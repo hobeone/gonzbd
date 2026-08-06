@@ -250,30 +250,51 @@ func (p *JobProgress) RemainingBytes() int64 {
 // O(files), and files number in the hundreds where articles number in the
 // tens of thousands. Called on reporting reads, not on the download path.
 func (p *JobProgress) derivedRemainingBytes() int64 {
-	var remaining int64
+	_, remaining := p.sizeFigures()
+	return remaining
+}
+
+// sizeFigures walks the files once and returns the two figures that must
+// agree: what the job expects to fetch, and how much of it is left.
+//
+// One walk rather than two because the exclusion sets are not independent.
+// Both skip Deferred; only remaining also skips Complete, because a complete
+// file has nothing left to fetch while still being part of what the job set
+// out to fetch. Computed apart, that relationship is a convention two
+// functions have to keep by hand — and a consumer pairing figures whose
+// exclusion sets have drifted gets a percentage or a downloaded total that is
+// wrong in a way no test of either figure alone would catch. Here it is one
+// continue-chain, so the shared half cannot drift and the divergent half is
+// visible in a single place.
+//
+// O(files), and files number in the hundreds where articles number in the
+// tens of thousands. Called on reporting reads, not on the download path.
+func (p *JobProgress) sizeFigures() (expected, remaining int64) {
+	if p == nil {
+		return 0, 0
+	}
 	for fi := range p.files {
 		f := &p.files[fi]
-		if f.Complete || f.Deferred {
+		if f.Deferred {
+			continue
+		}
+		expected += f.Bytes
+		if f.Complete {
 			continue
 		}
 		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
 			remaining += left
 		}
 	}
-	return remaining
+	return expected, remaining
 }
 
 // ExpectedBytes returns the size of what this job is expected to fetch:
 // every file that has not been deferred, whether or not it has been
 // downloaded yet.
 //
-// This is the size that must be paired with RemainingBytes. The two share
-// a walk and a predicate on purpose — a consumer computing a percentage or
-// a downloaded total from figures with different exclusion sets gets a
-// number that is wrong in a way no test of either figure alone would
-// catch. RemainingBytes additionally skips Complete files, because they
-// have nothing left to fetch; ExpectedBytes counts them, because they are
-// part of what the job set out to fetch.
+// This is the size that must be paired with RemainingBytes; sizeFigures
+// computes both from one walk so their exclusion sets cannot drift apart.
 //
 // It is therefore NOT Job.TotalBytes(), which is the immutable
 // whole-manifest total and still includes deferred recovery volumes. See
@@ -295,16 +316,7 @@ func (p *JobProgress) derivedRemainingBytes() int64 {
 // file needs to either exclude it from failedBytes accounting too, or
 // accept that the identity above stops closing for that file.
 func (p *JobProgress) ExpectedBytes() int64 {
-	if p == nil {
-		return 0
-	}
-	var expected int64
-	for fi := range p.files {
-		if p.files[fi].Deferred {
-			continue
-		}
-		expected += p.files[fi].Bytes
-	}
+	expected, _ := p.sizeFigures()
 	return expected
 }
 

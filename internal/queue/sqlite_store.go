@@ -485,8 +485,15 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	if job == nil || job.manifest == nil || job.progress == nil {
 		return nil
 	}
+	// The per-file byte columns are deliberately absent: recompute at the end
+	// of this function derives Bytes, BytesDownloaded and FailedBytes from the
+	// manifest and the article bitmaps, and it runs unconditionally, so
+	// reading them here only to overwrite them would make a query that runs on
+	// every promotion wider for no effect. They are still written by
+	// insertJobFilesTx and read by ArticleCountsByJob, which sizes a
+	// non-resident job that has no manifest to derive from.
 	const qFiles = `
-SELECT file_index, complete, deferred, write_cursor, bytes, bytes_downloaded, failed_bytes, assembled_crc32, COALESCE(articles_done, '')
+SELECT file_index, complete, deferred, write_cursor, assembled_crc32, COALESCE(articles_done, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
 	if err != nil {
@@ -495,17 +502,14 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var idx, complete, deferred int
-		var writeCursor, fileBytes, bytesDownloaded, failedBytes int64
+		var writeCursor int64
 		var crc32Val uint32
 		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &fileBytes, &bytesDownloaded, &failedBytes, &crc32Val, &artDoneStr); err != nil {
+		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &crc32Val, &artDoneStr); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
 			fp := &job.progress.files[idx]
-			fp.Bytes = fileBytes
-			fp.BytesDownloaded = bytesDownloaded
-			fp.FailedBytes = failedBytes // recompute below is the owner; this keeps the assignments to fp uniform
 			fp.WriteCursor = writeCursor
 			fp.AssembledCRC32 = crc32Val
 			// articles_done is the only source of per-article state;
@@ -552,6 +556,11 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			}
 		}
 	}
+	// Sole source of per-file byte state on this path: Bytes from the
+	// manifest, BytesDownloaded and FailedBytes from the article bitmaps
+	// decodeArticlesDone just restored. Removing this call does not fall back
+	// on the columns — they are not read above — it leaves every figure at
+	// zero, and RemainingBytes would report a fully downloaded job.
 	job.progress.recompute(job.manifest)
 	return rows.Err()
 }

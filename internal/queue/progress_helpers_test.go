@@ -16,7 +16,11 @@ func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
 		{ID: "a2", Bytes: 100},
 	}}})
 	p := newJobProgress(m)
-	p.recompute(m) // newJobProgress alone leaves pendingArticles at zero.
+	// recompute is not needed to seed the counters — newJobProgress sets
+	// pendingArticles now that it delegates to newJobProgressSized — but it
+	// is what production runs before these helpers ever see the progress, so
+	// the fixture matches that state rather than a constructor-fresh one.
+	p.recompute(m)
 
 	if got := p.files[0].Pending; got != 3 {
 		t.Fatalf("fixture: Pending = %d, want 3", got)

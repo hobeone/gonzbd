@@ -628,3 +628,64 @@ func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 		t.Errorf("un-deferred volume not counted: got %d, want %d", got, want)
 	}
 }
+
+// TestSizeFigures_SharedAndDivergentPredicates pins the relationship the two
+// figures have to keep, which is the reason they are computed in one walk:
+// both skip Deferred files, and only remaining also skips Complete ones.
+//
+// Asserting the two accessors separately would not catch a drift between
+// them — each would still look self-consistent. The interesting assertions
+// here are the per-file contributions, since that is where a predicate moving
+// on one figure but not the other shows up.
+func TestSizeFigures_SharedAndDivergentPredicates(t *testing.T) {
+	m := newManifest([]JobFile{
+		// Partly downloaded: contributes to both.
+		{Subject: "partial.rar", Bytes: 1000, Articles: []JobArticle{{ID: "p1", Bytes: 500}, {ID: "p2", Bytes: 500}}},
+		// Complete: contributes its whole size to expected, nothing to
+		// remaining. This is the divergent half of the predicate.
+		{Subject: "complete.rar", Bytes: 1000, Articles: []JobArticle{{ID: "c1", Bytes: 1000}}},
+		// Deferred: contributes to neither. This is the shared half.
+		{Subject: "x.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
+		// Wholly failed: counted as expected, but nothing is left to fetch.
+		{Subject: "failed.rar", Bytes: 600, Articles: []JobArticle{{ID: "f1", Bytes: 600}}},
+	})
+	p := newJobProgress(m)
+
+	p.markDone(m, 0) // partial.rar: half of it
+	p.markDone(m, 2) // complete.rar: all of it
+	p.files[1].Complete = true
+	p.files[2].Deferred = true
+	p.markFailed(m, 4) // failed.rar
+
+	expected, remaining := p.sizeFigures()
+
+	// 1000 + 1000 + 600; the deferred 800 is excluded from both.
+	if want := int64(2600); expected != want {
+		t.Errorf("expected = %d, want %d (deferred volume must be excluded)", expected, want)
+	}
+	// Only partial.rar has anything outstanding: 1000 - 500.
+	if want := int64(500); remaining != want {
+		t.Errorf("remaining = %d, want %d", remaining, want)
+	}
+	// The complete file is the case that separates the two predicates: drop
+	// the Complete skip from remaining and it would read 500; drop Complete
+	// from expected and expected would read 1600.
+	if expected-remaining != 2100 {
+		t.Errorf("expected-remaining = %d, want 2100", expected-remaining)
+	}
+
+	// The exported accessors must be these same two figures, or a caller
+	// pairing them is back to reading figures from two different walks.
+	if got := p.ExpectedBytes(); got != expected {
+		t.Errorf("ExpectedBytes() = %d, want %d", got, expected)
+	}
+	if got := p.RemainingBytes(); got != remaining {
+		t.Errorf("RemainingBytes() = %d, want %d", got, remaining)
+	}
+
+	// And the identity every consumer depends on still closes: bytes actually
+	// fetched are partial.rar's 500 plus complete.rar's 1000.
+	if downloaded := expected - p.FailedBytes() - remaining; downloaded != 1500 {
+		t.Errorf("downloaded identity = %d, want 1500", downloaded)
+	}
+}

@@ -101,11 +101,21 @@ handling:
 
 ### Restart
 
-`JobProgress` must be sized without loading manifests, which requires the
-article count per file. `job_files.articles_done` recovers that only to within
-8, so `job_files` carries an explicit `article_count` column. This is the
-design's only schema change and needs a new goose migration; startup then stays
-O(1) in manifest size rather than decompressing every manifest at boot.
+`JobProgress` must be sized without loading manifests. That started as needing
+only the article count per file — `job_files.articles_done` recovers it to
+within 8, so `job_files` carries an explicit `article_count` column — and
+startup stays O(1) in manifest size rather than decompressing every manifest at
+boot.
+
+Deriving remaining bytes rather than maintaining them widened what a
+non-resident job must reconstruct. `Store.ArticleCountsByJob` now returns a
+whole `FileMeta` per file — article count, `bytes`, `bytes_downloaded`,
+`failed_bytes`, `complete`, `deferred` — because the derivation reads all of
+them and must produce the same figure at either residency. `failed_bytes` is
+the second schema change this design has needed: a permanently failed article
+resolves without ever being downloaded, so it leaves no trace in
+`bytes_downloaded`, and without its own column a restarted job would report its
+bytes as still outstanding.
 
 ## Memory budget
 
