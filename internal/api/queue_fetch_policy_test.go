@@ -32,3 +32,22 @@ func TestFileState_DistinguishesHeldFromSkipped(t *testing.T) {
 		t.Errorf("discarded volume state = %q, want %q", got, "skipped")
 	}
 }
+
+// TestBuildSlot_Par2HeldStaysTrueAfterDiscard pins that the "par2 on-demand"
+// badge does not vanish at the exact moment the feature succeeds. Par2Held
+// must reflect UsesOnDemandPar2 (any non-default fetch policy), not
+// HasDeferredPar2 (FetchIfNeeded only) — a discarded volume is still a
+// volume that was withheld from download, which is what the badge
+// describes.
+func TestBuildSlot_Par2HeldStaysTrueAfterDiscard(t *testing.T) {
+	q, job := newOnDemandPar2Job(t)
+
+	if err := q.DiscardDeferredPar2(job.ID); err != nil {
+		t.Fatalf("DiscardDeferredPar2: %v", err)
+	}
+
+	slot := buildSlot(job, false, 0, 0, nil)
+	if !slot.Par2Held {
+		t.Error("Par2Held = false after DiscardDeferredPar2, want true — the badge must not disappear once the verdict comes back clean")
+	}
+}

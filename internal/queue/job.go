@@ -754,8 +754,14 @@ func (j *Job) HasDeferredPar2() bool {
 	return j.progress.HasDeferredPar2()
 }
 
-// UsesOnDemandPar2 reports whether any recovery volume is being withheld from
-// download — either awaiting the CRC verdict or already ruled unnecessary.
+// UsesOnDemandPar2 reports whether any file is being withheld from download
+// under a non-default fetch policy — either awaiting the CRC verdict
+// (FetchIfNeeded) or already ruled unnecessary (FetchNever). It does not
+// itself check IsPar2Recovery: every production call site that ever moves a
+// file off FetchAlways does so only for a par2 recovery volume, so today the
+// two conditions coincide. If a non-recovery file is ever given a
+// non-default policy, this method — and the "par2 on-demand" badge it
+// drives — would need the explicit IsPar2Recovery check added back.
 //
 // Distinct from HasDeferredPar2, which is FetchIfNeeded only because it gates
 // re-verification. This drives the "par2 on-demand" badge, which describes
