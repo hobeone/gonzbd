@@ -55,7 +55,8 @@ The tiering below is not an imposed taxonomy; it is that boundary made explicit.
 Writes need article byte counts and the file↔article mapping. Reads do not.
 
 Remaining bytes is derived, not stored. It sums the undownloaded part of every
-file that is neither complete nor deferred, from `FileProgress` alone, so it
+file that is neither complete nor held back from `FetchAlways` (`FetchIfNeeded`
+or `FetchNever`), from `FileProgress` alone, so it
 holds at any residency and needs no adjustment when a file's state changes.
 `FileProgress.Bytes` exists to make that derivation independent of the
 evictable manifest.
@@ -110,7 +111,8 @@ boot.
 Deriving remaining bytes rather than maintaining them widened what a
 non-resident job must reconstruct. `Store.ArticleCountsByJob` now returns a
 whole `FileMeta` per file — article count, `bytes`, `bytes_downloaded`,
-`failed_bytes`, `complete`, `deferred` — because the derivation reads all of
+`failed_bytes`, `complete`, `fetch_policy` (`FetchPolicy`, exposed as
+`FileMeta.Fetch`) — because the derivation reads all of
 them and must produce the same figure at either residency. `failed_bytes` is
 the second schema change this design has needed: a permanently failed article
 resolves without ever being downloaded, so it leaves no trace in
@@ -220,8 +222,19 @@ ordinary per-file write in `SQLiteStore.updateTx`. That write is unconditional
 for a resident job. For a non-resident job it is not: `updateTx` gates its
 whole `job_files` loop on `job.Manifest()` succeeding, so a discard on an
 evicted job updates `JobProgress` in memory immediately but leaves the
-persisted `fetch_policy` at its prior value until the job is promoted back to
-resident and a checkpoint runs.
+persisted `fetch_policy` at its prior value.
+
+That in-memory mark is then **lost**, not merely deferred, the next time the
+job is promoted. `PromoteNext` rebuilds `JobProgress` from scratch —
+`newJobProgress(&manifest)` — whenever `job.manifest` is nil, which discards
+the in-memory `FetchNever` outright, and `RestoreJobProgress` then assigns the
+stale `FetchIfNeeded` straight from the row. This is bounded and
+self-correcting rather than a data-loss bug: losing the mark makes
+`HasDeferredPar2()` true again, so `maybeReleaseRecoveryVolumes` re-runs the
+CRC pass on the next completion event and re-discards. The cost is one
+redundant verification pass — no re-download, no data loss. Making the mark
+survive promotion would need a residency-independent per-file write path,
+which does not exist today.
 
 This removed a whole tier of machinery that used to exist to survive the
 opposite design: `Store.ReplaceManifest`, which rewrote the manifest blob and

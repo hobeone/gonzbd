@@ -1044,9 +1044,11 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	}
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
-		// Discarding this error used to be harmless only because the method
-		// could not report the case that matters: a non-resident job silently
-		// returned nil. Now that it says so, say back.
+		// Log rather than discard: the only failure DiscardDeferredPar2 can
+		// still return is the job being genuinely gone (ErrNotFound), and
+		// silently swallowing that would mean a job removed mid-verification
+		// leaves no trace of why its recovery volumes were never marked
+		// FetchNever.
 		//
 		// DiscardDeferredPar2 marks the fetch policy on JobProgress, which is
 		// permanently resident (docs/queue-lifecycle.md), and makes no store

@@ -1,6 +1,6 @@
 -- +goose Up
 -- +goose StatementBegin
-ALTER TABLE job_files ADD COLUMN fetch_policy INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE job_files ADD COLUMN fetch_policy INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2);
 -- +goose StatementEnd
 -- +goose StatementBegin
 UPDATE job_files SET fetch_policy = 1 WHERE deferred = 1;
@@ -9,7 +9,7 @@ UPDATE job_files SET fetch_policy = 1 WHERE deferred = 1;
 ALTER TABLE job_files DROP COLUMN deferred;
 -- +goose StatementEnd
 -- +goose StatementBegin
-ALTER TABLE history_job_files ADD COLUMN fetch_policy INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE history_job_files ADD COLUMN fetch_policy INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2);
 -- +goose StatementEnd
 -- +goose StatementBegin
 UPDATE history_job_files SET fetch_policy = 1 WHERE deferred = 1;

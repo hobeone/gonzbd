@@ -126,10 +126,13 @@ func TestDiscardDeferredPar2_HydratesBackIntoAResidentStatus(t *testing.T) {
 // whole point is that DiscardDeferredPar2 no longer calls ReplaceManifest, or
 // any other store method, at all (see the interface note in the task brief).
 // There is no store write for a discard to fail, so there is nothing left
-// here to pin: a discard's only remaining failure mode is q.residentJob
-// rejecting the job (ErrNotFound/ErrJobNotResident), which is generic to
-// every mutator and already covered by nonresident_reporting_test.go. No
-// replacement test is added in this file.
+// here to pin: DiscardDeferredPar2 looks the job up directly in q.byID, not
+// through q.residentJob, so its only remaining failure mode is the job being
+// genuinely absent (ErrNotFound) — ErrJobNotResident is unreachable from
+// this method. That case is already covered directly, by
+// TestDiscardDeferredPar2 in ondemand_par2_test.go, which asserts
+// DiscardDeferredPar2("missing") returns an error. No replacement test is
+// added in this file.
 
 // TestDiscardDeferredPar2_ReplacesJobFilesRows used to pin that job_files rows
 // were renumbered wholesale to match a shrunk, re-indexed manifest — the
@@ -230,5 +233,82 @@ func TestDiscardDeferredPar2_RowsStayAtTheirIndices(t *testing.T) {
 	}
 	if rsnap.Progress().ArticleDone(0) {
 		t.Error("content-1 reads as downloaded after the reload, but only content-2 was")
+	}
+}
+
+// TestDiscardDeferredPar2_LostOnPromotionOfNonResidentJob pins the actual
+// behaviour of a discard issued against a job that was never resident to
+// begin with (StatusQueued, job.manifest == nil): the mark is in-memory
+// only, and PromoteNext's unconditional rebuild —
+// job.setResidency(&manifest, newJobProgress(&manifest)) when job.manifest
+// is nil — throws it away. RestoreJobProgress then assigns the stale
+// FetchIfNeeded straight from the still-unmodified job_files row.
+//
+// This is the opposite of what queue.go's DiscardDeferredPar2 doc comment
+// and docs/queue-lifecycle.md used to claim: that the mark "stays
+// in-memory-only... until the job is promoted back to resident and a
+// checkpoint runs", implying it survives and eventually lands. It does not
+// survive; it is lost outright. What makes that tolerable is that losing it
+// makes HasDeferredPar2() true again, so maybeReleaseRecoveryVolumes simply
+// redoes the CRC pass on the next completion event and re-discards — one
+// redundant verification, not lost data or a stuck job. This test pins only
+// the loss itself; the resident half of the round trip (discard survives
+// restart while resident) is already covered by
+// TestDiscardDeferredPar2_SurvivesRestart above.
+func TestDiscardDeferredPar2_LostOnPromotionOfNonResidentJob(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	// Occupy the single active slot so jobB is added StatusQueued and never
+	// becomes resident in the first place.
+	filler := makeMultiFileJob(t, "lost-promo-filler", 1, 1)
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+	jobB := addOnDemandPar2Job(t, q, "lost-promo-jobb")
+
+	q.mu.RLock()
+	b := q.byID[jobB.ID]
+	q.mu.RUnlock()
+	if b.Status != constants.StatusQueued || b.manifest != nil {
+		t.Fatalf("fixture guard: jobB status=%v manifest!=nil=%v, want StatusQueued/nil manifest",
+			b.Status, b.manifest != nil)
+	}
+
+	if err := q.DiscardDeferredPar2(jobB.ID); err != nil {
+		t.Fatalf("DiscardDeferredPar2: %v", err)
+	}
+	if got := jobB.Progress().FileFetchPolicy(2); got != FetchNever {
+		t.Fatalf("fixture guard: before promotion, policy = %d, want FetchNever(2)", got)
+	}
+	// Save so the persisted row is exactly what a real checkpoint would
+	// leave for a non-resident job: unchanged, since updateTx gates the
+	// whole job_files loop on job.Manifest() succeeding.
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Free the active slot and promote jobB — the exact path that rebuilds
+	// JobProgress from scratch.
+	q.SetMaxActiveJobs(2)
+
+	q.mu.RLock()
+	promoted := q.byID[jobB.ID]
+	q.mu.RUnlock()
+	if promoted.Status != constants.StatusDownloading {
+		t.Fatalf("fixture guard: jobB.Status = %v after SetMaxActiveJobs, want StatusDownloading (not promoted)", promoted.Status)
+	}
+
+	// The discard is lost: the policy reverts to FetchIfNeeded rather than
+	// staying FetchNever.
+	if got := promoted.Progress().FileFetchPolicy(2); got != FetchIfNeeded {
+		t.Errorf("after promotion, policy = %d, want FetchIfNeeded(1) — a discard on a non-resident "+
+			"job must be lost on promotion, not carried forward silently wrong", got)
+	}
+	// The self-correcting half: losing the mark makes the volume look
+	// deferred again, so maybeReleaseRecoveryVolumes has something to redo
+	// rather than a job stuck believing a discard that never reached disk.
+	if !promoted.HasDeferredPar2() {
+		t.Error("after promotion, HasDeferredPar2() = false, want true — losing the discard mark must make the volume eligible for re-verification")
 	}
 }

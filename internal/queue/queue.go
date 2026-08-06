@@ -1110,14 +1110,18 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 	// JobProgress is live and accurate, and rebuilding discarded whatever
 	// only memory knew — on-demand par2's deferral among it (#287). With a
 	// store this was masked, because RestoreJobProgress below re-read the
-	// deferred column; without one it was the original bug on the live job.
+	// fetch_policy column; without one it was the original bug on the live
+	// job.
 	//
 	// The same staleness hazard applies, so the same guard does. A manifest
-	// read from disk can predate a DiscardDeferredPar2 that shrank the
-	// in-memory pair, and pairing them panics inside recompute. Fail closed
-	// rather than crash: this path already fails closed for an unreadable
-	// manifest, and a manifest that contradicts the job is no more usable
-	// than one that will not parse.
+	// read from disk can predate a manifest write that has since gone
+	// missing or been truncated, and pairing a mismatched manifest/progress
+	// pair panics inside recompute. Fail closed rather than crash: this path
+	// already fails closed for an unreadable manifest, and a manifest that
+	// contradicts the job is no more usable than one that will not parse.
+	// DiscardDeferredPar2 no longer shrinks anything — a discard moves a
+	// file's fetch_policy in place and never touches the file set (see its
+	// doc comment) — so it is not a source of this mismatch any more.
 	if !priorProgress.describesSameJobAs(&m) {
 		hydrateErr := fmt.Errorf(
 			"%w: stored manifest for job %s describes %d files/%d articles but its progress holds %d/%d",
@@ -1856,8 +1860,19 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 // updateTx gates its whole job_files loop on job.Manifest() succeeding, and
 // an evicted job has none, so a discard there stays in-memory-only on
 // JobProgress — the persisted job_files.fetch_policy for that job's rows is
-// unchanged — until the job is promoted back to resident and a checkpoint
-// runs.
+// unchanged.
+//
+// That mark is then lost, not merely deferred, the next time the job is
+// promoted: PromoteNext rebuilds JobProgress from scratch with
+// newJobProgress when job.manifest is nil (see queue.go's promotion loop),
+// discarding the in-memory FetchNever, and RestoreJobProgress then assigns
+// the stale FetchIfNeeded straight from the row. There is no
+// residency-independent per-file write path to make the mark survive
+// promotion; building one is out of scope here. This is bounded and
+// self-correcting rather than a data-loss bug: HasDeferredPar2 is true again
+// once the mark is lost, so maybeReleaseRecoveryVolumes re-runs the CRC pass
+// on the next completion event and re-discards. The cost is one redundant
+// verification pass — no re-download, no data loss.
 //
 // Progress tier, like SetPar2ReleaseReason immediately above: the fetch
 // policy lives on JobProgress, which is permanently resident, so this
