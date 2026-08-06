@@ -205,6 +205,80 @@ func TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet(t *testing.T
 	}
 }
 
+// TestRestoreRetryProgress_DowngradesRetainedFetchNever pins the other half
+// of the overlay's fetch-policy handling, complementing
+// TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet: a row that
+// says FetchNever (the oracle discarded the volume on the run that failed)
+// must land back on FetchIfNeeded, the same downgrade ResetForRetry applies
+// to a live job — the retry is about to re-fetch different content, so the
+// old verdict cannot be trusted.
+//
+// The rebuild runs with OnDemandPar2 off, so NewJob's own fresh default for
+// the recovery volume is FetchAlways, not FetchIfNeeded. That is deliberate:
+// if the overlay's FetchNever branch were dropped, fp would silently keep
+// NewJob's FetchAlways default and this test would not notice the loss —
+// only forcing fp away from what the overlay must supply makes the branch
+// load-bearing rather than incidentally covered.
+func TestRestoreRetryProgress_DowngradesRetainedFetchNever(t *testing.T) {
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	store := NewSQLiteStore(repo.DB(), dir, repo)
+	q := New(WithStore(store))
+
+	// par2NZB (see ondemand_par2_test.go): file 0 content, file 1 par2 index,
+	// file 2 recovery volume.
+	job, err := NewJob(par2NZB(), AddOptions{Filename: "discard.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if job.progress.files[2].Fetch != FetchIfNeeded {
+		t.Fatalf("fixture guard: recovery volume not held after Add")
+	}
+
+	// Simulate the oracle ruling the volume unnecessary before the job later
+	// failed (on an unrelated file) and moved to history.
+	job.progress.files[2].Fetch = FetchNever
+	if err := store.Update(t.Context(), job); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := store.MoveToHistory(t.Context(), job, history.Entry{
+		NzoID: job.ID, Name: job.Name, Status: string(constants.StatusFailed),
+	}); err != nil {
+		t.Fatalf("MoveToHistory: %v", err)
+	}
+
+	// Retry rebuilds the job with on-demand par2 now off, so NewJob leaves
+	// the recovery volume at its zero-value FetchAlways rather than holding
+	// it — isolating the overlay's own downgrade from NewJob's.
+	rebuilt, err := NewJob(par2NZB(), AddOptions{Filename: "discard.nzb", OnDemandPar2: false}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob (rebuilt): %v", err)
+	}
+	rebuilt.ID = job.ID
+	if rebuilt.progress.files[2].Fetch != FetchAlways {
+		t.Fatalf("fixture guard: rebuilt job did not default the recovery volume to FetchAlways")
+	}
+
+	applied, err := store.RestoreRetryProgress(t.Context(), rebuilt)
+	if err != nil {
+		t.Fatalf("RestoreRetryProgress: %v", err)
+	}
+	if !applied {
+		t.Fatal("overlay refused for a matching manifest")
+	}
+	if got := rebuilt.Progress().FileFetchPolicy(2); got != FetchIfNeeded {
+		t.Errorf("FileFetchPolicy(2) = %v, want FetchIfNeeded — a discarded verdict must be re-derived, not left as FetchAlways nor stuck at FetchNever", got)
+	}
+}
+
 // TestRestoreRetryProgress_QueryFailurePropagates pins that a broken read is
 // an error rather than a silent "nothing retained". The two are opposite
 // instructions: one says re-download the job, the other says the database is

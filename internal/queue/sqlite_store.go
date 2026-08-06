@@ -954,26 +954,27 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		if f.Complete {
 			fp.Complete = true
 		}
-		// Unlike RestoreJobProgress, this does not assign fp.Fetch outright.
-		// RestoreJobProgress overlays rows onto progress that was itself sized
-		// from those same rows via ArticleCountsByJob, so row and memory
-		// cannot legitimately disagree there. Here, fp already carries
-		// whatever NewJob just decided while rebuilding the job from the
-		// re-parsed NZB — FetchIfNeeded on every recovery volume when
-		// OnDemandPar2 is on (see NewJob) — and that can genuinely differ
-		// from what this job's fetch_policy was the last time it ran: an
-		// undeferRecoveryLocked release (a permanent article failure, or a
-		// completed download that needed repair) sets FetchAlways and
-		// persists it, and a subsequent MoveToHistory retains that value.
-		// Only lift the row's value when it says FetchIfNeeded — the
-		// deliberately narrow case old code's set-only form preserved: a
-		// volume the previous run had already released for download
-		// (FetchAlways/FetchNever in the row) must not be re-held by a retry,
-		// since NewJob's own FetchIfNeeded default would otherwise silently
-		// win over a decision this job already made. What a retry itself
-		// should do to a still-held volume is Task 3's decision, not this
-		// one's — this task is behaviour-neutral.
-		if f.Fetch == FetchIfNeeded {
+		// A retry re-derives the par2 verdict rather than inheriting it, for
+		// the same reason ResetForRetry gives: the articles this retry
+		// re-fetches can change the contents the oracle already ruled on, so
+		// a discarded volume (FetchNever) and a still-held one (FetchIfNeeded)
+		// both land back on FetchIfNeeded here — symmetric with ResetForRetry's
+		// downgrade for a live job.
+		//
+		// A retained FetchAlways is the one value deliberately left alone.
+		// fp already carries whatever NewJob just decided while rebuilding the
+		// job from the re-parsed NZB — FetchIfNeeded on every recovery volume
+		// when OnDemandPar2 is on (see NewJob) — and that fresh decision is
+		// what must win, not the row: an undeferRecoveryLocked release (a
+		// permanent article failure, or a completed download that needed
+		// repair) sets FetchAlways and persists it, and a subsequent
+		// MoveToHistory retains that value. Assigning fp.Fetch = f.Fetch
+		// unconditionally (an unqualified else branch) would let that stale
+		// FetchAlways silently overwrite the fresh hold NewJob just set,
+		// re-downloading a recovery volume the current rebuild has no reason
+		// to think it needs — see
+		// TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet.
+		if f.Fetch == FetchIfNeeded || f.Fetch == FetchNever {
 			fp.Fetch = FetchIfNeeded
 		}
 	}

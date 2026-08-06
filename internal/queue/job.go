@@ -927,6 +927,15 @@ func (j *Job) ResetForRetry() {
 		if anyReset {
 			j.progress.files[fi].Complete = false
 		}
+		// A retry re-derives the par2 verdict rather than inheriting it. The
+		// clean verdict was computed against the contents this retry is about
+		// to change, so the volumes go back to awaiting a decision.
+		//
+		// Downgrade, not reset: FetchAlways would re-download every recovery
+		// volume the oracle already ruled unnecessary, which is #323.
+		if j.progress.files[fi].Fetch == FetchNever {
+			j.progress.files[fi].Fetch = FetchIfNeeded
+		}
 	}
 	j.progress.recompute(j.manifest)
 }
