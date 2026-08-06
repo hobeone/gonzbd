@@ -111,7 +111,11 @@ func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
 // total (via markFailed's bookkeeping) and remainingBytes. Emitted must also
 // be cleared, matching the not-failed path.
 func TestResetForReload_FailedArticle(t *testing.T) {
-	m := newManifest([]JobFile{{Articles: []JobArticle{
+	// Bytes is the sum of the articles' bytes, as internal/nzb's parser
+	// always makes it. RemainingBytes derives from the file's own size, so a
+	// fixture leaving it zero would clamp the figure to zero and make the
+	// assertions below pass no matter what resetForReload did.
+	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
@@ -120,7 +124,7 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 	p.emitted.Set(0) // simulate a reload racing an in-flight (re-)dispatch
 
 	failedBytesBefore := p.failedBytes
-	remainingBefore := p.remainingBytes
+	remainingBefore := p.RemainingBytes()
 	if failedBytesBefore == 0 {
 		t.Fatal("fixture: markFailed should have recorded failed bytes")
 	}
@@ -141,17 +145,21 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 		t.Errorf("failedBytes = %d, want %d (unwound by article 0's bytes)", p.failedBytes, wantFailedBytes)
 	}
 	wantRemaining := remainingBefore + int64(m.ArticleBytes(0))
-	if p.remainingBytes != wantRemaining {
-		t.Errorf("remainingBytes = %d, want %d (restored by article 0's bytes)", p.remainingBytes, wantRemaining)
+	if got := p.RemainingBytes(); got != wantRemaining {
+		t.Errorf("RemainingBytes() = %d, want %d (restored by article 0's bytes)", got, wantRemaining)
 	}
 }
 
 // TestResetForReload_NotFailedArticle pins the other side: an article that
 // was never Failed only has its transient Emitted flag cleared — Done,
-// failedBytes, and remainingBytes must be untouched, including for a Done
+// failedBytes, and RemainingBytes must be untouched, including for a Done
 // (successfully completed) article, which must not be reopened by a reload.
 func TestResetForReload_NotFailedArticle(t *testing.T) {
-	m := newManifest([]JobFile{{Articles: []JobArticle{
+	// Bytes is the sum of the articles' bytes, as internal/nzb's parser
+	// always makes it. RemainingBytes derives from the file's own size, so a
+	// fixture leaving it zero would clamp the figure to zero and make the
+	// assertions below pass no matter what resetForReload did.
+	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
@@ -160,7 +168,7 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 	p.emitted.Set(0)
 
 	failedBytesBefore := p.failedBytes
-	remainingBefore := p.remainingBytes
+	remainingBefore := p.RemainingBytes()
 	doneBefore := p.done.Get(0)
 
 	p.resetForReload(m, 0)
@@ -174,8 +182,8 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 	if p.failedBytes != failedBytesBefore {
 		t.Errorf("failedBytes changed on a reset non-failed article: got %d, want unchanged %d", p.failedBytes, failedBytesBefore)
 	}
-	if p.remainingBytes != remainingBefore {
-		t.Errorf("remainingBytes changed on a reset non-failed article: got %d, want unchanged %d", p.remainingBytes, remainingBefore)
+	if got := p.RemainingBytes(); got != remainingBefore {
+		t.Errorf("RemainingBytes() changed on a reset non-failed article: got %d, want unchanged %d", got, remainingBefore)
 	}
 }
 
@@ -186,7 +194,11 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 // map) must not move the clone. cloneJob relies on this to let a saveStore
 // snapshot be read outside q.mu while the live job keeps mutating.
 func TestJobProgressClone_DeepCopy(t *testing.T) {
-	m := newManifest([]JobFile{{Articles: []JobArticle{
+	// Bytes is the sum of the articles' bytes, as internal/nzb's parser
+	// always makes it. RemainingBytes derives from the file's own size, so a
+	// fixture leaving it zero would clamp the figure to zero and make the
+	// assertions below pass no matter what resetForReload did.
+	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
