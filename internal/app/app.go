@@ -1046,14 +1046,14 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		// Discarding this error used to be harmless only because the method
 		// could not report the case that matters: a non-resident job silently
-		// returned nil. Now that it says so, say so back.
+		// returned nil. Now that it says so, say back.
 		//
-		// The error covers two outcomes and the message must not claim one of
-		// them. A non-resident job discarded nothing, so it finalizes holding
-		// files it was told to drop. A resident job whose persistence failed
-		// (#294) did discard them in memory — this process is correct and the
-		// job finalizes as intended — but the durable state still lists them,
-		// so a restart before finalization brings them back.
+		// The only failure left is a non-resident job: DiscardDeferredPar2
+		// marks the fetch policy on the live JobProgress and makes no store
+		// call of its own (see its doc comment), so a resident job's mark can
+		// no longer fail to persist the way #294's rebuild-and-rewrite could.
+		// A non-resident job has no progress to mark, discards nothing, and
+		// finalizes holding files it was told to drop.
 		if err := app.queue.DiscardDeferredPar2(jobID); err != nil {
 			app.log.Warn("on-demand par2: discarding the deferred volumes did not fully succeed",
 				"job", jobID, "err", err)

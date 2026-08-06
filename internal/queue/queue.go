@@ -1830,12 +1830,21 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	return nil
 }
 
-// DiscardDeferredPar2 removes all deferred par2 files from the job. Since
-// Manifest is immutable and shared by reference across snapshots, this
-// rebuilds a fresh Manifest (with recomputed TotalBytes, but Par2Bytes/
-// Par2Files carried over unchanged) and a re-indexed JobProgress cloned
-// from the old one, rather than editing either in place. A pure no-op
-// (no rebuild, no dirty flag) when there is nothing deferred to discard.
+// DiscardDeferredPar2 records that every recovery volume still awaiting the
+// CRC verdict will never be downloaded. The file set does not change: the
+// manifest entries and job_files rows stay exactly where they are, and only
+// the fetch policy moves.
+//
+// This used to rebuild the manifest without those files. Removing a non-final
+// file renumbers every file_index after it, and job_files rows are keyed by
+// that index, which is the root of #294, #308, #310, #315 and #317. The only
+// purpose removal ever served was accounting, and both derived size figures
+// already exclude a file that is not being fetched, so there is nothing left
+// for it to correct.
+//
+// No store write of its own. Nothing about the file set changed, so the
+// ordinary checkpoint writes the new policy through updateTx like any other
+// per-file state, and the operation cannot partially apply.
 func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1844,166 +1853,15 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		return err
 	}
 
-	m := job.manifest
-	var activeFiles []JobFile
-	var discardedBytes int64
-	for fi := range m.NumFiles() {
-		// FetchIfNeeded only, matching the other policy-specific guards
-		// (HasDeferredPar2, DeferredRecoveryIndices, undeferRecoveryLocked):
-		// this discards volumes still awaiting the CRC verdict. A FetchNever
-		// volume is already decided and is Task 2's concern (marking rather
-		// than rebuilding), not this one's.
+	changed := false
+	for fi := range len(job.progress.files) {
 		if job.progress.files[fi].Fetch == FetchIfNeeded {
-			discardedBytes += m.FileBytes(fi)
-			continue
+			job.progress.files[fi].Fetch = FetchNever
+			changed = true
 		}
-		lo, hi := m.FileRange(fi)
-		articles := make([]JobArticle, 0, hi-lo)
-		for i := lo; i < hi; i++ {
-			articles = append(articles, JobArticle{
-				ID:     m.ArticleID(i),
-				Bytes:  m.ArticleBytes(i),
-				Number: m.ArticleNumber(i),
-			})
-		}
-		activeFiles = append(activeFiles, JobFile{
-			Subject:        m.FileSubject(fi),
-			Date:           m.FileDate(fi),
-			Bytes:          m.FileBytes(fi),
-			Articles:       articles,
-			IsPar2Recovery: m.FileIsPar2Recovery(fi),
-		})
 	}
-
-	if discardedBytes > 0 {
-		// Manifest is shared by reference across every snapshot, so it
-		// cannot be filtered in place — build a fresh one instead. Every
-		// surviving article's global index shifts whenever a removed file
-		// preceded it, so JobProgress's flat arrays must be re-indexed to
-		// match, not merely recomputed.
-		newManifestVal := newManifest(activeFiles)
-		// Par2Bytes/Par2Files are carried over from the old manifest
-		// unchanged, not recomputed against the reduced file set — this
-		// deliberately leaves them stale, still counting the just-removed
-		// recovery volumes.
-		newManifestVal.par2Bytes = m.Par2Bytes()
-		newManifestVal.par2Files = m.Par2Files()
-
-		// Clone-and-adjust the old JobProgress rather than constructing
-		// fresh: a fresh newJobProgress(newManifestVal) would zero every
-		// job-level scalar (ServerStats, DownloadStarted/Finished, ...),
-		// silently discarding progress on a partially-downloaded job.
-		newProgress := job.progress.clone()
-		// bitset has no slice/append primitive (see bitset.go), so surviving
-		// articles are copied bit-by-bit into pre-sized bitsets via a running
-		// index, rather than the []bool append-of-range this replaces.
-		newDone := newBitset(newManifestVal.NumArticles())
-		newFailed := newBitset(newManifestVal.NumArticles())
-		newEmitted := newBitset(newManifestVal.NumArticles())
-		newFiles := make([]FileProgress, 0, newManifestVal.NumFiles())
-		idx := 0
-		for fi := range m.NumFiles() {
-			if job.progress.files[fi].Fetch == FetchIfNeeded {
-				continue
-			}
-			// A Deferred file's articles are never dispatched
-			// (ForEachUnfinishedArticle skips them), so they are always
-			// Done=false/Failed=false/Emitted=false at discard time —
-			// dropping them loses nothing.
-			lo, hi := m.FileRange(fi)
-			for i := lo; i < hi; i++ {
-				if job.progress.done.Get(i) {
-					newDone.Set(idx)
-				}
-				if job.progress.failed.Get(i) {
-					newFailed.Set(idx)
-				}
-				if job.progress.emitted.Get(i) {
-					newEmitted.Set(idx)
-				}
-				idx++
-			}
-			newFiles = append(newFiles, job.progress.files[fi])
-		}
-		// idx is expected to land exactly on newManifestVal.NumArticles():
-		// both loops above walk the identical Deferred predicate in the
-		// identical file order, so every surviving article should get
-		// exactly one slot. That equality is not self-enforcing, though —
-		// bitset.Set silently no-ops out of range (see bitset.go), so a
-		// future divergence between the two loops would corrupt done/
-		// failed/emitted by silently dropping or misplacing bits instead of
-		// failing loudly. Check it explicitly rather than trust it.
-		if idx != newManifestVal.NumArticles() {
-			panic(fmt.Sprintf("queue: DiscardDeferredPar2 copied %d articles but the rebuilt manifest has %d — the surviving-file walk and the manifest's Deferred filtering have diverged", idx, newManifestVal.NumArticles()))
-		}
-		newProgress.done = newDone
-		newProgress.failed = newFailed
-		newProgress.emitted = newEmitted
-		newProgress.files = newFiles
-		// RemainingBytes needs no fixup of its own: derivedRemainingBytes
-		// already excludes a Deferred file's bytes on every read, so
-		// discarding one changes nothing it ever counted.
-		//
-		// pendingArticles/articlesResolved/articlesFailed and each file's
-		// Pending/BytesDownloaded are already correct here (deferred files
-		// contribute nothing, so dropping them changes nothing these
-		// counters depend on), but recompute defensively rather than
-		// relying on that invariant staying true — every other bulk-state
-		// path (Add, Load, ClearAllEmitted, undeferRecoveryLocked) does the
-		// same.
-		newProgress.recompute(newManifestVal)
-
-		job.setResidency(newManifestVal, newProgress)
-		// The rebuilt manifest has fewer files/articles/bytes than the one
-		// the job's scalars were last synced from (the whole point of this
-		// discard) — par2Bytes/par2Files are carried over unchanged above,
-		// but totalBytes/numFiles/numArticles shrink, so the cached scalars
-		// must be re-synced or TotalBytes()/NumFiles()/NumArticles() would
-		// keep reporting the pre-discard totals forever.
-		job.setScalarsFromManifest(newManifestVal)
-		// Set before the store write, not after: the in-memory job has already
-		// changed at this point, so it is dirty whether or not persisting it
-		// succeeds.
+	if changed {
 		q.dirty.Store(true)
-
-		// Persist the rebuilt shape before releasing the lock (#294). Holding
-		// q.mu across the store write is the same trade Add makes and is
-		// justified the same way: the in-memory job and the persisted one must
-		// never be observable at different file sets. Releasing the lock first
-		// would open a window where a concurrent Snapshot reads the shrunk
-		// progress, hydrates the un-rewritten manifest, and gets ErrManifestStale
-		// — reintroducing the bug for as long as the window lasts.
-		//
-		// A failure here is reported rather than swallowed, and the in-memory
-		// rebuild above is deliberately left in place: it is correct, it is
-		// what every reader in this process will see, and rolling it back
-		// would re-defer volumes the caller has already verified as
-		// unnecessary.
-		//
-		// What that leaves behind is not benign, and an earlier version of
-		// this comment claimed it was — that a restart merely resurrects the
-		// volumes, no worse than the pre-#294 behaviour. It is worse: the
-		// rows still describe the pre-discard file set while the manifest
-		// describes the new one, and updateTx writes job_files by
-		// file_index, so every checkpoint tick would splice each surviving
-		// file's progress onto its pre-discard neighbour's row (#310).
-		//
-		// Flag the job instead. The flag is raised before the attempt, not
-		// after a failure, so a panic or a partially-applied write inside
-		// ReplaceManifest leaves it raised too — the states this guards
-		// against are exactly the ones where control does not come back
-		// here cleanly.
-		// Bump before the store write, so a rewrite already in flight for
-		// the previous file set cannot clear the flag this one is about to
-		// raise.
-		job.bumpFileSetGen()
-		if q.store != nil {
-			job.setManifestRowsStale(true)
-			if err := q.store.ReplaceManifest(context.Background(), job); err != nil { //lockio: the in-memory and persisted file sets must not diverge; see comment above
-				return fmt.Errorf("queue: persist discarded par2 for job %s: %w", jobID, err)
-			}
-			job.setManifestRowsStale(false)
-		}
 	}
 	return nil
 }
