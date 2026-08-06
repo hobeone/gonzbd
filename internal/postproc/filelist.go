@@ -72,7 +72,11 @@ func buildDownloadFileList(job *Job) []string {
 
 	switch {
 	case heldVols > 0:
-		// Still deferred at finalize => never downloaded => verified clean.
+		// Still withheld at finalize => never downloaded => verified clean.
+		// On the clean path these are FetchNever by now, the verdict having
+		// landed; a job finalized before the verdict leaves them
+		// FetchIfNeeded. Either way the bytes were not fetched, which is
+		// what this line reports, so heldVols counts both.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
 	case recoveryVols > 0 && p.Par2Recovered():

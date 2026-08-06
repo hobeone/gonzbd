@@ -50,6 +50,34 @@ const (
 	FetchNever
 )
 
+// AllFetchPolicies lists every declared policy so a test can walk them and
+// assert that a switch over them handles each one rather than falling through
+// silently. Kept in declaration order.
+//
+// This enum is read through two predicates that mean different things —
+// `!= FetchAlways` for dispatch, completion and byte accounting, and
+// `== FetchIfNeeded` for HasDeferredPar2 and DeferredRecoveryIndices, which
+// gate CRC re-verification and whether a late failure may re-arm a volume. A
+// fourth value would need a decision at each of those sites, and the failure
+// mode of missing one is silence: a policy matching neither predicate is
+// excluded from every aggregate and invisible to the un-defer path, so its
+// file is never fetched and never blocks completion.
+//
+// It is hand-written, which on its own would make it a second copy of the
+// enum carrying the same defect: a value added to the const block but not
+// here is invisible to every loop over it, and every exhaustiveness test
+// built on it passes vacuously. TestAllFetchPolicies_Exhaustive closes that
+// loop by parsing the const block itself, the same way
+// postproc.AllQuickCheckOutcomes (#313) and constants.AllStatuses (#291) are
+// pinned.
+func AllFetchPolicies() []FetchPolicy {
+	return []FetchPolicy{
+		FetchAlways,
+		FetchIfNeeded,
+		FetchNever,
+	}
+}
+
 // FileProgress is one file's mutable assembly state.
 type FileProgress struct {
 	Complete bool
@@ -264,10 +292,11 @@ func (p *JobProgress) RemainingBytes() int64 {
 // downloaded as expectedBytes - FailedBytes() - RemainingBytes(), an identity
 // that only closes under that meaning.
 //
-// Deferred files contribute nothing because their articles are never
-// dispatched, so a deferral or an un-deferral needs no adjustment anywhere —
-// the next read reflects it. That is the whole point of deriving rather than
-// maintaining.
+// Files the job is not fetching contribute nothing because their articles are
+// never dispatched — both FetchIfNeeded and FetchNever, since neither is being
+// downloaded. Holding, releasing or discarding a volume therefore needs no
+// adjustment anywhere; the next read reflects it. That is the whole point of
+// deriving rather than maintaining.
 //
 // O(files), and files number in the hundreds where articles number in the
 // tens of thousands. Called on reporting reads, not on the download path.
@@ -280,7 +309,8 @@ func (p *JobProgress) derivedRemainingBytes() int64 {
 // agree: what the job expects to fetch, and how much of it is left.
 //
 // One walk rather than two because the exclusion sets are not independent.
-// Both skip Deferred; only remaining also skips Complete, because a complete
+// Both skip anything the job is not fetching (Fetch != FetchAlways, so both
+// FetchIfNeeded and FetchNever); only remaining also skips Complete, because a complete
 // file has nothing left to fetch while still being part of what the job set
 // out to fetch. Computed apart, that relationship is a convention two
 // functions have to keep by hand — and a consumer pairing figures whose
