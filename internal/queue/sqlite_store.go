@@ -958,8 +958,11 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		// the same reason ResetForRetry gives: the articles this retry
 		// re-fetches can change the contents the oracle already ruled on, so
 		// a discarded volume (FetchNever) and a still-held one (FetchIfNeeded)
-		// both land back on FetchIfNeeded here — symmetric with ResetForRetry's
-		// downgrade for a live job.
+		// both land back on FetchIfNeeded here. That symmetry with
+		// ResetForRetry's downgrade covers only this held/discarded pair —
+		// it does not extend to FetchAlways, where the two routes genuinely
+		// diverge (see below), and this overlay makes no attempt to close
+		// that gap.
 		//
 		// A retained FetchAlways is the one value deliberately left alone.
 		// fp already carries whatever NewJob just decided while rebuilding the
@@ -974,6 +977,22 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		// re-downloading a recovery volume the current rebuild has no reason
 		// to think it needs — see
 		// TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet.
+		//
+		// This is where the two retry routes actually disagree. On the live
+		// route (Queue.Retry -> ResetForRetry, job.go), a volume that
+		// undeferRecoveryLocked released to FetchAlways because damage was
+		// found is not FetchNever, so ResetForRetry's downgrade skips it and
+		// it stays FetchAlways — re-downloaded. On this history route, that
+		// same retained FetchAlways is skipped by the condition below, so fp
+		// keeps NewJob's fresh FetchIfNeeded — held pending a fresh ruling.
+		// Same prior state, opposite outcome, decided only by whether the
+		// job was still queue-resident when the user retried it.
+		// ResetForRetry cannot special-case that release the way this
+		// overlay does: JobFile.Deferred (the record of on-demand opt-in) is
+		// not carried onto Manifest, which exposes only FileIsPar2Recovery,
+		// so a live job's ResetForRetry has no way to tell an opted-in job's
+		// damage-released volume from an ordinary FetchAlways on a content
+		// file. Closing that gap needs state this task does not have.
 		if f.Fetch == FetchIfNeeded || f.Fetch == FetchNever {
 			fp.Fetch = FetchIfNeeded
 		}

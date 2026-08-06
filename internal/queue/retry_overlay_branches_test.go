@@ -219,6 +219,15 @@ func TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet(t *testing.T
 // NewJob's FetchAlways default and this test would not notice the loss —
 // only forcing fp away from what the overlay must supply makes the branch
 // load-bearing rather than incidentally covered.
+//
+// That fixture also means a user who turns on-demand par2 off and retries a
+// job whose volumes were discarded under the old setting gets them held
+// (FetchIfNeeded) rather than downloaded outright — disagreeing with the
+// config the retry was just rebuilt from. This is accepted rather than
+// treated as a bug this task should fix: it is safe because
+// maybeReleaseRecoveryVolumes gates on HasDeferredPar2() state, not on the
+// OnDemandPar2 config flag, so a held volume still gets a fresh ruling and
+// is never stranded — it is at most an extra decision, never lost data.
 func TestRestoreRetryProgress_DowngradesRetainedFetchNever(t *testing.T) {
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
