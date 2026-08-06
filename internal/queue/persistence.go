@@ -137,8 +137,19 @@ func (q *Queue) saveStore(_ string) error {
 		pausedErr = fmt.Errorf("queue: save paused state: %w", pausedErr)
 	}
 	if err := errors.Join(jobsErr, pausedErr); err != nil {
-		// Skip Prune: it deletes rows absent from the live set, which is
-		// only safe to trust once the live set has been written.
+		// Skip Prune: it deletes rows absent from the live set. Either
+		// write failing means this cycle's store state is not what we
+		// intended, so the guard is deliberately broader than "the live
+		// set is not durable" — after a paused-only failure the jobs did
+		// land, and Prune would be safe by that narrower reading alone.
+		//
+		// The breadth is the point. Deferring Prune costs one cycle of
+		// stale rows and the next checkpoint runs it; running a
+		// destructive delete against a store that just failed a write
+		// costs rows. A SetPaused failure is also evidence about the
+		// store rather than about that one bool — a locked database or a
+		// full disk fails it the same way — which is not a state to start
+		// deleting in.
 		return err
 	}
 	if err := q.store.Prune(ctx); err != nil {

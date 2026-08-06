@@ -1,7 +1,9 @@
 package queue
 
 import (
+	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -120,6 +122,266 @@ func TestSave_RestoresDirtyOnError(t *testing.T) {
 	}
 	if q.IsDirty() {
 		t.Error("dirty flag still set after a successful Save")
+	}
+}
+
+// ---------- saveStore ----------
+
+// TestSaveStore_Success pins the happy path: jobs and the paused flag both
+// land in the store, and Prune runs afterward without error.
+func TestSaveStore_Success(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir))
+	j := makeMultiFileJob(t, "savestore-ok", 1, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	q.mu.Lock()
+	q.paused = true
+	q.mu.Unlock()
+
+	if err := q.saveStore(dir); err != nil {
+		t.Fatalf("saveStore: %v", err)
+	}
+
+	got, err := store.IsPaused(t.Context())
+	if err != nil {
+		t.Fatalf("IsPaused: %v", err)
+	}
+	if !got {
+		t.Error("paused flag did not reach the store")
+	}
+}
+
+// TestSaveStore_JobsErrorPropagates pins that a failed UpdateBatch is
+// reported (wrapped), and that Prune — which trusts the just-written jobs
+// row as the live set — never runs when that write failed.
+func TestSaveStore_JobsErrorPropagates(t *testing.T) {
+	real, dir := setupResidencyTestStore(t)
+	fs := &failingStore{Store: real, failUpdateBatch: true}
+	q := New(WithStore(fs), WithStateDir(dir))
+	j := makeMultiFileJob(t, "savestore-jobs-err", 1, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := q.saveStore(dir)
+	if err == nil {
+		t.Fatal("saveStore: want error when UpdateBatch fails, got nil")
+	}
+	if !errors.Is(err, errInjected) {
+		t.Errorf("error = %v, want it to wrap the injected store failure", err)
+	}
+	if !strings.Contains(err.Error(), "save jobs") {
+		t.Errorf("error = %v, want it to mention saving jobs", err)
+	}
+	if strings.Contains(err.Error(), "prune store") {
+		t.Error("Prune ran (or its error surfaced) despite the jobs write failing; Prune must be skipped until the live set is durable")
+	}
+	// The string check above only pins Prune's *error* not surfacing, which
+	// stays true whenever Prune runs and simply succeeds. The actual safety
+	// property is that Prune must not run at all on this path — it deletes
+	// rows absent from the live set, so running it after a failed jobs write
+	// is destructive even if Prune itself reports no error. Assert the call
+	// count directly.
+	if fs.pruneCalls != 0 {
+		t.Errorf("Prune called %d times, want 0 — it must not run when the jobs write failed", fs.pruneCalls)
+	}
+}
+
+// TestSaveStore_BothWritesFailAreJoined pins that saveStore attempts BOTH
+// the jobs write and SetPaused even when the first fails, joining their
+// errors rather than returning early after the jobs write — the two writes
+// are independent per the errors.Join in saveStore, and a caller diagnosing
+// a checkpoint failure needs to see both problems, not just the first one
+// hit.
+func TestSaveStore_BothWritesFailAreJoined(t *testing.T) {
+	real, dir := setupResidencyTestStore(t)
+	fs := &failingStore{Store: real, failUpdateBatch: true, failSetPaused: true}
+	q := New(WithStore(fs), WithStateDir(dir))
+	j := makeMultiFileJob(t, "savestore-both-err", 1, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := q.saveStore(dir)
+	if err == nil {
+		t.Fatal("saveStore: want error when both UpdateBatch and SetPaused fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "save jobs") {
+		t.Errorf("error = %v, want it to mention saving jobs", err)
+	}
+	if !strings.Contains(err.Error(), "save paused state") {
+		t.Errorf("error = %v, want it to mention saving paused state", err)
+	}
+	if fs.pruneCalls != 0 {
+		t.Errorf("Prune called %d times, want 0 — both writes failed, so the live set is not durable", fs.pruneCalls)
+	}
+}
+
+// TestSaveStore_PausedErrorPropagates pins that a failed SetPaused is
+// reported (wrapped) even though the jobs write succeeded — the two writes
+// are attempted independently and their errors joined, rather than the
+// first success hiding the second failure.
+func TestSaveStore_PausedErrorPropagates(t *testing.T) {
+	real, dir := setupResidencyTestStore(t)
+	fs := &failingStore{Store: real, failSetPaused: true}
+	q := New(WithStore(fs), WithStateDir(dir))
+	j := makeMultiFileJob(t, "savestore-paused-err", 1, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := q.saveStore(dir)
+	if err == nil {
+		t.Fatal("saveStore: want error when SetPaused fails, got nil")
+	}
+	if !errors.Is(err, errInjected) {
+		t.Errorf("error = %v, want it to wrap the injected store failure", err)
+	}
+	if !strings.Contains(err.Error(), "save paused state") {
+		t.Errorf("error = %v, want it to mention saving paused state", err)
+	}
+
+	// The job write itself must still have landed — only the paused flag
+	// failed.
+	loaded, err := real.List(t.Context())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	found := false
+	for _, lj := range loaded {
+		if lj.ID == j.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("job write did not land even though only SetPaused was made to fail")
+	}
+
+	// The skip-Prune guard is errors.Join(jobsErr, pausedErr), so it fires
+	// when EITHER write fails. This is the half the other two tests do not
+	// reach, and it is the half a narrowing to `if jobsErr != nil` would
+	// break silently: the jobs write above provably landed, so the live set
+	// is durable and the narrower "only safe once the live set is written"
+	// reading would permit Prune here. The guard is deliberately broader
+	// than that — see its comment in saveStore — and this pins the breadth.
+	if fs.pruneCalls != 0 {
+		t.Errorf("pruneCalls = %d, want 0: Prune must not run in a cycle where either write failed", fs.pruneCalls)
+	}
+}
+
+// TestSaveStore_PruneErrorPropagates pins that a Prune failure, reached only
+// once both writes above succeed, is reported wrapped rather than swallowed.
+func TestSaveStore_PruneErrorPropagates(t *testing.T) {
+	real, dir := setupResidencyTestStore(t)
+	fs := &failingStore{Store: real, failPrune: true}
+	q := New(WithStore(fs), WithStateDir(dir))
+	j := makeMultiFileJob(t, "savestore-prune-err", 1, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := q.saveStore(dir)
+	if err == nil {
+		t.Fatal("saveStore: want error when Prune fails, got nil")
+	}
+	if !errors.Is(err, errInjected) {
+		t.Errorf("error = %v, want it to wrap the injected store failure", err)
+	}
+	if !strings.Contains(err.Error(), "prune store") {
+		t.Errorf("error = %v, want it to mention pruning the store", err)
+	}
+}
+
+// ---------- readGzJSON ----------
+
+// TestReadGzJSON_RoundTrip pins the success path shared with writeGzJSON:
+// what was encoded comes back equal.
+func TestReadGzJSON_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "roundtrip.json.gz")
+	type payload struct {
+		Name  string
+		Count int
+	}
+	want := payload{Name: "widget", Count: 7}
+	if err := writeGzJSON(path, want); err != nil {
+		t.Fatalf("writeGzJSON: %v", err)
+	}
+
+	var got payload
+	if err := readGzJSON(path, &got); err != nil {
+		t.Fatalf("readGzJSON: %v", err)
+	}
+	if got != want {
+		t.Errorf("readGzJSON = %+v, want %+v", got, want)
+	}
+}
+
+// TestReadGzJSON_MissingFile pins that a missing path surfaces as (wrapped)
+// os.ErrNotExist, letting callers like hydrateJobLocked distinguish "never
+// persisted" from a real I/O error.
+func TestReadGzJSON_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	var v map[string]int
+	err := readGzJSON(filepath.Join(dir, "missing.json.gz"), &v)
+	if err == nil {
+		t.Fatal("readGzJSON: want error for a missing file, got nil")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("error = %v, want it to wrap os.ErrNotExist", err)
+	}
+}
+
+// TestReadGzJSON_NotGzip pins the gunzip-failure branch: a file that exists
+// but is not valid gzip data must error rather than hand back garbage.
+func TestReadGzJSON_NotGzip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "not-gzip.json.gz")
+	if err := os.WriteFile(path, []byte("not actually gzip data"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var v map[string]int
+	err := readGzJSON(path, &v)
+	if err == nil {
+		t.Fatal("readGzJSON: want error for non-gzip content, got nil")
+	}
+	if !strings.Contains(err.Error(), "gzip") {
+		t.Errorf("error = %v, want it to mention gzip", err)
+	}
+}
+
+// TestReadGzJSON_CorruptJSON pins the decode-failure branch: valid gzip
+// wrapping invalid JSON must error rather than silently leave v untouched.
+func TestReadGzJSON_CorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "corrupt.json.gz")
+	// writeGzJSON only ever encodes valid JSON, so build the gzip stream by
+	// hand around a payload that is not valid JSON.
+	f, err := os.Create(path) //nolint:gosec // test fixture path under t.TempDir()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gz := gzip.NewWriter(f)
+	if _, err := gz.Write([]byte("{not valid json")); err != nil {
+		t.Fatalf("gzip Write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var v map[string]int
+	err = readGzJSON(path, &v)
+	if err == nil {
+		t.Fatal("readGzJSON: want error for corrupt JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error = %v, want it to mention decode failure", err)
 	}
 }
 
