@@ -258,6 +258,17 @@ func TestSaveStore_PausedErrorPropagates(t *testing.T) {
 	if !found {
 		t.Error("job write did not land even though only SetPaused was made to fail")
 	}
+
+	// The skip-Prune guard is errors.Join(jobsErr, pausedErr), so it fires
+	// when EITHER write fails. This is the half the other two tests do not
+	// reach, and it is the half a narrowing to `if jobsErr != nil` would
+	// break silently: the jobs write above provably landed, so the live set
+	// is durable and the narrower "only safe once the live set is written"
+	// reading would permit Prune here. The guard is deliberately broader
+	// than that — see its comment in saveStore — and this pins the breadth.
+	if fs.pruneCalls != 0 {
+		t.Errorf("pruneCalls = %d, want 0: Prune must not run in a cycle where either write failed", fs.pruneCalls)
+	}
 }
 
 // TestSaveStore_PruneErrorPropagates pins that a Prune failure, reached only

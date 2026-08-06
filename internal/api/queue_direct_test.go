@@ -489,6 +489,44 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 		}
 	})
 
+	// Both edges of `pp < 0 || pp > 3`, one value either side of each.
+	// Testing only an interior value and one well outside the range leaves
+	// both comparisons free to move by one without any test noticing: with
+	// only pp=3 and pp=5, widening the upper bound to `pp > 4` still rejects
+	// 5, and no negative value at all leaves `pp < 0` unpinned entirely.
+	for _, tc := range []struct {
+		name string
+		pp   string
+		want int
+	}{
+		{"lower boundary is valid", "0", http.StatusOK},
+		{"one below the lower boundary is a 400", "-1", http.StatusBadRequest},
+		{"one above the upper boundary is a 400", "4", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, q := testQueueServer(t)
+			job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+			req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2="+tc.pp, nil)
+			rr := httptest.NewRecorder()
+			s.queueChangeOpts(rr, req)
+
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d; want %d (body: %s)", rr.Code, tc.want, rr.Body.String())
+			}
+			if tc.want != http.StatusOK {
+				return
+			}
+			updated, err := q.Get(job.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if updated.PP != 0 {
+				t.Errorf("PP = %d; want 0", updated.PP)
+			}
+		})
+	}
+
 	t.Run("unknown job is a 404", func(t *testing.T) {
 		t.Parallel()
 		s, _ := testQueueServer(t)
