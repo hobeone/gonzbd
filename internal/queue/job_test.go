@@ -403,8 +403,9 @@ func TestJob_DropArtIndex(t *testing.T) {
 // selective-reset contract directly (rather than through app.RetryHistoryJob's
 // indirect coverage) on a three-file job where only some files have failed
 // articles: file 0 fully succeeded, file 1 partially failed, file 2 fully
-// failed. Only the failed articles' done/failed/remainingBytes should be
-// reset, and Complete should be cleared only for files that had a reset.
+// failed. Only the failed articles' done/failed bits should be reset (and
+// the per-file/job-level FailedBytes recomputed from what remains), and
+// Complete should be cleared only for files that had a reset.
 func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "f0", Bytes: 300, Articles: []nzb.Article{

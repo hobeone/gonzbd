@@ -756,7 +756,7 @@ func TestIsComplete_AbsentFileStateIsNotComplete(t *testing.T) {
 
 	t.Run("progress sized to zero files", func(t *testing.T) {
 		j := &Job{ID: "zero-files"}
-		j.progress = newJobProgressSized(nil, 0)
+		j.progress = newJobProgressSized(nil)
 		if j.progress == nil || len(j.progress.files) != 0 {
 			t.Fatal("fixture guard: expected non-nil progress carrying no file state")
 		}

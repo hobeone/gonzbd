@@ -99,3 +99,88 @@ func TestBuildSlot_NonResidentJobHasNoCurrentFile(t *testing.T) {
 		t.Errorf("CurrentFile = %q, want empty for a non-resident job", got)
 	}
 }
+
+// newOnDemandPar2Job builds a resident job with one content file and one
+// par2 recovery volume, added with OnDemandPar2 so the recovery volume
+// starts Deferred (see Job.NewJob's Deferred: isRecovery &&
+// opts.OnDemandPar2). No store is needed: unlike newEvictedJob, this test
+// needs the manifest resident, not evicted. Returns the queue alongside the
+// job so a caller can drive MarkArticlesDone through it.
+func newOnDemandPar2Job(t *testing.T) (*queue.Queue, *queue.Job) {
+	t.Helper()
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{Subject: "content.rar", Bytes: 10_000, Articles: []nzb.Article{{ID: "c1@t", Bytes: 10_000, Number: 1}}},
+			// Recovery-volume subject: matches isRecoveryVolume's
+			// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it deferred.
+			{Subject: "content.vol000+01.par2", Bytes: 1_000, Articles: []nzb.Article{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
+		},
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "par2.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := queue.New()
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !job.HasDeferredPar2() {
+		t.Fatal("fixture guard: recovery volume not deferred — OnDemandPar2 wiring didn't take, nothing is being tested")
+	}
+	return q, job
+}
+
+// TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent pins the
+// deferred-par2 progress bug directly at the API layer, above ExpectedBytes's
+// own unit tests: a queue row for a freshly added on-demand-par2 job must
+// show 0% and Size == SizeLeft, not a false head start from the deferred
+// recovery volume's bytes. TestBuildSlot_NonResidentJob above cannot catch a
+// regression here — its fixture has no deferred files, so Job.TotalBytes()
+// and p.ExpectedBytes() agree for it either way.
+func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
+	t.Parallel()
+	_, job := newOnDemandPar2Job(t)
+
+	// Guard the fixture against the bug this test exists to catch: under
+	// the old pairing (Size = job.TotalBytes(), the whole-manifest total
+	// of 11_000) a fresh job would already show >0% downloaded even though
+	// nothing has been fetched.
+	if got, want := job.TotalBytes(), int64(11_000); got != want {
+		t.Fatalf("fixture guard: TotalBytes() = %d, want %d", got, want)
+	}
+
+	slot := buildSlot(job, false, 0, 0, nil)
+
+	if got, want := slot.Bytes, int64(10_000); got != want {
+		t.Errorf("Bytes = %d, want %d (deferred recovery volume must not count)", got, want)
+	}
+	if slot.Bytes != slot.RemainingBytes {
+		t.Errorf("Bytes (%d) != RemainingBytes (%d); a fresh job must report all of its expectation as still remaining",
+			slot.Bytes, slot.RemainingBytes)
+	}
+	if got, want := slot.Percentage, 0; got != want {
+		t.Errorf("Percentage = %d, want %d", got, want)
+	}
+}
+
+// TestBuildSlot_DeferredPar2VolumeExcludedAfterDownload complements the
+// fresh-job case above: once the content file is fully downloaded but the
+// recovery volume is still deferred, the slot must report 100%, not a
+// number depressed by counting the undispatched deferred bytes against it.
+func TestBuildSlot_DeferredPar2VolumeExcludedAfterDownload(t *testing.T) {
+	t.Parallel()
+	q, job := newOnDemandPar2Job(t)
+
+	if err := q.MarkArticlesDone(job.ID, []string{"c1@t"}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+
+	slot := buildSlot(job, false, 0, 0, nil)
+
+	if got, want := slot.Percentage, 100; got != want {
+		t.Errorf("Percentage = %d, want %d (content complete, deferred volume must not count)", got, want)
+	}
+	if got, want := slot.RemainingBytes, int64(0); got != want {
+		t.Errorf("RemainingBytes = %d, want %d", got, want)
+	}
+}

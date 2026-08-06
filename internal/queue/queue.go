@@ -1544,7 +1544,8 @@ func (q *Queue) ClearAllEmitted() {
 // including jobs that are not currently resident (only maxActive jobs have a
 // resident Manifest at once). JobProgress is always resident regardless of
 // manifest residency — see docs/queue-lifecycle.md — so every job's
-// remainingBytes is a live read, never a cached fallback.
+// RemainingBytes() is a live read, derived from per-file state, never a
+// cached fallback.
 func (q *Queue) TotalRemainingBytes() int64 {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -1934,10 +1935,10 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		newProgress.failed = newFailed
 		newProgress.emitted = newEmitted
 		newProgress.files = newFiles
-		newProgress.remainingBytes -= discardedBytes
-		if newProgress.remainingBytes < 0 {
-			newProgress.remainingBytes = 0
-		}
+		// RemainingBytes needs no fixup of its own: derivedRemainingBytes
+		// already excludes a Deferred file's bytes on every read, so
+		// discarding one changes nothing it ever counted.
+		//
 		// pendingArticles/articlesResolved/articlesFailed and each file's
 		// Pending/BytesDownloaded are already correct here (deferred files
 		// contribute nothing, so dropping them changes nothing these
@@ -2004,9 +2005,12 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 
 // undeferRecoveryLocked clears Deferred on the given file indices of job. If
 // any file changed it marks Par2Recovered, recomputes pending counters from
-// ground truth (RemainingBytes already counted these bytes), and wakes the
-// dispatcher. Indices that are out of range or not deferred are ignored.
-// Must be called with q.mu held for writing. Returns true if anything changed.
+// ground truth, and wakes the dispatcher. RemainingBytes needs no fixup of
+// its own here: it derives from the Deferred flag on every read, so
+// clearing it is what makes the file's bytes start counting as remaining —
+// see derivedRemainingBytes. Indices that are out of range or not deferred
+// are ignored. Must be called with q.mu held for writing. Returns true if
+// anything changed.
 func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {

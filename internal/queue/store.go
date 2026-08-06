@@ -6,6 +6,25 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
+// FileMeta is the per-file shape Load needs to size a non-resident job's
+// progress without a manifest. It carries everything RemainingBytes reads
+// — Bytes, BytesDownloaded, FailedBytes, Complete, and Deferred — alongside
+// the article count for the bitsets, so a job reports the same remaining
+// figure whether it is reconstructed resident (via the manifest) or
+// non-resident (via this type).
+type FileMeta struct {
+	ArticleCount    int
+	Bytes           int64
+	BytesDownloaded int64
+	// FailedBytes is the sum of bytes belonging to this file's permanently
+	// failed articles, restored from job_files.failed_bytes — see
+	// FileProgress.FailedBytes for why a non-resident job needs this
+	// carried explicitly rather than recomputed from article bitmaps.
+	FailedBytes int64
+	Complete    bool
+	Deferred    bool
+}
+
 // Store defines the persistence and ordering interface for active download queue jobs.
 // It manages live job rows in SQLite while immutable article manifests reside on disk.
 type Store interface {
@@ -83,18 +102,12 @@ type Store interface {
 	// error and means "download from scratch".
 	RestoreRetryProgress(ctx context.Context, job *Job) (bool, error)
 
-	// ArticleCountsByJob returns every job's per-file article counts in a
-	// single grouped query, indexed by file_index within each job. Used by
-	// Load to size a non-resident job's JobProgress without reading
-	// its manifest.
-	ArticleCountsByJob(ctx context.Context) (map[string][]int, error)
-
-	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
-	// minus bytes already downloaded), summed per job_id across job_files.
-	// Used by Load to seed JobProgress.remainingBytes for jobs that
-	// come back from the store non-resident (no manifest, so no per-article
-	// byte breakdown is available to compute this the normal way).
-	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
+	// ArticleCountsByJob returns every job's per-file FileMeta — article
+	// count, byte size, bytes already downloaded, failed bytes, and
+	// whether the file is complete or deferred — in a single grouped
+	// query, indexed by file_index within each job. Used by Load to size
+	// a non-resident job's JobProgress without reading its manifest.
+	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
 
 	// DeleteJobArtifacts removes the on-disk manifest for job id
 	// (manifests/<id>.json.gz). A missing file is not an error.

@@ -707,88 +707,6 @@ func TestSQLiteStore_GetFailsClosedOnFileCountQueryError(t *testing.T) {
 	}
 }
 
-func TestSQLiteStore_RemainingBytesByJob(t *testing.T) {
-	store, repo, _ := setupTestStore(t)
-	ctx := t.Context()
-
-	// job1: untouched, 2 articles of 100 bytes each -> 200 bytes all remaining.
-	parsed1 := &nzb.NZB{
-		Files: []nzb.File{
-			{
-				Subject: "job1.bin",
-				Bytes:   200,
-				Articles: []nzb.Article{
-					{ID: "job1-a1", Bytes: 100, Number: 1},
-					{ID: "job1-a2", Bytes: 100, Number: 2},
-				},
-			},
-		},
-	}
-	job1, err := queue.NewJob(parsed1, queue.AddOptions{Name: "remaining-job1"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob job1: %v", err)
-	}
-	if err := store.Add(ctx, job1); err != nil {
-		t.Fatalf("Add job1: %v", err)
-	}
-
-	// job2: a single 300-byte article, artificially marked as having
-	// downloaded MORE than its manifest byte count (500 > 300). This
-	// shouldn't happen in normal operation, but pins the defensive
-	// clamp-to-zero in RemainingBytesByJob rather than surfacing a
-	// nonsensical negative "remaining" figure.
-	parsed2 := &nzb.NZB{
-		Files: []nzb.File{
-			{
-				Subject:  "job2.bin",
-				Bytes:    300,
-				Articles: []nzb.Article{{ID: "job2-a1", Bytes: 300, Number: 1}},
-			},
-		},
-	}
-	job2, err := queue.NewJob(parsed2, queue.AddOptions{Name: "remaining-job2"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob job2: %v", err)
-	}
-	if err := store.Add(ctx, job2); err != nil {
-		t.Fatalf("Add job2: %v", err)
-	}
-	if _, err := repo.DB().ExecContext(ctx,
-		"UPDATE job_files SET bytes_downloaded = 500 WHERE job_id = ?", job2.ID); err != nil {
-		t.Fatalf("UPDATE job_files bytes_downloaded: %v", err)
-	}
-
-	got, err := store.RemainingBytesByJob(ctx)
-	if err != nil {
-		t.Fatalf("RemainingBytesByJob: %v", err)
-	}
-
-	if got[job1.ID] != 200 {
-		t.Errorf("job1 remaining = %d, want 200", got[job1.ID])
-	}
-	if got[job2.ID] != 0 {
-		t.Errorf("job2 remaining = %d, want 0 (clamped from negative)", got[job2.ID])
-	}
-}
-
-func TestSQLiteStore_RemainingBytesByJobFailsClosedOnQueryError(t *testing.T) {
-	store, repo, _ := setupTestStore(t)
-	ctx := t.Context()
-
-	job := newTestJob("remaining-query-error", "remaining-query-error")
-	if err := store.Add(ctx, job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	if _, err := repo.DB().ExecContext(ctx, "DROP TABLE job_files"); err != nil {
-		t.Fatalf("DROP TABLE job_files: %v", err)
-	}
-
-	if _, err := store.RemainingBytesByJob(ctx); err == nil {
-		t.Fatal("expected RemainingBytesByJob to fail when job_files query errors, got nil error")
-	}
-}
-
 func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
@@ -1011,8 +929,8 @@ func TestSQLiteStore_ArticleCountRoundTrips(t *testing.T) {
 		t.Fatalf("got %d files, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("file %d: article_count = %d, want %d", i, got[i], want[i])
+		if got[i].ArticleCount != want[i] {
+			t.Errorf("file %d: article_count = %d, want %d", i, got[i].ArticleCount, want[i])
 		}
 	}
 }
@@ -1045,12 +963,12 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("got %d entries, want 3 (sized to the highest file_index + 1)", len(got))
 	}
-	if got[0] != 2 {
-		t.Errorf("file_index 0: article_count = %d, want 2", got[0])
+	if got[0].ArticleCount != 2 {
+		t.Errorf("file_index 0: article_count = %d, want 2", got[0].ArticleCount)
 	}
-	if got[2] != 9 {
+	if got[2].ArticleCount != 9 {
 		t.Errorf("file_index 2: article_count = %d, want 9 (must be attributed by "+
-			"file_index, not scan-order position)", got[2])
+			"file_index, not scan-order position)", got[2].ArticleCount)
 	}
 }
 

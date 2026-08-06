@@ -282,8 +282,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
 	const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, failed_bytes, filename, assembled_crc32, articles_done, article_count)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	p := job.Progress()
 	for i := range m.NumFiles() {
 		isPar2 := 0
@@ -309,7 +309,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		_, err := tx.ExecContext(ctx, qFiles,
 			job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2,
 			complete, deferred,
-			p.FileWriteCursor(i), p.FileBytesDownloaded(i), p.FileFilename(i), p.FileAssembledCRC32(i),
+			p.FileWriteCursor(i), p.FileBytesDownloaded(i), p.FileFailedBytes(i), p.FileFilename(i), p.FileAssembledCRC32(i),
 			artDoneStr, hi-lo,
 		)
 		if err != nil {
@@ -485,8 +485,15 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	if job == nil || job.manifest == nil || job.progress == nil {
 		return nil
 	}
+	// The per-file byte columns are deliberately absent: recompute at the end
+	// of this function derives Bytes, BytesDownloaded and FailedBytes from the
+	// manifest and the article bitmaps, and it runs unconditionally, so
+	// reading them here only to overwrite them would make a query that runs on
+	// every promotion wider for no effect. They are still written by
+	// insertJobFilesTx and read by ArticleCountsByJob, which sizes a
+	// non-resident job that has no manifest to derive from.
 	const qFiles = `
-SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
+SELECT file_index, complete, deferred, write_cursor, assembled_crc32, COALESCE(articles_done, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
 	if err != nil {
@@ -495,15 +502,14 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var idx, complete, deferred int
-		var writeCursor, bytesDownloaded int64
+		var writeCursor int64
 		var crc32Val uint32
 		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
+		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &crc32Val, &artDoneStr); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
 			fp := &job.progress.files[idx]
-			fp.BytesDownloaded = bytesDownloaded
 			fp.WriteCursor = writeCursor
 			fp.AssembledCRC32 = crc32Val
 			// articles_done is the only source of per-article state;
@@ -550,34 +556,42 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			}
 		}
 	}
+	// Sole source of per-file byte state on this path: Bytes from the
+	// manifest, BytesDownloaded and FailedBytes from the article bitmaps
+	// decodeArticlesDone just restored. Removing this call does not fall back
+	// on the columns — they are not read above — it leaves every figure at
+	// zero, and RemainingBytes would report a fully downloaded job.
 	job.progress.recompute(job.manifest)
 	return rows.Err()
 }
 
-// ArticleCountsByJob returns every job's per-file article counts in a single
-// grouped query, indexed by file_index within each job. Used to size
-// JobProgress at restart without loading each job's manifest individually —
-// collapsed from a per-job query (the RestoreJobProgress-adjacent shape
-// RemainingBytesByJob already uses) so that a large queued backlog costs one
-// round trip instead of N.
+// ArticleCountsByJob returns every job's per-file FileMeta — article count,
+// byte size, bytes already downloaded, failed bytes, and complete/deferred
+// state — in a single grouped query, indexed by file_index within each job.
+// Used to size JobProgress at restart without loading each job's manifest individually,
+// and to give newJobProgressSized everything it needs to reconstruct a
+// non-resident job's RemainingBytes, so a large queued backlog costs one
+// round trip instead of one query per job.
 //
-// Counts are placed by file_index rather than by scan order, so a job whose
-// job_files rows have non-contiguous indices (e.g. after a partial delete)
-// still gets each count attributed to the right file instead of shifted by
-// position.
-func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int, error) {
-	const q = `SELECT job_id, file_index, article_count FROM job_files ORDER BY job_id ASC, file_index ASC`
+// Entries are placed by file_index rather than by scan order, so a job
+// whose job_files rows have non-contiguous indices (e.g. after a partial
+// delete) still gets each entry attributed to the right file instead of
+// shifted by position.
+func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
+	const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, failed_bytes, complete, deferred FROM job_files ORDER BY job_id ASC, file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := make(map[string][]int)
+	result := make(map[string][]FileMeta)
 	for rows.Next() {
 		var jobID string
 		var idx, count int
-		if err := rows.Scan(&jobID, &idx, &count); err != nil {
+		var fileBytes, bytesDownloaded, failedBytes int64
+		var complete, deferred int
+		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &bytesDownloaded, &failedBytes, &complete, &deferred); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -589,51 +603,22 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int,
 		}
 		counts := result[jobID]
 		if idx >= len(counts) {
-			grown := make([]int, idx+1)
+			grown := make([]FileMeta, idx+1)
 			copy(grown, counts)
 			counts = grown
 		}
-		counts[idx] = count
+		counts[idx] = FileMeta{
+			ArticleCount:    count,
+			Bytes:           fileBytes,
+			BytesDownloaded: bytesDownloaded,
+			FailedBytes:     failedBytes,
+			Complete:        complete != 0,
+			Deferred:        deferred != 0,
+		}
 		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
-	}
-	return result, nil
-}
-
-// RemainingBytesByJob returns each job's remaining bytes (bytes minus
-// bytes_downloaded, summed per job_id) across job_files. Unlike
-// RestoreJobProgress, this needs no resident manifest/progress: it reads
-// straight from the persisted per-file counters, which is what makes it
-// usable to seed JobProgress.remainingBytes for non-resident jobs during
-// Load.
-func (s *SQLiteStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
-	const q = `SELECT job_id, SUM(bytes - bytes_downloaded) FROM job_files GROUP BY job_id`
-	rows, err := s.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	result := make(map[string]int64)
-	for rows.Next() {
-		var jobID string
-		var remaining int64
-		if err := rows.Scan(&jobID, &remaining); err != nil {
-			return nil, fmt.Errorf("sqlite store scan remaining bytes: %w", err)
-		}
-		if remaining < 0 {
-			// Shouldn't happen (bytes_downloaded can't exceed a file's byte
-			// count in normal operation), but a negative "remaining" figure
-			// would be nonsensical to report to the UI, so clamp rather
-			// than propagate it.
-			remaining = 0
-		}
-		result[jobID] = remaining
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
 	}
 	return result, nil
 }
@@ -729,7 +714,7 @@ WHERE id = ?`
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and
 		// its manifest is available, rather than staying 0 forever.
-		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
+		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, failed_bytes = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
 		for i := range m.NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -742,7 +727,7 @@ WHERE id = ?`
 			artDoneStr := encodeArticlesDone(job, i)
 			lo, hi := m.FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
-				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
+				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFailedBytes(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
 				job.ID, i,
 			); err != nil {
 				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)

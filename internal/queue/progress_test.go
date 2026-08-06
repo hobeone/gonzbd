@@ -89,6 +89,7 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 		"FileDeferred":        func() { _ = p.FileDeferred(0) },
 		"FilePending":         func() { _ = p.FilePending(0) },
 		"FileBytesDownloaded": func() { _ = p.FileBytesDownloaded(0) },
+		"FileFailedBytes":     func() { _ = p.FileFailedBytes(0) },
 		"FileWriteCursor":     func() { _ = p.FileWriteCursor(0) },
 		"FileFilename":        func() { _ = p.FileFilename(0) },
 		"FileAssembledCRC32":  func() { _ = p.FileAssembledCRC32(0) },

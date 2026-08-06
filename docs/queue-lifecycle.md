@@ -54,11 +54,17 @@ The tiering below is not an imposed taxonomy; it is that boundary made explicit.
 
 Writes need article byte counts and the file↔article mapping. Reads do not.
 
+Remaining bytes is derived, not stored. It sums the undownloaded part of every
+file that is neither complete nor deferred, from `FileProgress` alone, so it
+holds at any residency and needs no adjustment when a file's state changes.
+`FileProgress.Bytes` exists to make that derivation independent of the
+evictable manifest.
+
 External packages read five manifest-derived scalars — `TotalBytes`,
 `NumFiles`, `NumArticles`, `Par2Bytes`, `Par2Files`. These are computed once at
 `Add` and never change, so they live in the always-resident tier rather than
-behind a fallible handle. This generalizes what `lastKnownRemainingBytes`
-already does as a one-off: a reporting path must never need a manifest.
+behind a fallible handle. This generalizes the same rule remaining bytes
+already follows above: a reporting path must never need a manifest.
 
 The consequence is the point of the whole design: **every reporting path, and
 all current external call sites, become infallible.** Only the downloader and
@@ -95,11 +101,21 @@ handling:
 
 ### Restart
 
-`JobProgress` must be sized without loading manifests, which requires the
-article count per file. `job_files.articles_done` recovers that only to within
-8, so `job_files` carries an explicit `article_count` column. This is the
-design's only schema change and needs a new goose migration; startup then stays
-O(1) in manifest size rather than decompressing every manifest at boot.
+`JobProgress` must be sized without loading manifests. That started as needing
+only the article count per file — `job_files.articles_done` recovers it to
+within 8, so `job_files` carries an explicit `article_count` column — and
+startup stays O(1) in manifest size rather than decompressing every manifest at
+boot.
+
+Deriving remaining bytes rather than maintaining them widened what a
+non-resident job must reconstruct. `Store.ArticleCountsByJob` now returns a
+whole `FileMeta` per file — article count, `bytes`, `bytes_downloaded`,
+`failed_bytes`, `complete`, `deferred` — because the derivation reads all of
+them and must produce the same figure at either residency. `failed_bytes` is
+the second schema change this design has needed: a permanently failed article
+resolves without ever being downloaded, so it leaves no trace in
+`bytes_downloaded`, and without its own column a restarted job would report its
+bytes as still outstanding.
 
 ## Memory budget
 

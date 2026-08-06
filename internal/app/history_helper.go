@@ -33,7 +33,23 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(job.StageLog)
 
 	p := job.Queue.Progress()
-	totalBytes := job.Queue.TotalBytes()
+	// expectedBytes shares its walk and predicate with RemainingBytes and
+	// FailedBytes (both exclude Deferred files), so completeness and the
+	// downloaded identity below combine figures from the same universe —
+	// see ExpectedBytes's doc comment for why pairing either with
+	// job.Queue.TotalBytes() instead would misreport them for a job with
+	// deferred par2 volumes.
+	//
+	// entry.Bytes also uses expectedBytes rather than TotalBytes(), even
+	// though Bytes is not part of the downloaded identity: the UI renders
+	// "Downloaded of Bytes (Bytes-Downloaded failed)" as one sentence (see
+	// HistoryRow.svelte), so Bytes has to describe the same file set as
+	// Downloaded or that arithmetic reports bytes as failed that were only
+	// ever deferred, never dispatched, never failed. A job finalized while
+	// maybeReleaseRecoveryVolumes has left a deferred volume in the
+	// manifest (see the non-resident DiscardDeferredPar2 case documented
+	// at app.go:1057) is exactly the case this would otherwise misreport.
+	expectedBytes := p.ExpectedBytes()
 
 	var downloadDuration int64
 	if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
@@ -50,8 +66,8 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 
 	// Download health: byte-based rather than article-based because a failed
 	// article is marked both Done and Failed (Done = resolved, not succeeded).
-	completeness := downloadCompleteness(totalBytes, p.FailedBytes())
-	downloaded := totalBytes - p.FailedBytes() - p.RemainingBytes()
+	completeness := downloadCompleteness(expectedBytes, p.FailedBytes())
+	downloaded := expectedBytes - p.FailedBytes() - p.RemainingBytes()
 
 	// Sort server names for deterministic output in history entries.
 	stats := p.ServerStats()
@@ -102,7 +118,7 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 		DownloadTime: downloadDuration,
 		PostprocTime: postprocDuration,
 		StageLog:     string(stageLogJSON),
-		Bytes:        totalBytes,
+		Bytes:        expectedBytes,
 		Downloaded:   downloaded,
 		Completeness: completeness,
 		TimeAdded:    job.Queue.Added,

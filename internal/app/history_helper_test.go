@@ -213,3 +213,79 @@ func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 			evicted.Bytes, resident.Bytes)
 	}
 }
+
+// TestBuildHistoryEntry_DownloadedExcludesDeferredPar2 pins the
+// deferred-par2 fix: a job finalized while an on-demand-par2 recovery
+// volume is still (deferred, undispatched) in its manifest must record both
+// Bytes and Downloaded as only the content actually fetched, not the
+// deferred volume's bytes too — the two fields have to describe the same
+// file set, since the UI derives a "failed" figure as Bytes-Downloaded.
+//
+// Not built through buildHistoryTestJob: that helper's queue.AddOptions has
+// no OnDemandPar2, and OnDemandPar2 is what makes NewJob mark a recovery
+// volume Deferred in the first place (see Job.NewJob's Deferred: isRecovery
+// && opts.OnDemandPar2). The fixture is constructed directly here instead of
+// widening the shared helper for one test.
+func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "content.bin",
+				Bytes:    400,
+				Articles: []nzb.Article{{ID: "c1@t", Bytes: 400, Number: 1}},
+			},
+			{
+				// Recovery-volume subject: isRecoveryVolume's
+				// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it
+				// IsPar2Recovery and, with OnDemandPar2 below, Deferred.
+				Subject:  "content.vol000+01.par2",
+				Bytes:    1000,
+				Articles: []nzb.Article{{ID: "v1@t", Bytes: 1000, Number: 1}},
+			},
+		},
+	}
+	qjob, err := queue.NewJob(parsed, queue.AddOptions{
+		Filename:     "deferred.nzb",
+		Name:         "deferred",
+		OnDemandPar2: true,
+	}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	qjob.ID = "hist-deferred-par2"
+
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !qjob.HasDeferredPar2() {
+		t.Fatal("fixture guard: recovery volume not deferred — NewJob's OnDemandPar2 wiring didn't take, nothing is being tested")
+	}
+	if err := q.MarkArticlesDone(qjob.ID, []string{"c1@t"}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+
+	job := &postproc.Job{Queue: qjob}
+	entry := buildHistoryEntry(job)
+
+	// Only the content file's 400 bytes were ever fetched; the deferred
+	// 1000-byte recovery volume was never dispatched. Under the old
+	// pairing (Bytes = job.Queue.TotalBytes(), the whole-manifest total of
+	// 1400, while Downloaded already moved to the expectation) this would
+	// have reported Bytes = 1400, Downloaded = 400 — and
+	// HistoryRow.svelte's "X of Y received (Y-X failed)" line would have
+	// rendered "400 of 1400 (1000 failed)" for a job in which nothing
+	// failed. Bytes must describe the same file set as Downloaded.
+	if got, want := entry.Bytes, int64(400); got != want {
+		t.Errorf("Bytes = %d, want %d (deferred recovery volume must not count toward the advertised size)", got, want)
+	}
+	if got, want := entry.Downloaded, int64(400); got != want {
+		t.Errorf("Downloaded = %d, want %d (deferred recovery volume must not count as downloaded)", got, want)
+	}
+	if got, want := entry.Bytes-entry.Downloaded, int64(0); got != want {
+		t.Errorf("Bytes-Downloaded (the UI's \"failed\" figure) = %d, want %d — nothing failed", got, want)
+	}
+	if got, want := entry.Completeness, int64(100); got != want {
+		t.Errorf("Completeness = %d, want %d", got, want)
+	}
+}

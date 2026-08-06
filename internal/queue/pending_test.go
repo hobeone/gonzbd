@@ -51,11 +51,16 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 }
 
 // makeTestJob builds a Job with nFiles files, each having nArtsPerFile
-// articles. Article IDs are formatted as "art-{fileIdx}-{artIdx}".
+// articles. Article IDs are formatted as "art-{fileIdx}-{artIdx}". Each
+// file's Bytes is set to the sum of its articles' bytes: RemainingBytes
+// derives from file.Bytes minus downloaded/failed article bytes (see
+// derivedRemainingBytes), so a fixture whose file-level total disagrees
+// with its article-level total would make that derivation silently wrong
+// for every caller of this helper.
 func makeTestJob(id string, nFiles, nArtsPerFile int) *Job {
 	files := make([]JobFile, 0, nFiles)
 	for fi := range nFiles {
-		file := JobFile{Subject: "file"}
+		file := JobFile{Subject: "file", Bytes: int64(nArtsPerFile) * 1000}
 		for ai := range nArtsPerFile {
 			file.Articles = append(file.Articles, JobArticle{
 				ID:    artID(fi, ai),

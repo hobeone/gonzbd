@@ -24,7 +24,6 @@ type JobProgress struct {
 	articlesFailed    int
 	earlyAborted      bool
 	failedBytes       int64
-	remainingBytes    int64
 	serverStats       map[string]int64
 	downloadStarted   time.Time
 	downloadFinished  time.Time
@@ -34,31 +33,62 @@ type JobProgress struct {
 
 // FileProgress is one file's mutable assembly state.
 type FileProgress struct {
-	Complete        bool
-	Deferred        bool
-	Pending         int
+	Complete bool
+	Deferred bool
+	Pending  int
+	// Bytes is the file's NZB-claimed size. Carried on progress rather than
+	// read from the manifest so RemainingBytes derives from progress alone,
+	// at any residency. Written from the manifest when resident and from
+	// job_files.bytes when not; the two agree because the column is written
+	// from the manifest.
+	Bytes           int64
 	BytesDownloaded int64
-	WriteCursor     int64
-	Filename        string // resolved on-disk filename; empty until resolved
-	AssembledCRC32  uint32
+	// FailedBytes is the sum of bytes belonging to this file's permanently
+	// failed articles. Carried per file, not just job-wide, so remaining
+	// derives from progress alone at any residency: a failed article was
+	// never downloaded, so BytesDownloaded does not account for it, and
+	// without this the derivation would report its bytes as still to fetch
+	// forever. Recomputable from the article bitmaps when a manifest is
+	// resident; persisted in job_files.failed_bytes for when it is not.
+	FailedBytes    int64
+	WriteCursor    int64
+	Filename       string // resolved on-disk filename; empty until resolved
+	AssembledCRC32 uint32
 }
 
-// newJobProgress returns a zero-value JobProgress sized to m: RemainingBytes
-// starts at m.TotalBytes() and every file's Pending starts at its article
-// count (all articles start undone/unemitted).
-func newJobProgress(m *Manifest) *JobProgress {
-	p := &JobProgress{
-		done:           newBitset(m.NumArticles()),
-		failed:         newBitset(m.NumArticles()),
-		emitted:        newBitset(m.NumArticles()),
-		files:          make([]FileProgress, m.NumFiles()),
-		remainingBytes: m.TotalBytes(),
-	}
-	for fi := range p.files {
+// fileMetaFromManifest projects m into the same per-file shape
+// Store.ArticleCountsByJob returns, so newJobProgress and
+// newJobProgressSized are one code path rather than two that must be kept
+// in agreement by hand. A fresh job has nothing downloaded, nothing
+// failed, and no file complete or deferred, so every field but the sizes
+// is zero.
+//
+// The projection is lossless for what JobProgress needs: Manifest.TotalBytes
+// is the sum of every file's bytes, and Manifest.NumArticles is the sum of
+// every file's article count, so the totals newJobProgressSized derives
+// match the ones newJobProgress used to take from the manifest directly.
+func fileMetaFromManifest(m *Manifest) []FileMeta {
+	files := make([]FileMeta, m.NumFiles())
+	for fi := range files {
 		lo, hi := m.FileRange(fi)
-		p.files[fi].Pending = hi - lo
+		files[fi] = FileMeta{ArticleCount: hi - lo, Bytes: m.FileBytes(fi)}
 	}
-	return p
+	return files
+}
+
+// newJobProgress returns a zero-value JobProgress sized to m: every file's
+// Pending starts at its article count (all articles start undone/unemitted),
+// so RemainingBytes() — derived from per-file state, see
+// derivedRemainingBytes — starts at m.TotalBytes(). It projects m into
+// []FileMeta and delegates to newJobProgressSized, so resident and
+// non-resident construction are literally the same code and cannot drift
+// apart the way the two used to (see TestFailedBytes_NotDoubledByHydration
+// for what that drift cost). One side effect of delegating: pendingArticles
+// is now set to m.NumArticles() here too, where it used to be left at 0
+// until the first recompute — see the caller-visibility check this was
+// verified against.
+func newJobProgress(m *Manifest) *JobProgress {
+	return newJobProgressSized(fileMetaFromManifest(m))
 }
 
 // ArticleDone reports whether global article index i has resolved (success or failure).
@@ -116,6 +146,15 @@ func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
 		return 0
 	}
 	return p.files[fi].BytesDownloaded
+}
+
+// FileFailedBytes returns the sum of bytes belonging to permanently failed
+// articles in file fileIdx.
+func (p *JobProgress) FileFailedBytes(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].FailedBytes
 }
 
 // FileWriteCursor returns the assembler's contiguous write frontier for file fileIdx.
@@ -182,12 +221,103 @@ func (p *JobProgress) FailedBytes() int64 {
 	return p.failedBytes
 }
 
-// RemainingBytes returns TotalBytes minus the bytes of successfully completed articles.
+// RemainingBytes returns what is still to fetch, computed from per-file
+// state rather than read from a maintained counter — see
+// derivedRemainingBytes.
 func (p *JobProgress) RemainingBytes() int64 {
 	if p == nil {
 		return 0
 	}
-	return p.remainingBytes
+	return p.derivedRemainingBytes()
+}
+
+// derivedRemainingBytes computes what is still to fetch from per-file state
+// rather than from a maintained counter: every file that is neither complete
+// nor deferred contributes the part of it neither downloaded nor permanently
+// failed.
+//
+// Failed bytes are subtracted because the counter this replaces means
+// unresolved bytes, not un-downloaded ones: markFailed decrements it without
+// ever adding to BytesDownloaded. internal/app/history_helper.go computes
+// downloaded as expectedBytes - FailedBytes() - RemainingBytes(), an identity
+// that only closes under that meaning.
+//
+// Deferred files contribute nothing because their articles are never
+// dispatched, so a deferral or an un-deferral needs no adjustment anywhere —
+// the next read reflects it. That is the whole point of deriving rather than
+// maintaining.
+//
+// O(files), and files number in the hundreds where articles number in the
+// tens of thousands. Called on reporting reads, not on the download path.
+func (p *JobProgress) derivedRemainingBytes() int64 {
+	_, remaining := p.sizeFigures()
+	return remaining
+}
+
+// sizeFigures walks the files once and returns the two figures that must
+// agree: what the job expects to fetch, and how much of it is left.
+//
+// One walk rather than two because the exclusion sets are not independent.
+// Both skip Deferred; only remaining also skips Complete, because a complete
+// file has nothing left to fetch while still being part of what the job set
+// out to fetch. Computed apart, that relationship is a convention two
+// functions have to keep by hand — and a consumer pairing figures whose
+// exclusion sets have drifted gets a percentage or a downloaded total that is
+// wrong in a way no test of either figure alone would catch. Here it is one
+// continue-chain, so the shared half cannot drift and the divergent half is
+// visible in a single place.
+//
+// O(files), and files number in the hundreds where articles number in the
+// tens of thousands. Called on reporting reads, not on the download path.
+func (p *JobProgress) sizeFigures() (expected, remaining int64) {
+	if p == nil {
+		return 0, 0
+	}
+	for fi := range p.files {
+		f := &p.files[fi]
+		if f.Deferred {
+			continue
+		}
+		expected += f.Bytes
+		if f.Complete {
+			continue
+		}
+		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
+			remaining += left
+		}
+	}
+	return expected, remaining
+}
+
+// ExpectedBytes returns the size of what this job is expected to fetch:
+// every file that has not been deferred, whether or not it has been
+// downloaded yet.
+//
+// This is the size that must be paired with RemainingBytes; sizeFigures
+// computes both from one walk so their exclusion sets cannot drift apart.
+//
+// It is therefore NOT Job.TotalBytes(), which is the immutable
+// whole-manifest total and still includes deferred recovery volumes. See
+// docs/superpowers/specs/2026-08-05-job-size-figures-design.md, which
+// records that a job's advertised expectation moving as par2 decisions are
+// made is a deliberate consequence.
+//
+// A deferred file contributes zero to all three of ExpectedBytes,
+// RemainingBytes, and FailedBytes — which is what lets
+// downloaded=expected-failed-remaining close. The third leg holds only
+// because Deferred is never toggled on a file that already has resolved
+// articles: markFailed adds to the job-level failedBytes and to the
+// file's own FailedBytes unconditionally, with no check of Deferred, and
+// newJobProgressSized/recompute sum failedBytes over every file including
+// deferred ones. Today no caller defers a file after any of its articles
+// have been dispatched, so a deferred file's FailedBytes is always zero in
+// practice — but that is an invariant of the callers, not of this
+// function. A future change that starts deferring a partially-downloaded
+// file needs to either exclude it from failedBytes accounting too, or
+// accept that the identity above stops closing for that file.
+func (p *JobProgress) ExpectedBytes() int64 {
+	expected, _ := p.sizeFigures()
+	return expected
 }
 
 // ServerStats returns a defensive copy, matching cloneJob's current
@@ -289,17 +419,26 @@ func (p *JobProgress) clone() *JobProgress {
 }
 
 // recompute recalculates each file's Pending and the job-level
-// pendingArticles/articlesResolved/articlesFailed counters from the ground
-// truth (done/failed/emitted flags), against m's file ranges. Called after
-// Add and Load, and after any bulk state change (ClearAllEmitted,
-// DiscardDeferredPar2, undeferRecoveryLocked) where incremental tracking is
-// impractical.
+// pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
+// the ground truth (done/failed/emitted flags), against m's file ranges.
+// Called after Add and Load, and after any bulk state change
+// (ClearAllEmitted, DiscardDeferredPar2, undeferRecoveryLocked) where
+// incremental tracking is impractical.
+//
+// recompute is authoritative for the job-level failedBytes wherever a
+// manifest is resident: RestoreJobProgress replays per-article state
+// through markFailed on top of a progress that newJobProgressSized may
+// already have seeded from job_files, so without a single owner the seed
+// and the replay stack (see TestFailedBytes_NotDoubledByHydration).
+// Incremental maintenance by markFailed/resetForReload is what carries the
+// value between recomputes, while no manifest is resident to recompute
+// against.
 func (p *JobProgress) recompute(m *Manifest) {
 	// JobProgress and Manifest are persisted as independent JSON documents
 	// (Job.UnmarshalJSON assigns both from separate keys with nothing
 	// reconciling their lengths) and independent SQLite rows. A size
 	// mismatch here means every article-indexed write below — markDone's
-	// bitset.Set, byte accounting, pendingArticles/remainingBytes — would
+	// bitset.Set, byte accounting, pendingArticles — would
 	// otherwise either silently no-op (bitset.Set/Clear are deliberately
 	// lenient, see bitset.go) or run against the wrong article entirely,
 	// leaving byte accounting permanently and silently wrong. Panic rather
@@ -311,10 +450,11 @@ func (p *JobProgress) recompute(m *Manifest) {
 	}
 	total := 0
 	var resolved, failed int
+	var failedBytesTotal int64
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
 		n := 0
-		var downloaded int64
+		var downloaded, fileFailed int64
 		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
 		// so they contribute zero pending work.
 		deferred := p.files[fi].Deferred
@@ -329,16 +469,28 @@ func (p *JobProgress) recompute(m *Manifest) {
 				resolved++
 				if p.failed.Get(i) {
 					failed++
+					fileFailed += int64(m.ArticleBytes(i))
 				}
 			}
 		}
 		p.files[fi].Pending = n
 		p.files[fi].BytesDownloaded = downloaded
+		p.files[fi].FailedBytes = fileFailed
+		// Bytes is deliberately not part of jobProgressJSON (see
+		// fileProgressJSON) — it is ground truth already held by the
+		// manifest, so it is restored here rather than carried over the
+		// wire a second time. Without this, a JobProgress rebuilt via
+		// UnmarshalJSON+recompute would leave every file's Bytes at its
+		// zero value and derivedRemainingBytes would report everything as
+		// already fetched.
+		p.files[fi].Bytes = m.FileBytes(fi)
+		failedBytesTotal += fileFailed
 		total += n
 	}
 	p.pendingArticles = total
 	p.articlesResolved = resolved
 	p.articlesFailed = failed
+	p.failedBytes = failedBytesTotal
 }
 
 // markEmitted flags article i as having a result in flight from the
@@ -383,7 +535,6 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 	p.done.Set(i)
 	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
-	p.remainingBytes -= bytes
 	p.articlesResolved++
 	p.files[fi].BytesDownloaded += bytes
 	return true
@@ -405,7 +556,7 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
 	p.failedBytes += bytes
-	p.remainingBytes -= bytes
+	p.files[fi].FailedBytes += bytes
 	p.articlesResolved++
 	p.articlesFailed++
 	return true
@@ -413,15 +564,20 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 
 // resetForReload clears the transient Emitted flag on article i and, if it
 // was Failed, resets it to retryable (Done=false, Failed=false), restoring
-// its bytes to FailedBytes/RemainingBytes. Used by ClearAllEmitted on a
-// downloader reload; recompute must be called afterward to rebuild Pending
-// counters from the resulting ground truth.
+// its bytes to FailedBytes. RemainingBytes needs no restoring of its own:
+// it derives from BytesDownloaded/FailedBytes on read, and an article that
+// was never downloaded leaves BytesDownloaded untouched, so undoing
+// FailedBytes here is what makes the article's bytes reappear as
+// remaining. Used by ClearAllEmitted on a downloader reload; recompute
+// must be called afterward to rebuild Pending counters from the resulting
+// ground truth.
 func (p *JobProgress) resetForReload(m *Manifest, i int) {
 	p.emitted.Clear(i)
 	if p.failed.Get(i) {
+		fi := m.fileIndexForArticle(i)
 		bytes := int64(m.ArticleBytes(i))
 		p.failedBytes -= bytes
-		p.remainingBytes += bytes
+		p.files[fi].FailedBytes -= bytes
 		p.done.Clear(i)
 		p.failed.Clear(i)
 	}
@@ -449,7 +605,6 @@ type jobProgressJSON struct {
 	Files  []fileProgressJSON `json:"files"`
 
 	FailedBytes       int64            `json:"failed_bytes"`
-	RemainingBytes    int64            `json:"remaining_bytes"`
 	ServerStats       map[string]int64 `json:"server_stats,omitempty"`
 	DownloadStarted   time.Time        `json:"download_started"`
 	DownloadFinished  time.Time        `json:"download_finished"`
@@ -474,7 +629,6 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 		Failed:            p.failed.ToBools(),
 		Files:             files,
 		FailedBytes:       p.failedBytes,
-		RemainingBytes:    p.remainingBytes,
 		ServerStats:       p.serverStats,
 		DownloadStarted:   p.downloadStarted,
 		DownloadFinished:  p.downloadFinished,
@@ -507,7 +661,6 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 		}
 	}
 	p.failedBytes = pj.FailedBytes
-	p.remainingBytes = pj.RemainingBytes
 	p.serverStats = pj.ServerStats
 	p.downloadStarted = pj.DownloadStarted
 	p.downloadFinished = pj.DownloadFinished

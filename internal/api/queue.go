@@ -269,6 +269,16 @@ func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
 
 // buildQueueFiles converts a Job's file slice into the API per-file
 // shape for the expansion drawer.
+//
+// Known inconsistency: this lists every manifest file at full size,
+// including deferred par2 recovery volumes, while buildSlot's Size/Bytes
+// now excludes them (see ExpectedBytes). A drawer's per-file total can
+// therefore exceed the row above it for an on-demand-par2 job. Left as-is
+// rather than filtering here: a deferred volume is still a real file the
+// job may yet need, and hiding it from the drawer would make repair
+// decisions (which volumes exist, which are held back) invisible where a
+// user would look for them. The queueFile shape has no field marking a
+// file Deferred to reconcile the two views correctly — tracked as #325.
 func buildQueueFiles(j *queue.Job) []queueFile {
 	m, err := j.Manifest()
 	p := j.Progress()
@@ -304,7 +314,7 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 	// so needing one here meant either a disk read per job per poll or a nil
 	// deref — this used to do both.
 	p := j.Progress()
-	totalBytes := j.TotalBytes()
+	totalBytes := p.ExpectedBytes()
 	remainingBytes := p.RemainingBytes()
 
 	var pct int

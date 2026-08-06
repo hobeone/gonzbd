@@ -318,7 +318,6 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldRemaining := q.SnapshotJob(job.ID).Progress().RemainingBytes()
-	discardedBytes := m.FileBytes(1)
 
 	if err := q.DiscardDeferredPar2(job.ID); err != nil {
 		t.Fatal(err)
@@ -350,13 +349,14 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 		t.Errorf("Par2Files = %d, want %d (carried over unchanged)", newM.Par2Files(), oldPar2Files)
 	}
 
-	// RemainingBytes must be the OLD value minus discardedBytes (clamped to
-	// 0), not TotalBytes() of the reduced manifest — a zero-download job
-	// can't distinguish these, which is why this fixture downloads first.
-	wantRemaining := max(oldRemaining-discardedBytes, 0)
-	if newP.RemainingBytes() != wantRemaining {
-		t.Errorf("RemainingBytes = %d, want %d (old %d - discarded %d)",
-			newP.RemainingBytes(), wantRemaining, oldRemaining, discardedBytes)
+	// RemainingBytes must be unchanged by the discard, not TotalBytes() of
+	// the reduced manifest — a zero-download job can't distinguish these,
+	// which is why this fixture downloads first. Deferred files already
+	// contribute nothing to RemainingBytes (derivedRemainingBytes skips
+	// them), so removing one changes nothing that was ever counted.
+	if newP.RemainingBytes() != oldRemaining {
+		t.Errorf("RemainingBytes = %d, want %d (unchanged: deferred bytes were never counted)",
+			newP.RemainingBytes(), oldRemaining)
 	}
 
 	// The job-level scalar cache (TotalBytes/NumFiles/NumArticles) must be
