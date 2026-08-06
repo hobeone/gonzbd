@@ -44,6 +44,36 @@ func TestHasDeferredPar2_FalseOnceEverythingIsDecided(t *testing.T) {
 	}
 }
 
+// TestUsesOnDemandPar2 pins that the badge-driving predicate stays true once
+// the verdict is in, unlike HasDeferredPar2 which the release path needs to
+// go false at that point. Reported as HasDeferredPar2, the "par2 on-demand"
+// badge would disappear at the exact moment the feature succeeds.
+func TestUsesOnDemandPar2(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 1000, Articles: []JobArticle{{ID: "a1", Bytes: 1000}}},
+		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
+	})
+	j := &Job{ID: "on-demand-badge", progress: newJobProgress(m)}
+
+	if j.UsesOnDemandPar2() {
+		t.Error("UsesOnDemandPar2() = true with every file at FetchAlways, want false")
+	}
+
+	j.progress.files[1].Fetch = FetchIfNeeded
+	if !j.UsesOnDemandPar2() {
+		t.Error("UsesOnDemandPar2() = false with a volume awaiting the verdict, want true")
+	}
+
+	j.progress.files[1].Fetch = FetchNever
+	if !j.UsesOnDemandPar2() {
+		t.Error("UsesOnDemandPar2() = false once the verdict discarded the volume, want true — the badge must not disappear at the moment the feature succeeds")
+	}
+
+	if noProgress := (&Job{ID: "no-progress"}); noProgress.UsesOnDemandPar2() {
+		t.Error("UsesOnDemandPar2() = true with nil progress, want false")
+	}
+}
+
 // TestSizeFigures_ExcludesDiscarded pins that a discarded volume leaves both
 // derived figures, not just remaining. Expected must drop it too, or the
 // downloaded identity in internal/app/history_helper.go over-reports.

@@ -754,6 +754,26 @@ func (j *Job) HasDeferredPar2() bool {
 	return j.progress.HasDeferredPar2()
 }
 
+// UsesOnDemandPar2 reports whether any recovery volume is being withheld from
+// download — either awaiting the CRC verdict or already ruled unnecessary.
+//
+// Distinct from HasDeferredPar2, which is FetchIfNeeded only because it gates
+// re-verification. This drives the "par2 on-demand" badge, which describes
+// what the job is doing rather than what it is waiting on: reported as
+// HasDeferredPar2, the badge would disappear at the moment the feature
+// succeeds.
+func (j *Job) UsesOnDemandPar2() bool {
+	if j.progress == nil {
+		return false
+	}
+	for i := range j.progress.files {
+		if j.progress.files[i].Fetch != FetchAlways {
+			return true
+		}
+	}
+	return false
+}
+
 // DeferredRecoveryIndices returns the file indices of all currently-deferred
 // par2 recovery volumes. Phase 1 un-defers this full set on damage; Phase 2
 // selects a block-covering subset from it. Safe to call on a snapshot.

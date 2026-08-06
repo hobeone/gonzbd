@@ -46,7 +46,7 @@ export interface QueueFile {
 	name: string;
 	bytes: number;
 	bytes_downloaded: number;
-	state: 'queued' | 'downloading' | 'done' | 'failed' | 'held';
+	state: 'queued' | 'downloading' | 'done' | 'failed' | 'held' | 'skipped';
 }
 
 export interface QueueDetail {

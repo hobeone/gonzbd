@@ -284,6 +284,7 @@
 			case 'failed': return 'text-red-600 dark:text-red-400';
 			case 'downloading': return 'text-blue-600 dark:text-blue-400';
 			case 'held': return 'text-slate-500 dark:text-slate-400';
+			case 'skipped': return 'text-slate-400 dark:text-slate-500 italic';
 			default: return 'text-gray-500 dark:text-gray-400';
 		}
 	}

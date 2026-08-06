@@ -248,8 +248,11 @@ func firstIncompleteFile(j *queue.Job) string {
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
 func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
-	if p.FileFetchPolicy(fileIdx) != queue.FetchAlways {
+	switch p.FileFetchPolicy(fileIdx) {
+	case queue.FetchIfNeeded:
 		return "held"
+	case queue.FetchNever:
+		return "skipped"
 	}
 	if p.FileComplete(fileIdx) {
 		anyFailed := false
@@ -371,7 +374,7 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		ArticlesRemaining: p.PendingArticles(),
 		ETASeconds:        etaSeconds,
 		CurrentFile:       firstIncompleteFile(j),
-		Par2Held:          j.HasDeferredPar2(),
+		Par2Held:          j.UsesOnDemandPar2(),
 		Par2ReleaseReason: p.Par2ReleaseReason(),
 		DirectUnpack:      duStatus,
 	}
