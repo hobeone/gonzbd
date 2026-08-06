@@ -1845,12 +1845,21 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 // No store write of its own. Nothing about the file set changed, so the
 // ordinary checkpoint writes the new policy through updateTx like any other
 // per-file state, and the operation cannot partially apply.
+//
+// Progress tier, like SetPar2ReleaseReason immediately above: the fetch
+// policy lives on JobProgress, which is permanently resident, so this
+// neither needs the manifest nor can fail on residency. It used to require
+// the manifest (to walk and rebuild it) and so returned ErrJobNotResident
+// for a job whose manifest had been evicted for exceeding MaxActiveJobs —
+// silently leaving that job's recovery volumes FetchIfNeeded, forcing
+// maybeReleaseRecoveryVolumes to redo full CRC verification on every later
+// completion event instead of trusting a verdict it already reached.
 func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 
 	changed := false

@@ -1,11 +1,16 @@
 package postproc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func TestScriptStage_PathTraversalRejected(t *testing.T) {
@@ -177,6 +182,72 @@ func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
 	}
 	if job.FailMsg != "" {
 		t.Errorf("job.FailMsg should be empty with ScriptCanFail=true, got %q", job.FailMsg)
+	}
+}
+
+// TestScriptStage_BytesExcludesDiscardedPar2 pins the fix for a regression
+// this task's immutable TotalBytes() introduced: a discarded (FetchNever)
+// recovery volume never reaches disk, but it was still counted into
+// SAB_BYTES because ScriptInput.Bytes read job.Queue.TotalBytes(), which no
+// longer shrinks across a discard. The correct figure is ExpectedBytes,
+// which excludes any file that is not FetchAlways — matching what
+// buildHistoryEntry already reports for the same job (see
+// internal/app/history_helper.go).
+func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{Subject: `"movie.mkv" yEnc`, Bytes: 1000, Articles: []nzb.Article{{ID: "c@x", Bytes: 1000, Number: 1}}},
+			{Subject: `"movie.par2" yEnc`, Bytes: 50, Articles: []nzb.Article{{ID: "i@x", Bytes: 50, Number: 1}}},
+			{Subject: `"movie.vol000+01.par2" yEnc`, Bytes: 500, Articles: []nzb.Article{{ID: "v@x", Bytes: 500, Number: 1}}},
+		},
+	}
+	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "bytes-test.nzb", Name: "bytes-test", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !qjob.HasDeferredPar2() {
+		t.Fatal("fixture guard: expected a deferred recovery volume")
+	}
+	if err := q.DiscardDeferredPar2(qjob.ID); err != nil {
+		t.Fatalf("DiscardDeferredPar2: %v", err)
+	}
+
+	wantExpected := qjob.Progress().ExpectedBytes()
+	wantTotal := qjob.TotalBytes()
+	if wantExpected >= wantTotal {
+		t.Fatalf("fixture guard: ExpectedBytes (%d) must be less than TotalBytes (%d), or this test cannot distinguish them", wantExpected, wantTotal)
+	}
+
+	job := &Job{Queue: qjob, DownloadDir: t.TempDir()}
+
+	scriptDir := t.TempDir()
+	outFile := filepath.Join(scriptDir, "bytes.txt")
+	scriptPath := filepath.Join(scriptDir, "report.sh")
+	writeScript(t, scriptPath, fmt.Appendf(nil, "#!/bin/sh\necho \"$SAB_BYTES\" > %s\n", outFile))
+
+	job.Queue.Script = "report.sh"
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("reading script output: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != fmt.Sprintf("%d", wantExpected) {
+		t.Errorf("SAB_BYTES = %q, want %d (ExpectedBytes, excluding the discarded recovery volume); TotalBytes is %d",
+			got, wantExpected, wantTotal)
 	}
 }
 

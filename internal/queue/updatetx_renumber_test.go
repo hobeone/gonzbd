@@ -2,6 +2,7 @@ package queue
 
 import (
 	"database/sql"
+	"slices"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -121,13 +122,25 @@ func failedDiscardFixture(t *testing.T) (*Queue, *failingStore, *sql.DB, *Job, s
 func TestCheckpoint_ReconcilesOnceTheRewriteSucceeds(t *testing.T) {
 	q, fs, db, job, dir := failedDiscardFixture(t)
 
+	// The rows as the fixture left them: pre-discard, since the discard
+	// itself made no store call and nothing has checkpointed yet.
+	before := readJobFiles(t, db, job.ID)
+
 	// A checkpoint while the store is still failing: rows untouched, flag
-	// still raised.
+	// still raised. "Untouched" is the load-bearing half of this assertion —
+	// updateTx's ManifestRowsStale() skip branch (sqlite_store.go) exists
+	// precisely so a checkpoint does not write job_files by an index the
+	// rows may no longer agree with, and asserting only that the flag stays
+	// raised does not by itself prove the skip fired rather than a write
+	// that happened to land the same values.
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save during the failure: %v", err)
 	}
 	if !job.ManifestRowsStale() {
 		t.Error("the flag was cleared by a checkpoint that never reconciled the rows")
+	}
+	if got := readJobFiles(t, db, job.ID); !slices.Equal(got, before) {
+		t.Errorf("job_files changed during the failure, want untouched:\nbefore: %+v\nafter:  %+v", before, got)
 	}
 
 	// The next checkpoint, with the store healthy again.

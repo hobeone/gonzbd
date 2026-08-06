@@ -78,9 +78,6 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 		{"UndeferRecoveryVolumes", func(q *Queue, id string) error {
 			return q.UndeferRecoveryVolumes(id, []int{0})
 		}},
-		{"DiscardDeferredPar2", func(q *Queue, id string) error {
-			return q.DiscardDeferredPar2(id)
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q, job := nonResidentJob(t)
@@ -132,6 +129,50 @@ func TestNonResident_ProgressTierDoesTheWork(t *testing.T) {
 		}
 		if got := job.Progress().ServerStats()["news.example.com"]; got != 4096 {
 			t.Errorf("ServerStats[news.example.com] = %d, want 4096: per-server byte counts live in progress and must survive manifest eviction", got)
+		}
+	})
+
+	// DiscardDeferredPar2 moved into this tier along with the rest of Task
+	// 2: it reads only job.progress.files, so an evicted manifest must not
+	// block it. Left in the manifest tier, an on-demand-par2 job that
+	// exceeded MaxActiveJobs and verified clean would report
+	// ErrJobNotResident, leave its recovery volumes FetchIfNeeded, and force
+	// maybeReleaseRecoveryVolumes to redo full CRC verification on every
+	// later completion event instead of trusting the verdict it already
+	// reached.
+	t.Run("DiscardDeferredPar2", func(t *testing.T) {
+		store, dir := setupResidencyTestStore(t)
+		q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+		filler := makeMultiFileJob(t, "nr-par2-filler", 1, 1)
+		if err := q.Add(filler); err != nil {
+			t.Fatalf("Add filler: %v", err)
+		}
+		job, err := NewJob(par2NZB(), AddOptions{Filename: "nr-par2.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
+		}
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if manifestResident(job) {
+			t.Fatal("fixture guard: job is resident, so this exercises nothing")
+		}
+		if !job.HasDeferredPar2() {
+			t.Fatal("fixture guard: no deferred par2 volume, so there is nothing to discard")
+		}
+
+		if err := q.DiscardDeferredPar2(job.ID); err != nil {
+			t.Fatalf("DiscardDeferredPar2 on a non-resident job = %v, want it to work from progress alone", err)
+		}
+		if job.HasDeferredPar2() {
+			t.Error("the recovery volume is still deferred after a discard on a non-resident job")
+		}
+		if got := job.Progress().FileFetchPolicy(2); got != FetchNever {
+			t.Errorf("file 2 policy = %d, want FetchNever", got)
+		}
+		if manifestResident(job) {
+			t.Error("DiscardDeferredPar2 made the job resident; it should have needed nothing but progress")
 		}
 	})
 }
