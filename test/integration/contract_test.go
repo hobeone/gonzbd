@@ -83,7 +83,7 @@ func TestAPIContract_QueueResponse(t *testing.T) {
 		"nzo_id", "filename", "name", "cat", "priority", "status",
 		"script", "password", "size", "sizeleft", "mb", "mbleft",
 		"bytes", "remaining_bytes", "percentage", "pp",
-		"failed_bytes", "par2_bytes", "par2_files",
+		"failed_bytes", "recovery_bytes", "recovery_files",
 		"current_stage", "articles_remaining", "eta_seconds",
 		"current_file",
 	}

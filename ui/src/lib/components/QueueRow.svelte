@@ -348,8 +348,8 @@
 	/** Health indicator: can par2 cover the damage? */
 	function healthLabel(): { text: string; color: string } {
 		if (slot.failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
-		if (slot.par2_bytes === 0) return { text: 'No repair data', color: 'text-red-600 dark:text-red-400' };
-		if (slot.failed_bytes <= slot.par2_bytes) return { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' };
+		if (slot.recovery_bytes === 0) return { text: 'No repair data', color: 'text-red-600 dark:text-red-400' };
+		if (slot.failed_bytes <= slot.recovery_bytes) return { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' };
 		return { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' };
 	}
 </script>
@@ -519,9 +519,9 @@
 				<div>
 					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Par2 Recovery</span>
 					<div class="font-bold mt-0.5">
-						{#if slot.par2_bytes > 0}
-							{formatBytes(slot.par2_bytes)}
-							<span class="text-m3-on-surface-variant/70 text-xs font-semibold">({slot.par2_files} file{slot.par2_files !== 1 ? 's' : ''})</span>
+						{#if slot.recovery_bytes > 0}
+							{formatBytes(slot.recovery_bytes)}
+							<span class="text-m3-on-surface-variant/70 text-xs font-semibold">({slot.recovery_files} file{slot.recovery_files !== 1 ? 's' : ''})</span>
 						{:else}
 							<span class="text-m3-on-surface-variant/60 font-semibold">None</span>
 						{/if}

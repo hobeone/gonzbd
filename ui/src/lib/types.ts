@@ -21,8 +21,8 @@ export interface QueueSlot {
 	pp: string;
 	warning?: string;
 	failed_bytes: number;
-	par2_bytes: number;
-	par2_files: number;
+	recovery_bytes: number;
+	recovery_files: number;
 	current_stage: string;
 	articles_remaining: number;
 	eta_seconds: number;

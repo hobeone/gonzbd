@@ -1709,21 +1709,25 @@ func failMsgForJob(job *queue.Job) string {
 		)
 	}
 
-	par2Bytes := job.Par2Bytes()
+	// Recovery volumes only: the par2 index is always downloaded and carries
+	// no recovery blocks, so counting it here claimed repair capacity that
+	// does not exist. A job with an index and no volumes now correctly reads
+	// as having none, rather than as having the index's worth.
+	recoveryBytes := job.RecoveryBytes()
 
-	// If PAR2 files exist and the failure exceeds repair capacity, abort.
-	if par2Bytes > 0 && failedBytes > par2Bytes {
-		par2MB := float64(par2Bytes) / (1024 * 1024)
+	// If recovery volumes exist and the failure exceeds their capacity, abort.
+	if recoveryBytes > 0 && failedBytes > recoveryBytes {
+		recoveryMB := float64(recoveryBytes) / (1024 * 1024)
 		return fmt.Sprintf(
-			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d par2 files). Job is beyond repair",
-			failedMB, par2MB, job.Par2Files(),
+			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d recovery volumes). Job is beyond repair",
+			failedMB, recoveryMB, job.RecoveryFiles(),
 		)
 	}
 
-	// No PAR2 files at all and there are failures — can't repair.
-	if par2Bytes == 0 && failedBytes > 0 {
+	// No recovery volumes at all and there are failures — can't repair.
+	if recoveryBytes == 0 && failedBytes > 0 {
 		return fmt.Sprintf(
-			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
+			"Aborted: %.1f MB failed with no par2 recovery volumes available. Job is beyond repair",
 			failedMB,
 		)
 	}

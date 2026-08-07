@@ -374,23 +374,36 @@ func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
 	}
 }
 
-// Hopeless job (failedBytes > par2Bytes) lands in hopelessJobs, not dispatched.
+// Hopeless job (failedBytes > RecoveryBytes) lands in hopelessJobs, not
+// dispatched.
+//
+// The fixture carries a real recovery volume so the gate is tested against a
+// non-zero threshold. An earlier version used a bare "test.par2" index, which
+// still passed once the denominator became recovery-only — but only because
+// the threshold had silently become zero, so it had stopped pinning a
+// comparison at all. The index-only shape is worth testing, and gets its own
+// case below rather than being conflated with this one.
 func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.queue = queue.New()
-	// Simulate a hopeless download: more failed bytes than the par2 set can
-	// repair. h@h (1000 bytes) is marked failed below; the 100-byte par2
-	// file gives Par2Bytes=100 from real NZB classification.
+	// h@h (1000 bytes) fails below, against 100 bytes of recovery volume:
+	// 1000 > 100, so the job is beyond repair. The 40-byte index is content
+	// and contributes nothing to the threshold.
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "test.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "h@h", Bytes: 1000, Number: 1}}},
-		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
+		{Subject: "test.par2", Bytes: 40, Articles: []nzb.Article{{ID: "idx@h", Bytes: 40, Number: 1}}},
+		{Subject: "test.vol000+01.par2", Bytes: 100, Articles: []nzb.Article{{ID: "vol@h", Bytes: 100, Number: 1}}},
 	}}
 	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
+	}
+	if got := job.RecoveryBytes(); got != 100 {
+		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 100 — a zero threshold would make "+
+			"this test pass for the wrong reason, since any failure exceeds zero", got)
 	}
 	if err := d.queue.Add(job); err != nil {
 		t.Fatalf("queue.Add: %v", err)
@@ -407,6 +420,50 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	}
 	if _, ok := plan.hopelessJobs[job.ID]; !ok {
 		t.Error("hopelessJobs does not contain the job ID")
+	}
+}
+
+// A job carrying only a par2 index has no repair capacity, so any permanent
+// failure makes it hopeless immediately. This is a behaviour change: the
+// superseded figures counted the index, giving such a job a threshold it
+// could not actually repair against, so it stayed in dispatch.
+func TestBuildDispatchPlan_IndexOnlyJobIsHopelessOnFirstFailure(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	d.queue = queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "test.bin", Bytes: 1000, Articles: []nzb.Article{
+			{ID: "h@h", Bytes: 500, Number: 1},
+			{ID: "ok@h", Bytes: 500, Number: 2},
+		}},
+		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if got := job.RecoveryBytes(); got != 0 {
+		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 0 — an index alone is not repair capacity", got)
+	}
+	if err := d.queue.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	// One article of two fails: 500 failed bytes against zero capacity.
+	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if _, ok := plan.hopelessJobs[job.ID]; !ok {
+		t.Error("hopelessJobs does not contain the job ID: a partial failure with no recovery " +
+			"volumes is unrepairable, but the index's bytes would previously have masked it")
+	}
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 — a hopeless job must not keep consuming connections", plan.dispatched)
 	}
 }
 

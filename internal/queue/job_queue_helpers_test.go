@@ -43,10 +43,10 @@ func TestSetScalarsFromManifest_CopiesFiveTotals(t *testing.T) {
 	if got, want := j.NumArticles(), m.NumArticles(); got != want {
 		t.Errorf("NumArticles = %d, want %d", got, want)
 	}
-	if got, want := j.Par2Bytes(), m.Par2Bytes(); got != want {
+	if got, want := j.RecoveryBytes(), m.RecoveryBytes(); got != want {
 		t.Errorf("Par2Bytes = %d, want %d", got, want)
 	}
-	if got, want := j.Par2Files(), m.Par2Files(); got != want {
+	if got, want := j.RecoveryFiles(), m.RecoveryFiles(); got != want {
 		t.Errorf("Par2Files = %d, want %d", got, want)
 	}
 }
@@ -54,10 +54,10 @@ func TestSetScalarsFromManifest_CopiesFiveTotals(t *testing.T) {
 // TestSetAggregateScalarsFromFiles_LeavesPar2Untouched pins the contract
 // documented on the method: totalBytes/numFiles/numArticles are set from the
 // arguments, but par2Bytes/par2Files are deliberately left alone (they come
-// from setPar2ScalarsFromStore instead).
+// from setRecoveryScalarsFromStore instead).
 func TestSetAggregateScalarsFromFiles_LeavesPar2Untouched(t *testing.T) {
 	j := &Job{}
-	j.setPar2ScalarsFromStore(999, 3) // pre-set to a sentinel this call must not disturb
+	j.setRecoveryScalarsFromStore(999, 3) // pre-set to a sentinel this call must not disturb
 	j.setAggregateScalarsFromFiles(12345, 4, 20)
 
 	if got := j.TotalBytes(); got != 12345 {
@@ -69,10 +69,10 @@ func TestSetAggregateScalarsFromFiles_LeavesPar2Untouched(t *testing.T) {
 	if got := j.NumArticles(); got != 20 {
 		t.Errorf("NumArticles = %d, want 20", got)
 	}
-	if got := j.Par2Bytes(); got != 999 {
+	if got := j.RecoveryBytes(); got != 999 {
 		t.Errorf("Par2Bytes = %d, want 999 (untouched)", got)
 	}
-	if got := j.Par2Files(); got != 3 {
+	if got := j.RecoveryFiles(); got != 3 {
 		t.Errorf("Par2Files = %d, want 3 (untouched)", got)
 	}
 }
@@ -82,12 +82,12 @@ func TestSetAggregateScalarsFromFiles_LeavesPar2Untouched(t *testing.T) {
 func TestSetPar2ScalarsFromStore_SetsOnlyThePair(t *testing.T) {
 	j := &Job{}
 	j.setAggregateScalarsFromFiles(111, 2, 5)
-	j.setPar2ScalarsFromStore(777, 1)
+	j.setRecoveryScalarsFromStore(777, 1)
 
-	if got := j.Par2Bytes(); got != 777 {
+	if got := j.RecoveryBytes(); got != 777 {
 		t.Errorf("Par2Bytes = %d, want 777", got)
 	}
-	if got := j.Par2Files(); got != 1 {
+	if got := j.RecoveryFiles(); got != 1 {
 		t.Errorf("Par2Files = %d, want 1", got)
 	}
 	if got := j.TotalBytes(); got != 111 {

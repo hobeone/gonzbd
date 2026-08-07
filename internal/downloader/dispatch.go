@@ -23,7 +23,7 @@ import (
 type dispatchPlan struct {
 	dispatched   int                 // number of articles handed to a server
 	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
-	hopelessJobs map[string]struct{} // jobs where failedBytes > par2Bytes
+	hopelessJobs map[string]struct{} // jobs where failedBytes > recoveryBytes
 	exhausted    []*articleRequest   // articles with no eligible server this pass
 }
 
@@ -68,8 +68,10 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			return true // too young, skip for now
 		}
 
-		// Early Health Gate: Check if the job is beyond repair.
-		if a.FailedBytes > a.Par2Bytes {
+		// Early Health Gate: Check if the job is beyond repair. The
+		// denominator is recovery volumes only — the par2 index repairs
+		// nothing, so counting it kept genuinely hopeless jobs in dispatch.
+		if a.FailedBytes > a.RecoveryBytes {
 			plan.hopelessJobs[a.JobID] = struct{}{}
 			return true
 		}
@@ -147,7 +149,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 
 	// Handle hopeless jobs.
 	for jobID := range plan.hopelessJobs {
-		d.log.Warn("job beyond repair (failed bytes > par2 bytes), marking FAILED", "job", jobID)
+		d.log.Warn("job beyond repair (failed bytes > par2 recovery bytes), marking FAILED", "job", jobID)
 		if opts.onJobHopeless != nil {
 			opts.onJobHopeless(jobID)
 		} else {

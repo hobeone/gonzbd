@@ -62,7 +62,7 @@ holds at any residency and needs no adjustment when a file's state changes.
 evictable manifest.
 
 External packages read five manifest-derived scalars — `TotalBytes`,
-`NumFiles`, `NumArticles`, `Par2Bytes`, `Par2Files`. These are computed once at
+`NumFiles`, `NumArticles`, `RecoveryBytes`, `RecoveryFiles`. These are computed once at
 `Add` and never change, so they live in the always-resident tier rather than
 behind a fallible handle. This generalizes the same rule remaining bytes
 already follows above: a reporting path must never need a manifest.
@@ -314,7 +314,7 @@ Staged so each step is independently landable:
 
 Only the second half of step 3 cannot be partial, and the first half exists
 to shrink it: of the call sites outside `internal/queue`, roughly half were
-reading `TotalBytes`/`NumFiles`/`Par2Bytes` through a manifest they did not
+reading `TotalBytes`/`NumFiles`/`RecoveryBytes` through a manifest they did not
 otherwise need. Converting those first leaves the atomic change touching
 only the sites that genuinely need per-file structure. Steps 1 and 2 are
 additive.

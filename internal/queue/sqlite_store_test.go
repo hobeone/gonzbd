@@ -1022,8 +1022,8 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	wantTotalBytes := job.TotalBytes()
 	wantNumFiles := job.NumFiles()
 	wantNumArticles := job.NumArticles()
-	wantPar2Files := job.Par2Files()
-	wantPar2Bytes := job.Par2Bytes()
+	wantPar2Files := job.RecoveryFiles()
+	wantPar2Bytes := job.RecoveryBytes()
 	if wantPar2Files == 0 || wantPar2Bytes == 0 {
 		t.Fatal("test fixture must contain at least one par2 file for this to be a meaningful check")
 	}
@@ -1052,11 +1052,11 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	// — see this test's doc comment. A zero here would be the old behaviour
 	// leaking back, and would render as "no par2 files" on a queued job in
 	// the API.
-	if got.Par2Bytes() != wantPar2Bytes {
-		t.Errorf("Par2Bytes = %d, want %d", got.Par2Bytes(), wantPar2Bytes)
+	if got.RecoveryBytes() != wantPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d", got.RecoveryBytes(), wantPar2Bytes)
 	}
-	if got.Par2Files() != wantPar2Files {
-		t.Errorf("Par2Files = %d, want %d", got.Par2Files(), wantPar2Files)
+	if got.RecoveryFiles() != wantPar2Files {
+		t.Errorf("Par2Files = %d, want %d", got.RecoveryFiles(), wantPar2Files)
 	}
 }
 

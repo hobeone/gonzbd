@@ -240,7 +240,7 @@ func (s *SQLiteStore) addTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manife
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
    time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
-   download_started, download_finished, par2_bytes, par2_files, nzb_backup)
+   download_started, download_finished, recovery_bytes, recovery_files, nzb_backup)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
@@ -256,7 +256,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		// From the promoted scalars rather than job.Manifest(): they are set
 		// at Add and stay correct while the manifest is evicted, so this
 		// writes the right values even for a job persisted while non-resident.
-		job.Par2Bytes(), job.Par2Files(),
+		job.RecoveryBytes(), job.RecoveryFiles(),
 		job.NZBBackup,
 	)
 	if err != nil {
@@ -320,20 +320,20 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 	const qJob = `
 SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
        time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
-       download_started, download_finished, par2_bytes, par2_files,
+       download_started, download_finished, recovery_bytes, recovery_files,
        COALESCE(nzb_backup, '')
 FROM jobs WHERE id = ?`
 
 	var job Job
 	var groupsStr, metaStr, statusStr string
-	var priorityInt, ppInt, postprocInt, par2Files int
-	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix, par2Bytes int64
+	var priorityInt, ppInt, postprocInt, recoveryFiles int
+	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix, recoveryBytes int64
 
 	err := s.db.QueryRowContext(ctx, qJob, id).Scan(
 		&job.ID, &job.Filename, &job.Name, &job.Password, &job.URL, &job.Category,
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
-		&dlStartedUnix, &dlFinishedUnix, &par2Bytes, &par2Files,
+		&dlStartedUnix, &dlFinishedUnix, &recoveryBytes, &recoveryFiles,
 		&job.NZBBackup,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -397,9 +397,9 @@ FROM jobs WHERE id = ?`
 	// above when fileCount > 0). Without a resident manifest,
 	// TotalBytes/NumFiles/NumArticles would otherwise read as zero — a
 	// gap left open by Task 3 — so reconstruct the three of the five
-	// scalars that job_files can answer on its own. par2Bytes/par2Files
-	// stay zero; see setAggregateScalarsFromFiles for why they cannot be
-	// safely reconstructed from is_par2_recovery.
+	// scalars that job_files can answer on its own. recoveryBytes/recoveryFiles
+	// stay out of it; see setAggregateScalarsFromFiles for why a soft-failing
+	// aggregate is the wrong home for them even though it could compute them.
 	//
 	// A query failure here is logged rather than failing Get outright: the
 	// file-count query above fails closed because its result gates whether
@@ -409,12 +409,14 @@ FROM jobs WHERE id = ?`
 	// pre-Task-4 behavior) is preferable to losing the job entirely over a
 	// transient SQLite error on an already-slow, non-resident read path —
 	// but the error must not vanish silently, so it goes to the log.
-	// par2 comes from the job row, not from job_files, and is set
-	// independently of the aggregate query below so a failure there cannot
-	// take it down with the other three. A resident job already has the
-	// authoritative values from setScalarsFromManifest above.
+	// The recovery figures come from the job row, not from job_files, and are
+	// set independently of the aggregate query below so a failure there
+	// cannot take them down with the other three. That separation is the
+	// point: zero recovery bytes is a definite claim of no repair capacity,
+	// not an absent reading. A resident job already has the authoritative
+	// values from setScalarsFromManifest above.
 	if job.manifest == nil {
-		job.setPar2ScalarsFromStore(par2Bytes, par2Files)
+		job.setRecoveryScalarsFromStore(recoveryBytes, recoveryFiles)
 	}
 
 	if job.manifest == nil && fileCount > 0 {

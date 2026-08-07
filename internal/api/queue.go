@@ -102,29 +102,33 @@ func (s *Server) queueUnknownAction(w http.ResponseWriter, action string) {
 // Field names must match the Python build_queue response exactly so that
 // existing third-party clients (Sonarr, Radarr, etc.) parse them correctly.
 type queueSlot struct {
-	NzoID             string               `json:"nzo_id"`
-	Filename          string               `json:"filename"`
-	Name              string               `json:"name"`
-	Category          string               `json:"cat"`
-	Index             int                  `json:"index"`
-	Priority          string               `json:"priority"`
-	Status            string               `json:"status"`
-	Script            string               `json:"script"`
-	Password          string               `json:"password"`
-	Size              string               `json:"size"`
-	SizeLeft          string               `json:"sizeleft"`
-	MB                string               `json:"mb"`
-	MBLeft            string               `json:"mbleft"`
-	Bytes             int64                `json:"bytes"`
-	RemainingBytes    int64                `json:"remaining_bytes"`
-	Percentage        int                  `json:"percentage"`
-	Timeleft          string               `json:"timeleft"`
-	ETA               string               `json:"eta"`
-	PP                string               `json:"pp"`
-	Warning           string               `json:"warning,omitempty"`
-	FailedBytes       int64                `json:"failed_bytes"`
-	Par2Bytes         int64                `json:"par2_bytes"`
-	Par2Files         int                  `json:"par2_files"`
+	NzoID          string `json:"nzo_id"`
+	Filename       string `json:"filename"`
+	Name           string `json:"name"`
+	Category       string `json:"cat"`
+	Index          int    `json:"index"`
+	Priority       string `json:"priority"`
+	Status         string `json:"status"`
+	Script         string `json:"script"`
+	Password       string `json:"password"`
+	Size           string `json:"size"`
+	SizeLeft       string `json:"sizeleft"`
+	MB             string `json:"mb"`
+	MBLeft         string `json:"mbleft"`
+	Bytes          int64  `json:"bytes"`
+	RemainingBytes int64  `json:"remaining_bytes"`
+	Percentage     int    `json:"percentage"`
+	Timeleft       string `json:"timeleft"`
+	ETA            string `json:"eta"`
+	PP             string `json:"pp"`
+	Warning        string `json:"warning,omitempty"`
+	FailedBytes    int64  `json:"failed_bytes"`
+	// RecoveryBytes/RecoveryFiles describe the job's par2 recovery volumes,
+	// excluding the always-downloaded par2 index. Not SABnzbd-Python fields —
+	// they have no counterpart in build_queue — so unlike the names above they
+	// carry no third-party compatibility constraint.
+	RecoveryBytes     int64                `json:"recovery_bytes"`
+	RecoveryFiles     int                  `json:"recovery_files"`
 	Par2Held          bool                 `json:"par2_held,omitempty"`
 	Par2ReleaseReason string               `json:"par2_release_reason,omitempty"`
 	DirectUnpack      *directunpack.Status `json:"direct_unpack,omitempty"`
@@ -163,7 +167,11 @@ type queueFile struct {
 	Name            string `json:"name"`
 	Bytes           int64  `json:"bytes"`
 	BytesDownloaded int64  `json:"bytes_downloaded"`
-	// State is one of "queued", "downloading", "done", "failed".
+	// State is one of "queued", "downloading", "done", "failed", "held" or
+	// "skipped". The last two are par2 recovery volumes the job is not
+	// fetching — "held" pending a repair verdict, "skipped" once ruled
+	// unnecessary — and are the reason the drawer's file sizes can total more
+	// than the row's size, which excludes them.
 	State string `json:"state"`
 }
 
@@ -376,8 +384,8 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		PP:                strconv.Itoa(j.PP),
 		Warning:           j.Warning,
 		FailedBytes:       p.FailedBytes(),
-		Par2Bytes:         j.Par2Bytes(),
-		Par2Files:         j.Par2Files(),
+		RecoveryBytes:     j.RecoveryBytes(),
+		RecoveryFiles:     j.RecoveryFiles(),
 		CurrentStage:      stageFromStatus(displayStatus),
 		ArticlesRemaining: p.PendingArticles(),
 		ETASeconds:        etaSeconds,

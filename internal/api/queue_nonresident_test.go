@@ -68,7 +68,7 @@ func TestBuildSlot_NonResidentJob(t *testing.T) {
 	// Captured before the assertions so a fixture that silently stopped
 	// carrying par2 would fail loudly here rather than making the checks
 	// below vacuous.
-	wantBytes, wantPar2Bytes, wantPar2Files := job.TotalBytes(), job.Par2Bytes(), job.Par2Files()
+	wantBytes, wantPar2Bytes, wantPar2Files := job.TotalBytes(), job.RecoveryBytes(), job.RecoveryFiles()
 	if wantBytes == 0 || wantPar2Bytes == 0 || wantPar2Files == 0 {
 		t.Fatalf("fixture guard: scalars unset after eviction (bytes=%d par2Bytes=%d par2Files=%d)",
 			wantBytes, wantPar2Bytes, wantPar2Files)
@@ -79,11 +79,11 @@ func TestBuildSlot_NonResidentJob(t *testing.T) {
 	if slot.Bytes != wantBytes {
 		t.Errorf("Bytes = %d, want %d", slot.Bytes, wantBytes)
 	}
-	if slot.Par2Bytes != wantPar2Bytes {
-		t.Errorf("Par2Bytes = %d, want %d — a zero here renders as \"no par2 files\" for every queued job", slot.Par2Bytes, wantPar2Bytes)
+	if slot.RecoveryBytes != wantPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d — a zero here renders as \"no par2 files\" for every queued job", slot.RecoveryBytes, wantPar2Bytes)
 	}
-	if slot.Par2Files != wantPar2Files {
-		t.Errorf("Par2Files = %d, want %d", slot.Par2Files, wantPar2Files)
+	if slot.RecoveryFiles != wantPar2Files {
+		t.Errorf("Par2Files = %d, want %d", slot.RecoveryFiles, wantPar2Files)
 	}
 }
 

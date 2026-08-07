@@ -1342,7 +1342,12 @@ type UnfinishedArticle struct {
 	Bytes       int
 	Subject     string
 	FailedBytes int64
-	Par2Bytes   int64
+	// RecoveryBytes is the job's par2 recovery-volume total, excluding the
+	// index. Carried per-article because the dispatcher's Early Health Gate
+	// compares it against FailedBytes without reaching back into the Job.
+	// There is deliberately no RecoveryFiles counterpart: nothing on the
+	// dispatch path needs the count.
+	RecoveryBytes int64
 }
 
 // ForEachUnfinishedArticle invokes fn for every not-yet-Done article
@@ -1387,16 +1392,16 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					continue
 				}
 				if !fn(UnfinishedArticle{
-					JobID:       job.ID,
-					JobStatus:   job.Status,
-					JobAdded:    job.Added,
-					FileIdx:     fi,
-					ArtIdx:      int32(i), //nolint:gosec // article index bounded by manifest length
-					MessageID:   m.ArticleID(i),
-					Bytes:       m.ArticleBytes(i),
-					Subject:     m.FileSubject(fi),
-					FailedBytes: job.progress.failedBytes,
-					Par2Bytes:   m.Par2Bytes(),
+					JobID:         job.ID,
+					JobStatus:     job.Status,
+					JobAdded:      job.Added,
+					FileIdx:       fi,
+					ArtIdx:        int32(i), //nolint:gosec // article index bounded by manifest length
+					MessageID:     m.ArticleID(i),
+					Bytes:         m.ArticleBytes(i),
+					Subject:       m.FileSubject(fi),
+					FailedBytes:   job.progress.failedBytes,
+					RecoveryBytes: m.RecoveryBytes(),
 				}) {
 					return
 				}
@@ -1714,17 +1719,19 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 			firstTime = append(firstTime, id)
 		}
 	}
-	var failedBytes, par2Bytes int64
+	var failedBytes, recoveryBytes int64
 	var releasedPar2 bool
 	if len(firstTime) > 0 {
-		failedBytes, par2Bytes = job.progress.failedBytes, job.manifest.Par2Bytes()
+		failedBytes, recoveryBytes = job.progress.failedBytes, job.manifest.RecoveryBytes()
 		q.dirty.Store(true)
 		// On-demand par2: a permanent data-article failure proves this job
 		// will need repair. Release the deferred recovery volumes now — while
 		// the connection is live and the articles are freshest — rather than
 		// waiting for the download-complete verify. Par2Recovered guards it to
-		// fire once; Par2Files>0 skips the scan for jobs without par2.
-		if !job.progress.par2Recovered && job.manifest.Par2Files() > 0 {
+		// fire once; RecoveryFiles>0 skips the scan for jobs with nothing to
+		// release, which now correctly includes a job carrying only a par2
+		// index.
+		if !job.progress.par2Recovered && job.manifest.RecoveryFiles() > 0 {
 			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
 				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
 				releasedPar2 = true
@@ -1738,7 +1745,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		q.log.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
 	}
 	if len(firstTime) > 0 {
-		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "par2_bytes", par2Bytes)
+		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "recovery_bytes", recoveryBytes)
 		if releasedPar2 {
 			q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
 		}
@@ -1770,12 +1777,12 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 			invalidCount++
 		}
 	}
-	var failedBytes, par2Bytes int64
+	var failedBytes, recoveryBytes int64
 	var releasedPar2 bool
 	if len(firstTime) > 0 {
-		failedBytes, par2Bytes = job.progress.failedBytes, job.manifest.Par2Bytes()
+		failedBytes, recoveryBytes = job.progress.failedBytes, job.manifest.RecoveryBytes()
 		q.dirty.Store(true)
-		if !job.progress.par2Recovered && job.manifest.Par2Files() > 0 {
+		if !job.progress.par2Recovered && job.manifest.RecoveryFiles() > 0 {
 			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
 				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
 				releasedPar2 = true
@@ -1789,7 +1796,7 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 		q.log.Warn("MarkArticlesFailedByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
 	}
 	if len(firstTime) > 0 {
-		q.log.Warn("articles marked FAILED by idx", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "par2_bytes", par2Bytes)
+		q.log.Warn("articles marked FAILED by idx", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "recovery_bytes", recoveryBytes)
 		if releasedPar2 {
 			q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
 		}

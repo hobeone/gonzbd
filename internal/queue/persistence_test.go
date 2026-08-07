@@ -639,11 +639,11 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 	if lm.TotalBytes() != m.TotalBytes() {
 		t.Errorf("TotalBytes = %d, want %d", lm.TotalBytes(), m.TotalBytes())
 	}
-	if lm.Par2Bytes() != m.Par2Bytes() {
-		t.Errorf("Par2Bytes = %d, want %d", lm.Par2Bytes(), m.Par2Bytes())
+	if lm.RecoveryBytes() != m.RecoveryBytes() {
+		t.Errorf("Par2Bytes = %d, want %d", lm.RecoveryBytes(), m.RecoveryBytes())
 	}
-	if lm.Par2Files() != m.Par2Files() {
-		t.Errorf("Par2Files = %d, want %d", lm.Par2Files(), m.Par2Files())
+	if lm.RecoveryFiles() != m.RecoveryFiles() {
+		t.Errorf("Par2Files = %d, want %d", lm.RecoveryFiles(), m.RecoveryFiles())
 	}
 	if lp.RemainingBytes() != p.RemainingBytes() {
 		t.Errorf("RemainingBytes = %d, want %d", lp.RemainingBytes(), p.RemainingBytes())

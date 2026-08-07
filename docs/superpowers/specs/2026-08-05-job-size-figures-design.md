@@ -122,12 +122,33 @@ step 2.
 
 | Component | Change |
 |---|---|
-| `Manifest` | `contentBytes`, `recoveryBytes`, `recoveryFiles` computed in `newManifest` via `isPar2Recovery` |
-| `Job` | promoted scalars replacing `totalBytes` / `par2Bytes` / `par2Files` |
+| `Manifest` | `recoveryBytes`, `recoveryFiles` computed in `newManifest` via `isPar2Recovery`, and derived again in `UnmarshalJSON` rather than persisted |
+| `Job` | promoted scalars replacing `par2Bytes` / `par2Files` |
 | `FileProgress` | gains `Bytes int64` and `FailedBytes int64`; the latter backed by `job_files.failed_bytes` (migration `008_add_job_files_failed_bytes.sql`) |
-| `jobs` table | migration replacing `par2_bytes` / `par2_files` with `content_bytes` / `recovery_bytes` / `recovery_files` |
-| queue API | `par2_bytes` / `par2_files` become `recovery_bytes` / `recovery_files`; `total_bytes` is replaced by the two figures |
-| Svelte UI | reads the new fields; its repairability heuristic becomes more accurate as a consequence |
+| `jobs` table | migration replacing `par2_bytes` / `par2_files` with `recovery_bytes` / `recovery_files` |
+| queue API | `par2_bytes` / `par2_files` become `recovery_bytes` / `recovery_files` |
+| Svelte UI | reads the new fields; its repairability heuristic becomes less optimistic as a consequence |
+| control-flow gates | `app.go`'s `failMsgForJob`, the downloader's Early Health Gate via `UnfinishedArticle`, and the two recovery-release guards in `queue.go` all re-key onto the recovery figures |
+
+### Corrections applied during implementation
+
+Three claims in the table above were wrong as originally written, and are
+corrected in place rather than left to mislead:
+
+- **`content_bytes` is not built.** It has no consumer, and it is exactly
+  `totalBytes - recoveryBytes` from two scalars every job already carries.
+  Adding a column and an accessor for it would ship dead state.
+- **There is no `total_bytes` in the queue API to replace.** A job's size
+  reaches clients as `bytes` / `size` / `mb`, fed from `ExpectedBytes()`.
+  Those names are SABnzbd-Python compatible and are not touched;
+  `par2_bytes` / `par2_files` have no Python counterpart, which is why
+  renaming them is safe.
+- **The control-flow gates were not enumerated.** Four sites read this
+  figure to make decisions, not merely to report, and two of them abort a
+  job. They are listed above because they had to move in the same commit —
+  splitting them leaves a window where a job is declared hopeless by one
+  gate while the other still reports it repairable, and the resulting
+  history entry has no failure reason at all.
 
 ## Data flow
 
@@ -183,4 +204,4 @@ rather than accounting: the resurrection hazard, and the reporting #322 needs.
 
 - A job's advertised expectation moves as par2 decisions are made: it excludes recovery until damage forces an un-defer, and includes it after. This was decided deliberately.
 - The API changes shape. There is no backwards-compatibility requirement — landing this work requires a full reset and reinstall — so this is a UI update, not a data migration concern.
-- The UI's repairability check currently compares failed bytes against `par2_bytes`, which includes the index and so overstates repair capacity. Moving it to `recovery_bytes` corrects it. This is a behaviour change arriving as a consequence rather than as its own decision.
+- The UI's repairability check currently compares failed bytes against `par2_bytes`, which includes the index and so overstates repair capacity. Moving it to `recovery_bytes` makes it less optimistic. It does not make it correct: repairability is a block count, and the check's `<=` test is the direction the byte comparison cannot support — scattered damage destroys more blocks than its byte total suggests. This is a behaviour change arriving as a consequence rather than as its own decision.

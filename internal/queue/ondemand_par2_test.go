@@ -319,8 +319,8 @@ func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
 	}
 
 	oldTotalBytes := m.TotalBytes()
-	oldPar2Bytes := m.Par2Bytes()
-	oldPar2Files := m.Par2Files()
+	oldPar2Bytes := m.RecoveryBytes()
+	oldPar2Files := m.RecoveryFiles()
 
 	// Partially download the job before discarding: mark content-2's article
 	// done at its global index 2 (after content-1's 1 article and the
@@ -357,11 +357,11 @@ func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
 
 	// Par2Bytes/Par2Files are untouched — there was never a rebuild to carry
 	// them across.
-	if newM.Par2Bytes() != oldPar2Bytes {
-		t.Errorf("Par2Bytes = %d, want %d (unchanged)", newM.Par2Bytes(), oldPar2Bytes)
+	if newM.RecoveryBytes() != oldPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d (unchanged)", newM.RecoveryBytes(), oldPar2Bytes)
 	}
-	if newM.Par2Files() != oldPar2Files {
-		t.Errorf("Par2Files = %d, want %d (unchanged)", newM.Par2Files(), oldPar2Files)
+	if newM.RecoveryFiles() != oldPar2Files {
+		t.Errorf("Par2Files = %d, want %d (unchanged)", newM.RecoveryFiles(), oldPar2Files)
 	}
 
 	// RemainingBytes must be unchanged by the discard: deferred files already
@@ -386,11 +386,11 @@ func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
 	if got := snap.NumArticles(); got != newM.NumArticles() {
 		t.Errorf("Job.NumArticles() = %d, want %d", got, newM.NumArticles())
 	}
-	if got := snap.Par2Bytes(); got != oldPar2Bytes {
-		t.Errorf("Job.Par2Bytes() = %d, want %d (unchanged)", got, oldPar2Bytes)
+	if got := snap.RecoveryBytes(); got != oldPar2Bytes {
+		t.Errorf("Job.RecoveryBytes() = %d, want %d (unchanged)", got, oldPar2Bytes)
 	}
-	if got := snap.Par2Files(); got != oldPar2Files {
-		t.Errorf("Job.Par2Files() = %d, want %d (unchanged)", got, oldPar2Files)
+	if got := snap.RecoveryFiles(); got != oldPar2Files {
+		t.Errorf("Job.RecoveryFiles() = %d, want %d (unchanged)", got, oldPar2Files)
 	}
 }
 
