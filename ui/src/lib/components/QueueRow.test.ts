@@ -493,5 +493,61 @@ describe('QueueRow', () => {
 		expect(screen.getByText(/Unpack failed: volume had failed or missing download blocks/)).toBeInTheDocument();
 		expect(screen.getByText('(2 OK, 1 Failed)')).toBeInTheDocument();
 	});
+
+	/**
+	 * #325: the drawer lists every file in the NZB at full declared size,
+	 * but the row's size excludes par2 recovery volumes the job does not
+	 * expect to fetch. Without stating the excluded amount the drawer simply
+	 * totals more than the row above it and nothing explains the gap.
+	 */
+	describe('held-back subtotal', () => {
+		const withFiles = (files: unknown[]) =>
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, files }] }
+			} as any);
+
+		const openDrawer = async () => {
+			const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+			const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+			expect(row).toBeTruthy();
+			await fireEvent.click(row);
+			await vi.waitFor(() => {
+				expect(fetchQueueJobDetail).toHaveBeenCalledWith('123');
+			});
+		};
+
+		it('states the bytes excluded from the row, summing held and skipped', async () => {
+			withFiles([
+				{ name: 'release.rar', bytes: 1000, bytes_downloaded: 1000, state: 'done' },
+				{ name: 'x.vol000+01.par2', bytes: 300, bytes_downloaded: 0, state: 'held' },
+				{ name: 'x.vol001+02.par2', bytes: 500, bytes_downloaded: 0, state: 'skipped' }
+			]);
+			await openDrawer();
+
+			// 300 held + 500 skipped. Both are excluded from the row's size,
+			// so both belong in the subtotal — counting only 'held' would
+			// under-report a job whose volumes were ruled unnecessary.
+			await vi.waitFor(() => {
+				expect(screen.getByText(/incl\. .* held back/)).toBeInTheDocument();
+			});
+			expect(screen.getByText(/incl\. 800(\.0)? ?B held back/)).toBeInTheDocument();
+		});
+
+		it('says nothing when no file is held back', async () => {
+			withFiles([
+				{ name: 'release.rar', bytes: 1000, bytes_downloaded: 1000, state: 'done' },
+				{ name: 'other.rar', bytes: 500, bytes_downloaded: 0, state: 'queued' }
+			]);
+			await openDrawer();
+
+			await vi.waitFor(() => {
+				expect(screen.getByText('other.rar')).toBeInTheDocument();
+			});
+			// A job with nothing held back reconciles already; the note would
+			// be noise on every ordinary job in the queue.
+			expect(screen.queryByText(/held back/)).not.toBeInTheDocument();
+		});
+	});
 });
 
