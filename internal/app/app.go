@@ -1726,7 +1726,14 @@ func failMsgForJob(job *queue.Job) string {
 	// into maybeFinalize with no fallback string — so a dispatcher that
 	// declares a job hopeless while this one still considers it repairable
 	// finalizes the job with an empty reason and shows the user nothing.
-	switch job.RepairState() {
+	switch state := job.RepairState(); state {
+	case queue.RepairIntact, queue.RepairPossible, queue.RepairUnknown:
+		// RepairIntact: only par2 failed, so there is nothing to repair and
+		// the job merely cannot be verified. RepairPossible: within capacity.
+		// RepairUnknown: par2 present but unrecognized, so capacity is
+		// unmeasured rather than absent. All three proceed to
+		// post-processing.
+		return ""
 	case queue.RepairBeyondCapacity:
 		// Capacity may be understated if some plainly-named par2 file also
 		// carries slices, so this errs toward aborting.
@@ -1741,10 +1748,22 @@ func failMsgForJob(job *queue.Job) string {
 			failedMB,
 		)
 	default:
-		// RepairIntact (only par2 failed — nothing to repair, the job simply
-		// cannot be verified), RepairPossible (within capacity), and
-		// RepairUnknown (par2 present but unrecognized, so capacity is
-		// unmeasured rather than absent) all proceed to post-processing.
+		// A state added to queue.RepairState that nobody taught this function
+		// to word. Falling through to "" would be the precise failure the
+		// comment above warns about: Hopeless() is opt-in per state and the
+		// wording above is opt-in per state, as two separate lists, so a new
+		// hopeless state would abort the job in the dispatcher while this
+		// returned no reason at all — and OnJobHopeless hands that straight to
+		// maybeFinalize with no fallback, showing the user nothing.
+		//
+		// TestFailMsgForJob_WordsEveryHopelessState fails when a state reaches
+		// here; this arm only bounds the damage until someone reads it.
+		if state.Hopeless() {
+			return fmt.Sprintf(
+				"Aborted: %.1f MB failed (%s). Job is beyond repair",
+				failedMB, state,
+			)
+		}
 		return ""
 	}
 }

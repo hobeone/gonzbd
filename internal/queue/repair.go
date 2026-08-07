@@ -13,6 +13,15 @@ package queue
 // counts, not bytes; bytes are the only signal available before the volumes
 // are fetched and parsed. Centralizing it does not make it correct, it makes
 // it correctable in one place — see #334 for replacing it outright.
+//
+// One hopeless verdict is deliberately outside this type: failMsgForJob also
+// aborts when every byte a job set out to fetch has failed, which it decides
+// on total rather than content bytes, against ExpectedBytes. A job of nothing
+// but par2 files, all of which fail, therefore reports RepairIntact — its
+// content damage really is zero — while being finalized as beyond repair. The
+// figures this type derives from cannot express that case, and widening it to
+// take ExpectedBytes would put a fourth quantity into the dispatch gate for a
+// degenerate shape. The consequence is confined to the queue row's label.
 type RepairState string
 
 const (
@@ -43,6 +52,27 @@ const (
 	// may be understated, so this errs toward aborting.
 	RepairBeyondCapacity RepairState = "beyond_capacity"
 )
+
+// AllRepairStates lists every declared state, so that code which must handle
+// all of them can be tested against the list rather than against whichever
+// states its author happened to remember.
+//
+// The wire values are part of the contract: ui/src/lib/types.ts declares the
+// same set as a union, and a client that receives an unlisted state falls back
+// to a neutral label. Changing one of these strings without changing that
+// union silently degrades the queue row. See repair_state_exhaustive_test.go,
+// which pins both the list and the strings. Same construction as
+// constants.AllStatuses (#291), postproc.AllQuickCheckOutcomes (#313) and
+// AllFetchPolicies (#331).
+func AllRepairStates() []RepairState {
+	return []RepairState{
+		RepairIntact,
+		RepairPossible,
+		RepairUnknown,
+		RepairNoCapacity,
+		RepairBeyondCapacity,
+	}
+}
 
 // Hopeless reports whether the state is a definite verdict that the job cannot
 // be repaired, and is therefore grounds to stop work on it.

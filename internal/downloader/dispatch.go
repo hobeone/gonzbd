@@ -23,7 +23,7 @@ import (
 type dispatchPlan struct {
 	dispatched   int                 // number of articles handed to a server
 	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
-	hopelessJobs map[string]struct{} // jobs where failedBytes > recoveryBytes
+	hopelessJobs map[string]struct{} // jobs whose queue.RepairState is Hopeless()
 	exhausted    []*articleRequest   // articles with no eligible server this pass
 }
 
