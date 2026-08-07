@@ -113,10 +113,21 @@ of their failure ratio.
 
 4. **Idempotent disconnect-on-idle**: `DisconnectAll()` signals idle connections
    to close by closing the `disconnectPtr` channel. Workers that are mid-fetch
-   finish their current article before closing. Workers snapshot `disconnectCh`
-   via `disconnectSnapshot()` before blocking, so a stale closed channel from a
-   previous signal does not interfere — `ensureDisconnectChan()` replaces it
-   when the next connection dials.
+   finish their current article before closing. `ensureDisconnectChan()`
+   replaces the closed channel with a fresh open one when the next connection
+   dials.
+
+   A closed channel stays permanently ready, so a worker must select on it
+   **only while it actually holds a connection** — that is what
+   `disconnectChanFor()` enforces, returning `nil` (which blocks forever in
+   `select`) once the worker's `managedConn` is closed. Snapshotting alone is
+   not sufficient protection: `ensureDisconnectChan()` runs only on dial, and
+   an idle daemon never dials, so a worker that kept selecting on the stale
+   closed channel would take the `workDisconnect` branch on every iteration
+   and busy-loop forever. That was a real bug — after the first
+   idle-disconnect following a completed download, every `connWorker` spun at
+   full CPU, silently (the branch logs only at `Debug`, and `downloader` is
+   commonly configured at `info`).
 
 5. **Emitted-is-transient durability contract**: `MarkArticleEmitted` is not
    persisted to disk. If the process crashes between `MarkArticleEmitted` and

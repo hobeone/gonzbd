@@ -1858,6 +1858,69 @@ func TestDisconnectAll_IdempotentAndConcurrent(t *testing.T) {
 	}
 }
 
+// ---------- idle worker must not spin on a stale closed disconnect ----------
+
+// DisconnectAll broadcasts by closing the disconnect channel, which stays
+// permanently ready until a dial calls ensureDisconnectChan. A worker that
+// has already closed its connection must therefore NOT keep selecting on
+// it: on an idle daemon nothing dials, so selectWork would return
+// workDisconnect immediately on every iteration and the worker would spin
+// at full CPU forever, doing no work and logging only at Debug.
+func TestDisconnectChanFor_NilWhenConnAlreadyClosed(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	d.DisconnectAll() // closes the shared channel; it stays ready from here on
+
+	if got := d.disconnectSnapshot(); got == nil {
+		t.Fatal("precondition: disconnectSnapshot returned nil after DisconnectAll")
+	}
+
+	t.Run("worker holding a connection still sees the signal", func(t *testing.T) {
+		mc := &managedConn{conn: &nntp.Conn{}}
+		ch := d.disconnectChanFor(mc)
+		if ch == nil {
+			t.Fatal("disconnectChanFor = nil for an open connection; the worker would never disconnect")
+		}
+		if _, decision := selectWork(t.Context(), ch, make(chan *articleRequest)); decision != workDisconnect {
+			t.Errorf("decision = %v, want workDisconnect", decision)
+		}
+	})
+
+	t.Run("worker with no connection selects on nil and parks", func(t *testing.T) {
+		mc := &managedConn{} // conn already closed, as after a first disconnect
+		if ch := d.disconnectChanFor(mc); ch != nil {
+			t.Fatalf("disconnectChanFor = %v, want nil (stale closed channel would spin the worker)", ch)
+		}
+	})
+}
+
+// With no connection and no work, connWorker must block rather than
+// busy-loop. Proven by cancelling the context and requiring that
+// selectWork reports workCancelled: on the unfixed code the permanently
+// ready disconnect channel competes with ctx.Done in the same select, so
+// the worker churns through workDisconnect instead of parking.
+func TestSelectWork_NilDisconnectBlocksUntilWorkOrCancel(t *testing.T) {
+	t.Parallel()
+
+	workCh := make(chan *articleRequest)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, decision := selectWork(ctx, nil, workCh)
+	if decision != workCancelled {
+		t.Fatalf("decision = %v, want workCancelled", decision)
+	}
+	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+		t.Errorf("selectWork returned after %v; it did not block on the nil disconnect channel", elapsed)
+	}
+}
+
 func TestMarkArticleEmitted_ErrNotFound(t *testing.T) {
 	t.Parallel()
 

@@ -561,6 +561,30 @@ func (d *Downloader) disconnectSnapshot() <-chan struct{} {
 	return nil
 }
 
+// disconnectChanFor returns the disconnect channel a worker owning mc
+// should select on, or nil when that worker has no connection to close.
+//
+// DisconnectAll broadcasts by *closing* the channel, which leaves it
+// permanently ready, and only ensureDisconnectChan (called when a worker
+// dials) ever replaces it with a fresh open one. A worker that has already
+// closed its connection therefore keeps re-reading a ready channel, and on
+// an idle daemon nothing ever dials to reset it — so every connWorker spun
+// at full tilt on the workDisconnect branch forever after the first
+// idle-disconnect, doing no work and logging nothing above Debug.
+//
+// The signal only means anything to a worker actually holding a
+// connection, so a worker without one selects on nil instead: a nil
+// channel blocks forever in select, parking the worker on workCh/ctx
+// until real work arrives. The next Get() dials and re-arms the channel
+// via ensureDisconnectChan, so the worker is again responsive to a
+// subsequent DisconnectAll.
+func (d *Downloader) disconnectChanFor(mc *managedConn) <-chan struct{} {
+	if !mc.isOpen() {
+		return nil
+	}
+	return d.disconnectSnapshot()
+}
+
 // setConnActivity records that the worker identified by workerID is
 // now fetching the given article. Called at the start of handleRequest.
 func (d *Downloader) setConnActivity(workerID string, req *articleRequest) {

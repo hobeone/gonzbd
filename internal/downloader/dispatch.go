@@ -492,8 +492,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 			return
 		case sem <- struct{}{}:
 			// We have capacity — now wait for work or disconnect signal.
-			disconnectCh := d.disconnectSnapshot()
-			req, decision := selectWork(ctx, disconnectCh, workCh)
+			req, decision := selectWork(ctx, d.disconnectChanFor(mc), workCh)
 			switch decision {
 			case workCancelled:
 				return
@@ -768,6 +767,13 @@ func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // j
 type managedConn struct {
 	mu   sync.Mutex
 	conn *nntp.Conn
+}
+
+// isOpen reports whether this slot currently holds a dialled connection.
+func (m *managedConn) isOpen() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn != nil
 }
 
 func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, workerID string) (*nntp.Conn, error) {
