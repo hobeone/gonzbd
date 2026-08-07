@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -492,7 +493,11 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 			return
 		case sem <- struct{}{}:
 			// We have capacity — now wait for work or disconnect signal.
-			req, decision := selectWork(ctx, d.disconnectChanFor(mc), workCh)
+			//
+			// sem holds this iteration's slot plus one per still-running
+			// handleRequest goroutine, so len(sem) > 1 means a request that
+			// could dial (and thus open mc) is still in flight.
+			req, decision := selectWork(ctx, d.disconnectChanFor(mc, len(sem) > 1), workCh)
 			switch decision {
 			case workCancelled:
 				return
@@ -767,14 +772,19 @@ func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // j
 type managedConn struct {
 	mu   sync.Mutex
 	conn *nntp.Conn
+
+	// open mirrors "conn != nil" for lock-free reads. Maintained under mu
+	// alongside every conn assignment. It exists because mu is held across
+	// nntp.Dial (see the doc comment above), so an isOpen() that took mu
+	// would block its own connWorker's dispatch select for the whole dial —
+	// the parent loop and the handleRequest goroutine that is dialling share
+	// this managedConn. Readers tolerate a stale value; see disconnectChanFor.
+	open atomic.Bool
 }
 
 // isOpen reports whether this slot currently holds a dialled connection.
-func (m *managedConn) isOpen() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.conn != nil
-}
+// Lock-free by design — never take mu here, see the open field.
+func (m *managedConn) isOpen() bool { return m.open.Load() }
 
 func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, workerID string) (*nntp.Conn, error) {
 	m.mu.Lock()
@@ -806,6 +816,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 	d.log.Debug("connected", "server", name, "ssl", c.SSLInfo()) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
 	d.ensureDisconnectChan()
 	m.conn = c
+	m.open.Store(true)
 	d.setConnConnected(workerID, true)
 	return c, nil
 }
@@ -816,6 +827,7 @@ func (m *managedConn) Close(d *Downloader, workerID string) {
 	if m.conn != nil {
 		_ = m.conn.Close() //nolint:errcheck // discarding a broken conn
 		m.conn = nil
+		m.open.Store(false)
 		d.setConnConnected(workerID, false)
 	}
 }
@@ -828,6 +840,7 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 	if m.conn != nil && m.conn == c {
 		_ = m.conn.Close() //nolint:errcheck // discarding a broken conn
 		m.conn = nil
+		m.open.Store(false)
 		d.setConnConnected(workerID, false)
 		return true
 	}
