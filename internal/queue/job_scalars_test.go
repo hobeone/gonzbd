@@ -10,10 +10,10 @@ import (
 )
 
 // makeMultiFileJobWithPar2 is makeMultiFileJob (lifecycle_test.go) plus one
-// par2 recovery-volume file, so a test can assert on RecoveryBytes/RecoveryFiles —
-// the two manifest scalars that cannot be aggregated out of job_files, and so
-// travel through their own jobs.par2_bytes/par2_files columns (migration
-// 005) rather than through SQLiteStore.Get's job_files reconstruction.
+// par2 recovery-volume file, so a test can assert on RecoveryBytes/RecoveryFiles
+// — the two manifest scalars that travel through their own
+// jobs.recovery_bytes/recovery_files columns (migration 010) rather than
+// through SQLiteStore.Get's soft-failing job_files aggregate.
 func makeMultiFileJobWithPar2(t *testing.T, name string, nFiles, nArticles int) *Job {
 	t.Helper()
 	parsed := &nzb.NZB{

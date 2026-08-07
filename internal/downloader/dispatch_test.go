@@ -433,9 +433,14 @@ func TestBuildDispatchPlan_IndexOnlyJobIsHopelessOnFirstFailure(t *testing.T) {
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.queue = queue.New()
+	// The failing article (50 B) is deliberately SMALLER than the index
+	// (100 B). That is what makes this red-green: under the superseded
+	// figures the index counted as capacity, so 50 > 100 was false and the
+	// job kept being dispatched. Sizing the failure above the index instead
+	// would assert an outcome that never changed.
 	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "test.bin", Bytes: 1000, Articles: []nzb.Article{
-			{ID: "h@h", Bytes: 500, Number: 1},
+		{Subject: "test.bin", Bytes: 550, Articles: []nzb.Article{
+			{ID: "h@h", Bytes: 50, Number: 1},
 			{ID: "ok@h", Bytes: 500, Number: 2},
 		}},
 		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
@@ -450,7 +455,8 @@ func TestBuildDispatchPlan_IndexOnlyJobIsHopelessOnFirstFailure(t *testing.T) {
 	if err := d.queue.Add(job); err != nil {
 		t.Fatalf("queue.Add: %v", err)
 	}
-	// One article of two fails: 500 failed bytes against zero capacity.
+	// One article of two fails: 50 failed bytes against zero capacity. The
+	// old denominator counted the 100 B index, so this job was dispatched.
 	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}

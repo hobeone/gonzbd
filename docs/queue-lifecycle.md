@@ -62,8 +62,9 @@ holds at any residency and needs no adjustment when a file's state changes.
 evictable manifest.
 
 External packages read five manifest-derived scalars — `TotalBytes`,
-`NumFiles`, `NumArticles`, `RecoveryBytes`, `RecoveryFiles`. These are computed once at
-`Add` and never change, so they live in the always-resident tier rather than
+`NumFiles`, `NumArticles`, `RecoveryBytes`, `RecoveryFiles`. These are
+computed once at `Add` and never change, so they live in the
+always-resident tier rather than
 behind a fallible handle. This generalizes the same rule remaining bytes
 already follows above: a reporting path must never need a manifest.
 

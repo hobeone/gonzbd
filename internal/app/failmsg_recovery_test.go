@@ -67,17 +67,24 @@ func TestFailMsgForJob_AgreesWithDispatcherOnPartialFailure(t *testing.T) {
 		{subject: "movie.part02.rar", bytes: 120},
 	}, 3)
 
-	// Fixture guard: the whole point is that the failure lands inside the
-	// disagreement band. If either bound stops holding, the test proves
-	// nothing and should say so rather than pass.
-	const failed, recovery, oldPar2 = 120, 100, 150
-	if got := job.RecoveryBytes(); got != recovery {
+	// Fixture guards. Both read live values from the job — comparing the
+	// three constants against each other would fold away at compile time and
+	// guard nothing.
+	const wantFailed, wantRecovery, oldPar2 = int64(120), int64(100), int64(150)
+	if got := job.RecoveryBytes(); got != wantRecovery {
 		t.Fatalf("fixture guard: RecoveryBytes() = %d, want %d — the index or a volume "+
-			"is being classified differently than this test assumes", got, recovery)
+			"is being classified differently than this test assumes", got, wantRecovery)
 	}
-	if recovery >= failed || failed > oldPar2 {
+	if got := job.Progress().FailedBytes(); got != wantFailed {
+		t.Fatalf("fixture guard: FailedBytes() = %d, want %d — the failure is no longer "+
+			"landing where this test needs it", got, wantFailed)
+	}
+	// The band is what makes the test able to see a split at all: below
+	// wantRecovery both denominators say repairable, above oldPar2 both say
+	// hopeless, and only in between do they disagree.
+	if !(wantRecovery < wantFailed && wantFailed <= oldPar2) { //nolint:staticcheck // QF1001: the band reads as a band, not as De Morgan's inverse
 		t.Fatalf("fixture guard: %d < %d <= %d does not hold, so the two denominators "+
-			"would agree and this test could not detect a split", recovery, failed, oldPar2)
+			"would agree and this test could not detect a split", wantRecovery, wantFailed, oldPar2)
 	}
 
 	got := failMsgForJob(job)

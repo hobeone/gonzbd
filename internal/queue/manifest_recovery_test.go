@@ -137,6 +137,50 @@ func TestManifestRecoveryFigures_SurviveRoundTrip(t *testing.T) {
 	}
 }
 
+// TestManifestRecoveryFigures_LegacyBlobIgnoresStoredPar2 pins what happens
+// to a manifest written before the recovery figures stopped being persisted.
+//
+// Such a blob carries par2_bytes/par2_files keys that no longer have fields to
+// land in. encoding/json drops them, and the figures are recomputed from the
+// per-file is_par2_recovery flags the blob also carries. The recomputation
+// does not reproduce the stored values and is not meant to: the stored ones
+// counted the par2 index, which is the overstatement this change removes.
+func TestManifestRecoveryFigures_LegacyBlobIgnoresStoredPar2(t *testing.T) {
+	t.Parallel()
+
+	// Hand-written in the older on-disk shape: 750/3 counted the index.
+	const legacy = `{
+	  "files": [
+	    {"subject":"movie.mkv","bytes":1000,"articles":[{"id":"c@x","bytes":1000,"number":1}]},
+	    {"subject":"movie.par2","bytes":50,"articles":[{"id":"i@x","bytes":50,"number":1}]},
+	    {"subject":"movie.vol000+01.par2","bytes":300,"is_par2_recovery":true,"articles":[{"id":"v1@x","bytes":300,"number":1}]},
+	    {"subject":"movie.vol001+02.par2","bytes":400,"is_par2_recovery":true,"articles":[{"id":"v2@x","bytes":400,"number":1}]}
+	  ],
+	  "total_bytes": 1750,
+	  "par2_bytes": 750,
+	  "par2_files": 3
+	}`
+
+	var m Manifest
+	if err := json.Unmarshal([]byte(legacy), &m); err != nil {
+		t.Fatalf("Unmarshal legacy manifest: %v", err)
+	}
+
+	if got := m.NumFiles(); got != 4 {
+		t.Fatalf("NumFiles() = %d, want 4 — the legacy blob did not load", got)
+	}
+	if got := m.TotalBytes(); got != 1750 {
+		t.Errorf("TotalBytes() = %d, want 1750", got)
+	}
+	if got := m.RecoveryBytes(); got != 700 {
+		t.Errorf("RecoveryBytes() = %d, want 700 — recomputed from is_par2_recovery, "+
+			"not read from the blob's par2_bytes of 750", got)
+	}
+	if got := m.RecoveryFiles(); got != 2 {
+		t.Errorf("RecoveryFiles() = %d, want 2 — the blob's par2_files of 3 counted the index", got)
+	}
+}
+
 // TestRecoveryFigures covers the shared helper directly. newManifest and
 // UnmarshalJSON both call it so the two construction paths cannot disagree,
 // which is the property worth testing at this level rather than only through

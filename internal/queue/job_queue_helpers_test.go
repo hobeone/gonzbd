@@ -55,7 +55,7 @@ func TestSetScalarsFromManifest_CopiesFiveTotals(t *testing.T) {
 // documented on the method: totalBytes/numFiles/numArticles are set from the
 // arguments, but par2Bytes/par2Files are deliberately left alone (they come
 // from setRecoveryScalarsFromStore instead).
-func TestSetAggregateScalarsFromFiles_LeavesPar2Untouched(t *testing.T) {
+func TestSetAggregateScalarsFromFiles_LeavesRecoveryUntouched(t *testing.T) {
 	j := &Job{}
 	j.setRecoveryScalarsFromStore(999, 3) // pre-set to a sentinel this call must not disturb
 	j.setAggregateScalarsFromFiles(12345, 4, 20)
@@ -79,7 +79,7 @@ func TestSetAggregateScalarsFromFiles_LeavesPar2Untouched(t *testing.T) {
 
 // TestSetPar2ScalarsFromStore_SetsOnlyThePair pins that it writes exactly
 // par2Bytes/par2Files and nothing else.
-func TestSetPar2ScalarsFromStore_SetsOnlyThePair(t *testing.T) {
+func TestSetRecoveryScalarsFromStore_SetsOnlyThePair(t *testing.T) {
 	j := &Job{}
 	j.setAggregateScalarsFromFiles(111, 2, 5)
 	j.setRecoveryScalarsFromStore(777, 1)

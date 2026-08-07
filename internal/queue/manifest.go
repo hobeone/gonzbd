@@ -233,8 +233,11 @@ type manifestJSONFile struct {
 // a stored copy drifts from the file list it claims to summarize.
 //
 // Dropping the two keys is a soft landing for manifests written by an earlier
-// build: encoding/json ignores keys with no matching field, and the figures
-// they carried are exactly what the recomputation produces.
+// build: encoding/json ignores keys with no matching field, and the
+// recomputation produces the corrected figure regardless of what they carried.
+// Note it does not reproduce them — an older build counted the par2 index, so
+// a legacy blob's par2_bytes is larger than the recovery figure derived from
+// the same file list. That difference is the point of the change, not a loss.
 type manifestJSON struct {
 	Files      []manifestJSONFile `json:"files"`
 	TotalBytes int64              `json:"total_bytes"`
