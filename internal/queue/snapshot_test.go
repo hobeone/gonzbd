@@ -178,7 +178,7 @@ func TestSnapshot_DoesNotHydrateNonResidentJobs(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	wantBytes, wantPar2 := job.TotalBytes(), job.Par2Bytes()
+	wantBytes, wantPar2 := job.TotalBytes(), job.RecoveryBytes()
 
 	q.mu.RLock()
 	live := q.byID[job.ID]
@@ -205,8 +205,8 @@ func TestSnapshot_DoesNotHydrateNonResidentJobs(t *testing.T) {
 	if got.TotalBytes() != wantBytes {
 		t.Errorf("TotalBytes = %d, want %d", got.TotalBytes(), wantBytes)
 	}
-	if got.Par2Bytes() != wantPar2 {
-		t.Errorf("Par2Bytes = %d, want %d", got.Par2Bytes(), wantPar2)
+	if got.RecoveryBytes() != wantPar2 {
+		t.Errorf("Par2Bytes = %d, want %d", got.RecoveryBytes(), wantPar2)
 	}
 	if got.Progress() == nil {
 		t.Error("Progress is nil in a snapshot copy; reporting needs it and it is meant to be always resident")

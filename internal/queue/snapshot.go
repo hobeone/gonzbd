@@ -163,11 +163,11 @@ func cloneJob(j *Job) *Job {
 		// Manifest-derived scalars are immutable once set and do not depend
 		// on residency — they must be carried verbatim so a snapshot's
 		// TotalBytes/NumFiles/etc. never requires hydration.
-		totalBytes:  j.totalBytes,
-		numFiles:    j.numFiles,
-		numArticles: j.numArticles,
-		par2Bytes:   j.par2Bytes,
-		par2Files:   j.par2Files,
+		totalBytes:    j.totalBytes,
+		numFiles:      j.numFiles,
+		numArticles:   j.numArticles,
+		recoveryBytes: j.recoveryBytes,
+		recoveryFiles: j.recoveryFiles,
 	}
 
 	// Read all three residency fields under one lock. hydrateErr is carried

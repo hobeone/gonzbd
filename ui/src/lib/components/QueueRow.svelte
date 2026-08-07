@@ -345,11 +345,26 @@
 		renaming = false;
 	}
 
-	/** Health indicator: can par2 cover the damage? */
+	/**
+	 * Health indicator: can par2 cover the damage?
+	 *
+	 * Must reproduce the judgment the backend's two abort gates make, or the
+	 * row condemns a job the downloader is still working on. Two rules carry
+	 * that:
+	 *
+	 * - The numerator is content_failed_bytes, not failed_bytes. A par2 file
+	 *   that fails to download is lost repair capacity, not damage needing
+	 *   repair — counting it condemns a job for losing the file whose only
+	 *   purpose was to rescue others.
+	 * - Zero recovery_bytes means "no capacity we recognized". When the job
+	 *   carries a par2 file that did not match the .volNNN+MM convention the
+	 *   backend withholds its verdict, so this must too.
+	 */
 	function healthLabel(): { text: string; color: string } {
-		if (slot.failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
-		if (slot.par2_bytes === 0) return { text: 'No repair data', color: 'text-red-600 dark:text-red-400' };
-		if (slot.failed_bytes <= slot.par2_bytes) return { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' };
+		if (slot.content_failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
+		if (slot.recovery_capacity_unknown) return { text: 'Repair data unknown', color: 'text-amber-600 dark:text-amber-400' };
+		if (slot.recovery_bytes === 0) return { text: 'No repair data', color: 'text-red-600 dark:text-red-400' };
+		if (slot.content_failed_bytes <= slot.recovery_bytes) return { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' };
 		return { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' };
 	}
 </script>
@@ -519,9 +534,13 @@
 				<div>
 					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Par2 Recovery</span>
 					<div class="font-bold mt-0.5">
-						{#if slot.par2_bytes > 0}
-							{formatBytes(slot.par2_bytes)}
-							<span class="text-m3-on-surface-variant/70 text-xs font-semibold">({slot.par2_files} file{slot.par2_files !== 1 ? 's' : ''})</span>
+						{#if slot.recovery_bytes > 0}
+							{formatBytes(slot.recovery_bytes)}
+							<span class="text-m3-on-surface-variant/70 text-xs font-semibold">({slot.recovery_files} file{slot.recovery_files !== 1 ? 's' : ''})</span>
+						{:else if slot.recovery_capacity_unknown}
+							<!-- A par2 file is present but none matched the volume-naming
+							     convention, so its capacity is unmeasured, not absent. -->
+							<span class="text-m3-on-surface-variant/60 font-semibold">Unknown</span>
 						{:else}
 							<span class="text-m3-on-surface-variant/60 font-semibold">None</span>
 						{/if}

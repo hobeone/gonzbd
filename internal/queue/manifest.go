@@ -23,9 +23,9 @@ type Manifest struct {
 	// array, one longer than files (a final sentinel = total article count).
 	fileArticleOffsets []int
 
-	totalBytes int64
-	par2Bytes  int64
-	par2Files  int
+	totalBytes    int64
+	recoveryBytes int64
+	recoveryFiles int
 
 	// messageIDIndex is the messageID -> global article index lookup, built
 	// lazily on first call to articleIndexByID and dropped by
@@ -45,11 +45,14 @@ type manifestFile struct {
 
 // newManifest builds a Manifest from files, flattening each file's nested
 // articles into the parallel global arrays and computing the
-// fileArticleOffsets prefix sum plus totalBytes/par2Bytes/par2Files from
-// scratch. Used both by NewJob (initial construction) and by
-// DiscardDeferredPar2 (rebuild against a reduced file set) — the latter
-// overwrites the returned Manifest's par2Bytes/par2Files afterward, since
-// discard must leave those two fields stale rather than recomputed.
+// fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
+//
+// NewJob is the only caller. DiscardDeferredPar2 used to call it too, to
+// rebuild against a reduced file set, and that rebuild is why the recovery
+// figures were once stored rather than derived — the discard deliberately
+// left them describing the larger, pre-discard job. Since #331 the discard
+// only marks a FetchPolicy and changes no file set, so nothing can make
+// these figures disagree with the file list they are computed from.
 func newManifest(files []JobFile) *Manifest {
 	m := &Manifest{
 		files:              make([]manifestFile, len(files)),
@@ -69,18 +72,46 @@ func newManifest(files []JobFile) *Manifest {
 			m.articleNumber = append(m.articleNumber, a.Number)
 		}
 		m.totalBytes += f.Bytes
-		if isPar2File(f.Subject) {
-			m.par2Bytes += f.Bytes
-			m.par2Files++
-		}
 	}
 	m.fileArticleOffsets[len(files)] = len(m.articleIDs)
+	m.recoveryBytes, m.recoveryFiles = recoveryFigures(m.files)
 	return m
 }
 
+// recoveryFigures sums the par2 recovery volumes in files, returning their
+// total size and count. Both construction paths — newManifest and
+// UnmarshalJSON — call it, so the two cannot disagree about what a job's
+// repair capacity is.
+//
+// The predicate is isPar2Recovery — a subject matching the ".volNNN+MM.par2"
+// convention — not the broader name-based isPar2File, which matches any
+// ".par2" subject and so also picks up the file conventionally used as an
+// index. An index holds per-file checksums, and counting those as repair
+// capacity overstated it everywhere these figures are read.
+//
+// "Conventionally" is doing real work in that sentence, and the figure is
+// weaker than it looks. The PAR2 specification says a file carrying recovery
+// slices *should* be named with a .volNNN+MM segment; it does not require it,
+// does not forbid recovery slices in a plainly-named .par2, and does not
+// define an index file at all. par2 itself reads packets and ignores names.
+// So this counts recognized capacity, and a job can hold more than it reports.
+// Callers must not read zero here as proof that a job cannot be repaired —
+// see JobProgress.HasPar2Files and the guards that use it.
+func recoveryFigures(files []manifestFile) (bytes int64, count int) {
+	for _, f := range files {
+		if f.isPar2Recovery {
+			bytes += f.bytes
+			count++
+		}
+	}
+	return bytes, count
+}
+
 // isPar2File reports whether subject names a par2 file (index or recovery
-// volume), shared by newManifest and NewJob so the classification heuristic
-// can't drift between the two.
+// volume). NewJob is the only caller: it pairs this with isRecoveryVolume to
+// decide JobFile.IsPar2Recovery, which is the classification everything else
+// keys on. Manifest's own figures no longer use it — see recoveryFigures for
+// why a name-based test is the wrong predicate for repair capacity.
 func isPar2File(subject string) bool {
 	return strings.Contains(strings.ToLower(subject), ".par2")
 }
@@ -134,11 +165,33 @@ func (m *Manifest) ArticleNumber(i int) int { return m.articleNumber[i] }
 // TotalBytes returns the sum of all files' claimed byte counts.
 func (m *Manifest) TotalBytes() int64 { return m.totalBytes }
 
-// Par2Bytes returns the sum of all par2 files' byte counts.
-func (m *Manifest) Par2Bytes() int64 { return m.par2Bytes }
+// RecoveryBytes returns the summed size of the files whose subjects identify
+// them as par2 recovery volumes, excluding the file conventionally used as the
+// set's index, which holds per-file checksums rather than recovery slices.
+//
+// This is a proxy for repair capacity, and a doubly weak one. Read the
+// qualifications before comparing anything against it.
+//
+// It is *recognized* capacity, not total capacity. The classification comes
+// from the NZB subject, and the ".volNNN+MM.par2" convention is a convention:
+// the PAR2 specification recommends it for files carrying recovery slices
+// without requiring it, never forbids slices in a plainly-named .par2, and
+// defines no index file. par2 reads packets, not names. A job may therefore
+// hold recovery data this figure does not see, so zero is not evidence a job
+// cannot be repaired.
+//
+// Even where the classification is right, bytes are only a proxy for what
+// actually decides repair, which is block counts — usable parity shards
+// against unusable data shards — and nothing can know those until par2 parses
+// the volumes. The comparison is sound in one direction only: damage
+// exceeding this figure does imply unrepairable, since recovery bytes are at
+// least the slice payload. Damage failing to exceed it implies nothing,
+// because scattered damage destroys more blocks than its byte count suggests.
+func (m *Manifest) RecoveryBytes() int64 { return m.recoveryBytes }
 
-// Par2Files returns the count of par2 files.
-func (m *Manifest) Par2Files() int { return m.par2Files }
+// RecoveryFiles returns the count of par2 recovery volumes, excluding the
+// index. See RecoveryBytes.
+func (m *Manifest) RecoveryFiles() int { return m.recoveryFiles }
 
 // articleIndexByID returns the global article index for messageID, or
 // (0, false) if not found. Lazily builds messageIDIndex on first call.
@@ -160,11 +213,10 @@ func (m *Manifest) buildMessageIDIndex() {
 }
 
 // dropMessageIDIndex releases messageIDIndex. Called from the same place
-// dropArtIndex is called today (SetPostProcStarted). NOT called from
-// DiscardDeferredPar2's equivalent — that path builds an entirely fresh
-// Manifest whose messageIDIndex starts nil, so there is nothing to drop;
-// calling dropMessageIDIndex there would be a harmless no-op, not a
-// requirement.
+// dropArtIndex is called today (SetPostProcStarted). DiscardDeferredPar2 does
+// not call it and does not need to: since #331 that path mutates a
+// FetchPolicy in place and leaves the manifest — index included — exactly as
+// it was.
 func (m *Manifest) dropMessageIDIndex() {
 	m.messageIDIndex = nil
 }
@@ -190,16 +242,24 @@ type manifestJSONFile struct {
 
 // manifestJSON is Manifest's on-disk shape. messageIDIndex is deliberately
 // excluded — it is rebuilt lazily on demand rather than persisted.
-// Par2Bytes/Par2Files are persisted as-is rather than recomputed on load, so
-// the deliberate staleness DiscardDeferredPar2 leaves in that pair — it
-// carries the pre-discard totals over unchanged — survives a save/load cycle
-// too. The file set itself no longer does: since #294 the discard rewrites
-// this file, so only these two scalars still describe the larger job.
+//
+// The recovery figures are excluded too, and recomputed on load from the
+// per-file is_par2_recovery flags this format already carries. They were
+// persisted while DiscardDeferredPar2 rebuilt the manifest against a reduced
+// file set, because the discard deliberately left them describing the larger
+// pre-discard job and a recomputation would have erased that. #331 removed
+// the rebuild, so there is no staleness left to preserve — only the risk that
+// a stored copy drifts from the file list it claims to summarize.
+//
+// Dropping the two keys is a soft landing for manifests written by an earlier
+// build: encoding/json ignores keys with no matching field, and the
+// recomputation produces the corrected figure regardless of what they carried.
+// Note it does not reproduce them — an older build counted the par2 index, so
+// a legacy blob's par2_bytes is larger than the recovery figure derived from
+// the same file list. That difference is the point of the change, not a loss.
 type manifestJSON struct {
 	Files      []manifestJSONFile `json:"files"`
 	TotalBytes int64              `json:"total_bytes"`
-	Par2Bytes  int64              `json:"par2_bytes"`
-	Par2Files  int                `json:"par2_files"`
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -226,8 +286,6 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(manifestJSON{
 		Files:      files,
 		TotalBytes: m.totalBytes,
-		Par2Bytes:  m.par2Bytes,
-		Par2Files:  m.par2Files,
 	})
 }
 
@@ -255,7 +313,6 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 	}
 	m.fileArticleOffsets[len(mj.Files)] = len(m.articleIDs)
 	m.totalBytes = mj.TotalBytes
-	m.par2Bytes = mj.Par2Bytes
-	m.par2Files = mj.Par2Files
+	m.recoveryBytes, m.recoveryFiles = recoveryFigures(m.files)
 	return nil
 }

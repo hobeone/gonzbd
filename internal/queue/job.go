@@ -187,11 +187,11 @@ type Job struct {
 	// write lock; both are always called with q.mu held and never with
 	// residencyMu already held, so the q.mu -> residencyMu order matches
 	// setResidency's and cannot self-deadlock.
-	totalBytes  int64
-	numFiles    int
-	numArticles int
-	par2Bytes   int64
-	par2Files   int
+	totalBytes    int64
+	numFiles      int
+	numArticles   int
+	recoveryBytes int64
+	recoveryFiles int
 
 	// hydrateErr records why an attempt to load this job's manifest from
 	// disk failed, and is nil when no attempt failed. Guarded by
@@ -207,24 +207,24 @@ type Job struct {
 }
 
 // setScalarsFromManifest copies m's five totals onto j. Centralizing this
-// assignment matters: a review of this feature (Task 3) caught two sites —
-// hydrateSnapshot and PromoteNext — that attached a manifest to a Job
-// without it, leaving totalBytes/numFiles/numArticles/par2Bytes/par2Files at
+// assignment matters: a review of this feature caught two sites —
+// hydrateSnapshot and PromoteNext — that attached a manifest to a Job without
+// it, leaving totalBytes/numFiles/numArticles/recoveryBytes/recoveryFiles at
 // zero despite a manifest being in hand. Every site that assigns j.manifest
 // (directly or via setResidency) or rebuilds it in place must call this too.
 func (j *Job) setScalarsFromManifest(m *Manifest) {
 	// Read m's totals before taking the lock: m is immutable after parse,
 	// and this keeps the critical section to the five assignments.
 	totalBytes, numFiles := m.TotalBytes(), m.NumFiles()
-	numArticles, par2Bytes, par2Files := m.NumArticles(), m.Par2Bytes(), m.Par2Files()
+	numArticles, recoveryBytes, recoveryFiles := m.NumArticles(), m.RecoveryBytes(), m.RecoveryFiles()
 
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
 	j.totalBytes = totalBytes
 	j.numFiles = numFiles
 	j.numArticles = numArticles
-	j.par2Bytes = par2Bytes
-	j.par2Files = par2Files
+	j.recoveryBytes = recoveryBytes
+	j.recoveryFiles = recoveryFiles
 }
 
 // setAggregateScalarsFromFiles sets totalBytes/numFiles/numArticles from
@@ -234,13 +234,21 @@ func (j *Job) setScalarsFromManifest(m *Manifest) {
 // in-process — the case Task 3 left as a documented gap, where these
 // scalars would otherwise silently read as zero.
 //
-// par2Bytes/par2Files are deliberately left untouched: job_files'
-// is_par2_recovery flags only recovery volumes, while the manifest's
-// Par2Bytes/Par2Files also count the par2 index file, so the two are not
-// equivalent and reconstructing the par2 pair from is_par2_recovery would
-// silently produce an undercount rather than the value the manifest would
-// have produced. They come from the jobs row instead — see
-// setPar2ScalarsFromStore.
+// recoveryBytes/recoveryFiles are deliberately left untouched, and the reason
+// is no longer the one recorded here before: those figures now key on
+// is_par2_recovery, so the SQL aggregate over job_files would in fact produce
+// exactly the right value. Deriving them here is possible; it is just worse.
+//
+// The aggregate query in SQLiteStore.Get fails soft — on error it logs and
+// leaves these scalars at zero. For the three totals above a zero reads as
+// "unknown" and costs a wrong progress bar. For the recovery figures it does
+// not: zero recovery bytes is a definite claim that the job has no repair
+// capacity, which the UI renders as "No repair data" and both abort gates
+// read as grounds to declare a job hopeless. A transient database error must
+// not be able to say that. So they come from the jobs row, which is read
+// unconditionally and fails the whole load rather than degrading — see
+// setRecoveryScalarsFromStore and docs/queue-lifecycle.md's always-resident
+// tier.
 func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticles int) {
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
@@ -249,16 +257,16 @@ func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticl
 	j.numArticles = numArticles
 }
 
-// setPar2ScalarsFromStore sets par2Bytes/par2Files from the jobs row, for a
-// job SQLiteStore.Get loaded without a resident manifest. It is the par2
-// counterpart to setAggregateScalarsFromFiles: those three scalars can be
-// aggregated out of job_files, these two cannot (see that method), so they
-// get columns of their own.
-func (j *Job) setPar2ScalarsFromStore(par2Bytes int64, par2Files int) {
+// setRecoveryScalarsFromStore sets recoveryBytes/recoveryFiles from the jobs
+// row, for a job SQLiteStore.Get loaded without a resident manifest. It is
+// the recovery counterpart to setAggregateScalarsFromFiles: those three
+// scalars tolerate the soft-failing job_files aggregate, these two do not
+// (see that method), so they get columns of their own.
+func (j *Job) setRecoveryScalarsFromStore(recoveryBytes int64, recoveryFiles int) {
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
-	j.par2Bytes = par2Bytes
-	j.par2Files = par2Files
+	j.recoveryBytes = recoveryBytes
+	j.recoveryFiles = recoveryFiles
 }
 
 // TotalBytes returns the job's total size in bytes. Total: never requires a
@@ -285,19 +293,22 @@ func (j *Job) NumArticles() int {
 	return j.numArticles
 }
 
-// Par2Bytes returns the total size of the job's par2 files. Total;
+// RecoveryBytes returns the summed size of the job's par2 recovery volumes,
+// excluding the always-downloaded par2 index. See Manifest.RecoveryBytes for
+// what this figure can and cannot prove about repairability. Total;
 // lock-free-safe, see TotalBytes.
-func (j *Job) Par2Bytes() int64 {
+func (j *Job) RecoveryBytes() int64 {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
-	return j.par2Bytes
+	return j.recoveryBytes
 }
 
-// Par2Files returns the job's par2 file count. Total; lock-free-safe, see TotalBytes.
-func (j *Job) Par2Files() int {
+// RecoveryFiles returns the job's par2 recovery volume count, excluding the
+// index. Total; lock-free-safe, see TotalBytes.
+func (j *Job) RecoveryFiles() int {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
-	return j.par2Files
+	return j.recoveryFiles
 }
 
 // Manifest returns the job's immutable article/file structure, or an error
@@ -324,9 +335,9 @@ func (j *Job) Par2Files() int {
 //     as routine absence.
 //
 // Use errors.Is(err, ErrJobNotResident) to tell them apart. The five
-// promoted scalars (TotalBytes, NumFiles, NumArticles, Par2Bytes,
-// Par2Files) and Progress() never fail, so reporting paths should use those
-// rather than reaching for a manifest they do not need.
+// promoted scalars (TotalBytes, NumFiles, NumArticles, RecoveryBytes,
+// RecoveryFiles) and Progress() never fail, so reporting paths should use
+// those rather than reaching for a manifest they do not need.
 func (j *Job) Manifest() (*Manifest, error) {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()

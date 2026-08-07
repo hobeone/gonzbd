@@ -374,23 +374,36 @@ func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
 	}
 }
 
-// Hopeless job (failedBytes > par2Bytes) lands in hopelessJobs, not dispatched.
+// Hopeless job (failedBytes > RecoveryBytes) lands in hopelessJobs, not
+// dispatched.
+//
+// The fixture carries a real recovery volume so the gate is tested against a
+// non-zero threshold. An earlier version used a bare "test.par2" index, which
+// still passed once the denominator became recovery-only — but only because
+// the threshold had silently become zero, so it had stopped pinning a
+// comparison at all. The index-only shape is worth testing, and gets its own
+// case below rather than being conflated with this one.
 func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.queue = queue.New()
-	// Simulate a hopeless download: more failed bytes than the par2 set can
-	// repair. h@h (1000 bytes) is marked failed below; the 100-byte par2
-	// file gives Par2Bytes=100 from real NZB classification.
+	// h@h (1000 bytes) fails below, against 100 bytes of recovery volume:
+	// 1000 > 100, so the job is beyond repair. The 40-byte index is content
+	// and contributes nothing to the threshold.
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "test.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "h@h", Bytes: 1000, Number: 1}}},
-		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
+		{Subject: "test.par2", Bytes: 40, Articles: []nzb.Article{{ID: "idx@h", Bytes: 40, Number: 1}}},
+		{Subject: "test.vol000+01.par2", Bytes: 100, Articles: []nzb.Article{{ID: "vol@h", Bytes: 100, Number: 1}}},
 	}}
 	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
+	}
+	if got := job.RecoveryBytes(); got != 100 {
+		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 100 — a zero threshold would make "+
+			"this test pass for the wrong reason, since any failure exceeds zero", got)
 	}
 	if err := d.queue.Add(job); err != nil {
 		t.Fatalf("queue.Add: %v", err)
@@ -407,6 +420,60 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	}
 	if _, ok := plan.hopelessJobs[job.ID]; !ok {
 		t.Error("hopelessJobs does not contain the job ID")
+	}
+}
+
+// A job whose only par2 file is plainly named keeps being dispatched, even
+// once content has permanently failed.
+//
+// Nothing matched the ".volNNN+MM.par2" convention, so the recognized recovery
+// figure is zero — but that is ignorance, not a finding. The PAR2 format
+// permits recovery slices in a plainly-named file and par2 reads packets
+// rather than names, so this job may be perfectly repairable. Marking it
+// hopeless would stop dispatch and discard a download on a guess about a
+// filename.
+func TestBuildDispatchPlan_UnrecognizedPar2KeepsDispatching(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	d.queue = queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "test.bin", Bytes: 550, Articles: []nzb.Article{
+			{ID: "h@h", Bytes: 50, Number: 1},
+			{ID: "ok@h", Bytes: 500, Number: 2},
+		}},
+		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if got := job.RecoveryBytes(); got != 0 {
+		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 0 — no subject matches the volume "+
+			"convention, so nothing here is recognized capacity", got)
+	}
+	if err := d.queue.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	// One article of two fails: 50 bytes of damaged content against a
+	// recognized capacity of zero. Acting on that comparison would kill the
+	// job; the capacity is unknown, so the gate declines to.
+	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if _, ok := plan.hopelessJobs[job.ID]; ok {
+		t.Error("job was marked hopeless. Its par2 file did not match the volume-naming " +
+			"convention, which says nothing about whether it carries recovery slices — the " +
+			"format permits them in a plainly-named file. Post-processing reads the actual " +
+			"packets; this gate must not pre-empt it on a filename.")
+	}
+	if plan.dispatched == 0 {
+		t.Error("dispatched = 0, want the remaining article to keep being dispatched")
 	}
 }
 

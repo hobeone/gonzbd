@@ -58,8 +58,8 @@ func TestBuildIngestJob_HappyPath(t *testing.T) {
 	if mustManifest(t, job).TotalBytes() != 500 {
 		t.Errorf("TotalBytes = %d, want 500", mustManifest(t, job).TotalBytes())
 	}
-	if mustManifest(t, job).Par2Bytes() != 100 {
-		t.Errorf("Par2Bytes = %d, want 100", mustManifest(t, job).Par2Bytes())
+	if mustManifest(t, job).RecoveryBytes() != 100 {
+		t.Errorf("Par2Bytes = %d, want 100", mustManifest(t, job).RecoveryBytes())
 	}
 }
 

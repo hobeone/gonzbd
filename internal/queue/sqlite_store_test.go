@@ -979,16 +979,20 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 // Zero would be indistinguishable from a genuinely empty job, which is why
 // this matters.
 //
-// The par2 pair used to be a documented exception here, asserted as zero,
-// because job_files' is_par2_recovery only flags recovery volumes while the
-// manifest's Par2Bytes/Par2Files also include the par2 index file — so
-// aggregating the flag undercounts. That reasoning still holds and is why
-// they are not reconstructed from job_files. They now round-trip through
-// dedicated jobs.par2_bytes/par2_files columns instead (migration 005),
-// which is the only way to make them honest for a non-resident job. The
-// assertion below flipped from "must be zero" to "must match the manifest"
-// deliberately; it is the same property being checked, against a source
-// that can actually answer it.
+// The recovery pair used to be a documented exception here, asserted as zero,
+// on the reasoning that job_files' is_par2_recovery flags only recovery
+// volumes while the old figures also counted the par2 index, so aggregating
+// the flag would undercount. That reasoning is retired: the figures now key on
+// is_par2_recovery themselves, so the aggregate would in fact be exactly right.
+//
+// They still travel through dedicated jobs.recovery_bytes/recovery_files
+// columns (migration 010) for a different reason. The job_files aggregate in
+// Get fails soft, leaving its scalars at zero on error, and a zero recovery
+// figure is not a missing reading — it is a definite claim of no repair
+// capacity that two abort gates act on. The jobs row is read unconditionally.
+//
+// The assertion below checks "must match the manifest" rather than "must be
+// zero"; it is the same property, against a source that can answer it.
 func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
@@ -1003,8 +1007,9 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 			},
 			{
 				// A par2 recovery volume: counted by the manifest's
-				// Par2Bytes/Par2Files (via the ".par2" subject match) but also
-				// the only kind of file is_par2_recovery flags in job_files.
+				// RecoveryBytes/RecoveryFiles and flagged by job_files'
+				// is_par2_recovery. Since #333 both key on the same
+				// classification, so the two agree by construction.
 				Subject:  "file.vol01+02.par2",
 				Date:     time.Unix(1700000000, 0),
 				Bytes:    50,
@@ -1022,8 +1027,8 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	wantTotalBytes := job.TotalBytes()
 	wantNumFiles := job.NumFiles()
 	wantNumArticles := job.NumArticles()
-	wantPar2Files := job.Par2Files()
-	wantPar2Bytes := job.Par2Bytes()
+	wantPar2Files := job.RecoveryFiles()
+	wantPar2Bytes := job.RecoveryBytes()
 	if wantPar2Files == 0 || wantPar2Bytes == 0 {
 		t.Fatal("test fixture must contain at least one par2 file for this to be a meaningful check")
 	}
@@ -1052,11 +1057,11 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	// — see this test's doc comment. A zero here would be the old behaviour
 	// leaking back, and would render as "no par2 files" on a queued job in
 	// the API.
-	if got.Par2Bytes() != wantPar2Bytes {
-		t.Errorf("Par2Bytes = %d, want %d", got.Par2Bytes(), wantPar2Bytes)
+	if got.RecoveryBytes() != wantPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d", got.RecoveryBytes(), wantPar2Bytes)
 	}
-	if got.Par2Files() != wantPar2Files {
-		t.Errorf("Par2Files = %d, want %d", got.Par2Files(), wantPar2Files)
+	if got.RecoveryFiles() != wantPar2Files {
+		t.Errorf("Par2Files = %d, want %d", got.RecoveryFiles(), wantPar2Files)
 	}
 }
 

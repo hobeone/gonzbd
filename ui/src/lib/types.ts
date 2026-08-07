@@ -21,8 +21,16 @@ export interface QueueSlot {
 	pp: string;
 	warning?: string;
 	failed_bytes: number;
-	par2_bytes: number;
-	par2_files: number;
+	/** Failed bytes over content files only — the numerator of the repair
+	 *  comparison. `failed_bytes` is the total and is what to display; a
+	 *  failed par2 file is lost capacity, not damage needing repair. */
+	content_failed_bytes: number;
+	recovery_bytes: number;
+	recovery_files: number;
+	/** `recovery_bytes` is zero only because no par2 file matched the
+	 *  `.volNNN+MM` convention, not because the job is unprotected. Omitted
+	 *  when false. */
+	recovery_capacity_unknown?: boolean;
 	current_stage: string;
 	articles_remaining: number;
 	eta_seconds: number;

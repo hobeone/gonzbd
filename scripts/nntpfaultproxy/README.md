@@ -105,7 +105,7 @@ Three fault actions:
 - **Force par2 repair (RAR or 7z):** one `drop` rule on a single article
   from inside a `.rar`/`.7z` volume, with enough other par2 recovery
   volumes available that the job isn't "hopeless" per
-  `internal/downloader/dispatch.go`'s `FailedBytes > Par2Bytes` gate.
+  `internal/downloader/dispatch.go`'s `FailedBytes > RecoveryBytes` gate.
 - **Force the "needs more recovery blocks" path:** several `drop` rules
   spread across enough articles that `FailedBytes` exceeds the par2 set's
   recovery capacity.

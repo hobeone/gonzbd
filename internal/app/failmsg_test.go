@@ -13,10 +13,13 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-// failMsgFile describes one file for buildFailMsgJob: its subject (a ".par2"
-// suffix is what makes it count toward Par2Bytes/Par2Files) and its size.
-// Each file gets exactly one article of that size, so failing article i
-// fails precisely file i's bytes.
+// failMsgFile describes one file for buildFailMsgJob: its subject and its
+// size. What makes a file count toward RecoveryBytes/RecoveryFiles is a
+// recovery-volume subject (".volNNN+MM.par2"), not a bare ".par2" suffix — an
+// index file is classified as content, since it conventionally holds
+// checksums rather than recovery slices.
+// Each file gets exactly one article of that size, so failing article i fails
+// precisely file i's bytes.
 type failMsgFile struct {
 	subject string
 	bytes   int64

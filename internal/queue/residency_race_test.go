@@ -125,8 +125,8 @@ func TestJobScalarGettersRace(t *testing.T) {
 			_ = got.TotalBytes()
 			_ = got.NumFiles()
 			_ = got.NumArticles()
-			_ = got.Par2Bytes()
-			_ = got.Par2Files()
+			_ = got.RecoveryBytes()
+			_ = got.RecoveryFiles()
 		}
 	})
 

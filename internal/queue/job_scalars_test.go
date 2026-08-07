@@ -10,10 +10,10 @@ import (
 )
 
 // makeMultiFileJobWithPar2 is makeMultiFileJob (lifecycle_test.go) plus one
-// par2 recovery-volume file, so a test can assert on Par2Bytes/Par2Files —
-// the two manifest scalars that cannot be aggregated out of job_files, and so
-// travel through their own jobs.par2_bytes/par2_files columns (migration
-// 005) rather than through SQLiteStore.Get's job_files reconstruction.
+// par2 recovery-volume file, so a test can assert on RecoveryBytes/RecoveryFiles
+// — the two manifest scalars that travel through their own
+// jobs.recovery_bytes/recovery_files columns (migration 010) rather than
+// through SQLiteStore.Get's soft-failing job_files aggregate.
 func makeMultiFileJobWithPar2(t *testing.T, name string, nFiles, nArticles int) *Job {
 	t.Helper()
 	parsed := &nzb.NZB{
@@ -174,7 +174,7 @@ func TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero(t *testing.T) {
 // fixture guard: SQLiteStore.Get now reconstructs TotalBytes/NumFiles/
 // NumArticles for a non-resident job straight from job_files (bytes,
 // COUNT(*), article_count), so a restored StatusQueued job is no longer
-// zero even before PromoteNext runs. Par2Bytes/Par2Files are the one pair
+// zero even before PromoteNext runs. RecoveryBytes/RecoveryFiles are the one pair
 // left that can tell "restored from the store" apart from "read from the
 // resident manifest setScalarsFromManifest attaches at promotion", so
 // asserting on them — zero before promotion, correct after — is what
@@ -182,7 +182,7 @@ func TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero(t *testing.T) {
 // NumArticles alone would pass even if that call were deleted, since Get
 // already supplies the right values for those three.
 //
-// Par2 now round-trips through its own columns, so a normally-saved job
+// The recovery figures now round-trip through its own columns, so a normally-saved job
 // comes back with them already correct and that distinction disappears. The
 // test zeroes the columns before reloading to recreate the unsynced state,
 // which is the only thing left that PromoteNext's backfill can be observed
@@ -201,20 +201,20 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("Add jobB: %v", err)
 	}
 	wantBytes := jobB.TotalBytes()
-	wantPar2Bytes := jobB.Par2Bytes()
-	wantPar2Files := jobB.Par2Files()
+	wantRecoveryBytes := jobB.RecoveryBytes()
+	wantRecoveryFiles := jobB.RecoveryFiles()
 	if wantBytes == 0 {
 		t.Fatal("fixture is useless: TotalBytes is zero before restart")
 	}
-	if wantPar2Files == 0 || wantPar2Bytes == 0 {
-		t.Fatal("fixture is useless: Par2Files/Par2Bytes are zero before restart")
+	if wantRecoveryFiles == 0 || wantRecoveryBytes == 0 {
+		t.Fatal("fixture is useless: RecoveryFiles/RecoveryBytes are zero before restart")
 	}
 
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Zero the par2 columns so the reloaded job arrives unsynced.
+	// zero the recovery columns so the reloaded job arrives unsynced.
 	//
 	// This keeps the test's discriminator alive. Its whole design rests on
 	// par2 being the one pair that reads zero for a non-resident job and
@@ -226,14 +226,14 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	// closes. Recreating it here restores the discriminator: par2 must be
 	// wrong before promotion and right after, or the backfill is unobservable.
 	if _, err := store.db.ExecContext(t.Context(),
-		"UPDATE jobs SET par2_bytes = 0, par2_files = 0 WHERE id = ?", jobB.ID); err != nil {
-		t.Fatalf("blank par2 columns: %v", err)
+		"UPDATE jobs SET recovery_bytes = 0, recovery_files = 0 WHERE id = ?", jobB.ID); err != nil {
+		t.Fatalf("blank recovery columns: %v", err)
 	}
 
 	// Reload — jobB comes back via SQLiteStore.Get non-resident (StatusQueued,
 	// no manifest attached), but with TotalBytes/NumFiles/NumArticles already
 	// reconstructed from job_files (the Task 4 gap closure), not zero.
-	// Par2Bytes/Par2Files read zero because of the zeroing above.
+	// RecoveryBytes/RecoveryFiles read zero because of the zeroing above.
 	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -251,11 +251,11 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	if got := restored.TotalBytes(); got != wantBytes {
 		t.Fatalf("fixture guard: jobB.TotalBytes() = %d before promotion, want %d (job_files reconstruction, see Task 4)", got, wantBytes)
 	}
-	if got := restored.Par2Bytes(); got != 0 {
-		t.Fatalf("fixture guard: jobB.Par2Bytes() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
+	if got := restored.RecoveryBytes(); got != 0 {
+		t.Fatalf("fixture guard: jobB.RecoveryBytes() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
 	}
-	if got := restored.Par2Files(); got != 0 {
-		t.Fatalf("fixture guard: jobB.Par2Files() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
+	if got := restored.RecoveryFiles(); got != 0 {
+		t.Fatalf("fixture guard: jobB.RecoveryFiles() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
 	}
 
 	// Free up the active slot and promote: this drives PromoteNext, the
@@ -280,12 +280,12 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	}
 	// The property that actually distinguishes "PromoteNext backfilled from
 	// its manifest read" from "Get's job_files reconstruction carried
-	// over": Par2Bytes/Par2Files must go from 0 to their real manifest
+	// over": RecoveryBytes/RecoveryFiles must go from 0 to their real manifest
 	// values only once the job is resident again.
-	if got := promoted.Par2Bytes(); got != wantPar2Bytes {
-		t.Errorf("Par2Bytes after promotion = %d, want %d", got, wantPar2Bytes)
+	if got := promoted.RecoveryBytes(); got != wantRecoveryBytes {
+		t.Errorf("RecoveryBytes after promotion = %d, want %d", got, wantRecoveryBytes)
 	}
-	if got := promoted.Par2Files(); got != wantPar2Files {
-		t.Errorf("Par2Files after promotion = %d, want %d", got, wantPar2Files)
+	if got := promoted.RecoveryFiles(); got != wantRecoveryFiles {
+		t.Errorf("RecoveryFiles after promotion = %d, want %d", got, wantRecoveryFiles)
 	}
 }

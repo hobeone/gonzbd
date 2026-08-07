@@ -121,8 +121,8 @@ func TestCloneJobCarriesManifestScalars(t *testing.T) {
 	job.totalBytes = 111
 	job.numFiles = 2
 	job.numArticles = 3
-	job.par2Bytes = 44
-	job.par2Files = 1
+	job.recoveryBytes = 44
+	job.recoveryFiles = 1
 
 	cp := cloneJob(job)
 	if got := cp.TotalBytes(); got != 111 {
@@ -134,10 +134,10 @@ func TestCloneJobCarriesManifestScalars(t *testing.T) {
 	if got := cp.NumArticles(); got != 3 {
 		t.Errorf("cloneJob dropped numArticles: got %d, want 3", got)
 	}
-	if got := cp.Par2Bytes(); got != 44 {
+	if got := cp.RecoveryBytes(); got != 44 {
 		t.Errorf("cloneJob dropped par2Bytes: got %d, want 44", got)
 	}
-	if got := cp.Par2Files(); got != 1 {
+	if got := cp.RecoveryFiles(); got != 1 {
 		t.Errorf("cloneJob dropped par2Files: got %d, want 1", got)
 	}
 }
