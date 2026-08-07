@@ -83,11 +83,20 @@ func newManifest(files []JobFile) *Manifest {
 // UnmarshalJSON — call it, so the two cannot disagree about what a job's
 // repair capacity is.
 //
-// The predicate is isPar2Recovery, a per-file classification NewJob computes,
-// not the name-based isPar2File. That distinction is the point: isPar2File
-// matches any ".par2" subject and so includes the par2 index, which is always
-// downloaded and carries no recovery blocks. Counting it overstated repair
-// capacity everywhere these figures are read.
+// The predicate is isPar2Recovery — a subject matching the ".volNNN+MM.par2"
+// convention — not the broader name-based isPar2File, which matches any
+// ".par2" subject and so also picks up the file conventionally used as an
+// index. An index holds per-file checksums, and counting those as repair
+// capacity overstated it everywhere these figures are read.
+//
+// "Conventionally" is doing real work in that sentence, and the figure is
+// weaker than it looks. The PAR2 specification says a file carrying recovery
+// slices *should* be named with a .volNNN+MM segment; it does not require it,
+// does not forbid recovery slices in a plainly-named .par2, and does not
+// define an index file at all. par2 itself reads packets and ignores names.
+// So this counts recognized capacity, and a job can hold more than it reports.
+// Callers must not read zero here as proof that a job cannot be repaired —
+// see JobProgress.HasPar2Files and the guards that use it.
 func recoveryFigures(files []manifestFile) (bytes int64, count int) {
 	for _, f := range files {
 		if f.isPar2Recovery {
@@ -156,18 +165,28 @@ func (m *Manifest) ArticleNumber(i int) int { return m.articleNumber[i] }
 // TotalBytes returns the sum of all files' claimed byte counts.
 func (m *Manifest) TotalBytes() int64 { return m.totalBytes }
 
-// RecoveryBytes returns the summed size of the job's par2 recovery volumes,
-// excluding the par2 index — the index is always downloaded and carries no
-// recovery blocks.
+// RecoveryBytes returns the summed size of the files whose subjects identify
+// them as par2 recovery volumes, excluding the file conventionally used as the
+// set's index, which holds per-file checksums rather than recovery slices.
 //
-// This is the best proxy for repair capacity available before the volumes are
-// fetched, not a statement of it. Repairability is decided by block counts
-// (usable parity shards against unusable data shards), which nothing can know
-// until par2 parses the volumes. The comparison callers make with this figure
-// is sound in one direction only: failed bytes exceeding it does imply the
-// job is unrepairable, because recovery bytes are at least the slice payload;
-// failing to exceed it implies nothing, since scattered damage destroys more
-// blocks than its byte count suggests.
+// This is a proxy for repair capacity, and a doubly weak one. Read the
+// qualifications before comparing anything against it.
+//
+// It is *recognized* capacity, not total capacity. The classification comes
+// from the NZB subject, and the ".volNNN+MM.par2" convention is a convention:
+// the PAR2 specification recommends it for files carrying recovery slices
+// without requiring it, never forbids slices in a plainly-named .par2, and
+// defines no index file. par2 reads packets, not names. A job may therefore
+// hold recovery data this figure does not see, so zero is not evidence a job
+// cannot be repaired.
+//
+// Even where the classification is right, bytes are only a proxy for what
+// actually decides repair, which is block counts — usable parity shards
+// against unusable data shards — and nothing can know those until par2 parses
+// the volumes. The comparison is sound in one direction only: damage
+// exceeding this figure does imply unrepairable, since recovery bytes are at
+// least the slice payload. Damage failing to exceed it implies nothing,
+// because scattered damage destroys more blocks than its byte count suggests.
 func (m *Manifest) RecoveryBytes() int64 { return m.recoveryBytes }
 
 // RecoveryFiles returns the count of par2 recovery volumes, excluding the

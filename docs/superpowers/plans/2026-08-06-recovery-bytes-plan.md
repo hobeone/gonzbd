@@ -29,6 +29,31 @@ commit would fix, against the project rule that every commit passes
 `go build ./... && go test ./...`. The gates' must-move-together constraint
 points the same way.
 
+## Correction: the index-has-no-recovery-blocks premise is false
+
+Everything below that says a par2 index "carries no recovery blocks" overstates
+what can be known. The claim was checked after the plan was written and does
+not hold in general.
+
+- The PAR2 specification says a file carrying recovery slices **should** be
+  named with a `.volNNN+MM` segment. It does not require it, does not forbid
+  recovery slices in a plainly-named `.par2`, and does not define an index file
+  at all — that is a convention of the tooling.
+- `par2` reads packets, not names. A recovery volume renamed to drop its `.vol`
+  segment still repairs, verified locally.
+- SABnzbd, the reference implementation, **opens each base `.par2` and counts
+  recovery packets byte by byte** (`sabnzbd/par2file.py`, `analyse_par2`),
+  precisely because the filename cannot tell you.
+- par2cmdline never produces such a file — 10 configurations from 1 KB sources
+  to 100% redundancy all emitted a separate index with zero `RecvSlic` packets.
+  So the common case holds; the guarantee does not.
+
+What changes as a result: the figures are **recognized** capacity, not total
+capacity, and zero means "nothing matched the convention" rather than "nothing
+can repair this job". Both abort gates now withhold the beyond-repair verdict
+when a job carries par2 files but none were recognized as volumes. The
+accounting, API, persistence and UI work is unaffected.
+
 ## What research changed about the design
 
 `docs/superpowers/specs/2026-08-05-job-size-figures-design.md` § Components

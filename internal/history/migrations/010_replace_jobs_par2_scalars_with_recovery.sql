@@ -1,11 +1,18 @@
 -- Replace the jobs table's par2_bytes/par2_files with recovery_bytes and
 -- recovery_files.
 --
--- The old pair counted every file whose subject contained ".par2", which
--- includes the par2 index. The index is always downloaded and carries no
--- recovery blocks, so counting it overstated the job's repair capacity
--- everywhere the figure is read — including two gates that abort a job as
--- beyond repair. The new pair counts recovery volumes only.
+-- The old pair counted every file whose subject contained ".par2", including
+-- the file conventionally used as the set's index, which holds per-file
+-- checksums. Counting those as repair capacity overstated it everywhere the
+-- figure is read — including two gates that abort a job as beyond repair. The
+-- new pair counts only subjects matching the ".volNNN+MM.par2" convention.
+--
+-- That convention is not a guarantee, and the columns are named for what they
+-- actually hold: recognized capacity. The PAR2 specification recommends the
+-- .vol naming for files carrying recovery slices without requiring it, and
+-- par2 reads packets rather than filenames, so a job can hold recovery data
+-- these columns do not count. Zero here means "nothing recognized", never
+-- "nothing to repair with" — see JobProgress.HasPar2Files and the gates.
 --
 -- This retracts the rationale recorded in 005_add_jobs_par2_scalars.sql,
 -- which states these columns cannot be derived from job_files because

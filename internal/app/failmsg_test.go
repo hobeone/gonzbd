@@ -16,7 +16,8 @@ import (
 // failMsgFile describes one file for buildFailMsgJob: its subject and its
 // size. What makes a file count toward RecoveryBytes/RecoveryFiles is a
 // recovery-volume subject (".volNNN+MM.par2"), not a bare ".par2" suffix — an
-// index file is classified as content, since it carries no recovery blocks.
+// index file is classified as content, since it conventionally holds
+// checksums rather than recovery slices.
 // Each file gets exactly one article of that size, so failing article i fails
 // precisely file i's bytes.
 type failMsgFile struct {
@@ -91,7 +92,7 @@ func TestFailMsgForJob(t *testing.T) {
 			name:    "any failure with no par2 at all is beyond repair",
 			files:   []failMsgFile{{dataA, 100}, {dataB, 100}},
 			failIdx: []int{0},
-			wantSub: "no par2 recovery volumes available",
+			wantSub: "no par2 files available",
 		},
 		{
 			name:     "failure within par2 capacity proceeds to repair",

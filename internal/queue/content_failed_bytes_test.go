@@ -66,6 +66,56 @@ func TestContentFailedBytes_NilReceiver(t *testing.T) {
 	}
 }
 
+// TestHasPar2Files separates the two states a zero recovery figure cannot
+// tell apart. A job with no par2 protection and a job whose par2 files simply
+// did not match the volume-naming convention both report zero recognized
+// capacity; only the first of them is entitled to a beyond-repair verdict.
+func TestHasPar2Files(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		files []FileMeta
+		want  bool
+	}{
+		{name: "no files at all"},
+		{
+			name:  "content only",
+			files: []FileMeta{{ArticleCount: 1}, {ArticleCount: 1}},
+		},
+		{
+			name:  "a recovery volume counts",
+			files: []FileMeta{{ArticleCount: 1}, {ArticleCount: 1, IsPar2: true}},
+			want:  true,
+		},
+		{
+			name: "a plainly-named par2 counts too — it is the case this exists for",
+			files: []FileMeta{
+				{ArticleCount: 1},
+				{ArticleCount: 1, IsPar2: true},
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := newJobProgressSized(tc.files)
+			if got := p.HasPar2Files(); got != tc.want {
+				t.Errorf("HasPar2Files() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil receiver", func(t *testing.T) {
+		t.Parallel()
+		var p *JobProgress
+		if p.HasPar2Files() {
+			t.Error("HasPar2Files() on nil = true, want false")
+		}
+	})
+}
+
 // TestContentFailedBytes_AgreesAcrossResidency is the property that makes this
 // figure usable in an abort decision.
 //

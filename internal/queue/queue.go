@@ -1353,6 +1353,13 @@ type UnfinishedArticle struct {
 	// There is deliberately no RecoveryFiles counterpart: nothing on the
 	// dispatch path needs the count.
 	RecoveryBytes int64
+	// RecoveryCapacityUnknown marks a job whose RecoveryBytes is zero only
+	// because no file matched the ".volNNN+MM.par2" naming convention, while
+	// the job does carry par2 files. Their capacity cannot be read from a
+	// subject line — the PAR2 format permits recovery slices in a
+	// plainly-named file, and par2 reads packets rather than names — so zero
+	// here means unknown, not absent, and the gate must not act on it.
+	RecoveryCapacityUnknown bool
 }
 
 // ForEachUnfinishedArticle invokes fn for every not-yet-Done article
@@ -1383,9 +1390,10 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			continue
 		}
 		m := job.manifest
-		// Hoisted out of the per-article loop: it is a walk over files and
-		// does not change while this job's articles are enumerated.
+		// Hoisted out of the per-article loop: both are walks over files and
+		// do not change while this job's articles are enumerated.
 		contentFailed := job.progress.ContentFailedBytes()
+		capacityUnknown := m.RecoveryBytes() == 0 && job.progress.HasPar2Files()
 		for fi := range m.NumFiles() {
 			// Files that are not being fetched (on-demand par2 recovery
 			// volumes, held or discarded) already have Pending == 0 from
@@ -1400,16 +1408,17 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					continue
 				}
 				if !fn(UnfinishedArticle{
-					JobID:         job.ID,
-					JobStatus:     job.Status,
-					JobAdded:      job.Added,
-					FileIdx:       fi,
-					ArtIdx:        int32(i), //nolint:gosec // article index bounded by manifest length
-					MessageID:     m.ArticleID(i),
-					Bytes:         m.ArticleBytes(i),
-					Subject:       m.FileSubject(fi),
-					FailedBytes:   contentFailed,
-					RecoveryBytes: m.RecoveryBytes(),
+					JobID:                   job.ID,
+					JobStatus:               job.Status,
+					JobAdded:                job.Added,
+					FileIdx:                 fi,
+					ArtIdx:                  int32(i), //nolint:gosec // article index bounded by manifest length
+					MessageID:               m.ArticleID(i),
+					Bytes:                   m.ArticleBytes(i),
+					Subject:                 m.FileSubject(fi),
+					FailedBytes:             contentFailed,
+					RecoveryBytes:           m.RecoveryBytes(),
+					RecoveryCapacityUnknown: capacityUnknown,
 				}) {
 					return
 				}

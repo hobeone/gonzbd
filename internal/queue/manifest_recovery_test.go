@@ -31,8 +31,9 @@ func recoveryFixture(t *testing.T) *Manifest {
 }
 
 // TestManifestRecoveryFigures_ExcludeTheIndex pins the correction this change
-// exists to make: the par2 index is always downloaded and carries no recovery
-// blocks, so it is content, not recovery capacity.
+// exists to make: the file conventionally used as the set's index holds
+// per-file checksums, so it is content rather than recognized recovery
+// capacity.
 //
 // The superseded figures keyed on isPar2File, a name-based predicate matching
 // any ".par2" subject, so they counted the index as repair capacity that does
@@ -77,10 +78,14 @@ func TestManifestRecoveryFigures_PartitionIsExhaustive(t *testing.T) {
 	}
 }
 
-// TestManifestRecoveryFigures_NoVolumes covers the shape whose verdict this
-// change flips: a job with a par2 index but no recovery volumes has zero
-// repair capacity, where the old name-based figures reported the index's
-// bytes as though they could repair something.
+// TestManifestRecoveryFigures_NoVolumes covers a set with no subject matching
+// the volume convention: the recognized figures are zero, where the old
+// name-based ones reported the plainly-named file's bytes as capacity.
+//
+// Zero recognized capacity is not the same claim as "this job cannot be
+// repaired" — the file may carry recovery slices the subject gives no way to
+// see. That distinction is enforced at the gates, not here; this test pins
+// only what the manifest reports.
 func TestManifestRecoveryFigures_NoVolumes(t *testing.T) {
 	t.Parallel()
 	parsed := &nzb.NZB{Files: []nzb.File{
@@ -97,7 +102,7 @@ func TestManifestRecoveryFigures_NoVolumes(t *testing.T) {
 	}
 
 	if got := m.RecoveryBytes(); got != 0 {
-		t.Errorf("RecoveryBytes() = %d, want 0 — an index alone repairs nothing", got)
+		t.Errorf("RecoveryBytes() = %d, want 0 — no subject matches the volume convention", got)
 	}
 	if got := m.RecoveryFiles(); got != 0 {
 		t.Errorf("RecoveryFiles() = %d, want 0 — an index is not a recovery volume", got)

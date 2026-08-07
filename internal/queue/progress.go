@@ -312,6 +312,27 @@ func (p *JobProgress) ContentFailedBytes() int64 {
 	return n
 }
 
+// HasPar2Files reports whether the job carries any par2 file at all, index or
+// recovery volume.
+//
+// It exists to separate two states that a recovery-bytes figure of zero cannot
+// tell apart: a job with no par2 protection whatsoever, and a job whose par2
+// files simply did not match the volume-naming convention. The first is a real
+// finding. The second is ignorance, and acting on it as though it were a
+// finding discards downloads that par2 could repair — see the guard in
+// failMsgForJob and the dispatcher's Early Health Gate.
+func (p *JobProgress) HasPar2Files() bool {
+	if p == nil {
+		return false
+	}
+	for i := range p.files {
+		if p.files[i].IsPar2 {
+			return true
+		}
+	}
+	return false
+}
+
 // FailedBytes returns the sum of bytes belonging to permanently failed articles.
 func (p *JobProgress) FailedBytes() int64 {
 	if p == nil {

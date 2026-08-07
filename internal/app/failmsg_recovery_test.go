@@ -5,34 +5,35 @@ import (
 	"testing"
 )
 
-// TestFailMsgForJob_IndexOnlyHasNoRepairCapacity pins the one job shape whose
-// verdict this re-key changes.
+// TestFailMsgForJob_IndexIsNotCountedAsRecognizedCapacity pins the
+// classification half of the re-key at the job level: a plainly-named ".par2"
+// subject does not match the volume-naming convention, so it contributes
+// nothing to the recognized recovery figure. The superseded figures counted it,
+// because they keyed on a name test matching any ".par2" subject.
 //
-// A job carrying a par2 index but no recovery volumes has no repair capacity
-// at all: the index holds per-file checksums, not recovery blocks. The
-// superseded figures counted it anyway, because they keyed on a name test
-// matching any ".par2" subject, so such a job reported the index's bytes as
-// capacity and took the "exceeds repair capacity" branch. It now correctly
-// reports none.
-//
-// The distinction is not cosmetic. The same figure drives both abort gates,
-// and overstating it is the direction that keeps a genuinely unrepairable job
-// in the download queue.
-func TestFailMsgForJob_IndexOnlyHasNoRepairCapacity(t *testing.T) {
+// What that figure then licenses is a separate question, and a narrower one
+// than an earlier version of this test assumed. Zero recognized capacity does
+// not establish that a job cannot be repaired — the file may carry recovery
+// slices the subject line gives no way to see. The verdict is withheld here
+// for that reason; see
+// TestFailMsgForJob_UnrecognizedPar2WithholdsTheZeroCapacityVerdict.
+func TestFailMsgForJob_IndexIsNotCountedAsRecognizedCapacity(t *testing.T) {
 	job := buildFailMsgJob(t, []failMsgFile{
 		{subject: "movie.part01.rar", bytes: 1000},
-		{subject: "movie.par2", bytes: 100}, // index: no .volNNN+MM
+		{subject: "movie.par2", bytes: 100}, // no .volNNN+MM segment
 	}, 0)
 
-	got := failMsgForJob(job)
-
-	if !strings.Contains(got, "no par2 recovery volumes available") {
-		t.Errorf("failMsgForJob() = %q, want the no-recovery-volumes verdict.\n"+
-			"A bare index is not repair capacity; counting its 100 B would take the "+
-			"'exceeds repair capacity' branch instead, which is the pre-re-key behaviour.", got)
+	if got := job.RecoveryBytes(); got != 0 {
+		t.Errorf("RecoveryBytes() = %d, want 0 — the subject does not match the volume "+
+			"convention, so its 100 B is not recognized recovery capacity", got)
 	}
-	if strings.Contains(got, "exceeds repair capacity") {
-		t.Errorf("failMsgForJob() = %q, still reporting the index as repair capacity", got)
+	if got := job.RecoveryFiles(); got != 0 {
+		t.Errorf("RecoveryFiles() = %d, want 0", got)
+	}
+
+	if got := failMsgForJob(job); strings.Contains(got, "exceeds repair capacity") {
+		t.Errorf("failMsgForJob() = %q, still weighing damage against the index's bytes as "+
+			"though they were repair capacity", got)
 	}
 }
 

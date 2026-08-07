@@ -423,21 +423,21 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	}
 }
 
-// A job carrying only a par2 index has no repair capacity, so any permanent
-// failure makes it hopeless immediately. This is a behaviour change: the
-// superseded figures counted the index, giving such a job a threshold it
-// could not actually repair against, so it stayed in dispatch.
-func TestBuildDispatchPlan_IndexOnlyJobIsHopelessOnFirstFailure(t *testing.T) {
+// A job whose only par2 file is plainly named keeps being dispatched, even
+// once content has permanently failed.
+//
+// Nothing matched the ".volNNN+MM.par2" convention, so the recognized recovery
+// figure is zero — but that is ignorance, not a finding. The PAR2 format
+// permits recovery slices in a plainly-named file and par2 reads packets
+// rather than names, so this job may be perfectly repairable. Marking it
+// hopeless would stop dispatch and discard a download on a guess about a
+// filename.
+func TestBuildDispatchPlan_UnrecognizedPar2KeepsDispatching(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.queue = queue.New()
-	// The failing article (50 B) is deliberately SMALLER than the index
-	// (100 B). That is what makes this red-green: under the superseded
-	// figures the index counted as capacity, so 50 > 100 was false and the
-	// job kept being dispatched. Sizing the failure above the index instead
-	// would assert an outcome that never changed.
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "test.bin", Bytes: 550, Articles: []nzb.Article{
 			{ID: "h@h", Bytes: 50, Number: 1},
@@ -450,13 +450,15 @@ func TestBuildDispatchPlan_IndexOnlyJobIsHopelessOnFirstFailure(t *testing.T) {
 		t.Fatalf("NewJob: %v", err)
 	}
 	if got := job.RecoveryBytes(); got != 0 {
-		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 0 — an index alone is not repair capacity", got)
+		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 0 — no subject matches the volume "+
+			"convention, so nothing here is recognized capacity", got)
 	}
 	if err := d.queue.Add(job); err != nil {
 		t.Fatalf("queue.Add: %v", err)
 	}
-	// One article of two fails: 50 failed bytes against zero capacity. The
-	// old denominator counted the 100 B index, so this job was dispatched.
+	// One article of two fails: 50 bytes of damaged content against a
+	// recognized capacity of zero. Acting on that comparison would kill the
+	// job; the capacity is unknown, so the gate declines to.
 	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
@@ -464,12 +466,14 @@ func TestBuildDispatchPlan_IndexOnlyJobIsHopelessOnFirstFailure(t *testing.T) {
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
 
-	if _, ok := plan.hopelessJobs[job.ID]; !ok {
-		t.Error("hopelessJobs does not contain the job ID: a partial failure with no recovery " +
-			"volumes is unrepairable, but the index's bytes would previously have masked it")
+	if _, ok := plan.hopelessJobs[job.ID]; ok {
+		t.Error("job was marked hopeless. Its par2 file did not match the volume-naming " +
+			"convention, which says nothing about whether it carries recovery slices — the " +
+			"format permits them in a plainly-named file. Post-processing reads the actual " +
+			"packets; this gate must not pre-empt it on a filename.")
 	}
-	if plan.dispatched != 0 {
-		t.Errorf("dispatched = %d, want 0 — a hopeless job must not keep consuming connections", plan.dispatched)
+	if plan.dispatched == 0 {
+		t.Error("dispatched = 0, want the remaining article to keep being dispatched")
 	}
 }
 

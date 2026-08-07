@@ -69,9 +69,17 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		}
 
 		// Early Health Gate: Check if the job is beyond repair. The
-		// denominator is recovery volumes only — the par2 index repairs
-		// nothing, so counting it kept genuinely hopeless jobs in dispatch.
-		if a.FailedBytes > a.RecoveryBytes {
+		// denominator is recognized recovery volumes only — a conventionally-named
+		// index holds checksums, so counting it kept genuinely hopeless jobs in
+		// dispatch.
+		//
+		// Skipped entirely when the capacity is unknown rather than zero: a
+		// job whose par2 files did not match the volume-naming convention may
+		// still carry recovery slices, since the format permits it and par2
+		// reads packets rather than names. Killing a download on that
+		// ignorance is worse than letting it finish and having
+		// post-processing read the real packets.
+		if !a.RecoveryCapacityUnknown && a.FailedBytes > a.RecoveryBytes {
 			plan.hopelessJobs[a.JobID] = struct{}{}
 			return true
 		}

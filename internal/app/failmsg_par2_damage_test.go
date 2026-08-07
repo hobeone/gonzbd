@@ -57,19 +57,23 @@ func TestFailMsgForJob_FailedPar2DoesNotCondemnIntactContent(t *testing.T) {
 		}
 	})
 
-	t.Run("content failure still condemns when capacity is absent", func(t *testing.T) {
+	t.Run("content failure still condemns when there is no par2 at all", func(t *testing.T) {
+		// No par2 file of any kind, so zero capacity is a finding rather than
+		// ignorance and the verdict stands. A fixture carrying a plainly-named
+		// .par2 would instead be withheld — see
+		// TestFailMsgForJob_UnrecognizedPar2WithholdsTheZeroCapacityVerdict.
 		job := buildFailMsgJob(t, []failMsgFile{
 			{subject: "movie.part01.rar", bytes: 1000},
-			{subject: "movie.par2", bytes: 50},
+			{subject: "movie.part02.rar", bytes: 50},
 		}, 0) // content fails this time
 
 		got := failMsgForJob(job)
 		if got == "" {
 			t.Error("failMsgForJob() = \"\", want a beyond-repair verdict: content failed and " +
-				"there are no recovery volumes to rebuild it from")
+				"the job carries nothing that could rebuild it")
 		}
-		if !strings.Contains(got, "no par2 recovery volumes available") {
-			t.Errorf("failMsgForJob() = %q, want the no-recovery-volumes verdict", got)
+		if !strings.Contains(got, "no par2 files available") {
+			t.Errorf("failMsgForJob() = %q, want the no-par2 verdict", got)
 		}
 	})
 

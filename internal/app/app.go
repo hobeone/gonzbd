@@ -1726,13 +1726,23 @@ func failMsgForJob(job *queue.Job) string {
 
 	failedMB := float64(contentFailed) / (1024 * 1024)
 
-	// Recovery volumes only: the par2 index is always downloaded and carries
-	// no recovery blocks, so counting it here claimed repair capacity that
-	// does not exist. A job with an index and no volumes now correctly reads
-	// as having none, rather than as having the index's worth.
+	// Recovery volumes only. A conventionally-named par2 index holds per-file
+	// checksums, not recovery blocks, so counting it claimed capacity that
+	// usually is not there.
+	//
+	// "Usually" is the whole caveat, and it is why the zero case is guarded
+	// below. This figure is classified from the NZB subject before anything
+	// is downloaded, by matching ".volNNN+MM.par2". That pattern is a
+	// convention: the PAR2 specification says a file carrying recovery slices
+	// "should" be named that way, does not require it, and does not forbid
+	// recovery slices in a plainly-named .par2. par2 itself reads packets and
+	// ignores names.
 	recoveryBytes := job.RecoveryBytes()
 
-	// Damaged content exceeds what the recovery volumes could rebuild.
+	// Damaged content exceeds what the recognized recovery volumes could
+	// rebuild. Capacity may be understated if some plainly-named par2 file
+	// also carries slices, so this errs toward aborting; the guard below
+	// covers only the case where that understatement is total.
 	if recoveryBytes > 0 && contentFailed > recoveryBytes {
 		recoveryMB := float64(recoveryBytes) / (1024 * 1024)
 		return fmt.Sprintf(
@@ -1741,10 +1751,18 @@ func failMsgForJob(job *queue.Job) string {
 		)
 	}
 
-	// Damaged content with no recovery volumes at all — nothing can rebuild it.
+	// Zero recognized capacity. Whether that is a finding or ignorance
+	// depends on something the figure itself cannot express.
 	if recoveryBytes == 0 {
+		if p.HasPar2Files() {
+			// The job does carry par2 — it just did not match the naming
+			// convention. Its capacity is unknown, not absent, and condemning
+			// a job on ignorance throws away a download par2 may well repair.
+			// Let post-processing read the actual packets and decide.
+			return ""
+		}
 		return fmt.Sprintf(
-			"Aborted: %.1f MB failed with no par2 recovery volumes available. Job is beyond repair",
+			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
 			failedMB,
 		)
 	}
