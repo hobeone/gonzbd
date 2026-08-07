@@ -23,7 +23,7 @@ import (
 type dispatchPlan struct {
 	dispatched   int                 // number of articles handed to a server
 	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
-	hopelessJobs map[string]struct{} // jobs where failedBytes > recoveryBytes
+	hopelessJobs map[string]struct{} // jobs whose queue.RepairState is Hopeless()
 	exhausted    []*articleRequest   // articles with no eligible server this pass
 }
 
@@ -68,18 +68,15 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			return true // too young, skip for now
 		}
 
-		// Early Health Gate: Check if the job is beyond repair. The
-		// denominator is recognized recovery volumes only — a conventionally-named
-		// index holds checksums, so counting it kept genuinely hopeless jobs in
-		// dispatch.
+		// Early Health Gate: stop dispatching a job that cannot be repaired.
 		//
-		// Skipped entirely when the capacity is unknown rather than zero: a
-		// job whose par2 files did not match the volume-naming convention may
-		// still carry recovery slices, since the format permits it and par2
-		// reads packets rather than names. Killing a download on that
-		// ignorance is worse than letting it finish and having
-		// post-processing read the real packets.
-		if !a.RecoveryCapacityUnknown && a.FailedBytes > a.RecoveryBytes {
+		// The verdict comes from queue.RepairStateFrom, shared with
+		// failMsgForJob and the queue listing. Hopeless() is deliberately
+		// false for two non-verdicts: damage within the recognized capacity
+		// (bytes cannot prove repairability, only rule it out) and capacity
+		// that is unmeasured rather than absent. Killing a download on either
+		// is worse than letting post-processing read the real par2 packets.
+		if a.RepairState.Hopeless() {
 			plan.hopelessJobs[a.JobID] = struct{}{}
 			return true
 		}

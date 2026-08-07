@@ -43,104 +43,122 @@ func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int
 	return job
 }
 
-// TestBuildSlot_CarriesTheInputsTheHealthVerdictNeeds pins the queue listing as
-// the third consumer of the failed-bytes-against-capacity comparison.
+// TestBuildSlot_SendsTheVerdictNotItsInputs pins the queue listing to the same
+// verdict the two abort gates reach.
 //
-// The two abort gates — failMsgForJob and the dispatcher's Early Health Gate —
-// weigh *content* damage against *recognized* recovery capacity, and withhold a
-// verdict entirely when the capacity figure is zero only because no par2 file
-// matched the volume-naming convention. The UI renders the same comparison as a
-// health label.
+// The listing used to send raw figures and let the client re-derive the
+// comparison. It reached a different answer twice — once by weighing total
+// failed bytes against a capacity figure that excludes the par2 index, and
+// once by reading zero capacity as proof of no repair data when the job simply
+// carried a par2 file that did not match the volume-naming convention. Neither
+// was reachable by a reference search over Go, because the arithmetic lived in
+// TypeScript.
 //
-// Until this test, queueSlot carried neither input: it sent total failed bytes
-// (which counts a failed par2 file as damage) beside a capacity figure that had
-// just stopped counting the index. The UI could not reproduce the backend's
-// judgment from what was on the wire, so it rendered a definite red verdict on
-// exactly the job shapes the backend deliberately spares.
-func TestBuildSlot_CarriesTheInputsTheHealthVerdictNeeds(t *testing.T) {
+// Sending queue.RepairState removes the client's opportunity to disagree. The
+// verdict's own branches are pinned in internal/queue's TestRepairStateFrom;
+// what is tested here is that buildSlot asks for it rather than rebuilding it.
+func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 	t.Parallel()
 
-	t.Run("a failed par2 index is not content damage", func(t *testing.T) {
-		t.Parallel()
-		// The shape this PR exists to stop condemning: index present, no
-		// recovery volumes, every content byte downloaded, the index's own
-		// article fails.
-		job := buildRepairHealthJob(t, []repairHealthFile{
-			{subject: "movie.part01.rar", bytes: 1000},
-			{subject: "movie.par2", bytes: 50},
-		}, 1)
+	tests := []struct {
+		name    string
+		files   []repairHealthFile
+		failIdx []int
+		want    queue.RepairState
+	}{
+		{
+			// The shape this whole line of work exists to spare: index
+			// present, no recovery volumes, all content downloaded, the
+			// index's own article fails. Weighing total failed bytes here
+			// produced a red verdict on a job both gates let proceed.
+			name: "a failed par2 index is not content damage",
+			files: []repairHealthFile{
+				{subject: "movie.part01.rar", bytes: 1000},
+				{subject: "movie.par2", bytes: 50},
+			},
+			failIdx: []int{1},
+			want:    queue.RepairIntact,
+		},
+		{
+			// A plainly-named par2 file: the PAR2 specification recommends
+			// the .volNNN+MM convention but does not require it, so this file
+			// may carry recovery slices the classification cannot see.
+			name: "zero capacity with a par2 file present is unknown",
+			files: []repairHealthFile{
+				{subject: "movie.part01.rar", bytes: 1000},
+				{subject: "movie.par2", bytes: 50},
+			},
+			failIdx: []int{0},
+			want:    queue.RepairUnknown,
+		},
+		{
+			name: "no par2 at all leaves the verdict standing",
+			files: []repairHealthFile{
+				{subject: "movie.part01.rar", bytes: 1000},
+				{subject: "movie.part02.rar", bytes: 50},
+			},
+			failIdx: []int{1},
+			want:    queue.RepairNoCapacity,
+		},
+		{
+			name: "content damage within recognized capacity",
+			files: []repairHealthFile{
+				{subject: "movie.part01.rar", bytes: 1000},
+				{subject: "movie.part02.rar", bytes: 200},
+				{subject: "movie.vol01+02.par2", bytes: 300},
+			},
+			failIdx: []int{1},
+			want:    queue.RepairPossible,
+		},
+		{
+			name: "content damage beyond recognized capacity",
+			files: []repairHealthFile{
+				{subject: "movie.part01.rar", bytes: 1000},
+				{subject: "movie.part02.rar", bytes: 400},
+				{subject: "movie.vol01+02.par2", bytes: 300},
+			},
+			failIdx: []int{1},
+			want:    queue.RepairBeyondCapacity,
+		},
+	}
 
-		slot := buildSlot(job, false, 0, 0, nil)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			job := buildRepairHealthJob(t, tc.files, tc.failIdx...)
+			slot := buildSlot(job, false, 0, 0, nil)
 
-		if slot.FailedBytes != 50 {
-			t.Fatalf("fixture guard: FailedBytes = %d, want 50 — the index's article must be the failure", slot.FailedBytes)
-		}
-		if slot.RecoveryBytes != 0 {
-			t.Fatalf("fixture guard: RecoveryBytes = %d, want 0 — the fixture must have no recovery volumes", slot.RecoveryBytes)
-		}
-		if slot.ContentFailedBytes != 0 {
-			t.Errorf("ContentFailedBytes = %d, want 0 — only the par2 index failed, so no content "+
-				"became unrecoverable. Sending the total instead makes the UI render "+
-				"\"No repair data\" for a job both abort gates let proceed.", slot.ContentFailedBytes)
-		}
-	})
+			if slot.RepairState != tc.want {
+				t.Errorf("RepairState = %q, want %q", slot.RepairState, tc.want)
+			}
+			// The listing must agree with the job it describes, or the row
+			// contradicts the gate that is acting on the same job.
+			if got := job.RepairState(); slot.RepairState != got {
+				t.Errorf("buildSlot sent %q but Job.RepairState() is %q — the listing "+
+					"re-derived the verdict instead of asking for it", slot.RepairState, got)
+			}
+		})
+	}
+}
 
-	t.Run("zero capacity with a par2 file present is unknown, not absent", func(t *testing.T) {
-		t.Parallel()
-		// A plainly-named par2 file. The PAR2 specification only recommends
-		// the .volNNN+MM convention, so this file may carry recovery slices
-		// that the subject-based classification cannot see.
-		job := buildRepairHealthJob(t, []repairHealthFile{
-			{subject: "movie.part01.rar", bytes: 1000},
-			{subject: "movie.par2", bytes: 50},
-		}, 0)
+// TestBuildSlot_FailedBytesStaysTheTotal guards the figure the drawer
+// displays. It is deliberately *not* the repair numerator: a failed par2 file
+// is a real failure worth showing, it is just not damage needing repair.
+func TestBuildSlot_FailedBytesStaysTheTotal(t *testing.T) {
+	t.Parallel()
 
-		slot := buildSlot(job, false, 0, 0, nil)
+	job := buildRepairHealthJob(t, []repairHealthFile{
+		{subject: "movie.part01.rar", bytes: 1000},
+		{subject: "movie.par2", bytes: 50},
+	}, 1)
 
-		if slot.RecoveryBytes != 0 {
-			t.Fatalf("fixture guard: RecoveryBytes = %d, want 0", slot.RecoveryBytes)
-		}
-		if !slot.RecoveryCapacityUnknown {
-			t.Error("RecoveryCapacityUnknown = false, want true — the job carries a par2 file that " +
-				"was not recognized as a volume, so zero capacity is ignorance rather than a " +
-				"finding. Both abort gates withhold their verdict here; the UI must be able to too.")
-		}
-	})
-
-	t.Run("no par2 at all leaves the zero-capacity verdict standing", func(t *testing.T) {
-		t.Parallel()
-		job := buildRepairHealthJob(t, []repairHealthFile{
-			{subject: "movie.part01.rar", bytes: 1000},
-			{subject: "movie.part02.rar", bytes: 50},
-		}, 1)
-
-		slot := buildSlot(job, false, 0, 0, nil)
-
-		if slot.RecoveryCapacityUnknown {
-			t.Error("RecoveryCapacityUnknown = true, want false — the job carries no par2 file of " +
-				"any kind, so zero capacity is a finding and the red verdict is correct")
-		}
-		if slot.ContentFailedBytes != 50 {
-			t.Errorf("ContentFailedBytes = %d, want 50 — this failure is content", slot.ContentFailedBytes)
-		}
-	})
-
-	t.Run("content damage against real volumes is unchanged", func(t *testing.T) {
-		t.Parallel()
-		job := buildRepairHealthJob(t, []repairHealthFile{
-			{subject: "movie.part01.rar", bytes: 1000},
-			{subject: "movie.part02.rar", bytes: 200},
-			{subject: "movie.vol01+02.par2", bytes: 300},
-		}, 1)
-
-		slot := buildSlot(job, false, 0, 0, nil)
-
-		if slot.RecoveryCapacityUnknown {
-			t.Error("RecoveryCapacityUnknown = true, want false — a recognized volume is present")
-		}
-		if slot.ContentFailedBytes != 200 || slot.RecoveryBytes != 300 {
-			t.Errorf("ContentFailedBytes/RecoveryBytes = %d/%d, want 200/300",
-				slot.ContentFailedBytes, slot.RecoveryBytes)
-		}
-	})
+	slot := buildSlot(job, false, 0, 0, nil)
+	if slot.FailedBytes != 50 {
+		t.Errorf("FailedBytes = %d, want 50 — the par2 index's failure is still a failure to report",
+			slot.FailedBytes)
+	}
+	if slot.RepairState != queue.RepairIntact {
+		t.Errorf("RepairState = %q, want %q — the same failure is not content damage",
+			slot.RepairState, queue.RepairIntact)
+	}
 }

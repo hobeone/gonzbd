@@ -1717,58 +1717,55 @@ func failMsgForJob(job *queue.Job) string {
 		)
 	}
 
-	// Nothing but par2 failed. The content is intact, so there is nothing to
-	// repair — the job simply cannot be verified, which is not a reason to
-	// discard a complete download.
-	if contentFailed == 0 {
-		return ""
-	}
-
 	failedMB := float64(contentFailed) / (1024 * 1024)
 
-	// Recovery volumes only. A conventionally-named par2 index holds per-file
-	// checksums, not recovery blocks, so counting it claimed capacity that
-	// usually is not there.
-	//
-	// "Usually" is the whole caveat, and it is why the zero case is guarded
-	// below. This figure is classified from the NZB subject before anything
-	// is downloaded, by matching ".volNNN+MM.par2". That pattern is a
-	// convention: the PAR2 specification says a file carrying recovery slices
-	// "should" be named that way, does not require it, and does not forbid
-	// recovery slices in a plainly-named .par2. par2 itself reads packets and
-	// ignores names.
-	recoveryBytes := job.RecoveryBytes()
-
-	// Damaged content exceeds what the recognized recovery volumes could
-	// rebuild. Capacity may be understated if some plainly-named par2 file
-	// also carries slices, so this errs toward aborting; the guard below
-	// covers only the case where that understatement is total.
-	if recoveryBytes > 0 && contentFailed > recoveryBytes {
-		recoveryMB := float64(recoveryBytes) / (1024 * 1024)
+	// The verdict itself lives in queue.RepairStateFrom, which the dispatcher's
+	// Early Health Gate and the queue listing also read. Only the wording of
+	// each outcome belongs here: when these sites derived the comparison
+	// separately they drifted, and OnJobHopeless passes this function's result
+	// into maybeFinalize with no fallback string — so a dispatcher that
+	// declares a job hopeless while this one still considers it repairable
+	// finalizes the job with an empty reason and shows the user nothing.
+	switch state := job.RepairState(); state {
+	case queue.RepairIntact, queue.RepairPossible, queue.RepairUnknown:
+		// RepairIntact: only par2 failed, so there is nothing to repair and
+		// the job merely cannot be verified. RepairPossible: within capacity.
+		// RepairUnknown: par2 present but unrecognized, so capacity is
+		// unmeasured rather than absent. All three proceed to
+		// post-processing.
+		return ""
+	case queue.RepairBeyondCapacity:
+		// Capacity may be understated if some plainly-named par2 file also
+		// carries slices, so this errs toward aborting.
+		recoveryMB := float64(job.RecoveryBytes()) / (1024 * 1024)
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d recovery volumes). Job is beyond repair",
 			failedMB, recoveryMB, job.RecoveryFiles(),
 		)
-	}
-
-	// Zero recognized capacity. Whether that is a finding or ignorance
-	// depends on something the figure itself cannot express.
-	if recoveryBytes == 0 {
-		if p.HasPar2Files() {
-			// The job does carry par2 — it just did not match the naming
-			// convention. Its capacity is unknown, not absent, and condemning
-			// a job on ignorance throws away a download par2 may well repair.
-			// Let post-processing read the actual packets and decide.
-			return ""
-		}
+	case queue.RepairNoCapacity:
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
 			failedMB,
 		)
+	default:
+		// A state added to queue.RepairState that nobody taught this function
+		// to word. Falling through to "" would be the precise failure the
+		// comment above warns about: Hopeless() is opt-in per state and the
+		// wording above is opt-in per state, as two separate lists, so a new
+		// hopeless state would abort the job in the dispatcher while this
+		// returned no reason at all — and OnJobHopeless hands that straight to
+		// maybeFinalize with no fallback, showing the user nothing.
+		//
+		// TestFailMsgForJob_WordsEveryHopelessState fails when a state reaches
+		// here; this arm only bounds the damage until someone reads it.
+		if state.Hopeless() {
+			return fmt.Sprintf(
+				"Aborted: %.1f MB failed (%s). Job is beyond repair",
+				failedMB, state,
+			)
+		}
+		return ""
 	}
-
-	// Partial failure within repair capacity — let post-processing try.
-	return ""
 }
 
 // writeGzFile writes data to path as a gzip-compressed file using atomic

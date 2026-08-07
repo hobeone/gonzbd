@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { QueueSlot, QueueFile } from '$lib/types';
+	import type { QueueSlot, QueueFile, RepairState } from '$lib/types';
 	import { untrack } from 'svelte';
 	import { Progress } from '$lib/components/ui/progress';
 	import { Button } from '$lib/components/ui/button';
@@ -346,26 +346,27 @@
 	}
 
 	/**
-	 * Health indicator: can par2 cover the damage?
+	 * Health indicator: copy and colour for the backend's verdict.
 	 *
-	 * Must reproduce the judgment the backend's two abort gates make, or the
-	 * row condemns a job the downloader is still working on. Two rules carry
-	 * that:
-	 *
-	 * - The numerator is content_failed_bytes, not failed_bytes. A par2 file
-	 *   that fails to download is lost repair capacity, not damage needing
-	 *   repair — counting it condemns a job for losing the file whose only
-	 *   purpose was to rescue others.
-	 * - Zero recovery_bytes means "no capacity we recognized". When the job
-	 *   carries a par2 file that did not match the .volNNN+MM convention the
-	 *   backend withholds its verdict, so this must too.
+	 * This deliberately holds no arithmetic. The comparison behind
+	 * repair_state lives in queue.RepairStateFrom, shared with the two abort
+	 * gates; when this function derived it independently from byte figures it
+	 * twice reached a red verdict on jobs the downloader was still working
+	 * on, and no search of the Go source could find it doing so. Add a case
+	 * here, never a condition.
 	 */
+	const HEALTH_LABELS: Record<RepairState, { text: string; color: string }> = {
+		intact: { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' },
+		repairable: { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' },
+		unknown: { text: 'Repair data unknown', color: 'text-amber-600 dark:text-amber-400' },
+		no_capacity: { text: 'No repair data', color: 'text-red-600 dark:text-red-400' },
+		beyond_capacity: { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' }
+	};
+
 	function healthLabel(): { text: string; color: string } {
-		if (slot.content_failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
-		if (slot.recovery_capacity_unknown) return { text: 'Repair data unknown', color: 'text-amber-600 dark:text-amber-400' };
-		if (slot.recovery_bytes === 0) return { text: 'No repair data', color: 'text-red-600 dark:text-red-400' };
-		if (slot.content_failed_bytes <= slot.recovery_bytes) return { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' };
-		return { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' };
+		// An unrecognized state is a backend the UI has not caught up with.
+		// Reporting that beats guessing a verdict for it.
+		return HEALTH_LABELS[slot.repair_state] ?? { text: 'Unknown', color: 'text-m3-on-surface-variant' };
 	}
 </script>
 
@@ -537,7 +538,7 @@
 						{#if slot.recovery_bytes > 0}
 							{formatBytes(slot.recovery_bytes)}
 							<span class="text-m3-on-surface-variant/70 text-xs font-semibold">({slot.recovery_files} file{slot.recovery_files !== 1 ? 's' : ''})</span>
-						{:else if slot.recovery_capacity_unknown}
+						{:else if slot.repair_state === 'unknown'}
 							<!-- A par2 file is present but none matched the volume-naming
 							     convention, so its capacity is unmeasured, not absent. -->
 							<span class="text-m3-on-surface-variant/60 font-semibold">Unknown</span>

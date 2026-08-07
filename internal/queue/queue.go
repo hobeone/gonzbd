@@ -1341,25 +1341,16 @@ type UnfinishedArticle struct {
 	MessageID string
 	Bytes     int
 	Subject   string
-	// FailedBytes counts only damaged *content* — par2 files that failed to
-	// download are excluded. A failed par2 file is lost repair capacity, not
-	// damage needing repair, and counting it would let a job be declared
-	// hopeless because the very file meant to rescue it went missing. See
-	// JobProgress.ContentFailedBytes.
-	FailedBytes int64
-	// RecoveryBytes is the job's par2 recovery-volume total, excluding the
-	// index. Carried per-article because the dispatcher's Early Health Gate
-	// compares it against FailedBytes without reaching back into the Job.
-	// There is deliberately no RecoveryFiles counterpart: nothing on the
-	// dispatch path needs the count.
-	RecoveryBytes int64
-	// RecoveryCapacityUnknown marks a job whose RecoveryBytes is zero only
-	// because no file matched the ".volNNN+MM.par2" naming convention, while
-	// the job does carry par2 files. Their capacity cannot be read from a
-	// subject line — the PAR2 format permits recovery slices in a
-	// plainly-named file, and par2 reads packets rather than names — so zero
-	// here means unknown, not absent, and the gate must not act on it.
-	RecoveryCapacityUnknown bool
+	// RepairState is the job's repairability verdict, derived once per job in
+	// the walk below and carried per-article so the dispatcher's Early Health
+	// Gate can read it without reaching back into the Job.
+	//
+	// It carries the verdict rather than the three figures behind it because
+	// the dispatcher re-deriving the comparison is how the gate drifted from
+	// failMsgForJob twice — and a struct field is invisible to a reference
+	// search on the accessors, so the drift did not surface either time. Ask
+	// RepairState.Hopeless(); do not reconstruct the comparison here.
+	RepairState RepairState
 }
 
 // ForEachUnfinishedArticle invokes fn for every not-yet-Done article
@@ -1392,8 +1383,14 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 		m := job.manifest
 		// Hoisted out of the per-article loop: both are walks over files and
 		// do not change while this job's articles are enumerated.
-		contentFailed := job.progress.ContentFailedBytes()
-		capacityUnknown := m.RecoveryBytes() == 0 && job.progress.HasPar2Files()
+		// Derived from the manifest rather than through Job.RepairState():
+		// this walk runs under q.mu and the Job accessors take residencyMu,
+		// and the manifest figures are already in hand here.
+		repairState := RepairStateFrom(
+			job.progress.ContentFailedBytes(),
+			m.RecoveryBytes(),
+			job.progress.HasPar2Files(),
+		)
 		for fi := range m.NumFiles() {
 			// Files that are not being fetched (on-demand par2 recovery
 			// volumes, held or discarded) already have Pending == 0 from
@@ -1408,17 +1405,15 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					continue
 				}
 				if !fn(UnfinishedArticle{
-					JobID:                   job.ID,
-					JobStatus:               job.Status,
-					JobAdded:                job.Added,
-					FileIdx:                 fi,
-					ArtIdx:                  int32(i), //nolint:gosec // article index bounded by manifest length
-					MessageID:               m.ArticleID(i),
-					Bytes:                   m.ArticleBytes(i),
-					Subject:                 m.FileSubject(fi),
-					FailedBytes:             contentFailed,
-					RecoveryBytes:           m.RecoveryBytes(),
-					RecoveryCapacityUnknown: capacityUnknown,
+					JobID:       job.ID,
+					JobStatus:   job.Status,
+					JobAdded:    job.Added,
+					FileIdx:     fi,
+					ArtIdx:      int32(i), //nolint:gosec // article index bounded by manifest length
+					MessageID:   m.ArticleID(i),
+					Bytes:       m.ArticleBytes(i),
+					Subject:     m.FileSubject(fi),
+					RepairState: repairState,
 				}) {
 					return
 				}

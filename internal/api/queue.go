@@ -129,23 +129,18 @@ type queueSlot struct {
 	// carry no third-party compatibility constraint.
 	RecoveryBytes int64 `json:"recovery_bytes"`
 	RecoveryFiles int   `json:"recovery_files"`
-	// ContentFailedBytes is the numerator of the repair-capacity comparison:
-	// failed bytes over content files only. FailedBytes above is the total and
-	// stays the figure to display, but weighing it against RecoveryBytes
-	// counts a failed par2 file as damage needing repair, which condemns a job
-	// for losing the very file whose purpose was to rescue others.
-	ContentFailedBytes int64 `json:"content_failed_bytes"`
-	// RecoveryCapacityUnknown reports that RecoveryBytes is zero only because
-	// no par2 file matched the .volNNN+MM naming convention, not because the
-	// job is unprotected. The PAR2 specification recommends that name but does
-	// not require it, so a plainly-named .par2 may carry recovery slices this
-	// classification cannot see. Both abort gates withhold a beyond-repair
-	// verdict when it is set; a client rendering a definite verdict without it
-	// contradicts them.
-	RecoveryCapacityUnknown bool                 `json:"recovery_capacity_unknown,omitempty"`
-	Par2Held                bool                 `json:"par2_held,omitempty"`
-	Par2ReleaseReason       string               `json:"par2_release_reason,omitempty"`
-	DirectUnpack            *directunpack.Status `json:"direct_unpack,omitempty"`
+	// RepairState is the job's repairability verdict, derived server-side by
+	// queue.RepairStateFrom and shared with the two abort gates.
+	//
+	// It is sent as a verdict rather than as the figures behind it so that a
+	// client cannot reach a conclusion the backend declines to reach. That is
+	// not hypothetical: while the UI re-derived the comparison from raw
+	// fields, it condemned jobs the downloader was still working on, twice,
+	// and no reference search over Go could find it doing so.
+	RepairState       queue.RepairState    `json:"repair_state"`
+	Par2Held          bool                 `json:"par2_held,omitempty"`
+	Par2ReleaseReason string               `json:"par2_release_reason,omitempty"`
+	DirectUnpack      *directunpack.Status `json:"direct_unpack,omitempty"`
 
 	// CurrentStage is a lowercase machine-readable stage identifier
 	// derived from Status (download, repair, unpack, sort, move, ...).
@@ -377,42 +372,39 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 	}
 
 	return queueSlot{
-		NzoID:              j.ID,
-		Filename:           j.Filename,
-		Name:               j.Name,
-		Category:           j.Category,
-		Index:              index,
-		Priority:           j.Priority.String(),
-		Status:             string(displayStatus),
-		Script:             nonEmpty(j.Script, "none"),
-		Password:           j.Password,
-		Size:               humanfmt.Bytes(totalBytes),
-		SizeLeft:           humanfmt.Bytes(remainingBytes),
-		MB:                 toMBString(totalBytes),
-		MBLeft:             toMBString(remainingBytes),
-		Bytes:              totalBytes,
-		RemainingBytes:     remainingBytes,
-		Percentage:         pct,
-		Timeleft:           timeleft,
-		ETA:                etaStr,
-		PP:                 strconv.Itoa(j.PP),
-		Warning:            j.Warning,
-		FailedBytes:        p.FailedBytes(),
-		ContentFailedBytes: p.ContentFailedBytes(),
-		// Mirrors internal/queue's own capacityUnknown, but off the promoted
-		// scalar rather than the manifest: a queue listing includes evicted
-		// jobs, and JobProgress carries the par2 classification for both
-		// residency states.
-		RecoveryCapacityUnknown: j.RecoveryBytes() == 0 && p.HasPar2Files(),
-		RecoveryBytes:           j.RecoveryBytes(),
-		RecoveryFiles:           j.RecoveryFiles(),
-		CurrentStage:            stageFromStatus(displayStatus),
-		ArticlesRemaining:       p.PendingArticles(),
-		ETASeconds:              etaSeconds,
-		CurrentFile:             firstIncompleteFile(j),
-		Par2Held:                j.UsesOnDemandPar2(),
-		Par2ReleaseReason:       p.Par2ReleaseReason(),
-		DirectUnpack:            duStatus,
+		NzoID:          j.ID,
+		Filename:       j.Filename,
+		Name:           j.Name,
+		Category:       j.Category,
+		Index:          index,
+		Priority:       j.Priority.String(),
+		Status:         string(displayStatus),
+		Script:         nonEmpty(j.Script, "none"),
+		Password:       j.Password,
+		Size:           humanfmt.Bytes(totalBytes),
+		SizeLeft:       humanfmt.Bytes(remainingBytes),
+		MB:             toMBString(totalBytes),
+		MBLeft:         toMBString(remainingBytes),
+		Bytes:          totalBytes,
+		RemainingBytes: remainingBytes,
+		Percentage:     pct,
+		Timeleft:       timeleft,
+		ETA:            etaStr,
+		PP:             strconv.Itoa(j.PP),
+		Warning:        j.Warning,
+		FailedBytes:    p.FailedBytes(),
+		// Job.RepairState is residency-agnostic, which this call site needs:
+		// a listing includes jobs whose manifests have been evicted.
+		RepairState:       j.RepairState(),
+		RecoveryBytes:     j.RecoveryBytes(),
+		RecoveryFiles:     j.RecoveryFiles(),
+		CurrentStage:      stageFromStatus(displayStatus),
+		ArticlesRemaining: p.PendingArticles(),
+		ETASeconds:        etaSeconds,
+		CurrentFile:       firstIncompleteFile(j),
+		Par2Held:          j.UsesOnDemandPar2(),
+		Par2ReleaseReason: p.Par2ReleaseReason(),
+		DirectUnpack:      duStatus,
 	}
 }
 
