@@ -1686,28 +1686,45 @@ func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 }
 
 func failMsgForJob(job *queue.Job) string {
-	failedBytes := job.Progress().FailedBytes()
-	if failedBytes == 0 {
+	p := job.Progress()
+
+	// Promoted scalars and JobProgress, never job.Manifest(): this runs from
+	// the startup recovery walk over Queue.Snapshot(), where a job may have
+	// no resident manifest and a manifest read would nil-deref.
+	//
+	// Two different failure figures, and the difference matters. The
+	// all-failed check below asks "did everything we set out to fetch fail",
+	// so its numerator and denominator must cover the same file set —
+	// FailedBytes against ExpectedBytes. The repair checks after it ask "is
+	// the damage larger than what can rebuild it", which is a question about
+	// content only: a failed par2 file is lost capacity, not damage, and
+	// there is nothing to repair it with or any reason to.
+	totalFailed := p.FailedBytes()
+	if totalFailed == 0 {
+		return ""
+	}
+	contentFailed := p.ContentFailedBytes()
+
+	// If ALL bytes the job set out to fetch failed, it is hopeless regardless
+	// of par2. job.TotalBytes() would also count deferred recovery volumes
+	// that were never dispatched and so can never appear in the failed total,
+	// making this comparison impossible to satisfy for an on-demand-par2 job
+	// whose content entirely failed — hence ExpectedBytes.
+	if totalFailed >= p.ExpectedBytes() {
+		return fmt.Sprintf(
+			"Aborted: All articles failed (%.1f MB). Job is beyond repair",
+			float64(totalFailed)/(1024*1024),
+		)
+	}
+
+	// Nothing but par2 failed. The content is intact, so there is nothing to
+	// repair — the job simply cannot be verified, which is not a reason to
+	// discard a complete download.
+	if contentFailed == 0 {
 		return ""
 	}
 
-	failedMB := float64(failedBytes) / (1024 * 1024)
-
-	// Promoted scalars, not job.Manifest(): this runs from the startup
-	// recovery walk over Queue.Snapshot(), where a job may have no resident
-	// manifest and every one of these would nil-deref. ExpectedBytes reads
-	// from JobProgress alone, same as FailedBytes, so it is safe here too.
-	// If ALL bytes the job set out to fetch failed, it's hopeless regardless
-	// of PAR2 — job.TotalBytes() would also count deferred recovery volumes
-	// that were never dispatched and so can never appear in failedBytes,
-	// making this comparison impossible to satisfy for an on-demand-par2 job
-	// whose content entirely failed.
-	if failedBytes >= job.Progress().ExpectedBytes() {
-		return fmt.Sprintf(
-			"Aborted: All articles failed (%.1f MB). Job is beyond repair",
-			failedMB,
-		)
-	}
+	failedMB := float64(contentFailed) / (1024 * 1024)
 
 	// Recovery volumes only: the par2 index is always downloaded and carries
 	// no recovery blocks, so counting it here claimed repair capacity that
@@ -1715,8 +1732,8 @@ func failMsgForJob(job *queue.Job) string {
 	// as having none, rather than as having the index's worth.
 	recoveryBytes := job.RecoveryBytes()
 
-	// If recovery volumes exist and the failure exceeds their capacity, abort.
-	if recoveryBytes > 0 && failedBytes > recoveryBytes {
+	// Damaged content exceeds what the recovery volumes could rebuild.
+	if recoveryBytes > 0 && contentFailed > recoveryBytes {
 		recoveryMB := float64(recoveryBytes) / (1024 * 1024)
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d recovery volumes). Job is beyond repair",
@@ -1724,8 +1741,8 @@ func failMsgForJob(job *queue.Job) string {
 		)
 	}
 
-	// No recovery volumes at all and there are failures — can't repair.
-	if recoveryBytes == 0 && failedBytes > 0 {
+	// Damaged content with no recovery volumes at all — nothing can rebuild it.
+	if recoveryBytes == 0 {
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed with no par2 recovery volumes available. Job is beyond repair",
 			failedMB,

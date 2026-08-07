@@ -535,7 +535,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // delete) still gets each entry attributed to the right file instead of
 // shifted by position.
 func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
-	const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, failed_bytes, complete, fetch_policy FROM job_files ORDER BY job_id ASC, file_index ASC`
+	const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, failed_bytes, complete, fetch_policy, subject FROM job_files ORDER BY job_id ASC, file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
@@ -544,11 +544,11 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 
 	result := make(map[string][]FileMeta)
 	for rows.Next() {
-		var jobID string
+		var jobID, subject string
 		var idx, count int
 		var fileBytes, bytesDownloaded, failedBytes int64
 		var complete, fetch int
-		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &bytesDownloaded, &failedBytes, &complete, &fetch); err != nil {
+		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &bytesDownloaded, &failedBytes, &complete, &fetch, &subject); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -571,6 +571,10 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 			FailedBytes:     failedBytes,
 			Complete:        complete != 0,
 			Fetch:           FetchPolicy(fetch), //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+			// Classified from the stored subject rather than from
+			// is_par2_recovery, which flags recovery volumes only. The par2
+			// index is the case this exists for, and it is not a volume.
+			IsPar2: isPar2File(subject),
 		}
 		result[jobID] = counts
 	}

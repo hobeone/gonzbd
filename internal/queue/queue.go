@@ -1333,14 +1333,19 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 // needs to target a specific article; full Job state stays behind
 // the queue's lock.
 type UnfinishedArticle struct {
-	JobID       string
-	JobStatus   constants.Status
-	JobAdded    time.Time
-	FileIdx     int
-	ArtIdx      int32 // Global article index within Manifest
-	MessageID   string
-	Bytes       int
-	Subject     string
+	JobID     string
+	JobStatus constants.Status
+	JobAdded  time.Time
+	FileIdx   int
+	ArtIdx    int32 // Global article index within Manifest
+	MessageID string
+	Bytes     int
+	Subject   string
+	// FailedBytes counts only damaged *content* — par2 files that failed to
+	// download are excluded. A failed par2 file is lost repair capacity, not
+	// damage needing repair, and counting it would let a job be declared
+	// hopeless because the very file meant to rescue it went missing. See
+	// JobProgress.ContentFailedBytes.
 	FailedBytes int64
 	// RecoveryBytes is the job's par2 recovery-volume total, excluding the
 	// index. Carried per-article because the dispatcher's Early Health Gate
@@ -1378,6 +1383,9 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			continue
 		}
 		m := job.manifest
+		// Hoisted out of the per-article loop: it is a walk over files and
+		// does not change while this job's articles are enumerated.
+		contentFailed := job.progress.ContentFailedBytes()
 		for fi := range m.NumFiles() {
 			// Files that are not being fetched (on-demand par2 recovery
 			// volumes, held or discarded) already have Pending == 0 from
@@ -1400,7 +1408,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					MessageID:     m.ArticleID(i),
 					Bytes:         m.ArticleBytes(i),
 					Subject:       m.FileSubject(fi),
-					FailedBytes:   job.progress.failedBytes,
+					FailedBytes:   contentFailed,
 					RecoveryBytes: m.RecoveryBytes(),
 				}) {
 					return

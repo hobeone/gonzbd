@@ -132,6 +132,7 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		p.files[fi].FailedBytes = f.FailedBytes
 		p.files[fi].Complete = f.Complete
 		p.files[fi].Fetch = f.Fetch
+		p.files[fi].IsPar2 = f.IsPar2
 		p.files[fi].Bytes = f.Bytes
 	}
 	return p

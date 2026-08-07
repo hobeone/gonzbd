@@ -98,7 +98,18 @@ type FileProgress struct {
 	// without this the derivation would report its bytes as still to fetch
 	// forever. Recomputable from the article bitmaps when a manifest is
 	// resident; persisted in job_files.failed_bytes for when it is not.
-	FailedBytes    int64
+	FailedBytes int64
+	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
+	// to content. Carried per file, like Bytes and FailedBytes, so
+	// ContentFailedBytes derives from progress alone at any residency.
+	//
+	// Note this is broader than job_files.is_par2_recovery, which flags only
+	// volumes. The index matters here precisely because it is not a recovery
+	// volume: it is fetched, so it can fail, and its failure is not damage.
+	// Both construction paths classify by subject rather than reading a
+	// column, which is why no schema change is needed — job_files already
+	// stores the subject.
+	IsPar2         bool
 	WriteCursor    int64
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32
@@ -119,7 +130,11 @@ func fileMetaFromManifest(m *Manifest) []FileMeta {
 	files := make([]FileMeta, m.NumFiles())
 	for fi := range files {
 		lo, hi := m.FileRange(fi)
-		files[fi] = FileMeta{ArticleCount: hi - lo, Bytes: m.FileBytes(fi)}
+		files[fi] = FileMeta{
+			ArticleCount: hi - lo,
+			Bytes:        m.FileBytes(fi),
+			IsPar2:       isPar2File(m.FileSubject(fi)),
+		}
 	}
 	return files
 }
@@ -261,6 +276,40 @@ func (p *JobProgress) EarlyAborted() bool {
 		return false
 	}
 	return p.earlyAborted
+}
+
+// ContentFailedBytes returns the failed bytes that represent damaged content —
+// FailedBytes minus everything lost from par2 files.
+//
+// This is the figure a repair decision needs, and it is not the same question
+// FailedBytes answers. Repair capacity rebuilds damaged *content*; a par2 file
+// is not content. When an index or a recovery volume fails to download, no
+// content became unrecoverable — the job merely has less capacity than its
+// manifest advertised, which the capacity side of the comparison already
+// reflects. Counting those bytes as damage condemns a job for losing a file
+// whose only purpose was to rescue other files.
+//
+// The failure mode this prevents is not hypothetical. For a par2 set with an
+// index and no recovery volumes, the index's own failure is the entire failed
+// total, and comparing it against zero capacity declares a job beyond repair
+// whose content downloaded completely and unpacks. That was masked for as long
+// as the capacity figure counted the index too, since the comparison then
+// weighed the index against itself and came out false by exact tie.
+//
+// Derives from per-file state, so it is correct at any residency: IsPar2 is
+// classified from the manifest when resident and from job_files.subject when
+// not.
+func (p *JobProgress) ContentFailedBytes() int64 {
+	if p == nil {
+		return 0
+	}
+	var n int64
+	for i := range p.files {
+		if !p.files[i].IsPar2 {
+			n += p.files[i].FailedBytes
+		}
+	}
+	return n
 }
 
 // FailedBytes returns the sum of bytes belonging to permanently failed articles.

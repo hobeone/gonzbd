@@ -25,6 +25,11 @@ type FileMeta struct {
 	// Fetch is the file's download intent, restored from
 	// job_files.fetch_policy. See FetchPolicy.
 	Fetch FetchPolicy
+	// IsPar2 marks the file as par2 — index or recovery volume — rather than
+	// content. Classified from job_files.subject rather than read from a
+	// column: is_par2_recovery flags only volumes, and the index is exactly
+	// the case that matters here. See FileProgress.IsPar2.
+	IsPar2 bool
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.
