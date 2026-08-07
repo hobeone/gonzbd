@@ -1,6 +1,23 @@
 // TypeScript interfaces matching the Go API JSON response shapes.
 // Field names use the exact JSON keys from internal/api/*.go structs.
 
+/**
+ * Whether a job's damaged content can be rebuilt from its par2 recovery
+ * capacity. Mirrors queue.RepairState in internal/queue/repair.go, which is
+ * the single derivation the abort gates also read.
+ *
+ * 'repairable' is the unsound direction of a byte-based proxy — it means "not
+ * proven hopeless", never "proven repairable" — and 'unknown' means the job
+ * carries par2 that was not recognized as recovery volumes, so its capacity is
+ * unmeasured rather than absent. Neither is grounds for a red verdict.
+ */
+export type RepairState =
+	| 'intact'
+	| 'repairable'
+	| 'unknown'
+	| 'no_capacity'
+	| 'beyond_capacity';
+
 export interface QueueSlot {
 	index: number;
 	nzo_id: string;
@@ -21,16 +38,12 @@ export interface QueueSlot {
 	pp: string;
 	warning?: string;
 	failed_bytes: number;
-	/** Failed bytes over content files only — the numerator of the repair
-	 *  comparison. `failed_bytes` is the total and is what to display; a
-	 *  failed par2 file is lost capacity, not damage needing repair. */
-	content_failed_bytes: number;
 	recovery_bytes: number;
 	recovery_files: number;
-	/** `recovery_bytes` is zero only because no par2 file matched the
-	 *  `.volNNN+MM` convention, not because the job is unprotected. Omitted
-	 *  when false. */
-	recovery_capacity_unknown?: boolean;
+	/** The backend's repairability verdict. Render it; do not re-derive it
+	 *  from the byte figures above — doing that is what made this row
+	 *  contradict the downloader twice. */
+	repair_state: RepairState;
 	current_stage: string;
 	articles_remaining: number;
 	eta_seconds: number;
