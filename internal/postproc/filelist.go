@@ -32,9 +32,9 @@ func buildDownloadFileList(job *Job) []string {
 		return []string{fmt.Sprintf("File listing unavailable: %v", mErr)}
 	}
 
-	// On-demand par2 stats: count skipped recovery volumes and bytes saved.
+	// On-demand par2 stats: count the skipped recovery volumes. Only the
+	// counts are walked here — the byte figure comes from JobProgress below.
 	var heldVols, recoveryVols int
-	var heldBytes int64
 	for fi := range m.NumFiles() {
 		if !m.FileIsPar2Recovery(fi) {
 			continue
@@ -42,9 +42,23 @@ func buildDownloadFileList(job *Job) []string {
 		recoveryVols++
 		if p.FileFetchPolicy(fi) != queue.FetchAlways {
 			heldVols++
-			heldBytes += m.FileBytes(fi)
 		}
 	}
+
+	// The bytes this job held back, derived rather than summed here. Summing
+	// them locally was a second implementation of the figure JobProgress
+	// already derives, and the two drifted: this listing divided by the
+	// manifest total while the history record divided by ExpectedBytes, so
+	// the same job reported two different failure percentages (#326).
+	//
+	// The two expressions are not the same predicate. This one covers every
+	// file that is not FetchAlways; the loop above counts only recovery
+	// volumes. They agree because nothing but a recovery volume is ever moved
+	// off FetchAlways — a property of the callers (see Job.ResetForRetry and
+	// newJobProgress), not of JobProgress. If that ever changes, heldVols and
+	// heldBytes stop describing the same set and the line printing both goes
+	// wrong before anything else does.
+	heldBytes := m.TotalBytes() - p.ExpectedBytes()
 
 	// Download duration header.
 	var dlDuration time.Duration
@@ -54,20 +68,27 @@ func buildDownloadFileList(job *Job) []string {
 
 	if heldBytes > 0 {
 		lines = append(lines, fmt.Sprintf("Downloaded %s (saved %s by not downloading par2 files) in %s",
-			humanfmt.BytesSI(m.TotalBytes()-heldBytes),
+			humanfmt.BytesSI(p.ExpectedBytes()),
 			humanfmt.BytesSI(heldBytes),
 			humanfmt.Duration(dlDuration)))
 	} else {
 		lines = append(lines, fmt.Sprintf("Downloaded %s in %s",
-			humanfmt.BytesSI(m.TotalBytes()),
+			humanfmt.BytesSI(p.ExpectedBytes()),
 			humanfmt.Duration(dlDuration)))
 	}
 
-	// Failed/remaining bytes summary.
+	// Failed/remaining bytes summary. The denominator is ExpectedBytes, the
+	// same one the history record's completeness figure uses, so the two
+	// cannot report different failure percentages for one job (#326).
+	//
+	// ExpectedBytes can be zero where the manifest total could not (a job
+	// holding back every file). Nothing divides by it here, because this
+	// branch requires failed bytes and nothing can fail without having been
+	// dispatched — but that is an inherited invariant, not a check.
 	if p.FailedBytes() > 0 {
 		lines = append(lines, fmt.Sprintf("⚠ %s failed (%.1f%%)",
 			humanfmt.BytesSI(p.FailedBytes()),
-			float64(p.FailedBytes())/float64(m.TotalBytes())*100))
+			float64(p.FailedBytes())/float64(p.ExpectedBytes())*100))
 	}
 
 	switch {
