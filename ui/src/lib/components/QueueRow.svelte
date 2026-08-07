@@ -136,6 +136,18 @@
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
 
+	// Bytes listed in the drawer that the row's size deliberately excludes.
+	// The row reports what the job expects to fetch, which leaves out par2
+	// recovery volumes held back ('held') or already ruled unnecessary
+	// ('skipped'); the file table lists every file in the NZB at its full
+	// declared size. Without stating this the drawer simply totals more than
+	// the row above it with nothing to explain the gap (#325).
+	let heldBackBytes = $derived(
+		(files ?? [])
+			.filter((f) => f.state === 'held' || f.state === 'skipped')
+			.reduce((sum, f) => sum + f.bytes, 0)
+	);
+
 	/**
 	 * Apply an incoming files array to the reactive `files` state.
 	 *
@@ -680,6 +692,13 @@
 					Files
 					{#if files}
 						<span class="ml-1 text-m3-on-surface-variant/80">({files.length})</span>
+					{/if}
+					{#if heldBackBytes > 0}
+						<span
+							class="ml-2 normal-case tracking-normal font-semibold text-slate-500 dark:text-slate-400"
+							title="Par2 recovery volumes are listed here but excluded from the job's size above, because the job does not expect to download them."
+							>incl. {formatBytes(heldBackBytes)} held back</span
+						>
 					{/if}
 				</div>
 				{#if filesLoading && !files}
