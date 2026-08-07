@@ -550,15 +550,57 @@ func (d *Downloader) ensureDisconnectChan() {
 	}
 }
 
-// disconnectSnapshot returns the current disconnect channel. Workers
-// snapshot this before blocking on the work channel; when DisconnectAll
-// closes it, the select unblocks and the worker closes its connection.
+// disconnectSnapshot returns the current disconnect channel; when
+// DisconnectAll closes it, a select on it unblocks and the worker closes
+// its connection.
+//
+// Workers do not call this directly — they go through disconnectChanFor,
+// which returns this channel only for a worker that has, or may imminently
+// acquire, a connection. A fully idle worker gets nil instead and never
+// reaches here; see disconnectChanFor for why.
 func (d *Downloader) disconnectSnapshot() <-chan struct{} {
 	ch := d.disconnectPtr.Load()
 	if ch != nil {
 		return *ch
 	}
 	return nil
+}
+
+// disconnectChanFor returns the disconnect channel a worker owning mc
+// should select on, or nil when that worker has nothing to disconnect.
+//
+// DisconnectAll broadcasts by *closing* the channel, which leaves it
+// permanently ready, and only ensureDisconnectChan (called when a worker
+// dials) ever replaces it with a fresh open one. A worker that has already
+// closed its connection therefore keeps re-reading a ready channel, and on
+// an idle daemon nothing ever dials to reset it — so every connWorker spun
+// at full tilt on the workDisconnect branch forever after the first
+// idle-disconnect, doing no work and logging nothing above Debug.
+//
+// The signal only means anything to a worker that has, or may imminently
+// acquire, a connection. Such a worker selects on the real channel; a
+// fully idle one selects on nil, which blocks forever in select and parks
+// it on workCh/ctx until real work arrives. The next Get() dials and
+// re-arms the channel via ensureDisconnectChan, so the worker is again
+// responsive to a subsequent DisconnectAll.
+//
+// inFlight must be true while any handleRequest goroutine sharing mc is
+// still running. Those goroutines dial through mc.Get, so a worker that
+// parked on nil purely because mc happened to be closed at check time
+// could otherwise end up holding a connection opened behind its back,
+// with no way to be woken — leaking an idle connection until the next
+// unit of work arrived.
+//
+// mc.isOpen() is a lock-free atomic read: mc.mu is held across nntp.Dial,
+// so taking it here would stall this select for the duration of the very
+// dial that inFlight is covering for. A stale read is safe in both
+// directions — stale-open selects on the real channel and simply loops
+// once more, stale-closed is covered by inFlight.
+func (d *Downloader) disconnectChanFor(mc *managedConn, inFlight bool) <-chan struct{} {
+	if !mc.isOpen() && !inFlight {
+		return nil
+	}
+	return d.disconnectSnapshot()
 }
 
 // setConnActivity records that the worker identified by workerID is
