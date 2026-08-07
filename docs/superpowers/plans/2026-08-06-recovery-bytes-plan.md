@@ -74,11 +74,25 @@ untouched.
 
 ## Global constraints
 
-- The partition key is `manifestFile.isPar2Recovery`, never `isPar2File`.
-- `content` means "not a recovery volume" and therefore **includes the par2
-  index**. It is not "media bytes".
-- Both repair-capacity gates read one quantity and must change together, or
-  they disagree in the interim — the defect shape #326 documents.
+- The partition key for the *capacity* figure is `manifestFile.isPar2Recovery`,
+  never `isPar2File`.
+- **Amended during implementation — "content" names two different quantities,
+  and they partition on different keys.** As originally written this bullet
+  said `content` means "not a recovery volume" and therefore **includes the
+  par2 index**. That holds for the manifest's byte partition, where the index
+  is downloaded like any other file. It does *not* hold for the numerator of
+  the repair comparison: `JobProgress.ContentFailedBytes()` tests `!IsPar2` and
+  excludes the index, because a failed par2 file of either kind is lost
+  capacity rather than damage needing repair. Do not carry one sense of the
+  word into the other.
+- **Amended during implementation — there are three consumers, not two.** As
+  originally written this bullet said *both* repair-capacity gates read one
+  quantity and must change together. `failMsgForJob` and the dispatcher's
+  Early Health Gate are two; the queue listing's `buildSlot` is the third, and
+  it was missed because the UI re-derives the comparison from raw fields rather
+  than calling the accessors a reference search would find. It shipped with the
+  denominator moved and the numerator not, which is exactly the interim
+  disagreement this bullet exists to forbid — the defect shape #326 documents.
 - No `//nocover:` on branching code, no dummy tests, no weakened gates.
 - Never modify an existing migration file.
 
