@@ -118,16 +118,34 @@ of their failure ratio.
    dials.
 
    A closed channel stays permanently ready, so a worker must select on it
-   **only while it actually holds a connection** — that is what
-   `disconnectChanFor()` enforces, returning `nil` (which blocks forever in
-   `select`) once the worker's `managedConn` is closed. Snapshotting alone is
-   not sufficient protection: `ensureDisconnectChan()` runs only on dial, and
-   an idle daemon never dials, so a worker that kept selecting on the stale
-   closed channel would take the `workDisconnect` branch on every iteration
-   and busy-loop forever. That was a real bug — after the first
-   idle-disconnect following a completed download, every `connWorker` spun at
-   full CPU, silently (the branch logs only at `Debug`, and `downloader` is
-   commonly configured at `info`).
+   **only while it has, or may imminently acquire, a connection** — that is
+   what `disconnectChanFor(mc, inFlight)` enforces. It returns `nil` (which
+   blocks forever in `select`) only when **both** halves of the guard say the
+   worker is fully idle: `!mc.isOpen() && !inFlight`.
+
+   Both halves are load-bearing. `connWorker` passes `inFlight` as
+   `len(sem) > 1` — `sem` holds the loop's own slot plus one per running
+   `handleRequest` goroutine, and those goroutines dial through `mc.Get`. A
+   worker whose `managedConn` is merely closed *at check time* therefore
+   keeps the real channel while a request is still in flight: dropping to
+   `nil` there would leave it holding a connection opened behind its back,
+   unwakeable by a later `DisconnectAll()` and leaked until the next unit of
+   work arrived.
+
+   `mc.isOpen()` is a lock-free atomic read of `managedConn.open`, never a
+   `mu` acquisition — `mu` is held across `nntp.Dial`, and the parent loop
+   shares the `managedConn` with the goroutine that is dialling, so taking it
+   would stall the dispatch select for the whole dial. A stale read is safe
+   both ways: stale-open selects on the real channel and loops once more,
+   stale-closed is covered by `inFlight`.
+
+   Snapshotting alone is not sufficient protection: `ensureDisconnectChan()`
+   runs only on dial, and an idle daemon never dials, so a worker that kept
+   selecting on the stale closed channel would take the `workDisconnect`
+   branch on every iteration and busy-loop forever. That was a real bug —
+   after the first idle-disconnect following a completed download, every
+   `connWorker` spun at full CPU, silently (the branch logs only at `Debug`,
+   and `downloader` is commonly configured at `info`).
 
 5. **Emitted-is-transient durability contract**: `MarkArticleEmitted` is not
    persisted to disk. If the process crashes between `MarkArticleEmitted` and

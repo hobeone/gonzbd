@@ -550,9 +550,14 @@ func (d *Downloader) ensureDisconnectChan() {
 	}
 }
 
-// disconnectSnapshot returns the current disconnect channel. Workers
-// snapshot this before blocking on the work channel; when DisconnectAll
-// closes it, the select unblocks and the worker closes its connection.
+// disconnectSnapshot returns the current disconnect channel; when
+// DisconnectAll closes it, a select on it unblocks and the worker closes
+// its connection.
+//
+// Workers do not call this directly — they go through disconnectChanFor,
+// which returns this channel only for a worker that has, or may imminently
+// acquire, a connection. A fully idle worker gets nil instead and never
+// reaches here; see disconnectChanFor for why.
 func (d *Downloader) disconnectSnapshot() <-chan struct{} {
 	ch := d.disconnectPtr.Load()
 	if ch != nil {
