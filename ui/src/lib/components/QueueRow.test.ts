@@ -47,6 +47,7 @@ describe('QueueRow', () => {
 		script: 'none',
 		password: '',
 		failed_bytes: 0,
+		content_failed_bytes: 0,
 		recovery_bytes: 0,
 		recovery_files: 0,
 		current_stage: 'download',
@@ -547,6 +548,90 @@ describe('QueueRow', () => {
 			// A job with nothing held back reconciles already; the note would
 			// be noise on every ordinary job in the queue.
 			expect(screen.queryByText(/held back/)).not.toBeInTheDocument();
+		});
+	});
+
+	/**
+	 * The drawer's Health cell is the third consumer of the same comparison
+	 * the two backend abort gates make. It must not reach a verdict those
+	 * gates decline to reach.
+	 *
+	 * Two ways it used to diverge: it weighed *total* failed bytes (which
+	 * counts a failed par2 file as damage) against a capacity figure that
+	 * excludes the par2 index, and it read zero capacity as proof of no
+	 * repair data even when the job carries a par2 file that simply was not
+	 * named as a volume.
+	 */
+	describe('health verdict', () => {
+		const healthOf = async (overrides: Partial<QueueSlot>) => {
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, ...overrides }] }
+			} as any);
+			const slot = { ...baseSlot, ...overrides };
+			const { container } = render(QueueRow, { slot, onremove: () => {} });
+			const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+			await fireEvent.click(row);
+			const label = await screen.findByText('Health');
+			return label.parentElement?.querySelector('div') as HTMLElement;
+		};
+
+		it('calls content intact healthy when only a par2 file failed', async () => {
+			// Index present, no recovery volumes, the index's own article
+			// failed. Both abort gates let this job proceed.
+			const health = await healthOf({
+				failed_bytes: 50,
+				content_failed_bytes: 0,
+				recovery_bytes: 0,
+				recovery_capacity_unknown: true
+			});
+			expect(health.textContent).toBe('Healthy');
+			expect(health.className).not.toMatch(/text-red/);
+		});
+
+		it('withholds a verdict when capacity is unknown rather than absent', async () => {
+			// A plainly-named par2 file: the PAR2 spec only recommends the
+			// .volNNN+MM convention, so this may hold recovery slices the
+			// classification cannot see.
+			const health = await healthOf({
+				failed_bytes: 200,
+				content_failed_bytes: 200,
+				recovery_bytes: 0,
+				recovery_capacity_unknown: true
+			});
+			expect(health.textContent).toBe('Repair data unknown');
+			expect(health.className).not.toMatch(/text-red/);
+		});
+
+		it('still condemns a job carrying no par2 at all', async () => {
+			const health = await healthOf({
+				failed_bytes: 200,
+				content_failed_bytes: 200,
+				recovery_bytes: 0
+			});
+			expect(health.textContent).toBe('No repair data');
+			expect(health.className).toMatch(/text-red/);
+		});
+
+		it('compares content damage against recognized capacity', async () => {
+			const repairable = await healthOf({
+				failed_bytes: 500,
+				content_failed_bytes: 200,
+				recovery_bytes: 300
+			});
+			// 200 B of damaged content against 300 B of volumes. Weighing the
+			// 500 B total instead would condemn it.
+			expect(repairable.textContent).toBe('Repairable');
+		});
+
+		it('reports beyond repair when content damage exceeds capacity', async () => {
+			const beyond = await healthOf({
+				failed_bytes: 400,
+				content_failed_bytes: 400,
+				recovery_bytes: 300
+			});
+			expect(beyond.textContent).toBe('Beyond repair');
+			expect(beyond.className).toMatch(/text-red/);
 		});
 	});
 });
