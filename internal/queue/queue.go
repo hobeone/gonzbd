@@ -185,6 +185,11 @@ func New(opts ...Option) *Queue {
 
 // Notify returns the downloader wake-up channel. Cap 1; signals
 // coalesce. Callers should not close the returned channel.
+//
+// The consequence, since this hands the channel across a package boundary:
+// Downloader.run selects on it in a loop and its arm does not exit, so a
+// closed notifyCh would be permanently ready and would spin that loop at full
+// CPU. Never close it — see docs/go-standards.md § Concurrency & Locking.
 func (q *Queue) Notify() <-chan struct{} { return q.notifyCh }
 
 // Len returns the number of jobs currently in the queue.

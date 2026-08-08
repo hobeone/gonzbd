@@ -175,6 +175,23 @@ These rules are distilled from real bugs found across dozens of audit and harden
   }
   ```
 
+- **…and every such `select` arm must exit the loop or disarm the channel.** The rule above is only half the requirement. A *closed* channel is permanently ready, so a receive arm on one inside a `for` loop fires on every iteration forever. Note both `return`s in the pattern above — they are what make it safe. An arm that instead `continue`s, or falls through to the next iteration, is a full-CPU busy-spin the moment the channel closes. This is not hypothetical: it is #336, where `DisconnectAll()` broadcast by closing a channel and every `connWorker` spun until restart. Three requirements follow:
+    1. **Exit or disarm.** Either leave the loop, or set the channel variable to `nil` — a nil channel blocks forever in `select`, which parks the goroutine on its remaining arms. `internal/app/pipeline.go`'s `run` is the reference: on `!ok` it sets `p.completions = nil` and continues.
+
+       **A bare `break` inside a `select` breaks the *select*, not the loop** — it falls straight through to the next iteration and busy-spins, which is the bug this rule exists to prevent. Use `return`, or a **labelled** break (`break drain`) targeting the `for`. `internal/assembler`'s shutdown drain loop is labelled for exactly this reason. This compiles, vets, and lints clean either way, so the compiler will not catch it for you.
+    2. **Receive with `, ok` from any channel that can be closed**, and act on it — loudly. Without the guard you cannot distinguish a real value from the zero value a closed channel yields forever. `internal/assembler`'s worker and `internal/app`'s `watchCompletions`/`drainCompletions` all guard this way; `drainCompletions` shows why it matters even with a `default:` arm, since a permanently-ready receive means `default` is never selected.
+
+       Log at `Error` before exiting. A guard that returns silently swaps a loud symptom for a quiet one: #336 announced itself as 250% CPU, whereas a consumer that quietly disappears leaves jobs stalled at 100% with a clean log, which is *harder* to diagnose. And note what the guard does not buy — it protects the **receiver** only. If the senders are unguarded (they usually are), an actual `close()` panics the next send rather than exiting cleanly. The guard limits the blast radius; it does not make closing the channel safe.
+    3. **The loop and the ready receive need not be in the same function.** In #336 the loop was in `connWorker` but the receive was inside `selectWork`, one call away. Reading the loop body alone will not find this class, and neither will a local AST check — `scripts/check_lock_io` descends one call level but does no return-value taint tracking, and the #336 signal flowed through a returned decision enum.
+
+- **For an unreachable loop-exit failure, guard or delete according to who can break the invariant.** Several loops here are bounded only because something *elsewhere* never happens — a channel nobody closes, a status transition that is always legal. Both cases are unreachable today, and they take opposite treatments. The discriminator is whether the code at that point could ever detect the violation:
+    - **Whole-program invariant → keep the guard, and test it.** "Nobody anywhere calls `close()` on this channel" is not provable at the receive site, and any future edit in any file can break it silently — worse, `Queue.Notify()` hands its channel across a package boundary, so the invariant is not even package-local. A `, ok` guard costs one branch and is the only local defence. Close the channel in a white-box test to prove the guard turns a violation into a clean exit: the branch is unreachable in production but perfectly reachable from a test, so "unreachable" is not an excuse for leaving it uncovered. `internal/assembler` and `internal/app` each carry such a test.
+    - **Locally established → the handler is dead weight, and may be worth deleting.** Where the precondition is proved a few lines up, in the same function, under a lock never released in between, nothing outside can invalidate it. A handler there guards against a caller that cannot exist, and — unlike the channel case — cannot be reached from a test either, because forcing it needs a production seam built only for the test.
+
+      A live example sits in `Queue.PromoteNext`: a failed `setStatusLocked(job, StatusDownloading)` leaves the job `StatusQueued`, which makes it an immediate re-candidate for `findNextQueuedCandidateLocked`, so the `continue` would re-select it forever. The re-check above it already proved the job is `StatusQueued`, and `TestCanTransitionStatus` pins `Queued→Downloading` as legal, so the branch is unreachable today. It is left as-is deliberately: the surrounding function is large and thinly covered, and rewriting an unreachable branch there costs more than the latent risk it removes. Weigh the same way before changing one.
+
+  Either way, record the dependency where it is relied on, and pin it with a test where one exists. The failure mode for all of these is a silent spin rather than an error, so a broken assumption will not announce itself.
+
 - **Don't expose mutable data to concurrent readers before it is fully initialized.** Calling `addHistory(job)` before `processJob(job)` exposed partially-initialized `StageLog` fields to API handlers reading the same struct.
 
 - **Atomic flag ordering matters.** In `finishReader`, `closeErr` must be set *before* the `closed` atomic flag is flipped, otherwise concurrent readers see `closed=true` but read a nil error.
@@ -306,5 +323,20 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 - **Profile before optimizing.** Use `go tool pprof` with production workloads. Synthetic benchmarks miss real bottlenecks (e.g., `selectgo` overhead only appears under multi-server dispatch contention).
 
 - **String map keys for message-IDs are expensive.** NNTP message-IDs are long strings (40-80 bytes); `aeshashbody` for these keys costs 1.15s/10s at 2 Gbps. Avoid adding new `map[string]` lookups in the per-article hot path. If you must, consider integer keys or pre-hashed values.
+
+- **A discarded log call still allocates — one heap object per non-constant argument.** `Logger.Debug` checks the level *inside* the call, but the variadic `...any` arguments are boxed at the **call site**, before it is entered. Measured on a logger set to `Info`, so every call below emits nothing (`go test -tags=bench -bench=Slog -benchmem ./internal/telemetry/`):
+
+  | Call | ns/op | B/op | allocs/op |
+  |---|---|---|---|
+  | `Debug("msg")` | 3.8 | 0 | 0 |
+  | `Debug("msg", "k1", "c1", "k2", "c2", "k3", "c3")` — all constants | 5.4 | 0 | **0** |
+  | `Debug("msg", "k1", strVar)` | 15.3 | 16 | **1** |
+  | `Debug("msg", "server", s, "worker", w, "reason", r)` | 38.8 | 48 | **3** |
+  | `Debug("msg", "k1", intVar)`, `0 <= v <= 255` | 4.6 | 0 | 0 |
+  | `Debug("msg", "k1", intVar)`, larger | 9.9 | 8 | 1 |
+  | guarded by `log.Enabled(ctx, slog.LevelDebug)` | 2.6 | 0 | 0 |
+  | `LogAttrs(ctx, ..., slog.String(...)×3)` | 14.9 | 0 | 0 |
+
+  Constant keys and values box into read-only statics; ints in `[0,255]` hit `runtime.staticuint64s`; `slog.Attr` carries its value without boxing. **This is not a reason to delete log calls.** In a bounded path — per article, per file, per job — the cost is noise against the payloads, and the diagnostic value is worth far more than 39 ns. It matters only inside a loop with no natural bound, and there the *loop* is the defect. Treat a high allocation rate with a flat `HeapAlloc` as a **diagnostic signal** that you have an unbounded loop: that is how #336 was found, since a spin that allocates is visible in `/debug/vars` while a silent one is not. If a hot but genuinely bounded path needs the call, guard it with `Enabled()` or use `LogAttrs`.
 
 - **`sync.Pool` is usually not worth it in this codebase.** The `articleRequest` allocation (0.3s at steady-state) is small enough that pool overhead (Put/Get synchronization) would offset the savings. Only pool objects that are large and allocated at >10K/sec.

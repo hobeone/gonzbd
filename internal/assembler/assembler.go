@@ -560,15 +560,17 @@ func (a *Assembler) worker() {
 		tickC = t.C
 	}
 
+mainLoop:
 	for {
 		select {
 		case req, ok := <-a.reqs:
 			if !ok {
 				// Channel was closed; this path is not taken in normal operation
-				// (we never close reqs), but defend against it.
-				a.flush()
-				a.closeAll(open)
-				return
+				// (we never close reqs), but defend against it. Breaks to the
+				// shared shutdown block below rather than returning here, so
+				// this path cannot skip flushWriteCache and drop cached bytes
+				// that flush() has already reported Done.
+				break mainLoop
 			}
 			reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
 			if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
@@ -582,26 +584,43 @@ func (a *Assembler) worker() {
 			// Drain any requests that were already in the channel before stopCh
 			// was closed. New WriteArticle calls see stopCh and return ErrStopped,
 			// so the channel will not receive new items after this point.
+			// The !ok arm breaks to the shared shutdown block rather than
+			// duplicating it: a closed reqs makes this receive permanently
+			// ready, so `default` would never be selected and this loop would
+			// spin at full CPU dispatching zero-value requests forever. A zero
+			// WriteRequest is not the cancel sentinel (JobID=="" && FileIdx==-1),
+			// so it would reach processRequest with an empty job ID.
+			//
+			// Note `break drain` must be labelled: a bare break would exit the
+			// select and fall straight back into this loop, which is the spin
+			// it is meant to prevent.
+		drain:
 			for {
 				select {
-				case req := <-a.reqs:
+				case req, ok := <-a.reqs:
+					if !ok {
+						break drain
+					}
 					reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
 					if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
 						a.checkDiskSpace(open)
 					}
 				default:
-					// Drain all cached articles to disk before shutdown.
-					a.flushWriteCache(wc, open)
-					a.cacheUsedBytes.Store(wc.used)
-					// Channel drained. Final flush before closing files so the
-					// queue sees every Done/Failed that made it to disk.
-					a.flush()
-					a.closeAll(open)
-					return
+					break drain
 				}
 			}
+			break mainLoop
 		}
 	}
+
+	// Shared shutdown, reached from every exit above so no path can skip a
+	// step. Order matters: flush cached article bytes to disk BEFORE flush()
+	// reports articles Done to the queue, or a shutdown could mark articles
+	// complete whose bytes were still only in the write cache.
+	a.flushWriteCache(wc, open)
+	a.cacheUsedBytes.Store(wc.used)
+	a.flush()
+	a.closeAll(open)
 }
 
 // dispatchRequest handles a single request from the channel. It processes
