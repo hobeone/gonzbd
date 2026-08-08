@@ -179,9 +179,22 @@ memory and coalesces contiguous runs into larger `WriteAt` calls:
 - **Pressure relief**: When `used > 90% of limit` (`pressure()`), the file
   with the most buffered data is force-flushed (`forceFlushLargest`) regardless
   of contiguity. Articles are written individually, sorted by offset.
+- **A drain advances the cursor and keeps the file's entry.** `drainFile()`
+  moves `writeCursor` past every article it returns, and clears the entry
+  rather than deleting it, so the cursor survives into the next round of
+  buffering. This is what keeps contiguous coalescing alive across a pressure
+  flush: the drain has written those bytes, so the frontier really has moved,
+  and an entry deleted here would be recreated at cursor 0 — an offset whose
+  article was just written and will never be re-buffered, stranding the scan
+  for the rest of the file. The cursor moves *past* a gap rather than up to
+  it, because a drain writes what is buffered above the gap too. An article
+  arriving later below the advanced cursor is still buffered and still written
+  by the next drain; it just does not join a coalesced run. See #311.
 - **File completion drain**: `drainCacheForFile()` flushes all remaining cached
-  articles before `Truncate` + `Sync` + `Close`.
-- **Shutdown drain**: `flushWriteCache()` drains all files on `Stop()`.
+  articles before `Truncate` + `Sync` + `Close`, then `forget()`s the entry —
+  the file is closing, so there is no cursor left to preserve.
+- **Shutdown drain**: `flushWriteCache()` drains all files on `Stop()` and
+  drops their entries for the same reason.
 - **Resume cursor**: `initCursor(key, InitialWriteCursor)` seeds the write
   cursor from the persisted resume point so coalescing doesn't stall waiting
   for offset-0 articles that were already written before a restart.
@@ -337,4 +350,20 @@ articles or sparse file regions. The coordination model:
   dedup.
 
 ### Open Gaps
-No open gaps. All contract invariants are implemented and tested.
+
+- **In-flight coalescing still stalls on a permanently failed article.** A gap
+  the download will never fill leaves `buildContiguousRun` stranded at the
+  cursor until the next drain re-anchors it. #311 fixed the pressure-drain
+  route to the same symptom; this route remains. Its cost is memory residency
+  rather than syscalls, and two designs targeting it directly were measured
+  and found worse than leaving it alone — one had an unbounded stranding
+  bound, the other regressed hole-free files. Measure the residency cost
+  before attempting it again.
+- **The syscall-reduction figure above is unmeasured.** "Reducing syscall
+  count by 8–16×" states a ratio no benchmark in this repository produces. A
+  sweep of `WriteAt` chunk sizes over the same payload found wall-clock flat
+  on btrfs and *worse* for large chunks on tmpfs, because coalescing trades N
+  syscalls for one syscall plus a second memcpy of the same bytes. The
+  mechanism is sound where a write is expensive per call — NFS/SMB, where each
+  `pwrite` is a round trip — but the local-filesystem claim should be measured
+  or qualified rather than repeated.

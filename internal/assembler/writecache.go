@@ -207,8 +207,27 @@ func (wc *writeCache) forceFlushLargest() (key fileKey, articles []bufferedArtic
 	return wc.drainFile(largest)
 }
 
-// drainFile removes and returns all buffered articles for a file, sorted
-// by offset. Used for force-flush and file completion.
+// drainFile removes and returns all buffered articles for a file, sorted by
+// offset, and advances the file's write cursor past everything it returned.
+// Used for force-flush and file completion.
+//
+// The cursor advance is what keeps coalescing alive across a memory-pressure
+// flush. Every returned article is about to be written, so the frontier really
+// has moved. Before, this deleted the whole entry, and the next buffered
+// article recreated it with writeCursor back at zero — an offset whose article
+// had just been drained and would never be re-buffered. buildContiguousRun
+// then broke there on every later call and coalescing was dead for the rest of
+// the file, with no failed article involved. See #311.
+//
+// The cursor is set past a hole rather than up to it, deliberately: a drain
+// writes what is buffered above a gap as well as below, so stopping at the gap
+// would re-strand the scan at the same offset. An article that later arrives
+// below the advanced cursor is not lost — it is buffered as usual and written
+// by the next drain, exactly as it would be today. It simply does not
+// participate in a coalesced run.
+//
+// The entry is retained rather than deleted so the advanced cursor survives.
+// Callers that are finished with the file call forget to drop it.
 func (wc *writeCache) drainFile(key fileKey) (fileKey, []bufferedArticle) {
 	fb, ok := wc.perFile[key]
 	if !ok {
@@ -219,18 +238,23 @@ func (wc *writeCache) drainFile(key fileKey) (fileKey, []bufferedArticle) {
 	for offset, data := range fb.articles {
 		articles = append(articles, bufferedArticle{offset: offset, data: data})
 		wc.used -= int64(len(data))
+		if end := offset + int64(len(data)); end > fb.writeCursor {
+			fb.writeCursor = end
+		}
 	}
 	// Sort by offset for sequential write ordering.
 	slices.SortFunc(articles, func(a, b bufferedArticle) int {
 		return cmp.Compare(a.offset, b.offset)
 	})
 
-	delete(wc.perFile, key)
+	clear(fb.articles)
+	fb.totalBytes = 0
 	return key, articles
 }
 
-// drainAll removes and returns all buffered articles across all files.
-// Used on assembler shutdown.
+// drainAll removes and returns all buffered articles across all files, and
+// drops every per-file entry. Used on assembler shutdown, where no file will
+// be written again, so there is no cursor worth preserving.
 func (wc *writeCache) drainAll() map[fileKey][]bufferedArticle {
 	result := make(map[fileKey][]bufferedArticle, len(wc.perFile))
 	for key := range wc.perFile {
@@ -238,6 +262,10 @@ func (wc *writeCache) drainAll() map[fileKey][]bufferedArticle {
 		if len(arts) > 0 {
 			result[key] = arts
 		}
+		// drainFile retains the entry to preserve its cursor; nothing here
+		// will use it again, so drop it. Safe after a drain: the articles
+		// have been handed to the caller and forget has none left to pool.
+		wc.forget(key)
 	}
 	return result
 }

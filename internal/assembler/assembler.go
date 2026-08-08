@@ -1273,6 +1273,11 @@ func (a *Assembler) drainCacheForFile(wc *writeCache, f *openFile, key fileKey) 
 	}
 	_, arts := wc.drainFile(key)
 	a.writeCachedArticles(f, arts, "drain cached article to disk")
+	// drainFile retains the entry so a pressure flush keeps its advanced
+	// cursor (#311). This caller is the completion path — the file is about
+	// to be closed and will never be buffered again — so drop it here rather
+	// than leaving an entry per completed file behind.
+	wc.forget(key)
 }
 
 // flushWriteCache drains all cached articles across all files to disk.
