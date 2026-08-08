@@ -560,6 +560,8 @@ func (a *Assembler) worker() {
 		tickC = t.C
 	}
 
+	reqsClosed := false
+
 mainLoop:
 	for {
 		select {
@@ -570,6 +572,7 @@ mainLoop:
 				// shared shutdown block below rather than returning here, so
 				// this path cannot skip flushWriteCache and drop cached bytes
 				// that flush() has already reported Done.
+				reqsClosed = true
 				break mainLoop
 			}
 			reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
@@ -599,6 +602,7 @@ mainLoop:
 				select {
 				case req, ok := <-a.reqs:
 					if !ok {
+						reqsClosed = true
 						break drain
 					}
 					reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
@@ -611,6 +615,13 @@ mainLoop:
 			}
 			break mainLoop
 		}
+	}
+
+	// A closed reqs is not a normal shutdown — nothing closes it — and exiting
+	// quietly would stop all assembly with no trace. Logged once here rather
+	// than in each arm, since both reach this point.
+	if reqsClosed {
+		a.log.Error("assembler: reqs channel was closed; worker exiting, no further articles will be assembled")
 	}
 
 	// Shared shutdown, reached from every exit above so no path can skip a
