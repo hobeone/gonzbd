@@ -930,7 +930,21 @@ func (app *Application) watchCompletions(ctx context.Context) {
 			// the queue before it's saved to disk during shutdown.
 			app.drainCompletions(ctx)
 			return
-		case fc := <-app.internalFileComplete:
+		case fc, ok := <-app.internalFileComplete:
+			// A closed channel is permanently ready, so without this guard the
+			// select would spin at full CPU forever, handing zero-value events
+			// to handleFileComplete. Nothing closes internalFileComplete today.
+			// No drain is needed on !ok: a closed buffered channel yields every
+			// buffered value before ok goes false.
+			//
+			// Logged at Error because exiting here is not a clean shutdown: the
+			// completion consumer disappears while the app keeps running, so
+			// jobs stall at 100% and post-processing never starts. Silence would
+			// make that harder to diagnose than the spin it replaces.
+			if !ok {
+				app.log.Error("internalFileComplete was closed; completion consumer exiting, jobs will stall")
+				return
+			}
 			app.handleFileComplete(ctx, fc)
 		}
 	}
@@ -1153,7 +1167,16 @@ func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log 
 func (app *Application) drainCompletions(ctx context.Context) {
 	for {
 		select {
-		case fc := <-app.internalFileComplete:
+		case fc, ok := <-app.internalFileComplete:
+			// Without this guard a closed channel would keep this receive
+			// permanently ready, so `default` would never be selected and the
+			// drain would spin forever on zero-value events instead of
+			// returning. Nothing closes internalFileComplete today; if that
+			// changes, say so rather than exiting quietly.
+			if !ok {
+				app.log.Error("internalFileComplete was closed during drain; completions may be lost")
+				return
+			}
 			app.handleFileComplete(ctx, fc)
 		default:
 			return
