@@ -1274,9 +1274,16 @@ func (a *Assembler) drainCacheForFile(wc *writeCache, f *openFile, key fileKey) 
 	_, arts := wc.drainFile(key)
 	a.writeCachedArticles(f, arts, "drain cached article to disk")
 	// drainFile retains the entry so a pressure flush keeps its advanced
-	// cursor (#311). This caller is the completion path — the file is about
-	// to be closed and will never be buffered again — so drop it here rather
-	// than leaving an entry per completed file behind.
+	// cursor (#311). Both callers here are closing the handle, so the cursor
+	// has no further use in this pass and the entry would otherwise
+	// accumulate, one per file, until shutdown.
+	//
+	// The key can legitimately come back: CloseJobHandles runs at
+	// post-processing start, and a job retried from history is rebuilt under
+	// the same ID and file indices, so it re-enters on an identical fileKey.
+	// That is why this drops the entry rather than zeroing it — initCursor
+	// reseeds from the persisted write cursor on re-entry, which is the
+	// correct resume point, whereas a stale in-memory cursor would not be.
 	wc.forget(key)
 }
 

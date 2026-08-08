@@ -33,7 +33,10 @@ type fileBuf struct {
 	// articles maps byte offset → decoded article data.
 	articles map[int64][]byte
 	// writeCursor tracks the next expected contiguous offset for this file.
-	// Initially 0; advances as contiguous runs are flushed.
+	// Initially 0 (or the resume point seeded by initCursor). It advances as
+	// contiguous runs are flushed, and also on a drain — drainFile moves it
+	// past everything it hands back, which can jump an offset that was never
+	// buffered. See drainFile.
 	writeCursor int64
 	// totalBytes is the sum of len(data) for all buffered articles.
 	totalBytes int64
@@ -82,7 +85,10 @@ func (wc *writeCache) initCursor(key fileKey, cursor int64) {
 }
 
 // cursorFor returns the file's current contiguous write frontier, or 0 if the
-// file has no buffer entry (caching disabled, or already drained).
+// file has no buffer entry — caching is disabled, or the entry was dropped by
+// forget. A drain is not one of those cases: drainFile retains the entry
+// precisely so its advanced cursor survives, so after a pressure flush this
+// returns the advanced frontier rather than 0.
 func (wc *writeCache) cursorFor(key fileKey) int64 {
 	if fb, ok := wc.perFile[key]; ok {
 		return fb.writeCursor
@@ -270,8 +276,14 @@ func (wc *writeCache) drainAll() map[fileKey][]bufferedArticle {
 	return result
 }
 
-// forget removes tracking for a file without returning data. Used when
-// a file's cache has already been drained through contiguous flushes.
+// forget removes tracking for a file without returning data, pooling anything
+// still buffered. Called when nothing will be written for the file again:
+// after a cancel, or by the completion and shutdown paths to drop the entry
+// drainFile deliberately retained.
+//
+// Calling this after a drain is safe only because drainFile clears the
+// articles map. The articles it returned have already been pooled by the
+// caller that wrote them, so an uncleared map would double-return them.
 func (wc *writeCache) forget(key fileKey) {
 	if fb, ok := wc.perFile[key]; ok {
 		for _, data := range fb.articles {
