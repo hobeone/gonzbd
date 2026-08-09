@@ -136,7 +136,7 @@ type FileInfo struct {
 	// Zero for a fresh download (file starts at byte 0). On resume the caller
 	// sets it to the file's persisted contiguous write frontier so coalescing
 	// doesn't stall waiting for an offset-0 article that was already written
-	// before the restart. See queue.JobFile.WriteCursor.
+	// before the restart. See queue.FileProgress.WriteCursor.
 	//
 	// It doubles as a floor on the completed file's extent, for a file whose
 	// earlier run predates InitialMaxWritten being persisted. It is a weaker
@@ -151,7 +151,7 @@ type FileInfo struct {
 	// Zero for a fresh download, and zero for a file whose earlier run predates
 	// this figure being persisted — in which case InitialWriteCursor is the
 	// only floor available, which under-counts a tail that arrived out of
-	// order but never over-counts. See queue.JobFile.MaxWritten.
+	// order but never over-counts. See queue.FileProgress.MaxWritten.
 	InitialMaxWritten int64
 }
 
@@ -949,8 +949,11 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	// Seed the high-water mark from what earlier runs are recorded as having
 	// written. Without this a resumed file's mark starts at zero and the
 	// completion truncate cuts away the tail those runs already wrote (#342).
-	// Both inputs describe bytes that reached disk, so neither can push the
-	// mark above the file's real extent.
+	//
+	// Neither input is a guarantee — both describe a file this process has not
+	// measured, and the cursor in particular can sit above the bytes actually
+	// on disk. finalizeFile refuses to truncate upward rather than trusting
+	// them; do not delete that guard on the strength of this seeding.
 	f := &openFile{
 		handle:     fh,
 		info:       info,

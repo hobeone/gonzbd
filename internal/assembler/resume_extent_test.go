@@ -67,9 +67,10 @@ func TestResumeKeepsEarlierRunBytes(t *testing.T) {
 
 // TestWriteCursorSeedsTheExtent covers the same defect for a job whose earlier
 // run predates the persisted high-water mark, or whose mark is unset for any
-// other reason. InitialWriteCursor is the contiguous frontier of bytes that
-// reached disk, so it is always at or below the true extent and can serve as a
-// floor that never over-truncates.
+// other reason. InitialWriteCursor is the contiguous write frontier, so it
+// normally lags the true extent and serves as a floor — but it is not a
+// guarantee, which is why finalizeFile refuses to truncate upward rather than
+// trusting it. See TestTruncateNeverGrowsTheFile.
 func TestWriteCursorSeedsTheExtent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job1_0.dat")
@@ -137,10 +138,9 @@ func TestExtentReportedWithCacheDisabled(t *testing.T) {
 	}
 
 	a := startAssembler(t, opts)
-	// One of the file's two parts. The file stays incomplete deliberately:
-	// finalizeFile drops the pending entry before the flush, since a finished
-	// file has no resume state worth persisting, so a completed file reports
-	// nothing by design.
+	// One of the file's two parts. The file stays incomplete so the assertion
+	// is about the periodic flush rather than the completion path, which
+	// reports through a different route.
 	if err := a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("abcd"),
 	}); err != nil {
@@ -172,6 +172,114 @@ func TestExtentReportedWithCacheDisabled(t *testing.T) {
 	if st, err := os.Stat(path); err != nil || st.Size() != resumeArt {
 		t.Errorf("file on disk: %v (err %v); the reported mark must describe bytes "+
 			"that actually reached disk", st, err)
+	}
+}
+
+// TestTruncateNeverGrowsTheFile pins the guard that makes the seeded mark safe.
+//
+// The mark is seeded from figures an earlier run persisted, describing a file
+// this process has not measured. They can exceed what is on disk: the download
+// directory may have been removed between runs, pre-allocation may have failed
+// and been logged rather than fatal, and the write cursor can sit past a gap a
+// failed WriteAt left behind. Truncating to such a mark would append exactly
+// the trailing zeros the truncate exists to remove, and a job without par2 has
+// no repair stage to notice.
+func TestTruncateNeverGrowsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "job1_0.dat")
+
+	// The file on disk is far shorter than the persisted mark claims.
+	short := []byte("0123")
+	if err := os.WriteFile(path, short, 0o644); err != nil {
+		t.Fatalf("seed short file: %v", err)
+	}
+
+	files := map[string]FileInfo{
+		"job1:0": {
+			Path:       path,
+			TotalParts: 1,
+			// ExpectedSize unset: nothing is pre-allocated, so the only thing
+			// that could grow the file is the truncate itself.
+			InitialMaxWritten: 100 << 10,
+		},
+	}
+	opts := makeOpts(dir, files)
+	done := make(chan struct{}, 1)
+	opts.OnFileComplete = func(string, int, uint32) { done <- struct{}{} }
+
+	a := startAssembler(t, opts)
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("ZZZZ"),
+	}); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+	<-done
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if st.Size() > int64(len(short)) {
+		t.Errorf("file grew to %d bytes from %d — the truncate extended it to a "+
+			"stale persisted mark, appending the trailing zeros it exists to strip",
+			st.Size(), len(short))
+	}
+}
+
+// TestFinalizeFilePersistsTheDrainedExtent pins the completion path's half of
+// the same fix TestCloseJobHandlesPersistsTheFinalExtent covers.
+//
+// finalizeFile drains the write cache before truncating, and that drain raises
+// the mark. Dropping the pending entry before the flush discarded the raise.
+// It looks harmless because a completed file needs no resume state — but
+// ResetForRetry clears a file's failed articles and sets Complete to false, so
+// a file that finalized with a permanently failed article becomes resumable
+// again, against a stale mark.
+func TestFinalizeFilePersistsTheDrainedExtent(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 2)
+
+	var mu sync.Mutex
+	var maxReported int64
+	opts := makeOpts(dir, files)
+	opts.WriteCacheBytes = 64 << 20 // buffered, so only the completion drain writes
+	opts.SetFileExtents = func(_ string, _ int, _, maxWritten int64) error {
+		mu.Lock()
+		defer mu.Unlock()
+		maxReported = max(maxReported, maxWritten)
+		return nil
+	}
+	done := make(chan struct{}, 1)
+	opts.OnFileComplete = func(string, int, uint32) { done <- struct{}{} }
+
+	a := startAssembler(t, opts)
+	for i := range 2 {
+		if err := a.WriteArticle(t.Context(), WriteRequest{
+			JobID: "job1", FileIdx: 0,
+			Offset: int64(i) * resumeArt,
+			Data:   []byte("abcd"),
+		}); err != nil {
+			t.Fatalf("WriteArticle %d: %v", i, err)
+		}
+	}
+	<-done
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	mu.Lock()
+	got := maxReported
+	mu.Unlock()
+
+	if want := int64(2 * resumeArt); got != want {
+		t.Errorf("persisted maxWritten = %d, want %d — the completion drain wrote "+
+			"the buffered articles and raised the mark, but the entry was dropped "+
+			"before the flush, so a retried file resumes from a stale extent",
+			got, want)
 	}
 }
 
@@ -328,14 +436,13 @@ func TestExtentCountsOnlyWrittenBytes(t *testing.T) {
 			"that article is already acked done so it is never refetched",
 			reported, st.Size())
 	}
-	// Writes here are contiguous from zero, so the mark should land exactly on
-	// the file's size rather than merely at or below it. Not asserting against
-	// a fixed constant: the coalescer flushes when a run clears its threshold,
-	// so how many of the five articles are on disk at this point is its
-	// business, not this test's.
-	if reported != st.Size() {
-		t.Errorf("persisted maxWritten = %d but the file is %d bytes; the mark "+
-			"should track exactly what reached disk", reported, st.Size())
+	// Deliberately an inequality, not an equality. The poll loop breaks on the
+	// first report, which can land between the two coalesced runs, so the file
+	// may still grow before the stat — an equality check would race. The
+	// overshoot this test exists to catch is unbounded (the far article sits
+	// 40 articles past the end), so the inequality catches it just as surely.
+	if reported == 0 {
+		t.Error("nothing was reported as written, so this proves nothing")
 	}
 	if st.Size() >= farOffset {
 		t.Fatalf("the far article was written after all (file is %d bytes); this "+
