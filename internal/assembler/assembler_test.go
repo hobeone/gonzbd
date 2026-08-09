@@ -694,7 +694,7 @@ func TestResumedFileCoalescesAndReportsCursor(t *testing.T) {
 	}
 	opts := makeOpts(dir, files)
 	opts.WriteCacheBytes = 1 << 20
-	opts.SetWriteCursor = func(jobID string, fileIdx int, c int64) error {
+	opts.SetFileExtents = func(jobID string, fileIdx int, c, _ int64) error {
 		gotJob, gotIdx, gotCursor = jobID, fileIdx, c
 		return nil
 	}

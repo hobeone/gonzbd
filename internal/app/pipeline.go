@@ -408,6 +408,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		TotalParts:         totalParts,
 		ExpectedSize:       m.FileBytes(fileIdx),
 		InitialWriteCursor: snap.Progress().FileWriteCursor(fileIdx),
+		InitialMaxWritten:  snap.Progress().FileMaxWritten(fileIdx),
 	}
 
 	p.mu.Lock()

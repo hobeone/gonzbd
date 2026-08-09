@@ -113,7 +113,7 @@ func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
+	if err := q.SetFileExtents(job.ID, 0, 4096, 4096); err != nil {
 		t.Fatal(err)
 	}
 

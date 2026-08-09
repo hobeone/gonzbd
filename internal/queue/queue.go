@@ -1689,10 +1689,20 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 	return nil
 }
 
-// SetFileWriteCursor records the assembler's contiguous write frontier for a
-// file as a persisted resume hint (see JobFile.WriteCursor). Called from the
-// assembler's batched flush, never per-article.
-func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) error {
+// SetFileExtents records a file's resume figures: the assembler's contiguous
+// write frontier, and the highest byte position it has written (see
+// JobFile.WriteCursor and JobFile.MaxWritten). Called from the assembler's
+// batched flush, never per-article — taking the write lock once for both is
+// the reason they travel together.
+//
+// Both figures only ever advance, and the clamp is load-bearing rather than
+// defensive. The assembler reports whichever figure the write path that fired
+// happens to know: a coalesced run knows the new cursor, while a drained or
+// uncached write knows only the high-water mark and leaves the cursor at its
+// zero value. Taking the report literally would reset write_cursor to 0 on
+// every such flush, undoing the resume hint (#311) that the same call exists
+// to persist.
+func (q *Queue) SetFileExtents(jobID string, fileIdx int, cursor, maxWritten int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, err := q.residentJob(jobID)
@@ -1702,7 +1712,9 @@ func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) erro
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.progress.files[fileIdx].WriteCursor = cursor
+	f := &job.progress.files[fileIdx]
+	f.WriteCursor = max(f.WriteCursor, cursor)
+	f.MaxWritten = max(f.MaxWritten, maxWritten)
 	q.dirty.Store(true)
 	return nil
 }
