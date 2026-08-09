@@ -35,8 +35,9 @@ download speeds, naive I/O creates several classes of failure:
   larger than decoded). Pre-allocation at that size, then writing decoded data,
   leaves trailing zero bytes that par2 reports as damage. The assembler
   truncates to `maxWritten` at file completion to fix this.
-- **A truncate target that outlives one run**: `maxWritten` describes the
-  current run, but the file on disk is the product of every run. A resumed
+- **A truncate target that outlives one run**: with no persisted seed to
+  restore, `maxWritten` describes only the current run, but the file on disk is
+  the product of every run. A resumed
   file's `TotalParts` counts only the articles still outstanding, so it
   completes as soon as those arrive — and truncating to this run's extent then
   discards whatever an earlier run wrote above them. The mark is persisted and
