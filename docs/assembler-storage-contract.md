@@ -51,7 +51,7 @@ download speeds, naive I/O creates several classes of failure:
 | **Ingest** | `WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into bounded channel (`reqs`, cap 2048). Control messages for cancel/close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` can drain cleanly. |
 | **Worker** | `worker` goroutine | Owns all file handles. Dispatches requests, manages open-file map, drives write cache, executes periodic flush, checks disk space. | Single goroutine — zero lock contention on file handles, write cache, or pending batches. |
 | **Write cache** | `writeCache` (writecache.go) | Buffers decoded articles in memory, coalesces contiguous runs into single `WriteAt` calls, tracks per-file write cursor for resume. | Owned exclusively by the worker goroutine. No locks. |
-| **Batch flush** | `flush()` on worker | Accumulates `pendingDone` / `pendingFailed` / `pendingCursor` maps and flushes to queue callbacks in groups. | Worker-owned maps. Flushed on: file completion, ticker (250ms), and `Stop()`. |
+| **Batch flush** | `flush()` on worker | Accumulates `pendingDone` / `pendingFailed` / `pendingExtent` maps and flushes to queue callbacks in groups. | Worker-owned maps. Flushed on: file completion, ticker (250ms), and `Stop()`. |
 | **DirectUnpack** | `internal/directunpack` | Streams RAR extraction (via `rarengine`) as volumes complete during download. Reads whole-file volumes after assembly, not partial article data. | Mutex (`mu`) guards volume tracking and kill state. Blocking `volumeReady` channel coordinates volume availability. |
 
 ## File assembly lifecycle
@@ -104,7 +104,7 @@ for this (job, file)     │                              │
    invariant (see `nntp-downloader-contract.md` §5) handles this by re-fetching
    them on restart.
 
-3. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingCursor`
+3. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingExtent`
    maps are flushed to queue callbacks on three triggers:
    - **File completion** (`finalizeFile` → `flush()`).
    - **Periodic ticker** (default 250ms, `defaultDoneFlushInterval`).
@@ -246,7 +246,10 @@ memory and coalesces contiguous runs into larger `WriteAt` calls:
 - **Resume cursor**: `initCursor(key, InitialWriteCursor)` seeds the write
   cursor from the persisted resume point so coalescing doesn't stall waiting
   for offset-0 articles that were already written before a restart.
-  `pendingCursor` is flushed alongside `pendingDone` on the same cadence.
+  `pendingExtent` carries that cursor *and* the file's decoded high-water
+  mark, and is flushed alongside `pendingDone` on the same cadence. The two
+  travel together so the flush takes the queue's write lock once per file
+  rather than twice; see `SetFileExtents`.
 
 When `WriteCacheBytes == 0` (default), caching is disabled. Each article is
 written directly via `WriteAt`. Decoder buffers are returned to `sync.Pool`

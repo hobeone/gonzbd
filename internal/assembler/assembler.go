@@ -141,10 +141,10 @@ type FileInfo struct {
 	// It doubles as a floor on the completed file's extent, for a file whose
 	// earlier run predates InitialMaxWritten being persisted. It is a weaker
 	// figure than that mark and is not a guarantee: drainFile advances the
-	// cursor past a gap rather than up to it, and writeCachedArticles advances
-	// it for a WriteAt that it then logs as failed. So it can sit above the
-	// bytes actually on disk, which is why finalizeFile refuses to truncate
-	// upward rather than trusting either seed.
+	// cursor past everything it returns — gaps included, and before any write
+	// is attempted — so a subsequent WriteAt that writeCachedArticles logs as
+	// failed leaves the cursor above the bytes actually on disk. That is why
+	// finalizeFile refuses to truncate upward rather than trusting either seed.
 	InitialWriteCursor int64
 
 	// InitialMaxWritten seeds the file's decoded high-water mark on resume.

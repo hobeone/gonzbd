@@ -441,8 +441,16 @@ func TestExtentCountsOnlyWrittenBytes(t *testing.T) {
 	// may still grow before the stat — an equality check would race. The
 	// overshoot this test exists to catch is unbounded (the far article sits
 	// 40 articles past the end), so the inequality catches it just as surely.
-	if reported == 0 {
-		t.Error("nothing was reported as written, so this proves nothing")
+	// A deterministic floor rather than an equality. The poll loop breaks on
+	// the first report, which can land between the two coalesced runs, so the
+	// file may still grow before the stat — an equality check would race. This
+	// still pins the reported value against a constant or a systematic
+	// under-report, which a bare "greater than zero" would not: whatever run
+	// fired, it cleared the coalescing threshold by definition.
+	if reported < contiguousRunSize {
+		t.Errorf("persisted maxWritten = %d, want at least %d — a coalesced run "+
+			"had to clear the threshold to be written at all", reported,
+			int64(contiguousRunSize))
 	}
 	if st.Size() >= farOffset {
 		t.Fatalf("the far article was written after all (file is %d bytes); this "+

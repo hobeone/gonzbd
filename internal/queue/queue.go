@@ -1691,7 +1691,7 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 
 // SetFileExtents records a file's resume figures: the assembler's contiguous
 // write frontier, and the highest byte position it has written (see
-// JobFile.WriteCursor and JobFile.MaxWritten). Called from the assembler's
+// FileProgress.WriteCursor and FileProgress.MaxWritten). Called from the assembler's
 // batched flush, never per-article — taking the write lock once for both is
 // the reason they travel together.
 //
