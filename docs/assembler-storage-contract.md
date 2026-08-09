@@ -35,6 +35,13 @@ download speeds, naive I/O creates several classes of failure:
   larger than decoded). Pre-allocation at that size, then writing decoded data,
   leaves trailing zero bytes that par2 reports as damage. The assembler
   truncates to `maxWritten` at file completion to fix this.
+- **A truncate target that outlives one run**: `maxWritten` describes the
+  current run, but the file on disk is the product of every run. A resumed
+  file's `TotalParts` counts only the articles still outstanding, so it
+  completes as soon as those arrive — and truncating to this run's extent then
+  discards whatever an earlier run wrote above them. The mark is persisted and
+  re-seeded on open so the target describes the file rather than the session
+  (#342).
 
 ## The storage & assembly tiers
 
@@ -157,6 +164,46 @@ Pre-allocation uses `ExpectedSize` from the NZB, which is the *encoded* size
 `Truncate(maxWritten)` to trim to the actual decoded size. Without this
 truncation, trailing zero bytes cause par2 to report the file as damaged despite
 100% download health.
+
+`maxWritten` is the file's decoded high-water mark, and it must survive a
+restart. It is seeded on open from `max(InitialMaxWritten, InitialWriteCursor)`
+and raised only where bytes reach `WriteAt` — never when an article is merely
+accepted into the write cache, since an article can be acked Done while still
+resident in memory, and a mark persisted ahead of the bytes would make a later
+truncate *extend* a short file with zeros that nothing will ever fill.
+
+| Seed | Meaning | Why it is not the whole answer |
+|------|---------|--------------------------------|
+| `InitialMaxWritten` | highest byte position written | the answer when present — zero for a file whose earlier run predates the column |
+| `InitialWriteCursor` | *contiguous* write frontier | lags the high-water mark whenever articles arrive out of order, which is the normal case on a multi-connection download |
+
+**The truncate never grows a file.** Both seeds come from state persisted by an
+earlier run, describing a file this process has not measured, so neither is a
+guarantee. `drainFile` advances the cursor *past* a gap rather than up to it,
+and `writeCachedArticles` advances it for a `WriteAt` it then logs as failed —
+so the cursor can sit above the bytes actually on disk. The directory may also
+have been removed between runs, or pre-allocation may have failed and been
+logged rather than fatal.
+
+`finalizeFile` therefore stats the handle and skips the truncate when the
+target exceeds the file's real size. Growing it would append exactly the
+trailing zeros the truncate exists to remove, and a job with no par2 has no
+repair stage to notice. Trimming is the only direction ever intended.
+
+The two figures are persisted together through `SetFileExtents` on the worker's
+batched flush, so the queue's write lock is taken once per file rather than
+twice. They are recorded on both the cached and uncached write paths: with
+`WriteCacheBytes` at 0 the direct-write path is the only one that runs, and
+recording solely from the cache branch left the resume hint silently
+unpersisted in that configuration.
+
+Neither the completion path nor `CloseJobHandles` drops the pending entry
+before flushing. Both drain the write cache first, and that drain raises the
+mark, so dropping the entry first would discard the increment the drain just
+earned. `CloseJobHandles` is the path that makes this matter: it runs when a
+job enters post-processing, so the files still open are the incomplete ones a
+retry resumes. The flush clears the whole map afterwards, so nothing
+accumulates.
 
 `SupportsSparse()` in `sparse.go` probes whether the target filesystem supports
 sparse files by creating a temporary file, truncating it to 1 MiB, and checking
@@ -359,6 +406,13 @@ articles or sparse file regions. The coordination model:
   and found worse than leaving it alone — one had an unbounded stranding
   bound, the other regressed hole-free files. Measure the residency cost
   before attempting it again.
+- **A resumed file's whole-file CRC covers only part of the file.**
+  `finalizeFile` combines `crcParts` without checking they start at offset 0 or
+  tile without holes, and a resumed run only accumulates parts for the articles
+  it received. `crcValid` stays true, so the subrange CRC is reported as
+  trustworthy and QuickCheck reads it as a mismatch. The file is correct on
+  disk after #342; this sends it to a needless repair anyway. Tracked as #349,
+  and it shares the persistence question with the high-water mark above.
 - **The syscall-reduction figure above is unmeasured.** "Reducing syscall
   count by 8–16×" states a ratio no benchmark in this repository produces. A
   sweep of `WriteAt` chunk sizes over the same payload found wall-clock flat
