@@ -222,6 +222,13 @@ type Options struct {
 	// worker's batched flush, never per-article — the two travel together so
 	// the flush takes the queue's write lock once per file rather than twice.
 	// Optional; nil disables persistence of both.
+	//
+	// An implementation must merge rather than overwrite, keeping the larger
+	// of the stored and reported value for each figure. A flush reports
+	// whichever figures the write paths that fired happen to know: a coalesced
+	// run knows the new cursor, while a drained or uncached write knows only
+	// the high-water mark and leaves the cursor at zero. Storing that zero
+	// literally would erase the resume hint (#311) this call exists to keep.
 	SetFileExtents func(jobID string, fileIdx int, cursor, maxWritten int64) error
 }
 
@@ -339,8 +346,12 @@ type Assembler struct {
 }
 
 // fileExtent is a file's persisted resume state: how far the contiguous write
-// frontier has advanced, and the highest byte position written. Both describe
-// bytes that reached disk.
+// frontier has advanced, and the highest byte position written.
+//
+// Only maxWritten is a statement about bytes on disk. The cursor is advanced
+// by drainFile across everything it hands back, gaps included and before any
+// write is attempted, so it can outrun the file — see FileInfo.InitialWriteCursor
+// and the guard in finalizeFile.
 type fileExtent struct {
 	cursor     int64
 	maxWritten int64
@@ -1069,8 +1080,8 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	// earlier run, describing a file this process has not measured, so it can
 	// exceed what is actually on disk — the download directory may have been
 	// removed between runs, pre-allocation may have failed and been logged
-	// rather than fatal, or a persisted write cursor may sit past a gap a
-	// failed WriteAt left behind. Truncate would then extend the file with
+	// rather than fatal, or a persisted write cursor may have been advanced by
+	// drainFile across a range whose WriteAt then failed. Truncate would then extend the file with
 	// exactly the trailing zeros this call exists to remove, and a job with no
 	// par2 has no repair stage to notice. Trimming is the only direction that
 	// was ever intended.
@@ -1307,8 +1318,9 @@ func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
 }
 
 // noteWritten raises the file's decoded high-water mark to cover a range that
-// has just reached WriteAt, and records the file's resume figures for the next
-// batched flush.
+// has just reached WriteAt, and stages that mark for the next batched flush.
+// It leaves the staged cursor alone: this path knows nothing about the
+// contiguous frontier, which only a coalesced run advances.
 //
 // It is called from the write paths rather than from the point an article is
 // accepted, deliberately. The mark seeds a resumed file's truncate target, so
@@ -1319,11 +1331,13 @@ func (a *Assembler) noteWritten(f *openFile, offset, n int64) {
 	if end := offset + n; end > f.maxWritten {
 		f.maxWritten = end
 	}
-	// Lazily created rather than assumed: this runs on every write, and the
-	// map is nil on an Assembler built as a literal rather than by New. A nil
-	// map write would panic on the single worker goroutine, which owns every
-	// open file handle and is the only drainer of a.reqs, so the whole
-	// pipeline would stop rather than one write failing.
+	// New always allocates this map, so the nil case is unreachable in
+	// production; it exists for the tests that build an Assembler as a literal
+	// to exercise a single helper. Creating it rather than assuming it is one
+	// branch on a path that already writes to the map, against a nil-map panic
+	// on the single worker goroutine — which owns every open file handle and
+	// is the only drainer of a.reqs, so it would stop the pipeline rather than
+	// fail one write.
 	if a.pendingExtent == nil {
 		a.pendingExtent = make(map[fileKey]fileExtent)
 	}

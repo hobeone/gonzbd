@@ -118,7 +118,9 @@ type FileProgress struct {
 	// articles this run happens to receive (#342).
 	//
 	// Distinct from WriteCursor, which is the *contiguous* frontier and so
-	// lags this figure whenever articles arrive out of order.
+	// normally lags this figure whenever articles arrive out of order. Only
+	// this one is a statement about bytes on disk; see the assembler's
+	// FileInfo.InitialWriteCursor for why the cursor is not.
 	MaxWritten     int64
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32

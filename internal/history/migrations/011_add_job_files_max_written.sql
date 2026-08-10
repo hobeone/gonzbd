@@ -11,11 +11,13 @@
 -- whatever this run happened to receive — discarding data an earlier run had
 -- already written and fsynced. See #342.
 --
--- write_cursor does not solve this. It is the CONTIGUOUS frontier, so it lags
--- the high-water mark whenever articles arrive out of order, which is the
--- normal case for a multi-connection download. It is a sound floor, since every
--- byte below it reached disk, and the assembler uses it as one — but a floor is
--- not the extent.
+-- write_cursor does not solve this. It is the CONTIGUOUS frontier, so it
+-- normally lags the high-water mark: articles arriving out of order leave it
+-- behind, which is the usual case for a multi-connection download. The
+-- assembler still uses it as a fallback seed, but it is not a bound on the
+-- file either — drainFile advances it across everything it hands back, before
+-- any write is attempted — so finalizeFile refuses to truncate upward rather
+-- than trusting it.
 --
 -- There is no backfill, and none is possible. The figure describes bytes on
 -- disk, and nothing already stored records it: bytes and bytes_downloaded are

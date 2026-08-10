@@ -8,17 +8,20 @@ import (
 	"time"
 )
 
-// resumeArt is one article's decoded payload size in these tests. Small — none
-// of this exercises the coalescing threshold, only the extent bookkeeping.
+// resumeArt is one article's decoded payload size for the tests that use it.
+// Deliberately tiny: those tests are about the extent bookkeeping, so nothing
+// should reach the coalescing threshold and be written before its drain.
+// TestExtentCountsOnlyWrittenBytes needs the opposite and sizes its own.
 const resumeArt = 4
 
 // TestResumeKeepsEarlierRunBytes is the regression test for #342.
 //
-// finalizeFile truncates a completed file to openFile.maxWritten, a high-water
-// mark of bytes written during the current run. A resumed file's TotalParts
-// counts only the articles still outstanding, so it completes as soon as those
-// arrive. When they sit below what an earlier run already wrote, the truncate
-// cuts the tail off a file that was correct on disk.
+// finalizeFile truncates a completed file to openFile.maxWritten, which used to
+// be a high-water mark of bytes written during the current run alone. A resumed
+// file's TotalParts counts only the articles still outstanding, so it completes
+// as soon as those arrive — and when they sat below what an earlier run had
+// already written, the truncate cut the tail off a file that was correct on
+// disk. The mark is now seeded from what earlier runs persisted.
 //
 // The target file is opened O_CREATE without O_TRUNC precisely so an earlier
 // run's bytes survive the open — this test asserts they also survive the close.

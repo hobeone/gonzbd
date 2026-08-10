@@ -74,7 +74,7 @@ for this (job, file)     │                              │
                                                    finalizeFile()
                                                    │
                                                    ├── drainCacheForFile
-                                                   ├── Truncate(maxWritten)
+                                                   ├── Truncate(maxWritten) — trim only
                                                    ├── Sync() (fsync)
                                                    ├── Close()
                                                    ├── flush() (Done/Failed batches)
@@ -176,15 +176,15 @@ truncate *extend* a short file with zeros that nothing will ever fill.
 | Seed | Meaning | Why it is not the whole answer |
 |------|---------|--------------------------------|
 | `InitialMaxWritten` | highest byte position written | the answer when present — zero for a file whose earlier run predates the column |
-| `InitialWriteCursor` | *contiguous* write frontier | lags the high-water mark whenever articles arrive out of order, which is the normal case on a multi-connection download |
+| `InitialWriteCursor` | *contiguous* write frontier | normally lags the high-water mark, since articles arriving out of order leave it behind — but it is not bounded by the file either, see below |
 
 **The truncate never grows a file.** Both seeds come from state persisted by an
 earlier run, describing a file this process has not measured, so neither is a
-guarantee. `drainFile` advances the cursor *past* a gap rather than up to it,
-and `writeCachedArticles` advances it for a `WriteAt` it then logs as failed —
-so the cursor can sit above the bytes actually on disk. The directory may also
-have been removed between runs, or pre-allocation may have failed and been
-logged rather than fatal.
+guarantee. `drainFile` advances the cursor past everything it hands back — gaps
+included, and before any write is attempted — so a `WriteAt` that
+`writeCachedArticles` then logs as failed leaves the cursor above the bytes
+actually on disk. The directory may also have been removed between runs, or
+pre-allocation may have failed and been logged rather than fatal.
 
 `finalizeFile` therefore stats the handle and skips the truncate when the
 target exceeds the file's real size. Growing it would append exactly the
@@ -193,10 +193,16 @@ repair stage to notice. Trimming is the only direction ever intended.
 
 The two figures are persisted together through `SetFileExtents` on the worker's
 batched flush, so the queue's write lock is taken once per file rather than
-twice. They are recorded on both the cached and uncached write paths: with
+twice. Each write path stages only the figure it knows — a coalesced run
+advances the cursor, while a drained or uncached write raises the mark and
+leaves the cursor untouched — so the store must keep the larger of the stored
+and reported value for each rather than overwriting. Taking a report literally
+would erase the cursor on every uncached flush.
+
+The mark is staged on both the cached and uncached paths. With
 `WriteCacheBytes` at 0 the direct-write path is the only one that runs, and
-recording solely from the cache branch left the resume hint silently
-unpersisted in that configuration.
+staging solely from the cache branch left the resume hint silently unpersisted
+in that configuration.
 
 Neither the completion path nor `CloseJobHandles` drops the pending entry
 before flushing. Both drain the write cache first, and that drain raises the
