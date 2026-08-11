@@ -12,7 +12,7 @@ func TestWriteCacheDisabledWhenZero(t *testing.T) {
 		t.Error("expected disabled with limit=0")
 	}
 	key := fileKey{jobID: "j", fileIdx: 0}
-	if wc.buffer(key, 0, []byte("data")) {
+	if bufferAt(wc, key, 0, []byte("data")) {
 		t.Error("buffer should return false when disabled")
 	}
 }
@@ -21,7 +21,7 @@ func TestWriteCacheBuffer(t *testing.T) {
 	wc := newWriteCache(1 << 20) // 1 MiB
 	key := fileKey{jobID: "j", fileIdx: 0}
 
-	if !wc.buffer(key, 0, make([]byte, 1000)) {
+	if !bufferAt(wc, key, 0, make([]byte, 1000)) {
 		t.Fatal("buffer should return true")
 	}
 	if wc.used != 1000 {
@@ -32,7 +32,7 @@ func TestWriteCacheBuffer(t *testing.T) {
 	}
 
 	// Buffer a second article at a different offset.
-	if !wc.buffer(key, 1000, make([]byte, 500)) {
+	if !bufferAt(wc, key, 1000, make([]byte, 500)) {
 		t.Fatal("buffer should return true")
 	}
 	if wc.used != 1500 {
@@ -51,7 +51,7 @@ func TestWriteCacheContiguousFlush(t *testing.T) {
 		data := make([]byte, artSize)
 		// Write a marker byte so we can verify coalescing.
 		data[0] = byte(i + 1)
-		wc.buffer(key, int64(i*artSize), data)
+		bufferAt(wc, key, int64(i*artSize), data)
 	}
 
 	run := wc.flushContiguous(key)
@@ -82,7 +82,7 @@ func TestWriteCacheContiguousFlushBelowThreshold(t *testing.T) {
 	key := fileKey{jobID: "j", fileIdx: 0}
 
 	// Buffer a single small article — below the 512KB threshold.
-	wc.buffer(key, 0, make([]byte, 1024))
+	bufferAt(wc, key, 0, make([]byte, 1024))
 
 	run := wc.flushContiguous(key)
 	if run != nil {
@@ -99,8 +99,8 @@ func TestWriteCacheContiguousFlushWithGap(t *testing.T) {
 
 	artSize := 300 * 1024
 	// Article at offset 0 and offset 600KB (gap at 300KB).
-	wc.buffer(key, 0, make([]byte, artSize))
-	wc.buffer(key, int64(2*artSize), make([]byte, artSize))
+	bufferAt(wc, key, 0, make([]byte, artSize))
+	bufferAt(wc, key, int64(2*artSize), make([]byte, artSize))
 
 	// Only the run from offset 0 is contiguous, but it's only 300KB < 512KB.
 	run := wc.flushContiguous(key)
@@ -140,8 +140,8 @@ func TestWriteCacheForceFlushLargest(t *testing.T) {
 	k1 := fileKey{jobID: "j", fileIdx: 0}
 	k2 := fileKey{jobID: "j", fileIdx: 1}
 
-	wc.buffer(k1, 0, make([]byte, 1000))
-	wc.buffer(k2, 0, make([]byte, 2000))
+	bufferAt(wc, k1, 0, make([]byte, 1000))
+	bufferAt(wc, k2, 0, make([]byte, 2000))
 
 	fk, arts := wc.forceFlushLargest()
 	if fk != k2 {
@@ -164,9 +164,9 @@ func TestWriteCacheDrainFile(t *testing.T) {
 	key := fileKey{jobID: "j", fileIdx: 0}
 
 	// Buffer articles out of order.
-	wc.buffer(key, 2000, make([]byte, 500))
-	wc.buffer(key, 0, make([]byte, 1000))
-	wc.buffer(key, 1000, make([]byte, 1000))
+	bufferAt(wc, key, 2000, make([]byte, 500))
+	bufferAt(wc, key, 0, make([]byte, 1000))
+	bufferAt(wc, key, 1000, make([]byte, 1000))
 
 	_, arts := wc.drainFile(key)
 	if len(arts) != 3 {
@@ -192,12 +192,12 @@ func TestWriteCacheDrainAll(t *testing.T) {
 	k1 := fileKey{jobID: "j", fileIdx: 0}
 	k2 := fileKey{jobID: "j", fileIdx: 1}
 
-	wc.buffer(k1, 0, make([]byte, 100))
-	wc.buffer(k2, 0, make([]byte, 200))
+	bufferAt(wc, k1, 0, make([]byte, 100))
+	bufferAt(wc, k2, 0, make([]byte, 200))
 
 	// Add an empty file entry to perFile and ensure it is not returned.
 	wc.perFile[fileKey{jobID: "empty", fileIdx: 0}] = &fileBuf{
-		articles: make(map[int64][]byte),
+		articles: make(map[int64]bufferedArticle),
 	}
 
 	result := wc.drainAll()
@@ -219,7 +219,7 @@ func TestWriteCacheForget(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
 
-	wc.buffer(key, 0, make([]byte, 500))
+	bufferAt(wc, key, 0, make([]byte, 500))
 	wc.forget(key)
 
 	if wc.used != 0 {
@@ -234,8 +234,8 @@ func TestWriteCacheDuplicateOffset(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
 
-	wc.buffer(key, 0, make([]byte, 1000))
-	wc.buffer(key, 0, make([]byte, 500)) // replace
+	bufferAt(wc, key, 0, make([]byte, 1000))
+	bufferAt(wc, key, 0, make([]byte, 500)) // replace
 
 	if wc.used != 500 {
 		t.Errorf("used = %d, want 500 (should replace)", wc.used)
@@ -252,7 +252,7 @@ func TestWriteCacheWriteCursorAdvances(t *testing.T) {
 	artSize := 200 * 1024
 	// Buffer 4 contiguous articles = 800KB > 512KB threshold.
 	for i := range 4 {
-		wc.buffer(key, int64(i*artSize), make([]byte, artSize))
+		bufferAt(wc, key, int64(i*artSize), make([]byte, artSize))
 	}
 
 	run := wc.flushContiguous(key)
@@ -269,7 +269,7 @@ func TestWriteCacheWriteCursorAdvances(t *testing.T) {
 
 	// Buffer more starting from where we left off.
 	for i := 4; i < 8; i++ {
-		wc.buffer(key, int64(i*artSize), make([]byte, artSize))
+		bufferAt(wc, key, int64(i*artSize), make([]byte, artSize))
 	}
 
 	run = wc.flushContiguous(key)
@@ -504,7 +504,7 @@ func TestBuildContiguousRun_Direct(t *testing.T) {
 	t.Parallel()
 	wc := newWriteCache(1000)
 	fb := &fileBuf{
-		articles: make(map[int64][]byte),
+		articles: make(map[int64]bufferedArticle),
 	}
 
 	// Case 1: Empty
@@ -514,14 +514,14 @@ func TestBuildContiguousRun_Direct(t *testing.T) {
 	}
 
 	// Case 2: Contiguous but below minSize
-	fb.articles[0] = []byte("short")
+	fb.articles[0] = bufferedArticle{offset: 0, data: []byte("short")}
 	run = wc.buildContiguousRun(fb, 100)
 	if run != nil {
 		t.Error("expected nil run for run size < minSize")
 	}
 
 	// Case 2.1: Contiguous and exactly equal to minSize (boundary)
-	fb.articles[0] = []byte("exactlyfive")
+	fb.articles[0] = bufferedArticle{offset: 0, data: []byte("exactlyfive")}
 	run = wc.buildContiguousRun(fb, 11) // runSize = 11, minSize = 11
 	if run == nil {
 		t.Error("expected contiguous run when runSize == minSize")
@@ -529,8 +529,8 @@ func TestBuildContiguousRun_Direct(t *testing.T) {
 	fb.writeCursor = 0
 
 	// Case 3: Contiguous and >= minSize
-	fb.articles[5] = []byte("enough data to exceed threshold")
-	fb.articles[0] = []byte("hello")
+	fb.articles[5] = bufferedArticle{offset: 5, data: []byte("enough data to exceed threshold")}
+	fb.articles[0] = bufferedArticle{offset: 0, data: []byte("hello")}
 	run = wc.buildContiguousRun(fb, 20)
 	if run == nil {
 		t.Fatal("expected contiguous run")
@@ -558,12 +558,12 @@ func TestWriteCacheInitCursorResumesFromOffset(t *testing.T) {
 		t.Fatalf("cursorFor = %d, want 4096", wc.cursorFor(key))
 	}
 	artSize := 200 * 1024
-	wc.buffer(key, 4096, make([]byte, artSize))
+	bufferAt(wc, key, 4096, make([]byte, artSize))
 	if run := wc.flushContiguous(key); run != nil {
 		t.Fatalf("expected no flush below threshold, got offset %d", run.offset)
 	}
-	wc.buffer(key, 4096+int64(artSize), make([]byte, artSize))
-	wc.buffer(key, 4096+int64(2*artSize), make([]byte, artSize))
+	bufferAt(wc, key, 4096+int64(artSize), make([]byte, artSize))
+	bufferAt(wc, key, 4096+int64(2*artSize), make([]byte, artSize))
 	run := wc.flushContiguous(key)
 	if run == nil {
 		t.Fatal("expected a contiguous run from the initialized cursor")
@@ -590,7 +590,7 @@ func TestWriteCacheInitCursorNoopWhenDisabled(t *testing.T) {
 func TestWriteCacheInitCursorDoesNotClobberExisting(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.buffer(key, 0, []byte("data"))
+	bufferAt(wc, key, 0, []byte("data"))
 	wc.initCursor(key, 9999)
 	if wc.cursorFor(key) != 0 {
 		t.Errorf("cursorFor = %d, want 0 (initCursor must not clobber an existing buffer)", wc.cursorFor(key))
@@ -603,7 +603,7 @@ func TestWriteCache_ScratchCoalescing(t *testing.T) {
 
 	artSize := 200 * 1024
 	for i := range 3 {
-		wc.buffer(key, int64(i*artSize), make([]byte, artSize))
+		bufferAt(wc, key, int64(i*artSize), make([]byte, artSize))
 	}
 	run1 := wc.flushContiguous(key)
 	if run1 == nil {
@@ -613,7 +613,7 @@ func TestWriteCache_ScratchCoalescing(t *testing.T) {
 
 	// Buffer another 3 articles and flush again
 	for i := range 3 {
-		wc.buffer(key, int64((i+3)*artSize), make([]byte, artSize))
+		bufferAt(wc, key, int64((i+3)*artSize), make([]byte, artSize))
 	}
 	run2 := wc.flushContiguous(key)
 	if run2 == nil {
@@ -639,10 +639,18 @@ func BenchmarkWriteCache_ContiguousFlush(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		for j := range arts {
-			wc.buffer(key, int64(j*artSize), arts[j])
+			bufferAt(wc, key, int64(j*artSize), arts[j])
 		}
 		fb := wc.perFile[key]
 		fb.writeCursor = 0
 		_ = wc.buildContiguousRun(fb, contiguousRunSize)
 	}
+}
+
+// bufferAt buffers an article without an identity, for the tests whose subject
+// is coalescing rather than acking. Tests that care about the ack call
+// wc.buffer directly.
+func bufferAt(wc *writeCache, key fileKey, offset int64, data []byte) bool {
+	cached, _ := wc.buffer(key, bufferedArticle{offset: offset, data: data})
+	return cached
 }

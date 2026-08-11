@@ -11,6 +11,17 @@ import (
 // articles into larger writes. It runs exclusively on the assembler's single
 // worker goroutine, so it requires no locking.
 //
+// Every key the cache holds is believed to be a key of the assembler's
+// open-file map too: each removal from that map is paired with a forget or a
+// drain in the same call, with no yield to the request channel in between.
+// Nothing enforces the pairing, which is why the assembler's two "unknown
+// file" branches still exist and still log.
+//
+// Those branches matter more than they read. An article's Done ack now waits
+// on its write, so a buffered article the cache loses track of is one the
+// queue never hears about in either direction, and no later run re-dispatches
+// it. Both branches settle what they discard as failed for that reason.
+//
 // Design:
 //   - Articles are buffered by (fileKey, offset).
 //   - When a contiguous run from offset 0 (or the file's current write cursor)
@@ -30,8 +41,8 @@ type writeCache struct {
 
 // fileBuf holds buffered articles for a single file.
 type fileBuf struct {
-	// articles maps byte offset → decoded article data.
-	articles map[int64][]byte
+	// articles maps byte offset → the buffered article at that offset.
+	articles map[int64]bufferedArticle
 	// writeCursor tracks the next expected contiguous offset for this file.
 	// Initially 0 (or the resume point seeded by initCursor). It advances as
 	// contiguous runs are flushed, and also on a drain — drainFile moves it
@@ -42,16 +53,37 @@ type fileBuf struct {
 	totalBytes int64
 }
 
-// bufferedArticle is a flushable article with its offset and data.
+// articleID names an article to the queue. It travels with the article's bytes
+// through the cache so that the write which makes those bytes durable can say
+// which articles it settled — the cache is the only place that knows an
+// article's bytes are still in memory, and an ack sent before then is a claim
+// no later run can check (#355).
+//
+// Both fields are carried because the assembler supports two queue callback
+// shapes: the index-based one, and the Message-ID one it falls back to when
+// the index form is not wired. recordPendingDone picks between them.
+type articleID struct {
+	msgID  string
+	artIdx int32
+}
+
+// bufferedArticle is a flushable article with its offset, data, and identity.
 type bufferedArticle struct {
 	offset int64
 	data   []byte
+	id     articleID
 }
 
 // flushRun is a contiguous run of articles that can be written as a single WriteAt.
 type flushRun struct {
 	offset int64  // starting byte offset
 	data   []byte // coalesced data
+	// ids names every article coalesced into data, so the write can settle
+	// them all rather than only the one whose arrival triggered the flush.
+	//
+	// Allocated per run, unlike data, which is a view into the cache's reused
+	// scratch buffer and is valid only until the next run is built.
+	ids []articleID
 }
 
 // newWriteCache creates a write cache with the given memory limit.
@@ -81,7 +113,7 @@ func (wc *writeCache) initCursor(key fileKey, cursor int64) {
 	if _, ok := wc.perFile[key]; ok {
 		return
 	}
-	wc.perFile[key] = &fileBuf{articles: make(map[int64][]byte), writeCursor: cursor}
+	wc.perFile[key] = &fileBuf{articles: make(map[int64]bufferedArticle), writeCursor: cursor}
 }
 
 // cursorFor returns the file's current contiguous write frontier, or 0 if the
@@ -96,31 +128,67 @@ func (wc *writeCache) cursorFor(key fileKey) int64 {
 	return 0
 }
 
-// buffer adds an article to the cache. Returns true if the article was
-// buffered, false if caching is disabled (caller should write immediately).
-func (wc *writeCache) buffer(key fileKey, offset int64, data []byte) bool {
+// buffer adds an article to the cache. cached reports whether the article was
+// taken; false means caching is disabled and the caller should write
+// immediately.
+//
+// displaced carries the identity of an article evicted from the same offset,
+// and is nil in every ordinary case. The caller must settle it — as a failure,
+// so it is fetched again — rather than dropping it. Returning it is not
+// bookkeeping for its own sake: once an ack waits on a write, an article
+// silently removed from the cache is an article that is never acked at all and
+// never re-dispatched, which is the defect this whole path exists to close.
+//
+// Folding the two identities together and letting the winner's write ack both
+// would be wrong. This branch exists for a case upstream dedup should already
+// have caught, so nothing constrains the two articles to the same length, and a
+// shorter winner would ack the displaced article over bytes its write never
+// covered.
+func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, displaced []articleID) {
 	if !wc.enabled() {
-		return false
+		return false, nil
+	}
+	// A zero-length article is refused so the caller writes it inline. It
+	// occupies no space, so it can neither be coalesced nor advance any
+	// cursor, and buffering it would wedge buildContiguousRun: that scan
+	// advances by the length of the article at the cursor, so a zero-length
+	// entry there never moves and the loop never terminates. The inline path
+	// costs a no-op WriteAt and settles the article.
+	if len(art.data) == 0 {
+		return false, nil
 	}
 	fb, ok := wc.perFile[key]
 	if !ok {
-		fb = &fileBuf{articles: make(map[int64][]byte)}
+		fb = &fileBuf{articles: make(map[int64]bufferedArticle)}
 		wc.perFile[key] = fb
 	}
 	// If this offset already exists (shouldn't happen in practice due to
 	// upstream dedup), replace it and adjust accounting.
-	if existing, dup := fb.articles[offset]; dup {
-		wc.used -= int64(len(existing))
-		fb.totalBytes -= int64(len(existing))
-		if existing != nil {
-			decoder.PutBuffer(existing)
+	if existing, dup := fb.articles[art.offset]; dup {
+		wc.used -= int64(len(existing.data))
+		fb.totalBytes -= int64(len(existing.data))
+		if existing.data != nil {
+			decoder.PutBuffer(existing.data)
 		}
+		displaced = []articleID{existing.id}
 	}
-	fb.articles[offset] = data
-	size := int64(len(data))
+	fb.articles[art.offset] = art
+	size := int64(len(art.data))
 	fb.totalBytes += size
 	wc.used += size
-	return true
+	return true, displaced
+}
+
+// buffered reports whether an article is still sitting unwritten at this
+// offset. It distinguishes an article the cache has yet to write from one it
+// has already written and acked, which the two look identical from outside.
+func (wc *writeCache) buffered(key fileKey, offset int64) bool {
+	fb, ok := wc.perFile[key]
+	if !ok {
+		return false
+	}
+	_, ok = fb.articles[offset]
+	return ok
 }
 
 // contiguousRunSize is the minimum coalesced write size before we flush
@@ -155,13 +223,20 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	var runSize int64
 
 	for {
-		data, ok := fb.articles[cursor]
+		art, ok := fb.articles[cursor]
 		if !ok {
 			break
 		}
-		runArticles = append(runArticles, bufferedArticle{offset: cursor, data: data})
-		runSize += int64(len(data))
-		cursor += int64(len(data))
+		// buffer refuses zero-length articles precisely so this scan always
+		// advances. Stopping rather than trusting that is cheap, and the
+		// alternative is not a wrong answer but a hung worker goroutine —
+		// which owns every file handle, so it takes all assembly with it.
+		if len(art.data) == 0 {
+			break
+		}
+		runArticles = append(runArticles, art)
+		runSize += int64(len(art.data))
+		cursor += int64(len(art.data))
 	}
 
 	if runSize < minSize {
@@ -171,8 +246,13 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	// Coalesce into wc.scratchBuf to eliminate heap allocations during write coalescing.
 	wc.scratchBuf = wc.scratchBuf[:0]
 	startOffset := fb.writeCursor
+	ids := make([]articleID, 0, len(runArticles))
 	for _, art := range runArticles {
 		wc.scratchBuf = append(wc.scratchBuf, art.data...)
+		// Copied out of art rather than read back from the map: the entry is
+		// gone by the time the run reaches disk, and the identity is what the
+		// write needs in order to ack.
+		ids = append(ids, art.id)
 		delete(fb.articles, art.offset)
 		fb.totalBytes -= int64(len(art.data))
 		wc.used -= int64(len(art.data))
@@ -182,7 +262,7 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	}
 	fb.writeCursor = cursor
 
-	return &flushRun{offset: startOffset, data: wc.scratchBuf}
+	return &flushRun{offset: startOffset, data: wc.scratchBuf, ids: ids}
 }
 
 // pressure reports whether memory usage exceeds 90% of the limit.
@@ -241,10 +321,10 @@ func (wc *writeCache) drainFile(key fileKey) (fileKey, []bufferedArticle) {
 	}
 
 	articles := make([]bufferedArticle, 0, len(fb.articles))
-	for offset, data := range fb.articles {
-		articles = append(articles, bufferedArticle{offset: offset, data: data})
-		wc.used -= int64(len(data))
-		if end := offset + int64(len(data)); end > fb.writeCursor {
+	for offset, art := range fb.articles {
+		articles = append(articles, art)
+		wc.used -= int64(len(art.data))
+		if end := offset + int64(len(art.data)); end > fb.writeCursor {
 			fb.writeCursor = end
 		}
 	}
@@ -286,9 +366,9 @@ func (wc *writeCache) drainAll() map[fileKey][]bufferedArticle {
 // caller that wrote them, so an uncleared map would double-return them.
 func (wc *writeCache) forget(key fileKey) {
 	if fb, ok := wc.perFile[key]; ok {
-		for _, data := range fb.articles {
-			if data != nil {
-				decoder.PutBuffer(data)
+		for _, art := range fb.articles {
+			if art.data != nil {
+				decoder.PutBuffer(art.data)
 			}
 		}
 		wc.used -= fb.totalBytes

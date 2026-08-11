@@ -697,13 +697,17 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	}
 
 	// Durability (B.6): the article is not marked Done here. The assembler
-	// calls MarkArticleDone after pwrite + fsync so that Done => bytes on disk.
+	// calls MarkArticleDone once the bytes have reached WriteAt.
 	//
 	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher
 	// from re-picking this article between now and the assembler's Done
-	// write. If the process crashes before fsync, Emitted is lost on
-	// restart, so the article is re-dispatched — matching the B.6
-	// invariant that Done means "bytes on stable storage".
+	// write. If the process crashes before that, Emitted is lost on restart
+	// and the article is re-dispatched.
+	//
+	// Done means the bytes reached WriteAt, not that they were fsynced: the
+	// assembler syncs per file completion, not per article. Page-cache loss
+	// on an already-acked article is par2's to repair, not this path's. See
+	// nntp-downloader-contract.md §5.
 	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}

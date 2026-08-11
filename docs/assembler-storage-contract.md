@@ -99,12 +99,69 @@ for this (job, file)     │                              │
 
    **Important nuance**: `Sync()` (fsync) is called once per *file completion*,
    not once per article. Individual article `WriteAt` calls are not individually
-   fsynced — they rely on the OS page cache until the file completes. This means
-   a crash mid-download loses unfsynced articles; the `Emitted`-is-transient
-   invariant (see `nntp-downloader-contract.md` §5) handles this by re-fetching
-   them on restart.
+   fsynced — they rely on the OS page cache until the file completes.
 
-3. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingExtent`
+   So "durable" in *Ack durability* below means the bytes reached `WriteAt`,
+   not that they reached the platter, and the two classes of crash loss differ:
+
+   - An article still in the write cache is **not** acked, so the
+     `Emitted`-is-transient invariant (see `nntp-downloader-contract.md` §5)
+     re-fetches it on restart.
+   - An article whose bytes reached `WriteAt` but not the disk **is** acked,
+     and is therefore not re-fetched. Page-cache loss on that article is not
+     repaired by the download path at all; par2 is what covers it.
+
+   Acking only after an fsync would defer every ack to file completion, which
+   is a different trade and is not what this does.
+
+3. **Ack durability**: an article is acked `Done` only once its bytes have
+   reached `WriteAt`, never while it is merely buffered in the write cache.
+   Ownership of the ack passes to the cache when the article is buffered, and
+   is discharged by whichever write moves it: `flushRun` for a coalesced run,
+   `writeCachedArticles` for a drain or a pressure flush. Each settles *every*
+   article it handled, in both directions — a failed coalesced run fails all
+   of the articles merged into it, not only the one whose arrival triggered
+   the flush.
+
+   The full set of sites that settle an article, since the two above are only
+   the deferred ones:
+
+   | Site | Settles | Note |
+   |------|---------|------|
+   | `writeAndSettle`, `outcomeDurable` | Done | the uncached write, which is already on disk when it returns |
+   | `writeAndSettle`, `outcomeFailed` | Failed | uncached write error, or an out-of-range offset |
+   | `flushRun` | Done / Failed | the whole coalesced run, by its recorded identities |
+   | `writeCachedArticles` | Done / Failed | per article, on a drain or a pressure flush |
+   | `writeArticleOrBuffer`, displacement | Failed | an article evicted from an offset a later one claimed |
+   | `failDrainedArticles` | Failed | articles drained for a file no longer open; not believed reachable |
+   | `handleFatalArticle` | Failed | unless the Message-ID is already in `seenDone` — see below |
+   | `handleLateDuplicate` | Done / Failed | a file already in `completed`, so `finalizeFile` has drained and synced it; the bytes are on disk and the ack is a re-emit |
+   | duplicate branch of `handleSuccessArticle` | Done | a re-emit, and only once the first copy has left the cache |
+
+   The cancel path settles nothing, deliberately: `CancelJob`'s only caller
+   removes the job from the queue immediately afterwards, so no bit it could
+   set would ever be read.
+
+   `handleFatalArticle` suppressing its ack for an article already in
+   `seenDone` is a consequence of this invariant rather than an independent
+   rule. Both acks used to land in one `flush()`, which publishes the Done
+   batch before the Failed batch, and `markDone` / `markFailed` are
+   first-writer-wins — so the success won by ordering. With the Done deferred
+   to the write, a failure recorded at that point is published a batch earlier
+   and wins instead, marking a file that is complete on disk as damaged.
+
+   This is not a nicety of ordering. `ForEachUnfinishedArticle` skips any
+   article whose `done` bit is set, and `ResetForRetry` clears `done` only
+   where `failed` is also set, so a `Done` published for bytes that never
+   landed is permanent: no later run re-dispatches that article, and the file
+   stays short (#355). `markDone` and `markFailed` are first-writer-wins for
+   the same reason — a wrong ack in either direction cannot be corrected by a
+   later one.
+
+   The two `pending*` maps are still flushed in batches (below); the change is
+   *when an entry is added to them*, not how they drain.
+
+4. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingExtent`
    maps are flushed to queue callbacks on three triggers:
    - **File completion** (`finalizeFile` → `flush()`).
    - **Periodic ticker** (default 250ms, `defaultDoneFlushInterval`).
@@ -120,7 +177,7 @@ for this (job, file)     │                              │
    mutation is best-effort once bytes are on disk, since partsWritten tracking
    is local to the assembler.
 
-4. **Disk-space pre-flight timeouts**: `checkDiskSpace` runs every 16
+5. **Disk-space pre-flight timeouts**: `checkDiskSpace` runs every 16
    `WriteRequest` items (`diskCheckInterval`). Two distinct timeouts bound
    disk probe latency:
    - **Caller timeout** (`diskCheckTimeout = 5s`): Each per-directory
@@ -135,7 +192,7 @@ for this (job, file)     │                              │
    timeout error, preventing goroutine accumulation. Stale entries are evicted
    after 10 minutes (`diskProbeEvictAfter`).
 
-5. **CRC32 incremental combination**: Per-article CRC32 values (from yEnc
+6. **CRC32 incremental combination**: Per-article CRC32 values (from yEnc
    headers) are accumulated with their byte offsets in `crcParts`. At file
    completion, parts are sorted by offset and combined via
    `crc32util.Combine(crc_a, crc_b, len_b)` to produce a whole-file CRC32
@@ -154,7 +211,7 @@ for this (job, file)     │                              │
    not harmless even when they are zero, since appending `n` bytes multiplies
    the CRC state by `M^n` whatever their value.
 
-6. **Offset bounds checking**: `offsetInRange` rejects `WriteRequest` items
+7. **Offset bounds checking**: `offsetInRange` rejects `WriteRequest` items
    whose offset is negative, whose offset+length overflows int64, or whose write
    extends past `ExpectedSize + ExpectedSize/8` (12.5% slack). This prevents a
    hostile NNTP server from inflating the file's apparent size via a crafted
@@ -180,9 +237,15 @@ truncation, trailing zero bytes cause par2 to report the file as damaged despite
 `maxWritten` is the file's decoded high-water mark, and it must survive a
 restart. It is seeded on open from `max(InitialMaxWritten, InitialWriteCursor)`
 and raised only where bytes reach `WriteAt` — never when an article is merely
-accepted into the write cache, since an article can be acked Done while still
-resident in memory, and a mark persisted ahead of the bytes would make a later
-truncate *extend* a short file with zeros that nothing will ever fill.
+accepted into the write cache, since a mark persisted ahead of the bytes would
+make a later truncate *extend* a short file with zeros that nothing will ever
+fill.
+
+That rule used to be justified by the article ack: an article acked Done while
+still buffered is never re-fetched, so any gap below the mark was permanent.
+The ack no longer runs ahead of the bytes (see *Ack durability* above), so the
+mark no longer depends on it. Raising it only from the write paths is the same
+rule the ack now follows, and each stands on its own.
 
 | Seed | Meaning | Why it is not the whole answer |
 |------|---------|--------------------------------|
@@ -236,6 +299,14 @@ memory and coalesces contiguous runs into larger `WriteAt` calls:
 
 - **Buffering**: Each article is stored in `fileBuf.articles[offset]`, keyed by
   byte offset. Total memory is tracked in `writeCache.used`.
+- **A zero-length article is refused, and the contiguous scan stops at one.**
+  `offsetInRange` admits an empty write, so nothing upstream rules one out.
+  Buffering it would wedge the scan below, which advances by the length of the
+  article at the cursor: a zero-length entry there never moves it and the loop
+  never terminates — on the worker goroutine that owns every file handle, so it
+  takes all assembly with it. `buffer()` returns `cached == false` so the caller
+  writes it inline, where the `WriteAt` is a no-op and the article settles
+  normally. `buildContiguousRun` also breaks on one rather than trusting that.
 - **Contiguous flush**: After each `buffer()`, `flushContiguous()` scans from
   the file's `writeCursor` for a contiguous run ≥ 512KB
   (`contiguousRunSize`). If found, the run is coalesced into `scratchBuf`
@@ -280,6 +351,18 @@ The assembler handles duplicates at multiple levels:
   the worker. A duplicate success re-records `pendingDone` (in case a prior
   flush dropped it) but does NOT increment `partsWritten`. A duplicate failure
   similarly re-records `pendingFailed` without incrementing.
+
+  The re-record is skipped while the first copy is still buffered. `seenDone`
+  means the article was accepted and counted toward `TotalParts`, not that the
+  file holds it, so re-emitting there would restore exactly the premature
+  `Done` that *Ack durability* removes. The write that drains the first copy
+  acks it. The cache is asked about the offset the *first* copy was accepted
+  at, which is what `seenDone` stores: dedup is keyed on the Message-ID, so a
+  duplicate may report a different yEnc offset, and asking about its own would
+  interrogate a slot the first copy never occupied — reading empty as "already
+  written". For the same reason a write path that fails moves the articles it
+  lost out of `seenDone` and into `seenFailed`, so a later duplicate is not
+  read as a success.
 - **Cross-state dedup**: If a MessageID was previously counted as a success and
   now arrives as a failure (or vice versa), the write/ack is recorded but
   `partsWritten` is not incremented again.

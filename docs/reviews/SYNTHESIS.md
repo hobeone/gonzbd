@@ -8,6 +8,11 @@ deduped and ranked here. Detail lives in `lane1..lane5-*.md` alongside this file
 ### INT-1 — The 30s queue checkpoint durably records Done for bytes still in RAM
 `internal/app/app.go:800-815` (`runCheckpoint`) × `internal/assembler/assembler.go:940-964`
 
+> **Resolved in #355.** The ack now waits for the bytes: `writeArticleOrBuffer`
+> returns a three-state outcome instead of a bool, and the write paths settle the
+> articles they moved. The analysis below describes the code as it stood at the
+> time of the audit and is kept unedited as a record.
+
 `runCheckpoint` fires on a ticker (~30s), checks `app.queue.IsDirty()`, and calls
 `app.queue.Save(...)`. It does **not** flush the assembler write cache first — `queue.Save`
 takes a directory and has no assembler reference. Lane 1 found that `recordPendingDone`

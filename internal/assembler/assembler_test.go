@@ -811,7 +811,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 		f := &openFile{
 			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]struct{}),
+			seenDone:   make(map[string]int64),
 			crcValid:   true,
 		}
 		req := WriteRequest{
@@ -845,7 +845,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// Cross-check: already counted as success.
 		f.seenFailed = make(map[string]struct{})
 		a.pendingFailed = make(map[string][]string)
-		f.seenDone["msg1"] = struct{}{}
+		f.seenDone["msg1"] = 0
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false when already counted as success")
 		}
@@ -870,7 +870,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		f := &openFile{
 			handle:     tmpFile,
 			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]struct{}),
+			seenDone:   make(map[string]int64),
 			crcValid:   true,
 		}
 
@@ -909,7 +909,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		// Cross-check: already counted as failure.
-		f.seenDone = make(map[string]struct{})
+		f.seenDone = make(map[string]int64)
 		a.pendingDone = make(map[string][]string)
 		f.seenFailed["msg1"] = struct{}{}
 		if a.handleSuccessArticle(f, req, wc, open, key) {
@@ -986,7 +986,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		f := &openFile{
 			handle:     tmpFile,
 			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]struct{}),
+			seenDone:   make(map[string]int64),
 			maxWritten: 11, // "hello world" length is 11
 			crcValid:   true,
 			crcParts: []crcPart{
@@ -1060,7 +1060,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		f := &openFile{
 			handle:     tmpFile,
 			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]struct{}),
+			seenDone:   make(map[string]int64),
 			maxWritten: 0, // no bytes written
 			crcValid:   false,
 		}
@@ -1111,7 +1111,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		f := &openFile{
 			handle:     tmpFile,
 			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]struct{}),
+			seenDone:   make(map[string]int64),
 			maxWritten: 11,
 			crcValid:   true,
 			crcParts:   nil, // empty
@@ -1147,16 +1147,17 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// Close the file so WriteAt will return an error.
 		tmpFile.Close()
 
-		f := &openFile{
-			handle:     tmpFile, // closed — writes will fail
-			seenFailed: nil,     // nil — test map initialization
-			seenDone:   make(map[string]struct{}),
-			crcValid:   true,
-		}
-
 		wc := newWriteCache(0)
 		open := make(map[fileKey]*openFile)
 		key := fileKey{jobID: "job1", fileIdx: 0}
+
+		f := &openFile{
+			handle:     tmpFile, // closed — writes will fail
+			key:        key,     // set on every file openTargetFile creates
+			seenFailed: nil,     // nil — test map initialization
+			seenDone:   make(map[string]int64),
+			crcValid:   true,
+		}
 
 		req := WriteRequest{
 			JobID:     "job1",
@@ -1694,8 +1695,8 @@ func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data")}
 
-	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got {
-		t.Error("writeArticleOrBuffer on closed file: got true, want false")
+	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got != outcomeFailed {
+		t.Errorf("writeArticleOrBuffer on closed file: got %v, want outcomeFailed", got)
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)

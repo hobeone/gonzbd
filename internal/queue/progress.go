@@ -754,9 +754,11 @@ type fileProgressJSON struct {
 // jobProgressJSON is JobProgress's on-disk shape. emitted, pendingArticles,
 // articlesResolved, articlesFailed, and earlyAborted are all deliberately
 // excluded — these are correctness exclusions, not wire-compatibility ones.
-// emitted in particular must never survive a restart: on crash recovery,
-// any article whose bytes hadn't reached stable storage needs to be
-// re-dispatched, and persisting emitted would let it be silently skipped.
+// emitted in particular must never survive a restart: on crash recovery, any
+// article the assembler had not yet written needs to be re-dispatched, and
+// persisting emitted would let it be silently skipped. The done bit is what
+// marks an article as written, and it is set only once the bytes have reached
+// WriteAt (#355), so the pair is consistent.
 type jobProgressJSON struct {
 	Done   []bool             `json:"done"`
 	Failed []bool             `json:"failed"`
