@@ -1093,10 +1093,13 @@ func (a *Assembler) recordArticleCRC(f *openFile, req WriteRequest) {
 // exactly. Skipping bytes is not harmless even when those bytes are zero:
 // appending n bytes multiplies the CRC state by M^n whatever their value.
 //
-// parts must already be sorted by offset. ok is false when coverage is partial,
-// which is the resume case: articles a previous run completed are not
-// re-dispatched, so they contribute no part and the fold would describe a
-// subrange of the file (#349).
+// parts must already be sorted by offset. ok is false whenever they do not tile
+// exactly — a hole below a part, an overlap, or a span that does not end
+// precisely at total, whether short of it or past it. In
+// practice that is nearly always the resume case, where articles a previous run
+// completed are not re-dispatched and so contribute no part (#349); an overlap
+// would instead mean a defect upstream in the dedup or CRC-recording path, so
+// do not read a false here as proof the file was resumed.
 //
 // An empty parts slice tiles a zero-length file, so it reports ok — callers
 // distinguishing "no CRC recorded" from "verified empty" must check that
@@ -1146,12 +1149,13 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	// empty, and saying so would misdescribe the one event an operator has to
 	// go on.
 	//
-	// Every branch that leaves the file untrimmed also clears crcValid. The
-	// pre-allocated trailing zeros survive in those cases, so the bytes on
-	// disk are not the [0, maxWritten) the recorded parts describe, and
-	// reporting a CRC over that range would hand par2 a mismatch on a file
-	// nothing is actually wrong with — the same false corruption claim #349
-	// removes for resumed files.
+	// The three failure branches also clear crcValid: the pre-allocated
+	// trailing zeros survive there, so the bytes on disk are not the
+	// [0, maxWritten) the recorded parts describe, and reporting a CRC over
+	// that range would hand par2 a mismatch on a file nothing is actually
+	// wrong with — the same false corruption claim #349 removes for resumed
+	// files. The zero-length branch is not one of them: it is not a failure,
+	// nothing was written, and there is no extent for a CRC to describe.
 	size, statErr := f.handle.Stat()
 	switch {
 	case f.maxWritten <= 0:

@@ -139,9 +139,12 @@ for this (job, file)     │                              │
    headers) are accumulated with their byte offsets in `crcParts`. At file
    completion, parts are sorted by offset and combined via
    `crc32util.Combine(crc_a, crc_b, len_b)` to produce a whole-file CRC32
-   without re-reading the file from disk. If any article had CRC=0 (UU-encoded,
-   failed, or write error), `crcValid` is set false and the file CRC is reported
-   as 0.
+   without re-reading the file from disk. `crcValid` is set false — and the file
+   CRC reported as 0 — when any article had CRC=0 (UU-encoded), when an article
+   failed, when a write failed (inline or drained), and when a completed file is
+   left untrimmed because its `Stat` failed, its truncate target sat above the
+   file on disk, or its `Truncate` failed. The trailing zeros that survive in
+   those last three cases are not bytes the recorded parts describe.
 
    `Combine` is positional: it reconstructs `CRC(A||B)` from the two CRCs and
    `B`'s length alone, with no offsets, so the fold equals the file's CRC only
