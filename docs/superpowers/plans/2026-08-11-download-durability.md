@@ -278,18 +278,24 @@ Expected: PASS, all subtests.
 
 - [ ] **Step 5: Verify the structural guarantee mechanically**
 
-Run: `go list -deps ./internal/storagefault | grep gonzbd`
-Expected: **no output**. If this prints anything, the A1 guarantee is broken.
+Run: `go list -deps ./internal/storagefault | grep gonzbd | grep -v '/internal/storagefault$'`
+Expected: **no output**. The `grep -v` is required — `go list -deps` always
+lists the target package itself, so without it this command always reports a
+hit and proves nothing. If this prints anything, the A1 guarantee is broken.
 Add this as a test so it cannot regress:
 
 ```go
 func TestPackageImportsNoGonzbdPackage(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/hobeone/gonzbd/internal/storagefault").Output()
+	const self = "github.com/hobeone/gonzbd/internal/storagefault"
+	out, err := exec.Command("go", "list", "-deps", self).Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "github.com/hobeone/gonzbd/") {
+	// go list -deps always includes the target package itself, so self is
+	// excluded: the invariant is that storagefault imports no *other*
+	// gonzbd package, not that it is absent from its own closure.
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line != self && strings.HasPrefix(line, "github.com/hobeone/gonzbd/") {
 			t.Errorf("storagefault must not depend on %s — invariant A1 relies on it having no article vocabulary", line)
 		}
 	}
