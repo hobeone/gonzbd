@@ -155,6 +155,21 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	if err != nil {
 		return FileExtent{}, nil, err
 	}
+	if verified != ext.VerifiedTo {
+		// PrefixCRC is defined as the CRC32 of [0, VerifiedTo), so carrying
+		// the loaded one across a recomputed VerifiedTo would relabel the
+		// CRC of one prefix as the CRC of a different one — design Shape 1
+		// ("a fact recorded before the thing it asserts becomes true") in
+		// the one file whose job is to prevent it. R23 already blesses
+		// "unavailable" as an honest answer, and HasPrefixCRC is what makes
+		// it distinguishable from a CRC of zero.
+		//
+		// Nothing writes PrefixCRC yet. R24 (task 7) will, off the barrier's
+		// critical path, and it must recompute rather than expect this
+		// field to have survived a barrier that moved the anchor.
+		ext.PrefixCRC = 0
+		ext.HasPrefixCRC = false
+	}
 	ext.VerifiedTo = verified
 	return ext, acked, nil
 }

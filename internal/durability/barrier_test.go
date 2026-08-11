@@ -556,16 +556,26 @@ func TestBarrier_FactLogReadFailureAbortsTheBarrier(t *testing.T) {
 // TestBarrier_MultipleFilesSyncAllBeforeAnyClaim pins R5's "fsync every open
 // file of the job" ordering across more than one file: every sync must
 // precede every stat, not merely the stat of its own file.
+//
+// It also pins that each file's extent is committed under its OWN file_idx.
+// That is not a cosmetic field: file_extents is keyed on (job_id, file_idx)
+// and the store INSERTs OR REPLACEs, so a barrier that leaves FileIdx at
+// its zero value collapses every file of the job into one row. Each file but
+// the last silently loses its durable bitmap, and the next resume re-fetches
+// all of them — an L3 violation with no symptom until a restart.
+//
+// The drained articles are 5 and 1, in that order, so the proof's sort is
+// pinned too rather than being satisfied by an already-ascending fixture.
 func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 	ctx := context.Background()
 	es := NewSQLiteExtentStore(openTestDB(t))
 	tgt := &fakeTarget{
 		files: []int32{0, 1},
 		written: map[int32][]WrittenArticle{
-			0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10}},
+			0: {{FileIdx: 0, ArtIdx: 5, Offset: 0, Length: 10}},
 			1: {{FileIdx: 1, ArtIdx: 1, Offset: 0, Length: 20}},
 		},
-		artCount: 4,
+		artCount: 8,
 	}
 	ack := &recordingAcker{}
 	b, _ := newBarrierWithStores(t, es, ack, &recordingStall{})
@@ -585,8 +595,107 @@ func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 		t.Fatalf("acked %d proofs, want 1 covering both files", len(ack.proofs))
 	}
 	arts := ack.proofs[0].Articles()
-	if len(arts) != 2 || arts[0] != 0 || arts[1] != 1 {
-		t.Errorf("proof articles = %v, want [0 1] across both files", arts)
+	if len(arts) != 2 || arts[0] != 1 || arts[1] != 5 {
+		t.Errorf("proof articles = %v, want [1 5] — drained as 5 then 1, so the proof is sorted", arts)
+	}
+
+	got, err := es.Load(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("loaded %d extents, want 2 — a shared file_idx collapses the job's cache into one row", len(got))
+	}
+	// Load orders by file_idx, so index i is file i.
+	for i, wantBytes := range []int64{10, 20} {
+		if got[i].FileIdx != int32(i) {
+			t.Errorf("extent %d has FileIdx %d, want %d", i, got[i].FileIdx, i)
+		}
+		if got[i].BytesDurable != wantBytes {
+			t.Errorf("file %d BytesDurable = %d, want %d", i, got[i].BytesDurable, wantBytes)
+		}
+	}
+	if !got[0].Durable.Get(5) {
+		t.Error("file 0 lost article 5's durable bit")
+	}
+	if !got[1].Durable.Get(1) {
+		t.Error("file 1 lost article 1's durable bit")
+	}
+}
+
+// TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC pins that the CRC anchor
+// and its CRC move together. PrefixCRC is defined as the CRC32 of
+// [0, VerifiedTo); carrying a loaded CRC across a recomputed VerifiedTo would
+// relabel the CRC of a shorter prefix as the CRC of a longer one. Nothing
+// writes PrefixCRC yet — R24 (task 7) will, and this is the guard it needs.
+func TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC(t *testing.T) {
+	tests := []struct {
+		name        string
+		drain       []WrittenArticle
+		wantVerTo   int64
+		wantHasCRC  bool
+		wantCRCZero bool
+	}{
+		{
+			name:        "VerifiedTo advances, so the CRC becomes unavailable",
+			drain:       []WrittenArticle{{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}},
+			wantVerTo:   200,
+			wantHasCRC:  false,
+			wantCRCZero: true,
+		},
+		{
+			name:       "VerifiedTo is unchanged, so the CRC survives",
+			drain:      nil,
+			wantVerTo:  100,
+			wantHasCRC: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			es := NewSQLiteExtentStore(openTestDB(t))
+			prior := NewBitmap(4)
+			prior.Set(0)
+			if err := es.Commit(ctx, "job-1", []FileExtent{{
+				FileIdx: 0, Durable: prior, VerifiedTo: 100,
+				PrefixCRC: 0xDEADBEEF, HasPrefixCRC: true,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			b, fl := newBarrierWithStores(t, es, &recordingAcker{}, &recordingStall{})
+			if err := fl.Append(ctx, "job-1", []ArticleFact{
+				{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+				{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tgt := &fakeTarget{
+				written:  map[int32][]WrittenArticle{0: tt.drain},
+				artCount: 4,
+			}
+			if err := b.Run(ctx, "job-1", tgt); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := es.Load(ctx, "job-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got[0].VerifiedTo != tt.wantVerTo {
+				t.Fatalf("VerifiedTo = %d, want %d", got[0].VerifiedTo, tt.wantVerTo)
+			}
+			if got[0].HasPrefixCRC != tt.wantHasCRC {
+				t.Errorf("HasPrefixCRC = %v, want %v — a CRC of [0,%d) cannot be relabelled as the CRC of [0,%d)",
+					got[0].HasPrefixCRC, tt.wantHasCRC, 100, tt.wantVerTo)
+			}
+			if tt.wantCRCZero && got[0].PrefixCRC != 0 {
+				t.Errorf("PrefixCRC = %#x, want 0 alongside HasPrefixCRC=false", got[0].PrefixCRC)
+			}
+			if tt.wantHasCRC && got[0].PrefixCRC != 0xDEADBEEF {
+				t.Errorf("PrefixCRC = %#x, want the preserved 0xDEADBEEF", got[0].PrefixCRC)
+			}
+		})
 	}
 }
 
