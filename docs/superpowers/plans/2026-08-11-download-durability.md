@@ -1829,6 +1829,16 @@ func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
 // stops the CRC anchor without stopping resume. This is the distinction
 // that #311 and #353 collided over: the durable bitmap must record the
 // article above the hole, while VerifiedTo must not advance past it.
+//
+// A hole has two shapes and ONE FIXTURE CANNOT PIN BOTH GATES. In the
+// fixture below the missing article HAS a Class A fact, so the walk stops
+// because that article is not durable — and deleting the contiguity check
+// entirely leaves this test green, which was observed, not reasoned. Add a
+// second case in which the missing article has NO fact (it was never
+// decoded, so nothing recorded its byte range): every fact present is then
+// durable, and only contiguity can stop the walk. Also append the facts to
+// the fact log — gaplessPrefix reads FactLog.ForFile, so with an empty log
+// VerifiedTo is 0 and the fixture below cannot reach 100 at all.
 func TestBarrier_VerifiedToAdvancesOnlyOverAGaplessPrefix(t *testing.T) {
 	ctx := context.Background()
 	es := NewSQLiteExtentStore(openTestDB(t))
@@ -2037,16 +2047,39 @@ cp internal/durability/barrier.go "$SCRATCH/barrier.bak.go"
 
 # Revert 1 — move the ack before the commit.
 # Edit Run so `b.ack.AckDurable(...)` is called immediately after phase 3,
-# before b.exts.Commit. Then:
-go test ./internal/durability/ -run TestBarrier_SyncFailureAcksNothing
-# MUST FAIL: "acked 1 proofs after a failed sync, want 0"
+# before b.exts.Commit. This canNOT be pinned by SyncFailureAcksNothing: a
+# failed sync aborts in phase 2 and never reaches phase 4, so the mutation
+# is unreachable there. Pin it with a test that fails the COMMIT instead
+# (an ExtentStore whose Commit returns an error), and assert nothing was
+# acked. Then:
+go test -count=1 ./internal/durability/ -run TestBarrier_CommitFailureAcksNothing
+# MUST FAIL: "acked 1 proofs after a failed commit, want 0"
 cp "$SCRATCH/barrier.bak.go" internal/durability/barrier.go
 
 # Revert 2 — neuter the sync loop so drain's output is claimed unsynced.
-sed -i 's|if err := t.Sync(ctx, idx); err != nil {|if err := error(nil); err != nil {|' internal/durability/barrier.go
-grep -n 'if err := error(nil)' internal/durability/barrier.go
-go test ./internal/durability/ -run 'TestBarrier_SyncPrecedesCommitAndAck|TestBarrier_SyncFailureAcksNothing'
+# NOT `if err := error(nil); err != nil {` — that leaves idx unused and
+# fails to COMPILE, which is the weak form and proves nothing about the
+# test. Delete the call so the ordering itself changes:
+python3 - <<'EOF'
+p='internal/durability/barrier.go'; s=open(p).read()
+old = ("\t\tif err := t.Sync(ctx, idx); err != nil {\n"
+       "\t\t\treturn b.routeFault(jobID, storagefault.Classify(\"sync\", \"\", err))\n"
+       "\t\t}")
+assert old in s
+open(p,'w').write(s.replace(old, "\t\t_ = idx", 1))
+EOF
+grep -n '_ = idx' internal/durability/barrier.go
+go test -count=1 ./internal/durability/ -run TestBarrier_SyncPrecedesCommitAndAck
 # MUST FAIL: calls = [drain stat], want [drain sync stat]
+cp "$SCRATCH/barrier.bak.go" internal/durability/barrier.go
+
+# Revert 3 — neuter only the sync ERROR CHECK, which keeps the call in
+# place so the ordering pin above stays green and only the fault routing
+# changes.
+sed -i 's|if err := t.Sync(ctx, idx); err != nil {|if err := t.Sync(ctx, idx); false \&\& err != nil {|' internal/durability/barrier.go
+grep -n 'false && err != nil' internal/durability/barrier.go
+go test -count=1 ./internal/durability/ -run TestBarrier_SyncFailureAcksNothing
+# MUST FAIL: "Run returned nil after a failed sync"
 cp "$SCRATCH/barrier.bak.go" internal/durability/barrier.go
 ```
 
