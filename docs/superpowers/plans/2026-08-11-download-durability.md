@@ -1052,6 +1052,46 @@ func TestSQLiteFactLog_ForFileIsOrderedByOffset(t *testing.T) {
 	}
 }
 
+// TestSQLiteFactLog_HasCRCRoundTrips pins R23: "CRC unavailable" must stay
+// distinguishable from "CRC is genuinely zero". Both facts below carry
+// CRC32 == 0 and differ only in HasCRC, so the test fails if either the
+// write side or the read side of that boolean is hardcoded.
+//
+// Without this, every other fixture in the file sets HasCRC: true, and both
+// halves can be replaced with a constant while the suite stays green. Task 6
+// decides whether a completed file can report a whole-file CRC from exactly
+// this flag: if the read side degrades to true, a UU-encoded article's absent
+// CRC becomes a CRC of zero and the file reports a fabricated whole-file
+// value — the failure R23 exists to forbid.
+func TestSQLiteFactLog_HasCRCRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	fl := NewSQLiteFactLog(openTestDB(t))
+
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0, HasCRC: false},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0, HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fl.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ForFile returned %d facts, want 2", len(got))
+	}
+	if got[0].HasCRC {
+		t.Error("HasCRC = true for the UU-encoded article, want false")
+	}
+	if !got[1].HasCRC {
+		t.Error("HasCRC = false for the article whose CRC is genuinely zero, want true")
+	}
+	if got[0].CRC32 != 0 || got[1].CRC32 != 0 {
+		t.Fatalf("CRC32 = %d/%d, want 0/0 — the flag, not the value, must carry the distinction",
+			got[0].CRC32, got[1].CRC32)
+	}
+}
+
 func TestSQLiteFactLog_DeleteJobIsScoped(t *testing.T) {
 	ctx := context.Background()
 	fl := NewSQLiteFactLog(openTestDB(t))
