@@ -347,9 +347,20 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
 ### Storage faults
 
 - **R18** Write and sync failures MUST be classified by subject and
-  retryability: *retryable-storage* (`ENOSPC`, `EDQUOT`, `ETIMEDOUT`, wedged
-  mount) and *permanent-storage* (`EROFS`, `EIO`, target directory gone).
+  retryability: *retryable-storage* (`ENOSPC`, `EDQUOT`, `ETIMEDOUT`, `EIO`,
+  `ESTALE`, a missing target directory, a wedged mount) and
+  *permanent-storage* (`EROFS`, `EACCES`/`EPERM`, and anything that cannot
+  clear without a configuration change). Anything unrecognised is retryable.
   Storage never produces an article-subject fault.
+
+  **`EIO` and a missing target directory are retryable, reversing this
+  requirement's first draft.** That draft contradicted A1, which listed `EIO`
+  among the faults that stall; A1 governs. Retryable does not mean retry
+  forever — it means the job stalls with a surfaced reason (R19) — and both
+  conditions are routinely transient on network-backed and removable volumes.
+  Failing the job instead discards every byte already downloaded, for a
+  condition a user often fixes in seconds. A dying disk still reaches the
+  operator, as a stall rather than a job failure.
 - **R19** Retryable-storage → the job stalls, the reason is surfaced, articles
   stay Outstanding, and the condition is re-evaluated on an interval and on user
   action.
