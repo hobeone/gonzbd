@@ -2392,6 +2392,29 @@ carry the working tree forward.
 
 ## Task 9: FileWriter — the assembler loses its authority
 
+> **Data-loss debt this task MUST discharge.** Task 3 dropped
+> `job_files.max_written`, so `FileProgress.FileMaxWritten` and
+> `FileWriteCursor` return 0 on every restart. `finalizeFile` seeds
+> `f.maxWritten` from them and truncates the completed file to this run's
+> high-water mark; its only guard refuses to *grow* a file, so truncating
+> **downward** — the destructive direction — is unguarded. That reinstates
+> #342/#350 verbatim: a resumed file is trimmed to the extent of the articles
+> this run happened to fetch, discarding what earlier runs wrote. Without par2
+> the loss is permanent and silent.
+>
+> Task 3 adds an interim guard (skip the truncate when the extent is unknown).
+> **This task removes the interim guard and replaces the bound with
+> `FileExtent.VerifiedTo`**, which is the real fix: a verified extent describes
+> the file rather than the session. It must also restore the end-to-end pin
+> deleted with the column — `internal/queue/max_written_persist_test.go`,
+> rewritten against `file_extents` — asserting that a file resumed with one
+> article at offset 0 keeps its full length. `internal/assembler/resume_extent_test.go`
+> does **not** cover this: it injects `InitialMaxWritten` directly and so cannot
+> observe an unseeded resume.
+>
+> A reviewer must reject this task if the interim guard is still present, or if
+> no test fails when the truncate bound is reverted to the run's high-water mark.
+
 > **Premise re-derived 2026-08-11 against `73d0c810`.** This task was originally
 > written against an assembler that acked at *accept* time from six call sites.
 > PR #358 (`913adf0d`, 1,310 lines) has since moved acking to `WriteAt` and
