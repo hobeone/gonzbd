@@ -149,9 +149,18 @@ the test never creates.
 SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
 cp internal/pkg/target.go "$SCRATCH/target.bak.go"
 # ... revert the fix in place, or neuter its condition ...
-go test ./internal/pkg/ -run TestTheNewPin        # MUST fail, for the right reason
+go test -count=1 ./internal/pkg/ -run TestTheNewPin   # MUST fail, for the right reason
 cp "$SCRATCH/target.bak.go" internal/pkg/target.go
 ```
+
+**`-count=1` is not optional.** Go caches a successful test result keyed on the
+test binary and its inputs, and prints `(cached)` where it would have printed a
+duration. A mutation run without it can replay the *pre-mutation* pass and
+report `ok` — which reads as "the test does not discriminate" and is the exact
+opposite of the truth. This has already happened once in practice: a mutation
+check returned a cached `ok` and would have been recorded as evidence that a
+pin was inert, had the second run not been questioned. A cached `ok` is not an
+observation.
 
 **Never `git stash`** — the stash stack is shared with any other session in this
 repo and a pop can take their work. Restore from your own copy rather than

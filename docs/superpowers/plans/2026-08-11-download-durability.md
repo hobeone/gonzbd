@@ -36,6 +36,7 @@ to ack, compute a CRC, or truncate.
   `go vet ./...`, `go test -race ./...`, `golangci-lint run ./...`.
 - **Conventional Commits**, scope = Go package name. Footer
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+- **Every mutation run uses `go test -count=1`.** Without it Go replays a cached pass and prints `ok`, which reads as "the test is inert" when the test was never actually run against the mutation. A cached `ok` is not evidence. This nearly recorded a false finding during Task 3.
 - **The red check is mechanical, not mental** (`AGENTS.md`): every pinning test
   must be *observed* to fail against a reverted or neutered fix, and the failure
   message recorded in the commit body. Never `git stash` — copy the file to a
