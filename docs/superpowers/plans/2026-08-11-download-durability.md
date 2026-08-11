@@ -2409,6 +2409,15 @@ Write these doc comments, because they are the claims most likely to drift:
 Run: `go test -race ./internal/durability/ -run TestResume -v`
 Expected: PASS.
 
+> **The mutations below were verified inert during Task 7's review.** Run
+> verbatim, three of them abort earlier in `TestResume_TruncatedFileForcesRecompute`
+> than the code they target, and the fourth is rejected by that fixture's
+> `CRC32: 0` regardless — so the script as written records green runs as red
+> checks. Each needs its own fixture: a same-size edit (mtime moves but size
+> does not), a truncation with the mtime preserved, and a fact carrying a
+> *correct* `CRC32` with `HasCRC: false`, which is the only shape that
+> separates the CRC guard from the has-CRC guard.
+
 - [ ] **Step 5: Observe the red check on validation — twice**
 
 ```bash
