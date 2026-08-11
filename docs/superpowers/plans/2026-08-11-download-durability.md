@@ -1295,9 +1295,6 @@ func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSQLiteExtentStore_CommitIsAtomic pins that a job's files are never
-// observable half-committed. A barrier that fails partway must leave the
-// previous committed cache intact (R7).
 // TestSQLiteExtentStore_HasPrefixCRCRoundTrips pins the same distinction
 // TestSQLiteFactLog_HasCRCRoundTrips pins for Class A: a prefix CRC that is
 // genuinely zero must stay distinguishable from no prefix CRC at all.
@@ -1339,6 +1336,16 @@ func TestSQLiteExtentStore_HasPrefixCRCRoundTrips(t *testing.T) {
 	}
 }
 
+// TestSQLiteExtentStore_CommitIsAtomic pins that a job's files are never
+// observable half-committed. A barrier that fails partway must leave the
+// previous committed cache intact (R7).
+//
+// This test pins the VALIDATION loop, not the transaction. The bad row is
+// rejected before any write, so removing the transaction changes nothing it
+// can see — file_extents has no CHECK constraint, so nothing else can fail
+// mid-batch either. TestSQLiteExtentStore_TransactionRollsBackMidBatch below
+// is what pins the transaction; the two mechanisms need two tests, not two
+// mutations of one test.
 func TestSQLiteExtentStore_CommitIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
@@ -1367,6 +1374,60 @@ func TestSQLiteExtentStore_CommitIsAtomic(t *testing.T) {
 	}
 	if got[0].VerifiedTo != 100 {
 		t.Fatalf("VerifiedTo = %d after a failed commit, want 100 — the batch was not atomic", got[0].VerifiedTo)
+	}
+}
+
+// TestSQLiteExtentStore_TransactionRollsBackMidBatch pins the transaction
+// itself, which CommitIsAtomic cannot reach: validation rejects malformed
+// input before any write, so only a failure arriving DURING the write
+// exercises the rollback. In production that is ENOSPC, SQLITE_BUSY, or a
+// cancelled context; here a test-only trigger produces the same shape
+// deterministically, with no driver wrapper and no schema change — the
+// trigger lives in this test's scratch database only.
+//
+// Without the transaction, row 0's new value is already committed when row 1
+// fails, which violates R7 on a path validation can never guard.
+func TestSQLiteExtentStore_TransactionRollsBackMidBatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	es := NewSQLiteExtentStore(db)
+
+	if err := es.Commit(ctx, "job-1", []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 100},
+		{FileIdx: 1, Durable: NewBitmap(8), VerifiedTo: 200},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER abort_second BEFORE INSERT ON file_extents
+		WHEN NEW.file_idx = 1 BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both rows are valid, so the validation loop passes them; the second
+	// fails at the storage layer.
+	err := es.Commit(ctx, "job-1", []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 999},
+		{FileIdx: 1, Durable: NewBitmap(8), VerifiedTo: 888},
+	})
+	if err == nil {
+		t.Fatal("Commit succeeded despite the trigger")
+	}
+
+	got, loadErr := es.Load(ctx, "job-1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Load returned %d extents, want 2", len(got))
+	}
+	if got[0].VerifiedTo != 100 {
+		t.Fatalf("file 0 VerifiedTo = %d, want 100 — a mid-batch failure left a partial write",
+			got[0].VerifiedTo)
+	}
+	if got[1].VerifiedTo != 200 {
+		t.Fatalf("file 1 VerifiedTo = %d, want 200", got[1].VerifiedTo)
 	}
 }
 
@@ -1465,10 +1526,19 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 	return tx.Commit()
 }
 
-// Load reads a job's extents. The caller supplies the article count per file
-// via the manifest; because the bitmap's bit count is not stored, Load
-// reconstructs each bitmap at its full byte width and the resumer narrows it.
-// See loadBitmapWidth below for why that is safe.
+// Load reads a job's extents, ordered by file_idx.
+//
+// The bitmap's bit count is not stored, so each bitmap comes back at its full
+// BYTE width and is UNMASKED — Bitmap's tail-word mask cannot fire when n is a
+// multiple of 64. Padding bits are zero for any blob this package wrote, since
+// Set is bounds-checked, but a damaged blob can set them and Count() would
+// then over-report articles durable, which is the over-claim direction the
+// design forbids.
+//
+// Callers that need a trustworthy Count MUST re-derive with
+// BitmapFromBytes(raw, realArticleCount) rather than slicing what Load
+// returns. Only the manifest knows that count, and this layer does not have
+// it.
 func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExtent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT file_idx, durable_bitmap, verified_to, prefix_crc,
