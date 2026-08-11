@@ -197,47 +197,99 @@ func TestForgetJob(t *testing.T) {
 	})
 }
 
+// TestHandleResult_RoutesOnError pins handleResult's only decision: an
+// ArticleResult carrying an error goes to handleFailureResult and one without
+// goes to handleSuccessResult.
+//
+// The discriminator is the job's download-started timestamp. handleSuccessResult
+// sets it through Queue.MarkJobStarted before doing anything else, and nothing
+// on the failure path touches it — so it is set if and only if the success
+// branch ran. An earlier version of this test asserted only that registerFile
+// had run and the heartbeat had fired, which both branches do; it passed
+// against a handleResult whose two arms both called handleSuccessResult, i.e.
+// against precisely the defect its own comment named.
+//
+// Each subtest builds its own job. MarkJobStarted is first-start-wins and
+// never resets, so a shared fixture would make the assertions order-dependent.
 func TestHandleResult_RoutesOnError(t *testing.T) {
-	// handleResult's whole job is the split, plus the heartbeat. Routing a
-	// failure down the success path would hand the assembler a nil body as
-	// though it were content.
-	q, job := helperJob(t, "route", 1, 2)
-	p := helperPipeline(t, q)
-	p.assembler = assembler.New(assembler.Options{
-		FileInfo: p.resolveFileInfo,
-	}, nil)
-
-	var beats int
-	p.onHeartbeat = func() { beats++ }
-
-	// A failure with no servers left is terminal, so handleFailureResult
-	// reaches registerFile — observable without starting the assembler.
-	p.handleResult(t.Context(), &downloader.ArticleResult{
-		JobID:     job.ID,
-		FileIdx:   0,
-		MessageID: "route-f0-a0@x",
-		Err:       downloader.ErrNoServersLeft,
-		Subject:   "file0.rar",
-	})
-	if beats != 1 {
-		t.Errorf("onHeartbeat fired %d times, want 1", beats)
+	newCase := func(t *testing.T, name string) (*pipeline, *queue.Job) {
+		t.Helper()
+		q, job := helperJob(t, name, 1, 2)
+		p := helperPipeline(t, q)
+		p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveFileInfo}, nil)
+		return p, job
 	}
-	if _, err := p.resolveFileInfo(job.ID, 0); err != nil {
-		t.Errorf("a terminal failure did not reach the failure path: %v", err)
+	startedAt := func(t *testing.T, p *pipeline, jobID string) time.Time {
+		t.Helper()
+		snap := p.queue.SnapshotJob(jobID)
+		if snap == nil {
+			t.Fatalf("job %s vanished", jobID)
+		}
+		return snap.Progress().DownloadStarted()
 	}
 
-	t.Run("fires the heartbeat for a success too", func(t *testing.T) {
-		// Watchdog liveness must not depend on articles succeeding; a job
-		// failing every article is still making progress.
-		before := beats
+	t.Run("an error takes the failure path", func(t *testing.T) {
+		p, job := newCase(t, "route-fail")
 		p.handleResult(t.Context(), &downloader.ArticleResult{
 			JobID:     job.ID,
 			FileIdx:   0,
-			MessageID: "route-f0-a1@x",
+			MessageID: "route-fail-f0-a0@x",
+			Err:       downloader.ErrNoServersLeft,
 			Subject:   "file0.rar",
 		})
-		if beats != before+1 {
-			t.Errorf("onHeartbeat fired %d times, want %d", beats, before+1)
+		if got := startedAt(t, p, job.ID); !got.IsZero() {
+			t.Errorf("download-started = %v after a failed article, want zero — the failure "+
+				"was routed to handleSuccessResult, which records it as downloaded data", got)
+		}
+		// The failure path is terminal here (ErrNoServersLeft), so it does
+		// reach registerFile. Asserting this too keeps the test honest about
+		// which path ran rather than only which one did not.
+		if _, err := p.resolveFileInfo(job.ID, 0); err != nil {
+			t.Errorf("the terminal failure path did not register the file: %v", err)
+		}
+	})
+
+	t.Run("no error takes the success path", func(t *testing.T) {
+		p, job := newCase(t, "route-ok")
+		p.handleResult(t.Context(), &downloader.ArticleResult{
+			JobID:     job.ID,
+			FileIdx:   0,
+			MessageID: "route-ok-f0-a0@x",
+			Subject:   "file0.rar",
+			Data:      []byte("payload"),
+		})
+		if startedAt(t, p, job.ID).IsZero() {
+			t.Error("download-started is zero after a successful article — the success " +
+				"was routed to handleFailureResult")
+		}
+	})
+
+	// The heartbeat is the watchdog's liveness signal and sits above the
+	// branch, so it must fire either way: a job failing every article is
+	// still making progress and must not be killed as stalled.
+	t.Run("fires the heartbeat for a failure", func(t *testing.T) {
+		p, job := newCase(t, "beat-fail")
+		var beats int
+		p.onHeartbeat = func() { beats++ }
+		p.handleResult(t.Context(), &downloader.ArticleResult{
+			JobID: job.ID, FileIdx: 0, MessageID: "beat-fail-f0-a0@x",
+			Err: downloader.ErrNoServersLeft, Subject: "file0.rar",
+		})
+		if beats != 1 {
+			t.Errorf("onHeartbeat fired %d times for a failure, want 1", beats)
+		}
+	})
+
+	t.Run("fires the heartbeat for a success", func(t *testing.T) {
+		p, job := newCase(t, "beat-ok")
+		var beats int
+		p.onHeartbeat = func() { beats++ }
+		p.handleResult(t.Context(), &downloader.ArticleResult{
+			JobID: job.ID, FileIdx: 0, MessageID: "beat-ok-f0-a0@x",
+			Subject: "file0.rar", Data: []byte("payload"),
+		})
+		if beats != 1 {
+			t.Errorf("onHeartbeat fired %d times for a success, want 1", beats)
 		}
 	})
 }

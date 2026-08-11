@@ -91,7 +91,15 @@ func BitmapFromBytes(buf []byte, n int) (Bitmap, error) {
 }
 
 // FileExtent is the Class B derivation cache for one file. Every field is
-// recomputable from the FactLog plus the file's bytes; none is authoritative.
+// recomputable from the FactLog plus the file's bytes, with the documented
+// exception of BytesFailed, and none is authoritative.
+//
+// BytesFailed is the exception because a permanently failed article never
+// decodes, so it never writes an ArticleFact — Class A records what was
+// decoded. Its authority is the failed half of job_files.articles_done. S4's
+// "the recomputation is correct by definition" rule therefore does NOT extend
+// to it: recomputing from Class A yields zero and would discard a real
+// failure count.
 type FileExtent struct {
 	FileIdx int32
 	// Durable has one bit per article of this file, in file-local ordinal
