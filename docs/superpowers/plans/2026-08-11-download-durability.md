@@ -1,0 +1,3193 @@
+# Download Durability Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace the article→disk→ack path with a design in which no fact is
+persisted before the thing it asserts becomes true, and no derived value is
+authoritative — implementing every invariant in
+`docs/superpowers/specs/2026-08-11-download-durability-design.md`.
+
+**Architecture:** Three new packages carry the design. `internal/storagefault`
+classifies syscall errors and has no vocabulary for articles, which makes
+invariant A1 true by ignorance. `internal/durability` owns the Class A fact log,
+the Class B extent cache, the checkpoint barrier, and the resumer — and is the
+only package that can mint the proof token that acking requires, which makes
+invariants X2/X3 compiler-enforced outside it. `internal/assembler` is reduced
+to a dumb `FileWriter` that writes bytes and reports faults, with no authority
+to ack, compute a CRC, or truncate.
+
+**Tech Stack:** Go 1.26.4, `modernc.org/sqlite` (pure Go), `goose` migrations,
+`log/slog`, `internal/crc32util`.
+
+## Global Constraints
+
+- **Go 1.26.4** (toolchain 1.26.4); module `github.com/hobeone/gonzbd`.
+- **No backwards compatibility of any kind.** The user will wipe all on-disk
+  state and reinstall from scratch after this lands. No migration path, no
+  legacy read path, no compatibility shim, no deprecation window.
+- **Migrations are replaced, not appended.** `internal/history/migrations/`
+  001–011 are deleted and replaced by a single fresh `001_initial.sql`. This
+  deliberately overrides `AGENTS.md`'s "never modify existing migration files"
+  rule, which exists to protect applied migrations on real installations; the
+  user has explicitly authorised a from-scratch reinstall, so no applied
+  migration is at risk. **Record this authorisation in the commit body of Task 3.**
+- **Every commit leaves the repo green:** `go build ./... && go test -race ./...`.
+- **Quality gates before every commit:** `go fix ./...`, `goimports -w .`,
+  `go vet ./...`, `go test -race ./...`, `golangci-lint run ./...`.
+- **Conventional Commits**, scope = Go package name. Footer
+  `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+- **The red check is mechanical, not mental** (`AGENTS.md`): every pinning test
+  must be *observed* to fail against a reverted or neutered fix, and the failure
+  message recorded in the commit body. Never `git stash` — copy the file to a
+  scratch dir and restore from your own copy.
+- **New unexported helpers need real tests** — `check_test_alignment` reports
+  every unexported helper in a touched file. Never add a dummy reference.
+
+---
+
+## File Structure
+
+**New — `internal/storagefault/`** (no dependencies on any gonzbd package)
+
+| File | Responsibility |
+|---|---|
+| `fault.go` | `Fault` type; `Retryable()`; `Error()` |
+| `classify.go` | `Classify(op, path string, err error) *Fault` — errno → retryability |
+
+**New — `internal/durability/`**
+
+| File | Responsibility |
+|---|---|
+| `fact.go` | `ArticleFact` (Class A); `FactLog` interface |
+| `factlog_sqlite.go` | append-only SQLite implementation of `FactLog` |
+| `extent.go` | `FileExtent` (Class B); `ExtentStore` interface; `Bitmap` |
+| `extentstore_sqlite.go` | atomic per-job commit of `[]FileExtent` |
+| `proof.go` | `DurableProof` — unexported fields, no exported constructor |
+| `barrier.go` | `Barrier`: drain → write → fsync → commit → mint proof |
+| `resume.go` | `Resumer`: validity check, recomputation from bytes |
+| `synctarget.go` | `SyncTarget` interface the assembler satisfies |
+
+**Rewritten — `internal/assembler/`**
+
+| File | Change |
+|---|---|
+| `filewriter.go` | **new** — one file's handle, cache, coalescing, pre-allocation. No acks. |
+| `assembler.go` | reduced: routing + `SyncTarget` impl. Loses ack, CRC, truncate, extent logic. |
+| `writecache.go` | retained, but `writeCursor` becomes purely a coalescing hint (Class C) |
+| `diskprobe.go`, `diskspace.go`, `sparse.go`, `preallocate*.go` | retained; errors routed through `storagefault` |
+
+**Deleted:** `resume_crc_test.go`, `resume_extent_test.go`, `max_written_persist_test.go`,
+`drain_cursor_test.go` — they pin behaviour this plan removes.
+
+**Modified — `internal/queue/`**
+
+| File | Change |
+|---|---|
+| `worksetderive.go` | **new** — derives outstanding articles from the durable bitmap |
+| `queue.go` | delete `MarkArticlesDone*`, `MarkArticlesFailed*`, `SetFileExtents`; add `AckDurable` |
+| `progress.go` | delete `BytesDownloaded`/`MaxWritten`/`WriteCursor` maintenance |
+| `sqlite_store.go` | slimmed `job_files`; no Class B columns |
+
+**Modified:** `internal/app/app.go` (wiring), `internal/config/downloads.go`
+(new knobs), `internal/history/migrations/` (collapsed).
+
+---
+
+## Task 1: Storage fault classification
+
+**Files:**
+- Create: `internal/storagefault/fault.go`, `internal/storagefault/classify.go`
+- Test: `internal/storagefault/classify_test.go`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `storagefault.Fault` struct with fields `Op string`, `Path string`,
+  `Err error`, `Permanent bool`; methods `Error() string`, `Retryable() bool`,
+  `Unwrap() error`. Function
+  `Classify(op, path string, err error) *Fault` returning `nil` when `err == nil`.
+
+This package must **never** import any gonzbd package and must have no concept
+of an article, job, or file index. That is the mechanism for invariant A1: it
+cannot blame an article because it has no word for one.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+package storagefault
+
+import (
+	"errors"
+	"syscall"
+	"testing"
+)
+
+func TestClassify_NilErrorYieldsNoFault(t *testing.T) {
+	if got := Classify("write", "/x", nil); got != nil {
+		t.Fatalf("Classify(nil) = %v, want nil", got)
+	}
+}
+
+func TestClassify_Retryability(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		permanent bool
+	}{
+		{"ENOSPC is retryable", syscall.ENOSPC, false},
+		{"EDQUOT is retryable", syscall.EDQUOT, false},
+		{"ETIMEDOUT is retryable", syscall.ETIMEDOUT, false},
+		{"ESTALE is retryable", syscall.ESTALE, false},
+		{"EROFS is permanent", syscall.EROFS, true},
+		{"EIO is permanent", syscall.EIO, true},
+		{"ENOENT is permanent", syscall.ENOENT, true},
+		{"EACCES is permanent", syscall.EACCES, true},
+		{"unknown defaults to retryable", errors.New("boom"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := Classify("write", "/data/x.bin", tt.err)
+			if f == nil {
+				t.Fatal("Classify returned nil for a non-nil error")
+			}
+			if f.Permanent != tt.permanent {
+				t.Errorf("Permanent = %v, want %v", f.Permanent, tt.permanent)
+			}
+			if f.Retryable() == tt.permanent {
+				t.Errorf("Retryable() = %v, contradicts Permanent = %v", f.Retryable(), f.Permanent)
+			}
+			if !errors.Is(f, tt.err) {
+				t.Errorf("errors.Is(fault, %v) = false, want true", tt.err)
+			}
+		})
+	}
+}
+
+// TestClassify_WrappedErrnoIsUnwrapped guards the real call shape: the
+// assembler passes an *os.PathError from WriteAt, never a bare errno.
+func TestClassify_WrappedErrnoIsUnwrapped(t *testing.T) {
+	wrapped := &os_PathErrorStub{Err: syscall.ENOSPC}
+	f := Classify("write", "/data/x.bin", wrapped)
+	if f.Permanent {
+		t.Error("wrapped ENOSPC classified permanent, want retryable")
+	}
+}
+```
+
+Define `os_PathErrorStub` in the test file as
+`type os_PathErrorStub struct{ Err error }` with
+`func (e *os_PathErrorStub) Error() string { return "stub: " + e.Err.Error() }`
+and `func (e *os_PathErrorStub) Unwrap() error { return e.Err }`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/storagefault/ -v`
+Expected: FAIL — `undefined: Classify`.
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/storagefault/fault.go`:
+
+```go
+// Package storagefault classifies errors returned by the storage layer.
+//
+// It deliberately has no concept of an article, job, or file index, and
+// imports no gonzbd package. That is not an accident of layering: invariant
+// A1 of the durability design forbids recording a storage fault as an article
+// fault, and this package cannot violate it because it has no vocabulary in
+// which to blame an article.
+package storagefault
+
+import "fmt"
+
+// Fault is a classified failure of the storage layer.
+type Fault struct {
+	// Op is the syscall-level operation: "write", "sync", "open",
+	// "truncate", "mkdir", "stat".
+	Op string
+	// Path is the filesystem path the operation targeted.
+	Path string
+	// Err is the underlying error, retained for errors.Is/As.
+	Err error
+	// Permanent reports whether retrying could ever succeed without
+	// operator intervention.
+	Permanent bool
+}
+
+func (f *Fault) Error() string {
+	kind := "retryable"
+	if f.Permanent {
+		kind = "permanent"
+	}
+	return fmt.Sprintf("storage %s fault on %s %q: %v", kind, f.Op, f.Path, f.Err)
+}
+
+// Retryable reports whether the condition may clear on its own or after
+// operator action, in which case the job stalls rather than fails.
+func (f *Fault) Retryable() bool { return !f.Permanent }
+
+func (f *Fault) Unwrap() error { return f.Err }
+```
+
+`internal/storagefault/classify.go`:
+
+```go
+package storagefault
+
+import (
+	"errors"
+	"syscall"
+)
+
+// permanentErrnos are conditions no amount of waiting will clear. Anything
+// not listed is treated as retryable, which is the conservative default: a
+// stalled job is recoverable by the user, whereas failing a job discards
+// work that a transient mount hiccup would have let us keep.
+var permanentErrnos = []syscall.Errno{
+	syscall.EROFS,   // read-only filesystem
+	syscall.EIO,     // hardware or filesystem-level I/O error
+	syscall.ENOENT,  // target directory removed underneath us
+	syscall.ENOTDIR, // a path component is not a directory
+	syscall.EACCES,  // permissions
+	syscall.EPERM,
+	syscall.EBADF,  // programming error: handle already closed
+	syscall.EFBIG,  // exceeds the filesystem's maximum file size
+	syscall.EINVAL, // bad offset or unaligned write
+}
+
+// Classify maps an error from a storage operation to a Fault. It returns nil
+// when err is nil, so callers can write `if f := Classify(...); f != nil`.
+func Classify(op, path string, err error) *Fault {
+	if err == nil {
+		return nil
+	}
+	f := &Fault{Op: op, Path: path, Err: err}
+	for _, e := range permanentErrnos {
+		if errors.Is(err, e) {
+			f.Permanent = true
+			break
+		}
+	}
+	return f
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/storagefault/ -v`
+Expected: PASS, all subtests.
+
+- [ ] **Step 5: Verify the structural guarantee mechanically**
+
+Run: `go list -deps ./internal/storagefault | grep gonzbd`
+Expected: **no output**. If this prints anything, the A1 guarantee is broken.
+Add this as a test so it cannot regress:
+
+```go
+func TestPackageImportsNoGonzbdPackage(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", "github.com/hobeone/gonzbd/internal/storagefault").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "github.com/hobeone/gonzbd/") {
+			t.Errorf("storagefault must not depend on %s — invariant A1 relies on it having no article vocabulary", line)
+		}
+	}
+}
+```
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+goimports -w internal/storagefault/ && go vet ./internal/storagefault/ && \
+  go test -race ./internal/storagefault/ && golangci-lint run ./internal/storagefault/
+git add internal/storagefault/
+git commit -m "feat(storagefault): classify storage errors by retryability
+
+A1 of the durability design forbids recording a storage fault as an
+article fault. This package makes that structural rather than
+disciplinary: it imports no gonzbd package and has no type naming an
+article, so it cannot express the wrong attribution. A test asserts
+the import constraint.
+
+Unknown errors classify retryable, which stalls the job rather than
+failing it — a recoverable outcome is the safe default when the cause
+is unrecognised.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 2: Class A and Class B core types
+
+**Files:**
+- Create: `internal/durability/fact.go`, `internal/durability/extent.go`,
+  `internal/durability/proof.go`
+- Test: `internal/durability/fact_test.go`, `internal/durability/extent_test.go`,
+  `internal/durability/proof_test.go`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `durability.ArticleFact{FileIdx int32; ArtIdx int32; Offset int64; Length int32; CRC32 uint32; HasCRC bool}`
+  - `durability.Bitmap` with `NewBitmap(n int) Bitmap`, `Set(i int)`,
+    `Get(i int) bool`, `Len() int`, `Count() int`, `Bytes() []byte`,
+    `BitmapFromBytes(b []byte, n int) (Bitmap, error)`
+  - `durability.FileExtent{FileIdx int32; Durable Bitmap; VerifiedTo int64;
+    PrefixCRC uint32; HasPrefixCRC bool; BytesDurable int64; BytesFailed int64;
+    Size int64; ModTimeNs int64}`
+  - `durability.DurableProof` with `JobID() string`, `Articles() []int32`,
+    and no exported constructor.
+
+- [ ] **Step 1: Write the failing tests**
+
+`internal/durability/extent_test.go`:
+
+```go
+package durability
+
+import "testing"
+
+func TestBitmap_RoundTripsThroughBytes(t *testing.T) {
+	b := NewBitmap(200)
+	for _, i := range []int{0, 63, 64, 65, 199} {
+		b.Set(i)
+	}
+	got, err := BitmapFromBytes(b.Bytes(), 200)
+	if err != nil {
+		t.Fatalf("BitmapFromBytes: %v", err)
+	}
+	if got.Count() != 5 {
+		t.Fatalf("Count() = %d, want 5", got.Count())
+	}
+	for _, i := range []int{0, 63, 64, 65, 199} {
+		if !got.Get(i) {
+			t.Errorf("Get(%d) = false after round trip", i)
+		}
+	}
+	if got.Get(1) || got.Get(198) {
+		t.Error("round trip invented a set bit")
+	}
+}
+
+// TestBitmapFromBytes_RejectsShortBuffer pins that a truncated persisted
+// bitmap is an error rather than a silently short map. S3 requires that an
+// article whose state cannot be established is Outstanding; a silently
+// truncated bitmap would instead report those articles as not-durable
+// without anyone noticing the record was damaged.
+func TestBitmapFromBytes_RejectsShortBuffer(t *testing.T) {
+	if _, err := BitmapFromBytes([]byte{0x01}, 200); err == nil {
+		t.Fatal("BitmapFromBytes accepted a buffer too short for n=200")
+	}
+}
+
+func TestBitmap_OutOfRangeIsNoOp(t *testing.T) {
+	b := NewBitmap(8)
+	b.Set(-1)
+	b.Set(8)
+	if b.Count() != 0 {
+		t.Fatalf("Count() = %d after out-of-range Sets, want 0", b.Count())
+	}
+	if b.Get(-1) || b.Get(8) {
+		t.Error("Get out of range returned true")
+	}
+}
+```
+
+`internal/durability/proof_test.go`:
+
+```go
+package durability
+
+import "testing"
+
+// TestDurableProof_CarriesItsPayload is the only thing a proof must do.
+// Its real guarantee — that no package outside this one can construct it —
+// is enforced by the type having no exported fields and no exported
+// constructor, and is asserted by TestNoExportedProofConstructor below.
+func TestDurableProof_CarriesItsPayload(t *testing.T) {
+	p := newProof("job-1", []int32{3, 7, 11})
+	if p.JobID() != "job-1" {
+		t.Errorf("JobID() = %q, want %q", p.JobID(), "job-1")
+	}
+	if got := p.Articles(); len(got) != 3 || got[0] != 3 || got[2] != 11 {
+		t.Errorf("Articles() = %v, want [3 7 11]", got)
+	}
+}
+
+// TestDurableProof_ArticlesIsNotAliased pins that a caller mutating the
+// returned slice cannot corrupt the proof, which the barrier may still hold.
+func TestDurableProof_ArticlesIsNotAliased(t *testing.T) {
+	p := newProof("job-1", []int32{3, 7, 11})
+	got := p.Articles()
+	got[0] = 99
+	if p.Articles()[0] != 3 {
+		t.Fatal("mutating the returned slice mutated the proof")
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/durability/ -v`
+Expected: FAIL — `undefined: NewBitmap`, `undefined: newProof`.
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/durability/fact.go`:
+
+```go
+// Package durability owns the persistence of download progress.
+//
+// It divides every fact into two classes, per
+// docs/superpowers/specs/2026-08-11-download-durability-design.md:
+//
+//   - Class A (ArticleFact) — immutable facts discovered when an article is
+//     decoded. They assert nothing about presence on disk: an ArticleFact
+//     says only "if the bytes at [Offset, Offset+Length) are present, they
+//     hash to CRC32". That is true the instant the article is decoded and
+//     stays true forever, so Class A may be committed at any time in any
+//     order, with no barrier and no ordering constraint against the data.
+//
+//   - Class B (FileExtent) — a cache of values derived from Class A plus the
+//     file's actual bytes. Class B asserts presence, so it may only be
+//     committed by Barrier, strictly after the fsync that makes its claims
+//     true (S1). It is never authoritative: where it disagrees with a
+//     recomputation, the recomputation is correct by definition (S4).
+package durability
+
+import "context"
+
+// ArticleFact is an immutable Class A fact about one article.
+//
+// Offset and Length are the article's *decoded* byte range, which is not
+// knowable until the article is fetched — the NZB carries only an encoded
+// byte count, while the true range comes from the yEnc =ypart header. That
+// is why this mapping must be persisted rather than derived from the NZB.
+type ArticleFact struct {
+	// FileIdx is the article's file within the job.
+	FileIdx int32
+	// ArtIdx is the article's global index within the job's manifest.
+	ArtIdx int32
+	// Offset is the decoded byte position within the target file.
+	Offset int64
+	// Length is the decoded byte length.
+	Length int32
+	// CRC32 is the CRC32 of the decoded bytes, valid only when HasCRC.
+	CRC32 uint32
+	// HasCRC is false for UU-encoded articles, which carry no CRC.
+	// Distinguishing this from CRC32 == 0 is required by R23.
+	HasCRC bool
+}
+
+// FactLog is the append-only store of Class A facts.
+//
+// Append has no ordering relationship to file writes (R2). Losing a suffix
+// of the log is safe and costs only a re-fetch (R3).
+type FactLog interface {
+	// Append records facts. It is idempotent per (jobID, ArtIdx): appending
+	// a fact whose ArtIdx is already present is a no-op, not an update,
+	// because a Class A fact never changes (R1).
+	Append(ctx context.Context, jobID string, facts []ArticleFact) error
+
+	// ForFile returns every recorded fact for one file, ordered by Offset.
+	ForFile(ctx context.Context, jobID string, fileIdx int32) ([]ArticleFact, error)
+
+	// DeleteJob removes every fact for a job that has left the queue.
+	DeleteJob(ctx context.Context, jobID string) error
+}
+```
+
+`internal/durability/extent.go`:
+
+```go
+package durability
+
+import (
+	"context"
+	"errors"
+	"math/bits"
+)
+
+// ErrBitmapTooShort reports a persisted bitmap buffer that cannot hold n bits.
+var ErrBitmapTooShort = errors.New("durability: bitmap buffer too short for bit count")
+
+// Bitmap is a fixed-size bit vector of per-article durable flags.
+type Bitmap struct {
+	words []uint64
+	n     int
+}
+
+func NewBitmap(n int) Bitmap {
+	if n < 0 {
+		n = 0
+	}
+	return Bitmap{words: make([]uint64, (n+63)/64), n: n}
+}
+
+func (b Bitmap) Len() int { return b.n }
+
+func (b Bitmap) Get(i int) bool {
+	if i < 0 || i >= b.n {
+		return false
+	}
+	return b.words[i/64]&(1<<(uint(i)%64)) != 0
+}
+
+// Set mutates the caller's Bitmap despite the value receiver: words is a
+// slice, so the receiver copy shares its backing array.
+func (b Bitmap) Set(i int) {
+	if i < 0 || i >= b.n {
+		return
+	}
+	b.words[i/64] |= 1 << (uint(i) % 64)
+}
+
+func (b Bitmap) Count() int {
+	total := 0
+	for _, w := range b.words {
+		total += bits.OnesCount64(w)
+	}
+	return total
+}
+
+// Bytes serialises the bitmap little-endian for persistence.
+func (b Bitmap) Bytes() []byte {
+	out := make([]byte, len(b.words)*8)
+	for i, w := range b.words {
+		for j := range 8 {
+			out[i*8+j] = byte(w >> (8 * uint(j)))
+		}
+	}
+	return out
+}
+
+// BitmapFromBytes rebuilds a bitmap, rejecting a buffer too short for n.
+// A short buffer means the record is damaged; silently returning a partly
+// zero bitmap would report those articles not-durable without anyone
+// noticing the damage, which S3 forbids treating as an ordinary answer.
+func BitmapFromBytes(buf []byte, n int) (Bitmap, error) {
+	if n < 0 {
+		n = 0
+	}
+	need := (n + 63) / 64
+	if len(buf) < need*8 {
+		return Bitmap{}, ErrBitmapTooShort
+	}
+	b := NewBitmap(n)
+	for i := range need {
+		var w uint64
+		for j := range 8 {
+			w |= uint64(buf[i*8+j]) << (8 * uint(j))
+		}
+		b.words[i] = w
+	}
+	return b, nil
+}
+
+// FileExtent is the Class B derivation cache for one file. Every field is
+// recomputable from the FactLog plus the file's bytes; none is authoritative.
+type FileExtent struct {
+	FileIdx int32
+	// Durable has one bit per article of this file, in file-local ordinal
+	// order, set when a completed fsync covered that article's bytes.
+	Durable Bitmap
+	// VerifiedTo is the length of the gapless prefix proven present from
+	// byte 0. It is the CRC anchor, and is permitted to stall at a hole
+	// without affecting resume, which depends only on Durable.
+	VerifiedTo int64
+	// PrefixCRC is the CRC32 of [0, VerifiedTo), valid only when HasPrefixCRC.
+	PrefixCRC    uint32
+	HasPrefixCRC bool
+	// BytesDurable and BytesFailed are cached aggregates. They exist so
+	// restart stays O(files) (B3) rather than O(articles); the FactLog
+	// remains the authority (S5).
+	BytesDurable int64
+	BytesFailed  int64
+	// Size and ModTimeNs stamp the file as it was at commit time. The
+	// resumer compares them against the file as it exists now; a mismatch
+	// invalidates every other field in this struct (S7).
+	Size      int64
+	ModTimeNs int64
+}
+
+// ExtentStore persists Class B. Commit is atomic across the whole slice so a
+// job's files can never be observed half-committed.
+type ExtentStore interface {
+	Commit(ctx context.Context, jobID string, exts []FileExtent) error
+	Load(ctx context.Context, jobID string) ([]FileExtent, error)
+	DeleteJob(ctx context.Context, jobID string) error
+}
+```
+
+`internal/durability/proof.go`:
+
+```go
+package durability
+
+import "slices"
+
+// DurableProof witnesses that a completed fsync covers the articles it names.
+//
+// It has no exported fields and no exported constructor, so no package
+// outside internal/durability can create one. Since the queue's ack entry
+// point takes a DurableProof, "ack before fsync" is not a rule anyone must
+// remember — it is code that does not compile.
+//
+// The guarantee is package-scoped: within internal/durability, newProof is
+// reachable from anywhere. Only Barrier.Run calls it, and that is the one
+// place review has to hold. Outside this package it is absolute.
+type DurableProof struct {
+	jobID string
+	arts  []int32
+}
+
+// newProof is unexported deliberately. See the type doc.
+func newProof(jobID string, arts []int32) DurableProof {
+	return DurableProof{jobID: jobID, arts: slices.Clone(arts)}
+}
+
+func (p DurableProof) JobID() string { return p.jobID }
+
+// Articles returns a copy, so a consumer cannot mutate a proof the barrier
+// may still hold.
+func (p DurableProof) Articles() []int32 { return slices.Clone(p.arts) }
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/durability/ -v`
+Expected: PASS.
+
+- [ ] **Step 5: Observe the red check on the aliasing pin**
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/durability/proof.go "$SCRATCH/proof.bak.go"
+sed -i 's|func (p DurableProof) Articles() \[\]int32 { return slices.Clone(p.arts) }|func (p DurableProof) Articles() []int32 { return p.arts }|' internal/durability/proof.go
+grep -n 'return p.arts$' internal/durability/proof.go   # confirm the mutation landed
+go test ./internal/durability/ -run TestDurableProof_ArticlesIsNotAliased
+# MUST FAIL: "mutating the returned slice mutated the proof"
+cp "$SCRATCH/proof.bak.go" internal/durability/proof.go
+```
+
+Record the observed failure message in the commit body.
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+goimports -w internal/durability/ && go vet ./internal/durability/ && \
+  go test -race ./internal/durability/ && golangci-lint run ./internal/durability/
+git add internal/durability/
+git commit -m "feat(durability): add Class A facts, Class B extents, and the proof token
+
+ArticleFact asserts nothing about presence, so it needs no barrier and
+no ordering against the data. FileExtent does assert presence, so only
+Barrier may commit it.
+
+DurableProof has no exported constructor, which is what makes 'ack only
+after fsync' compiler-enforced outside this package rather than a rule
+six call sites must each remember.
+
+Red check observed: reverting Articles() to return p.arts fails
+TestDurableProof_ArticlesIsNotAliased with 'mutating the returned slice
+mutated the proof'.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 3: Collapse the schema to a single fresh migration
+
+**Files:**
+- Delete: `internal/history/migrations/002_add_jobs_tables.sql` through
+  `011_add_job_files_max_written.sql`
+- Rewrite: `internal/history/migrations/001_initial.sql`
+- Test: `internal/history/migrations_test.go` (extend existing, or create)
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: tables `jobs`, `job_files`, `article_facts`, `file_extents`,
+  `history`, `history_job_files`, `queue_meta`.
+
+The Class B columns leave `job_files` entirely. `bytes_downloaded`,
+`failed_bytes`, `max_written`, and `write_cursor` are derived values that were
+being maintained independently — the direct cause of #306, #337, and #311. They
+now live in `file_extents` and are labelled cache.
+
+- [ ] **Step 1: Write the failing test**
+
+`internal/history/migrations_test.go`:
+
+```go
+func TestMigrations_SchemaShape(t *testing.T) {
+	db := openMigratedTestDB(t) // existing helper; create one if absent
+
+	t.Run("job_files carries no derived columns", func(t *testing.T) {
+		forbidden := []string{"bytes_downloaded", "failed_bytes", "max_written", "write_cursor"}
+		rows, err := db.Query(`SELECT name FROM pragma_table_info('job_files')`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var cols []string
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				t.Fatal(err)
+			}
+			cols = append(cols, c)
+		}
+		for _, f := range forbidden {
+			if slices.Contains(cols, f) {
+				t.Errorf("job_files still has derived column %q — S5 forbids a second authoritative copy", f)
+			}
+		}
+	})
+
+	t.Run("article_facts is keyed for idempotent append", func(t *testing.T) {
+		var sql string
+		err := db.QueryRow(
+			`SELECT sql FROM sqlite_master WHERE type='table' AND name='article_facts'`,
+		).Scan(&sql)
+		if err != nil {
+			t.Fatalf("article_facts table missing: %v", err)
+		}
+		if !strings.Contains(sql, "PRIMARY KEY") {
+			t.Error("article_facts needs a primary key on (job_id, art_idx) for idempotent Append")
+		}
+	})
+
+	t.Run("file_extents exists with the validity stamp", func(t *testing.T) {
+		for _, col := range []string{"durable_bitmap", "verified_to", "prefix_crc", "has_prefix_crc", "bytes_durable", "bytes_failed", "size", "mod_time_ns"} {
+			var n int
+			err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('file_extents') WHERE name = ?`, col,
+			).Scan(&n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Errorf("file_extents missing column %q", col)
+			}
+		}
+	})
+
+	t.Run("only one migration file remains", func(t *testing.T) {
+		entries, err := os.ReadDir("migrations")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sqls []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".sql") {
+				sqls = append(sqls, e.Name())
+			}
+		}
+		if len(sqls) != 1 || sqls[0] != "001_initial.sql" {
+			t.Errorf("migrations = %v, want exactly [001_initial.sql]", sqls)
+		}
+	})
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/history/ -run TestMigrations_SchemaShape -v`
+Expected: FAIL — `job_files still has derived column "bytes_downloaded"`, and
+`migrations = [001_initial.sql 002_... ]`.
+
+- [ ] **Step 3: Delete migrations 002–011 and rewrite 001**
+
+```bash
+git rm internal/history/migrations/0{02,03,04,05,06,07,08,09,10,11}_*.sql
+```
+
+Rewrite `internal/history/migrations/001_initial.sql`. Build it by reading the
+current schema (`sqlite3 <testdb> .schema` after running the old migrations, or
+by reading 001–011 in order before deleting them) and then applying these
+changes:
+
+- `job_files`: **drop** `bytes_downloaded`, `failed_bytes`, `max_written`,
+  `write_cursor`. Keep `job_id`, `file_index`, `subject`, `filename`,
+  `article_count`, `bytes`, `complete`, `fetch_policy`, `is_par2_recovery`.
+- **New** `article_facts`:
+
+```sql
+CREATE TABLE article_facts (
+    job_id    TEXT    NOT NULL,
+    art_idx   INTEGER NOT NULL,
+    file_idx  INTEGER NOT NULL,
+    offset    INTEGER NOT NULL,
+    length    INTEGER NOT NULL,
+    crc32     INTEGER NOT NULL,
+    has_crc   INTEGER NOT NULL,
+    PRIMARY KEY (job_id, art_idx)
+) WITHOUT ROWID;
+-- Class A. Append-only and immutable: a row is never updated, because an
+-- article's decoded offset, length, and CRC never change once discovered.
+-- Idempotency is the primary key's job — Append uses INSERT OR IGNORE.
+-- These rows assert nothing about bytes being present on disk, which is
+-- why they may be committed at any time with no fsync ordering.
+CREATE INDEX idx_article_facts_file ON article_facts(job_id, file_idx, offset);
+```
+
+- **New** `file_extents`:
+
+```sql
+CREATE TABLE file_extents (
+    job_id         TEXT    NOT NULL,
+    file_idx       INTEGER NOT NULL,
+    durable_bitmap BLOB    NOT NULL,
+    verified_to    INTEGER NOT NULL DEFAULT 0,
+    prefix_crc     INTEGER NOT NULL DEFAULT 0,
+    has_prefix_crc INTEGER NOT NULL DEFAULT 0,
+    bytes_durable  INTEGER NOT NULL DEFAULT 0,
+    bytes_failed   INTEGER NOT NULL DEFAULT 0,
+    size           INTEGER NOT NULL DEFAULT 0,
+    mod_time_ns    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (job_id, file_idx)
+) WITHOUT ROWID;
+-- Class B: a cache of values derived from article_facts plus the file's
+-- actual bytes. Never authoritative — where this disagrees with a
+-- recomputation from the bytes, the recomputation is correct by definition.
+-- Written only by durability.Barrier, only after the fsync that makes its
+-- claims true. size and mod_time_ns stamp the file at commit; a mismatch
+-- against the file as it exists now invalidates every other column here.
+```
+
+Because the whole schema is one migration, the comment blocks above are the
+**only** place these claims live, and per `AGENTS.md` they are frozen once
+applied. Sweep them before this task's commit, not after.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/history/ -v`
+Expected: PASS.
+
+Then: `go build ./...`
+Expected: **FAIL** — `internal/queue/sqlite_store.go` still selects the dropped
+columns. That is correct and expected at this point; Task 8 removes those reads.
+To keep the repo green per-commit, **this task's commit must also stub those
+reads out**, which is why Task 3 and the `sqlite_store.go` column removal are
+one task rather than two: a reviewer cannot meaningfully accept one without the
+other.
+
+Delete from `internal/queue/sqlite_store.go` every reference to
+`bytes_downloaded`, `failed_bytes`, `max_written`, and `write_cursor` —
+including in `RestoreJobProgress`, `RestoreRetryProgress`,
+`ArticleCountsByJob`, `RemainingBytesByJob`, and the `job_files` INSERT/UPDATE
+statements. Remove `FileMeta.BytesDownloaded`, `FileMeta.FailedBytes`, and any
+now-unused struct fields. Fix the resulting compile errors in `progress.go` by
+deleting the fields they assign; Task 8 replaces the derivation properly.
+
+Run: `go build ./... && go test -race ./...`
+Expected: PASS. Delete tests that pinned the removed columns:
+`internal/queue/max_written_persist_test.go`,
+`internal/queue/content_failed_bytes_test.go`, and the removed-column subtests
+in `sqlite_store_test.go` and `progress_bytes_test.go`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A internal/history/migrations internal/history internal/queue
+git commit -m "feat(history)!: collapse the schema and drop the derived job_files columns
+
+Replaces migrations 001-011 with a single fresh 001_initial.sql, adding
+article_facts (Class A) and file_extents (Class B).
+
+bytes_downloaded, failed_bytes, max_written, and write_cursor leave
+job_files. Each was a derived value maintained independently of the
+facts it summarised, which is the direct cause of #306 (loaded then
+overwritten by a recompute), #337 (stored while siblings are derived),
+and #311 (a cursor serving as cache, authority, and scheduling hint at
+once). They return as labelled cache columns in file_extents.
+
+BREAKING CHANGE: the on-disk database is not migrated and cannot be
+read by this version. Rewriting applied migrations overrides the rule
+in AGENTS.md; the user has explicitly authorised a from-scratch
+reinstall, so no applied migration is at risk.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 4: SQLite fact log
+
+**Files:**
+- Create: `internal/durability/factlog_sqlite.go`
+- Test: `internal/durability/factlog_sqlite_test.go`
+
+**Interfaces:**
+- Consumes: `FactLog`, `ArticleFact` (Task 2); schema from Task 3.
+- Produces: `func NewSQLiteFactLog(db *sql.DB) *SQLiteFactLog` satisfying `FactLog`.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+func TestSQLiteFactLog_AppendIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	fl := NewSQLiteFactLog(openTestDB(t))
+
+	fact := ArticleFact{FileIdx: 0, ArtIdx: 5, Offset: 1024, Length: 768000, CRC32: 0xDEADBEEF, HasCRC: true}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{fact}); err != nil {
+		t.Fatal(err)
+	}
+	// A re-delivered article must not error and must not change the record.
+	if err := fl.Append(ctx, "job-1", []ArticleFact{fact}); err != nil {
+		t.Fatalf("second Append: %v", err)
+	}
+
+	got, err := fl.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ForFile returned %d facts, want 1", len(got))
+	}
+	if got[0] != fact {
+		t.Errorf("ForFile = %+v, want %+v", got[0], fact)
+	}
+}
+
+// TestSQLiteFactLog_AppendNeverUpdates pins R1: a Class A fact is immutable.
+// A hostile or buggy second delivery reporting a different offset must not
+// overwrite the first — the file's bytes were written against the original.
+func TestSQLiteFactLog_AppendNeverUpdates(t *testing.T) {
+	ctx := context.Background()
+	fl := NewSQLiteFactLog(openTestDB(t))
+
+	orig := ArticleFact{FileIdx: 0, ArtIdx: 5, Offset: 1024, Length: 100, CRC32: 1, HasCRC: true}
+	evil := ArticleFact{FileIdx: 0, ArtIdx: 5, Offset: 999999, Length: 100, CRC32: 2, HasCRC: true}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{orig}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{evil}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := fl.ForFile(ctx, "job-1", 0)
+	if got[0].Offset != 1024 {
+		t.Fatalf("Offset = %d, want 1024 — a Class A fact was mutated", got[0].Offset)
+	}
+}
+
+func TestSQLiteFactLog_ForFileIsOrderedByOffset(t *testing.T) {
+	ctx := context.Background()
+	fl := NewSQLiteFactLog(openTestDB(t))
+	// Append out of order, as concurrent connections deliver them.
+	facts := []ArticleFact{
+		{FileIdx: 0, ArtIdx: 2, Offset: 2000, Length: 500, HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 500, HasCRC: true},
+		{FileIdx: 1, ArtIdx: 3, Offset: 0, Length: 500, HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 1000, Length: 500, HasCRC: true},
+	}
+	if err := fl.Append(ctx, "job-1", facts); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fl.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ForFile(0) returned %d, want 3 (file 1 must not leak in)", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Offset <= got[i-1].Offset {
+			t.Fatalf("ForFile not ordered by offset: %v", got)
+		}
+	}
+}
+
+func TestSQLiteFactLog_DeleteJobIsScoped(t *testing.T) {
+	ctx := context.Background()
+	fl := NewSQLiteFactLog(openTestDB(t))
+	f := ArticleFact{FileIdx: 0, ArtIdx: 1, Offset: 0, Length: 10, HasCRC: true}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fl.Append(ctx, "job-2", []ArticleFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fl.DeleteJob(ctx, "job-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := fl.ForFile(ctx, "job-1", 0); len(got) != 0 {
+		t.Errorf("job-1 has %d facts after DeleteJob, want 0", len(got))
+	}
+	if got, _ := fl.ForFile(ctx, "job-2", 0); len(got) != 1 {
+		t.Errorf("DeleteJob(job-1) removed job-2's facts")
+	}
+}
+```
+
+Write `openTestDB(t *testing.T) *sql.DB` in the test file: open
+`modernc.org/sqlite` at `t.TempDir()+"/test.db"`, run the goose migrations from
+`internal/history/migrations`, and register `t.Cleanup(db.Close)`.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/durability/ -run TestSQLiteFactLog -v`
+Expected: FAIL — `undefined: NewSQLiteFactLog`.
+
+- [ ] **Step 3: Write the implementation**
+
+```go
+package durability
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+// SQLiteFactLog is the append-only Class A store.
+type SQLiteFactLog struct{ db *sql.DB }
+
+func NewSQLiteFactLog(db *sql.DB) *SQLiteFactLog { return &SQLiteFactLog{db: db} }
+
+// Append inserts facts, ignoring any whose (job_id, art_idx) is already
+// present. INSERT OR IGNORE rather than UPSERT is the point: a Class A fact
+// is immutable (R1), so a second delivery of the same article must leave the
+// original record untouched. The file's bytes were written against the
+// original offset, and a later report claiming a different one — whether from
+// a buggy path or a hostile server — must not be allowed to redescribe them.
+func (s *SQLiteFactLog) Append(ctx context.Context, jobID string, facts []ArticleFact) error {
+	if len(facts) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("durability: begin fact append: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT OR IGNORE INTO article_facts
+			(job_id, art_idx, file_idx, offset, length, crc32, has_crc)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("durability: prepare fact append: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	for _, f := range facts {
+		hasCRC := 0
+		if f.HasCRC {
+			hasCRC = 1
+		}
+		if _, err := stmt.ExecContext(ctx, jobID, f.ArtIdx, f.FileIdx, f.Offset, f.Length, f.CRC32, hasCRC); err != nil {
+			return fmt.Errorf("durability: append fact art=%d: %w", f.ArtIdx, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteFactLog) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]ArticleFact, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT art_idx, file_idx, offset, length, crc32, has_crc
+		  FROM article_facts
+		 WHERE job_id = ? AND file_idx = ?
+		 ORDER BY offset`, jobID, fileIdx)
+	if err != nil {
+		return nil, fmt.Errorf("durability: query facts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []ArticleFact
+	for rows.Next() {
+		var f ArticleFact
+		var hasCRC int
+		if err := rows.Scan(&f.ArtIdx, &f.FileIdx, &f.Offset, &f.Length, &f.CRC32, &hasCRC); err != nil {
+			return nil, fmt.Errorf("durability: scan fact: %w", err)
+		}
+		f.HasCRC = hasCRC != 0
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteFactLog) DeleteJob(ctx context.Context, jobID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM article_facts WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("durability: delete facts for %s: %w", jobID, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/durability/ -run TestSQLiteFactLog -v`
+Expected: PASS.
+
+- [ ] **Step 5: Observe the red check on immutability**
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/durability/factlog_sqlite.go "$SCRATCH/factlog.bak.go"
+sed -i 's/INSERT OR IGNORE INTO article_facts/INSERT OR REPLACE INTO article_facts/' internal/durability/factlog_sqlite.go
+grep -n 'INSERT OR REPLACE' internal/durability/factlog_sqlite.go   # confirm it landed
+go test ./internal/durability/ -run TestSQLiteFactLog_AppendNeverUpdates
+# MUST FAIL: "Offset = 999999, want 1024 — a Class A fact was mutated"
+cp "$SCRATCH/factlog.bak.go" internal/durability/factlog_sqlite.go
+```
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+goimports -w internal/durability/ && go vet ./internal/durability/ && \
+  go test -race ./internal/durability/ && golangci-lint run ./internal/durability/
+git add internal/durability/
+git commit -m "feat(durability): add the append-only SQLite fact log
+
+INSERT OR IGNORE rather than UPSERT: a Class A fact is immutable, so a
+re-delivered article must leave the original record untouched. The
+file's bytes were written against the original offset, and a later
+report claiming a different one must not redescribe them.
+
+Red check observed: switching to INSERT OR REPLACE fails
+TestSQLiteFactLog_AppendNeverUpdates with 'Offset = 999999, want 1024
+— a Class A fact was mutated'.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 5: SQLite extent store
+
+**Files:**
+- Create: `internal/durability/extentstore_sqlite.go`
+- Test: `internal/durability/extentstore_sqlite_test.go`
+
+**Interfaces:**
+- Consumes: `ExtentStore`, `FileExtent`, `Bitmap` (Task 2); schema (Task 3).
+- Produces: `func NewSQLiteExtentStore(db *sql.DB) *SQLiteExtentStore`
+  satisfying `ExtentStore`. `Load` returns extents ordered by `file_idx`.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+
+	bm := NewBitmap(100)
+	bm.Set(0)
+	bm.Set(42)
+	bm.Set(99)
+	ext := FileExtent{
+		FileIdx: 3, Durable: bm, VerifiedTo: 4096, PrefixCRC: 0xABCD, HasPrefixCRC: true,
+		BytesDurable: 3000, BytesFailed: 120, Size: 8192, ModTimeNs: 1_700_000_000_000_000_000,
+	}
+	if err := es.Commit(ctx, "job-1", []FileExtent{ext}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := es.Load(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Load returned %d extents, want 1", len(got))
+	}
+	g := got[0]
+	if g.FileIdx != 3 || g.VerifiedTo != 4096 || g.PrefixCRC != 0xABCD || !g.HasPrefixCRC {
+		t.Errorf("scalar round trip wrong: %+v", g)
+	}
+	if g.BytesDurable != 3000 || g.BytesFailed != 120 || g.Size != 8192 || g.ModTimeNs != 1_700_000_000_000_000_000 {
+		t.Errorf("cache/stamp round trip wrong: %+v", g)
+	}
+	if g.Durable.Count() != 3 || !g.Durable.Get(0) || !g.Durable.Get(42) || !g.Durable.Get(99) {
+		t.Errorf("bitmap round trip wrong: count=%d", g.Durable.Count())
+	}
+}
+
+// TestSQLiteExtentStore_CommitIsAtomic pins that a job's files are never
+// observable half-committed. A barrier that fails partway must leave the
+// previous committed cache intact (R7).
+func TestSQLiteExtentStore_CommitIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	es := NewSQLiteExtentStore(db)
+
+	first := []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 100},
+		{FileIdx: 1, Durable: NewBitmap(8), VerifiedTo: 200},
+	}
+	if err := es.Commit(ctx, "job-1", first); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second commit whose second element is invalid must roll the whole
+	// batch back, leaving VerifiedTo at 100/200 rather than 999/200.
+	bad := []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 999},
+		{FileIdx: 1, Durable: Bitmap{}, VerifiedTo: -1}, // negative extent is rejected
+	}
+	if err := es.Commit(ctx, "job-1", bad); err == nil {
+		t.Fatal("Commit accepted a negative VerifiedTo")
+	}
+	got, err := es.Load(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].VerifiedTo != 100 {
+		t.Fatalf("VerifiedTo = %d after a failed commit, want 100 — the batch was not atomic", got[0].VerifiedTo)
+	}
+}
+
+func TestSQLiteExtentStore_CommitOverwritesPriorExtent(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm1 := NewBitmap(8)
+	bm1.Set(0)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{FileIdx: 0, Durable: bm1, VerifiedTo: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	bm2 := NewBitmap(8)
+	bm2.Set(0)
+	bm2.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{FileIdx: 0, Durable: bm2, VerifiedTo: 200}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := es.Load(ctx, "job-1")
+	if len(got) != 1 {
+		t.Fatalf("Load returned %d rows, want 1 — Commit inserted instead of replacing", len(got))
+	}
+	if got[0].VerifiedTo != 200 || got[0].Durable.Count() != 2 {
+		t.Errorf("second commit did not replace the first: %+v", got[0])
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/durability/ -run TestSQLiteExtentStore -v`
+Expected: FAIL — `undefined: NewSQLiteExtentStore`.
+
+- [ ] **Step 3: Write the implementation**
+
+```go
+package durability
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
+// ErrInvalidExtent reports a FileExtent that cannot describe a real file.
+var ErrInvalidExtent = errors.New("durability: invalid file extent")
+
+// SQLiteExtentStore persists the Class B cache.
+//
+// Unlike the fact log, this store REPLACEs: a FileExtent is a cache entry
+// describing the file as of the last barrier, so a newer commit supersedes an
+// older one wholesale. The immutability rule that governs article_facts does
+// not apply here, and must not be copied across.
+type SQLiteExtentStore struct{ db *sql.DB }
+
+func NewSQLiteExtentStore(db *sql.DB) *SQLiteExtentStore { return &SQLiteExtentStore{db: db} }
+
+// Commit writes every extent in one transaction. Atomicity is the guarantee
+// R7 depends on: a barrier that fails partway must leave the previously
+// committed cache wholly intact rather than a mix of old and new.
+func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []FileExtent) error {
+	if len(exts) == 0 {
+		return nil
+	}
+	for _, e := range exts {
+		if e.VerifiedTo < 0 || e.Size < 0 || e.BytesDurable < 0 || e.BytesFailed < 0 {
+			return fmt.Errorf("%w: file %d has a negative figure", ErrInvalidExtent, e.FileIdx)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("durability: begin extent commit: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT OR REPLACE INTO file_extents
+			(job_id, file_idx, durable_bitmap, verified_to, prefix_crc,
+			 has_prefix_crc, bytes_durable, bytes_failed, size, mod_time_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("durability: prepare extent commit: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	for _, e := range exts {
+		hasCRC := 0
+		if e.HasPrefixCRC {
+			hasCRC = 1
+		}
+		if _, err := stmt.ExecContext(ctx, jobID, e.FileIdx, e.Durable.Bytes(), e.VerifiedTo,
+			e.PrefixCRC, hasCRC, e.BytesDurable, e.BytesFailed, e.Size, e.ModTimeNs); err != nil {
+			return fmt.Errorf("durability: commit extent file=%d: %w", e.FileIdx, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// Load reads a job's extents. The caller supplies the article count per file
+// via the manifest; because the bitmap's bit count is not stored, Load
+// reconstructs each bitmap at its full byte width and the resumer narrows it.
+// See loadBitmapWidth below for why that is safe.
+func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExtent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT file_idx, durable_bitmap, verified_to, prefix_crc,
+		       has_prefix_crc, bytes_durable, bytes_failed, size, mod_time_ns
+		  FROM file_extents WHERE job_id = ? ORDER BY file_idx`, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("durability: query extents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []FileExtent
+	for rows.Next() {
+		var e FileExtent
+		var raw []byte
+		var hasCRC int
+		if err := rows.Scan(&e.FileIdx, &raw, &e.VerifiedTo, &e.PrefixCRC,
+			&hasCRC, &e.BytesDurable, &e.BytesFailed, &e.Size, &e.ModTimeNs); err != nil {
+			return nil, fmt.Errorf("durability: scan extent: %w", err)
+		}
+		e.HasPrefixCRC = hasCRC != 0
+		bm, err := BitmapFromBytes(raw, len(raw)*8)
+		if err != nil {
+			return nil, fmt.Errorf("durability: extent file=%d bitmap: %w", e.FileIdx, err)
+		}
+		e.Durable = bm
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteExtentStore) DeleteJob(ctx context.Context, jobID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM file_extents WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("durability: delete extents for %s: %w", jobID, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/durability/ -run TestSQLiteExtentStore -v`
+Expected: PASS.
+
+- [ ] **Step 5: Observe the red check on atomicity**
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/durability/extentstore_sqlite.go "$SCRATCH/es.bak.go"
+# Neuter the pre-validation loop so the bad row is rejected mid-transaction
+# by SQLite instead of before it starts — which is the shape that would
+# leave a partial write if the transaction were not doing its job.
+sed -i 's|if e.VerifiedTo < 0 |if false \&\& e.VerifiedTo < 0 |' internal/durability/extentstore_sqlite.go
+grep -n 'if false &&' internal/durability/extentstore_sqlite.go
+go test ./internal/durability/ -run TestSQLiteExtentStore_CommitIsAtomic
+# MUST FAIL: "Commit accepted a negative VerifiedTo"
+cp "$SCRATCH/es.bak.go" internal/durability/extentstore_sqlite.go
+```
+
+Note: this red check demonstrates the *validation*, not the transaction. To
+demonstrate the transaction as well, additionally replace `tx.Commit()` with a
+per-row `s.db.ExecContext` (no transaction) and confirm
+`TestSQLiteExtentStore_CommitIsAtomic` then fails on `VerifiedTo = 999`.
+**Both reverts are required** — a fix with two mechanisms needs two red checks.
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+goimports -w internal/durability/ && go vet ./internal/durability/ && \
+  go test -race ./internal/durability/ && golangci-lint run ./internal/durability/
+git add internal/durability/
+git commit -m "feat(durability): add the atomic SQLite extent store
+
+Class B, so this store REPLACEs where the fact log IGNOREs: an extent
+describes the file as of the last barrier and a newer commit supersedes
+it wholesale.
+
+Commit is one transaction across a job's files, which is what lets a
+failed barrier leave the previous cache wholly intact instead of a mix
+of old and new.
+
+Red checks observed (two, one per mechanism): disabling the validation
+loop fails CommitIsAtomic with 'Commit accepted a negative VerifiedTo';
+replacing the transaction with per-row Exec fails it with
+'VerifiedTo = 999 after a failed commit, want 100'.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 6: The checkpoint barrier
+
+**Files:**
+- Create: `internal/durability/synctarget.go`, `internal/durability/barrier.go`
+- Test: `internal/durability/barrier_test.go`
+
+**Interfaces:**
+- Consumes: `FactLog`, `ExtentStore`, `DurableProof`, `newProof`, `Bitmap`,
+  `storagefault.Fault`.
+- Produces:
+
+```go
+type WrittenArticle struct {
+	FileIdx int32
+	ArtIdx  int32
+	Offset  int64
+	Length  int32
+}
+
+type SyncTarget interface {
+	Files() []int32
+	Drain(ctx context.Context, fileIdx int32) ([]WrittenArticle, error)
+	Sync(ctx context.Context, fileIdx int32) error
+	Stat(fileIdx int32) (size int64, modTimeNs int64, err error)
+	ArticleCount(fileIdx int32) int
+	FileLocalOrdinal(fileIdx int32, artIdx int32) (int, bool)
+}
+
+type Acker interface {
+	AckDurable(p DurableProof) error
+}
+
+type Stallable interface {
+	Stall(jobID string, f *storagefault.Fault)
+	Fail(jobID string, f *storagefault.Fault)
+}
+
+func NewBarrier(fl FactLog, es ExtentStore, ack Acker, stall Stallable, log *slog.Logger) *Barrier
+func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error
+```
+
+`Barrier.Run` is the **only** caller of `newProof` and therefore the only path
+by which anything can be acked as durable.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+package durability
+
+import (
+	"context"
+	"errors"
+	"syscall"
+	"testing"
+)
+
+// fakeTarget records the order of Drain/Sync/Stat calls so the ordering
+// invariant S1 can be asserted rather than assumed.
+type fakeTarget struct {
+	calls    []string
+	written  map[int32][]WrittenArticle
+	syncErr  error
+	size     int64
+	modTime  int64
+	artCount int
+}
+
+func (f *fakeTarget) Files() []int32 { return []int32{0} }
+func (f *fakeTarget) Drain(ctx context.Context, fileIdx int32) ([]WrittenArticle, error) {
+	f.calls = append(f.calls, "drain")
+	return f.written[fileIdx], nil
+}
+func (f *fakeTarget) Sync(ctx context.Context, fileIdx int32) error {
+	f.calls = append(f.calls, "sync")
+	return f.syncErr
+}
+func (f *fakeTarget) Stat(fileIdx int32) (int64, int64, error) {
+	f.calls = append(f.calls, "stat")
+	return f.size, f.modTime, nil
+}
+func (f *fakeTarget) ArticleCount(fileIdx int32) int { return f.artCount }
+func (f *fakeTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
+	return int(artIdx), true
+}
+
+type recordingAcker struct{ proofs []DurableProof }
+
+func (r *recordingAcker) AckDurable(p DurableProof) error {
+	r.proofs = append(r.proofs, p)
+	return nil
+}
+
+type recordingStall struct {
+	stalled []*storagefault.Fault
+	failed  []*storagefault.Fault
+}
+
+func (r *recordingStall) Stall(jobID string, f *storagefault.Fault) { r.stalled = append(r.stalled, f) }
+func (r *recordingStall) Fail(jobID string, f *storagefault.Fault)  { r.failed = append(r.failed, f) }
+
+// TestBarrier_SyncPrecedesCommitAndAck is the pin for S1 and R9. If the
+// commit or the ack happens before the fsync, this fails.
+func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
+	ctx := context.Background()
+	tgt := &fakeTarget{
+		written:  map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
+		size:     100,
+		modTime:  42,
+		artCount: 4,
+	}
+	ack := &recordingAcker{}
+	b := NewBarrier(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), ack, &recordingStall{}, testLogger(t))
+
+	if err := b.Run(ctx, "job-1", tgt); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"drain", "sync", "stat"}
+	if len(tgt.calls) != len(want) {
+		t.Fatalf("calls = %v, want %v", tgt.calls, want)
+	}
+	for i := range want {
+		if tgt.calls[i] != want[i] {
+			t.Fatalf("calls = %v, want %v — S1 requires sync before any claim", tgt.calls, want)
+		}
+	}
+	if len(ack.proofs) != 1 || len(ack.proofs[0].Articles()) != 1 {
+		t.Fatalf("expected exactly one article acked, got %v", ack.proofs)
+	}
+}
+
+// TestBarrier_SyncFailureAcksNothing pins R7: a failed barrier acks nothing
+// and leaves the prior committed cache intact.
+func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+	prior := NewBitmap(4)
+	prior.Set(0)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{FileIdx: 0, Durable: prior, VerifiedTo: 50}}); err != nil {
+		t.Fatal(err)
+	}
+
+	tgt := &fakeTarget{
+		written:  map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}}},
+		syncErr:  syscall.ENOSPC,
+		artCount: 4,
+	}
+	ack := &recordingAcker{}
+	stall := &recordingStall{}
+	b := NewBarrier(NewSQLiteFactLog(openTestDB(t)), es, ack, stall, testLogger(t))
+
+	if err := b.Run(ctx, "job-1", tgt); err == nil {
+		t.Fatal("Run returned nil after a failed sync")
+	}
+	if len(ack.proofs) != 0 {
+		t.Errorf("acked %d proofs after a failed sync, want 0", len(ack.proofs))
+	}
+	got, _ := es.Load(ctx, "job-1")
+	if got[0].VerifiedTo != 50 || got[0].Durable.Count() != 1 {
+		t.Errorf("prior cache was disturbed by a failed barrier: %+v", got[0])
+	}
+	if len(stall.stalled) != 1 {
+		t.Fatalf("stalled %d times, want 1 — ENOSPC is retryable", len(stall.stalled))
+	}
+	if len(stall.failed) != 0 {
+		t.Errorf("failed the job on a retryable fault")
+	}
+}
+
+// TestBarrier_PermanentFaultFailsRatherThanStalls pins R20.
+func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
+	ctx := context.Background()
+	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.EROFS, artCount: 4}
+	stall := &recordingStall{}
+	b := NewBarrier(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), &recordingAcker{}, stall, testLogger(t))
+
+	if err := b.Run(ctx, "job-1", tgt); err == nil {
+		t.Fatal("Run returned nil after EROFS")
+	}
+	if len(stall.failed) != 1 {
+		t.Errorf("failed %d times, want 1 — EROFS is permanent", len(stall.failed))
+	}
+	if len(stall.stalled) != 0 {
+		t.Errorf("stalled on a permanent fault")
+	}
+}
+
+// TestBarrier_VerifiedToAdvancesOnlyOverAGaplessPrefix pins that a hole
+// stops the CRC anchor without stopping resume. This is the distinction
+// that #311 and #353 collided over: the durable bitmap must record the
+// article above the hole, while VerifiedTo must not advance past it.
+func TestBarrier_VerifiedToAdvancesOnlyOverAGaplessPrefix(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+	tgt := &fakeTarget{
+		written: map[int32][]WrittenArticle{0: {
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+			// article 1 at offset 100 is missing — the hole
+			{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100},
+		}},
+		size: 300, artCount: 4,
+	}
+	b := NewBarrier(NewSQLiteFactLog(openTestDB(t)), es, &recordingAcker{}, &recordingStall{}, testLogger(t))
+	if err := b.Run(ctx, "job-1", tgt); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := es.Load(ctx, "job-1")
+	if got[0].VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100 — it must stop at the hole", got[0].VerifiedTo)
+	}
+	if !got[0].Durable.Get(2) {
+		t.Error("article 2 is not durable, but its bytes were written and fsynced — resume must not be held back by the hole")
+	}
+}
+```
+
+Write `testLogger(t *testing.T) *slog.Logger` returning
+`slog.New(slog.NewTextHandler(io.Discard, nil))`.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/durability/ -run TestBarrier -v`
+Expected: FAIL — `undefined: NewBarrier`.
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/durability/synctarget.go` — the interfaces exactly as in the
+**Interfaces** block above, each with a doc comment stating what the barrier
+relies on. Key comments to write:
+
+- On `Drain`: "returns the articles whose bytes reached `WriteAt` without
+  error. It must NOT return an article that is merely buffered — S2 makes
+  acceptance and durability different things, and this return value is the
+  only evidence the barrier has."
+- On `Sync`: "fsyncs the handle. Until this returns nil, nothing the preceding
+  Drain reported may be claimed (S1)."
+
+`internal/durability/barrier.go`:
+
+```go
+package durability
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"slices"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
+)
+
+// Barrier is the single place the Written → Durable → Resolved transition
+// happens (X2). It is the only caller of newProof, so no other code path —
+// inside this package or out — can ack an article as downloaded.
+type Barrier struct {
+	facts  FactLog
+	exts   ExtentStore
+	ack    Acker
+	stall  Stallable
+	log    *slog.Logger
+}
+
+func NewBarrier(fl FactLog, es ExtentStore, ack Acker, stall Stallable, log *slog.Logger) *Barrier {
+	return &Barrier{facts: fl, exts: es, ack: ack, stall: stall, log: log}
+}
+
+// Run executes one checkpoint for a job:
+//
+//	drain → write → fsync → commit Class B → ack
+//
+// The order is the invariant. Nothing before the fsync may be claimed, and
+// nothing is claimed at all if any step fails (R7).
+func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
+	files := t.Files()
+	drained := make(map[int32][]WrittenArticle, len(files))
+
+	// Phase 1 — drain every file. Still no claim of any kind.
+	for _, idx := range files {
+		w, err := t.Drain(ctx, idx)
+		if err != nil {
+			return b.routeFault(jobID, storagefault.Classify("write", "", err))
+		}
+		drained[idx] = w
+	}
+
+	// Phase 2 — fsync every file. Only after this may anything be claimed.
+	for _, idx := range files {
+		if err := t.Sync(ctx, idx); err != nil {
+			return b.routeFault(jobID, storagefault.Classify("sync", "", err))
+		}
+	}
+
+	// Phase 3 — build the Class B cache from what the fsync just made true.
+	exts := make([]FileExtent, 0, len(files))
+	var acked []int32
+	for _, idx := range files {
+		size, modNs, err := t.Stat(idx)
+		if err != nil {
+			return b.routeFault(jobID, storagefault.Classify("stat", "", err))
+		}
+		prior, err := b.priorExtent(ctx, jobID, idx, t.ArticleCount(idx))
+		if err != nil {
+			return err
+		}
+		ext := prior
+		ext.FileIdx = idx
+		ext.Size = size
+		ext.ModTimeNs = modNs
+
+		facts := make([]ArticleFact, 0, len(drained[idx]))
+		for _, w := range drained[idx] {
+			ord, ok := t.FileLocalOrdinal(idx, w.ArtIdx)
+			if !ok {
+				// The target could not place this article in its file. That
+				// is a bookkeeping defect, not a storage fault, and it must
+				// not be swallowed (A2, R28).
+				return fmt.Errorf("durability: job %s file %d: article %d has no file-local ordinal", jobID, idx, w.ArtIdx)
+			}
+			ext.Durable.Set(ord)
+			ext.BytesDurable += int64(w.Length)
+			acked = append(acked, w.ArtIdx)
+			facts = append(facts, ArticleFact{FileIdx: idx, ArtIdx: w.ArtIdx, Offset: w.Offset, Length: w.Length})
+		}
+		_ = facts // facts are appended by the writer at decode time, not here
+
+		ext.VerifiedTo = b.gaplessPrefix(ctx, jobID, idx, ext.Durable, t)
+		exts = append(exts, ext)
+	}
+
+	// Phase 4 — commit Class B atomically, then and only then ack.
+	if err := b.exts.Commit(ctx, jobID, exts); err != nil {
+		return fmt.Errorf("durability: barrier commit for %s: %w", jobID, err)
+	}
+	if len(acked) == 0 {
+		return nil
+	}
+	slices.Sort(acked)
+	return b.ack.AckDurable(newProof(jobID, acked))
+}
+```
+
+Also implement, in the same file:
+
+- `func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error` —
+  calls `b.stall.Fail` when `f.Permanent`, `b.stall.Stall` otherwise, and
+  returns `f`.
+- `func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artCount int) (FileExtent, error)` —
+  loads the committed extent for this file, or returns a zero extent with
+  `Durable: NewBitmap(artCount)` if none exists. It must widen a loaded bitmap
+  to `artCount` bits rather than trusting the stored width.
+- `func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) int64` —
+  reads `b.facts.ForFile` (already ordered by offset), walks from offset 0 while
+  each successive fact is durable **and** starts exactly where the previous one
+  ended, and returns the first offset at which that fails. Document that a hole
+  stops this walk while leaving `durable` untouched, which is the #311/#353
+  distinction: resume reads the bitmap, the CRC anchor reads this.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/durability/ -run TestBarrier -v`
+Expected: PASS.
+
+- [ ] **Step 5: Observe the red check on ordering — twice**
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/durability/barrier.go "$SCRATCH/barrier.bak.go"
+
+# Revert 1 — move the ack before the commit.
+# Edit Run so `b.ack.AckDurable(...)` is called immediately after phase 3,
+# before b.exts.Commit. Then:
+go test ./internal/durability/ -run TestBarrier_SyncFailureAcksNothing
+# MUST FAIL: "acked 1 proofs after a failed sync, want 0"
+cp "$SCRATCH/barrier.bak.go" internal/durability/barrier.go
+
+# Revert 2 — neuter the sync loop so drain's output is claimed unsynced.
+sed -i 's|if err := t.Sync(ctx, idx); err != nil {|if err := error(nil); err != nil {|' internal/durability/barrier.go
+grep -n 'if err := error(nil)' internal/durability/barrier.go
+go test ./internal/durability/ -run 'TestBarrier_SyncPrecedesCommitAndAck|TestBarrier_SyncFailureAcksNothing'
+# MUST FAIL: calls = [drain stat], want [drain sync stat]
+cp "$SCRATCH/barrier.bak.go" internal/durability/barrier.go
+```
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+goimports -w internal/durability/ && go vet ./internal/durability/ && \
+  go test -race ./internal/durability/ && golangci-lint run ./internal/durability/
+git add internal/durability/
+git commit -m "feat(durability): add the checkpoint barrier
+
+Run is the single place the Written -> Durable -> Resolved transition
+happens, and the only caller of newProof. Six paths could ack an
+article before this change; one can now.
+
+Four phases, and the order is the invariant: drain every file, fsync
+every file, build Class B from what the fsync made true, commit
+atomically and only then ack. Any failure acks nothing and leaves the
+prior cache intact.
+
+VerifiedTo stops at the first hole while the durable bitmap records
+articles above it. That separation is what lets a slow or permanently
+failed article stop the CRC anchor without inflating rework — the
+collision #311 and #353 were both circling.
+
+Red checks observed (two, one per mechanism): acking before the commit
+fails SyncFailureAcksNothing with 'acked 1 proofs after a failed sync,
+want 0'; neutering the sync loop fails SyncPrecedesCommitAndAck with
+'calls = [drain stat], want [drain sync stat]'.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 7: The resumer
+
+**Files:**
+- Create: `internal/durability/resume.go`
+- Test: `internal/durability/resume_test.go`
+
+**Interfaces:**
+- Consumes: `FactLog`, `ExtentStore`, `Bitmap`, `crc32util`.
+- Produces:
+
+```go
+type ResumeResult struct {
+	Durable      Bitmap
+	VerifiedTo   int64
+	PrefixCRC    uint32
+	HasPrefixCRC bool
+	Recomputed   bool
+	Restart      bool
+}
+
+func NewResumer(fl FactLog, es ExtentStore, log *slog.Logger) *Resumer
+func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, artCount int) (ResumeResult, error)
+```
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// TestResume_FastPathAdoptsWhenStampMatches pins the O(1) path (B3).
+func TestResume_FastPathAdoptsWhenStampMatches(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{0xAB}, 300), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(4)
+	bm.Set(0)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: 200, PrefixCRC: 0x1234, HasPrefixCRC: true,
+		Size: 300, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Recomputed {
+		t.Error("Recomputed = true with a matching stamp — the fast path did not fire")
+	}
+	if got.Durable.Count() != 2 || got.VerifiedTo != 200 || got.PrefixCRC != 0x1234 {
+		t.Errorf("fast path did not adopt the cache: %+v", got)
+	}
+}
+
+// TestResume_TruncatedFileForcesRecompute pins S7 against the external
+// modification failure mode: the cache was correct when written and the
+// world changed underneath it.
+func TestResume_TruncatedFileForcesRecompute(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+
+	// Two articles of 100 bytes each, with known CRCs.
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, _ := os.Stat(path)
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(2)
+	bm.Set(0)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: 200, Size: 200, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user truncates the partial file between runs.
+	if err := os.Truncate(path, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Recomputed {
+		t.Fatal("Recomputed = false after the file was truncated — the cache was adopted unvalidated")
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is still durable after its bytes were truncated away")
+	}
+	if !got.Durable.Get(0) {
+		t.Error("article 0 was discarded although its bytes are intact and match their CRC")
+	}
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100", got.VerifiedTo)
+	}
+}
+
+// TestResume_RecomputeYieldsAPrefixCRC pins R24: verification and CRC
+// recovery are the same read, so a recomputed file gets a real CRC.
+func TestResume_RecomputeYieldsAPrefixCRC(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	whole := append(append([]byte{}, a0...), a1...)
+	if err := os.WriteFile(path, whole, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No committed extent at all — forces the recompute path.
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasPrefixCRC {
+		t.Fatal("HasPrefixCRC = false after a full recompute over a gapless file")
+	}
+	if got.PrefixCRC != crc32.ChecksumIEEE(whole) {
+		t.Errorf("PrefixCRC = %#x, want %#x", got.PrefixCRC, crc32.ChecksumIEEE(whole))
+	}
+	if got.VerifiedTo != 200 {
+		t.Errorf("VerifiedTo = %d, want 200", got.VerifiedTo)
+	}
+}
+
+// TestResume_MissingFileRestarts pins that a deleted partial starts over
+// rather than resuming against nothing.
+func TestResume_MissingFileRestarts(t *testing.T) {
+	ctx := context.Background()
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, filepath.Join(t.TempDir(), "gone.mkv"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Restart {
+		t.Fatal("Restart = false for a file that does not exist")
+	}
+	if got.Durable.Count() != 0 {
+		t.Error("a restarted file has durable articles")
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/durability/ -run TestResume -v`
+Expected: FAIL — `undefined: NewResumer`.
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/durability/resume.go`. The algorithm:
+
+1. `os.Stat(path)`. On `IsNotExist`, return `ResumeResult{Durable: NewBitmap(artCount), Restart: true}`.
+   Any other stat error → return it wrapped.
+2. Load the committed extent. If one exists **and** `ext.Size == fi.Size()`
+   **and** `ext.ModTimeNs == fi.ModTime().UnixNano()`, adopt it and return with
+   `Recomputed: false`. This is the O(1) fast path (B3).
+3. Otherwise recompute. Open the file. Read `facts, err := fl.ForFile(...)`
+   (ordered by offset). For each fact whose `HasCRC` is true and whose
+   `[Offset, Offset+Length)` lies within the file's current size, read that
+   region and compare `crc32.ChecksumIEEE` against `fact.CRC32`. Set the
+   article's bit only on a match. A fact without a CRC (UU-encoded) can never
+   be verified, so its bit is left clear and its article is re-fetched — the
+   conservative answer S3 requires.
+4. Walk the facts from offset 0 to compute `VerifiedTo`: advance while each
+   successive verified fact starts exactly where the previous ended. Accumulate
+   the running CRC over that gapless prefix with `crc32util.Combine`, which is
+   valid here precisely because the walk has proven contiguity from 0. Set
+   `HasPrefixCRC` only if every fact in the prefix had a CRC.
+5. Return with `Recomputed: true`.
+
+Write these doc comments, because they are the claims most likely to drift:
+
+```go
+// Resume establishes what is actually on disk for one file.
+//
+// The fast path is a stat: if the committed extent's size and mtime still
+// match the file, the cache is adopted without reading a byte. Correctness
+// never depends on the fast path being right — a mismatch falls through to
+// recomputation, and recomputation is correct by definition (S4).
+//
+// Recomputation reads each recorded region and checks it against the CRC the
+// fact log recorded when the article was decoded. That single read produces
+// both the verified done-set and the gapless-prefix CRC: verification and CRC
+// recovery are the same operation, which is why a resumed file can report a
+// real whole-file CRC (R24) rather than the honest absence of one.
+//
+// An article whose fact carries no CRC (UU-encoded) cannot be verified and is
+// therefore left Outstanding. Re-fetching it is cheap; assuming it is correct
+// is exactly the optimism the design forbids (S3).
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/durability/ -run TestResume -v`
+Expected: PASS.
+
+- [ ] **Step 5: Observe the red check on validation — twice**
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/durability/resume.go "$SCRATCH/resume.bak.go"
+
+# Revert 1 — drop the size check, keeping mtime.
+sed -i 's|ext.Size == fi.Size() && ext.ModTimeNs == fi.ModTime().UnixNano()|ext.ModTimeNs == fi.ModTime().UnixNano()|' internal/durability/resume.go
+grep -n 'ext.ModTimeNs == fi.ModTime' internal/durability/resume.go
+go test ./internal/durability/ -run TestResume_TruncatedFileForcesRecompute
+# MUST FAIL: "Recomputed = false after the file was truncated"
+cp "$SCRATCH/resume.bak.go" internal/durability/resume.go
+
+# Revert 2 — accept a region without checking its CRC.
+# Edit the recompute loop so the bit is set unconditionally rather than on
+# a CRC match. Then:
+go test ./internal/durability/ -run TestResume_TruncatedFileForcesRecompute
+# MUST FAIL: "article 1 is still durable after its bytes were truncated away"
+cp "$SCRATCH/resume.bak.go" internal/durability/resume.go
+```
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+goimports -w internal/durability/ && go vet ./internal/durability/ && \
+  go test -race ./internal/durability/ && golangci-lint run ./internal/durability/
+git add internal/durability/
+git commit -m "feat(durability): add the resumer
+
+Stat-based fast path adopts the committed cache in O(1); a size or
+mtime mismatch falls through to recomputation from the bytes, which is
+correct by definition. Correctness never depends on the fast path.
+
+Recomputation reads each recorded region and checks it against the CRC
+the fact log captured at decode time. The same read produces both the
+verified done-set and the gapless-prefix CRC, so a resumed file can
+report a real whole-file CRC instead of an honest absence — #349 and
+#353 close on one mechanism rather than two.
+
+An article whose fact carries no CRC cannot be verified and is left
+Outstanding. Re-fetching is cheap; assuming is the optimism the design
+forbids.
+
+Red checks observed (two, one per mechanism): dropping the size check
+fails TruncatedFileForcesRecompute with 'Recomputed = false after the
+file was truncated'; setting the bit without the CRC comparison fails
+it with 'article 1 is still durable after its bytes were truncated
+away'.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 8: Derive the work set in the queue
+
+**Files:**
+- Create: `internal/queue/workset.go`
+- Modify: `internal/queue/queue.go` (add `AckDurable`, delete the old ack API),
+  `internal/queue/progress.go`
+- Test: `internal/queue/workset_test.go`
+
+**Interfaces:**
+- Consumes: `durability.DurableProof`, `durability.FileExtent`.
+- Produces:
+  - `func (q *Queue) AckDurable(p durability.DurableProof) error` — satisfies
+    `durability.Acker`.
+  - `func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error`
+    — the non-barrier path permitted by R10.
+  - `func (q *Queue) SeedFromExtents(jobID string, exts []durability.FileExtent) error`
+    — installs a resumed job's durable bitmaps.
+
+**Deleted from `queue.go`:** `MarkArticlesDone`, `MarkArticlesDoneByIdx`,
+`MarkArticlesFailed`, `MarkArticlesFailedByIdx`, `SetFileExtents`. Their tests
+go with them.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+func TestAckDurable_MarksArticlesResolved(t *testing.T) {
+	q := newTestQueueWithJob(t, "job-1", 10) // existing helper pattern
+	p := durabilitytest.Proof(t, "job-1", []int32{0, 3, 7})
+
+	if err := q.AckDurable(p); err != nil {
+		t.Fatal(err)
+	}
+	var outstanding []int32
+	q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {
+		if a.JobID == "job-1" {
+			outstanding = append(outstanding, a.ArtIdx)
+		}
+		return true
+	})
+	for _, resolved := range []int32{0, 3, 7} {
+		if slices.Contains(outstanding, resolved) {
+			t.Errorf("article %d still outstanding after AckDurable", resolved)
+		}
+	}
+	if len(outstanding) != 7 {
+		t.Errorf("outstanding = %d, want 7", len(outstanding))
+	}
+}
+
+// TestAckDurable_IsIdempotent pins R12: at-least-once delivery with an
+// idempotent apply. A replayed proof must not double-count bytes.
+func TestAckDurable_IsIdempotent(t *testing.T) {
+	q := newTestQueueWithJob(t, "job-1", 10)
+	p := durabilitytest.Proof(t, "job-1", []int32{0, 1, 2})
+	if err := q.AckDurable(p); err != nil {
+		t.Fatal(err)
+	}
+	before := q.jobBytesDownloaded(t, "job-1")
+	if err := q.AckDurable(p); err != nil {
+		t.Fatal(err)
+	}
+	if after := q.jobBytesDownloaded(t, "job-1"); after != before {
+		t.Fatalf("bytes = %d after a replayed proof, want %d — the apply is not idempotent", after, before)
+	}
+}
+
+// TestQueue_HasNoNonBarrierAckPath pins X2 structurally. If a future change
+// reintroduces a public ack that does not require a DurableProof, this fails.
+func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
+	forbidden := []string{"MarkArticlesDone", "MarkArticlesDoneByIdx", "SetFileExtents"}
+	qt := reflect.TypeOf(&Queue{})
+	for i := range qt.NumMethod() {
+		name := qt.Method(i).Name
+		if slices.Contains(forbidden, name) {
+			t.Errorf("Queue.%s still exists — X2 requires the barrier to be the only ack path", name)
+		}
+	}
+}
+```
+
+Create `internal/durability/durabilitytest/proof.go` exporting
+`func Proof(tb testing.TB, jobID string, arts []int32) durability.DurableProof`
+— a **test-only** minting helper. It lives in its own package so production
+code cannot reach it, and it must carry this comment:
+
+```go
+// Package durabilitytest mints DurableProof values for tests.
+//
+// It exists because DurableProof deliberately has no exported constructor, so
+// a test of a consumer would otherwise have nothing to pass. Keeping the
+// helper in a separate package rather than adding an exported constructor is
+// what preserves X2: production code has no reason to import a package named
+// durabilitytest, and a review that sees it in a non-test file has an obvious
+// red flag rather than a subtle one.
+```
+
+To make this work without exporting a constructor, `durabilitytest` needs an
+in-package hook. Add to `internal/durability/proof.go`:
+
+```go
+// NewProofForTest is the only exported way to mint a proof. It exists solely
+// for internal/durability/durabilitytest and must not be called from
+// production code — see that package's doc for why the seam is drawn there.
+func NewProofForTest(jobID string, arts []int32) DurableProof { return newProof(jobID, arts) }
+```
+
+and add a lint guard in Task 12's gate work asserting no non-test file outside
+`durabilitytest` calls `NewProofForTest`.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/queue/ -run 'TestAckDurable|TestQueue_HasNoNonBarrierAckPath' -v`
+Expected: FAIL — `q.AckDurable undefined`, and
+`Queue.MarkArticlesDone still exists`.
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/queue/workset.go`:
+
+```go
+package queue
+
+import (
+	"fmt"
+
+	"github.com/hobeone/gonzbd/internal/durability"
+)
+
+// AckDurable resolves the articles a completed fsync covers.
+//
+// It takes a durability.DurableProof rather than a slice of indices, and that
+// is the whole point: DurableProof has no exported constructor outside
+// internal/durability, so this method is unreachable from any code path that
+// has not actually run a barrier. Before this design, six paths in the
+// assembler could ack an article, each independently responsible for
+// remembering not to do so before the bytes were durable — which is why the
+// same defect kept being refiled (#355, #356).
+func (q *Queue) AckDurable(p durability.DurableProof) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	job, ok := q.byID[p.JobID()]
+	if !ok {
+		return fmt.Errorf("queue: AckDurable: %w: %s", ErrJobNotFound, p.JobID())
+	}
+	m, err := job.Manifest()
+	if err != nil {
+		return fmt.Errorf("queue: AckDurable %s: %w", p.JobID(), err)
+	}
+	for _, idx := range p.Articles() {
+		job.progress.markDone(m, int(idx))
+	}
+	return nil
+}
+```
+
+`markDone` must already be idempotent (it sets a bit and adds bytes only on a
+0→1 transition). Verify that; if it adds bytes unconditionally, fix it — that is
+the bug `TestAckDurable_IsIdempotent` pins.
+
+Add `AckPermanentFailure` alongside, calling `job.progress.markFailed`, with a
+comment stating why it needs no proof: a permanent failure asserts nothing about
+disk, and losing one costs only a re-attempt that will fail again (R10).
+
+Add `SeedFromExtents`, which installs a resumed job's durable bits into
+`job.progress` and recomputes the job's byte figures from the extents' cached
+aggregates.
+
+Then delete `MarkArticlesDone`, `MarkArticlesDoneByIdx`, `MarkArticlesFailed`,
+`MarkArticlesFailedByIdx`, and `SetFileExtents` from `queue.go`, plus their
+tests in `queue_test.go`, `persistence_test.go`, and `clearallemitted_test.go`.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/queue/ -v`
+Expected: PASS. `go build ./...` will fail in `internal/app` and
+`internal/assembler`, which Tasks 9–11 fix. **Do not commit yet** — this task's
+commit comes after Task 9 makes the tree build again. Mark the checkbox and
+carry the working tree forward.
+
+---
+
+## Task 9: FileWriter — the assembler loses its authority
+
+**Files:**
+- Create: `internal/assembler/filewriter.go`
+- Modify: `internal/assembler/assembler.go`, `internal/assembler/writecache.go`
+- Delete: `internal/assembler/resume_crc_test.go`,
+  `internal/assembler/resume_extent_test.go`,
+  `internal/assembler/drain_cursor_test.go`,
+  `internal/assembler/flush_error_test.go`
+- Test: `internal/assembler/filewriter_test.go`
+
+**Interfaces:**
+- Consumes: `storagefault.Classify`, `durability.WrittenArticle`.
+- Produces: `Assembler` satisfying `durability.SyncTarget`:
+  `Files() []int32`, `Drain(ctx, fileIdx) ([]durability.WrittenArticle, error)`,
+  `Sync(ctx, fileIdx) error`, `Stat(fileIdx) (int64, int64, error)`,
+  `ArticleCount(fileIdx) int`, `FileLocalOrdinal(fileIdx, artIdx) (int, bool)`.
+
+**Removed from `Options`:** `MarkArticlesDone`, `MarkArticlesDoneByIdx`,
+`MarkArticlesFailed`, `MarkArticlesFailedByIdx`, `SetFileExtents`,
+`DoneFlushInterval`.
+**Removed from `FileInfo`:** `InitialWriteCursor`, `InitialMaxWritten`.
+**Removed from `openFile`:** `maxWritten`, `crcParts`, `crcValid`, `seenDone`,
+`seenFailed`, `partsWritten`.
+**Removed from `Options.OnFileComplete`:** the `fileCRC uint32` parameter. The
+CRC now comes from the barrier's extent, not the writer.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// TestFileWriter_DrainReportsOnlyWrittenArticles is the pin for S2. An
+// article sitting in the write cache has NOT reached disk, and Drain is the
+// barrier's only evidence — so a buffered-but-unwritten article must not
+// appear in its return value.
+func TestFileWriter_DrainReportsOnlyWrittenArticles(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
+
+	// Buffer an article without triggering a contiguous flush.
+	if err := w.Accept(5, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing has been drained yet, so nothing may be reported.
+	if got := w.writtenSoFar(); len(got) != 0 {
+		t.Fatalf("writtenSoFar = %v before any drain, want empty", got)
+	}
+
+	got, err := w.Drain(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ArtIdx != 5 {
+		t.Fatalf("Drain = %v, want one entry for article 5", got)
+	}
+}
+
+// TestFileWriter_FailedWriteIsNotReportedAsWritten pins #355 directly: a
+// deferred write that fails must not appear in Drain's output, so the
+// barrier never acks it and the article is re-fetched.
+func TestFileWriter_FailedWriteIsNotReportedAsWritten(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(1<<20), withWriteError(syscall.ENOSPC))
+
+	if err := w.Accept(5, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Drain(context.Background(), 0)
+	if err == nil {
+		t.Fatal("Drain returned nil error after ENOSPC")
+	}
+	var f *storagefault.Fault
+	if !errors.As(err, &f) {
+		t.Fatalf("Drain error = %T, want *storagefault.Fault", err)
+	}
+	if !f.Retryable() {
+		t.Error("ENOSPC classified permanent")
+	}
+	for _, w := range got {
+		if w.ArtIdx == 5 {
+			t.Fatal("article 5 reported written although its WriteAt failed")
+		}
+	}
+}
+
+// TestAssembler_HasNoAckSurface pins X2 from the assembler's side.
+func TestAssembler_HasNoAckSurface(t *testing.T) {
+	ot := reflect.TypeOf(Options{})
+	forbidden := []string{"MarkArticlesDone", "MarkArticlesDoneByIdx", "MarkArticlesFailed",
+		"MarkArticlesFailedByIdx", "SetFileExtents"}
+	for i := range ot.NumField() {
+		if slices.Contains(forbidden, ot.Field(i).Name) {
+			t.Errorf("Options.%s still exists — the assembler must have no ack authority", ot.Field(i).Name)
+		}
+	}
+}
+```
+
+Write `newTestFileWriter(t, opts...)` creating a `FileWriter` over a
+`t.TempDir()` file, with functional options `withCacheBytes(int64)` and
+`withWriteError(error)` (the latter injecting a `writeAt` func field on the
+writer, set once before use, mirroring how `diskProbe.statfs` is overridden in
+existing tests).
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/assembler/ -run 'TestFileWriter|TestAssembler_HasNoAckSurface' -v`
+Expected: FAIL — `undefined: newTestFileWriter`, and
+`Options.MarkArticlesDone still exists`.
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/assembler/filewriter.go` — one file's handle and cache:
+
+```go
+// FileWriter owns one target file: its handle, its write cache, its
+// coalescing, and its pre-allocation. It has no authority over anything
+// externally visible.
+//
+// It cannot ack an article, record a CRC part, decide a file is complete, or
+// truncate. Those decisions moved to durability.Barrier, which is the only
+// component that knows whether an fsync has happened. The writer's entire
+// contract to the outside world is: bytes it reports from Drain reached
+// WriteAt without error, and everything else is its own business.
+//
+// This is an inversion of the pre-existing assembler rather than a refactor of
+// it. The old design let the write path ack inline from six places, each of
+// which had to independently remember that acceptance is not durability. Not
+// one of them could see whether an fsync had happened, because none of them
+// ran one.
+type FileWriter struct {
+	handle  *os.File
+	path    string
+	cache   *fileBuf
+	written []durability.WrittenArticle
+	// writeAt is os.File.WriteAt in production. Tests override it before
+	// first use to inject storage faults.
+	writeAt func(p []byte, off int64) (int, error)
+}
+```
+
+Methods to implement, each with the stated behaviour:
+
+- `Accept(artIdx int32, off int64, data []byte) error` — buffer or write.
+  On a direct write, append to `w.written` **only after** `writeAt` returns nil.
+  On failure, return `storagefault.Classify("write", w.path, err)` and append
+  nothing.
+- `Drain(ctx) ([]durability.WrittenArticle, error)` — flush every buffered
+  article, appending to `w.written` per successful `writeAt`. On the first
+  failure, return the accumulated `w.written` **and** the classified fault, so
+  the barrier can see both what did land and why it stopped.
+- `Sync(ctx) error` — `w.handle.Sync()`, classified.
+- `Stat() (size, modTimeNs int64, err error)`.
+- `Close() error`.
+
+In `assembler.go`, delete `flush`, `recordPendingDone`, `recordPendingFailed`,
+`recordArticleCRC`, `combineWholeFileCRC`, `finalizeFile`'s truncate/CRC/ack
+logic, `pendingDone`, `pendingFailed`, `pendingExtent`, and the
+`doneFlushInterval` ticker. Add the six `durability.SyncTarget` methods,
+delegating per-file to the `FileWriter` in the `open` map.
+
+Handle #357 and #344 while here: `openTargetFile`'s two drop branches now
+return a classified fault to the caller instead of logging and discarding, and
+the "unknown file" branches in `flushPressure`/`flushWriteCache` are deleted
+outright — the `FileWriter` owns its own cache, so a cache entry with no file
+is no longer representable.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/assembler/ -v`
+Expected: PASS. Delete any remaining test in `assembler_test.go`,
+`writecache_test.go`, `processreq_test.go`, or `artidx_challenge_test.go` that
+asserts on the removed ack/CRC/extent behaviour.
+
+- [ ] **Step 5: Observe the red check on the #355 pin**
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/assembler/filewriter.go "$SCRATCH/fw.bak.go"
+# Move the append above the error check in Drain's flush loop, reproducing
+# the accept-is-durability bug exactly.
+# Edit Drain so w.written = append(...) precedes `if err != nil`.
+go test ./internal/assembler/ -run TestFileWriter_FailedWriteIsNotReportedAsWritten
+# MUST FAIL: "article 5 reported written although its WriteAt failed"
+cp "$SCRATCH/fw.bak.go" internal/assembler/filewriter.go
+```
+
+- [ ] **Step 6: Commit Tasks 8 and 9 together**
+
+They are one reviewable unit: Task 8 removes the queue's ack surface and Task 9
+removes the assembler's, and neither builds without the other.
+
+```bash
+go fix ./... && goimports -w . && go vet ./... && go test -race ./... && golangci-lint run ./...
+git add internal/queue internal/assembler
+git commit -m "refactor(assembler)!: strip the write path of all external authority
+
+The assembler could ack an article from six places — handleSuccessArticle,
+handleLateDuplicate, flush, finalizeFile, and the two control messages —
+each independently responsible for remembering that acceptance is not
+durability, and none of them able to see whether an fsync had happened.
+That is why #355 and #356 are the same bug filed twice.
+
+FileWriter now owns one file's handle and cache and nothing else. Its
+whole contract is that bytes reported from Drain reached WriteAt without
+error. Acking, CRC combination, completion, and truncation move to
+durability.Barrier, which is the only component that runs the fsync.
+
+Queue.AckDurable takes a durability.DurableProof, which has no exported
+constructor outside internal/durability, so no code path that has not
+run a barrier can reach it.
+
+openTargetFile's two drop branches now return a classified fault rather
+than discarding the article (#357), and the unreachable unknown-file
+drain handlers are deleted rather than fixed (#344) — FileWriter owns
+its own cache, so a cache entry with no file is unrepresentable.
+
+BREAKING CHANGE: Options loses MarkArticlesDone*, MarkArticlesFailed*,
+SetFileExtents, and DoneFlushInterval. FileInfo loses InitialWriteCursor
+and InitialMaxWritten. OnFileComplete loses its fileCRC parameter.
+
+Red check observed: moving the written-append above the error check in
+Drain fails TestFileWriter_FailedWriteIsNotReportedAsWritten with
+'article 5 reported written although its WriteAt failed'.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 10: Wire the barrier into the application
+
+**Files:**
+- Modify: `internal/app/app.go:326-346`, `internal/app/pipeline.go`,
+  `internal/config/downloads.go`, `internal/constants/`
+- Test: `internal/app/barrier_wiring_test.go`
+
+**Interfaces:**
+- Consumes: everything from Tasks 1–9.
+- Produces: `Application.barrier *durability.Barrier`; a barrier goroutine
+  driven by `checkpointInterval` and `checkpointBytes`.
+
+**New config** in `internal/config/downloads.go`:
+
+```go
+// CheckpointInterval bounds how much downloaded work a power loss can cost.
+// A barrier runs at least this often per active job, so at most one
+// interval's articles are re-fetched on restart.
+CheckpointInterval Duration `yaml:"checkpoint_interval" json:"checkpoint_interval"`
+
+// CheckpointBytes bounds the same window by volume, for a fast link where
+// 30s is a lot of data. The barrier fires on whichever bound arrives first.
+CheckpointBytes ByteSize `yaml:"checkpoint_bytes" json:"checkpoint_bytes"`
+```
+
+Defaults in `internal/constants/`: `DefaultCheckpointInterval = 30 * time.Second`,
+`DefaultCheckpointBytes = 64 << 20`. Per `docs/config-contract.md`, adding these
+fields requires updating `gonzbd.yaml`'s comments, `docs/sabnzbd_spec.md` §9.x,
+and the config↔UI contract test — do all three in this task, and run
+`go test ./internal/config/ -run 'TestUI|TestAllFlat'`.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// TestBarrierFiresOnByteBound pins B1's volume bound.
+func TestBarrierFiresOnByteBound(t *testing.T) {
+	app := newTestApp(t, withCheckpointBytes(1024), withCheckpointInterval(time.Hour))
+	// An hour-long interval means only the byte bound can fire.
+	feedArticles(t, app, "job-1", 20, 100) // 20 articles x 100 bytes = 2000 > 1024
+
+	waitFor(t, 5*time.Second, func() bool { return app.barrierRuns() >= 1 })
+	if got := app.barrierRuns(); got < 1 {
+		t.Fatalf("barrier ran %d times after exceeding the byte bound", got)
+	}
+}
+
+// TestBarrierFiresOnTimeBound pins B1's time bound.
+func TestBarrierFiresOnTimeBound(t *testing.T) {
+	app := newTestApp(t, withCheckpointBytes(1<<30), withCheckpointInterval(50*time.Millisecond))
+	feedArticles(t, app, "job-1", 1, 100)
+	waitFor(t, 5*time.Second, func() bool { return app.barrierRuns() >= 2 })
+}
+
+// TestBarrierRunsOnCleanShutdown pins R6.
+func TestBarrierRunsOnCleanShutdown(t *testing.T) {
+	app := newTestApp(t, withCheckpointBytes(1<<30), withCheckpointInterval(time.Hour))
+	feedArticles(t, app, "job-1", 5, 100)
+	before := app.barrierRuns()
+	if err := app.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if app.barrierRuns() <= before {
+		t.Fatal("shutdown did not run a final barrier — work within the window would be lost")
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/app/ -run TestBarrier -v`
+Expected: FAIL — `app.barrierRuns undefined`.
+
+- [ ] **Step 3: Write the implementation**
+
+Replace `internal/app/app.go:326-346`:
+
+```go
+factLog := durability.NewSQLiteFactLog(db)
+extents := durability.NewSQLiteExtentStore(db)
+app.resumer = durability.NewResumer(factLog, extents, log)
+app.barrier = durability.NewBarrier(factLog, extents, q, app, log)
+
+asm := assembler.New(assembler.Options{
+	FileInfo:        p.resolveFileInfo,
+	MinFreeBytes:    minFreeBytes,
+	WriteCacheBytes: writeCacheBytes,
+	OnLowDisk:       app.handleLowDisk,
+	OnFileComplete:  onFileComplete,
+	FactLog:         factLog,
+}, log)
+```
+
+`Application` implements `durability.Stallable`:
+
+```go
+// Stall moves a job out of the active set with a surfaced reason and leaves
+// its articles Outstanding. A storage fault is never attributed to an
+// article: marking them failed would burn their retry budget, inflate the
+// job's failed-byte count, and degrade the reported health percentage — all
+// from a full disk the user could fix in ten seconds (A1, R19, R21).
+func (a *Application) Stall(jobID string, f *storagefault.Fault) { ... }
+
+// Fail terminates a job on a permanent storage fault. Still no article is
+// marked failed (R20).
+func (a *Application) Fail(jobID string, f *storagefault.Fault) { ... }
+```
+
+Add the barrier loop: a goroutine per active job, or one goroutine iterating
+active jobs, firing `barrier.Run(ctx, jobID, assembler)` on
+`min(checkpointInterval elapsed, checkpointBytes accumulated)`, plus on file
+completion, job pause, and `Shutdown`. Track byte accumulation from the
+assembler's accepted-byte counter.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/app/ -v && go test -race ./...`
+Expected: PASS.
+
+- [ ] **Step 5: Run the integration suite**
+
+Per `AGENTS.md`, startup wiring in `cmd/gonzbd/main.go` and `internal/app` is
+consumed by integration tests, so this task must run them:
+
+Run: `go test -v -tags=integration ./test/integration/...`
+Expected: PASS. (Requires `par2`, `rar`, `unrar`, `7z` on PATH.)
+
+- [ ] **Step 6: Quality gates and commit**
+
+```bash
+go fix ./... && goimports -w . && go vet ./... && go test -race ./... && \
+  golangci-lint run ./... && go test ./internal/config/ -run 'TestUI|TestAllFlat'
+git add -A
+git commit -m "feat(app): drive the checkpoint barrier and route storage faults
+
+Adds checkpoint_interval (30s) and checkpoint_bytes (64MiB), which
+together are the stated bound on how much downloaded work a power loss
+can cost. The barrier fires on whichever arrives first, and
+additionally on file completion, pause, and shutdown.
+
+Application implements durability.Stallable: a retryable storage fault
+stalls the job with a surfaced reason and leaves its articles
+Outstanding; a permanent one fails the job. Neither marks an article
+failed. Attributing a full disk to a remote article burns its retry
+budget, inflates failed bytes, and degrades health — from a condition
+the user could fix in ten seconds.
+
+Config contract updated in step: gonzbd.yaml comments, sabnzbd_spec
+9.x, and the config-UI contract test.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 11: Surface stall state and durability figures
+
+**Files:**
+- Modify: `internal/api/` (queue mode handler), `internal/app/statusinfo.go`,
+  `ui/src/` (queue row component)
+- Test: `internal/api/stall_test.go`, `ui/src/**/*.test.ts`
+
+**Interfaces:**
+- Consumes: `Application.Stall`/`Fail` state from Task 10.
+- Produces: per-job API fields `stall_reason string`, `bytes_durable int64`,
+  `bytes_pending int64`, `last_barrier_unix int64` (R26, R27).
+
+Read `docs/svelte-gotchas.md` before touching any `.svelte` file, and
+`docs/config-contract.md` if you add a config-bound prop.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+func TestQueueAPI_ReportsStallReason(t *testing.T) {
+	srv := newTestAPIServer(t)
+	srv.app.Stall("job-1", &storagefault.Fault{
+		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
+	})
+
+	var got struct {
+		Queue struct {
+			Slots []struct {
+				NzoID       string `json:"nzo_id"`
+				StallReason string `json:"stall_reason"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	doJSON(t, srv, "/api?mode=queue&output=json", &got)
+
+	for _, s := range got.Queue.Slots {
+		if s.NzoID == "job-1" {
+			if s.StallReason == "" {
+				t.Fatal("stall_reason is empty for a stalled job — R27 requires an actionable reason")
+			}
+			if !strings.Contains(s.StallReason, "no space") && !strings.Contains(s.StallReason, "ENOSPC") {
+				t.Errorf("stall_reason = %q, does not name the condition", s.StallReason)
+			}
+			return
+		}
+	}
+	t.Fatal("job-1 not present in the queue listing")
+}
+
+func TestQueueAPI_ReportsDurableAndPendingBytes(t *testing.T) {
+	// bytes_pending is bytes written but not yet covered by an fsync — the
+	// rework window made visible. It must be reported separately from
+	// bytes_durable, never summed into it.
+	srv := newTestAPIServer(t)
+	feedArticles(t, srv.app, "job-1", 10, 100)
+
+	var got queueResponse
+	doJSON(t, srv, "/api?mode=queue&output=json", &got)
+	slot := findSlot(t, got, "job-1")
+	if slot.BytesPending == 0 {
+		t.Error("bytes_pending = 0 before any barrier ran")
+	}
+	if slot.BytesDurable != 0 {
+		t.Errorf("bytes_durable = %d before any barrier ran, want 0", slot.BytesDurable)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/api/ -run 'TestQueueAPI_ReportsStall|TestQueueAPI_ReportsDurable' -v`
+Expected: FAIL — `unknown field StallReason`.
+
+- [ ] **Step 3: Write the implementation**
+
+Add the four fields to the queue slot struct in `internal/api/`, populated from
+`Application`'s stall map and the job's `FileExtent` aggregates. Render
+`stall_reason` in the UI queue row as a warning badge, and show
+`bytes_pending` in the row's tooltip.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -race ./internal/api/ && ./scripts/run_tests.sh`
+Expected: PASS (both Go and UI suites).
+
+- [ ] **Step 5: Commit**
+
+```bash
+go fix ./... && goimports -w . && go vet ./... && go test -race ./... && golangci-lint run ./...
+git add -A
+git commit -m "feat(api): report stall reason and the durability window
+
+bytes_pending is bytes written but not yet covered by an fsync — the
+rework window made visible rather than inferred. It is reported
+separately from bytes_durable and never summed into it, because the two
+make different claims.
+
+A stalled job now carries a reason a user can act on, which is the
+difference between a recoverable full disk and a job that appears to
+have silently stopped.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 12: Crash-consistency test harness
+
+**Files:**
+- Create: `test/crash/harness.go`, `test/crash/crash_test.go` (build tag `crash`)
+- Modify: `docs/TESTING.md`, `scripts/run_tests.sh`
+- Test: the harness *is* the test.
+
+**Interfaces:**
+- Consumes: the full application.
+- Produces: `go test -tags=crash ./test/crash/...`
+
+This task discharges R31, R32, and R33 — the obligations that no other task can
+satisfy, because they require killing a real process.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+//go:build crash
+
+package crash
+
+// TestPowerLoss_ReworkIsWithinTheCheckpointBound is the pin for B1. It is the
+// only test in the suite that measures the bound rather than assuming it.
+//
+// A "power loss" here is SIGKILL plus a page-cache drop on the download
+// directory, which is the closest a userspace test can get to losing
+// unfsynced data. Without the drop this would only test process crash, where
+// the page cache survives and nothing is lost — a strictly weaker claim.
+func TestPowerLoss_ReworkIsWithinTheCheckpointBound(t *testing.T) {
+	h := newHarness(t, harnessOpts{
+		CheckpointBytes:    1 << 20, // 1 MiB
+		CheckpointInterval: time.Hour,
+	})
+	h.StartJob("job-1", 64<<20) // 64 MiB of articles
+
+	h.WaitForBarriers(3)
+	servedBefore := h.MockServer.ArticlesServed()
+
+	h.KillAndDropPageCache()
+	h.Restart()
+	h.WaitForJobComplete("job-1")
+
+	rework := h.MockServer.ArticlesServed() - servedBefore - h.ArticlesRemainingAt(servedBefore)
+	reworkBytes := rework * h.ArticleSize
+	if reworkBytes > 1<<20 {
+		t.Fatalf("re-fetched %d bytes after power loss, bound is %d — B1 is violated",
+			reworkBytes, 1<<20)
+	}
+}
+
+// TestPowerLoss_NoArticleIsAckedWithoutItsBytes is the pin for S1/S2 end to
+// end: after a power loss, every article the queue calls resolved must have
+// bytes on disk that match its recorded CRC.
+func TestPowerLoss_NoArticleIsAckedWithoutItsBytes(t *testing.T) {
+	h := newHarness(t, harnessOpts{CheckpointBytes: 1 << 20, CheckpointInterval: 200 * time.Millisecond})
+	h.StartJob("job-1", 32<<20)
+	h.WaitForBarriers(2)
+	h.KillAndDropPageCache()
+	h.Restart()
+
+	for _, a := range h.ResolvedArticles("job-1") {
+		fact := h.Fact("job-1", a.ArtIdx)
+		if !fact.HasCRC {
+			continue
+		}
+		got := h.ReadRegionCRC(fact)
+		if got != fact.CRC32 {
+			t.Errorf("article %d is resolved but its bytes hash to %#x, want %#x — a claim outlived its data",
+				a.ArtIdx, got, fact.CRC32)
+		}
+	}
+}
+
+func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
+	h := newHarness(t, harnessOpts{CheckpointBytes: 1 << 20})
+	h.StartJob("job-1", 16<<20)
+	h.WaitForBarriers(2)
+	h.Stop()
+
+	path := h.PartialPath("job-1", 0)
+	fi, _ := os.Stat(path)
+	if err := os.Truncate(path, fi.Size()/2); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Restart()
+	h.WaitForJobComplete("job-1")
+	if !h.FinalFileMatchesExpectedCRC("job-1", 0) {
+		t.Fatal("the completed file is wrong after an externally truncated partial")
+	}
+}
+
+func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
+	h := newHarness(t, harnessOpts{CheckpointBytes: 1 << 20})
+	h.StartJob("job-1", 16<<20)
+	h.WaitForBarriers(2)
+	h.Stop()
+	if err := os.Remove(h.PartialPath("job-1", 0)); err != nil {
+		t.Fatal(err)
+	}
+	h.Restart()
+	h.WaitForJobComplete("job-1")
+	if !h.FinalFileMatchesExpectedCRC("job-1", 0) {
+		t.Fatal("the completed file is wrong after its partial was deleted")
+	}
+}
+
+func TestDiskFull_StallsWithoutFailingArticles(t *testing.T) {
+	h := newHarness(t, harnessOpts{DownloadDirSizeLimit: 4 << 20})
+	h.StartJob("job-1", 64<<20)
+	h.WaitForStall("job-1")
+
+	if got := h.FailedArticleCount("job-1"); got != 0 {
+		t.Errorf("%d articles marked failed by a full disk — A1 forbids attributing storage faults to articles", got)
+	}
+	if got := h.HealthPercent("job-1"); got != 100 {
+		t.Errorf("health = %d%% after a disk-full stall, want 100%% — R21", got)
+	}
+	if h.StallReason("job-1") == "" {
+		t.Error("no stall reason surfaced — R27")
+	}
+
+	h.FreeDiskSpace()
+	h.WaitForJobComplete("job-1")
+}
+```
+
+`KillAndDropPageCache` must `SIGKILL` the child process, then drop the page
+cache for the download directory. On Linux, prefer
+`posix_fadvise(POSIX_FADV_DONTNEED)` over each partial file — it needs no root,
+unlike `/proc/sys/vm/drop_caches`. Document in the harness why: a test that
+silently degrades to "process crash only" when run without root would pass
+while measuring nothing, which is exactly the failure mode `AGENTS.md` warns
+about for green gates that bound nothing. If the fadvise call fails, the
+harness must `t.Fatal`, never skip silently.
+
+`DownloadDirSizeLimit` should mount a small `tmpfs`, or fall back to writing a
+large filler file to exhaust a `t.TempDir()` on the same filesystem. If neither
+is available, `t.Skip` **with an explicit reason** — this is the one place a
+skip is acceptable, because the alternative is a test that lies.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test -tags=crash ./test/crash/ -v`
+Expected: FAIL — `undefined: newHarness`.
+
+- [ ] **Step 3: Write the harness**
+
+Build `test/crash/harness.go` on the existing mock NNTP server in `test/`. The
+harness runs the real `gonzbd` binary as a child process so `SIGKILL` is
+meaningful — an in-process test cannot lose a page cache.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test -tags=crash -timeout=20m ./test/crash/ -v`
+Expected: PASS.
+
+- [ ] **Step 5: Document the suite**
+
+Add a `crash` section to `docs/TESTING.md` covering the build tag, the Linux
+requirement, the runtime, and — importantly — what a pass does and does not
+bound. State plainly that these tests measure the checkpoint bound on the test
+filesystem only, and that NFS/SMB fsync behaviour is not covered.
+
+- [ ] **Step 6: Commit**
+
+```bash
+gofmt -l test/crash && go vet -tags=crash ./test/crash/
+git add test/crash docs/TESTING.md scripts/run_tests.sh
+git commit -m "test(crash): measure the durability bound rather than assume it
+
+The checkpoint bound is the design's central promise and nothing else
+in the suite can check it: it needs a real SIGKILL plus a page-cache
+drop, which an in-process test cannot produce.
+
+Five tests: rework stays within the bound after power loss; no acked
+article outlives its bytes; a truncated partial recomputes; a deleted
+partial restarts; a full disk stalls without failing a single article
+or moving the health percentage.
+
+The page-cache drop uses posix_fadvise(DONTNEED) so it needs no root,
+and hard-fails rather than skipping if it cannot run — a test that
+silently degrades to process-crash-only would pass while measuring
+nothing.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 13: Replace the documentation
+
+**Files:**
+- Rewrite: `docs/assembler-storage-contract.md` → delete, replaced by
+  `docs/durability-contract.md`
+- Rewrite: `docs/queue-lifecycle.md` (progress/extent sections)
+- Modify: `docs/ARCHITECTURE.md`, `docs/nntp-downloader-contract.md` §5,
+  `docs/post-processing-contract.md` (QuickCheck CRC input),
+  `docs/sabnzbd_spec.md` (persistence + config sections), `AGENTS.md`
+  (topic-docs table), `docs/go-standards.md` (if it cites the old ack path)
+- Modify: `docs/superpowers/specs/2026-08-11-download-durability-design.md`
+  — remove the "design proposal, carries no authority" caveat, since it is now
+  implemented.
+
+The user's instruction is explicit: **this replaces any existing spec or doc
+describing the current implementation.** A doc that still describes the old
+model is not "stale", it is wrong, and it will be cited as authority by the next
+session.
+
+- [ ] **Step 1: Find every claim the change falsified**
+
+Per `AGENTS.md` § "sweep the claim, not the file", grep from the repository root
+for the distinctive phrasing, not the files you happened to edit:
+
+```bash
+git grep -n 'maxWritten\|write cursor\|writeCursor\|InitialWriteCursor\|InitialMaxWritten'
+git grep -n 'MarkArticlesDone\|MarkArticlesFailed\|SetFileExtents'
+git grep -n 'bytes_downloaded\|failed_bytes\|max_written'
+git grep -n 'Emitted-is-transient\|emitted is transient'
+git grep -n 'crcValid\|crcParts\|combineWholeFileCRC'
+git grep -n 'acked Done\|acked as done\|before any downstream code'
+git grep -n 'pwrite → Truncate → Sync → Close → flush'
+```
+
+Every hit outside `docs/superpowers/` is a claim to fix or delete. Expect hits
+in `cmd/`, `test/`, `ui/`, `AGENTS.md`, and this plan itself.
+
+- [ ] **Step 2: Write `docs/durability-contract.md`**
+
+It replaces `docs/assembler-storage-contract.md`. Structure it as that file was
+structured — "Why this exists", tiers table, lifecycle diagram, mandatory
+invariants — but describing the new model. Carry forward the sections that are
+still true and are not about durability: pre-allocation platform behaviour, the
+`DiskProbe` at-most-one-in-flight pattern, `SupportsSparse`, DirectUnpack's
+volume-level contract, and offset bounds checking.
+
+Keep the existing header convention:
+
+```markdown
+**This states the contract in the present tense.** Where the code and this
+document disagree, the code is wrong and the gap is a bug, not a documentation
+error.
+```
+
+- [ ] **Step 3: Revise `docs/queue-lifecycle.md`**
+
+The residency/manifest argument survives intact and is *strengthened* by this
+work — cite it as the precedent for X3. Replace the sections describing
+`bytes_downloaded`, `failed_bytes`, `MaxWritten`, `WriteCursor`, and the
+`SetFileExtents` merge rule. The "Restart" section needs rewriting entirely: the
+job no longer reconstructs progress from `job_files` aggregates but from
+`file_extents`.
+
+- [ ] **Step 4: Update the remaining docs**
+
+- `docs/ARCHITECTURE.md` — the pipeline diagram gains the barrier.
+- `docs/nntp-downloader-contract.md` §5 — "Emitted-is-transient" survives and is
+  now a consequence of S3 rather than a standalone rule. Restate it in the new
+  vocabulary and cross-reference.
+- `docs/post-processing-contract.md` — QuickCheck's CRC input now comes from the
+  barrier's `FileExtent.PrefixCRC`, and a resumed file can now supply one.
+  Update the "QuickCheck bypass guarantees" section.
+- `docs/sabnzbd_spec.md` — persistence section and §9.x config.
+- `AGENTS.md` — topic-docs table: replace the
+  `docs/assembler-storage-contract.md` row with `docs/durability-contract.md`,
+  and update its "read before" trigger to include `internal/durability` and
+  `internal/storagefault`.
+- `docs/superpowers/specs/2026-08-11-download-durability-design.md` — delete the
+  "Relationship to the existing contracts" paragraph.
+
+- [ ] **Step 5: Run the comment analyzer over the cumulative diff**
+
+Per `AGENTS.md`, the grep in Step 1 and the analyzer cover different things: the
+grep finds comments you did not touch, the analyzer reads the ones you did.
+
+Run `pr-review-toolkit:comment-analyzer` over the full branch diff.
+
+- [ ] **Step 6: Verify no stale claim survives**
+
+```bash
+git grep -n 'assembler-storage-contract'   # expect: no hits outside git history
+git grep -n 'InitialMaxWritten\|SetFileExtents\|MarkArticlesDoneByIdx'  # expect: no hits
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A docs AGENTS.md
+git commit -m "docs: replace the assembler storage contract with the durability contract
+
+docs/assembler-storage-contract.md described a model in which the write
+path acked, combined CRCs, and truncated. None of that is true now, so
+the file is deleted rather than amended — a doc that still describes the
+old model is not stale, it is wrong, and the next session will cite it
+as authority.
+
+queue-lifecycle.md keeps its residency argument, which this work
+strengthens rather than replaces: the eight bugs its property test
+passed through are the precedent for making the ack path
+compiler-enforced instead of test-enforced.
+
+Swept from the repository root rather than by re-reading edited files.
+The comment analyzer covered the comments in the diff; the grep covered
+the ones outside it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 14: Final verification and dead-code sweep
+
+**Files:** whole repository.
+
+- [ ] **Step 1: Full gate run**
+
+```bash
+go fix ./...
+goimports -w .
+go vet ./...
+go build ./...
+go test -race ./...
+./scripts/run_tests.sh
+golangci-lint run ./...
+go test -v -tags=integration ./test/integration/...
+go test -tags=crash -timeout=20m ./test/crash/...
+go test ./internal/config/ -run 'TestUI|TestAllFlat'
+```
+
+Every one must pass. Record the output of the crash suite in the PR body — it is
+the only evidence for B1.
+
+- [ ] **Step 2: Dead-code sweep**
+
+Several issues on the tracker are "symbol has no production caller" (#290, #297,
+#304). This change removes a lot of code, so re-check:
+
+```bash
+golangci-lint run --enable unused ./...
+git grep -n 'ClearArticleEmitted\|MarkArticleEmittedByIdx' -- '*.go' ':!*_test.go'
+```
+
+Close or update #344, #349, #353, #355, #356, #357, #311, #306, #337 with a note
+naming the invariant that retired each.
+
+- [ ] **Step 3: Mutation-test the two packages that carry the invariants**
+
+```bash
+./scripts/run_gremlins.sh ./internal/durability
+./scripts/run_gremlins.sh ./internal/storagefault
+```
+
+**Never** run `gremlins` on the whole repo or call `gremlins unleash` directly —
+it has caused 168–394 GB of disk use and OOM kills. See
+`docs/mutation-testing-playbook.md` for triage. A `LIVED` mutant in
+`barrier.go`'s ordering or `resume.go`'s validation is a real gap; write the
+test rather than dismissing it.
+
+- [ ] **Step 4: Open the PR**
+
+```bash
+git push -u origin docs/download-durability-spec
+```
+
+Then `/pr-create`, followed by `/watch-ci`.
+
+---
+
+## Self-Review
+
+**Spec coverage.** Every invariant maps to a task: S1/S2 → 6, 9; S3 → 7, 8;
+S4/S7 → 7; S5 → 3, 8; S6 → 6 (`VerifiedTo` replaces `maxWritten` as the
+truncate source); A1/A2 → 1, 10; L1 → 9; L2/L3 → 10, 12; B1 → 10, 12; B2 → 9;
+B3 → 7; B4 → 9 (retained `DiskProbe`); X1 → 9; X2/X3 → 2, 6, 8. Requirements
+R1–R4 → 2, 4; R5–R8 → 6, 10; R9–R12 → 6, 8; R13–R17 → 7; R18–R22 → 1, 10;
+R23–R25 → 6, 7; R26–R30 → 10, 11; R31–R34 → 12 and each task's red check.
+
+**Known gaps, stated rather than hidden:**
+
+1. **R15 (interruptible recomputation) is specified but not separately tested.**
+   Task 7 implements `Resume` synchronously per file. If a 15 GB partial makes
+   startup unacceptably slow in practice, interruptibility needs its own task.
+   Do not claim R15 is discharged.
+2. **R24's "off the critical path" is not enforced.** Task 7 computes the prefix
+   CRC during recomputation, which is off the barrier path by construction, but
+   nothing prevents a future change from moving it. No test guards this.
+3. **Task 12's disk-full test may skip** on a filesystem where neither `tmpfs`
+   nor a filler file can bound free space. The skip is loud and reasoned, but a
+   skipped test is not a passing one.
+4. **`internal/queue` remains ~23k lines.** This plan removes its ack surface
+   but does not decompose it. That is deliberate scope control, not an
+   endorsement.
+
+**Type consistency check performed:** `WrittenArticle`, `ArticleFact`,
+`FileExtent`, `DurableProof`, `ResumeResult`, `SyncTarget`, `Acker`,
+`Stallable`, and `Fault` are each defined in exactly one task and referenced
+with matching field names and signatures thereafter. `FileLocalOrdinal` is used
+in Task 6 and produced by Task 9 — Task 6's tests stub it, so Task 6 can land
+before Task 9 exists.
