@@ -2489,6 +2489,17 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Task 8: Derive the work set in the queue
 
+> **Non-resident Class B read path (decided during review).**
+> `ArticleCountsByJob` gains a `LEFT JOIN file_extents`, so a non-resident job's
+> `bytes_durable` / `bytes_failed` come back in the same grouped query the Store
+> already runs at startup. One query for the whole queue, preserving B3's
+> O(incomplete files) bound, and the read stays where every other non-resident
+> figure already lives. The alternative — injecting a `durability.ExtentStore`
+> into `Queue` — is cleaner layering but is N queries at startup unless a batch
+> method is added, which is the bound B3 exists to protect. `LEFT`, not inner:
+> a job whose barrier has never run has no `file_extents` row, and it must
+> report zero rather than vanish from the queue.
+>
 > **Regression debt this task MUST discharge.** Task 3 removed
 > `job_files.bytes_downloaded` and `failed_bytes` with no replacement, because
 > the replacement is this task's derivation. Between Task 3 and here, a
@@ -2717,6 +2728,19 @@ carry the working tree forward.
 ---
 
 ## Task 9: FileWriter — the assembler loses its authority
+
+> **The assembler cannot implement `SyncTarget` directly (decided during
+> review).** `SyncTarget` is per-job — `Files()` returns one job's files — while
+> the assembler is keyed on `fileKey{jobID, fileIdx}` and serves every job at
+> once. Its state is owned exclusively by the single worker goroutine with no
+> locks, which is invariant X1.
+>
+> Add a **per-job adapter** that implements `SyncTarget` for one `jobID` and
+> reaches the worker through the existing control-message channel, the same
+> pattern `CancelJob` and `CloseJobHandles` already use. Do **not** add a mutex
+> to the assembler's maps: X1's value is that one goroutine owns every file
+> handle with zero contention, and a lock would also put `check_lock_io` in play
+> around code that does I/O by definition.
 
 > **Data-loss debt this task MUST discharge.** Task 3 dropped
 > `job_files.max_written`, so `FileProgress.FileMaxWritten` and
