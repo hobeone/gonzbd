@@ -198,6 +198,16 @@ CREATE TABLE file_extents (
 -- are derived from article_facts plus the file's actual bytes, and that pair
 -- is what a recomputation reads.
 --
+-- has_prefix_crc means "prefix_crc is a verified WHOLE-FILE CRC", not merely
+-- "prefix_crc is populated". It is set only when the verification run consumed
+-- every recorded fact for the file AND its gapless prefix reached the file's
+-- end; anything short of that is unavailable (R23), which is an honest answer
+-- and must stay distinguishable from a CRC of zero. prefix_crc still covers
+-- exactly [0, verified_to) whether or not the flag is set, so a reader must
+-- not infer the range from the flag. The looser reading — "the CRC of
+-- whatever prefix we have" — is what lets a partial extent's CRC be reported
+-- as the file's, which is the defect this column exists to prevent.
+--
 -- bytes_failed is the exception, and the discard rule above does NOT extend
 -- to it. A permanently failed article never decodes, so it never writes an
 -- article_facts row — by design: Class A is recorded at decode, and a lost

@@ -28,10 +28,13 @@ type ResumeResult struct {
 	Durable Bitmap
 	// VerifiedTo is the length of the gapless, verified prefix from byte 0.
 	VerifiedTo int64
-	// PrefixCRC is the CRC32 of exactly [0, VerifiedTo), valid only when
-	// HasPrefixCRC. Unavailable is an honest answer and must stay
-	// distinguishable from a CRC of zero (R23).
-	PrefixCRC    uint32
+	// PrefixCRC is the CRC32 of exactly [0, VerifiedTo), whether or not
+	// HasPrefixCRC is set.
+	PrefixCRC uint32
+	// HasPrefixCRC means PrefixCRC is a verified whole-file CRC: the run
+	// consumed every recorded fact AND reached the file's end. Anything less
+	// is unavailable, which is an honest answer and must stay distinguishable
+	// from a CRC of zero (R23).
 	HasPrefixCRC bool
 	// Recomputed reports that the committed cache was not adopted and the
 	// answer came from the file's bytes. It is observability, not a claim:
@@ -44,19 +47,6 @@ type ResumeResult struct {
 
 // Resumer answers, from stable storage alone, which of a file's articles still
 // need fetching.
-//
-// # The article-numbering gap this signature carries
-//
-// Resume is given an article count but no mapping from an ArticleFact's global
-// ArtIdx to the file-local ordinal that FileExtent.Durable is indexed by — the
-// mapping the barrier gets from SyncTarget.FileLocalOrdinal. It therefore has
-// to treat ArtIdx as the bit position directly, which holds only while a
-// file's articles are numbered from zero within it. Where the assumption is
-// visibly broken — a fact outside [0, artCount) — Resume fails with
-// ErrArticleOutOfRange rather than leaving the bit clear, because a clear bit
-// is indistinguishable from "those bytes are not on disk" and would silently
-// re-fetch an intact file (A2, R28). Closing the gap needs an ordinal mapper
-// on this signature, which is the wiring task's to add.
 type Resumer struct {
 	facts FactLog
 	exts  ExtentStore
@@ -86,7 +76,15 @@ func NewResumer(fl FactLog, es ExtentStore, log *slog.Logger) *Resumer {
 // An article whose fact carries no CRC (UU-encoded) cannot be verified and is
 // therefore left Outstanding. Re-fetching it is cheap; assuming it is correct
 // is exactly the optimism the design forbids (S3).
-func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, artCount int) (ResumeResult, error) {
+// firstArtIdx is the file's first global article index — lo from the
+// manifest's FileRange(fileIdx). FileExtent.Durable is indexed by file-local
+// ordinal, so a fact's bit is fact.ArtIdx - firstArtIdx. The barrier gets that
+// mapping from SyncTarget.FileLocalOrdinal; this signature has no equivalent,
+// so the caller supplies the offset. An index outside [0, artCount) is
+// ErrArticleOutOfRange, never a silently clear bit: a clear bit is
+// indistinguishable from "those bytes are not on disk" and would re-fetch an
+// intact file without saying so (A2, R28).
+func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (ResumeResult, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -109,14 +107,24 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 		// R13's cheap validity check passed. Both halves are load-bearing:
 		// a truncation moves the size, an in-place edit of the same length
 		// moves only the mtime.
+		//
+		// HasPrefixCRC is re-checked against the strict rule rather than
+		// adopted, because the flag can outlive the condition it asserts. A
+		// resume commits it true for a whole file; an article then lands
+		// beyond a hole, so the file grows while VerifiedTo does not move;
+		// the barrier only clears the flag when VerifiedTo *changes*, so it
+		// survives. The next restart's stamp matches, and a partial extent's
+		// CRC would be adopted as the file's — #349's misuse re-entering
+		// through the cache instead of the walk. The re-check costs one
+		// comparison against a stat this path already made, so B3 is intact.
 		return ResumeResult{
 			Durable:      ext.Durable,
 			VerifiedTo:   ext.VerifiedTo,
 			PrefixCRC:    ext.PrefixCRC,
-			HasPrefixCRC: ext.HasPrefixCRC,
+			HasPrefixCRC: ext.HasPrefixCRC && ext.VerifiedTo == fi.Size(),
 		}, nil
 	}
-	return r.recompute(ctx, jobID, fileIdx, path, fi.Size(), artCount)
+	return r.recompute(ctx, jobID, fileIdx, path, fi.Size(), firstArtIdx, artCount)
 }
 
 // committedExtent loads the Class B cache for one file, reporting whether one
@@ -157,7 +165,7 @@ func (r *Resumer) committedExtent(ctx context.Context, jobID string, fileIdx int
 
 // recompute derives the done-set from the file's bytes, which S4 makes correct
 // by definition, and the gapless-prefix CRC from the same read (R24).
-func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, path string, size int64, artCount int) (ResumeResult, error) {
+func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, path string, size int64, firstArtIdx int32, artCount int) (ResumeResult, error) {
 	facts, err := r.facts.ForFile(ctx, jobID, fileIdx)
 	if err != nil {
 		return ResumeResult{}, fmt.Errorf("durability: resume facts job=%s file=%d: %w", jobID, fileIdx, err)
@@ -171,7 +179,7 @@ func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, pa
 	defer func() { _ = f.Close() }()
 
 	durable := NewBitmap(artCount)
-	verified, err := r.verifyRegions(ctx, f, facts, durable, size, artCount, jobID, fileIdx)
+	verified, err := r.verifyRegions(ctx, f, facts, durable, size, firstArtIdx, artCount, jobID, fileIdx)
 	if err != nil {
 		return ResumeResult{}, err
 	}
@@ -196,7 +204,7 @@ func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, pa
 //
 // A fact with no CRC is skipped rather than trusted: nothing can prove those
 // bytes are the right bytes, and S3 makes the unprovable Outstanding.
-func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []ArticleFact, durable Bitmap, size int64, artCount int, jobID string, fileIdx int32) ([]bool, error) {
+func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []ArticleFact, durable Bitmap, size int64, firstArtIdx int32, artCount int, jobID string, fileIdx int32) ([]bool, error) {
 	verified := make([]bool, len(facts))
 	var buf []byte
 	for i, fact := range facts {
@@ -205,15 +213,20 @@ func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []Article
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("durability: resume recompute job=%s file=%d: %w", jobID, fileIdx, err)
 		}
-		ord := int(fact.ArtIdx)
+		ord := int(fact.ArtIdx - firstArtIdx)
 		if ord < 0 || ord >= artCount {
-			return nil, fmt.Errorf("%w: job=%s file=%d article=%d count=%d",
-				ErrArticleOutOfRange, jobID, fileIdx, fact.ArtIdx, artCount)
+			return nil, fmt.Errorf("%w: job=%s file=%d article=%d first=%d count=%d",
+				ErrArticleOutOfRange, jobID, fileIdx, fact.ArtIdx, firstArtIdx, artCount)
 		}
 		if !fact.HasCRC {
 			continue
 		}
-		if fact.Offset < 0 || fact.Length < 0 || fact.Offset+int64(fact.Length) > size {
+		// Offset is bounded against size before the addition, so the sum
+		// cannot wrap: a corrupt row with Offset near MaxInt64 would
+		// otherwise produce a negative sum that passes a "> size" test, and
+		// the guard would read as bounding a region it had not bounded.
+		// ReadAt would still fail, but on the wrong claim.
+		if fact.Offset < 0 || fact.Length < 0 || fact.Offset > size-int64(fact.Length) {
 			// The region the fact describes is not wholly inside the file as
 			// it exists now, so its bytes cannot be checked. Outstanding.
 			continue

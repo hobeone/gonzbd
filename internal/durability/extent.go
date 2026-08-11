@@ -109,8 +109,21 @@ type FileExtent struct {
 	// byte 0. It is the CRC anchor, and is permitted to stall at a hole
 	// without affecting resume, which depends only on Durable.
 	VerifiedTo int64
-	// PrefixCRC is the CRC32 of [0, VerifiedTo), valid only when HasPrefixCRC.
-	PrefixCRC    uint32
+	// PrefixCRC is the CRC32 of exactly [0, VerifiedTo). That range holds
+	// whether or not HasPrefixCRC is set, so the flag must not be read as
+	// describing what the CRC covers.
+	PrefixCRC uint32
+	// HasPrefixCRC means "PrefixCRC is a verified WHOLE-FILE CRC", not
+	// merely "PrefixCRC is populated". It is set only when the verification
+	// run consumed every recorded fact for the file AND the gapless prefix
+	// reached the file's end. Anything less is unavailable (R23) — an honest
+	// answer, and one that must stay distinguishable from a CRC of zero.
+	//
+	// The loose reading, "the CRC of whatever prefix we have", is what lets a
+	// partial extent's CRC be reported as the file's. That is #349, and it is
+	// why Resumer re-checks this flag against the file's current size rather
+	// than adopting a committed one: the flag can outlive its condition when
+	// a file grows past a hole without VerifiedTo moving.
 	HasPrefixCRC bool
 	// BytesDurable and BytesFailed are cached aggregates. They exist so
 	// restart stays O(files) (B3) rather than O(articles).
