@@ -338,8 +338,17 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
 - **R14** On validation failure it MUST recompute the done-set by reading the
   file and verifying each Class A region against its CRC. Where Class A is
   insufficient to cover the file, it MUST restart the file rather than guess.
-- **R15** Recomputation MUST be interruptible, resumable, and MUST NOT block
-  unrelated jobs.
+- **R15** Recomputation MUST be interruptible and MUST NOT block unrelated
+  jobs.
+
+  **"Resumable" was dropped from this requirement.** Recomputation fires only
+  when the stat fast path fails, which is the rare case; it is O(bytes) against
+  local disk rather than the network; and a discarded partial costs a re-read,
+  never a wrong answer. Making it resumable needs a persisted verified-through
+  offset — a new Class B field, committed per chunk during the recompute, that
+  can disagree with the file. That is the exact class of independently
+  maintained state this design exists to remove, spent to avoid re-reading a
+  file. The requirement was over-specified.
 - **R16** Restart MUST reconstruct the outstanding work set without
   decompressing manifests — fast path O(incomplete files).
 - **R17** Any article not provably Durable after resume MUST be Outstanding.
@@ -381,6 +390,15 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
   CRC, derived from Class A over the verified extent, so QuickCheck can
   short-circuit a resumed job. This work MUST be off the barrier's critical
   path.
+
+  **`HasPrefixCRC` means "this is a verified whole-file CRC", not "the CRC over
+  `[0, VerifiedTo)` is valid for that range".** It is set only when the
+  verification run consumed every recorded fact *and* reached the file's end.
+  The looser reading preserves more information but has no consumer — R24's
+  only stated use is QuickCheck short-circuiting, which needs a whole-file
+  value — and it reintroduces the misuse that #349 was: a partial-extent CRC
+  mistaken for a whole-file one. Where the strict condition does not hold, the
+  honest answer is unavailable, which R23 already blesses.
 - **R25** Truncation to final size MUST only shrink, and MUST be based on the
   verified extent, never on the run's high-water mark.
 
