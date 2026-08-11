@@ -12,6 +12,8 @@ type SQLiteFactLog struct{ db *sql.DB }
 // NewSQLiteFactLog wraps db as a FactLog. The caller owns db's lifecycle.
 func NewSQLiteFactLog(db *sql.DB) *SQLiteFactLog { return &SQLiteFactLog{db: db} }
 
+var _ FactLog = (*SQLiteFactLog)(nil)
+
 // Append inserts facts, ignoring any whose (job_id, art_idx) is already
 // present. INSERT OR IGNORE rather than UPSERT is the point: a Class A fact
 // is immutable (R1), so a second delivery of the same article must leave the

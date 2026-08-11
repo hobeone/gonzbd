@@ -22,6 +22,8 @@ type SQLiteExtentStore struct{ db *sql.DB }
 // lifecycle.
 func NewSQLiteExtentStore(db *sql.DB) *SQLiteExtentStore { return &SQLiteExtentStore{db: db} }
 
+var _ ExtentStore = (*SQLiteExtentStore)(nil)
+
 // Commit writes every extent in one transaction. Atomicity is the guarantee
 // R7 depends on: a barrier that fails partway must leave the previously
 // committed cache wholly intact rather than a mix of old and new.
@@ -36,7 +38,7 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("durability: begin extent commit: %w", err)
+		return fmt.Errorf("durability: begin extent commit job=%s: %w", jobID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -46,7 +48,7 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 			 has_prefix_crc, bytes_durable, bytes_failed, size, mod_time_ns)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return fmt.Errorf("durability: prepare extent commit: %w", err)
+		return fmt.Errorf("durability: prepare extent commit job=%s: %w", jobID, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
@@ -66,11 +68,25 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 	return nil
 }
 
-// Load reads a job's extents, ordered by file_idx. The caller supplies the
-// article count per file via the manifest; because the bitmap's bit count is
-// not stored, Load reconstructs each bitmap at its full byte width and the
-// caller narrows or widens it against the real count.
+// Load reads a job's extents, ordered by file_idx.
+//
+// The bitmap's bit count is not stored, so each bitmap comes back at its full
+// BYTE width and is UNMASKED — Bitmap's tail-word mask cannot fire when n is a
+// multiple of 64. Padding bits are zero for any blob this package wrote, since
+// Set is bounds-checked, but a damaged blob can set them and Count() would
+// then over-report articles durable, which is the over-claim direction the
+// design forbids.
+//
+// Callers that need a trustworthy Count MUST re-derive with
+// BitmapFromBytes(raw, realArticleCount) rather than slicing what Load
+// returns. Only the manifest knows that count, and this layer does not have
+// it.
 func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExtent, error) {
+	// ORDER BY file_idx is defensive, not behavior this package can pin by
+	// test: file_extents is WITHOUT ROWID keyed on (job_id, file_idx), so
+	// the clustered index already returns rows in that order regardless of
+	// the clause. It stays in case a future index or schema change removes
+	// that guarantee.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT file_idx, durable_bitmap, verified_to, prefix_crc,
 		       has_prefix_crc, bytes_durable, bytes_failed, size, mod_time_ns
@@ -103,7 +119,7 @@ func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExten
 // DeleteJob removes every extent for a job that has left the queue.
 func (s *SQLiteExtentStore) DeleteJob(ctx context.Context, jobID string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM file_extents WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("durability: delete extents for %s: %w", jobID, err)
+		return fmt.Errorf("durability: delete extents job=%s: %w", jobID, err)
 	}
 	return nil
 }

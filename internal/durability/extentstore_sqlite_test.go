@@ -2,6 +2,8 @@ package durability
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -39,9 +41,6 @@ func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSQLiteExtentStore_CommitIsAtomic pins that a job's files are never
-// observable half-committed. A barrier that fails partway must leave the
-// previous committed cache intact (R7).
 // TestSQLiteExtentStore_HasPrefixCRCRoundTrips pins the same distinction
 // TestSQLiteFactLog_HasCRCRoundTrips pins for Class A: a prefix CRC that is
 // genuinely zero must stay distinguishable from no prefix CRC at all.
@@ -83,6 +82,16 @@ func TestSQLiteExtentStore_HasPrefixCRCRoundTrips(t *testing.T) {
 	}
 }
 
+// TestSQLiteExtentStore_CommitIsAtomic pins that a job's files are never
+// observable half-committed. A barrier that fails partway must leave the
+// previous committed cache intact (R7).
+//
+// This test pins the VALIDATION loop, not the transaction. The bad row is
+// rejected before any write, so removing the transaction changes nothing it
+// can see — file_extents has no CHECK constraint, so nothing else can fail
+// mid-batch either. TestSQLiteExtentStore_TransactionRollsBackMidBatch below
+// is what pins the transaction; the two mechanisms need two tests, not two
+// mutations of one test.
 func TestSQLiteExtentStore_CommitIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
@@ -102,15 +111,101 @@ func TestSQLiteExtentStore_CommitIsAtomic(t *testing.T) {
 		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 999},
 		{FileIdx: 1, Durable: Bitmap{}, VerifiedTo: -1}, // negative extent is rejected
 	}
-	if err := es.Commit(ctx, "job-1", bad); err == nil {
-		t.Fatal("Commit accepted a negative VerifiedTo")
+	if err := es.Commit(ctx, "job-1", bad); !errors.Is(err, ErrInvalidExtent) {
+		t.Fatalf("Commit error = %v, want ErrInvalidExtent", err)
 	}
 	got, err := es.Load(ctx, "job-1")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(got) != 2 {
+		t.Fatalf("Load returned %d extents, want 2", len(got))
+	}
 	if got[0].VerifiedTo != 100 {
 		t.Fatalf("VerifiedTo = %d after a failed commit, want 100 — the batch was not atomic", got[0].VerifiedTo)
+	}
+}
+
+// TestSQLiteExtentStore_TransactionRollsBackMidBatch pins the transaction
+// itself, which CommitIsAtomic cannot reach: validation rejects malformed
+// input before any write, so only a failure arriving DURING the write
+// exercises the rollback. In production that is ENOSPC, SQLITE_BUSY, or a
+// cancelled context; here a test-only trigger produces the same shape
+// deterministically, with no driver wrapper and no schema change — the
+// trigger lives in this test's scratch database only.
+//
+// Without the transaction, row 0's new value is already committed when row 1
+// fails, which violates R7 on a path validation can never guard.
+func TestSQLiteExtentStore_TransactionRollsBackMidBatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	es := NewSQLiteExtentStore(db)
+
+	if err := es.Commit(ctx, "job-1", []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 100},
+		{FileIdx: 1, Durable: NewBitmap(8), VerifiedTo: 200},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER abort_second BEFORE INSERT ON file_extents
+		WHEN NEW.file_idx = 1 BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both rows are valid, so the validation loop passes them; the second
+	// fails at the storage layer.
+	err := es.Commit(ctx, "job-1", []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: 999},
+		{FileIdx: 1, Durable: NewBitmap(8), VerifiedTo: 888},
+	})
+	if err == nil {
+		t.Fatal("Commit succeeded despite the trigger")
+	}
+
+	got, loadErr := es.Load(ctx, "job-1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Load returned %d extents, want 2", len(got))
+	}
+	if got[0].VerifiedTo != 100 {
+		t.Fatalf("file 0 VerifiedTo = %d, want 100 — a mid-batch failure left a partial write",
+			got[0].VerifiedTo)
+	}
+	if got[1].VerifiedTo != 200 {
+		t.Fatalf("file 1 VerifiedTo = %d, want 200", got[1].VerifiedTo)
+	}
+}
+
+// TestSQLiteExtentStore_CommitRejectsEachNegativeField pins all four clauses
+// of Commit's validation loop independently. Only VerifiedTo was previously
+// exercised — deleting the Size, BytesDurable, or BytesFailed guard was
+// invisible to the suite. BytesDurable is the R26 "bytes durable" aggregate;
+// BytesFailed has no Class A backing at all (S4's recompute-wins rule cannot
+// rescue a negative value there, since recomputing from article_facts always
+// yields zero for it).
+func TestSQLiteExtentStore_CommitRejectsEachNegativeField(t *testing.T) {
+	tests := []struct {
+		name string
+		ext  FileExtent
+	}{
+		{"VerifiedTo", FileExtent{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: -1}},
+		{"Size", FileExtent{FileIdx: 0, Durable: NewBitmap(8), Size: -1}},
+		{"BytesDurable", FileExtent{FileIdx: 0, Durable: NewBitmap(8), BytesDurable: -1}},
+		{"BytesFailed", FileExtent{FileIdx: 0, Durable: NewBitmap(8), BytesFailed: -1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			es := NewSQLiteExtentStore(openTestDB(t))
+			err := es.Commit(ctx, "job-1", []FileExtent{tc.ext})
+			if !errors.Is(err, ErrInvalidExtent) {
+				t.Fatalf("Commit error = %v, want ErrInvalidExtent for a negative %s", err, tc.name)
+			}
+		})
 	}
 }
 
@@ -169,8 +264,12 @@ func TestSQLiteExtentStore_CommitErrorsOnClosedDB(t *testing.T) {
 		t.Fatalf("close db: %v", err)
 	}
 	ext := FileExtent{FileIdx: 0, Durable: NewBitmap(8)}
-	if err := es.Commit(ctx, "job-1", []FileExtent{ext}); err == nil {
+	err := es.Commit(ctx, "job-1", []FileExtent{ext})
+	if err == nil {
 		t.Fatal("Commit on a closed db = nil error, want an error")
+	}
+	if !strings.Contains(err.Error(), "durability: begin extent commit") {
+		t.Errorf("Commit error = %q, want it to name the failing step", err)
 	}
 }
 
@@ -183,7 +282,26 @@ func TestSQLiteExtentStore_DeleteJobErrorsOnClosedDB(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
-	if err := es.DeleteJob(ctx, "job-1"); err == nil {
+	err := es.DeleteJob(ctx, "job-1")
+	if err == nil {
 		t.Fatal("DeleteJob on a closed db = nil error, want an error")
+	}
+	if !strings.Contains(err.Error(), "job=job-1") {
+		t.Errorf("DeleteJob error = %q, want it to name the job", err)
+	}
+}
+
+// TestSQLiteExtentStore_CommitEmptyIsNoop covers Commit's early return: an
+// empty batch must not touch the database at all, so it succeeds even
+// against an already-closed handle that would fail any real query.
+func TestSQLiteExtentStore_CommitEmptyIsNoop(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	es := NewSQLiteExtentStore(db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if err := es.Commit(ctx, "job-1", nil); err != nil {
+		t.Fatalf("Commit(nil) on a closed db = %v, want nil (should be a no-op)", err)
 	}
 }
