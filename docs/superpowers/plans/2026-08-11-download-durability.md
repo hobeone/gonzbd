@@ -2151,7 +2151,7 @@ go with them.
 ```go
 func TestAckDurable_MarksArticlesResolved(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 10) // existing helper pattern
-	p := durabilitytest.Proof(t, "job-1", []int32{0, 3, 7})
+	p := mintProof(t, "job-1", []int32{0, 3, 7})
 
 	if err := q.AckDurable(p); err != nil {
 		t.Fatal(err)
@@ -2177,7 +2177,7 @@ func TestAckDurable_MarksArticlesResolved(t *testing.T) {
 // idempotent apply. A replayed proof must not double-count bytes.
 func TestAckDurable_IsIdempotent(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 10)
-	p := durabilitytest.Proof(t, "job-1", []int32{0, 1, 2})
+	p := mintProof(t, "job-1", []int32{0, 1, 2})
 	if err := q.AckDurable(p); err != nil {
 		t.Fatal(err)
 	}
@@ -2204,34 +2204,65 @@ func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
 }
 ```
 
-Create `internal/durability/durabilitytest/proof.go` exporting
-`func Proof(tb testing.TB, jobID string, arts []int32) durability.DurableProof`
-— a **test-only** minting helper. It lives in its own package so production
-code cannot reach it, and it must carry this comment:
+`mintProof` is a test helper in `internal/queue/workset_test.go`. It does **not**
+reach for an exported constructor, because there isn't one and there must not
+be: `DurableProof`'s unexported constructor is the entire mechanism behind X3,
+and an exported `NewProofForTest` would put the escape hatch in production code
+where only a CI grep could police it. Go offers no way to export a symbol to
+other packages' tests alone, so the helper mints a proof the only legitimate
+way — by running a real barrier:
 
 ```go
-// Package durabilitytest mints DurableProof values for tests.
+// mintProof produces a DurableProof the way production does: by running a
+// real durability.Barrier over a stub target and capturing what it emits.
 //
-// It exists because DurableProof deliberately has no exported constructor, so
-// a test of a consumer would otherwise have nothing to pass. Keeping the
-// helper in a separate package rather than adding an exported constructor is
-// what preserves X2: production code has no reason to import a package named
-// durabilitytest, and a review that sees it in a non-test file has an obvious
-// red flag rather than a subtle one.
+// There is deliberately no shortcut. DurableProof has no exported
+// constructor, and that absence is what makes "ack only after fsync"
+// compiler-enforced rather than a rule six call sites must each remember. A
+// test-only exported constructor would move that guarantee from the compiler
+// to a CI grep, so this helper pays the setup cost instead — and gets a test
+// that exercises the real minting path as a bonus.
+func mintProof(t *testing.T, jobID string, arts []int32) durability.DurableProof {
+	t.Helper()
+
+	written := make([]durability.WrittenArticle, len(arts))
+	for i, a := range arts {
+		written[i] = durability.WrittenArticle{
+			FileIdx: 0, ArtIdx: a, Offset: int64(a) * 100, Length: 100,
+		}
+	}
+	tgt := &stubSyncTarget{files: []int32{0}, written: written, artCount: len(arts) + 8}
+
+	var got durability.DurableProof
+	captured := ackerFunc(func(p durability.DurableProof) error { got = p; return nil })
+
+	db := openTestDB(t)
+	b := durability.NewBarrier(
+		durability.NewSQLiteFactLog(db),
+		durability.NewSQLiteExtentStore(db),
+		captured,
+		noopStallable{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err := b.Run(context.Background(), jobID, tgt); err != nil {
+		t.Fatalf("mintProof: barrier run: %v", err)
+	}
+	if len(got.Articles()) != len(arts) {
+		t.Fatalf("mintProof: barrier emitted %d articles, want %d", len(got.Articles()), len(arts))
+	}
+	return got
+}
 ```
 
-To make this work without exporting a constructor, `durabilitytest` needs an
-in-package hook. Add to `internal/durability/proof.go`:
+Write `stubSyncTarget`, `ackerFunc`, and `noopStallable` alongside it in the
+same test file — `stubSyncTarget` satisfies `durability.SyncTarget` returning
+its fixed `written` slice from `Drain` and nil from `Sync`; `ackerFunc` is a
+func-typed `durability.Acker`; `noopStallable` satisfies
+`durability.Stallable` with empty methods.
 
-```go
-// NewProofForTest is the only exported way to mint a proof. It exists solely
-// for internal/durability/durabilitytest and must not be called from
-// production code — see that package's doc for why the seam is drawn there.
-func NewProofForTest(jobID string, arts []int32) DurableProof { return newProof(jobID, arts) }
-```
-
-and add a lint guard in Task 12's gate work asserting no non-test file outside
-`durabilitytest` calls `NewProofForTest`.
+**Do not add an exported constructor to `proof.go`.** If a later task finds it
+needs one, that is a signal the boundary is drawn wrong — raise it rather than
+opening the hatch.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
