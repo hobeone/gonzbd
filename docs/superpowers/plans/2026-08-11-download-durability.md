@@ -1023,10 +1023,15 @@ func TestSQLiteFactLog_AppendNeverUpdates(t *testing.T) {
 func TestSQLiteFactLog_ForFileIsOrderedByOffset(t *testing.T) {
 	ctx := context.Background()
 	fl := NewSQLiteFactLog(openTestDB(t))
-	// Append out of order, as concurrent connections deliver them.
+	// art_idx ascends as offset DESCENDS. That inversion is the whole point:
+	// article_facts is WITHOUT ROWID keyed on (job_id, art_idx), so an
+	// unordered scan returns primary-key order. A fixture whose art_idx and
+	// offset both ascend produces the same sequence either way, and the test
+	// passes with ORDER BY deleted — it pins nothing. Task 6's gaplessPrefix
+	// walks this result assuming offset order, so the clause is load-bearing.
 	facts := []ArticleFact{
-		{FileIdx: 0, ArtIdx: 2, Offset: 2000, Length: 500, HasCRC: true},
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 500, HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 2000, Length: 500, HasCRC: true},
+		{FileIdx: 0, ArtIdx: 2, Offset: 0, Length: 500, HasCRC: true},
 		{FileIdx: 1, ArtIdx: 3, Offset: 0, Length: 500, HasCRC: true},
 		{FileIdx: 0, ArtIdx: 1, Offset: 1000, Length: 500, HasCRC: true},
 	}
