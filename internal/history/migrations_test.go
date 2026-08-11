@@ -2,9 +2,13 @@ package history
 
 import (
 	"database/sql"
+	"flag"
+	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +22,8 @@ import (
 // directly. Open's *DB wrapper keeps its handle unexported and offers no
 // schema accessor, and repository_test.go's openTestDB returns
 // (*DB, *Repository), so neither is usable for schema-shape assertions.
+var updateGolden = flag.Bool("update", false, "rewrite testdata/schema.golden from the migration")
+
 func openMigratedTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
@@ -44,6 +50,31 @@ func openMigratedTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("run migrations: %v", err)
 	}
 	return db
+}
+
+// primaryKeyOrdinals returns the table's primary-key columns mapped to their
+// 1-based position within the key. A non-key column has pk=0 and is omitted, so
+// an empty result means the table has no primary key.
+func primaryKeyOrdinals(t *testing.T, db *sql.DB, table string) map[string]int {
+	t.Helper()
+	rows, err := db.Query(`SELECT name, pk FROM pragma_table_info(?) WHERE pk > 0`, table)
+	if err != nil {
+		t.Fatalf("pragma_table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var name string
+		var pk int
+		if err := rows.Scan(&name, &pk); err != nil {
+			t.Fatal(err)
+		}
+		out[name] = pk
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestMigrations_SchemaShape(t *testing.T) {
@@ -75,15 +106,25 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	})
 
 	t.Run("article_facts is keyed for idempotent append", func(t *testing.T) {
-		var stmt string
-		err := db.QueryRow(
-			`SELECT sql FROM sqlite_master WHERE type='table' AND name='article_facts'`,
-		).Scan(&stmt)
-		if err != nil {
-			t.Fatalf("article_facts table missing: %v", err)
+		// Asserted through pragma_table_info's pk ordinals rather than a
+		// "PRIMARY KEY" substring of the DDL. The substring is satisfied by a
+		// key on any columns at all, including the wrong ones, while the
+		// failure message names (job_id, art_idx) — a check that cannot fail
+		// for the reason it reports. Append's INSERT OR IGNORE is idempotent
+		// only if the key is on exactly this pair, in this order.
+		want := map[string]int{"job_id": 1, "art_idx": 2}
+		got := primaryKeyOrdinals(t, db, "article_facts")
+		if !maps.Equal(got, want) {
+			t.Errorf("article_facts primary key = %v, want %v — INSERT OR IGNORE "+
+				"is only idempotent against a key on (job_id, art_idx)", got, want)
 		}
-		if !strings.Contains(stmt, "PRIMARY KEY") {
-			t.Error("article_facts needs a primary key on (job_id, art_idx) for idempotent Append")
+	})
+
+	t.Run("file_extents is keyed per file", func(t *testing.T) {
+		want := map[string]int{"job_id": 1, "file_idx": 2}
+		got := primaryKeyOrdinals(t, db, "file_extents")
+		if !maps.Equal(got, want) {
+			t.Errorf("file_extents primary key = %v, want %v", got, want)
 		}
 	})
 
@@ -117,4 +158,117 @@ func TestMigrations_SchemaShape(t *testing.T) {
 			t.Errorf("migrations = %v, want exactly [001_initial.sql]", sqls)
 		}
 	})
+}
+
+// TestMigrations_GoldenSchema compares the schema the migration actually
+// builds against a checked-in golden file.
+//
+// The subtests above pin the handful of properties this task's design turns
+// on. This pins everything else — every table and index's stored DDL, and
+// every foreign key — so that the constraints nothing else asserts cannot be
+// dropped silently: WITHOUT ROWID on the two new tables, article_facts's
+// covering index, job_files's UNIQUE(job_id, file_index) and its CASCADE to
+// jobs, the fetch_policy CHECK, the AUTOINCREMENT on job_files.id, and the
+// fact that history, jobs, and queue_meta came through the collapse of
+// migrations 001-011 unchanged. sqlite_sequence appears in the dump and is
+// deliberately not filtered out: SQLite creates it only for an AUTOINCREMENT
+// column, so its presence is the assertion that job_files.id still has one.
+//
+// It matters more here than it usually would. The schema is one file now, so
+// there is no chain of ALTERs recording what each column was for, and a
+// constraint deleted from 001_initial.sql leaves no trace anywhere else.
+//
+// Whitespace is normalised because SQLite stores the DDL as written; the
+// golden file is therefore stable against reformatting but not against a
+// changed constraint. Regenerate it deliberately, with
+// `go test ./internal/history/ -run TestMigrations_GoldenSchema -update`, and
+// read the diff — an unexplained line in it is the bug this test exists for.
+func TestMigrations_GoldenSchema(t *testing.T) {
+	db := openMigratedTestDB(t)
+
+	var b strings.Builder
+	rows, err := db.Query(`
+SELECT type, name, COALESCE(sql, '')
+FROM sqlite_master
+WHERE name NOT LIKE 'goose_%' AND tbl_name NOT LIKE 'goose_%'
+ORDER BY type, name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type object struct{ typ, name, sql string }
+	var objects []object
+	for rows.Next() {
+		var o object
+		if err := rows.Scan(&o.typ, &o.name, &o.sql); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		objects = append(objects, o)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+
+	// Strip SQL line comments before collapsing whitespace. SQLite stores the
+	// CREATE statement verbatim, comments included, and 001_initial.sql carries
+	// most of its rationale inline — leaving them in would make this a
+	// change-detector that fails on every comment edit while saying nothing
+	// about the schema. The comments are reviewed as prose in the migration;
+	// this file is for the constraints.
+	lineComment := regexp.MustCompile(`(?m)--[^\n]*$`)
+	ws := regexp.MustCompile(`\s+`)
+	for _, o := range objects {
+		// An implicit index (a UNIQUE or PRIMARY KEY constraint's own index)
+		// has no DDL of its own. Recording the name alone still pins it:
+		// dropping the constraint removes the row entirely.
+		stmt := "(implicit)"
+		if o.sql != "" {
+			stmt = strings.TrimSpace(ws.ReplaceAllString(lineComment.ReplaceAllString(o.sql, ""), " "))
+		}
+		fmt.Fprintf(&b, "%s %s: %s\n", o.typ, o.name, stmt)
+
+		if o.typ != "table" {
+			continue
+		}
+		fks, err := db.Query(
+			`SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list(?) ORDER BY id`, o.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for fks.Next() {
+			var target, from, to, onDelete string
+			if err := fks.Scan(&target, &from, &to, &onDelete); err != nil {
+				fks.Close()
+				t.Fatal(err)
+			}
+			fmt.Fprintf(&b, "  FK %s.%s -> %s.%s ON DELETE %s\n", o.name, from, target, to, onDelete)
+		}
+		if err := fks.Err(); err != nil {
+			fks.Close()
+			t.Fatal(err)
+		}
+		fks.Close()
+	}
+	got := b.String()
+
+	golden := filepath.Join("testdata", "schema.golden")
+	if *updateGolden {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("wrote %s", golden)
+		return
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden (regenerate with -update): %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("schema differs from %s.\n--- got ---\n%s\n--- want ---\n%s", golden, got, want)
+	}
 }

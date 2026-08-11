@@ -105,8 +105,22 @@ type FileExtent struct {
 	PrefixCRC    uint32
 	HasPrefixCRC bool
 	// BytesDurable and BytesFailed are cached aggregates. They exist so
-	// restart stays O(files) (B3) rather than O(articles); the FactLog
-	// remains the authority (S5).
+	// restart stays O(files) (B3) rather than O(articles).
+	//
+	// They do not share an authority. BytesDurable summarises the FactLog,
+	// which remains authoritative for it (S5): every byte counted here has an
+	// ArticleFact behind it, so a recomputation from Class A plus the file's
+	// bytes reproduces the figure and supersedes this cache when they differ.
+	//
+	// BytesFailed has no Class A backing at all. A permanently failed article
+	// never decodes, so it never produces an ArticleFact — deliberately, since
+	// Class A is written at decode (S2) and R10 depends on a lost failure ack
+	// being re-attempted rather than recorded. Recomputing from the FactLog
+	// would therefore always yield zero for it, and S4's rule that a
+	// recomputation wins must NOT be applied here: doing so would silently
+	// discard a real failure count and report a damaged job as intact. Its
+	// authority is the job's per-article failure record (the failed half of
+	// job_files.articles_done), and this field is a cache of that.
 	BytesDurable int64
 	BytesFailed  int64
 	// Size and ModTimeNs stamp the file as it was at commit time. The

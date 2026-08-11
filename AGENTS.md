@@ -201,7 +201,14 @@ each round's own fix creates fresh drift, so an early sweep goes stale.
 applied `goose` migration is frozen — the file must not be edited afterwards.
 Sweep any migration this change adds *before* it merges; if a stale claim is
 found in one already applied, correct it in a new migration's comment block and
-say which statement it supersedes (010 does this for 005).
+name the statement it supersedes, rather than editing the original.
+
+The schema is currently a single `001_initial.sql`, so there is no second
+migration to hold a correction: a wrong claim there can only be superseded by
+the next migration anyone adds. Sweep it especially carefully. Its
+`jobs.recovery_bytes` block is the worked example of a superseding comment —
+it states the corrected definition and why the derivation argument that
+preceded it was wrong.
 
 ### Code Review Reception Protocol
 

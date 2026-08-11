@@ -187,12 +187,26 @@ CREATE TABLE file_extents (
     mod_time_ns    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (job_id, file_idx)
 ) WITHOUT ROWID;
--- Class B: a cache of values derived from article_facts plus the file's
--- actual bytes. Never authoritative — where this disagrees with a
--- recomputation from the bytes, the recomputation is correct by definition.
--- Written only by durability.Barrier, only after the fsync that makes its
--- claims true. size and mod_time_ns stamp the file at commit; a mismatch
--- against the file as it exists now invalidates every other column here.
+-- Class B: a cache. Never authoritative — where this disagrees with a
+-- recomputation from what it is derived from, the recomputation is correct by
+-- definition. Written only by durability.Barrier, only after the fsync that
+-- makes its claims true. size and mod_time_ns stamp the file at commit; a
+-- mismatch against the file as it exists now invalidates every other column
+-- here.
+--
+-- durable_bitmap, verified_to, prefix_crc, has_prefix_crc, and bytes_durable
+-- are derived from article_facts plus the file's actual bytes, and that pair
+-- is what a recomputation reads.
+--
+-- bytes_failed is the exception, and the discard rule above does NOT extend
+-- to it. A permanently failed article never decodes, so it never writes an
+-- article_facts row — by design: Class A is recorded at decode, and a lost
+-- failure ack is safe precisely because a restart re-attempts the article. No
+-- recomputation from article_facts plus the file's bytes can produce a
+-- non-zero bytes_failed, so treating a recomputed zero as correct would
+-- discard a real failure count and report a damaged job as intact. Its
+-- authority is the job's per-article failure record — the failed half of
+-- job_files.articles_done — and this column caches that instead.
 -- +goose StatementEnd
 
 -- +goose StatementBegin

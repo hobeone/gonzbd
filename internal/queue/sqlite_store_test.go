@@ -986,7 +986,7 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 // is_par2_recovery themselves, so the aggregate would in fact be exactly right.
 //
 // They still travel through dedicated jobs.recovery_bytes/recovery_files
-// columns (migration 010) for a different reason. The job_files aggregate in
+// columns for a different reason. The job_files aggregate in
 // Get fails soft, leaving its scalars at zero on error, and a zero recovery
 // figure is not a missing reading — it is a definite claim of no repair
 // capacity that two abort gates act on. The jobs row is read unconditionally.
