@@ -640,7 +640,13 @@ type FileExtent struct {
 	// byte 0. It is the CRC anchor, and is permitted to stall at a hole
 	// without affecting resume, which depends only on Durable.
 	VerifiedTo int64
-	// PrefixCRC is the CRC32 of [0, VerifiedTo), valid only when HasPrefixCRC.
+	// PrefixCRC is the CRC32 of [0, VerifiedTo).
+	//
+	// HasPrefixCRC means this is a VERIFIED WHOLE-FILE CRC — set only when a
+	// verification run consumed every recorded fact and reached the file's
+	// end. Anything less is unavailable (R23). The looser reading, that the
+	// CRC is merely valid for whatever range VerifiedTo names, is bug #349:
+	// a partial-extent CRC mistaken for the file's.
 	PrefixCRC    uint32
 	HasPrefixCRC bool
 	// BytesDurable and BytesFailed are cached aggregates. They exist so
