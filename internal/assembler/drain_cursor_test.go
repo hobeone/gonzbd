@@ -25,7 +25,7 @@ func TestWriteCacheDrainKeepsCoalescingAlive(t *testing.T) {
 	// Three articles is 300 KiB, below contiguousRunSize, so nothing flushes
 	// through the contiguous path and all three are still buffered.
 	for i := range 3 {
-		wc.buffer(key, int64(i)*drainTestArt, make([]byte, drainTestArt))
+		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
 	}
 	if run := wc.flushContiguous(key); run != nil {
 		t.Fatalf("run flushed at %d before the threshold was reached", run.offset)
@@ -41,7 +41,7 @@ func TestWriteCacheDrainKeepsCoalescingAlive(t *testing.T) {
 	// articles are contiguous with what was drained, and there are enough of
 	// them to clear the threshold.
 	for i := 3; i < 12; i++ {
-		wc.buffer(key, int64(i)*drainTestArt, make([]byte, drainTestArt))
+		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
 	}
 
 	run := wc.flushContiguous(key)
@@ -64,9 +64,9 @@ func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 	wc.initCursor(key, 0)
 
 	// Articles 0 and 1, then a gap at 2, then article 3.
-	wc.buffer(key, 0, make([]byte, drainTestArt))
-	wc.buffer(key, drainTestArt, make([]byte, drainTestArt))
-	wc.buffer(key, 3*drainTestArt, make([]byte, drainTestArt))
+	bufferAt(wc, key, 0, make([]byte, drainTestArt))
+	bufferAt(wc, key, drainTestArt, make([]byte, drainTestArt))
+	bufferAt(wc, key, 3*drainTestArt, make([]byte, drainTestArt))
 
 	wc.drainFile(key)
 
@@ -85,7 +85,7 @@ func TestWriteCacheDrainClearsAccounting(t *testing.T) {
 	wc.initCursor(key, 0)
 
 	for i := range 3 {
-		wc.buffer(key, int64(i)*drainTestArt, make([]byte, drainTestArt))
+		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
 	}
 	wc.drainFile(key)
 
@@ -116,7 +116,7 @@ func TestWriteCacheDrainEmptiesArticlesMap(t *testing.T) {
 	wc.initCursor(key, 0)
 
 	for i := range 3 {
-		wc.buffer(key, int64(i)*drainTestArt, make([]byte, drainTestArt))
+		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
 	}
 	wc.drainFile(key)
 
@@ -160,7 +160,7 @@ func TestDrainCacheForFileDropsTheEntry(t *testing.T) {
 	key := fileKey{jobID: "j", fileIdx: 0}
 	wc.initCursor(key, 0)
 	for i := range 3 {
-		wc.buffer(key, int64(i)*drainTestArt, make([]byte, drainTestArt))
+		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
 	}
 
 	a.drainCacheForFile(wc, f, key)

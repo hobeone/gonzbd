@@ -1016,9 +1016,19 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 		}
 	}
 	f.seenFailed[req.MessageID] = struct{}{}
-	a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
+	if !alreadyCounted {
+		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
+	}
 	// If this MessageID was already counted as a success, don't increment
-	// partsWritten again (the failure ack above is still recorded).
+	// partsWritten again, and leave the ack to the success path.
+	//
+	// The ack half is load-bearing since the Done moved to the write. This
+	// used to record the failure too and lose harmlessly: both acks landed in
+	// one flush, which applies the Done batch first, and markDone/markFailed
+	// are first-writer-wins. Now the Done waits for the bytes, so a failure
+	// recorded here is published a batch earlier and wins — marking an article
+	// failed, charging failedBytes, and calling for a par2 repair on a file
+	// that is complete on disk.
 	return !alreadyCounted
 }
 
@@ -1028,7 +1038,15 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 			f.seenDone = make(map[string]struct{})
 		}
 		if _, dup := f.seenDone[req.MessageID]; dup {
-			a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
+			// Re-emit the ack so the queue receives it even if a prior flush
+			// dropped it — but only once the first copy's bytes have left the
+			// cache. While they are still buffered, seenDone means the article
+			// was accepted, not that the file holds it, and re-emitting here
+			// would put back exactly the premature Done this path removed.
+			// The write that drains it will ack it.
+			if !wc.buffered(key, req.Offset) {
+				a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
+			}
 			if req.Data != nil {
 				decoder.PutBuffer(req.Data)
 			}
@@ -1036,39 +1054,69 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 		}
 		if f.seenFailed != nil {
 			if _, was := f.seenFailed[req.MessageID]; was {
-				a.writeArticleOrBuffer(f, key, req, wc, open)
+				// A retry of an article already counted as failed. The false
+				// return is what keeps partsWritten from counting it twice,
+				// so it stays; only the ack moves into writeAndSettle with
+				// every other write.
 				f.seenDone[req.MessageID] = struct{}{}
-				a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
+				a.writeAndSettle(f, key, req, wc, open)
 				return false
 			}
 		}
+		// Recorded before the write is attempted, not after, so that a write
+		// path which fails can move the article to seenFailed without this
+		// function putting it straight back.
+		f.seenDone[req.MessageID] = struct{}{}
 	}
-	if !a.writeArticleOrBuffer(f, key, req, wc, open) {
-		// The file is now missing this part's bytes, so a whole-file CRC
-		// combined from the parts that did land would describe a byte range
-		// the file does not have. Report it as unavailable instead: quickcheck
-		// then classifies the file as NoCRC ("could not be checked") rather
-		// than Mismatched ("corrupted"). Both route to par2 repair, but only
-		// one of them is true.
-		//
-		// This also covers the retry path above: once any part has failed the
-		// file CRC stays invalid, even if a later attempt writes successfully.
-		f.crcValid = false
-		if req.MessageID != "" {
-			if f.seenFailed == nil {
-				f.seenFailed = make(map[string]struct{})
-			}
-			f.seenFailed[req.MessageID] = struct{}{}
-			a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
-		}
-	} else {
-		if req.MessageID != "" {
-			f.seenDone[req.MessageID] = struct{}{}
-		}
+	a.writeAndSettle(f, key, req, wc, open)
+	return true
+}
+
+// writeAndSettle writes or buffers an article and settles what the outcome
+// owes the queue.
+//
+// The three outcomes divide by who owns the ack, which is the whole point of
+// the type. Only the uncached paths settle here; once an article is buffered,
+// the cache owns both its ack and its seen-set membership until its bytes
+// move, and this function deliberately does nothing about them.
+//
+// recordArticleCRC fires for a buffered article as well as a written one. Its
+// input is req.CRC, which the identity carried through the cache does not
+// include, so deferring it with the ack would leave every cached file without
+// a whole-file CRC. A part recorded for bytes that then fail to land is
+// covered instead by crcValid, which every failing write path that still has
+// the file clears (#349). failDrainedArticles is the exception, and only
+// because its file has already left the open map, so nothing remains to
+// finalize a CRC for it.
+func (a *Assembler) writeAndSettle(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) {
+	switch a.writeArticleOrBuffer(f, key, req, wc, open) {
+	case outcomeDurable:
 		a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
 		a.recordArticleCRC(f, req)
+	case outcomeDeferred:
+		a.recordArticleCRC(f, req)
+	default:
+		// outcomeFailed, and anything a later edit adds without saying what it
+		// means. Go does not check a switch over a named type for
+		// exhaustiveness and this repository enables no linter that does, so
+		// the unhandled case has to land somewhere by construction. It lands
+		// on the failing branch: the cost of a needless re-fetch is a wasted
+		// download, and the cost of a wrong Done is a file that is silently
+		// short forever.
+		//
+		// The file is now missing this part's bytes, so a whole-file CRC
+		// combined from the parts that did land would describe a byte range
+		// the file does not have. Report it as unavailable instead:
+		// quickcheck then classifies the file as NoCRC ("could not be
+		// checked") rather than Mismatched ("corrupted"). Both route to par2
+		// repair, but only one of them is true.
+		//
+		// This also covers the retry path in handleSuccessArticle: once any
+		// part has failed the file CRC stays invalid, even if a later attempt
+		// writes successfully.
+		f.crcValid = false
+		a.failArticle(f, articleID{msgID: req.MessageID, artIdx: req.ArtIdx})
 	}
-	return true
 }
 
 // recordArticleCRC accumulates CRC information for a successfully written article.
@@ -1321,37 +1369,81 @@ func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
 	return true
 }
 
+// writeOutcome reports what happened to an article, and with it who owes the
+// queue an ack. Bytes that reached WriteAt and bytes that are merely buffered
+// are different answers to that question, and conflating them is #355.
+type writeOutcome int
+
+const (
+	// outcomeFailed means the bytes are not on disk and will not be. The
+	// caller fail-acks the article and invalidates the file CRC.
+	//
+	// It is deliberately the zero value: an outcome left unset by some future
+	// edit resolves to a re-fetch, never to a silent Done.
+	outcomeFailed writeOutcome = iota
+	// outcomeDurable means the bytes reached WriteAt. The caller acks Done.
+	outcomeDurable
+	// outcomeDeferred means the bytes are buffered in the write cache. The
+	// caller must not ack the article in either direction; one of the write
+	// paths will, when the bytes actually move.
+	//
+	// The caller still records the article as accepted in seenDone before
+	// handing it over — that is what "accepted" means, and partsWritten
+	// counts it. What passes to the cache is every transition after that
+	// point, including moving the article to seenFailed if its write is lost.
+	outcomeDeferred
+)
+
 // writeArticleOrBuffer either buffers the article in the write cache (if
-// enabled and coalescing is active) or writes it directly to disk. Returns
-// true if the data was successfully written or buffered, false on I/O error
-// or a rejected (out-of-range) write offset.
+// enabled and coalescing is active) or writes it directly to disk. The
+// returned outcome says whether the bytes reached disk, are still buffered, or
+// are gone — and with that, who owes the queue an ack.
 //
 // When caching is enabled, the article is buffered in memory. After each
 // buffer insertion, contiguous runs are checked and flushed as a single
 // coalesced WriteAt. Under memory pressure (>90% of limit), the file with
 // the most buffered data is force-flushed.
-func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) bool {
+func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) writeOutcome {
 	if !a.offsetInRange(f, req) {
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
-		return false
+		return outcomeFailed
 	}
 
-	if wc.buffer(key, req.Offset, req.Data) {
+	art := bufferedArticle{
+		offset: req.Offset,
+		data:   req.Data,
+		id:     articleID{msgID: req.MessageID, artIdx: req.ArtIdx},
+	}
+	if cached, displaced := wc.buffer(key, art); cached {
 		telemetry.CacheHits.Add(1)
+		// An article evicted from this offset is settled as failed so it is
+		// fetched again; nothing else will write its bytes now. Its CRC part
+		// was recorded when it was accepted and describes a length the
+		// replacement does not have to match, so the file's CRC goes with it.
+		for _, id := range displaced {
+			f.crcValid = false
+			a.failArticle(f, id)
+		}
 		// Article buffered. Check for a flushable contiguous run.
 		if run := wc.flushContiguous(key); run != nil {
-			if !a.flushRun(f, run) {
-				return false
-			}
-			a.pendingExtent[key] = fileExtent{
-				cursor:     wc.cursorFor(key),
-				maxWritten: f.maxWritten,
+			// A failed run is not reported to the caller. flushRun has
+			// already settled every article it coalesced, this one included
+			// if it was contiguous with the cursor — and if it was not, its
+			// bytes are still buffered and still owed a later ack. Returning
+			// failed here would fail-ack an article whose bytes are fine,
+			// which markFailed makes permanent: it and markDone both set the
+			// done bit, and both no-op once it is set, so the first ack wins.
+			if a.flushRun(f, run) {
+				a.pendingExtent[key] = fileExtent{
+					cursor:     wc.cursorFor(key),
+					maxWritten: f.maxWritten,
+				}
 			}
 		}
 		a.relievePressure(wc, open)
-		return true
+		return outcomeDeferred
 	}
 	// Caching disabled — write directly.
 	telemetry.DiskWrites.Add(1)
@@ -1366,13 +1458,62 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
-		return false
+		return outcomeFailed
 	}
 	a.noteWritten(f, req.Offset, int64(len(req.Data)))
 	if req.Data != nil {
 		decoder.PutBuffer(req.Data)
 	}
-	return true
+	return outcomeDurable
+}
+
+// ackArticleDone settles an article the file now holds on disk.
+func (a *Assembler) ackArticleDone(f *openFile, id articleID) {
+	a.recordPendingDone(f.key.jobID, id.msgID, id.artIdx)
+}
+
+// failArticle settles an article whose bytes did not reach disk and will not,
+// so a later run fetches it again.
+//
+// It moves the article out of seenDone as well as acking, because the two
+// answer different questions that this file's dedup logic would otherwise
+// conflate: seenDone means "accepted, counted toward TotalParts", and after a
+// failed write the article is still counted but is no longer on its way to
+// disk. Leaving it there would let the duplicate branch in handleSuccessArticle
+// re-emit a Done for bytes the file does not have.
+func (a *Assembler) failArticle(f *openFile, id articleID) {
+	if id.msgID != "" {
+		delete(f.seenDone, id.msgID)
+		if f.seenFailed == nil {
+			f.seenFailed = make(map[string]struct{})
+		}
+		f.seenFailed[id.msgID] = struct{}{}
+	}
+	a.recordPendingFailed(f.key.jobID, id.msgID, id.artIdx)
+}
+
+// failDrainedArticles settles articles drained out of the cache for a file
+// that is no longer open, and returns their buffers to the pool.
+//
+// Neither caller is believed reachable: every delete from the open-file map is
+// paired with a forget or a drain in the same call, with no yield to the
+// request channel in between. Nothing enforces that, and both call sites log
+// precisely because someone doubted it, so this settles what it discards
+// rather than trusting the argument.
+//
+// Settling matters here because an article acked neither Done nor Failed is
+// one no later run re-dispatches. Failing them keeps the worst case a
+// re-fetch.
+//
+// There is no openFile to update, so unlike failArticle this cannot correct
+// the seen sets — the file they belong to is gone.
+func (a *Assembler) failDrainedArticles(key fileKey, arts []bufferedArticle) {
+	for _, art := range arts {
+		a.recordPendingFailed(key.jobID, art.id.msgID, art.id.artIdx)
+		if art.data != nil {
+			decoder.PutBuffer(art.data)
+		}
+	}
 }
 
 // flushRun writes a coalesced run to the target file and records telemetry.
@@ -1387,12 +1528,26 @@ func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
 			"path", f.info.Path,
 			"offset", run.offset,
 			"bytes", len(run.data),
+			"articles", len(run.ids),
 			"error", err,
 		)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
+		// Every article in the run loses its bytes here, not just whichever
+		// one happened to trigger the flush: buildContiguousRun coalesced
+		// them all into one buffer and pooled the originals before this
+		// write was attempted. Settling only the triggering article would
+		// leave the rest marked Done from their own accept-time acks, with
+		// their bytes freed and no run able to fetch them again (#355).
+		f.crcValid = false
+		for _, id := range run.ids {
+			a.failArticle(f, id)
+		}
 		return false
 	}
 	a.noteWritten(f, run.offset, int64(len(run.data)))
+	for _, id := range run.ids {
+		a.ackArticleDone(f, id)
+	}
 	return true
 }
 
@@ -1403,9 +1558,15 @@ func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
 //
 // It is called from the write paths rather than from the point an article is
 // accepted, deliberately. The mark seeds a resumed file's truncate target, so
-// it must describe bytes that are on disk: an article acked Done while still
-// buffered would otherwise persist a mark past the file's real extent, and
-// being Done it is never refetched, so nothing would ever fill the gap.
+// it must describe bytes that are on disk; a mark persisted ahead of the bytes
+// would make a later truncate extend a short file with zeros that nothing
+// fills.
+//
+// That reasoning used to run through the article ack — an article acked Done
+// while still buffered is never refetched, so the gap could never be closed.
+// The ack no longer moves ahead of the bytes (#355), so the mark no longer
+// depends on it. Staging only from the write paths remains correct on its own
+// terms, and is the same rule the ack now follows.
 func (a *Assembler) noteWritten(f *openFile, offset, n int64) {
 	if end := offset + n; end > f.maxWritten {
 		f.maxWritten = end
@@ -1455,8 +1616,10 @@ func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, rea
 			// the parts still tile it, producing a confident CRC over content
 			// the disk lacks (#349).
 			f.crcValid = false
+			a.failArticle(f, art.id)
 		} else {
 			a.noteWritten(f, art.offset, int64(len(art.data)))
+			a.ackArticleDone(f, art.id)
 		}
 		if art.data != nil {
 			decoder.PutBuffer(art.data)
@@ -1478,6 +1641,7 @@ func (a *Assembler) flushPressure(wc *writeCache, open map[fileKey]*openFile) {
 			"jobID", fk.jobID, "fileIdx", fk.fileIdx,
 			"articles", len(arts),
 		)
+		a.failDrainedArticles(fk, arts)
 		return
 	}
 	a.log.Debug("write cache pressure flush",
@@ -1525,6 +1689,7 @@ func (a *Assembler) flushWriteCache(wc *writeCache, open map[fileKey]*openFile) 
 				"jobID", key.jobID, "fileIdx", key.fileIdx,
 				"articles", len(arts),
 			)
+			a.failDrainedArticles(key, arts)
 			continue
 		}
 		a.writeCachedArticles(f, arts, "flush cached article on shutdown")

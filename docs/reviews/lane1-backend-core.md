@@ -114,6 +114,11 @@ Effort: **S** for the guards, **M** for the systematic test.
 `internal/assembler/assembler.go:940-964`, `writecache.go:95-118`, `assembler.go:683-733`
 **CONFIRMED** (read) — lens 2
 
+> **Resolved in #355.** `writeArticleOrBuffer` now returns a three-state outcome
+> rather than a bool, and the Done ack is issued by whichever write moves the
+> bytes. The text below describes the code as it stood at the time of the audit
+> and is kept unedited as a record.
+
 `handleSuccessArticle` calls `a.recordPendingDone(...)` whenever
 `writeArticleOrBuffer` returns true — but that function returns true as soon as
 `wc.buffer(...)` accepts the article into RAM (`assembler.go:1161-1172`). `flush()`

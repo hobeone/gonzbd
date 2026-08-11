@@ -1147,16 +1147,17 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// Close the file so WriteAt will return an error.
 		tmpFile.Close()
 
+		wc := newWriteCache(0)
+		open := make(map[fileKey]*openFile)
+		key := fileKey{jobID: "job1", fileIdx: 0}
+
 		f := &openFile{
 			handle:     tmpFile, // closed — writes will fail
+			key:        key,     // set on every file openTargetFile creates
 			seenFailed: nil,     // nil — test map initialization
 			seenDone:   make(map[string]struct{}),
 			crcValid:   true,
 		}
-
-		wc := newWriteCache(0)
-		open := make(map[fileKey]*openFile)
-		key := fileKey{jobID: "job1", fileIdx: 0}
 
 		req := WriteRequest{
 			JobID:     "job1",
@@ -1694,8 +1695,8 @@ func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data")}
 
-	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got {
-		t.Error("writeArticleOrBuffer on closed file: got true, want false")
+	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got != outcomeFailed {
+		t.Errorf("writeArticleOrBuffer on closed file: got %v, want outcomeFailed", got)
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
