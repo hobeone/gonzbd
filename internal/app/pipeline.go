@@ -403,12 +403,22 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return fmt.Errorf("count unfinished articles: %w", err)
 	}
 
+	// Whether this run is resuming a file an earlier run had partly written.
+	// totalParts counts only what is still outstanding, so it falling short of
+	// the file's article count is exactly the condition: articles were
+	// withheld because they are already done, which means their bytes are
+	// already on disk. finalizeFile needs this because it cannot tell a
+	// resumed file from a fresh one — see FileInfo.ResumedFile.
+	lo, hi := m.FileRange(fileIdx)
+	resumed := totalParts < hi-lo
+
 	info := assembler.FileInfo{
 		Path:               path,
 		TotalParts:         totalParts,
 		ExpectedSize:       m.FileBytes(fileIdx),
 		InitialWriteCursor: snap.Progress().FileWriteCursor(fileIdx),
 		InitialMaxWritten:  snap.Progress().FileMaxWritten(fileIdx),
+		ResumedFile:        resumed,
 	}
 
 	p.mu.Lock()

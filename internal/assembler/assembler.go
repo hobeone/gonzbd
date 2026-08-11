@@ -153,6 +153,21 @@ type FileInfo struct {
 	// only floor available, which under-counts a tail that arrived out of
 	// order but never over-counts. See queue.FileProgress.MaxWritten.
 	InitialMaxWritten int64
+
+	// ResumedFile reports that some of this file's articles were already
+	// complete before this run started, so bytes an earlier run wrote are
+	// already on disk and TotalParts counts only what is still outstanding.
+	//
+	// The assembler cannot infer this for itself. A resumed file and a fresh
+	// one are indistinguishable from inside: both can arrive with either seed
+	// at zero, and treating a fresh file as resumed would skip the truncate
+	// that removes pre-allocation's trailing zeros on every download. Only
+	// the caller knows how many of the file's articles it withheld.
+	//
+	// It exists for finalizeFile's interim guard — see the INTERIM comment
+	// there. Once a resumed file carries a trustworthy extent again, the
+	// guard and this field go together.
+	ResumedFile bool
 }
 
 // Options configures an Assembler.
@@ -986,6 +1001,12 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	// measured, and the cursor in particular can sit above the bytes actually
 	// on disk. finalizeFile refuses to truncate upward rather than trusting
 	// them; do not delete that guard on the strength of this seeding.
+	//
+	// Both are currently always zero in production: job_files no longer stores
+	// either figure, and nothing has replaced it yet. The seeding is kept
+	// because it is what task 9's verified extent will feed, and because the
+	// tests that pin #342 drive these fields directly. finalizeFile's INTERIM
+	// branch is what protects a resumed file meanwhile.
 	f := &openFile{
 		handle:     fh,
 		info:       info,
@@ -1202,13 +1223,15 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	// empty, and saying so would misdescribe the one event an operator has to
 	// go on.
 	//
-	// The three failure branches also clear crcValid: the pre-allocated
-	// trailing zeros survive there, so the bytes on disk are not the
-	// [0, maxWritten) the recorded parts describe, and reporting a CRC over
+	// Every branch that leaves the file untrimmed also clears crcValid: the
+	// pre-allocated trailing zeros survive there, so the bytes on disk are not
+	// the [0, maxWritten) the recorded parts describe, and reporting a CRC over
 	// that range would hand par2 a mismatch on a file nothing is actually
 	// wrong with — the same false corruption claim #349 removes for resumed
-	// files. The zero-length branch is not one of them: it is not a failure,
-	// nothing was written, and there is no extent for a CRC to describe.
+	// files. That covers a failed Stat, the interim resume guard, a truncate
+	// target above the file on disk, and a failed Truncate. The zero-length
+	// branch is not one of them: nothing was written, and there is no extent
+	// for a CRC to describe.
 	size, statErr := f.handle.Stat()
 	switch {
 	case f.maxWritten <= 0:
@@ -1216,6 +1239,28 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	case statErr != nil:
 		a.log.Warn("stat completed file; skipping truncate",
 			"path", f.info.Path, "error", statErr)
+		f.crcValid = false
+	case f.info.ResumedFile && f.info.InitialMaxWritten == 0 && f.info.InitialWriteCursor == 0:
+		// INTERIM (see plan task 9): job_files.max_written is gone and its
+		// replacement, FileExtent.VerifiedTo, does not exist until the barrier
+		// lands. Until then a resumed file has no trustworthy extent, and
+		// truncating to this run's high-water mark discards what earlier runs
+		// wrote (#342/#350). Skipping the truncate leaves trailing zeros that
+		// par2 reports as repairable damage — recoverable, unlike the bytes a
+		// wrong truncate destroys. Task 9 removes this and truncates to the
+		// verified extent.
+		//
+		// This is the same safe-direction reasoning the maxWritten >
+		// size.Size() branch below uses: where the target cannot be trusted,
+		// the only error worth making is the one par2 can undo.
+		//
+		// All three conditions are load-bearing. Without ResumedFile a fresh
+		// download would keep pre-allocation's zeros on every file; without
+		// the two seeds being zero this would suppress a truncate that a
+		// restored extent had made trustworthy again, which is precisely what
+		// task 9 needs to keep working.
+		a.log.Debug("resumed file has no persisted extent; skipping truncate",
+			"path", f.info.Path, "run_max_written", f.maxWritten, "size", size.Size())
 		f.crcValid = false
 	case f.maxWritten > size.Size():
 		a.log.Debug("truncate target exceeds the file on disk; leaving it alone",
