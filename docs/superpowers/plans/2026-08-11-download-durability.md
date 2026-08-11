@@ -728,8 +728,21 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Delete: `internal/history/migrations/002_add_jobs_tables.sql` through
   `011_add_job_files_max_written.sql`
+- Delete: `internal/history/migration_010_test.go` — it drives goose to
+  version 009, seeds rows, then applies 010 to assert the par2-scalar
+  replacement. With a single migration there is no intermediate version to
+  stop at and no replacement to observe, so the test cannot be rewritten,
+  only removed. Its `migrationProviderAt` helper goes with it unless the new
+  schema test reuses it.
 - Rewrite: `internal/history/migrations/001_initial.sql`
-- Test: `internal/history/migrations_test.go` (extend existing, or create)
+- Test: `internal/history/migrations_test.go` (new file)
+
+`openMigratedTestDB` does **not** exist and must be written. The nearest
+existing helper is `openTestDB(t) (*DB, *Repository)` in
+`internal/history/repository_test.go`, which returns a different pair and is
+not a drop-in. Write `openMigratedTestDB(t *testing.T) *sql.DB`: open
+`modernc.org/sqlite` under `t.TempDir()`, run the embedded migrations the
+same way `Open` does, and register `t.Cleanup`.
 
 **Interfaces:**
 - Consumes: nothing.
