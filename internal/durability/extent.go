@@ -2,6 +2,7 @@ package durability
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"math/bits"
 )
@@ -56,9 +57,7 @@ func (b Bitmap) Count() int {
 func (b Bitmap) Bytes() []byte {
 	out := make([]byte, len(b.words)*8)
 	for i, w := range b.words {
-		for j := range 8 {
-			out[i*8+j] = byte(w >> (8 * uint(j))) //nolint:gosec // G115: intentional truncation to extract one byte of w
-		}
+		binary.LittleEndian.PutUint64(out[i*8:], w)
 	}
 	return out
 }
@@ -77,11 +76,16 @@ func BitmapFromBytes(buf []byte, n int) (Bitmap, error) {
 	}
 	b := NewBitmap(n)
 	for i := range need {
-		var w uint64
-		for j := range 8 {
-			w |= uint64(buf[i*8+j]) << (8 * uint(j))
-		}
-		b.words[i] = w
+		b.words[i] = binary.LittleEndian.Uint64(buf[i*8:])
+	}
+	// Mask the padding bits of the final word. A persisted buffer may be
+	// damaged, and this constructor exists to read exactly that input class —
+	// the short-buffer guard above defends the same case. Without the mask,
+	// garbage above bit n is absorbed: Get is bounded by n but Count is not,
+	// so Count could exceed Len and over-report how many articles are
+	// durable. Over-counting is the over-claim direction the design forbids.
+	if rem := n % 64; rem != 0 && need > 0 {
+		b.words[need-1] &= (1 << uint(rem)) - 1
 	}
 	return b, nil
 }

@@ -4,8 +4,9 @@ import "testing"
 
 // TestDurableProof_CarriesItsPayload is the only thing a proof must do.
 // Its real guarantee — that no package outside this one can construct it —
-// is enforced by the type having no exported fields and no exported
-// constructor, and is asserted by TestNoExportedProofConstructor below.
+// is a language property, not a testable one: no in-package test can assert
+// the absence, because newProof is reachable from anywhere in this package.
+// It is enforced at the package boundary by the compiler.
 func TestDurableProof_CarriesItsPayload(t *testing.T) {
 	p := newProof("job-1", []int32{3, 7, 11})
 	if p.JobID() != "job-1" {
