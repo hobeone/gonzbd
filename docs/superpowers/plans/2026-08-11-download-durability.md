@@ -1947,7 +1947,6 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 		ext.Size = size
 		ext.ModTimeNs = modNs
 
-		facts := make([]ArticleFact, 0, len(drained[idx]))
 		for _, w := range drained[idx] {
 			ord, ok := t.FileLocalOrdinal(idx, w.ArtIdx)
 			if !ok {
@@ -1956,12 +1955,24 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 				// not be swallowed (A2, R28).
 				return fmt.Errorf("durability: job %s file %d: article %d has no file-local ordinal", jobID, idx, w.ArtIdx)
 			}
-			ext.Durable.Set(ord)
-			ext.BytesDurable += int64(w.Length)
+			// Charge the bytes only on a 0->1 transition. Drain may report an
+			// article this or a previous barrier already recorded — R12 makes
+			// at-least-once delivery the contract and requires the apply to
+			// absorb it — and += outside this guard would inflate the R26
+			// "bytes durable" figure on every replay. Set() is idempotent;
+			// the accumulator is not.
+			if !ext.Durable.Get(ord) {
+				ext.Durable.Set(ord)
+				ext.BytesDurable += int64(w.Length)
+			}
 			acked = append(acked, w.ArtIdx)
-			facts = append(facts, ArticleFact{FileIdx: idx, ArtIdx: w.ArtIdx, Offset: w.Offset, Length: w.Length})
 		}
-		_ = facts // facts are appended by the writer at decode time, not here
+
+		// The barrier does NOT write ArticleFacts. Class A is appended by the
+		// writer when the article is decoded, with no ordering against the
+		// data (R2) — that independence is what lets Class A be committed
+		// without a barrier at all. Writing facts here would make them
+		// barrier-ordered and quietly destroy the property.
 
 		ext.VerifiedTo = b.gaplessPrefix(ctx, jobID, idx, ext.Durable, t)
 		exts = append(exts, ext)
@@ -1985,6 +1996,24 @@ Also implement, in the same file:
   calls `b.stall.Fail` when `f.Permanent`, `b.stall.Stall` otherwise, and
   returns `f`.
 - `func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artCount int) (FileExtent, error)` —
+  **Two hazards carried from earlier tasks, both load-bearing here.**
+
+  *Re-derive the bitmap, do not slice it.* `ExtentStore.Load` returns each
+  bitmap at its full BYTE width and **unmasked** — `Bitmap`'s tail-word mask
+  cannot fire when `n` is a multiple of 64 — so a damaged blob's padding bits
+  survive and inflate `Count()`, the over-claim direction. `priorExtent` has
+  `artCount` and `Load` does not, so this is the only place that can fix it:
+  rebuild with `BitmapFromBytes(raw, artCount)` rather than narrowing what
+  `Load` returned.
+
+  *`FileExtent` holds `Durable Bitmap` by value.* `Bitmap.Set` has a value
+  receiver and mutates through the shared backing slice, so `ext.Durable.Set(ord)`
+  on a copied `FileExtent` does reach the original's storage — but only while
+  `Set` never reassigns `words`. Task 2's review found that no test covered
+  the copy case and that a plausible pointer-receiver refactor would look
+  correct. This is the code that depends on it: the barrier copies
+  `FileExtent` values freely. If you find yourself needing `&ext.Durable`,
+  stop and report rather than changing the receiver.
   loads the committed extent for this file, or returns a zero extent with
   `Durable: NewBitmap(artCount)` if none exists. It must widen a loaded bitmap
   to `artCount` bits rather than trusting the stored width.
