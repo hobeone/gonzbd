@@ -1097,8 +1097,10 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // recovery volumes downloaded for repair. It mirrors the post-processing
 // QuickCheck stage: it parses the par2 index files already on disk in dir and
 // compares them against the assembled CRC32s captured during download. Repair
-// is needed when any par2-tracked file is corrupt (Mismatched), failed to
-// download (NoCRC), or could not be matched (Unverified). When no usable par2
+// is needed when any par2-tracked file is corrupt (Mismatched), has no
+// assembled CRC to check against (NoCRC — a failed download, or a resumed
+// file whose CRC could not be computed), or could not be matched
+// (Unverified). When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
 func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log *slog.Logger, parseOpts par2.ParseOptions) (needsRecovery bool, reason string) {

@@ -145,7 +145,7 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 // failed article invalidates the file CRC.
 //
 // Without this, quickcheck reports the file as "CRC mismatch — corrupted"
-// rather than "download had failures, CRC unavailable". Repair runs either way
+// rather than "CRC unavailable, verifying with par2". Repair runs either way
 // (both feed stage_quickcheck's `unverifiable` count), so this is a diagnostic
 // correctness issue rather than a data-loss one — but the two states are
 // materially different stories for an operator.
