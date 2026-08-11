@@ -148,11 +148,28 @@ of their failure ratio.
    and `downloader` is commonly configured at `info`).
 
 5. **Emitted-is-transient durability contract**: `MarkArticleEmitted` is not
-   persisted to disk. If the process crashes between `MarkArticleEmitted` and
-   the assembler's `MarkArticleDone` (which happens after `pwrite` + `fsync`),
-   the `Emitted` flag is lost on restart and the article is re-dispatched. This
-   is by design: `Done` means "bytes on stable storage," and crash-recovery
-   re-fetches anything that didn't reach that point.
+   persisted to disk. If the process crashes before the assembler marks the
+   article `Done`, the `Emitted` flag is lost on restart and the article is
+   re-dispatched.
+
+   What `Done` means is narrower than "bytes on stable storage", and the
+   boundary moved in #355. The assembler acks an article once its bytes have
+   reached `WriteAt` — never while they are only in its write cache, which is
+   what makes the re-dispatch above reliable. It does not wait for an `fsync`:
+   the assembler syncs once per file completion, not once per article, so an
+   ack published by the periodic flush describes bytes that are in the page
+   cache and may not be on the platter. Only a file's final acks, flushed by
+   `finalizeFile` after its `Sync`, are fsync-backed.
+
+   The two crash classes therefore differ, and only one is the download path's
+   to repair:
+
+   | Lost | Acked? | Recovery |
+   |------|--------|----------|
+   | bytes that never reached `WriteAt` — still buffered, or never received | no | `Emitted` is lost, the next run re-dispatches the article. This contract. |
+   | bytes that reached `WriteAt` but not the platter | yes | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
+
+   See `assembler-storage-contract.md` §3 for the assembler side of this.
 
 ## `nntp.Conn` pipelining contract
 
