@@ -336,8 +336,15 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Create: `internal/durability/fact.go`, `internal/durability/extent.go`,
   `internal/durability/proof.go`
-- Test: `internal/durability/fact_test.go`, `internal/durability/extent_test.go`,
-  `internal/durability/proof_test.go`
+- Test: `internal/durability/extent_test.go`, `internal/durability/proof_test.go`
+
+**No `fact_test.go`.** `fact.go` contains only type and interface
+declarations — zero statements — so any test of it would assert Go's own
+struct semantics and could not go red against any edit short of a rename,
+which the compiler already catches. R23's `HasCRC`-vs-`CRC32==0`
+distinction does need pinning, but it belongs with the consumer that acts
+on it (Tasks 6 and 7), not here. Naming a test file without saying what it
+must pin is how a tautology gets written to fill the gap.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -416,8 +423,9 @@ import "testing"
 
 // TestDurableProof_CarriesItsPayload is the only thing a proof must do.
 // Its real guarantee — that no package outside this one can construct it —
-// is enforced by the type having no exported fields and no exported
-// constructor, and is asserted by TestNoExportedProofConstructor below.
+// is a language property, not a testable one: no in-package test can assert
+// the absence, because newProof is reachable from anywhere in this package.
+// It is enforced at the package boundary by the compiler.
 func TestDurableProof_CarriesItsPayload(t *testing.T) {
 	p := newProof("job-1", []int32{3, 7, 11})
 	if p.JobID() != "job-1" {
@@ -518,6 +526,7 @@ package durability
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"math/bits"
 )
@@ -568,9 +577,7 @@ func (b Bitmap) Count() int {
 func (b Bitmap) Bytes() []byte {
 	out := make([]byte, len(b.words)*8)
 	for i, w := range b.words {
-		for j := range 8 {
-			out[i*8+j] = byte(w >> (8 * uint(j)))
-		}
+		binary.LittleEndian.PutUint64(out[i*8:], w)
 	}
 	return out
 }
@@ -589,11 +596,16 @@ func BitmapFromBytes(buf []byte, n int) (Bitmap, error) {
 	}
 	b := NewBitmap(n)
 	for i := range need {
-		var w uint64
-		for j := range 8 {
-			w |= uint64(buf[i*8+j]) << (8 * uint(j))
-		}
-		b.words[i] = w
+		b.words[i] = binary.LittleEndian.Uint64(buf[i*8:])
+	}
+	// Mask the padding bits of the final word. A persisted buffer may be
+	// damaged, and this constructor exists to read exactly that input class —
+	// the short-buffer guard above defends the same case. Without the mask,
+	// garbage above bit n is absorbed: Get is bounded by n but Count is not,
+	// so Count could exceed Len and over-report how many articles are
+	// durable. Over-counting is the over-claim direction the design forbids.
+	if rem := n % 64; rem != 0 && need > 0 {
+		b.words[need-1] &= (1 << uint(rem)) - 1
 	}
 	return b, nil
 }
