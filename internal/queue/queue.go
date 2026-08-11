@@ -1999,11 +1999,15 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 	return nil
 }
 
-// SetFileCRC32 stores the assembled CRC32 on a JobFile. The CRC is
-// computed by the assembler by combining per-article yEnc CRCs in
-// offset order and represents the CRC32 of the entire file as written
-// to disk. This is used during QuickCheck to verify file integrity
-// against par2 file hashes without re-reading from disk.
+// SetFileCRC32 stores the assembled CRC32 on a JobFile. The CRC is computed by
+// the assembler by combining per-article yEnc CRCs in offset order, and is used
+// during QuickCheck to verify file integrity against par2 file hashes without
+// re-reading from disk.
+//
+// The assembler reports it only when those per-article CRCs cover the whole
+// file; a resumed run is not sent the articles an earlier run completed, so it
+// generally cannot produce one. Zero therefore means unavailable rather than
+// mismatched, and QuickCheck treats it that way (#349).
 func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

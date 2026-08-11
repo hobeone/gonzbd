@@ -12,8 +12,11 @@ type FileComplete struct {
 	JobID   string
 	FileIdx int
 	// CRC32 is the whole-file CRC32 computed by the assembler from
-	// per-article CRCs combined in offset order. Zero if unavailable
-	// (e.g. UU-encoded articles or failed articles).
+	// per-article CRCs combined in offset order. Zero if unavailable:
+	// UU-encoded or failed articles, a failed write, a file that could not
+	// be trimmed to its decoded extent, or a run whose articles do not cover
+	// the whole file — the resume case, where an earlier run's articles are
+	// not re-dispatched (#349). Zero means unavailable, never mismatched.
 	CRC32 uint32
 }
 
