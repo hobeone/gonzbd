@@ -34,7 +34,7 @@ func TestFlush_QueueErrorsAreLoggedNotFatal(t *testing.T) {
 			failedCalls.Add(1)
 			return nil, errQueueGone
 		},
-		SetWriteCursor: func(jobID string, fileIdx int, cursor int64) error {
+		SetFileExtents: func(jobID string, fileIdx int, cursor, maxWritten int64) error {
 			cursorCalls.Add(1)
 			return errQueueGone
 		},

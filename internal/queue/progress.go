@@ -109,8 +109,19 @@ type FileProgress struct {
 	// Both construction paths classify by subject rather than reading a
 	// column, which is why no schema change is needed — job_files already
 	// stores the subject.
-	IsPar2         bool
-	WriteCursor    int64
+	IsPar2      bool
+	WriteCursor int64
+	// MaxWritten is the highest byte position the assembler has written for
+	// this file — its decoded high-water mark. Persisted so a resumed run
+	// starts from the file's real extent instead of zero; without it the
+	// completion truncate cuts away whatever an earlier run wrote above the
+	// articles this run happens to receive (#342).
+	//
+	// Distinct from WriteCursor, which is the *contiguous* frontier and so
+	// normally lags this figure whenever articles arrive out of order. Only
+	// this one is a statement about bytes on disk; see the assembler's
+	// FileInfo.InitialWriteCursor for why the cursor is not.
+	MaxWritten     int64
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32
 }
@@ -228,6 +239,16 @@ func (p *JobProgress) FileWriteCursor(fi int) int64 {
 		return 0
 	}
 	return p.files[fi].WriteCursor
+}
+
+// FileMaxWritten returns the highest byte position written for file fileIdx —
+// the file's decoded high-water mark, used to seed a resumed run so the
+// completion truncate does not cut below what earlier runs already wrote.
+func (p *JobProgress) FileMaxWritten(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].MaxWritten
 }
 
 // FileFilename returns the resolved on-disk filename for file fileIdx, or empty if unresolved.
@@ -725,6 +746,7 @@ type fileProgressJSON struct {
 	Complete       bool        `json:"complete,omitempty"`
 	Fetch          FetchPolicy `json:"fetch_policy,omitempty"`
 	WriteCursor    int64       `json:"write_cursor,omitempty"`
+	MaxWritten     int64       `json:"max_written,omitempty"`
 	Filename       string      `json:"filename,omitempty"`
 	AssembledCRC32 uint32      `json:"assembled_crc32,omitempty"`
 }
@@ -756,6 +778,7 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 			Complete:       f.Complete,
 			Fetch:          f.Fetch,
 			WriteCursor:    f.WriteCursor,
+			MaxWritten:     f.MaxWritten,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
 		}
@@ -792,6 +815,7 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 			Complete:       f.Complete,
 			Fetch:          f.Fetch,
 			WriteCursor:    f.WriteCursor,
+			MaxWritten:     f.MaxWritten,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
 		}

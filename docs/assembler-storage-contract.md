@@ -35,6 +35,14 @@ download speeds, naive I/O creates several classes of failure:
   larger than decoded). Pre-allocation at that size, then writing decoded data,
   leaves trailing zero bytes that par2 reports as damage. The assembler
   truncates to `maxWritten` at file completion to fix this.
+- **A truncate target that outlives one run**: with no persisted seed to
+  restore, `maxWritten` describes only the current run, but the file on disk is
+  the product of every run. A resumed
+  file's `TotalParts` counts only the articles still outstanding, so it
+  completes as soon as those arrive — and truncating to this run's extent then
+  discards whatever an earlier run wrote above them. The mark is persisted and
+  re-seeded on open so the target describes the file rather than the session
+  (#342).
 
 ## The storage & assembly tiers
 
@@ -43,7 +51,7 @@ download speeds, naive I/O creates several classes of failure:
 | **Ingest** | `WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into bounded channel (`reqs`, cap 2048). Control messages for cancel/close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` can drain cleanly. |
 | **Worker** | `worker` goroutine | Owns all file handles. Dispatches requests, manages open-file map, drives write cache, executes periodic flush, checks disk space. | Single goroutine — zero lock contention on file handles, write cache, or pending batches. |
 | **Write cache** | `writeCache` (writecache.go) | Buffers decoded articles in memory, coalesces contiguous runs into single `WriteAt` calls, tracks per-file write cursor for resume. | Owned exclusively by the worker goroutine. No locks. |
-| **Batch flush** | `flush()` on worker | Accumulates `pendingDone` / `pendingFailed` / `pendingCursor` maps and flushes to queue callbacks in groups. | Worker-owned maps. Flushed on: file completion, ticker (250ms), and `Stop()`. |
+| **Batch flush** | `flush()` on worker | Accumulates `pendingDone` / `pendingFailed` / `pendingExtent` maps and flushes to queue callbacks in groups. | Worker-owned maps. Flushed on: file completion, ticker (250ms), and `Stop()`. |
 | **DirectUnpack** | `internal/directunpack` | Streams RAR extraction (via `rarengine`) as volumes complete during download. Reads whole-file volumes after assembly, not partial article data. | Mutex (`mu`) guards volume tracking and kill state. Blocking `volumeReady` channel coordinates volume availability. |
 
 ## File assembly lifecycle
@@ -66,7 +74,7 @@ for this (job, file)     │                              │
                                                    finalizeFile()
                                                    │
                                                    ├── drainCacheForFile
-                                                   ├── Truncate(maxWritten)
+                                                   ├── Truncate(maxWritten) — trim only
                                                    ├── Sync() (fsync)
                                                    ├── Close()
                                                    ├── flush() (Done/Failed batches)
@@ -96,7 +104,7 @@ for this (job, file)     │                              │
    invariant (see `nntp-downloader-contract.md` §5) handles this by re-fetching
    them on restart.
 
-3. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingCursor`
+3. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingExtent`
    maps are flushed to queue callbacks on three triggers:
    - **File completion** (`finalizeFile` → `flush()`).
    - **Periodic ticker** (default 250ms, `defaultDoneFlushInterval`).
@@ -158,6 +166,52 @@ Pre-allocation uses `ExpectedSize` from the NZB, which is the *encoded* size
 truncation, trailing zero bytes cause par2 to report the file as damaged despite
 100% download health.
 
+`maxWritten` is the file's decoded high-water mark, and it must survive a
+restart. It is seeded on open from `max(InitialMaxWritten, InitialWriteCursor)`
+and raised only where bytes reach `WriteAt` — never when an article is merely
+accepted into the write cache, since an article can be acked Done while still
+resident in memory, and a mark persisted ahead of the bytes would make a later
+truncate *extend* a short file with zeros that nothing will ever fill.
+
+| Seed | Meaning | Why it is not the whole answer |
+|------|---------|--------------------------------|
+| `InitialMaxWritten` | highest byte position written | the answer when present — zero for a file whose earlier run predates the column |
+| `InitialWriteCursor` | *contiguous* write frontier | normally lags the high-water mark, since articles arriving out of order leave it behind — but it is not bounded by the file either, see below |
+
+**The truncate never grows a file.** Both seeds come from state persisted by an
+earlier run, describing a file this process has not measured, so neither is a
+guarantee. `drainFile` advances the cursor past everything it hands back — gaps
+included, and before any write is attempted — so a `WriteAt` that
+`writeCachedArticles` then logs as failed leaves the cursor above the bytes
+actually on disk. The directory may also have been removed between runs, or
+pre-allocation may have failed and been logged rather than fatal.
+
+`finalizeFile` therefore stats the handle and skips the truncate when the
+target exceeds the file's real size. Growing it would append exactly the
+trailing zeros the truncate exists to remove, and a job with no par2 has no
+repair stage to notice. Trimming is the only direction ever intended.
+
+The two figures are persisted together through `SetFileExtents` on the worker's
+batched flush, so the queue's write lock is taken once per file rather than
+twice. Each write path stages only the figure it knows — a coalesced run
+advances the cursor, while a drained or uncached write raises the mark and
+leaves the cursor untouched — so the store must keep the larger of the stored
+and reported value for each rather than overwriting. Taking a report literally
+would erase the cursor on every uncached flush.
+
+The mark is staged on both the cached and uncached paths. With
+`WriteCacheBytes` at 0 the direct-write path is the only one that runs, and
+staging solely from the cache branch left the resume hint silently unpersisted
+in that configuration.
+
+Neither the completion path nor `CloseJobHandles` drops the pending entry
+before flushing. Both drain the write cache first, and that drain raises the
+mark, so dropping the entry first would discard the increment the drain just
+earned. `CloseJobHandles` is the path that makes this matter: it runs when a
+job enters post-processing, so the files still open are the incomplete ones a
+retry resumes. The flush clears the whole map afterwards, so nothing
+accumulates.
+
 `SupportsSparse()` in `sparse.go` probes whether the target filesystem supports
 sparse files by creating a temporary file, truncating it to 1 MiB, and checking
 `st_blocks * 512 < apparent_size`. This is an **informational probe** used at
@@ -198,7 +252,10 @@ memory and coalesces contiguous runs into larger `WriteAt` calls:
 - **Resume cursor**: `initCursor(key, InitialWriteCursor)` seeds the write
   cursor from the persisted resume point so coalescing doesn't stall waiting
   for offset-0 articles that were already written before a restart.
-  `pendingCursor` is flushed alongside `pendingDone` on the same cadence.
+  `pendingExtent` carries that cursor *and* the file's decoded high-water
+  mark, and is flushed alongside `pendingDone` on the same cadence. The two
+  travel together so the flush takes the queue's write lock once per file
+  rather than twice; see `SetFileExtents`.
 
 When `WriteCacheBytes == 0` (default), caching is disabled. Each article is
 written directly via `WriteAt`. Decoder buffers are returned to `sync.Pool`
@@ -359,6 +416,13 @@ articles or sparse file regions. The coordination model:
   and found worse than leaving it alone — one had an unbounded stranding
   bound, the other regressed hole-free files. Measure the residency cost
   before attempting it again.
+- **A resumed file's whole-file CRC covers only part of the file.**
+  `finalizeFile` combines `crcParts` without checking they start at offset 0 or
+  tile without holes, and a resumed run only accumulates parts for the articles
+  it received. `crcValid` stays true, so the subrange CRC is reported as
+  trustworthy and QuickCheck reads it as a mismatch. The file is correct on
+  disk after #342; this sends it to a needless repair anyway. Tracked as #349,
+  and it shares the persistence question with the high-water mark above.
 - **The syscall-reduction figure above is unmeasured.** "Reducing syscall
   count by 8–16×" states a ratio no benchmark in this repository produces. A
   sweep of `WriteAt` chunk sizes over the same payload found wall-clock flat

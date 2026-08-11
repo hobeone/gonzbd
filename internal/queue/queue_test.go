@@ -1592,21 +1592,21 @@ func TestSetFileWriteCursor(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
-		t.Fatalf("SetFileWriteCursor: %v", err)
+	if err := q.SetFileExtents(job.ID, 0, 4096, 4096); err != nil {
+		t.Fatalf("SetFileExtents: %v", err)
 	}
 	snap := q.SnapshotJob(job.ID)
 	if snap.Progress().FileWriteCursor(0) != 4096 {
 		t.Errorf("WriteCursor = %d, want 4096", snap.Progress().FileWriteCursor(0))
 	}
 	if !q.IsDirty() {
-		t.Error("queue should be marked dirty after SetFileWriteCursor")
+		t.Error("queue should be marked dirty after SetFileExtents")
 	}
 }
 
 func TestSetFileWriteCursor_Errors(t *testing.T) {
 	q := New()
-	if err := q.SetFileWriteCursor("nope", 0, 1); err == nil {
+	if err := q.SetFileExtents("nope", 0, 1, 1); err == nil {
 		t.Error("expected error for unknown job")
 	}
 	parsed := &nzb.NZB{Files: []nzb.File{
@@ -1614,7 +1614,7 @@ func TestSetFileWriteCursor_Errors(t *testing.T) {
 	}}
 	job, _ := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
 	_ = q.Add(job)
-	if err := q.SetFileWriteCursor(job.ID, 5, 1); err == nil {
+	if err := q.SetFileExtents(job.ID, 5, 1, 1); err == nil {
 		t.Error("expected error for out-of-range fileIdx")
 	}
 }

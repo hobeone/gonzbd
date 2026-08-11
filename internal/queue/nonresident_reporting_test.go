@@ -63,8 +63,8 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 			_, err := q.MarkArticlesFailedByIdx(id, []int32{0})
 			return err
 		}},
-		{"SetFileWriteCursor", func(q *Queue, id string) error {
-			return q.SetFileWriteCursor(id, 0, 128)
+		{"SetFileExtents", func(q *Queue, id string) error {
+			return q.SetFileExtents(id, 0, 128, 128)
 		}},
 		{"MarkFileComplete", func(q *Queue, id string) error {
 			return q.MarkFileComplete(id, 0)

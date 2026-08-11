@@ -118,19 +118,41 @@ type FileInfo struct {
 	// layer (Step 4.1) deduplicates via the article Done flag before enqueuing.
 	TotalParts int
 
-	// ExpectedSize is the NZB's claimed total decoded size for this file
-	// (sum of article byte counts). When positive, the assembler
-	// pre-allocates the file at this size on first open, reducing
-	// per-write filesystem metadata overhead and fragmentation.
+	// ExpectedSize is the NZB's declared *encoded* byte count for this file
+	// (the sum of its segment `bytes` attributes). yEnc encoding inflates the
+	// payload by ~2%, so this runs above the file's decoded size. When
+	// positive, the assembler pre-allocates the file at this size on first
+	// open, reducing per-write filesystem metadata overhead and fragmentation.
 	// Zero disables pre-allocation.
+	//
+	// Pre-allocating to the encoded figure is why a completed file has to be
+	// truncated back down to its decoded extent: the difference would
+	// otherwise remain as trailing zeros, which par2 reports as damage. Both
+	// consumers depend on this being the larger of the two figures — see
+	// finalizeFile and offsetInRange.
 	ExpectedSize int64
 
 	// InitialWriteCursor seeds the write-coalescing cache's per-file cursor.
 	// Zero for a fresh download (file starts at byte 0). On resume the caller
 	// sets it to the file's persisted contiguous write frontier so coalescing
 	// doesn't stall waiting for an offset-0 article that was already written
-	// before the restart. See queue.JobFile.WriteCursor.
+	// before the restart. See queue.FileProgress.WriteCursor.
+	//
+	// It doubles as a floor on the completed file's extent, for a file whose
+	// earlier run predates InitialMaxWritten being persisted. It is a weaker
+	// figure than that mark and is not a guarantee: drainFile advances the
+	// cursor past everything it returns — gaps included, and before any write
+	// is attempted — so a subsequent WriteAt that writeCachedArticles logs as
+	// failed leaves the cursor above the bytes actually on disk. That is why
+	// finalizeFile refuses to truncate upward rather than trusting either seed.
 	InitialWriteCursor int64
+
+	// InitialMaxWritten seeds the file's decoded high-water mark on resume.
+	// Zero for a fresh download, and zero for a file whose earlier run predates
+	// this figure being persisted — in which case InitialWriteCursor is the
+	// only floor available, which under-counts a tail that arrived out of
+	// order but never over-counts. See queue.FileProgress.MaxWritten.
+	InitialMaxWritten int64
 }
 
 // Options configures an Assembler.
@@ -195,10 +217,20 @@ type Options struct {
 	// written individually, which is the pre-5.0 behavior).
 	WriteCacheBytes int64
 
-	// SetWriteCursor persists a file's advanced contiguous write frontier as a
-	// resume hint. Called from the worker's batched flush, never per-article.
-	// Optional; nil disables cursor persistence.
-	SetWriteCursor func(jobID string, fileIdx int, cursor int64) error
+	// SetFileExtents persists a file's resume figures: the advanced contiguous
+	// write frontier, and the highest byte position written. Called from the
+	// worker's batched flush, never per-article — the two travel together so
+	// the flush takes the queue's write lock once per file rather than twice.
+	// Optional; nil disables persistence of both.
+	//
+	// An implementation must merge rather than overwrite, keeping the larger
+	// of the stored and reported value for each figure. A flush reports
+	// whichever figures the write paths that fired happen to know: a coalesced
+	// run knows the new cursor, while a drained or uncached write knows only
+	// the high-water mark and leaves the staged cursor unchanged — usually
+	// zero, but whatever an earlier run in the same cycle staged. Storing a
+	// report literally would erase the resume hint (#311) this call keeps.
+	SetFileExtents func(jobID string, fileIdx int, cursor, maxWritten int64) error
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -209,8 +241,11 @@ type fileKey struct {
 
 // openFile tracks an in-progress file being assembled.
 type openFile struct {
-	handle       *os.File
-	info         FileInfo
+	handle *os.File
+	info   FileInfo
+	// key identifies this file, so the write paths can record its resume
+	// figures without threading the key through every call.
+	key          fileKey
 	partsWritten int
 	// maxWritten tracks the highest byte position written (offset + len).
 	// Used to truncate the file to its true decoded size at completion.
@@ -306,9 +341,21 @@ type Assembler struct {
 	pendingDoneByIdx   map[string][]int32
 	pendingFailedByIdx map[string][]int32
 
-	// pendingCursor holds the latest reported write cursor per file, flushed
-	// to Options.SetWriteCursor on the same cadence as pendingDone. Worker-owned.
-	pendingCursor map[fileKey]int64
+	// pendingExtent holds the latest resume figures per file, flushed to
+	// Options.SetFileExtents on the same cadence as pendingDone. Worker-owned.
+	pendingExtent map[fileKey]fileExtent
+}
+
+// fileExtent is a file's persisted resume state: how far the contiguous write
+// frontier has advanced, and the highest byte position written.
+//
+// Only maxWritten is a statement about bytes on disk. The cursor is advanced
+// by drainFile across everything it hands back, gaps included and before any
+// write is attempted, so it can outrun the file — see FileInfo.InitialWriteCursor
+// and the guard in finalizeFile.
+type fileExtent struct {
+	cursor     int64
+	maxWritten int64
 }
 
 // New creates an Assembler from opts. It panics if opts.FileInfo is nil.
@@ -336,7 +383,7 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		pendingFailed:      make(map[string][]string),
 		pendingDoneByIdx:   make(map[string][]int32),
 		pendingFailedByIdx: make(map[string][]int32),
-		pendingCursor:      make(map[fileKey]int64),
+		pendingExtent:      make(map[fileKey]fileExtent),
 		diskProbe:          NewDiskProbe(DefaultDiskProbeTTL),
 	}
 	a.minFreeBytes.Store(opts.MinFreeBytes)
@@ -685,7 +732,6 @@ func (a *Assembler) dispatchRequest(
 			_ = f.handle.Sync()  //nolint:errcheck // best-effort sync before closing
 			_ = f.handle.Close() //nolint:errcheck // best-effort close
 			delete(open, k)
-			delete(a.pendingCursor, k)
 			completed[k] = struct{}{}
 		}
 		a.flush()
@@ -712,7 +758,7 @@ func (a *Assembler) dispatchRequest(
 // tracking is local to the assembler).
 func (a *Assembler) flush() {
 	if len(a.pendingDoneByIdx) == 0 && len(a.pendingFailedByIdx) == 0 &&
-		len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 && len(a.pendingCursor) == 0 {
+		len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 && len(a.pendingExtent) == 0 {
 		return
 	}
 	if a.opts.MarkArticlesDoneByIdx != nil {
@@ -747,10 +793,10 @@ func (a *Assembler) flush() {
 		}
 	}
 
-	if a.opts.SetWriteCursor != nil {
-		for k, cur := range a.pendingCursor {
-			if err := a.opts.SetWriteCursor(k.jobID, k.fileIdx, cur); err != nil {
-				a.log.Debug("set write cursor skipped (job removed or not resident)",
+	if a.opts.SetFileExtents != nil {
+		for k, ext := range a.pendingExtent {
+			if err := a.opts.SetFileExtents(k.jobID, k.fileIdx, ext.cursor, ext.maxWritten); err != nil {
+				a.log.Debug("set file extents skipped (job removed or not resident)",
 					"job", k.jobID, "fileidx", k.fileIdx, "error", err)
 			}
 		}
@@ -759,7 +805,7 @@ func (a *Assembler) flush() {
 	clear(a.pendingFailed)
 	clear(a.pendingDoneByIdx)
 	clear(a.pendingFailedByIdx)
-	clear(a.pendingCursor)
+	clear(a.pendingExtent)
 }
 
 // closeAll closes all remaining open file handles. Called on worker exit.
@@ -912,7 +958,21 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 			"path", info.Path,
 		)
 	}
-	f := &openFile{handle: fh, info: info, crcValid: true}
+	// Seed the high-water mark from what earlier runs are recorded as having
+	// written. Without this a resumed file's mark starts at zero and the
+	// completion truncate cuts away the tail those runs already wrote (#342).
+	//
+	// Neither input is a guarantee — both describe a file this process has not
+	// measured, and the cursor in particular can sit above the bytes actually
+	// on disk. finalizeFile refuses to truncate upward rather than trusting
+	// them; do not delete that guard on the strength of this seeding.
+	f := &openFile{
+		handle:     fh,
+		info:       info,
+		key:        key,
+		crcValid:   true,
+		maxWritten: max(info.InitialMaxWritten, info.InitialWriteCursor),
+	}
 	open[key] = f
 	wc.initCursor(key, info.InitialWriteCursor)
 	return f
@@ -1016,7 +1076,32 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	// encoded size, which includes yEnc overhead (~2% larger).
 	// Without this truncation the file has trailing zero bytes,
 	// which causes par2 to report it as damaged.
-	if f.maxWritten > 0 {
+	//
+	// Never grow the file. maxWritten is seeded from state persisted by an
+	// earlier run, describing a file this process has not measured, so it can
+	// exceed what is actually on disk — the download directory may have been
+	// removed between runs, pre-allocation may have failed and been logged
+	// rather than fatal, or a persisted write cursor may have been advanced
+	// by drainFile across a range whose WriteAt then failed. Truncating to it
+	// would append exactly the trailing zeros this call exists to remove, and
+	// a job with no par2 has no repair stage to notice. Trimming is the only
+	// direction that was ever intended.
+	//
+	// Each outcome logs for itself rather than routing through the
+	// zero-length case: a file skipped because the target overshoots is not
+	// empty, and saying so would misdescribe the one event an operator has to
+	// go on.
+	size, statErr := f.handle.Stat()
+	switch {
+	case f.maxWritten <= 0:
+		a.log.Debug("zero-length file completed", "path", f.info.Path)
+	case statErr != nil:
+		a.log.Warn("stat completed file; skipping truncate",
+			"path", f.info.Path, "error", statErr)
+	case f.maxWritten > size.Size():
+		a.log.Debug("truncate target exceeds the file on disk; leaving it alone",
+			"path", f.info.Path, "target", f.maxWritten, "size", size.Size())
+	default:
 		if err := f.handle.Truncate(f.maxWritten); err != nil {
 			a.log.Error("truncate completed file to decoded size",
 				"path", f.info.Path,
@@ -1024,10 +1109,6 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 				"error", err,
 			)
 		}
-	} else {
-		a.log.Debug("zero-length file completed",
-			"path", f.info.Path,
-		)
 	}
 	// Durability: fsync before closing and reporting completion.
 	if err := f.handle.Sync(); err != nil {
@@ -1043,7 +1124,6 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 		)
 	}
 	delete(open, key)
-	delete(a.pendingCursor, key)
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
@@ -1182,12 +1262,6 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 		return false
 	}
 
-	// Track the high-water mark of decoded bytes so we can truncate
-	// the file to its true size at completion (see processRequest).
-	if end := req.Offset + int64(len(req.Data)); end > f.maxWritten {
-		f.maxWritten = end
-	}
-
 	if wc.buffer(key, req.Offset, req.Data) {
 		telemetry.CacheHits.Add(1)
 		// Article buffered. Check for a flushable contiguous run.
@@ -1195,7 +1269,10 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 			if !a.flushRun(f, run) {
 				return false
 			}
-			a.pendingCursor[key] = wc.cursorFor(key)
+			a.pendingExtent[key] = fileExtent{
+				cursor:     wc.cursorFor(key),
+				maxWritten: f.maxWritten,
+			}
 		}
 		a.relievePressure(wc, open)
 		return true
@@ -1215,6 +1292,7 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 		}
 		return false
 	}
+	a.noteWritten(f, req.Offset, int64(len(req.Data)))
 	if req.Data != nil {
 		decoder.PutBuffer(req.Data)
 	}
@@ -1238,7 +1316,37 @@ func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
 		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
 		return false
 	}
+	a.noteWritten(f, run.offset, int64(len(run.data)))
 	return true
+}
+
+// noteWritten raises the file's decoded high-water mark to cover a range that
+// has just reached WriteAt, and stages that mark for the next batched flush.
+// It leaves the staged cursor alone: this path knows nothing about the
+// contiguous frontier, which only a coalesced run advances.
+//
+// It is called from the write paths rather than from the point an article is
+// accepted, deliberately. The mark seeds a resumed file's truncate target, so
+// it must describe bytes that are on disk: an article acked Done while still
+// buffered would otherwise persist a mark past the file's real extent, and
+// being Done it is never refetched, so nothing would ever fill the gap.
+func (a *Assembler) noteWritten(f *openFile, offset, n int64) {
+	if end := offset + n; end > f.maxWritten {
+		f.maxWritten = end
+	}
+	// New always allocates this map, so the nil case is unreachable in
+	// production; it exists for the tests that build an Assembler as a literal
+	// to exercise a single helper. Creating it rather than assuming it is one
+	// branch on a path that already writes to the map, against a nil-map panic
+	// on the single worker goroutine — which owns every open file handle and
+	// is the only drainer of a.reqs, so it would stop the pipeline rather than
+	// fail one write.
+	if a.pendingExtent == nil {
+		a.pendingExtent = make(map[fileKey]fileExtent)
+	}
+	ext := a.pendingExtent[f.key]
+	ext.maxWritten = f.maxWritten
+	a.pendingExtent[f.key] = ext
 }
 
 // relievePressure force-flushes the largest cached files until memory usage drops below the pressure threshold.
@@ -1263,6 +1371,8 @@ func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, rea
 				"error", err,
 			)
 			telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
+		} else {
+			a.noteWritten(f, art.offset, int64(len(art.data)))
 		}
 		if art.data != nil {
 			decoder.PutBuffer(art.data)

@@ -335,7 +335,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		MarkArticlesFailedByIdx: q.MarkArticlesFailedByIdx,
 		MarkArticlesDone:        markDone,
 		MarkArticlesFailed:      q.MarkArticlesFailed,
-		SetWriteCursor:          q.SetFileWriteCursor,
+		SetFileExtents:          q.SetFileExtents,
 		MinFreeBytes:            minFreeBytes,
 		WriteCacheBytes:         writeCacheBytes,
 		OnLowDisk:               app.handleLowDisk,
