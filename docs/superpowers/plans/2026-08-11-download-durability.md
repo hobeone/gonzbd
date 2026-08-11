@@ -2174,6 +2174,9 @@ func TestResume_FastPathAdoptsWhenStampMatches(t *testing.T) {
 	if got.Recomputed {
 		t.Error("Recomputed = true with a matching stamp — the fast path did not fire")
 	}
+	if got.Restart {
+		t.Error("Restart = true for a file whose stamp matched")
+	}
 	if got.Durable.Count() != 2 || got.VerifiedTo != 200 || got.PrefixCRC != 0x1234 {
 		t.Errorf("fast path did not adopt the cache: %+v", got)
 	}
@@ -2269,6 +2272,59 @@ func TestResume_RecomputeYieldsAPrefixCRC(t *testing.T) {
 	}
 	if got.VerifiedTo != 200 {
 		t.Errorf("VerifiedTo = %d, want 200", got.VerifiedTo)
+	}
+}
+
+// TestResume_ArticleWithoutACRCIsLeftOutstanding pins S3's conservative
+// default for the one article class that can never be verified.
+//
+// A UU-encoded article carries no CRC, so recomputation cannot prove its bytes
+// are the right bytes — even when they are sitting on disk at the recorded
+// offset. The design's answer is that absence of evidence is absence: leave it
+// Outstanding and re-fetch. Re-fetching costs one article; assuming is the
+// optimism §1 forbids.
+//
+// Without this, no fixture in the file sets HasCRC: false, and the branch that
+// implements the rule can be deleted with the suite still green.
+func TestResume_ArticleWithoutACRCIsLeftOutstanding(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100) // UU-encoded: no CRC to check it against
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0, HasCRC: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Durable.Get(0) {
+		t.Error("article 0 is not durable, but its bytes match its recorded CRC")
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is durable, but it carries no CRC — nothing proves those bytes are correct")
+	}
+	// The prefix stops at the unverifiable article, so no whole-file CRC is
+	// reportable. Unavailable must be distinguishable from a CRC of zero (R23).
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100 — the prefix cannot cross an unverifiable article", got.VerifiedTo)
+	}
+	if got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = true, but the prefix ends at an article with no CRC")
+	}
+	if got.Restart {
+		t.Error("Restart = true for a file that exists and partly verified")
 	}
 }
 
