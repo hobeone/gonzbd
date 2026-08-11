@@ -110,15 +110,19 @@ startup stays O(1) in manifest size rather than decompressing every manifest at
 boot.
 
 Deriving remaining bytes rather than maintaining them widened what a
-non-resident job must reconstruct. `Store.ArticleCountsByJob` now returns a
-whole `FileMeta` per file — article count, `bytes`, `bytes_downloaded`,
-`failed_bytes`, `complete`, `fetch_policy` (`FetchPolicy`, exposed as
-`FileMeta.Fetch`) — because the derivation reads all of
-them and must produce the same figure at either residency. `failed_bytes` is
-the second schema change this design has needed: a permanently failed article
-resolves without ever being downloaded, so it leaves no trace in
-`bytes_downloaded`, and without its own column a restarted job would report its
-bytes as still outstanding.
+non-resident job must reconstruct. `Store.ArticleCountsByJob` returns a whole
+`FileMeta` per file — article count, `bytes`, `complete`, `fetch_policy`
+(`FetchPolicy`, exposed as `FileMeta.Fetch`) — because the derivation reads all
+of them.
+
+It no longer carries `bytes_downloaded` or `failed_bytes`. Those were columns
+on `job_files`, and they were removed along with `write_cursor` and
+`max_written`: each summarised facts held elsewhere while being maintained
+independently of them (#306, #337, #311). **A non-resident job therefore
+reports zero downloaded and zero failed bytes, and a full remaining figure,
+until promotion replays its article bitmaps** — the residency parity this
+section previously claimed does not currently hold. Restoring it from
+`file_extents` is the remaining half of the durability work.
 
 ## Memory budget
 

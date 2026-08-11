@@ -7,21 +7,17 @@ import (
 )
 
 // FileMeta is the per-file shape Load needs to size a non-resident job's
-// progress without a manifest. It carries everything RemainingBytes reads
-// — Bytes, BytesDownloaded, FailedBytes, Complete, and Fetch — alongside
-// the article count for the bitsets, so a job reports the same remaining
-// figure whether it is reconstructed resident (via the manifest) or
-// non-resident (via this type).
+// progress without a manifest. It carries Bytes, Complete, and Fetch
+// alongside the article count for the bitsets.
+//
+// It no longer carries BytesDownloaded or FailedBytes. Those came from
+// job_files columns that were maintained independently of the article facts
+// they summarised, which is the defect this change removes; a non-resident
+// job now reports both as zero until the durable extents restore them.
 type FileMeta struct {
-	ArticleCount    int
-	Bytes           int64
-	BytesDownloaded int64
-	// FailedBytes is the sum of bytes belonging to this file's permanently
-	// failed articles, restored from job_files.failed_bytes — see
-	// FileProgress.FailedBytes for why a non-resident job needs this
-	// carried explicitly rather than recomputed from article bitmaps.
-	FailedBytes int64
-	Complete    bool
+	ArticleCount int
+	Bytes        int64
+	Complete     bool
 	// Fetch is the file's download intent, restored from
 	// job_files.fetch_policy. See FetchPolicy.
 	Fetch FetchPolicy

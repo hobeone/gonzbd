@@ -97,7 +97,8 @@ type FileProgress struct {
 	// never downloaded, so BytesDownloaded does not account for it, and
 	// without this the derivation would report its bytes as still to fetch
 	// forever. Recomputable from the article bitmaps when a manifest is
-	// resident; persisted in job_files.failed_bytes for when it is not.
+	// resident. It has no column of its own: a non-resident job reports zero
+	// here until promotion replays the article bitmaps.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so

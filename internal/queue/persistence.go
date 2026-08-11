@@ -93,19 +93,18 @@ func (q *Queue) saveStore(_ string) error {
 // manifest. That restoration already happens whenever the job is promoted
 // back to resident.
 //
-// Per-file Bytes/BytesDownloaded/FailedBytes/Complete/Fetch are carried so
-// RemainingBytes (see derivedRemainingBytes) derives correctly for a job at
-// any residency, including a job that restarted non-resident. They replace
-// the pre-summed figure this used to take from Store.RemainingBytesByJob.
+// Per-file Bytes/Complete/Fetch are carried so RemainingBytes (see
+// derivedRemainingBytes) has the file sizes it needs at any residency,
+// including a job that restarted non-resident. They replace the pre-summed
+// figure this used to take from Store.RemainingBytesByJob.
 //
-// failedBytes is summed here, over every file including Complete and
-// held/discarded ones, because FailedBytes reporting depends on it before the job
-// is ever promoted back to resident: a restarted non-resident job with
-// permanently failed articles would otherwise silently report zero failed
-// bytes until promotion. This closes the residency drift where the same job
-// reported different FailedBytes depending on whether it had been promoted
-// yet — a gap the deleted Store.RemainingBytesByJob had too, so it is not a
-// regression introduced by this refactor.
+// BytesDownloaded and FailedBytes are no longer among them, and both start at
+// zero here. They used to be restored from job_files columns, so a restarted
+// non-resident job reported its earlier progress before promotion; it now
+// reports a full remaining figure until promotion restores the article
+// bitmaps. Those columns were a summary maintained independently of the facts
+// they summarised and had to go with them (#306, #337); the durable extents
+// replace the reporting they supported.
 //
 // The per-article bitmaps genuinely do start clear here — every article
 // starts undone/unfailed/unemitted, since restoring true per-article state
@@ -113,10 +112,8 @@ func (q *Queue) saveStore(_ string) error {
 // resident.
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
-	var failedBytes int64
 	for _, f := range files {
 		total += f.ArticleCount
-		failedBytes += f.FailedBytes
 	}
 	p := &JobProgress{
 		done:            newBitset(total),
@@ -124,12 +121,9 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		emitted:         newBitset(total),
 		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
-		failedBytes:     failedBytes,
 	}
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
-		p.files[fi].BytesDownloaded = f.BytesDownloaded
-		p.files[fi].FailedBytes = f.FailedBytes
 		p.files[fi].Complete = f.Complete
 		p.files[fi].Fetch = f.Fetch
 		p.files[fi].IsPar2 = f.IsPar2

@@ -1700,9 +1700,12 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 // happens to know: a coalesced run knows the new cursor, while a drained or
 // uncached write knows only the high-water mark and leaves the staged cursor
 // unchanged — usually zero, but whatever an earlier run in the same flush
-// cycle staged. Taking the report literally would reset write_cursor on every
-// such flush, undoing the resume hint (#311) that the same call exists to
-// persist.
+// cycle staged. Taking the report literally would reset the cursor on every
+// such flush.
+//
+// Neither figure is persisted any more: job_files lost write_cursor and
+// max_written along with the other derived columns, so both start at zero on
+// every run until the durable extents restore them.
 func (q *Queue) SetFileExtents(jobID string, fileIdx int, cursor, maxWritten int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

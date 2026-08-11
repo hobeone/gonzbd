@@ -16,14 +16,10 @@ import (
 //
 // The values below are deliberately all distinct and non-zero, so a row
 // assembled with two arguments transposed fails rather than coincidentally
-// matching: the INSERT passes fifteen positional arguments, and neither the
+// matching: the INSERT passes twelve positional arguments, and neither the
 // compiler nor the schema can catch a swap between two INTEGER columns.
 func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 	store, _, db := setupResidencyTestStoreWithDB(t)
-	// Four articles per file, not two: the fixture's articles are equal in
-	// size, so resolving one as downloaded and one as failed would put the
-	// same number in both byte columns and a swap between them would pass.
-	// Two downloaded against one failed keeps them distinct.
 	job := makeMultiFileJob(t, "insert-job-files", 2, 4)
 	m, err := job.Manifest()
 	if err != nil {
@@ -33,10 +29,9 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 
 	// Give file 0 state that is distinguishable in every column the INSERT
 	// writes from progress, and leave file 1 as the untouched contrast.
-	p.markDone(m, 0)   // moves BytesDownloaded and articles_done
-	p.markDone(m, 1)   // again, so downloaded is twice one article's bytes
-	p.markFailed(m, 2) // moves FailedBytes, and only FailedBytes
-	p.files[0].WriteCursor = 4242
+	p.markDone(m, 0)   // sets two articles_done bits
+	p.markDone(m, 1)   //
+	p.markFailed(m, 2) // sets one articles_done failed bit
 	p.files[0].AssembledCRC32 = 0xDEADBEEF
 	p.files[0].Filename = "resolved-name.rar"
 	p.files[0].Complete = true
@@ -68,22 +63,21 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 	}
 
 	type row struct {
-		complete, fetch              int
-		writeCursor, bytes           int64
-		bytesDownloaded, failedBytes int64
-		filename                     string
-		crc32                        uint32
-		articleCount                 int
+		complete, fetch int
+		bytes           int64
+		filename        string
+		crc32           uint32
+		articleCount    int
 	}
 	read := func(idx int) row {
 		t.Helper()
 		var r row
 		err := db.QueryRowContext(t.Context(), `
-SELECT complete, fetch_policy, write_cursor, bytes, bytes_downloaded, failed_bytes,
+SELECT complete, fetch_policy, bytes,
        COALESCE(filename, ''), assembled_crc32, article_count
 FROM job_files WHERE job_id = ? AND file_index = ?`, job.ID, idx).
-			Scan(&r.complete, &r.fetch, &r.writeCursor, &r.bytes,
-				&r.bytesDownloaded, &r.failedBytes, &r.filename, &r.crc32, &r.articleCount)
+			Scan(&r.complete, &r.fetch, &r.bytes,
+				&r.filename, &r.crc32, &r.articleCount)
 		if err != nil {
 			t.Fatalf("read row %d: %v", idx, err)
 		}
@@ -97,25 +91,11 @@ FROM job_files WHERE job_id = ? AND file_index = ?`, job.ID, idx).
 	if got0.fetch != int(FetchAlways) {
 		t.Errorf("file 0 fetch_policy = %d, want %d", got0.fetch, FetchAlways)
 	}
-	if got0.writeCursor != 4242 {
-		t.Errorf("file 0 write_cursor = %d, want 4242", got0.writeCursor)
-	}
 	if got0.filename != "resolved-name.rar" {
 		t.Errorf("file 0 filename = %q, want %q", got0.filename, "resolved-name.rar")
 	}
 	if got0.crc32 != 0xDEADBEEF {
 		t.Errorf("file 0 assembled_crc32 = %#x, want %#x", got0.crc32, 0xDEADBEEF)
-	}
-	if want := p.FileBytesDownloaded(0); got0.bytesDownloaded != want {
-		t.Errorf("file 0 bytes_downloaded = %d, want %d", got0.bytesDownloaded, want)
-	}
-	if want := p.FileFailedBytes(0); got0.failedBytes != want {
-		t.Errorf("file 0 failed_bytes = %d, want %d", got0.failedBytes, want)
-	}
-	// The two byte columns must not be the same value, or a transposition
-	// between them would be invisible to the assertions above.
-	if got0.bytesDownloaded == got0.failedBytes {
-		t.Fatalf("fixture: bytes_downloaded and failed_bytes are both %d, so a swap between them would pass", got0.bytesDownloaded)
 	}
 	if want := m.FileBytes(0); got0.bytes != want {
 		t.Errorf("file 0 bytes = %d, want %d", got0.bytes, want)
@@ -124,16 +104,13 @@ FROM job_files WHERE job_id = ? AND file_index = ?`, job.ID, idx).
 		t.Errorf("file 0 article_count = %d, want 4", got0.articleCount)
 	}
 
-	// File 1 is the contrast: deferred, nothing downloaded, no resolved name.
+	// File 1 is the contrast: deferred, not complete, no resolved name.
 	got1 := read(1)
 	if got1.fetch != int(FetchIfNeeded) {
 		t.Errorf("file 1 fetch_policy = %d, want %d (a deferred volume written as 0 is #287)", got1.fetch, FetchIfNeeded)
 	}
 	if got1.complete != 0 {
 		t.Errorf("file 1 complete = %d, want 0", got1.complete)
-	}
-	if got1.bytesDownloaded != 0 {
-		t.Errorf("file 1 bytes_downloaded = %d, want 0", got1.bytesDownloaded)
 	}
 	if got1.filename != "" {
 		t.Errorf("file 1 filename = %q, want empty", got1.filename)
