@@ -146,12 +146,17 @@ tautology, and an assertion on a value the code only produces under conditions
 the test never creates.
 
 ```bash
-cp internal/pkg/target.go "$SCRATCH/target.bak.go"   # never `git stash` — the
-# stash stack is shared with other sessions and popping can take their work
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/pkg/target.go "$SCRATCH/target.bak.go"
 # ... revert the fix in place, or neuter its condition ...
 go test ./internal/pkg/ -run TestTheNewPin        # MUST fail, for the right reason
-cp "$SCRATCH/target.bak.go" internal/pkg/target.go # or: git checkout -- <path>
+cp "$SCRATCH/target.bak.go" internal/pkg/target.go
 ```
+
+**Never `git stash`** — the stash stack is shared with any other session in this
+repo and a pop can take their work. Restore from your own copy rather than
+`git checkout -- <path>`, which also discards unrelated uncommitted edits in
+that file.
 
 - **Revert each half separately.** A fix with two call sites needs two reverts;
   one half being pinned says nothing about the other.
@@ -173,9 +178,21 @@ comment, a `docs/*.md` section, a migration's comment block. Fixing the copy
 you happened to be editing leaves the rest reading as authoritative.
 
 Take each claim the change invalidated and grep for its distinctive phrasing
-across `internal/` and `docs/`, rather than re-reading the files you touched.
-Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff for the
-same purpose.
+**from the repository root**, rather than re-reading the files you touched:
+
+```bash
+git grep -n 'bytes that reached disk'   # tracked files only, so no ui/dist or node_modules
+```
+
+`git grep` rather than a path list, because the copies are not where you expect
+— they turn up in `cmd/`, `test/`, `ui/`, the root `AGENTS.md`, and this file.
+Restricting the search to `internal/` and `docs/` is how the first draft of this
+section missed that `docs/go-standards.md` still said to `git stash`, in the
+same change that added the rule against it.
+
+Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
+It and the grep cover different things: the analyzer reads the comments you
+changed, the grep finds the ones you didn't.
 
 Do this **once, on the last round** of a review-fix loop, not on every round:
 each round's own fix creates fresh drift, so an early sweep goes stale.
