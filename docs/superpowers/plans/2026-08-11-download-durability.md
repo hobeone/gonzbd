@@ -2972,6 +2972,20 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Task 10: Wire the barrier into the application
 
+> **Obligations carried from Task 6, reported by its implementer.**
+>
+> - **`Barrier.Run` is not reentrant and takes no lock.** Task 10 owns the
+>   cadence, so Task 10 must guarantee at most one `Run` in flight per job.
+>   Two concurrent barriers over one job would interleave phase 3's
+>   read-modify-write of `FileExtent` and could commit a cache describing
+>   neither run.
+> - **`SyncTarget.Stat` takes no `context.Context`.** B4 and R22 require every
+>   storage syscall on the critical path to be timeout-bounded, and a `stat`
+>   on a wedged NFS mount is exactly that case. The bound must therefore come
+>   from the `SyncTarget` implementor (Task 9's assembler), not the barrier.
+>   Confirm it is actually bounded there — `check_lock_io` descends only one
+>   call level and cannot see it.
+
 **Files:**
 - Modify: `internal/app/app.go:326-346`, `internal/app/pipeline.go`,
   `internal/config/downloads.go`, `internal/constants/`
