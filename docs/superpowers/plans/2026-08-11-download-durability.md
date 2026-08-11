@@ -31,6 +31,16 @@ to ack, compute a CRC, or truncate.
   rule, which exists to protect applied migrations on real installations; the
   user has explicitly authorised a from-scratch reinstall, so no applied
   migration is at risk. **Record this authorisation in the commit body of Task 3.**
+- **Never rewrite a commit that is not `HEAD`.** No `git rebase`, no
+  `git reset --hard`, no `commit-tree` surgery. Amending `HEAD` in place is
+  fine; anything earlier requires moving the branch, which has twice destroyed
+  another agent's uncommitted work in this shared worktree. If an earlier
+  commit's body needs correcting — including a false red-check claim — say so
+  in the **next** commit's body instead. History that records a correction is
+  more honest than history that hides the error, and infinitely safer.
+- **Never `git stash`, `git checkout -- <path>`, or `git checkout -- .`.**
+  The stash stack is shared; the checkouts discard other agents' uncommitted
+  edits. Restore only by copying back your own scratch copy.
 - **Every commit leaves the repo green:** `go build ./... && go test -race ./...`.
 - **Quality gates before every commit:** `go fix ./...`, `goimports -w .`,
   `go vet ./...`, `go test -race ./...`, `golangci-lint run ./...`.
