@@ -299,6 +299,14 @@ memory and coalesces contiguous runs into larger `WriteAt` calls:
 
 - **Buffering**: Each article is stored in `fileBuf.articles[offset]`, keyed by
   byte offset. Total memory is tracked in `writeCache.used`.
+- **A zero-length article is refused, and the contiguous scan stops at one.**
+  `offsetInRange` admits an empty write, so nothing upstream rules one out.
+  Buffering it would wedge the scan below, which advances by the length of the
+  article at the cursor: a zero-length entry there never moves it and the loop
+  never terminates — on the worker goroutine that owns every file handle, so it
+  takes all assembly with it. `buffer()` returns `cached == false` so the caller
+  writes it inline, where the `WriteAt` is a no-op and the article settles
+  normally. `buildContiguousRun` also breaks on one rather than trusting that.
 - **Contiguous flush**: After each `buffer()`, `flushContiguous()` scans from
   the file's `writeCursor` for a contiguous run ≥ 512KB
   (`contiguousRunSize`). If found, the run is coalesced into `scratchBuf`

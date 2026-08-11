@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // An article's Done ack is a claim that no later run can check: once the queue
@@ -591,5 +592,62 @@ func TestCompletedFileAcksEveryArticleExactlyOnce(t *testing.T) {
 	}
 	if got := readFile(t, path); len(got) != parts*4 {
 		t.Errorf("file is %d bytes, want %d", len(got), parts*4)
+	}
+}
+
+// TestZeroLengthArticleIsNotBuffered guards a hang rather than a wrong answer.
+//
+// buildContiguousRun scans from the write cursor and advances by the length of
+// the article it finds there. A zero-length article at that offset never
+// advances it, so the loop runs forever, appending the same article until
+// memory runs out — on the single worker goroutine that owns every open file
+// handle, so it takes all assembly down with it.
+//
+// offsetInRange admits a zero-length write (it checks only for a negative
+// offset and for overflow), so nothing upstream rules this out. Refusing to
+// cache it sends it down the inline path, where the WriteAt is a no-op and the
+// article is settled normally.
+func TestZeroLengthArticleIsNotBuffered(t *testing.T) {
+	x := newAckFixture(t, 1<<20, false)
+
+	cached, displaced := x.wc.buffer(x.key, bufferedArticle{offset: 0, data: nil})
+	if cached {
+		t.Error("a zero-length article was buffered; it cannot advance the " +
+			"write cursor, so buildContiguousRun would never terminate")
+	}
+	if len(displaced) != 0 {
+		t.Errorf("displaced = %v for an article that was never taken", displaced)
+	}
+
+	// End to end: it takes the inline path and is settled.
+	if !x.accept(t, 0, 0, nil) {
+		t.Fatal("a zero-length article must still count toward TotalParts")
+	}
+	if done, _ := x.settle(); !slices.Equal(done, []int32{0}) {
+		t.Errorf("done acks = %v, want [0]; the inline write is a no-op but the "+
+			"article is still settled", done)
+	}
+}
+
+// TestBuildContiguousRunStopsAtAZeroLengthArticle covers the second guard.
+// buffer refuses to cache such an article, so only direct construction can put
+// one in the map — which is what this does, since the cost of the scan not
+// stopping is a hung worker rather than a wrong result.
+func TestBuildContiguousRunStopsAtAZeroLengthArticle(t *testing.T) {
+	wc := newWriteCache(1 << 20)
+	fb := &fileBuf{articles: make(map[int64]bufferedArticle)}
+	fb.articles[0] = bufferedArticle{offset: 0, data: []byte{}}
+
+	done := make(chan *flushRun, 1)
+	go func() { done <- wc.buildContiguousRun(fb, 1) }()
+
+	select {
+	case run := <-done:
+		if run != nil {
+			t.Errorf("run = %+v, want nil; a zero-length article cannot start a run", run)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("buildContiguousRun did not return: the scan cannot advance past " +
+			"a zero-length article at the write cursor")
 	}
 }

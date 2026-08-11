@@ -148,6 +148,15 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 	if !wc.enabled() {
 		return false, nil
 	}
+	// A zero-length article is refused so the caller writes it inline. It
+	// occupies no space, so it can neither be coalesced nor advance any
+	// cursor, and buffering it would wedge buildContiguousRun: that scan
+	// advances by the length of the article at the cursor, so a zero-length
+	// entry there never moves and the loop never terminates. The inline path
+	// costs a no-op WriteAt and settles the article.
+	if len(art.data) == 0 {
+		return false, nil
+	}
 	fb, ok := wc.perFile[key]
 	if !ok {
 		fb = &fileBuf{articles: make(map[int64]bufferedArticle)}
@@ -216,6 +225,13 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	for {
 		art, ok := fb.articles[cursor]
 		if !ok {
+			break
+		}
+		// buffer refuses zero-length articles precisely so this scan always
+		// advances. Stopping rather than trusting that is cheap, and the
+		// alternative is not a wrong answer but a hung worker goroutine —
+		// which owns every file handle, so it takes all assembly with it.
+		if len(art.data) == 0 {
 			break
 		}
 		runArticles = append(runArticles, art)
