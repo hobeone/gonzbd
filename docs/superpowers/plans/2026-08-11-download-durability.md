@@ -2308,13 +2308,20 @@ carry the working tree forward.
 
 ## Task 9: FileWriter — the assembler loses its authority
 
+> **Premise re-derived 2026-08-11 against `73d0c810`.** This task was originally
+> written against an assembler that acked at *accept* time from six call sites.
+> PR #358 (`913adf0d`, 1,310 lines) has since moved acking to `WriteAt` and
+> closed #355. What follows describes the code as it now stands. Do not trust
+> any pre-amendment description of this package.
+
 **Files:**
 - Create: `internal/assembler/filewriter.go`
 - Modify: `internal/assembler/assembler.go`, `internal/assembler/writecache.go`
+- Rewrite: `internal/assembler/durable_ack_test.go` (773 lines, 19 tests — see
+  the triage table below; most survive translation, four do not)
 - Delete: `internal/assembler/resume_crc_test.go`,
   `internal/assembler/resume_extent_test.go`,
-  `internal/assembler/drain_cursor_test.go`,
-  `internal/assembler/flush_error_test.go`
+  `internal/assembler/drain_cursor_test.go`
 - Test: `internal/assembler/filewriter_test.go`
 
 **Interfaces:**
@@ -2324,14 +2331,61 @@ carry the working tree forward.
   `Sync(ctx, fileIdx) error`, `Stat(fileIdx) (int64, int64, error)`,
   `ArticleCount(fileIdx) int`, `FileLocalOrdinal(fileIdx, artIdx) (int, bool)`.
 
+### What #358 already built, and what remains
+
+#358 moved the ack boundary one step along the same axis this design travels:
+from **Decoded** to **Written**. This task moves it the remaining step, to
+**Durable**. That makes several of its mechanisms prerequisites rather than
+obstacles — the write cache already carries article identities through
+coalescing (`bufferedArticle.msgID`, `writecache.go:66`), which Task 9
+originally assumed it would have to build.
+
+| Concern | State on main after #358 | What this task does |
+|---|---|---|
+| Ack timing | `writeAndSettle` acks on `outcomeDurable` (= reached `WriteAt`) | Moves the ack to the barrier; `Drain` reports, it does not ack |
+| Coalesced-run failure | `failArticle` fails every article in a failed run | Retained inside `FileWriter`, reported as absence from `Drain` |
+| Unknown-file drain (#344) | `failDrainedArticles` now fails them rather than dropping | Becomes unrepresentable: `FileWriter` owns its own cache |
+| CRC on a buffered article (#356) | Still recorded at accept; mitigated by `crcValid` | Removed entirely — CRC moves to the barrier's `FileExtent` |
+| Whole-file CRC (#349) | `combineWholeFileCRC` checks tiling, reports 0 on failure | Deleted; superseded by `FileExtent.PrefixCRC` |
+
+**The naming trap.** `writeOutcome`'s constant `outcomeDurable`
+(`assembler.go:1390`) is documented as *"the bytes reached `WriteAt`"*. In this
+design's vocabulary that state is **Written**, and the spec is explicit that it
+survives a process crash but **not** a power loss. A symbol named
+`outcomeDurable` for a not-durable state is exactly the conflation S2 exists to
+prevent, and leaving it would guarantee the next reader re-derives the old bug.
+**Rename `outcomeDurable` → `outcomeWritten` as part of this task**, and say so
+in the commit body.
+
 **Removed from `Options`:** `MarkArticlesDone`, `MarkArticlesDoneByIdx`,
 `MarkArticlesFailed`, `MarkArticlesFailedByIdx`, `SetFileExtents`,
 `DoneFlushInterval`.
 **Removed from `FileInfo`:** `InitialWriteCursor`, `InitialMaxWritten`.
-**Removed from `openFile`:** `maxWritten`, `crcParts`, `crcValid`, `seenDone`,
-`seenFailed`, `partsWritten`.
-**Removed from `Options.OnFileComplete`:** the `fileCRC uint32` parameter. The
-CRC now comes from the barrier's extent, not the writer.
+**Removed from `openFile`:** `maxWritten`, `crcParts`, `crcValid`, `partsWritten`.
+`seenDone` / `seenFailed` move into `FileWriter` — they are still needed for
+idempotent duplicate handling (R12), which #358's tests pin.
+**Removed from `Options.OnFileComplete`:** the `fileCRC uint32` parameter.
+
+### Test triage for `durable_ack_test.go`
+
+Do not delete this file wholesale — it encodes real behaviour, and four of its
+tests are the only coverage of cases this design still has.
+
+| Test | Disposition |
+|---|---|
+| `TestFailedCoalescedRunFailsEveryArticleInTheRun` | **Translate** — becomes "absent from `Drain`" rather than "acked failed" |
+| `TestDuplicateSuccessWhileBufferedIsNotReAcked` | **Translate** — the `wc.buffered` check moves into `FileWriter` |
+| `TestDuplicateAtADifferentOffsetIsNotReAcked` | **Translate** — same |
+| `TestDisplacedArticleIsFailed` | **Translate** — becomes absent from `Drain` |
+| `TestZeroLengthArticleIsNotBuffered` | **Keep as-is** — pure cache behaviour |
+| `TestBuildContiguousRunStopsAtAZeroLengthArticle` | **Keep as-is** |
+| `TestBufferedReportsUnknownKey` | **Keep as-is** |
+| `TestCompletedFileAcksEveryArticleExactlyOnce` | **Translate** — becomes "reported exactly once across all `Drain` calls" |
+| `TestBufferedArticleIsNotAckedUntilItsBytesLand` | **Delete** — superseded by `TestFileWriter_DrainReportsOnlyWrittenArticles`, which makes the stronger claim |
+| `TestWriteOutcomesSettleTheirAcks` | **Delete** — settling moves to the barrier |
+| `TestFatalAfterBufferedSuccessDoesNotOutraceTheDoneAck` | **Delete** — the ordering it guards is gone once one component acks |
+| `TestAckArticleDoneUsesTheFilesJobAndTheArticlesIndex` | **Delete** — no ack in this package |
+| remaining `failArticle`/`failDrained` tests | **Translate** — assert absence from `Drain`, plus a returned `*storagefault.Fault` |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2347,7 +2401,6 @@ func TestFileWriter_DrainReportsOnlyWrittenArticles(t *testing.T) {
 	if err := w.Accept(5, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
-	// Nothing has been drained yet, so nothing may be reported.
 	if got := w.writtenSoFar(); len(got) != 0 {
 		t.Fatalf("writtenSoFar = %v before any drain, want empty", got)
 	}
@@ -2361,9 +2414,10 @@ func TestFileWriter_DrainReportsOnlyWrittenArticles(t *testing.T) {
 	}
 }
 
-// TestFileWriter_FailedWriteIsNotReportedAsWritten pins #355 directly: a
-// deferred write that fails must not appear in Drain's output, so the
-// barrier never acks it and the article is re-fetched.
+// TestFileWriter_FailedWriteIsNotReportedAsWritten pins the deferred-write
+// failure path. #358 fixed the ack half of this on main; the pin is retained
+// because Drain's contract to the barrier is a NEW claim that nothing on main
+// makes, and it is the only evidence the barrier has.
 func TestFileWriter_FailedWriteIsNotReportedAsWritten(t *testing.T) {
 	w := newTestFileWriter(t, withCacheBytes(1<<20), withWriteError(syscall.ENOSPC))
 
@@ -2381,8 +2435,8 @@ func TestFileWriter_FailedWriteIsNotReportedAsWritten(t *testing.T) {
 	if !f.Retryable() {
 		t.Error("ENOSPC classified permanent")
 	}
-	for _, w := range got {
-		if w.ArtIdx == 5 {
+	for _, a := range got {
+		if a.ArtIdx == 5 {
 			t.Fatal("article 5 reported written although its WriteAt failed")
 		}
 	}
@@ -2399,6 +2453,16 @@ func TestAssembler_HasNoAckSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestNoSymbolNamesWriteAtDurable guards the naming trap: #358 introduced
+// outcomeDurable for a state this design calls Written, and a state named
+// durable that is not durable is the conflation S2 exists to prevent.
+func TestNoSymbolNamesWriteAtDurable(t *testing.T) {
+	out, err := exec.Command("git", "grep", "-n", "outcomeDurable", "--", "internal/assembler").CombinedOutput()
+	if err == nil && len(out) > 0 {
+		t.Errorf("outcomeDurable still present; rename to outcomeWritten:\n%s", out)
+	}
+}
 ```
 
 Write `newTestFileWriter(t, opts...)` creating a `FileWriter` over a
@@ -2409,9 +2473,9 @@ existing tests).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./internal/assembler/ -run 'TestFileWriter|TestAssembler_HasNoAckSurface' -v`
-Expected: FAIL — `undefined: newTestFileWriter`, and
-`Options.MarkArticlesDone still exists`.
+Run: `go test ./internal/assembler/ -run 'TestFileWriter|TestAssembler_HasNoAckSurface|TestNoSymbolNamesWriteAtDurable' -v`
+Expected: FAIL — `undefined: newTestFileWriter`,
+`Options.MarkArticlesDone still exists`, and `outcomeDurable still present`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -2428,23 +2492,32 @@ Expected: FAIL — `undefined: newTestFileWriter`, and
 // contract to the outside world is: bytes it reports from Drain reached
 // WriteAt without error, and everything else is its own business.
 //
-// This is an inversion of the pre-existing assembler rather than a refactor of
-// it. The old design let the write path ack inline from six places, each of
-// which had to independently remember that acceptance is not durability. Not
-// one of them could see whether an fsync had happened, because none of them
-// ran one.
+// This continues the direction #358 started rather than reversing it. That
+// change moved the ack from accept to WriteAt — Decoded to Written. This one
+// moves it from Written to Durable, which is the step #358 explicitly declined
+// ("this does not defer acks to fsync — that would push every ack to file
+// completion"). That objection was correct at the time: Sync ran only in
+// finalizeFile, so acking after fsync really did mean acking at file
+// completion. The barrier removes the premise by fsyncing on a cadence, so
+// the cost is one checkpoint interval rather than a whole file.
 type FileWriter struct {
 	handle  *os.File
 	path    string
 	cache   *fileBuf
 	written []durability.WrittenArticle
+	// seenDone and seenFailed keep duplicate handling idempotent (R12).
+	// They move here from openFile because the writer is now the only
+	// component that can tell whether a duplicate's first copy has left
+	// the cache — the check #358 added as wc.buffered.
+	seenDone   map[string]int64
+	seenFailed map[string]struct{}
 	// writeAt is os.File.WriteAt in production. Tests override it before
 	// first use to inject storage faults.
 	writeAt func(p []byte, off int64) (int, error)
 }
 ```
 
-Methods to implement, each with the stated behaviour:
+Methods to implement:
 
 - `Accept(artIdx int32, off int64, data []byte) error` — buffer or write.
   On a direct write, append to `w.written` **only after** `writeAt` returns nil.
@@ -2459,34 +2532,49 @@ Methods to implement, each with the stated behaviour:
 - `Close() error`.
 
 In `assembler.go`, delete `flush`, `recordPendingDone`, `recordPendingFailed`,
-`recordArticleCRC`, `combineWholeFileCRC`, `finalizeFile`'s truncate/CRC/ack
-logic, `pendingDone`, `pendingFailed`, `pendingExtent`, and the
-`doneFlushInterval` ticker. Add the six `durability.SyncTarget` methods,
-delegating per-file to the `FileWriter` in the `open` map.
+`writeAndSettle`, `failArticle`, `failDrainedArticles`, `recordArticleCRC`,
+`combineWholeFileCRC`, `handleLateDuplicate`'s ack calls, `finalizeFile`'s
+truncate/CRC/ack logic, `pendingDone*`, `pendingFailed*`, `pendingExtent`, and
+the `doneFlushInterval` ticker. Rename `outcomeDurable` → `outcomeWritten`. Add
+the six `durability.SyncTarget` methods, delegating per-file to the
+`FileWriter` in the `open` map.
 
-Handle #357 and #344 while here: `openTargetFile`'s two drop branches now
-return a classified fault to the caller instead of logging and discarding, and
-the "unknown file" branches in `flushPressure`/`flushWriteCache` are deleted
-outright — the `FileWriter` owns its own cache, so a cache entry with no file
-is no longer representable.
+Handle #357 while here: `openTargetFile`'s two drop branches
+(`assembler.go:928` FileInfo resolver, `assembler.go:944` mkdir/open) still
+log and discard, leaving the article acked neither way. They now return a
+classified `*storagefault.Fault` to the caller instead.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race ./internal/assembler/ -v`
-Expected: PASS. Delete any remaining test in `assembler_test.go`,
-`writecache_test.go`, `processreq_test.go`, or `artidx_challenge_test.go` that
-asserts on the removed ack/CRC/extent behaviour.
+Expected: PASS, with `durable_ack_test.go` translated per the triage table.
 
-- [ ] **Step 5: Observe the red check on the #355 pin**
+- [ ] **Step 5: Observe the red check**
+
+The original red check for this task reproduced #355, which #358 has since
+fixed — reintroducing it would no longer go red for the right reason, and a
+check that cannot go red is not a pin. Use the `Drain` contract instead, which
+is a claim nothing on main makes:
 
 ```bash
 SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
 cp internal/assembler/filewriter.go "$SCRATCH/fw.bak.go"
-# Move the append above the error check in Drain's flush loop, reproducing
-# the accept-is-durability bug exactly.
-# Edit Drain so w.written = append(...) precedes `if err != nil`.
+# Move the w.written append above the error check in Drain's flush loop, so a
+# failed WriteAt is still reported to the barrier as written.
+# Edit Drain so `w.written = append(...)` precedes `if err != nil`.
+grep -n 'w.written = append' internal/assembler/filewriter.go   # confirm placement
 go test ./internal/assembler/ -run TestFileWriter_FailedWriteIsNotReportedAsWritten
 # MUST FAIL: "article 5 reported written although its WriteAt failed"
+cp "$SCRATCH/fw.bak.go" internal/assembler/filewriter.go
+```
+
+Second revert, for the buffered half:
+
+```bash
+cp internal/assembler/filewriter.go "$SCRATCH/fw.bak.go"
+# In Accept, append to w.written at buffer time as well as at write time.
+go test ./internal/assembler/ -run TestFileWriter_DrainReportsOnlyWrittenArticles
+# MUST FAIL: "writtenSoFar = [...] before any drain, want empty"
 cp "$SCRATCH/fw.bak.go" internal/assembler/filewriter.go
 ```
 
@@ -2498,35 +2586,40 @@ removes the assembler's, and neither builds without the other.
 ```bash
 go fix ./... && goimports -w . && go vet ./... && go test -race ./... && golangci-lint run ./...
 git add internal/queue internal/assembler
-git commit -m "refactor(assembler)!: strip the write path of all external authority
+git commit -m "refactor(assembler)!: move the ack boundary from Written to Durable
 
-The assembler could ack an article from six places — handleSuccessArticle,
-handleLateDuplicate, flush, finalizeFile, and the two control messages —
-each independently responsible for remembering that acceptance is not
-durability, and none of them able to see whether an fsync had happened.
-That is why #355 and #356 are the same bug filed twice.
+#358 moved acking from accept to WriteAt, which is Decoded to Written in
+the durability design's vocabulary. This moves it the remaining step to
+Durable — the step #358 explicitly declined, on the grounds that
+deferring to fsync would push every ack to file completion. That was
+correct then: Sync ran only in finalizeFile. The barrier removes the
+premise by fsyncing on a cadence, so the cost is one checkpoint interval
+rather than a whole file.
 
 FileWriter now owns one file's handle and cache and nothing else. Its
 whole contract is that bytes reported from Drain reached WriteAt without
 error. Acking, CRC combination, completion, and truncation move to
-durability.Barrier, which is the only component that runs the fsync.
+durability.Barrier, the only component that runs the fsync.
 
-Queue.AckDurable takes a durability.DurableProof, which has no exported
-constructor outside internal/durability, so no code path that has not
-run a barrier can reach it.
+Renames outcomeDurable to outcomeWritten. A constant named durable for a
+state documented as 'reached WriteAt' is the conflation the design's S2
+exists to prevent, and it would have taught the next reader the bug back.
 
 openTargetFile's two drop branches now return a classified fault rather
-than discarding the article (#357), and the unreachable unknown-file
-drain handlers are deleted rather than fixed (#344) — FileWriter owns
-its own cache, so a cache entry with no file is unrepresentable.
+than discarding the article (#357). The unknown-file drain handler
+becomes unrepresentable rather than correct (#344): FileWriter owns its
+own cache, so a cache entry with no file cannot exist. recordArticleCRC
+is deleted rather than moved (#356).
 
 BREAKING CHANGE: Options loses MarkArticlesDone*, MarkArticlesFailed*,
 SetFileExtents, and DoneFlushInterval. FileInfo loses InitialWriteCursor
 and InitialMaxWritten. OnFileComplete loses its fileCRC parameter.
 
-Red check observed: moving the written-append above the error check in
-Drain fails TestFileWriter_FailedWriteIsNotReportedAsWritten with
-'article 5 reported written although its WriteAt failed'.
+Red checks observed (two): appending to w.written before the error check
+in Drain fails FailedWriteIsNotReportedAsWritten with 'article 5
+reported written although its WriteAt failed'; appending at buffer time
+in Accept fails DrainReportsOnlyWrittenArticles with 'writtenSoFar =
+[...] before any drain, want empty'.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -3014,7 +3107,21 @@ git grep -n 'Emitted-is-transient\|emitted is transient'
 git grep -n 'crcValid\|crcParts\|combineWholeFileCRC'
 git grep -n 'acked Done\|acked as done\|before any downstream code'
 git grep -n 'pwrite → Truncate → Sync → Close → flush'
+# Added by the 2026-08-11 re-derivation: #358 introduced this vocabulary and
+# documented it across three docs. All of it describes the Written boundary,
+# which this change moves.
+git grep -n 'outcomeDurable\|outcomeDeferred\|writeAndSettle\|failDrainedArticles'
+git grep -n 'reached WriteAt\|bytes reach disk\|once its bytes land'
+git grep -n 'does not defer acks to fsync'
 ```
+
+**#358 added 105 lines to `docs/assembler-storage-contract.md`, 27 to
+`docs/nntp-downloader-contract.md`, and touched `docs/ARCHITECTURE.md` plus two
+files under `docs/reviews/`.** Those are the newest and most confident
+statements of the model this change replaces, so they are the ones a later
+reader is most likely to trust. Sweep `docs/reviews/SYNTHESIS.md` and
+`docs/reviews/lane1-backend-core.md` too — the original plan omitted them
+because they did not yet contain durability claims.
 
 Every hit outside `docs/superpowers/` is a claim to fix or delete. Expect hits
 in `cmd/`, `test/`, `ui/`, `AGENTS.md`, and this plan itself.
@@ -3170,6 +3277,13 @@ R1–R4 → 2, 4; R5–R8 → 6, 10; R9–R12 → 6, 8; R13–R17 → 7; R18–R
 R23–R25 → 6, 7; R26–R30 → 10, 11; R31–R34 → 12 and each task's red check.
 
 **Known gaps, stated rather than hidden:**
+
+0. **Tasks 9 and 13 were re-derived on 2026-08-11 against `73d0c810`**, after
+   PR #358 (`913adf0d`) moved the ack boundary from accept to `WriteAt` and
+   closed #355. Tasks 1-8, 10-12 and 14 were checked and are unaffected: they
+   create new packages or touch files #358 did not. If further assembler work
+   lands before this plan executes, re-derive Task 9 again rather than patching
+   its citations — its premise is the part that goes stale, not its wording.
 
 1. **R15 (interruptible recomputation) is specified but not separately tested.**
    Task 7 implements `Resume` synchronously per file. If a 15 GB partial makes
