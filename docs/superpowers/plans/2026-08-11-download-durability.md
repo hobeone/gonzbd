@@ -2125,6 +2125,15 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `FactLog`, `ExtentStore`, `Bitmap`, `crc32util`.
 - Produces:
 
+**`firstArtIdx` is the file's first global article index**, i.e. `lo` from the
+manifest's `FileRange(fileIdx)`. `FileExtent.Durable` is indexed by *file-local*
+ordinal, so the bit for a fact is `fact.ArtIdx - firstArtIdx`. Treating the
+global `ArtIdx` as the bit position is correct only for a job's first file and
+silently wrong for every other one — the barrier avoids this by taking a
+`FileLocalOrdinal` mapper from its `SyncTarget`, and the resumer has no
+equivalent, so the caller must supply the offset. An index outside
+`[0, artCount)` is `ErrArticleOutOfRange`, never a silently clear bit.
+
 ```go
 type ResumeResult struct {
 	Durable      Bitmap
@@ -2136,7 +2145,7 @@ type ResumeResult struct {
 }
 
 func NewResumer(fl FactLog, es ExtentStore, log *slog.Logger) *Resumer
-func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, artCount int) (ResumeResult, error)
+func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (ResumeResult, error)
 ```
 
 - [ ] **Step 1: Write the failing test**
