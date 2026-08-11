@@ -42,6 +42,15 @@ to ack, compute a CRC, or truncate.
   The stash stack is shared; the checkouts discard other agents' uncommitted
   edits. Restore only by copying back your own scratch copy.
 - **Every commit leaves the repo green:** `go build ./... && go test -race ./...`.
+  **One authorised exception: the Tasks 8+9 boundary.** After the cutover no
+  component mints a `DurableProof` until Task 10 wires the barrier's cadence,
+  so every test that drives a job to completion fails by construction. The user
+  explicitly authorised this rather than re-sequencing. Two consequences:
+  Tasks 8+9 must publish the **exact set** of suites expected to fail, and a
+  reviewer's job is to confirm the observed failures match that set and nothing
+  else; and **Task 10 does not close until the set is empty.** A red boundary
+  with an enumerated list is a known state; a red boundary without one is
+  indistinguishable from a broken change.
 - **Quality gates before every commit:** `go fix ./...`, `goimports -w .`,
   `go vet ./...`, `go test -race ./...`, `golangci-lint run ./...`.
 - **Conventional Commits**, scope = Go package name. Footer
@@ -2720,9 +2729,20 @@ carry the working tree forward.
 > the loss is permanent and silent.
 >
 > Task 3 adds an interim guard (skip the truncate when the extent is unknown).
-> **This task removes the interim guard and replaces the bound with
-> `FileExtent.VerifiedTo`**, which is the real fix: a verified extent describes
-> the file rather than the session. It must also restore the end-to-end pin
+> **This task removes the interim guard and bounds the truncate by the highest
+> durable fact end** — `max(offset + length)` over the articles whose durable
+> bit is set, computed from the `FactLog` at completion.
+>
+> **Do NOT use `FileExtent.VerifiedTo`.** An earlier revision of this plan said
+> to, and it was wrong in the dangerous direction: `VerifiedTo` is the *gapless
+> prefix* and stalls at the first hole, so a 40 GB file with one failed article
+> at 2 GB would be truncated to 2 GB. That is far worse than #342/#350 and it
+> destroys exactly the blocks par2 repairs from. Extent and gapless prefix are
+> different quantities.
+>
+> The high-water mark is derived from Class A rather than stored, so no second
+> authoritative copy exists (S5) and it is correct by construction. It costs one
+> `ForFile` query and a scan per file completion, off the hot path. It must also restore the end-to-end pin
 > deleted with the column — `internal/queue/max_written_persist_test.go`,
 > rewritten against `file_extents` — asserting that a file resumed with one
 > article at offset 0 keeps its full length. `internal/assembler/resume_extent_test.go`
