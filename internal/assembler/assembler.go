@@ -263,8 +263,12 @@ type openFile struct {
 	// emission (shouldn't happen under B.6's Emitted gate, but defence
 	// in depth) cannot double-count a part toward TotalParts.
 	seenFailed map[string]struct{}
-	// seenDone dedupes successful writes symmetrically with seenFailed.
-	seenDone map[string]struct{}
+	// seenDone dedupes successful writes symmetrically with seenFailed. The
+	// value is the offset the article was accepted at, which the duplicate
+	// branch needs in order to ask the write cache whether that copy's bytes
+	// are still buffered — a duplicate is deduped by Message-ID and may carry
+	// a different offset, so its own is the wrong one to look up.
+	seenDone map[string]int64
 	// crcParts accumulates per-article CRC32 values with their offsets, for
 	// the articles this run wrote. At file completion they are sorted by
 	// offset and combined with crc32util.Combine, which reconstructs the
@@ -1035,16 +1039,16 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writeCache, open map[fileKey]*openFile, key fileKey) bool {
 	if req.MessageID != "" {
 		if f.seenDone == nil {
-			f.seenDone = make(map[string]struct{})
+			f.seenDone = make(map[string]int64)
 		}
-		if _, dup := f.seenDone[req.MessageID]; dup {
+		if acceptedAt, dup := f.seenDone[req.MessageID]; dup {
 			// Re-emit the ack so the queue receives it even if a prior flush
 			// dropped it — but only once the first copy's bytes have left the
 			// cache. While they are still buffered, seenDone means the article
 			// was accepted, not that the file holds it, and re-emitting here
 			// would put back exactly the premature Done this path removed.
 			// The write that drains it will ack it.
-			if !wc.buffered(key, req.Offset) {
+			if !wc.buffered(key, acceptedAt) {
 				a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
 			}
 			if req.Data != nil {
@@ -1058,7 +1062,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 				// return is what keeps partsWritten from counting it twice,
 				// so it stays; only the ack moves into writeAndSettle with
 				// every other write.
-				f.seenDone[req.MessageID] = struct{}{}
+				f.seenDone[req.MessageID] = req.Offset
 				a.writeAndSettle(f, key, req, wc, open)
 				return false
 			}
@@ -1066,7 +1070,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 		// Recorded before the write is attempted, not after, so that a write
 		// path which fails can move the article to seenFailed without this
 		// function putting it straight back.
-		f.seenDone[req.MessageID] = struct{}{}
+		f.seenDone[req.MessageID] = req.Offset
 	}
 	a.writeAndSettle(f, key, req, wc, open)
 	return true

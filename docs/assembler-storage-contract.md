@@ -348,7 +348,11 @@ The assembler handles duplicates at multiple levels:
   means the article was accepted and counted toward `TotalParts`, not that the
   file holds it, so re-emitting there would restore exactly the premature
   `Done` that *Ack durability* removes. The write that drains the first copy
-  acks it. For the same reason a write path that fails moves the articles it
+  acks it. The cache is asked about the offset the *first* copy was accepted
+  at, which is what `seenDone` stores: dedup is keyed on the Message-ID, so a
+  duplicate may report a different yEnc offset, and asking about its own would
+  interrogate a slot the first copy never occupied — reading empty as "already
+  written". For the same reason a write path that fails moves the articles it
   lost out of `seenDone` and into `seenFailed`, so a later duplicate is not
   read as a success.
 - **Cross-state dedup**: If a MessageID was previously counted as a success and

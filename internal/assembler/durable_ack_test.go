@@ -90,7 +90,7 @@ func newAckFixture(t *testing.T, cacheBytes int64, closed bool) *ackFixture {
 		handle:   fh,
 		info:     FileInfo{Path: path},
 		key:      key,
-		seenDone: make(map[string]struct{}),
+		seenDone: make(map[string]int64),
 		crcValid: true,
 	}
 	return &ackFixture{
@@ -260,6 +260,36 @@ func TestDuplicateSuccessWhileBufferedIsNotReAcked(t *testing.T) {
 	if done, _ := x.settle(); !slices.Equal(done, []int32{0, 0}) {
 		t.Errorf("done acks = %v; a duplicate arriving after the bytes landed "+
 			"must still re-emit, so a dropped flush can be recovered", done)
+	}
+}
+
+// TestDuplicateAtADifferentOffsetIsNotReAcked is the same guard against a
+// duplicate that does not agree with the first copy about where the article
+// belongs.
+//
+// The dedup is keyed on the Message-ID, so a second copy reporting a different
+// yEnc offset still reaches the duplicate branch. Asking the cache about *that*
+// offset answers a question about a slot the first copy never occupied — it is
+// empty, so the guard would read "already written" and re-emit a Done for bytes
+// still sitting in memory. seenDone records the offset the article was accepted
+// at so the lookup asks about the right one.
+func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
+	x := newAckFixture(t, 1<<20, false)
+
+	if !x.accept(t, 0, 0, []byte("first copy")) {
+		t.Fatal("first copy was not accepted")
+	}
+
+	// Same Message-ID, different offset, while the first copy is buffered.
+	dup := articleReq(x.key, 0, 4096, []byte("same article, other offset"))
+	if x.a.handleSuccessArticle(x.f, dup, x.wc, x.open, x.key) {
+		t.Error("a duplicate must not be counted toward TotalParts")
+	}
+
+	if done, _ := x.settle(); len(done) != 0 {
+		t.Errorf("done acks = %v; the guard asked the cache about offset 4096, "+
+			"which the first copy never occupied, and read the empty slot as "+
+			"'already written' while its bytes were still buffered", done)
 	}
 }
 
