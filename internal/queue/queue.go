@@ -1698,10 +1698,11 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 // Both figures only ever advance, and the clamp is load-bearing rather than
 // defensive. The assembler reports whichever figure the write path that fired
 // happens to know: a coalesced run knows the new cursor, while a drained or
-// uncached write knows only the high-water mark and leaves the cursor at its
-// zero value. Taking the report literally would reset write_cursor to 0 on
-// every such flush, undoing the resume hint (#311) that the same call exists
-// to persist.
+// uncached write knows only the high-water mark and leaves the staged cursor
+// unchanged — usually zero, but whatever an earlier run in the same flush
+// cycle staged. Taking the report literally would reset write_cursor on every
+// such flush, undoing the resume hint (#311) that the same call exists to
+// persist.
 func (q *Queue) SetFileExtents(jobID string, fileIdx int, cursor, maxWritten int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

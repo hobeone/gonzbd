@@ -439,17 +439,16 @@ func TestExtentCountsOnlyWrittenBytes(t *testing.T) {
 			"that article is already acked done so it is never refetched",
 			reported, st.Size())
 	}
-	// Deliberately an inequality, not an equality. The poll loop breaks on the
-	// first report, which can land between the two coalesced runs, so the file
-	// may still grow before the stat — an equality check would race. The
-	// overshoot this test exists to catch is unbounded (the far article sits
-	// 40 articles past the end), so the inequality catches it just as surely.
 	// A deterministic floor rather than an equality. The poll loop breaks on
 	// the first report, which can land between the two coalesced runs, so the
 	// file may still grow before the stat — an equality check would race. This
 	// still pins the reported value against a constant or a systematic
-	// under-report, which a bare "greater than zero" would not: whatever run
-	// fired, it cleared the coalescing threshold by definition.
+	// under-report, which a bare "greater than zero" would not.
+	//
+	// The floor holds because a sub-threshold write stages nothing at all:
+	// below a full run flushContiguous returns nil, noteWritten is never
+	// called, and the poll loop does not break. So the first report is a
+	// completed run or nothing — never a partial value below this bound.
 	if reported < contiguousRunSize {
 		t.Errorf("persisted maxWritten = %d, want at least %d — a coalesced run "+
 			"had to clear the threshold to be written at all", reported,

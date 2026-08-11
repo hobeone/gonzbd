@@ -227,8 +227,9 @@ type Options struct {
 	// of the stored and reported value for each figure. A flush reports
 	// whichever figures the write paths that fired happen to know: a coalesced
 	// run knows the new cursor, while a drained or uncached write knows only
-	// the high-water mark and leaves the cursor at zero. Storing that zero
-	// literally would erase the resume hint (#311) this call exists to keep.
+	// the high-water mark and leaves the staged cursor unchanged — usually
+	// zero, but whatever an earlier run in the same cycle staged. Storing a
+	// report literally would erase the resume hint (#311) this call keeps.
 	SetFileExtents func(jobID string, fileIdx int, cursor, maxWritten int64) error
 }
 
@@ -1080,21 +1081,27 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	// earlier run, describing a file this process has not measured, so it can
 	// exceed what is actually on disk — the download directory may have been
 	// removed between runs, pre-allocation may have failed and been logged
-	// rather than fatal, or a persisted write cursor may have been advanced by
-	// drainFile across a range whose WriteAt then failed. Truncate would then extend the file with
-	// exactly the trailing zeros this call exists to remove, and a job with no
-	// par2 has no repair stage to notice. Trimming is the only direction that
-	// was ever intended.
-	if size, err := f.handle.Stat(); err != nil {
+	// rather than fatal, or a persisted write cursor may have been advanced
+	// by drainFile across a range whose WriteAt then failed. Truncating to it
+	// would append exactly the trailing zeros this call exists to remove, and
+	// a job with no par2 has no repair stage to notice. Trimming is the only
+	// direction that was ever intended.
+	//
+	// Each outcome logs for itself rather than routing through the
+	// zero-length case: a file skipped because the target overshoots is not
+	// empty, and saying so would misdescribe the one event an operator has to
+	// go on.
+	size, statErr := f.handle.Stat()
+	switch {
+	case f.maxWritten <= 0:
+		a.log.Debug("zero-length file completed", "path", f.info.Path)
+	case statErr != nil:
 		a.log.Warn("stat completed file; skipping truncate",
-			"path", f.info.Path, "error", err)
-		f.maxWritten = 0
-	} else if f.maxWritten > size.Size() {
+			"path", f.info.Path, "error", statErr)
+	case f.maxWritten > size.Size():
 		a.log.Debug("truncate target exceeds the file on disk; leaving it alone",
 			"path", f.info.Path, "target", f.maxWritten, "size", size.Size())
-		f.maxWritten = 0
-	}
-	if f.maxWritten > 0 {
+	default:
 		if err := f.handle.Truncate(f.maxWritten); err != nil {
 			a.log.Error("truncate completed file to decoded size",
 				"path", f.info.Path,
@@ -1102,10 +1109,6 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 				"error", err,
 			)
 		}
-	} else {
-		a.log.Debug("zero-length file completed",
-			"path", f.info.Path,
-		)
 	}
 	// Durability: fsync before closing and reporting completion.
 	if err := f.handle.Sync(); err != nil {
