@@ -168,9 +168,14 @@ type Options struct {
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
 	// TotalParts for a file have been written and its handle has been closed.
 	// fileCRC is the CRC32 of the complete file, computed by combining
-	// per-article CRCs in offset order. It is zero if any articles lacked
-	// CRC information (e.g. UU-encoded or failed). The callback should be
-	// cheap; expensive work should be dispatched asynchronously.
+	// per-article CRCs in offset order. It is zero when no such CRC is
+	// available: an article lacked CRC information (UU-encoded or failed), a
+	// write failed, the file could not be trimmed to its decoded extent, or
+	// this run's articles do not cover the whole file — the resume case,
+	// where an earlier run's articles are not re-dispatched (#349). Consumers
+	// must read zero as "unavailable", never as a mismatch.
+	// The callback should be cheap; expensive work should be dispatched
+	// asynchronously.
 	OnFileComplete func(jobID string, fileIdx int, fileCRC uint32)
 
 	// OnLowDisk, if non-nil, is called when free space on the target
@@ -260,13 +265,24 @@ type openFile struct {
 	seenFailed map[string]struct{}
 	// seenDone dedupes successful writes symmetrically with seenFailed.
 	seenDone map[string]struct{}
-	// crcParts accumulates per-article CRC32 values with their offsets.
-	// At file completion, these are sorted by offset and combined using
-	// crc32util.Combine to produce the whole-file CRC32.
+	// crcParts accumulates per-article CRC32 values with their offsets, for
+	// the articles this run wrote. At file completion they are sorted by
+	// offset and combined with crc32util.Combine, which reconstructs the
+	// whole-file CRC32 only when they tile the file's extent exactly — see
+	// combineWholeFileCRC, which enforces that rather than assuming it.
 	crcParts []crcPart
-	// crcValid tracks whether all articles had valid CRC values.
-	// If any article had CRC=0 (UU-encoded or failed), this is set
-	// to false and the final file CRC is reported as 0.
+	// crcValid tracks whether a whole-file CRC is reportable for the bytes
+	// this run put on disk. It is cleared by a failed article, a failed
+	// write (inline or drained), an article with CRC=0 (UU-encoded), and by
+	// any finalizeFile branch that leaves the file untrimmed — a failed
+	// Stat, a truncate target above the file on disk, or a failed Truncate —
+	// since the trailing zeros that survive there are not bytes the recorded
+	// parts describe.
+	//
+	// It is not a statement about the file's coverage. A resumed run is not
+	// sent the articles a previous run completed, so nothing fails and
+	// nothing clears this flag, yet crcParts still describes only part of
+	// the file. That gap is why the combination is guarded separately (#349).
 	crcValid bool
 }
 
@@ -1031,7 +1047,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 		// The file is now missing this part's bytes, so a whole-file CRC
 		// combined from the parts that did land would describe a byte range
 		// the file does not have. Report it as unavailable instead: quickcheck
-		// then classifies the file as NoCRC ("download had failures") rather
+		// then classifies the file as NoCRC ("could not be checked") rather
 		// than Mismatched ("corrupted"). Both route to par2 repair, but only
 		// one of them is true.
 		//
@@ -1068,6 +1084,47 @@ func (a *Assembler) recordArticleCRC(f *openFile, req WriteRequest) {
 	}
 }
 
+// combineWholeFileCRC folds per-article CRCs into the CRC of the whole file.
+//
+// crc32util.Combine reconstructs CRC(A||B) from the two parts' CRCs and B's
+// length alone; it is given no offsets, so it cannot tell an adjacent part from
+// a distant one. The fold below therefore yields the CRC of the parts
+// concatenated, which is the CRC of the file only when they tile [0, total)
+// exactly. Skipping bytes is not harmless even when those bytes are zero:
+// appending n bytes multiplies the CRC state by M^n whatever their value.
+//
+// parts must already be sorted by offset. ok is false whenever they do not tile
+// exactly — a hole below a part, an overlap, or a span that does not end
+// precisely at total, whether short of it or past it. In
+// practice that is nearly always the resume case, where articles a previous run
+// completed are not re-dispatched and so contribute no part (#349); an overlap
+// would instead mean a defect upstream in the dedup or CRC-recording path, so
+// do not read a false here as proof the file was resumed.
+//
+// An empty parts slice tiles a zero-length file, so it reports ok — callers
+// distinguishing "no CRC recorded" from "verified empty" must check that
+// themselves, as finalizeFile does with its len(f.crcParts) > 0 guard.
+func combineWholeFileCRC(parts []crcPart, total int64) (uint32, bool) {
+	var (
+		crc  uint32
+		next int64
+	)
+	for _, p := range parts {
+		// Seeding from 0 rather than parts[0].crc is what makes this check
+		// cover the first part too: Combine(0, c, n) == c, so the old seed
+		// silently assumed parts[0] began at offset 0.
+		if p.offset != next {
+			return 0, false // a hole below this part, or an overlap
+		}
+		crc = crc32util.Combine(crc, p.crc, p.len)
+		next += p.len
+	}
+	if next != total {
+		return 0, false // the parts stop short of the file's extent
+	}
+	return crc, true
+}
+
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
 	// Drain any remaining cached articles for this file before close.
 	a.drainCacheForFile(wc, f, key)
@@ -1091,6 +1148,14 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	// zero-length case: a file skipped because the target overshoots is not
 	// empty, and saying so would misdescribe the one event an operator has to
 	// go on.
+	//
+	// The three failure branches also clear crcValid: the pre-allocated
+	// trailing zeros survive there, so the bytes on disk are not the
+	// [0, maxWritten) the recorded parts describe, and reporting a CRC over
+	// that range would hand par2 a mismatch on a file nothing is actually
+	// wrong with — the same false corruption claim #349 removes for resumed
+	// files. The zero-length branch is not one of them: it is not a failure,
+	// nothing was written, and there is no extent for a CRC to describe.
 	size, statErr := f.handle.Stat()
 	switch {
 	case f.maxWritten <= 0:
@@ -1098,11 +1163,14 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 	case statErr != nil:
 		a.log.Warn("stat completed file; skipping truncate",
 			"path", f.info.Path, "error", statErr)
+		f.crcValid = false
 	case f.maxWritten > size.Size():
 		a.log.Debug("truncate target exceeds the file on disk; leaving it alone",
 			"path", f.info.Path, "target", f.maxWritten, "size", size.Size())
+		f.crcValid = false
 	default:
 		if err := f.handle.Truncate(f.maxWritten); err != nil {
+			f.crcValid = false
 			a.log.Error("truncate completed file to decoded size",
 				"path", f.info.Path,
 				"expected", f.maxWritten,
@@ -1135,20 +1203,28 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 
 	// Compute the whole-file CRC32 by combining per-article CRCs
 	// in offset order. This produces the same CRC as if the file
-	// were read sequentially, which is what par2 files store.
+	// were read sequentially, which is what par2 files store — but only
+	// when this run recorded a part for every byte of the file. When it
+	// did not, there is no whole-file CRC to report and fileCRC stays 0,
+	// which quickcheck reads as NoCRC ("unavailable") rather than as a
+	// mismatch.
 	var fileCRC uint32
 	if f.crcValid && len(f.crcParts) > 0 {
 		slices.SortFunc(f.crcParts, func(a, b crcPart) int {
 			return cmp.Compare(a.offset, b.offset)
 		})
-		fileCRC = f.crcParts[0].crc
-		for _, p := range f.crcParts[1:] {
-			fileCRC = crc32util.Combine(fileCRC, p.crc, p.len)
+		if crc, ok := combineWholeFileCRC(f.crcParts, f.maxWritten); ok {
+			fileCRC = crc
+			a.log.Debug("computed file CRC32",
+				"job", req.JobID, "fileidx", req.FileIdx,
+				"path", f.info.Path, "crc32", fileCRC,
+				"parts", len(f.crcParts))
+		} else {
+			a.log.Debug("partial article coverage; reporting file CRC as unavailable",
+				"job", req.JobID, "fileidx", req.FileIdx,
+				"path", f.info.Path, "parts", len(f.crcParts),
+				"extent", f.maxWritten)
 		}
-		a.log.Debug("computed file CRC32",
-			"job", req.JobID, "fileidx", req.FileIdx,
-			"path", f.info.Path, "crc32", fileCRC,
-			"parts", len(f.crcParts))
 	}
 
 	if a.opts.OnFileComplete != nil {
@@ -1371,6 +1447,14 @@ func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, rea
 				"error", err,
 			)
 			telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
+			// The file is now missing this article's bytes, so a whole-file
+			// CRC combined from the parts that did land would describe a byte
+			// range the file does not have. The inline write path clears this
+			// for the same condition; a drained write is no different. Without
+			// it a later article can raise maxWritten past the failed range and
+			// the parts still tile it, producing a confident CRC over content
+			// the disk lacks (#349).
+			f.crcValid = false
 		} else {
 			a.noteWritten(f, art.offset, int64(len(art.data)))
 		}

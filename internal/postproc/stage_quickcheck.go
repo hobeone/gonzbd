@@ -170,7 +170,7 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 	if crcResult.NoCRC > 0 {
 		for _, name := range crcResult.NoCRCFiles {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[quickcheck] ⚠ %s: download had failures, CRC unavailable", name))
+				fmt.Sprintf("[quickcheck] ⚠ %s: CRC unavailable, verifying with par2", name))
 		}
 	}
 

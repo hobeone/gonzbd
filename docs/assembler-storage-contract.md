@@ -139,9 +139,20 @@ for this (job, file)     │                              │
    headers) are accumulated with their byte offsets in `crcParts`. At file
    completion, parts are sorted by offset and combined via
    `crc32util.Combine(crc_a, crc_b, len_b)` to produce a whole-file CRC32
-   without re-reading the file from disk. If any article had CRC=0 (UU-encoded,
-   failed, or write error), `crcValid` is set false and the file CRC is reported
-   as 0.
+   without re-reading the file from disk. `crcValid` is set false — and the file
+   CRC reported as 0 — when any article had CRC=0 (UU-encoded), when an article
+   failed, when a write failed (inline or drained), and when a completed file is
+   left untrimmed because its `Stat` failed, its truncate target sat above the
+   file on disk, or its `Truncate` failed. The trailing zeros that survive in
+   those last three cases are not bytes the recorded parts describe.
+
+   `Combine` is positional: it reconstructs `CRC(A||B)` from the two CRCs and
+   `B`'s length alone, with no offsets, so the fold equals the file's CRC only
+   when the parts tile `[0, maxWritten)` exactly. `combineWholeFileCRC` enforces
+   that and reports 0 when they do not — the resume case, where an earlier run's
+   articles are never re-dispatched and so contribute no part. Skipping bytes is
+   not harmless even when they are zero, since appending `n` bytes multiplies
+   the CRC state by `M^n` whatever their value.
 
 6. **Offset bounds checking**: `offsetInRange` rejects `WriteRequest` items
    whose offset is negative, whose offset+length overflows int64, or whose write
@@ -416,13 +427,17 @@ articles or sparse file regions. The coordination model:
   and found worse than leaving it alone — one had an unbounded stranding
   bound, the other regressed hole-free files. Measure the residency cost
   before attempting it again.
-- **A resumed file's whole-file CRC covers only part of the file.**
-  `finalizeFile` combines `crcParts` without checking they start at offset 0 or
-  tile without holes, and a resumed run only accumulates parts for the articles
-  it received. `crcValid` stays true, so the subrange CRC is reported as
-  trustworthy and QuickCheck reads it as a mismatch. The file is correct on
-  disk after #342; this sends it to a needless repair anyway. Tracked as #349,
-  and it shares the persistence question with the high-water mark above.
+- **A resumed file still has no whole-file CRC, only an honest absence of one.**
+  A resumed run accumulates parts for the articles it received, and `crcValid`
+  stays true because nothing failed, so `finalizeFile` used to report the
+  subrange CRC as trustworthy and QuickCheck read it as a mismatch on a file
+  that was correct on disk after #342. `combineWholeFileCRC` now checks the
+  parts tile `[0, maxWritten)` and reports 0 — read as NoCRC, "unavailable" —
+  when they do not, so the needless repair no longer comes with a false
+  corruption claim (#349). Producing a *correct* CRC across a restart needs a
+  gapless prefix CRC persisted per file, which the write cursor cannot carry
+  because `drainFile` advances it past holes by design. Tracked as #353, and it
+  shares the persistence question with the high-water mark above.
 - **The syscall-reduction figure above is unmeasured.** "Reducing syscall
   count by 8–16×" states a ratio no benchmark in this repository produces. A
   sweep of `WriteAt` chunk sizes over the same payload found wall-clock flat

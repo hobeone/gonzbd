@@ -34,8 +34,12 @@ type CRCVerifyResult struct {
 	// Mismatched is the count of files whose CRCs did not match.
 	Mismatched int
 	// NoCRC is the count of par2-tracked files whose assembled CRC was
-	// unavailable (articles failed during download). These are the most
-	// important files to verify via par2 — they likely have corruption.
+	// unavailable. A failed download is one cause, but so is a resumed file
+	// that is perfectly intact: the articles an earlier run completed are
+	// not re-fetched, so they contribute nothing to the combination and no
+	// whole-file CRC can be produced. NoCRC therefore says the file could
+	// not be checked, not that it is damaged — which is why par2 has to
+	// decide.
 	NoCRC int
 	// NotInPar2 is the count of assembled files not tracked by par2.
 	// This is expected and benign — par2 files, .nfo files, etc.
@@ -140,15 +144,17 @@ func VerifyCRCsWithOptions(files []AssembledFile, sets []Set, log *slog.Logger, 
 			entry, inPar2 = matchFlattened(af, par2Index)
 		}
 
-		// Files with no assembled CRC (articles failed during download).
+		// Files with no assembled CRC: the download failed, or the file was
+		// resumed and no whole-file CRC could be computed for it.
 		if af.CRC32 == 0 {
 			if inPar2 {
-				// This is a par2-tracked file that we can't verify
-				// because articles failed — likely has corruption.
+				// A par2-tracked file we cannot check from the assembled
+				// CRC. Whether it is damaged is unknown here, so par2 is
+				// left to answer it.
 				entry.consumed = true
 				result.NoCRC++
 				result.NoCRCFiles = append(result.NoCRCFiles, af.FileName)
-				log.Warn("verifycrc: par2-tracked file has no assembled CRC (download had failures)",
+				log.Warn("verifycrc: par2-tracked file has no assembled CRC to check",
 					"file", af.FileName)
 			} else {
 				result.NotInPar2++
