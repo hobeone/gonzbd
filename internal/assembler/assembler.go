@@ -1011,8 +1011,9 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
 		return false
 	}
-	// Cross-check: if this MessageID was already counted as a success,
-	// don't increment partsWritten again — just record the failure ack.
+	// Cross-check: if this MessageID was already counted as a success, it must
+	// neither increment partsWritten again nor record a failure ack here. See
+	// the note below the seenFailed insert for why the ack is suppressed.
 	alreadyCounted := false
 	if f.seenDone != nil {
 		if _, was := f.seenDone[req.MessageID]; was {
