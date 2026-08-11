@@ -651,3 +651,123 @@ func TestBuildContiguousRunStopsAtAZeroLengthArticle(t *testing.T) {
 			"a zero-length article at the write cursor")
 	}
 }
+
+// TestFailArticleMovesTheArticleOutOfSeenDone pins the cross-state half of the
+// dedup rule: a write path that loses an article must move it out of seenDone,
+// not merely record a Failed ack.
+//
+// The two dedup branches of handleSuccessArticle do very different things. A
+// seenDone hit discards the request — the buffer goes back to the pool and no
+// write is attempted, because the article is held to be already accounted for.
+// A seenFailed hit still writes, and only suppresses the second count toward
+// TotalParts. So the delete is what routes a retry into the branch that can
+// actually heal the file. Leaving the entry would send every retry of a failed
+// article down the discard path, and it would be silent: the Failed ack still
+// went out, so nothing looks wrong until the file is short on disk.
+//
+// The cache is disabled here so the write is inline and the bytes are on disk
+// when the call returns, which is what makes the assertion about the file
+// itself rather than about an intention to write.
+func TestFailArticleMovesTheArticleOutOfSeenDone(t *testing.T) {
+	x := newAckFixture(t, 0, false)
+
+	if !x.accept(t, 0, 0, []byte("first")) {
+		t.Fatal("article was not accepted")
+	}
+	if _, ok := x.f.seenDone["msg0"]; !ok {
+		t.Fatal("precondition: accepting the article should record it in seenDone")
+	}
+
+	x.a.failArticle(x.f, articleID{msgID: "msg0", artIdx: 0})
+
+	if _, stillDone := x.f.seenDone["msg0"]; stillDone {
+		t.Error("the failed article is still in seenDone; its retry would take " +
+			"the discard branch and never be written")
+	}
+	if _, failed := x.f.seenFailed["msg0"]; !failed {
+		t.Error("the failed article was not recorded in seenFailed")
+	}
+
+	// The consequence the move exists for: the retry's bytes reach the file.
+	if x.accept(t, 0, 0, []byte("retry")) {
+		t.Error("the retry was counted toward TotalParts a second time")
+	}
+	got, err := os.ReadFile(x.f.info.Path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "retry" {
+		t.Errorf("file holds %q, want %q; the retry was discarded instead of "+
+			"written, which is what leaving the seenDone entry causes", got, "retry")
+	}
+}
+
+// TestFailArticleInitialisesSeenFailed covers the nil-map branch: failArticle
+// can be the first thing to touch seenFailed, since openTargetFile leaves it nil.
+func TestFailArticleInitialisesSeenFailed(t *testing.T) {
+	x := newAckFixture(t, 1<<20, false)
+	x.f.seenFailed = nil
+
+	x.a.failArticle(x.f, articleID{msgID: "msg7", artIdx: 7})
+
+	if _, failed := x.f.seenFailed["msg7"]; !failed {
+		t.Error("seenFailed was nil and failArticle did not initialise it")
+	}
+}
+
+// TestFailArticleWithoutAMessageIDStillAcks covers an article whose Message-ID
+// never made it onto the request. There is no dedup key to move, but the queue
+// still has to hear that the article failed or the job cannot finish.
+func TestFailArticleWithoutAMessageIDStillAcks(t *testing.T) {
+	x := newAckFixture(t, 1<<20, false)
+
+	x.a.failArticle(x.f, articleID{msgID: "", artIdx: 3})
+
+	if len(x.f.seenFailed) != 0 {
+		t.Errorf("seenFailed = %v; an empty Message-ID is not a dedup key", x.f.seenFailed)
+	}
+	if _, failed := x.settle(); !slices.Equal(failed, []int32{3}) {
+		t.Errorf("failed acks = %v, want [3]; the queue must still hear the failure", failed)
+	}
+}
+
+// TestFailDrainedArticlesAcksEveryArticle pins the path taken when a drain
+// produces articles for a file that is no longer open. Nothing can write them,
+// so each one has to be failed individually — a single ack, or none, would
+// strand the rest as permanently unfinished.
+func TestFailDrainedArticlesAcksEveryArticle(t *testing.T) {
+	x := newAckFixture(t, 1<<20, false)
+
+	x.a.failDrainedArticles(x.key, []bufferedArticle{
+		{offset: 0, data: []byte("a"), id: articleID{msgID: "msg0", artIdx: 0}},
+		{offset: 1, data: nil, id: articleID{msgID: "msg1", artIdx: 1}},
+		{offset: 2, data: []byte("c"), id: articleID{msgID: "msg2", artIdx: 2}},
+	})
+
+	done, failed := x.settle()
+	if !slices.Equal(failed, []int32{0, 1, 2}) {
+		t.Errorf("failed acks = %v, want [0 1 2]; every drained article must be "+
+			"settled or it stays unfinished forever", failed)
+	}
+	if len(done) != 0 {
+		t.Errorf("done acks = %v; articles that were never written are not done", done)
+	}
+}
+
+// TestAckArticleDoneUsesTheFilesJobAndTheArticlesIndex pins the field pairing.
+// The job comes from the open file and the index from the article's recorded
+// identity; crossing them would ack a different article, which is unrecoverable
+// once the queue persists it.
+func TestAckArticleDoneUsesTheFilesJobAndTheArticlesIndex(t *testing.T) {
+	x := newAckFixture(t, 1<<20, false)
+
+	x.a.ackArticleDone(x.f, articleID{msgID: "msg9", artIdx: 9})
+
+	done, failed := x.settle()
+	if !slices.Equal(done, []int32{9}) {
+		t.Errorf("done acks = %v, want [9]", done)
+	}
+	if len(failed) != 0 {
+		t.Errorf("failed acks = %v, want none", failed)
+	}
+}
