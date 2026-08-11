@@ -250,7 +250,10 @@ golangci-lint run ./internal/<package>/...
 **Check for *new* lint findings, not just a clean run.** This codebase has
 pre-existing accepted lint debt (e.g. `prealloc` on `var buf []byte; buf =
 append(...)` patterns repeated through `parser_test.go`). Compare the
-before/after issue counts (`git stash` → lint → `git stash pop` → lint) so
+before/after issue counts — lint your branch, then lint the merge base
+(`git worktree add` a scratch checkout of it, never `git stash`: the stash
+stack is shared with any other session in this repo and a pop can take their
+work) — so
 you don't get blocked by debt you didn't introduce, but also don't add to it
 gratuitously — if your new code uses the same repeated-append pattern,
 preallocate it (`make([]byte, 0, len(a)+len(b)+...)`) since you already know

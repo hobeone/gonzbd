@@ -132,16 +132,49 @@ The required order for any fix:
    where possible).
 2. **Run it against the unfixed code and watch it FAIL.** For a pre-existing
    bug, write the test before touching the code. For a regression guard added
-   alongside a fix, stash or revert the fix (e.g. the one-line change) and
-   confirm the test goes red. Read the failure message — it must fail because of
-   the bug, not a typo or wrong setup.
+   alongside a fix, revert the fix and confirm the test goes red. Read the
+   failure message — it must fail because of the bug, not a typo or wrong setup.
+
+   Revert by copying the file aside and restoring from that copy:
+
+   ```bash
+   SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+   cp internal/pkg/target.go "$SCRATCH/target.bak.go"
+   # revert the fix in place, or neuter its condition
+   go test ./internal/pkg/ -run TestTheNewPin   # MUST fail, for the right reason
+   cp "$SCRATCH/target.bak.go" internal/pkg/target.go
+   ```
+
+   **Never `git stash`** — the stash stack is shared with any other session
+   working in this repo, and a pop can take their work. Prefer restoring from
+   your own copy over `git checkout -- <path>`, which also discards any
+   unrelated uncommitted edits in that file.
+
+   **Revert each half separately.** A fix touching two call sites needs two
+   reverts; one half being pinned says nothing about the other.
+
+   **Prefer neutering a condition to deleting a block.** Deleting often breaks
+   the build instead of the test, and a compile error does not demonstrate the
+   test would have caught the behaviour.
+
+   **Confirm the mutation landed where you meant.** A scripted string-replace
+   can match an identical branch elsewhere in the same file and produce a red
+   result that proves nothing. Anchor on text unique to the target.
 3. **Apply the fix**, confirm the test now passes, and confirm the rest of the
    suite stays green.
 
-**The cheap pre-commit check for any `fix:` + `test:` pair:** mentally (or
-actually) revert the fix and confirm the new test fails. If it still passes, the
-test is exercising the wrong branch or input — fix the *test*, not just the
-code. The fix and its test belong in the same change so this is verifiable.
+**The pre-commit check for any `fix:` + `test:` pair:** actually revert the fix
+and confirm the new test fails. Not "mentally" — that is what this said before,
+and pins that passed against unfixed code shipped anyway, because the failure
+modes are not visible on reading. One assertion degenerated to `0 > 0`; another
+asserted on a value the code only reports after a subsequent write, so with the
+input merely buffered there was nothing to observe and the check held
+vacuously. If the test still passes, it is exercising the wrong branch or input
+— fix the *test*, not just the code. The fix and its test belong in the same
+change so this is verifiable.
+
+Record the observed failure message in the commit body or PR. A red-green claim
+without the message it produced is an assertion, not evidence.
 
 **For de-flaking concurrency/timing tests**, the analogous proof is
 `go test -race -count=N` (N ≥ 50, ideally also under `GOMAXPROCS=1`): a single

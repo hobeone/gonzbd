@@ -126,13 +126,82 @@ Each logical change is a self-contained unit of work. The workflow is:
 1. **Read** the relevant spec/architecture sections.
 2. **Implement** the change. For a bug fix, write the failing test *first* and
    confirm it fails on the unpatched code before applying the fix (see
-   `docs/go-standards.md` § Red-Green Discipline).
+   `docs/go-standards.md` § Red-Green Discipline, and the mechanical procedure
+   below — "confirm" means *observed*, not reasoned).
 3. **Verify** all quality gates pass (see below).
-4. **Commit** with a Conventional Commits message. Mention the plan step in the
+4. **Sweep** the comments and docs the change falsified (see below).
+5. **Commit** with a Conventional Commits message. Mention the plan step in the
    body if useful context.
 
 Each commit must leave the repository in a working state
 (`go build ./... && go test ./...` passes).
+
+#### Step 2 in practice: the red check is mechanical, not mental
+
+A test written to pin a fix is not a pin until that fix has been reverted and
+the test *observed* to fail. "Mentally reverting" is not sufficient — it is
+already what this file said, and pins that passed against unfixed code have
+shipped anyway. Two ways they slip through: an assertion that degenerates to a
+tautology, and an assertion on a value the code only produces under conditions
+the test never creates.
+
+```bash
+SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
+cp internal/pkg/target.go "$SCRATCH/target.bak.go"
+# ... revert the fix in place, or neuter its condition ...
+go test ./internal/pkg/ -run TestTheNewPin        # MUST fail, for the right reason
+cp "$SCRATCH/target.bak.go" internal/pkg/target.go
+```
+
+**Never `git stash`** — the stash stack is shared with any other session in this
+repo and a pop can take their work. Restore from your own copy rather than
+`git checkout -- <path>`, which also discards unrelated uncommitted edits in
+that file.
+
+- **Revert each half separately.** A fix with two call sites needs two reverts;
+  one half being pinned says nothing about the other.
+- **Prefer neutering a condition to deleting a block.** Deleting often breaks
+  the build instead of the test, and a compile error does not demonstrate the
+  test would have caught the behaviour.
+- **Confirm the mutation landed where you meant.** A scripted string-replace
+  can match an identical branch elsewhere in the file and produce a red result
+  that proves nothing. Anchor on text unique to the target.
+
+Record the observed failure message in the commit body or PR. A red-green claim
+without the message it produced is an assertion, not evidence.
+
+#### Step 4 in practice: sweep the claim, not the file
+
+A behaviour change falsifies the same sentence in several places at once, and
+they are usually **not** in the diff — an interface doc, a sibling field's
+comment, a `docs/*.md` section, a migration's comment block. Fixing the copy
+you happened to be editing leaves the rest reading as authoritative.
+
+Take each claim the change invalidated and grep for its distinctive phrasing
+**from the repository root**, rather than re-reading the files you touched:
+
+```bash
+git grep -n 'bytes that reached disk'   # tracked files only, so no ui/dist or node_modules
+```
+
+`git grep` rather than a path list, because the copies are not where you expect
+— they turn up in `cmd/`, `test/`, `ui/`, the root `AGENTS.md`, and this file.
+Restricting the search to `internal/` and `docs/` is how the first draft of this
+section missed that `docs/go-standards.md` still said to `git stash`, in the
+same change that added the rule against it.
+
+Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
+It and the grep cover different things: the analyzer reads the comments you
+changed, the grep finds the ones you didn't.
+
+Do this **once, on the last round** of a review-fix loop, not on every round:
+each round's own fix creates fresh drift, so an early sweep goes stale.
+
+**Migrations are the case that cannot be fixed later.** A wrong claim in an
+applied `goose` migration is frozen — the file must not be edited afterwards.
+Sweep any migration this change adds *before* it merges; if a stale claim is
+found in one already applied, correct it in a new migration's comment block and
+say which statement it supersedes (010 does this for 005).
 
 ### Code Review Reception Protocol
 
@@ -177,6 +246,12 @@ go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
 ```
+
+Two gates in the Per-Change Commit Cycle above are not scripts and so are not
+in that block, but they are not optional: the **observed** red check (step 2)
+and the **claim sweep** (step 4). Neither has a tool that fails the build, which
+is exactly why both have been skipped in practice while every scripted gate
+stayed green.
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
 detector, so `go test -race ./...` is a separate, required step.
