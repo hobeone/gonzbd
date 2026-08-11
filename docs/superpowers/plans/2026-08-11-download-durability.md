@@ -2163,6 +2163,22 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Task 8: Derive the work set in the queue
 
+> **Regression debt this task MUST discharge.** Task 3 removed
+> `job_files.bytes_downloaded` and `failed_bytes` with no replacement, because
+> the replacement is this task's derivation. Between Task 3 and here, a
+> **non-resident job reports 0 failed bytes and an inflated remaining figure**
+> until it is promoted. Two tests were deleted with the columns and must be
+> restored, passing, before this task is complete:
+>
+> - `TestRemainingBytes_IdenticalResidentAndNonResident`
+> - `TestFailedBytes_SurvivesRestartNonResident`
+>
+> Restoring them is not optional polish. Residency parity — a job reporting the
+> same figures whether or not its manifest is resident — is the property
+> `docs/queue-lifecycle.md` was written to defend, and it is currently broken
+> on purpose. A reviewer must reject this task if those two tests are absent or
+> skipped.
+
 **Files:**
 - Create: `internal/queue/workset.go`
 - Modify: `internal/queue/queue.go` (add `AckDurable`, delete the old ack API),
