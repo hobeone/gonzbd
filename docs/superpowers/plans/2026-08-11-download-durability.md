@@ -2985,6 +2985,16 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 >   from the `SyncTarget` implementor (Task 9's assembler), not the barrier.
 >   Confirm it is actually bounded there — `check_lock_io` descends only one
 >   call level and cannot see it.
+> - **`SyncTarget` has no path accessor**, so `Barrier.routeFault` classifies
+>   every fault with an empty `Path`. R27 wants a stall reason a user can act
+>   on, and "ENOSPC on sync" without a path is thinner than it needs to be.
+>   Add one when wiring the assembler as the `SyncTarget`.
+> - **Note, not a task:** `priorExtent` calls `ExtentStore.Load(jobID)` — all of
+>   a job's extents — once per file, which is O(files²) rows scanned per
+>   barrier. Task 6's review measured this as unmeasurable against the ~100
+>   `fsync`s in the same barrier and recommended leaving it. If Task 10 hoists
+>   the load into `Run` while adding per-job serialisation, take it then;
+>   otherwise leave it alone.
 
 **Files:**
 - Modify: `internal/app/app.go:326-346`, `internal/app/pipeline.go`,
