@@ -1,0 +1,848 @@
+package durability
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"hash/crc32"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/crc32util"
+)
+
+// TestResume_FastPathAdoptsWhenStampMatches pins the O(1) path (B3).
+func TestResume_FastPathAdoptsWhenStampMatches(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{0xAB}, 300), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(4)
+	bm.Set(0)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: 200, PrefixCRC: 0x1234, HasPrefixCRC: true,
+		Size: 300, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Recomputed {
+		t.Error("Recomputed = true with a matching stamp — the fast path did not fire")
+	}
+	if got.Restart {
+		t.Error("Restart = true for a file whose stamp matched")
+	}
+	if got.Durable.Count() != 2 || got.VerifiedTo != 200 || got.PrefixCRC != 0x1234 {
+		t.Errorf("fast path did not adopt the cache: %+v", got)
+	}
+	// The bitmap must come back at the article count, not at the byte width
+	// persistence rounded it up to. ExtentStore.Load cannot apply Bitmap's
+	// tail-word mask — its n is always a multiple of 64 — so a bitmap adopted
+	// as loaded carries any padding bits a damaged blob set, and Count() then
+	// over-reports how many articles are durable.
+	if got.Durable.Len() != 4 {
+		t.Errorf("Durable.Len() = %d, want 4 — the stored bitmap was adopted at its byte width", got.Durable.Len())
+	}
+	if !got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = false, but the adopted cache carried one")
+	}
+}
+
+// TestResume_TruncatedFileForcesRecompute pins S7 against the external
+// modification failure mode: the cache was correct when written and the
+// world changed underneath it.
+func TestResume_TruncatedFileForcesRecompute(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+
+	// Two articles of 100 bytes each, with known CRCs.
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(2)
+	bm.Set(0)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: 200, Size: 200, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user truncates the partial file between runs.
+	if err := os.Truncate(path, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Recomputed {
+		t.Fatal("Recomputed = false after the file was truncated — the cache was adopted unvalidated")
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is still durable after its bytes were truncated away")
+	}
+	if !got.Durable.Get(0) {
+		t.Error("article 0 was discarded although its bytes are intact and match their CRC")
+	}
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100", got.VerifiedTo)
+	}
+	// The prefix covers every byte the truncated file still holds, but a
+	// recorded fact lies wholly beyond its end, so what is on disk is not the
+	// whole of what this file is meant to contain. Reporting a whole-file CRC
+	// here would label a chopped file's CRC as the file's (R23).
+	if got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = true although a recorded fact lies beyond the truncated file's end")
+	}
+}
+
+// TestResume_SameSizeEditForcesRecompute pins the mtime half of the S7
+// validity stamp. An edit in place — a partial file opened and rewritten by
+// another tool — leaves the size identical and only the mtime moves, so a
+// guard that checks size alone adopts a cache describing bytes that are gone.
+func TestResume_SameSizeEditForcesRecompute(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(2)
+	bm.Set(0)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: 200, Size: 200, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same length, different bytes in the second half, and a moved mtime.
+	edited := append(append([]byte{}, a0...), bytes.Repeat([]byte{0x03}, 100)...)
+	if err := os.WriteFile(path, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	moved := fi.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, moved, moved); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Recomputed {
+		t.Fatal("Recomputed = false after a same-size edit — only the mtime moved and the cache was adopted")
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is still durable although its bytes were overwritten")
+	}
+	if !got.Durable.Get(0) {
+		t.Error("article 0 was discarded although its bytes still match their CRC")
+	}
+}
+
+// TestResume_RecomputeYieldsAPrefixCRC pins R24: verification and CRC
+// recovery are the same read, so a recomputed file gets a real CRC.
+func TestResume_RecomputeYieldsAPrefixCRC(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	whole := append(append([]byte{}, a0...), a1...)
+	if err := os.WriteFile(path, whole, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No committed extent at all — forces the recompute path.
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasPrefixCRC {
+		t.Fatal("HasPrefixCRC = false after a full recompute over a gapless file")
+	}
+	if got.PrefixCRC != crc32.ChecksumIEEE(whole) {
+		t.Errorf("PrefixCRC = %#x, want %#x", got.PrefixCRC, crc32.ChecksumIEEE(whole))
+	}
+	if got.VerifiedTo != 200 {
+		t.Errorf("VerifiedTo = %d, want 200", got.VerifiedTo)
+	}
+	if !got.Recomputed {
+		t.Error("Recomputed = false although no extent was ever committed")
+	}
+}
+
+// TestResume_ArticleWithoutACRCIsLeftOutstanding pins S3's conservative
+// default for the one article class that can never be verified.
+//
+// A UU-encoded article carries no CRC, so recomputation cannot prove its bytes
+// are the right bytes — even when they are sitting on disk at the recorded
+// offset. The design's answer is that absence of evidence is absence: leave it
+// Outstanding and re-fetch. Re-fetching costs one article; assuming is the
+// optimism §1 forbids.
+//
+// Without this, no fixture in the file sets HasCRC: false, and the branch that
+// implements the rule can be deleted with the suite still green.
+func TestResume_ArticleWithoutACRCIsLeftOutstanding(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100) // UU-encoded: no CRC to check it against
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0, HasCRC: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Durable.Get(0) {
+		t.Error("article 0 is not durable, but its bytes match its recorded CRC")
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is durable, but it carries no CRC — nothing proves those bytes are correct")
+	}
+	// The prefix stops at the unverifiable article, so no whole-file CRC is
+	// reportable. Unavailable must be distinguishable from a CRC of zero (R23).
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100 — the prefix cannot cross an unverifiable article", got.VerifiedTo)
+	}
+	if got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = true, but the prefix ends at an article with no CRC")
+	}
+	if got.Restart {
+		t.Error("Restart = true for a file that exists and partly verified")
+	}
+}
+
+// TestResume_MissingFileRestarts pins that a deleted partial starts over
+// rather than resuming against nothing.
+func TestResume_MissingFileRestarts(t *testing.T) {
+	ctx := context.Background()
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, filepath.Join(t.TempDir(), "gone.mkv"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Restart {
+		t.Fatal("Restart = false for a file that does not exist")
+	}
+	if got.Durable.Count() != 0 {
+		t.Error("a restarted file has durable articles")
+	}
+	if got.Durable.Len() != 4 {
+		t.Errorf("Durable.Len() = %d, want 4 — a restarted file still needs a bitmap of the right width", got.Durable.Len())
+	}
+}
+
+// TestResume_PrefixStopsAtAGap pins that the walk requires each fact to abut
+// the run so far. Both articles here verify against their CRCs, so nothing but
+// the offset comparison keeps VerifiedTo off the far one: a walk that skipped
+// the gap would report 300 verified bytes for a file with a 100-byte hole,
+// and PrefixCRC would then be the CRC of a range that is not [0, VerifiedTo).
+func TestResume_PrefixStopsAtAGap(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a2 := bytes.Repeat([]byte{0x03}, 100)
+	whole := append(append(append([]byte{}, a0...), make([]byte, 100)...), a2...)
+	if err := os.WriteFile(path, whole, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a2), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100 — the walk crossed the hole at [100, 200)", got.VerifiedTo)
+	}
+	if got.PrefixCRC != crc32.ChecksumIEEE(a0) {
+		t.Errorf("PrefixCRC = %#x, want %#x — the CRC must cover exactly [0, VerifiedTo)",
+			got.PrefixCRC, crc32.ChecksumIEEE(a0))
+	}
+	if got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = true although the prefix stops short of the file's end")
+	}
+	// The article above the hole is still durable: resume reads the bitmap,
+	// not the anchor, so a hole costs a CRC and not a re-fetch (#311/#353).
+	if !got.Durable.Get(2) {
+		t.Error("article 2 was re-marked outstanding because of a hole below it")
+	}
+}
+
+// TestResume_PrefixCRCUnavailableWhenTheFileExtendsBeyondTheFacts pins the
+// other half of the whole-file rule. Every recorded fact verifies and they
+// tile [0, 100) with no gap, so the prefix CRC is a true CRC of that prefix —
+// but the file is 300 bytes long, so it is not a CRC of the file. R23 wants
+// unavailable here, not a shorter range's CRC relabelled as the whole.
+func TestResume_PrefixCRCUnavailableWhenTheFileExtendsBeyondTheFacts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), make([]byte, 200)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100", got.VerifiedTo)
+	}
+	if got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = true although the verified prefix covers only 100 of the file's 300 bytes")
+	}
+}
+
+// TestResume_FactBeyondTheArticleCountFailsLoudly pins R28 against the
+// article-numbering gap this signature carries: Resume is handed an article
+// count but no global-to-file-local ordinal mapping, so it can only treat a
+// fact's ArtIdx as the bit position. A fact outside that range proves the
+// assumption is broken for this job. Setting no bit would be indistinguishable
+// from "that article is not on disk" and would silently re-fetch a whole file.
+func TestResume_FactBeyondTheArticleCountFailsLoudly(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	if err := os.WriteFile(path, a0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 7, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	_, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err == nil {
+		t.Fatal("Resume returned no error for a fact whose article index is outside the file's article count")
+	}
+	if !errors.Is(err, ErrArticleOutOfRange) {
+		t.Errorf("err = %v, want one wrapping ErrArticleOutOfRange", err)
+	}
+}
+
+// TestResume_StatErrorIsReturned pins that a stat failure other than "not
+// found" is surfaced rather than read as a missing file. A2 forbids
+// log-and-continue, and restarting a file because its parent directory is
+// unreadable would discard bytes that are still there.
+func TestResume_StatErrorIsReturned(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "regular")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, filepath.Join(notADir, "movie.mkv"), 2)
+	if err == nil {
+		t.Fatalf("Resume returned no error for an unstattable path: %+v", got)
+	}
+	if got.Restart {
+		t.Error("Restart = true for a path that failed to stat for a reason other than absence")
+	}
+}
+
+// cancelAfterForFile cancels the resume's context the moment the fact log has
+// answered, so the cancellation lands inside the verification loop rather than
+// in the query that precedes it.
+//
+// Cancelling before the call instead is what the first version of the test did,
+// and it proved nothing: SQLite's QueryContext fails on a dead context, so the
+// error came back wrapping context.Canceled whether or not the loop checked at
+// all — observed, by deleting the loop's check and watching the test stay
+// green.
+type cancelAfterForFile struct {
+	FactLog
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterForFile) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]ArticleFact, error) {
+	facts, err := c.FactLog.ForFile(ctx, jobID, fileIdx)
+	c.cancel()
+	return facts, err
+}
+
+// TestResume_CancelledContextStops pins R15's interruptibility: a
+// recomputation that is reading gigabytes must stop when its caller does,
+// rather than run to completion after a shutdown.
+func TestResume_CancelledContextStops(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	if err := os.WriteFile(path, a0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(context.Background(), "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := NewResumer(cancelAfterForFile{FactLog: fl, cancel: cancel}, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v (result %+v), want one wrapping context.Canceled", err, got)
+	}
+}
+
+// TestResume_PrefixCRCCombinesAcrossThreeArticles guards the accumulator
+// itself: with two articles a combine that returned its second argument would
+// still produce the right answer at the end.
+func TestResume_PrefixCRCCombinesAcrossThreeArticles(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 50)
+	a2 := bytes.Repeat([]byte{0x03}, 70)
+	whole := bytes.Join([][]byte{a0, a1, a2}, nil)
+	if err := os.WriteFile(path, whole, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 50, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 70, CRC32: crc32.ChecksumIEEE(a2), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := crc32util.Combine(crc32util.Combine(crc32.ChecksumIEEE(a0), crc32.ChecksumIEEE(a1), 50),
+		crc32.ChecksumIEEE(a2), 70)
+	if want != crc32.ChecksumIEEE(whole) {
+		t.Fatalf("fixture is wrong: combined %#x != whole %#x", want, crc32.ChecksumIEEE(whole))
+	}
+	if !got.HasPrefixCRC || got.PrefixCRC != want {
+		t.Errorf("PrefixCRC = %#x (has=%v), want %#x", got.PrefixCRC, got.HasPrefixCRC, want)
+	}
+	if got.Durable.Count() != 3 {
+		t.Errorf("Durable.Count() = %d, want 3", got.Durable.Count())
+	}
+}
+
+// TestResume_SizeChangeWithPreservedMtimeForcesRecompute isolates the size
+// half of the S7 stamp.
+//
+// The truncation test cannot do it: truncating also moves the mtime, so the
+// mtime clause alone still catches that file and a guard that dropped the size
+// check would keep the suite green. Restoring the mtime after the truncation
+// is what leaves only the size to notice — and it is not contrived, since
+// every timestamp-preserving restore (rsync --times, cp -p, tar extraction,
+// a backup rollback) reinstates a partial file's old mtime over content of a
+// different length.
+func TestResume_SizeChangeWithPreservedMtimeForcesRecompute(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(2)
+	bm.Set(0)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: 200, Size: 200, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Truncate(path, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ModTime().UnixNano() != fi.ModTime().UnixNano() {
+		t.Fatalf("fixture is wrong: mtime moved (%d -> %d), so this no longer isolates the size clause",
+			fi.ModTime().UnixNano(), after.ModTime().UnixNano())
+	}
+
+	r := NewResumer(fl, es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Recomputed {
+		t.Fatal("Recomputed = false after a truncation that preserved the mtime — only the size moved and the cache was adopted")
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is still durable after its bytes were truncated away")
+	}
+}
+
+// TestResume_ArticleWithoutACRCIsNotAcceptedByAMatchingCRCField is what
+// actually pins the HasCRC branch.
+//
+// TestResume_ArticleWithoutACRCIsLeftOutstanding does not: its unverifiable
+// fact carries CRC32: 0, so the CRC comparison rejects those bytes anyway and
+// the HasCRC guard can be deleted with that test still green — observed, not
+// reasoned. When HasCRC is false the CRC32 field carries no meaning at all, so
+// the only fixture that can tell the two guards apart is one whose meaningless
+// field happens to hold the region's real CRC. Then nothing but HasCRC stands
+// between an unverifiable article and a durable bit.
+func TestResume_ArticleWithoutACRCIsNotAcceptedByAMatchingCRCField(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		// The bytes on disk hash to exactly this value, and it still proves
+		// nothing: HasCRC is false, so the field is not a checksum of
+		// anything the decoder computed.
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Durable.Get(1) {
+		t.Error("article 1 is durable, but it carries no CRC — the matching CRC32 field is not evidence")
+	}
+	if got.VerifiedTo != 100 {
+		t.Errorf("VerifiedTo = %d, want 100 — the prefix cannot cross an unverifiable article", got.VerifiedTo)
+	}
+	if got.HasPrefixCRC {
+		t.Error("HasPrefixCRC = true although the prefix stops at an article with no CRC")
+	}
+}
+
+// TestResume_FastPathWidensANarrowerStoredBitmap pins the other direction of
+// the same re-derivation. A stored bitmap can be narrower than the file's
+// article count — an older commit, or a manifest that grew — and re-deriving
+// it at artCount without first zero-padding the buffer fails outright rather
+// than reading the missing articles as "not durable yet", which is the safe
+// direction under S3.
+func TestResume_FastPathWidensANarrowerStoredBitmap(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{0xAB}, 300), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(2)
+	bm.Set(1)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, Size: 300, ModTimeNs: fi.ModTime().UnixNano(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), es, testLogger(t))
+	got, err := r.Resume(ctx, "job-1", 0, path, 200)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got.Durable.Len() != 200 {
+		t.Errorf("Durable.Len() = %d, want 200", got.Durable.Len())
+	}
+	if !got.Durable.Get(1) || got.Durable.Count() != 1 {
+		t.Errorf("widening lost or invented bits: count=%d", got.Durable.Count())
+	}
+}
+
+// TestGaplessPrefixCRC exercises the walk directly, over the fact/verified
+// shapes that are awkward to reach through Resume: an empty fact list, a
+// verified run that stops because the next fact was not proven, and one that
+// stops because the next fact does not abut it.
+func TestGaplessPrefixCRC(t *testing.T) {
+	a := bytes.Repeat([]byte{0x01}, 100)
+	b := bytes.Repeat([]byte{0x02}, 100)
+	crcA, crcB := crc32.ChecksumIEEE(a), crc32.ChecksumIEEE(b)
+	abut := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA, HasCRC: true},
+		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcB, HasCRC: true},
+	}
+	gapped := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA, HasCRC: true},
+		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crcB, HasCRC: true},
+	}
+
+	tests := []struct {
+		name      string
+		facts     []ArticleFact
+		verified  []bool
+		size      int64
+		wantTo    int64
+		wantCRC   uint32
+		wantWhole bool
+	}{
+		{
+			name: "no facts and no bytes is a vacuously whole empty file",
+			size: 0, wantWhole: true,
+		},
+		{
+			name: "no facts but bytes on disk is not whole",
+			size: 100,
+		},
+		{
+			name:  "both verified and abutting reaches the end",
+			facts: abut, verified: []bool{true, true}, size: 200,
+			wantTo: 200, wantCRC: crc32util.Combine(crcA, crcB, 100), wantWhole: true,
+		},
+		{
+			name:  "an unverified second fact stops the run short",
+			facts: abut, verified: []bool{true, false}, size: 200,
+			wantTo: 100, wantCRC: crcA,
+		},
+		{
+			name:  "a verified fact that does not abut stops the run",
+			facts: gapped, verified: []bool{true, true}, size: 300,
+			wantTo: 100, wantCRC: crcA,
+		},
+		{
+			name:  "an unverified first fact yields nothing",
+			facts: abut, verified: []bool{false, true}, size: 200,
+		},
+		{
+			name:  "reaching the end with a fact left over is not whole",
+			facts: abut, verified: []bool{true, false}, size: 100,
+			wantTo: 100, wantCRC: crcA,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			to, crc, whole := gaplessPrefixCRC(tc.facts, tc.verified, tc.size)
+			if to != tc.wantTo || crc != tc.wantCRC || whole != tc.wantWhole {
+				t.Errorf("gaplessPrefixCRC = (%d, %#x, %v), want (%d, %#x, %v)",
+					to, crc, whole, tc.wantTo, tc.wantCRC, tc.wantWhole)
+			}
+		})
+	}
+}
+
+// TestResumerCommittedExtent exercises the lookup directly: the "no extent for
+// this job" and "extents exist but not for this file" cases both have to
+// report absence rather than another file's cache.
+func TestResumerCommittedExtent(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+	bm := NewBitmap(3)
+	bm.Set(2)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 1, Durable: bm, VerifiedTo: 42, Size: 99, ModTimeNs: 7,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), es, testLogger(t))
+
+	if _, ok, err := r.committedExtent(ctx, "job-2", 1, 3); err != nil || ok {
+		t.Errorf("committedExtent for an unknown job = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
+	if _, ok, err := r.committedExtent(ctx, "job-1", 0, 3); err != nil || ok {
+		t.Errorf("committedExtent for an uncommitted file = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
+	got, ok, err := r.committedExtent(ctx, "job-1", 1, 3)
+	if err != nil || !ok {
+		t.Fatalf("committedExtent = (ok=%v, err=%v), want (true, nil)", ok, err)
+	}
+	if got.VerifiedTo != 42 || got.Size != 99 || got.ModTimeNs != 7 {
+		t.Errorf("committedExtent lost fields: %+v", got)
+	}
+	if got.Durable.Len() != 3 || !got.Durable.Get(2) || got.Durable.Count() != 1 {
+		t.Errorf("committedExtent bitmap = len %d count %d, want len 3 count 1",
+			got.Durable.Len(), got.Durable.Count())
+	}
+}
+
+// TestResumerVerifyRegions exercises the read loop directly, because the
+// parallel []bool it returns is the only link between verification and the
+// prefix walk and is invisible from Resume's result.
+func TestResumerVerifyRegions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	a1 := bytes.Repeat([]byte{0x02}, 100)
+	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	facts := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true}, // wrong CRC
+		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true}, // past the end
+		{ArtIdx: 3, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: false},
+	}
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	durable := NewBitmap(4)
+	verified, err := r.verifyRegions(ctx, f, facts, durable, 200, 4, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{true, false, false, false}
+	for i := range want {
+		if verified[i] != want[i] {
+			t.Errorf("verified[%d] = %v, want %v", i, verified[i], want[i])
+		}
+		if durable.Get(i) != want[i] {
+			t.Errorf("durable bit %d = %v, want %v", i, durable.Get(i), want[i])
+		}
+	}
+}
+
+// TestResumerRecompute exercises the recompute path directly, pinning that it
+// is what sets Recomputed and that a negative offset is refused rather than
+// read.
+func TestResumerRecompute(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	a0 := bytes.Repeat([]byte{0x01}, 100)
+	if err := os.WriteFile(path, a0, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fl := NewSQLiteFactLog(openTestDB(t))
+	if err := fl.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: -1, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
+	got, err := r.recompute(ctx, "job-1", 0, path, 100, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Recomputed {
+		t.Error("Recomputed = false from recompute itself")
+	}
+	if got.Durable.Count() != 0 {
+		t.Error("a fact at a negative offset was treated as durable")
+	}
+	if _, err := r.recompute(ctx, "job-1", 0, filepath.Join(t.TempDir(), "gone"), 100, 2); err == nil {
+		t.Error("recompute returned no error for a file it could not open")
+	}
+}

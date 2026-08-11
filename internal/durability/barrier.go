@@ -164,9 +164,11 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 		// "unavailable" as an honest answer, and HasPrefixCRC is what makes
 		// it distinguishable from a CRC of zero.
 		//
-		// Nothing writes PrefixCRC yet. R24 (task 7) will, off the barrier's
-		// critical path, and it must recompute rather than expect this
-		// field to have survived a barrier that moved the anchor.
+		// The barrier itself never writes a PrefixCRC. Resumer does, off
+		// this critical path, and it recomputes the CRC from the bytes it
+		// reads rather than expecting the field to have survived a barrier
+		// that moved the anchor — which is why clearing it here costs
+		// nothing but a stale claim.
 		ext.PrefixCRC = 0
 		ext.HasPrefixCRC = false
 	}

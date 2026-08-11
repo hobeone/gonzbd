@@ -626,8 +626,9 @@ func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 // TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC pins that the CRC anchor
 // and its CRC move together. PrefixCRC is defined as the CRC32 of
 // [0, VerifiedTo); carrying a loaded CRC across a recomputed VerifiedTo would
-// relabel the CRC of a shorter prefix as the CRC of a longer one. Nothing
-// writes PrefixCRC yet — R24 (task 7) will, and this is the guard it needs.
+// relabel the CRC of a shorter prefix as the CRC of a longer one. The barrier
+// never writes a PrefixCRC; Resumer recomputes one (R24), and this is the
+// guard that keeps the barrier from handing it a stale one to adopt.
 func TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC(t *testing.T) {
 	tests := []struct {
 		name        string
