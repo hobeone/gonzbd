@@ -1298,6 +1298,47 @@ func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
 // TestSQLiteExtentStore_CommitIsAtomic pins that a job's files are never
 // observable half-committed. A barrier that fails partway must leave the
 // previous committed cache intact (R7).
+// TestSQLiteExtentStore_HasPrefixCRCRoundTrips pins the same distinction
+// TestSQLiteFactLog_HasCRCRoundTrips pins for Class A: a prefix CRC that is
+// genuinely zero must stay distinguishable from no prefix CRC at all.
+//
+// Both extents below carry PrefixCRC == 0 and differ only in HasPrefixCRC, so
+// the test fails if either side of that boolean is hardcoded. Without it every
+// fixture in this file sets HasPrefixCRC: true and the flag is unprotected —
+// exactly the gap the Task 4 review found by mutation.
+//
+// R23 makes this load-bearing: QuickCheck reads the flag, not the value, to
+// decide whether a file's CRC can be compared against par2's. A read side
+// degraded to true reports a fabricated CRC of zero as authoritative.
+func TestSQLiteExtentStore_HasPrefixCRCRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+
+	if err := es.Commit(ctx, "job-1", []FileExtent{
+		{FileIdx: 0, Durable: NewBitmap(8), PrefixCRC: 0, HasPrefixCRC: false},
+		{FileIdx: 1, Durable: NewBitmap(8), PrefixCRC: 0, HasPrefixCRC: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := es.Load(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Load returned %d extents, want 2", len(got))
+	}
+	if got[0].HasPrefixCRC {
+		t.Error("HasPrefixCRC = true for the extent that has no prefix CRC, want false")
+	}
+	if !got[1].HasPrefixCRC {
+		t.Error("HasPrefixCRC = false for the extent whose CRC is genuinely zero, want true")
+	}
+	if got[0].PrefixCRC != 0 || got[1].PrefixCRC != 0 {
+		t.Fatalf("PrefixCRC = %d/%d, want 0/0 — the flag, not the value, carries the distinction",
+			got[0].PrefixCRC, got[1].PrefixCRC)
+	}
+}
+
 func TestSQLiteExtentStore_CommitIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
