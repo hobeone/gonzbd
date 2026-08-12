@@ -1210,9 +1210,30 @@ func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
 // clear, and destroying the actionable reason on the way.
 //
 // The fixture reproduces the barrier's exact sequence — route, then return the
-// fault — because that is the only shape the caller ever sees. A test written
-// against the retryable case alone would pass against the bug and pin nothing:
-// re-stalling an already-stalled job is idempotent.
+// fault — because that is the only shape the caller ever sees.
+//
+// # What each subtest can and cannot catch
+//
+// Worth stating, because two of the three are structurally unable to catch one
+// obvious mutation and a reader who assumed otherwise would be misled.
+//
+// "permanent" and "retryable" both feed a fault the barrier ALREADY routed, and
+// for that input the correct behaviour is to do nothing. So neither can redden
+// when the function's body is deleted outright: a no-op body is behaviourally
+// correct for this input class, and no observation of the job's state can tell
+// "recognised it as already-routed and did nothing" from "did nothing".
+// Verified, not assumed — with the body emptied both subtests pass.
+//
+// What they DO catch is the defect this function exists for: a second,
+// unconditional dispatch of an already-routed fault. Both redden under it.
+//
+// "never_routed" is the input class where the function must act, and it is what
+// pins the body against being empty. It reddens on that mutation and passes
+// under the re-route one.
+//
+// The three together therefore cover the function completely: every mutation
+// that can be distinguished by any observer is caught by at least one, and the
+// one mutation two of them miss is caught by the third.
 func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testing.T) {
 	const path = "/mnt/ro/movie.rar"
 
@@ -1249,16 +1270,25 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		if !strings.Contains(after.Warning, "Failed:") {
 			t.Errorf("warning = %q, want the permanent reason Fail set to survive", after.Warning)
 		}
-		if !strings.Contains(after.Warning, path) {
-			t.Errorf("warning = %q no longer names %q; the actionable reason was destroyed",
-				after.Warning, path)
-		}
-		if after.Status == constants.StatusPaused {
-			t.Errorf("status = Paused after a permanent fault; the job is presented as "+
-				"resumable and its warning says %q", after.Warning)
-		}
+		// Two further assertions were tried here and removed, because neither
+		// could fire. "the warning still names the path" holds under the bug
+		// too — the re-stall NESTS the original fault, which names it. And
+		// "status is not Paused" cannot fire because Fail leaves the job in
+		// Verifying, where Queue.Pause is rejected outright, so the re-stall
+		// changes the reason without changing the status. Only the two above
+		// distinguish the two worlds.
 	})
 
+	// The retryable half of the same rule. It needs a different assertion from
+	// the permanent one, and finding that out took a mutation: re-stalling an
+	// already-stalled job leaves it Paused, still naming the file, with no
+	// article damage — so every obvious assertion is satisfied by the
+	// fixture's own Stall and passes whether the function re-routes or not.
+	//
+	// What DOES separate the two worlds is the operation named in the reason.
+	// The barrier's own fault says "on sync"; a re-route rebuilds it as "on
+	// finalize" and wraps the original inside. So the reason growing a second
+	// layer is the observable, and it is the only one.
 	t.Run("retryable", func(t *testing.T) {
 		application, job := newDurabilityTestApp(t, 1, 1)
 
@@ -1267,20 +1297,34 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 			t.Fatal("ENOSPC is classified permanent; this subtest is about the other branch")
 		}
 		application.Stall(job.ID, fault)
+
+		before := application.queue.SnapshotJob(job.ID)
+		if before == nil {
+			t.Fatal("job left the queue")
+		}
+		if !strings.Contains(before.Warning, "on sync") {
+			t.Fatalf("the barrier's own reason is %q; this subtest reads the operation "+
+				"name to tell a re-route from an untouched reason, so it needs one", before.Warning)
+		}
+
 		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0, fault)
 		application.routeFinalizeFailure(job.ID, 0, path, err)
 
-		snap := application.queue.SnapshotJob(job.ID)
-		if snap == nil {
+		after := application.queue.SnapshotJob(job.ID)
+		if after == nil {
 			t.Fatal("job left the queue")
 		}
-		if snap.Status != constants.StatusPaused {
-			t.Errorf("status = %v, want Paused for a retryable fault", snap.Status)
+		if after.Warning != before.Warning {
+			t.Errorf("the reason changed from %q to %q — the fault the barrier had "+
+				"already routed was routed a second time, rewrapping the operator's "+
+				"reason in a layer that describes this code path rather than the fault",
+				before.Warning, after.Warning)
 		}
-		if !strings.Contains(snap.Warning, path) {
-			t.Errorf("warning = %q does not name the file (R27)", snap.Warning)
+		if strings.Contains(after.Warning, "on finalize") {
+			t.Errorf("warning = %q names this code path rather than the failing syscall; "+
+				"the barrier reported %q and it must survive intact", after.Warning, before.Warning)
 		}
-		if snap.Progress().ArticleFailed(0) || snap.Progress().FailedBytes() != 0 {
+		if after.Progress().ArticleFailed(0) || after.Progress().FailedBytes() != 0 {
 			t.Error("a storage condition was recorded as article damage (A1, R21)")
 		}
 	})

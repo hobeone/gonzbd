@@ -215,6 +215,26 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 // Neither branch marks an article failed. That is the whole distinction A1
 // draws: storage faults resolve against storage, article faults against the
 // article, and conflating them is how a full disk gets recorded as damage.
+//
+// # A coupling any new fault site must honour
+//
+// Returning the fault is how the application layer knows it has been handled.
+// Application.routeFinalizeFailure treats a *storagefault.Fault anywhere in an
+// error chain as proof that this function already dispatched it, and so leaves
+// it alone — which is what stops a permanent fault from being relabelled a
+// stall on its way out.
+//
+// That inference is only sound while THIS function is the only thing that lets
+// a *Fault escape the barrier. It is not the only thing that mints one:
+// filewriter.go and assembler.go both build faults with storagefault.Classify,
+// and any of those reaching the application layer without having been routed
+// would be silently swallowed — the job halting with a Debug line and no reason
+// the operator can see.
+//
+// So a new fault site inside this package must either route through here, or
+// not surface a *Fault to its caller at all. Wrapping one in a plain error is
+// enough to make it invisible to the check and is the wrong direction; convert
+// it, or route it.
 func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 	if f.Permanent {
 		b.log.Error("durability barrier hit a permanent storage fault", "job", jobID, "fault", f)
