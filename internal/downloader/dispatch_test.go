@@ -1975,3 +1975,314 @@ func TestMarkArticleEmitted_ErrNotFound(t *testing.T) {
 		t.Errorf("expected ErrNotFound to be filtered out, got %v", err2)
 	}
 }
+
+// ---------- clearTried ----------
+
+func TestClearTried(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	mask := serverMask{}
+	mask.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked("msg1@h", mask)
+	d.tracker.Unlock()
+
+	d.tracker.Lock()
+	if _, ok := d.tracker.TryListLocked("msg1@h"); !ok {
+		t.Fatal("setup: try-list entry missing before clearTried")
+	}
+	d.tracker.Unlock()
+
+	d.clearTried("j1", "msg1@h")
+
+	d.tracker.Lock()
+	_, ok := d.tracker.TryListLocked("msg1@h")
+	d.tracker.Unlock()
+	if ok {
+		t.Error("clearTried did not remove the try-list entry")
+	}
+}
+
+func TestClearTried_UnknownKeyIsNoop(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	// Must not panic on a key that was never tracked.
+	d.clearTried("j1", "nonexistent@h")
+
+	tryListLen, _ := d.tracker.Len()
+	if tryListLen != 0 {
+		t.Errorf("tryList length = %d, want 0", tryListLen)
+	}
+}
+
+// ---------- dispatchPass ----------
+
+// dispatchPass must not dispatch anything while d.paused is set, even
+// though the queue itself is not paused and has ready work.
+func TestDispatchPass_DownloaderPausedSkipsDispatch(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"a@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	srv := testServer(t, "s1", ms.addr)
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d.paused.Store(true)
+
+	d.dispatchPass(t.Context())
+
+	select {
+	case req := <-d.workCh["s1"]:
+		t.Fatalf("dispatchPass dispatched %v while downloader paused", req.messageID)
+	default:
+	}
+}
+
+// dispatchPass must not dispatch anything while the queue itself is
+// globally paused, independent of d.paused.
+func TestDispatchPass_QueuePausedSkipsDispatch(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"a@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	q.PauseAll()
+
+	srv := testServer(t, "s1", ms.addr)
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	d.dispatchPass(t.Context())
+
+	select {
+	case req := <-d.workCh["s1"]:
+		t.Fatalf("dispatchPass dispatched %v while queue paused", req.messageID)
+	default:
+	}
+}
+
+// dispatchPass must not dispatch anything once the context is already
+// cancelled.
+func TestDispatchPass_CancelledContextSkipsDispatch(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"a@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	srv := testServer(t, "s1", ms.addr)
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.dispatchPass(ctx)
+
+	select {
+	case req := <-d.workCh["s1"]:
+		t.Fatalf("dispatchPass dispatched %v with a cancelled context", req.messageID)
+	default:
+	}
+}
+
+// With neither the downloader nor the queue paused and a live context,
+// dispatchPass fans an unfinished article out to the eligible server's
+// workCh and records it in the tracker's try-list.
+func TestDispatchPass_DispatchesReadyArticle(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"a@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	srv := testServer(t, "s1", ms.addr)
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	d.dispatchPass(t.Context())
+
+	select {
+	case req := <-d.workCh["s1"]:
+		if req.messageID != "a@h" {
+			t.Errorf("req.messageID = %q, want %q", req.messageID, "a@h")
+		}
+	default:
+		t.Fatal("dispatchPass did not dispatch the ready article")
+	}
+
+	d.tracker.Lock()
+	mask, ok := d.tracker.TryListLocked("a@h")
+	d.tracker.Unlock()
+	if !ok || !mask.has(0) {
+		t.Errorf("try-list for a@h = (%+v, %v), want server 0 marked tried", mask, ok)
+	}
+}
+
+// ---------- emitResult ----------
+
+// TestEmitResult_DeliversTheOutcomeToCompletions pins the one exit every
+// dispatched article takes. The pipeline learns an article's fate from this
+// channel and nowhere else, so a field dropped here is a fact no later stage
+// can recover: the assembler would write at the wrong offset, or the queue
+// would never see the failure.
+func TestEmitResult_DeliversTheOutcomeToCompletions(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	req := &articleRequest{
+		jobID: "j1", fileIdx: 3, artIdx: 7,
+		messageID: "a@h", subject: "movie.bin",
+	}
+	data := []byte("decoded")
+
+	d.emitResult(t.Context(), req, "s1", data, 4096, 0xDEADBEEF, nil)
+
+	select {
+	case res := <-d.completions:
+		if res.JobID != "j1" || res.FileIdx != 3 || res.ArtIdx != 7 ||
+			res.MessageID != "a@h" || res.Subject != "movie.bin" {
+			t.Errorf("result identity = %+v, want the request's", res)
+		}
+		if res.ServerName != "s1" {
+			t.Errorf("ServerName = %q, want s1 — per-server byte accounting reads this", res.ServerName)
+		}
+		if string(res.Data) != "decoded" || res.Offset != 4096 || res.CRC != 0xDEADBEEF {
+			t.Errorf("payload = (%q, off %d, crc %#x), want (%q, 4096, 0xdeadbeef)",
+				res.Data, res.Offset, res.CRC, "decoded")
+		}
+		if res.Err != nil {
+			t.Errorf("Err = %v on a success, want nil", res.Err)
+		}
+	default:
+		t.Fatal("emitResult delivered nothing; the article's outcome is lost and the " +
+			"queue waits for it forever")
+	}
+}
+
+// TestEmitResult_CarriesTheFailureRatherThanDroppingIt pins the other
+// polarity. A dropped error looks exactly like an article that is still in
+// flight, which is the shape L1 forbids.
+func TestEmitResult_CarriesTheFailureRatherThanDroppingIt(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	req := &articleRequest{jobID: "j1", messageID: "a@h"}
+
+	d.emitResult(t.Context(), req, "s1", nil, 0, 0, ErrNoServersLeft)
+
+	select {
+	case res := <-d.completions:
+		if !errors.Is(res.Err, ErrNoServersLeft) {
+			t.Errorf("Err = %v, want ErrNoServersLeft", res.Err)
+		}
+		if res.Data != nil {
+			t.Errorf("Data = %q on a failure, want nil", res.Data)
+		}
+	default:
+		t.Fatal("emitResult dropped a failure")
+	}
+}
+
+// TestEmitResult_ReturnsWhenTheContextIsDoneRatherThanBlocking pins the
+// shutdown path. The completions channel has no reader once the pipeline has
+// stopped, so a blocking send would hold a connection worker open forever and
+// Stop would never join it.
+func TestEmitResult_ReturnsWhenTheContextIsDoneRatherThanBlocking(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	// Fill the buffer so the send cannot proceed.
+	for range cap(d.completions) {
+		d.completions <- &ArticleResult{}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.emitResult(ctx, &articleRequest{messageID: "a@h"}, "s1", nil, 0, 0, nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emitResult blocked on a full channel with a cancelled context; " +
+			"the connection worker never returns and Stop hangs")
+	}
+}
+
+// ---------- clearInFlight / unmarkTried ----------
+
+// TestClearInFlight_ReleasesTheArticleForRedispatch pins the counter the
+// dispatcher reads to decide whether an article is already out. Without the
+// decrement the article is permanently believed in flight and is never
+// retried on a fallback server.
+func TestClearInFlight_ReleasesTheArticleForRedispatch(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked("a@h")
+	d.tracker.IncrementInFlightLocked("a@h")
+	d.tracker.Unlock()
+
+	inFlight := func() int {
+		d.tracker.Lock()
+		defer d.tracker.Unlock()
+		return d.tracker.InFlightLocked("a@h")
+	}
+
+	d.clearInFlight("j1", "a@h")
+	if got := inFlight(); got != 1 {
+		t.Fatalf("in-flight = %d after one clear of two, want 1", got)
+	}
+	d.clearInFlight("j1", "a@h")
+	if got := inFlight(); got != 0 {
+		t.Errorf("in-flight = %d after clearing both, want 0 — the article is believed "+
+			"dispatched forever and never falls back to another server", got)
+	}
+}
+
+// TestUnmarkTried_LetsTheSameServerBeRetried pins the difference between
+// unmarkTried and clearTried: a retryable failure frees ONE server from the
+// try-list, so the article can go back to it or bounce to another, while the
+// servers already ruled out stay ruled out.
+func TestUnmarkTried_LetsTheSameServerBeRetried(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true), fakeSrv("s2", 1, true)})
+	mask := serverMask{}
+	mask.set(0)
+	mask.set(1)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked("a@h", mask)
+	d.tracker.Unlock()
+
+	d.unmarkTried("j1", "a@h", 0)
+
+	d.tracker.Lock()
+	got, ok := d.tracker.TryListLocked("a@h")
+	d.tracker.Unlock()
+	if !ok {
+		t.Fatal("unmarkTried removed the whole try-list entry; every server it had " +
+			"already ruled out becomes eligible again")
+	}
+	if got.has(0) {
+		t.Error("server 0 is still marked tried, so a recovered server never gets the article back")
+	}
+	if !got.has(1) {
+		t.Error("server 1 was un-marked too; only the failing server may be freed")
+	}
+}

@@ -1211,6 +1211,126 @@ func TestResume_CancelsPreviousContext(t *testing.T) {
 	}
 }
 
+// ---------- signalDispatch ----------
+
+// signalDispatch delivers a poke that a receiver on dispatchReady observes.
+func TestSignalDispatch_Delivers(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	d := New(q, nil, nil, Options{}, nil)
+
+	d.signalDispatch()
+
+	select {
+	case <-d.dispatchReady:
+	default:
+		t.Fatal("signalDispatch did not deliver a signal on dispatchReady")
+	}
+}
+
+// signalDispatch must never block: the channel has capacity 1, and a
+// second call while the first signal is still unread must coalesce
+// rather than stall the caller.
+func TestSignalDispatch_CoalescesAndDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	d := New(q, nil, nil, Options{}, nil)
+
+	done := make(chan struct{})
+	go func() {
+		d.signalDispatch()
+		d.signalDispatch() // must not block on the already-full channel
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("signalDispatch blocked on a full channel")
+	}
+
+	// Exactly one signal should be pending, not two.
+	<-d.dispatchReady
+	select {
+	case <-d.dispatchReady:
+		t.Fatal("dispatchReady held a second signal; signalDispatch should coalesce")
+	default:
+	}
+}
+
+// ---------- setConnConnected / hasActiveConnections ----------
+
+// setConnConnected toggles the Connected flag for a tracked worker in
+// both directions, and hasActiveConnections reflects the aggregate.
+func TestSetConnConnected_TogglesActivityAndHasActiveConnections(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer(config.ServerConfig{Name: "s1", Connections: 1, Enable: true})
+	q := queue.New()
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	workerID := "s1#0"
+	if d.hasActiveConnections() {
+		t.Fatal("hasActiveConnections() = true before any connection was marked connected")
+	}
+
+	d.setConnConnected(workerID, true)
+	if !d.hasActiveConnections() {
+		t.Error("hasActiveConnections() = false after setConnConnected(workerID, true)")
+	}
+
+	d.setConnConnected(workerID, false)
+	if d.hasActiveConnections() {
+		t.Error("hasActiveConnections() = true after setConnConnected(workerID, false)")
+	}
+}
+
+// setConnConnected on a workerID with no tracked activity entry is a
+// silent no-op rather than a panic or a spurious insertion.
+func TestSetConnConnected_UnknownWorkerIsNoop(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	d := New(q, nil, nil, Options{}, nil)
+
+	d.setConnConnected("no-such-worker#0", true) // must not panic
+
+	if d.hasActiveConnections() {
+		t.Error("hasActiveConnections() = true after setConnConnected on an untracked worker")
+	}
+}
+
+// ---------- checkExpiredPenalties ----------
+
+// checkExpiredPenalties clears the deactivated flag and penalty expiry
+// on a server whose penalty has already elapsed, and leaves a server
+// with a still-future penalty untouched.
+func TestCheckExpiredPenalties(t *testing.T) {
+	t.Parallel()
+
+	expired := NewServer(config.ServerConfig{Name: "expired", Optional: true, Connections: 1, Enable: true})
+	expired.RecordBadConnection() // ratio 1.0 > OptionalDeactivationThreshold
+	expired.ApplyPenalty(-time.Hour)
+
+	stillPenalized := NewServer(config.ServerConfig{Name: "still-penalized", Optional: true, Connections: 1, Enable: true})
+	stillPenalized.RecordBadConnection()
+	stillPenalized.ApplyPenalty(time.Hour)
+
+	q := queue.New()
+	d := New(q, []*Server{expired, stillPenalized}, nil, Options{}, nil)
+
+	d.checkExpiredPenalties()
+
+	if !expired.PenaltyExpiry().IsZero() {
+		t.Errorf("expired server's PenaltyExpiry() = %v, want zero after checkExpiredPenalties", expired.PenaltyExpiry())
+	}
+	if stillPenalized.PenaltyExpiry().IsZero() {
+		t.Error("still-penalized server's PenaltyExpiry() was cleared; checkExpiredPenalties must leave unexpired penalties alone")
+	}
+}
+
 // Dummy references to satisfy scripts/check_test_alignment. handleRequest and
 // connWorker are long-running goroutine workers exercised indirectly via
 // integration-level tests rather than direct unit tests.
@@ -1218,3 +1338,56 @@ var (
 	_ = (*Downloader).handleRequest
 	_ = (*Downloader).connWorker
 )
+
+// TestRun_DispatchesOnEveryWakeupAndStopsOnCancel pins the dispatcher's own
+// loop.
+//
+// It has three wakeup sources — a queue notification, a dispatchReady signal
+// and a 5s safety ticker — and each must reach dispatchPass. The ticker is the
+// one that matters least often and most: with every server penalised there are
+// no dispatchReady signals at all, so without it a job resumes only when the
+// queue happens to change.
+//
+// Cancellation is pinned in the same test because Stop joins this goroutine; a
+// run that ignores ctx.Done leaves Stop hanging on its wait group.
+func TestRun_DispatchesOnEveryWakeupAndStopsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"r1@h", "r2@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	srv := testServer(t, "s1", ms.addr)
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		d.run(ctx)
+		close(done)
+	}()
+
+	// dispatchReady is the wakeup a finished connection worker raises. One
+	// article must land on the server's work channel because of it.
+	d.signalDispatch()
+	select {
+	case req := <-d.workCh["s1"]:
+		if req.messageID != "r1@h" && req.messageID != "r2@h" {
+			t.Errorf("dispatched %q, which is not one of the job's articles", req.messageID)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("run did not dispatch after a dispatchReady signal; a finished " +
+			"connection never triggers the next article")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return on context cancellation; Stop would hang on it")
+	}
+}

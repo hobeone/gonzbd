@@ -41,6 +41,7 @@ const (
 	opStat
 	opTruncate
 	opClose
+	opJobs
 )
 
 // barrierOpTimeout bounds the two barrier operations whose interface signature
@@ -66,6 +67,7 @@ const barrierOpTimeout = 5 * time.Second
 // syncReply carries a worker answer back to the barrier's goroutine.
 type syncReply struct {
 	files     []int32
+	jobs      []string
 	written   []durability.WrittenArticle
 	size      int64
 	modTimeNs int64
@@ -181,6 +183,14 @@ func (t *jobSyncTarget) Files() []int32 {
 		// claims nothing — but it is not nothing happening, so it is not
 		// silent. Without this the job simply stops checkpointing and the
 		// only symptom is rework after a restart.
+		//
+		// A stopped assembler is the exception: it is the ordinary end of
+		// every process, and every completion still in flight at that point
+		// goes through here.
+		if errors.Is(err, ErrAssemblerStopped) {
+			t.a.log.Debug("barrier asked a stopped assembler for a job's files", "job", t.jobID)
+			return nil
+		}
 		t.a.log.Warn("barrier could not list a job's open files; this checkpoint claims nothing",
 			"job", t.jobID, "err", err)
 		return nil
@@ -269,6 +279,20 @@ func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) 
 	return err
 }
 
+// OpenJobIDs returns every job that currently holds an open file.
+//
+// The checkpoint cadence uses it to pick which jobs to run a barrier for. The
+// set comes from here rather than from job status because "has an open file"
+// is this package's fact and R8 bounds barrier cost by exactly that set — a
+// barrier fsyncs open files, not every file a job will eventually produce.
+// Deriving it from the queue instead would be a second representation of one
+// fact, free to drift (S5).
+func (a *Assembler) OpenJobIDs(ctx context.Context) ([]string, error) {
+	t := &jobSyncTarget{a: a}
+	r, err := t.submit(ctx, syncOp{kind: opJobs})
+	return r.jobs, err
+}
+
 // handleSyncOp performs one barrier operation on the worker goroutine.
 func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *writeCache) {
 	var r syncReply
@@ -278,6 +302,15 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			if k.jobID == op.jobID {
 				r.files = append(r.files, int32(k.fileIdx)) //nolint:gosec // G115: file counts are far below int32
 			}
+		}
+	case opJobs:
+		seen := make(map[string]struct{}, len(open))
+		for k := range open {
+			if _, dup := seen[k.jobID]; dup {
+				continue
+			}
+			seen[k.jobID] = struct{}{}
+			r.jobs = append(r.jobs, k.jobID)
 		}
 	default:
 		key := fileKey{jobID: op.jobID, fileIdx: int(op.fileIdx)}
@@ -309,7 +342,7 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			a.drainAndClose(f)
 			delete(open, key)
 			wc.forget(key)
-		case opFiles:
+		case opFiles, opJobs:
 		}
 	}
 	op.reply <- r

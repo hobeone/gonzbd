@@ -1,0 +1,465 @@
+package app
+
+import (
+	"context"
+	"path/filepath"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/storagefault"
+)
+
+// manifestArticleMap answers the two manifest questions the assembler cannot:
+// how many articles a file holds, and where a global article index sits
+// within it.
+//
+// The assembler is fed one article at a time and never sees the job's
+// manifest, so any answer it invented would be a guess — and the barrier
+// places durable bits by these ordinals, where a wrong one marks the wrong
+// article durable and costs a silently short file. The queue owns the
+// manifest, so the answer comes from here.
+//
+// queue.Manifest.FileRange indexes the manifest's slices directly and panics
+// on an out-of-range file, so every method bounds fileIdx against NumFiles
+// first. A file index the manifest does not have is a bookkeeping defect, and
+// the honest answers (0 / false) make the barrier refuse to build an extent
+// rather than crash the process.
+type manifestArticleMap struct{ m *queue.Manifest }
+
+func (a manifestArticleMap) rangeOf(fileIdx int32) (lo, hi int, ok bool) {
+	i := int(fileIdx)
+	if a.m == nil || i < 0 || i >= a.m.NumFiles() {
+		return 0, 0, false
+	}
+	lo, hi = a.m.FileRange(i)
+	return lo, hi, true
+}
+
+func (a manifestArticleMap) ArticleCount(fileIdx int32) int {
+	lo, hi, ok := a.rangeOf(fileIdx)
+	if !ok {
+		return 0
+	}
+	return hi - lo
+}
+
+func (a manifestArticleMap) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
+	lo, hi, ok := a.rangeOf(fileIdx)
+	if !ok {
+		return 0, false
+	}
+	i := int(artIdx)
+	if i < lo || i >= hi {
+		return 0, false
+	}
+	return i - lo, true
+}
+
+// Stall parks a job on a retryable storage fault and surfaces why (R19, R27).
+//
+// No article is marked failed, and that is the whole of A1. A full disk is a
+// condition of the device, not evidence about any article: attributing it to
+// the remote article would burn its retry budget, inflate the job's
+// failed-byte count and degrade its reported health (R21) — all from something
+// the user often fixes in ten seconds. The articles stay Outstanding and are
+// re-fetched when the job resumes.
+//
+// The job is paused rather than left running because a running job would keep
+// dispatching articles into a device that cannot take them, turning one
+// surfaced fault into a flood of them.
+func (app *Application) Stall(jobID string, f *storagefault.Fault) {
+	reason := "Stalled: " + f.Error()
+	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
+	if err := app.queue.Pause(jobID); err != nil {
+		app.log.Warn("stall: could not pause the job", "job", jobID, "err", err)
+	}
+	if err := app.queue.SetWarning(jobID, reason); err != nil {
+		// Without the warning the job is paused for no visible reason, which
+		// is precisely the unactionable halt R27 forbids — so this is logged
+		// at Warn rather than swallowed.
+		app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
+	}
+	app.emit(Event{Type: "queue_updated", NzoID: jobID})
+}
+
+// Fail stops a job on a permanent storage fault (R20).
+//
+// Still no article is marked failed. A read-only filesystem says nothing about
+// any article's availability, and recording it as article damage would make
+// the job's health figure describe the disk instead of the download.
+//
+// maybeFinalize is how every other terminal condition leaves the queue — the
+// job carries its reason into history rather than sitting in the queue in a
+// state nothing will move it out of.
+func (app *Application) Fail(jobID string, f *storagefault.Fault) {
+	reason := "Failed: " + f.Error()
+	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
+	if err := app.queue.SetWarning(jobID, reason); err != nil {
+		app.log.Warn("fail: could not surface the reason", "job", jobID, "err", err)
+	}
+	app.maybeFinalize(jobID, reason)
+}
+
+// jobBarrierLock returns the mutex serialising barrier work for one job.
+//
+// Barrier.Run holds no lock of its own — it does I/O throughout, and this
+// project bans I/O under a lock — so the cadence owner has to guarantee at
+// most one barrier in flight per job. Two concurrent barriers over one job
+// would interleave the read-modify-write of its FileExtent: both load the
+// same stored bitmap, each adds its own bits, and the second commit
+// overwrites the first, so the committed cache describes neither run and the
+// articles the loser acked are durable with no bit to say so.
+//
+// The lock is per job, not global, because a barrier is a few dozen fsyncs
+// and one job's slow mount must not park every other job's checkpoint.
+//
+// FinalizeFile takes it too. It is a barrier by another name — same
+// buildExtent, same ExtentStore.Commit — so it races Run for exactly the same
+// reason.
+func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	mu, ok := app.jobBarrierMu[jobID]
+	if !ok {
+		mu = &sync.Mutex{}
+		app.jobBarrierMu[jobID] = mu
+	}
+	return mu
+}
+
+// forgetJobBarrierState drops a departed job's lock and byte accumulator.
+//
+// Both maps are keyed by job ID and would otherwise grow for the life of the
+// process, one entry per job ever downloaded. Called from the same places
+// pipeline.forgetJob is, which is where a job stops being the assembler's
+// business.
+func (app *Application) forgetJobBarrierState(jobID string) {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	delete(app.jobBarrierMu, jobID)
+	delete(app.jobBarrierBytes, jobID)
+}
+
+// noteJobBytes accumulates a job's freshly written bytes and asks for a
+// barrier once the volume bound is crossed (B1's byte half).
+//
+// The two bounds answer different failure shapes and neither subsumes the
+// other. The time bound is what limits rework on a slow link, where 30 seconds
+// is a few articles; the byte bound is what limits it on a fast one, where 30
+// seconds can be a gigabyte. The barrier fires on whichever arrives first.
+//
+// The counter resets when the barrier runs, not here, so a kick that cannot be
+// delivered is not lost: the bytes stay counted and the next call tries again,
+// or the interval tick collects them.
+func (app *Application) noteJobBytes(jobID string, n int) {
+	if n <= 0 || app.barrier == nil {
+		return
+	}
+	app.barrierMu.Lock()
+	app.jobBarrierBytes[jobID] += int64(n)
+	crossed := app.jobBarrierBytes[jobID] >= app.checkpointBytes
+	app.barrierMu.Unlock()
+	// --- No lock held below this line ---
+	if !crossed {
+		return
+	}
+	select {
+	case app.barrierKick <- jobID:
+	default:
+		// The checkpoint loop is busy. Dropping the kick costs nothing: the
+		// accumulator was not reset, so the next article re-raises it, and
+		// the interval tick covers the job regardless.
+	}
+}
+
+// resetJobBytes zeroes a job's accumulator. Called by the barrier itself, so
+// the byte bound measures the window between barriers rather than the window
+// between kicks.
+func (app *Application) resetJobBytes(jobID string) {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	delete(app.jobBarrierBytes, jobID)
+}
+
+// syncTargetFor builds the barrier's view of one job's open files, or nil when
+// the job has no resident manifest.
+//
+// Nil rather than a target with a nil ArticleMap: the adapter answers
+// "unknown" for every ordinal in that case, which makes the barrier refuse the
+// job loudly. That refusal is correct and is deliberately not exercised here —
+// a job whose manifest has been evicted is an ordinary event, not a defect,
+// and it has nothing open to checkpoint anyway.
+//
+//nolint:ireturn // the barrier takes this interface; there is no concrete type to return
+func (app *Application) syncTargetFor(jobID string) durability.SyncTarget {
+	snap := app.queue.SnapshotJob(jobID)
+	if snap == nil {
+		return nil
+	}
+	m, err := snap.Manifest()
+	if err != nil {
+		app.log.Debug("checkpoint skipped, job has no resident manifest",
+			"job", jobID, "err", err)
+		return nil
+	}
+	return app.assembler.SyncTargetFor(jobID, manifestArticleMap{m: m})
+}
+
+// checkpointJob runs one barrier for one job.
+//
+// Everything a barrier means lives in durability.Barrier; what lives here is
+// when it happens. The per-job lock and the accumulator reset are the two
+// pieces of that policy the barrier cannot own: it is not reentrant and it
+// does not know what triggered it.
+func (app *Application) checkpointJob(ctx context.Context, jobID string) {
+	if app.barrier == nil {
+		return
+	}
+	mu := app.jobBarrierLock(jobID)
+	mu.Lock()
+	// --- Barrier serialised per job below this line ---
+
+	// Reset before the run, not after. An article written while the barrier
+	// is in flight belongs to the NEXT window: it may or may not have made
+	// it into this drain, and charging it to the window that just closed
+	// would let it go uncounted until the following one.
+	app.resetJobBytes(jobID)
+
+	var err error
+	if tgt := app.syncTargetFor(jobID); tgt != nil {
+		app.barrierRuns.Add(1)
+		err = app.barrier.Run(ctx, jobID, tgt)
+	}
+	mu.Unlock()
+	// --- No lock held below this line ---
+
+	// Reported after the unlock rather than under it. The lock is held across
+	// the barrier's I/O by design — that is the serialisation — but a log
+	// write is I/O of its own, and a slow handler would hold every other
+	// checkpoint for this job behind a message about one that already failed.
+	if err != nil {
+		// The fault has already reached the job through Stallable, and a
+		// failed barrier claims nothing — the prior committed cache is
+		// intact and no article was acked. Logging is all that is left.
+		app.log.Warn("checkpoint barrier failed", "job", jobID, "err", err)
+	}
+}
+
+// checkpointAll runs a barrier for every job holding an open file.
+//
+// The set comes from the assembler rather than from the queue, because "has an
+// open file" is the assembler's fact and R8 bounds barrier cost by exactly
+// that set: a barrier fsyncs open files, not every file a job will eventually
+// produce. Deriving the set from job status instead would be a second
+// representation of the same fact, free to drift (S5).
+func (app *Application) checkpointAll(ctx context.Context) {
+	if app.barrier == nil {
+		return
+	}
+	jobs, err := app.assembler.OpenJobIDs(ctx)
+	if err != nil {
+		app.log.Warn("checkpoint skipped, could not list jobs with open files", "err", err)
+		return
+	}
+	for _, jobID := range jobs {
+		app.checkpointJob(ctx, jobID)
+	}
+}
+
+// finalizeCompletedFile checkpoints a file whose parts have all arrived, trims
+// it to its real extent, and hands its handle back to the assembler.
+//
+// This is the second half of the handoff assembler.finalizeFile starts. The
+// assembler stops short of closing the file precisely so this can run: the
+// truncate, the last drain's acks and the size/mtime stamp all need the handle
+// it owns.
+//
+// The bound the trim uses is the highest end offset among the file's DURABLE
+// articles, which is neither this run's high-water mark (#342, #350: a resumed
+// file would be cut back to what this process happened to fetch) nor the
+// gapless prefix (which stops at the first permanently failed article and
+// would destroy the very blocks par2 repairs from). Barrier.FinalizeFile owns
+// that derivation; this function owns getting it called at all.
+//
+// The close is deferred so it happens even when the barrier fails. Leaving the
+// handle open would hold it for the rest of the job and, on NFS, turn
+// post-processing's unlink into a silly-rename.
+func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) {
+	defer func() {
+		if err := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); err != nil { //nolint:gosec // G115: file counts are far below int32
+			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", err)
+		}
+	}()
+	if app.barrier == nil {
+		return
+	}
+	mu := app.jobBarrierLock(jobID)
+	mu.Lock()
+	// --- Barrier serialised per job below this line ---
+
+	var (
+		err         error
+		stillOpen   = true
+		canTruncate = true
+	)
+	if tgt := app.syncTargetFor(jobID); tgt != nil {
+		// Only finalize a file the assembler still holds open, and this guard
+		// is load-bearing rather than an optimisation.
+		//
+		// Every operation FinalizeFile performs goes through the worker, and
+		// a worker that has stopped — or a file some other path already
+		// closed, via CancelJob or CloseJobHandles — answers with an error.
+		// The barrier cannot tell that apart from a real storage fault, so it
+		// would classify it, stall the job and pause it. Shutdown is exactly
+		// when this happens in bulk: watchCompletions drains its pending
+		// completions after the assembler has stopped, so every one of them
+		// would pause its job on the way out.
+		stillOpen = slices.Contains(tgt.Files(), int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
+		if trunc, ok := tgt.(durability.Truncator); !ok {
+			canTruncate = false
+		} else if stillOpen {
+			err = app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
+		}
+	}
+	mu.Unlock()
+	// --- No lock held below this line ---
+
+	// Every report happens after the unlock. The lock spans the barrier's I/O
+	// by design; a log write is I/O of its own and has no business extending
+	// that span.
+	switch {
+	case !canTruncate:
+		// Unreachable with the real adapter, which implements Truncate, and
+		// asserted rather than assumed: without the trim a completed file
+		// keeps pre-allocation's trailing zeros and par2 reports a healthy
+		// download as damaged.
+		app.log.Error("assembler sync target cannot truncate; completed files keep their pre-allocation padding",
+			"job", jobID, "fileidx", fileIdx)
+	case !stillOpen:
+		app.log.Debug("completed file is no longer open; nothing to finalize",
+			"job", jobID, "fileidx", fileIdx)
+	case err != nil:
+		app.log.Warn("finalize completed file", "job", jobID, "fileidx", fileIdx, "err", err)
+	}
+}
+
+// runCheckpoint is R6's cadence: a barrier per job on the lesser of a time
+// bound and a byte bound, and a queue save after it.
+//
+// The queue save follows the barrier rather than running on its own timer
+// because the barrier is what produces something worth saving. An ack marks
+// articles Done in memory; until the queue is written, a crash re-fetches
+// them anyway, so saving first would persist a snapshot that is stale by
+// construction.
+//
+// The other three triggers R6 names are not here, because they are events
+// rather than a cadence: file completion goes through finalizeCompletedFile,
+// and pause and clean shutdown go through Shutdown's final pass.
+func (app *Application) runCheckpoint(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			app.checkpointAll(ctx)
+		case jobID := <-app.barrierKick:
+			app.checkpointJob(ctx, jobID)
+		}
+		app.saveQueueIfDirty()
+	}
+}
+
+// saveQueueIfDirty persists the queue when something changed.
+func (app *Application) saveQueueIfDirty() {
+	if !app.queue.IsDirty() {
+		return
+	}
+	adminDir := app.config.GetGeneral().AdminDir
+	if err := app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
+		app.log.Warn("periodic queue save failed", "err", err)
+	}
+}
+
+// shutdownCheckpoint is R6's clean-shutdown trigger.
+//
+// It runs after the downloader has stopped and before the assembler does,
+// which is the only window where both halves hold: no new article can arrive,
+// and the file handles the barrier needs still exist. Running it after the
+// assembler stopped would find nothing open; running it before the downloader
+// stopped would leave whatever arrived in between unacked.
+//
+// Without it, everything downloaded since the last barrier is re-fetched on
+// the next start — up to a full checkpoint window thrown away on every
+// deliberate restart, which is the cost B1 bounds for a crash and nobody
+// should pay for a clean stop.
+func (app *Application) shutdownCheckpoint() {
+	if app.barrier == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownCheckpointTimeout)
+	defer cancel()
+	app.checkpointAll(ctx)
+	app.saveQueueIfDirty()
+}
+
+// appendArticleFacts records Class A for one decoded article.
+//
+// Deliberately not ordered against the write. A Class A fact says only "if the
+// bytes at [Offset, Offset+Length) are present, they hash to CRC32", which is
+// true the instant the article is decoded and stays true whether the write
+// succeeded, failed, or was never attempted. That independence is the whole
+// reason Class A needs no barrier (R2), and adding an ordering here would
+// quietly destroy it.
+//
+// A failure costs a re-fetch and nothing else (R3): the missing fact makes the
+// article unprovable on resume, and unprovable resolves to Outstanding.
+func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durability.ArticleFact) {
+	if p.factLog == nil {
+		return
+	}
+	if err := p.factLog.Append(ctx, jobID, []durability.ArticleFact{f}); err != nil {
+		p.log.Warn("append article fact; the article will be re-fetched after a restart",
+			"job", jobID, "artidx", f.ArtIdx, "err", err)
+	}
+}
+
+// deleteJobDurability drops a departed job's Class A and Class B rows.
+//
+// Both are keyed by job ID with no foreign key to the queue, so nothing else
+// removes them: a job that finished or was deleted would leave its facts and
+// extents behind forever.
+func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
+	if app.factLog != nil {
+		if err := app.factLog.DeleteJob(ctx, jobID); err != nil {
+			app.log.Warn("delete article facts for a departed job", "job", jobID, "err", err)
+		}
+	}
+	if app.extents != nil {
+		if err := app.extents.DeleteJob(ctx, jobID); err != nil {
+			app.log.Warn("delete file extents for a departed job", "job", jobID, "err", err)
+		}
+	}
+}
+
+var _ durability.Stallable = (*Application)(nil)
+
+// checkpointSettings resolves the two bounds from config, substituting the
+// defaults for unset or nonsensical values.
+//
+// Neither can be disabled. A barrier is the only thing that acks a downloaded
+// article, so a job with no barrier re-fetches everything it has on every
+// restart — "off" is not a faster mode, it is a broken one.
+func checkpointSettings(interval time.Duration, bytes int64) (resolvedInterval time.Duration, resolvedBytes int64) {
+	if interval <= 0 {
+		interval = defaultCheckpointInterval
+	}
+	if bytes <= 0 {
+		bytes = defaultCheckpointBytes
+	}
+	return interval, bytes
+}

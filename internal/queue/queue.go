@@ -1647,6 +1647,29 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	return nil
 }
 
+// SetWarning attaches a human-readable reason to a job.
+//
+// It exists for R27: a job that stalls on a storage fault must surface a
+// reason the user can act on, and Warning is the field the API and the UI
+// already render. "Paused" with nothing beside it is exactly the unactionable
+// halt the requirement forbids.
+//
+// Header tier: Warning is a plain string on the Job itself, so this needs
+// neither the manifest nor residency and cannot fail on either — which
+// matters, because the condition it reports is most likely to arrive when the
+// job is in an unusual state.
+func (q *Queue) SetWarning(jobID, warning string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	job.Warning = warning
+	q.dirty.Store(true)
+	return nil
+}
+
 // DiscardDeferredPar2 records that every recovery volume still awaiting the
 // CRC verdict will never be downloaded. The file set does not change: the
 // manifest entries and job_files rows stay exactly where they are, and only

@@ -2,9 +2,11 @@ package assembler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -247,5 +249,87 @@ func TestSyncTargetFor_NilArticleMapReportsNoFiles(t *testing.T) {
 	if got := a.SyncTargetFor("job1", nil).Files(); len(got) != 0 {
 		t.Errorf("Files() with a nil ArticleMap = %v, want none: a barrier would size a "+
 			"zero-width bitmap from ArticleCount==0 and commit it over the stored durable bits", got)
+	}
+}
+
+// TestOpenJobIDs_ReportsEveryJobHoldingAFileOnce pins the set the checkpoint
+// cadence iterates.
+//
+// It comes from here rather than from job status because "has an open file" is
+// this package's fact, and R8 bounds barrier cost by exactly that set. The
+// de-duplication matters as much as the membership: a job with forty open
+// files must produce one barrier, not forty.
+func TestOpenJobIDs_ReportsEveryJobHoldingAFileOnce(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]FileInfo{}
+	registerFile(t, dir, files, "job1", 0, 5)
+	registerFile(t, dir, files, "job1", 1, 5)
+	registerFile(t, dir, files, "job2", 0, 5)
+	a := startAssembler(t, makeOpts(dir, files))
+
+	if got, err := a.OpenJobIDs(t.Context()); err != nil {
+		t.Fatalf("OpenJobIDs: %v", err)
+	} else if len(got) != 0 {
+		t.Fatalf("OpenJobIDs = %v before any write, want none — a barrier would run "+
+			"for a job with nothing open", got)
+	}
+
+	for _, w := range []struct {
+		job  string
+		file int
+		art  int32
+	}{{"job1", 0, 0}, {"job1", 1, 1}, {"job2", 0, 2}} {
+		if err := a.WriteArticle(t.Context(), WriteRequest{
+			JobID: w.job, FileIdx: w.file, ArtIdx: w.art,
+			MessageID: string(rune('a' + w.art)), //nolint:unconvert // the rune conversion is the point
+			Offset:    0, Data: make([]byte, 10),
+		}); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+
+	got, err := a.OpenJobIDs(t.Context())
+	if err != nil {
+		t.Fatalf("OpenJobIDs: %v", err)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"job1", "job2"}) {
+		t.Errorf("OpenJobIDs = %v, want [job1 job2] exactly once each — job1 holds two "+
+			"files and must still produce one barrier", got)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := a.OpenJobIDs(t.Context()); !errors.Is(err, ErrAssemblerStopped) {
+		t.Errorf("OpenJobIDs after Stop = %v, want ErrAssemblerStopped — the checkpoint "+
+			"loop would wait on a worker that will never answer", err)
+	}
+}
+
+// TestHandleSyncOp_CloseIsIdempotent pins the handoff's release step. The
+// completion consumer calls CloseFile after the barrier has finalized the
+// file, and CancelJob, CloseJobHandles or shutdown can all have closed it
+// first — that race must not surface as an error the consumer logs as a
+// problem.
+func TestHandleSyncOp_CloseIsIdempotent(t *testing.T) {
+	a, open, key := newSyncOpFixture(t)
+
+	if r := runSyncOp(t, a, open, syncOp{kind: opClose, jobID: "job1", fileIdx: 0}); r.err != nil {
+		t.Fatalf("opClose on an open file: %v", r.err)
+	}
+	if _, still := open[key]; still {
+		t.Error("opClose left the file in the worker's open map; the handle leaks for the rest of the job")
+	}
+	if r := runSyncOp(t, a, open, syncOp{kind: opClose, jobID: "job1", fileIdx: 0}); r.err != nil {
+		t.Errorf("opClose on an already-closed file = %v, want nil — losing the race "+
+			"with cancel or shutdown is ordinary, not a disagreement", r.err)
+	}
+	// Every other operation on a missing file is still an error: those are
+	// bookkeeping disagreements the barrier must not paper over (A2).
+	for _, kind := range []syncOpKind{opDrain, opSync, opStat, opTruncate} {
+		if r := runSyncOp(t, a, open, syncOp{kind: kind, jobID: "job1", fileIdx: 0}); r.err == nil {
+			t.Errorf("op %v on a closed file returned nil; only opClose may be idempotent", kind)
+		}
 	}
 }

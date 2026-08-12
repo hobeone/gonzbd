@@ -1,7 +1,6 @@
 package app_test
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -100,60 +99,6 @@ func ackFailed(t *testing.T, q *queue.Queue, jobID string, msgIDs ...string) {
 	if err := q.AckPermanentFailure(jobID, idxs); err != nil {
 		t.Fatalf("ackFailed: %v", err)
 	}
-}
-
-// seedDoneByMsgIDs is ackDone's error-returning counterpart, for use from
-// callback bodies (e.g. a hook wired via app.WithMarkArticlesDoneHook) that
-// have no *testing.T to fail through.
-func seedDoneByMsgIDs(q *queue.Queue, jobID string, msgIDs []string) error {
-	job, err := q.Get(jobID)
-	if err != nil {
-		return fmt.Errorf("seedDoneByMsgIDs: job %s not in queue: %w", jobID, err)
-	}
-	m, err := job.Manifest()
-	if err != nil {
-		return fmt.Errorf("seedDoneByMsgIDs: job %s manifest: %w", jobID, err)
-	}
-	progress := job.Progress()
-
-	add := make(map[int]bool, len(msgIDs))
-	for _, id := range msgIDs {
-		found := false
-		for i := range m.NumArticles() {
-			if m.ArticleID(i) == id {
-				add[i] = true
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("seedDoneByMsgIDs: job %s has no article %s", jobID, id)
-		}
-	}
-
-	touched := make(map[int]bool)
-	for i := range add {
-		fi, ok := fileIdxForArticle(m, i)
-		if !ok {
-			return fmt.Errorf("seedDoneByMsgIDs: article %d not owned by any file in job %s", i, jobID)
-		}
-		touched[fi] = true
-	}
-	var exts []durability.FileExtent
-	for fi := range touched {
-		lo, hi := m.FileRange(fi)
-		bm := durability.NewBitmap(hi - lo)
-		for i := lo; i < hi; i++ {
-			if add[i] || (progress.ArticleDone(i) && !progress.ArticleFailed(i)) {
-				bm.Set(i - lo)
-			}
-		}
-		exts = append(exts, durability.FileExtent{
-			FileIdx: int32(fi), //nolint:gosec // G115: file counts are far below int32
-			Durable: bm,
-		})
-	}
-	return q.SeedFromExtents(jobID, exts)
 }
 
 func fileIdxForArticle(m *queue.Manifest, i int) (int, bool) {

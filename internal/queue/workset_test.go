@@ -2,10 +2,12 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -221,5 +223,43 @@ func TestAckDurable_RequiresAProof(t *testing.T) {
 	if got := m.Type.In(1); got != want {
 		t.Errorf("AckDurable takes %v, want %v — a non-proof parameter reopens the "+
 			"pre-barrier ack path that R9 exists to close", got, want)
+	}
+}
+
+// TestSetWarning_IsReadableWithoutResidency pins the field R27's stall reason
+// travels on.
+//
+// Header tier deliberately: the condition that sets it — a storage fault — is
+// most likely to arrive when the job is in an unusual state, so a setter that
+// needed the manifest or residency would drop the reason for exactly the jobs
+// that have one. An unknown job is reported rather than silently ignored (A2).
+func TestSetWarning_IsReadableWithoutResidency(t *testing.T) {
+	q := newTestQueueWithJob(t, "job-1", 4)
+
+	if err := q.SetWarning("job-1", "Stalled: storage retryable fault on sync \"/mnt/x\": no space left on device"); err != nil {
+		t.Fatalf("SetWarning: %v", err)
+	}
+	snap := q.SnapshotJob("job-1")
+	if snap == nil {
+		t.Fatal("job missing")
+	}
+	if !strings.Contains(snap.Warning, "no space left on device") {
+		t.Errorf("Warning = %q, want the fault's text — the job halts with no reason a user can act on", snap.Warning)
+	}
+	if !q.IsDirty() {
+		t.Error("the queue was not marked dirty, so the reason is lost on the next reload")
+	}
+
+	// Overwriting replaces rather than appends: the current reason is the one
+	// that matters.
+	if err := q.SetWarning("job-1", "Stalled: read-only filesystem"); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.SnapshotJob("job-1").Warning; got != "Stalled: read-only filesystem" {
+		t.Errorf("Warning = %q after a second call, want only the newer reason", got)
+	}
+
+	if err := q.SetWarning("no-such-job", "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetWarning on an unknown job = %v, want ErrNotFound", err)
 	}
 }

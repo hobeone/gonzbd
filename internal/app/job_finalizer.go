@@ -87,6 +87,18 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 	if err := app.queue.Remove(job.Queue.ID); err != nil {
 		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
 	}
+	// The download is over and filed. Its Class A facts and Class B extents
+	// describe a queue entry that no longer exists, and nothing else deletes
+	// them — they are keyed by job ID with no foreign key to the queue, so
+	// they would otherwise accumulate one set per job ever downloaded.
+	//
+	// Deliberately here rather than in enqueuePostProc: post-processing can
+	// send a job back for more downloading, and a job that returns to the
+	// queue without its extents re-fetches every byte it already has.
+	delCtx, delCancel := context.WithTimeout(app.ctx, 5*time.Second)
+	app.deleteJobDurability(delCtx, job.Queue.ID)
+	delCancel()
+	app.forgetJobBarrierState(job.Queue.ID)
 	select {
 	case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
 	default:

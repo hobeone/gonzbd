@@ -139,7 +139,12 @@ type Options struct {
 	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
-	// TotalParts for a file have been written and its handle has been closed.
+	// TotalParts for a file have been written.
+	//
+	// The handle is still OPEN at that point, and stays open until the caller
+	// releases it with CloseFile. That is the handoff durability.Barrier's
+	// FinalizeFile needs: it has to Drain, Sync, Truncate and Stat the file,
+	// and all four go through this package's handle. See finalizeFile.
 	//
 	// It no longer reports a whole-file CRC. The assembler cannot compute one
 	// honestly: a resumed run is not sent the articles an earlier run

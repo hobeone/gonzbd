@@ -11,14 +11,19 @@ import (
 type FileComplete struct {
 	JobID   string
 	FileIdx int
-	// CRC32 is the whole-file CRC32 computed by the assembler from
-	// per-article CRCs combined in offset order. Zero if unavailable:
-	// UU-encoded or failed articles, a failed write, a file that could not
-	// be trimmed to its decoded extent, or a run whose articles do not cover
-	// the whole file — the resume case, where an earlier run's articles are
-	// not re-dispatched (#349). Zero means unavailable, never mismatched.
-	CRC32 uint32
 }
+
+// FileComplete carries no CRC32. The assembler used to compute a whole-file
+// value here by combining the per-article CRCs it happened to see, which was
+// #349: a resumed run is never sent the articles an earlier run completed, so
+// those parts never tile the file and the figure described a fragment while
+// claiming to describe the whole.
+//
+// The honest whole-file value is durability.FileExtent.PrefixCRC, guarded by
+// HasPrefixCRC, which the resumer derives from the Class A facts over the
+// file's real extent and off the barrier's critical path (R24). Nothing
+// consumes it yet — Queue.SetFileCRC32 is currently without a caller for that
+// reason.
 
 // JobComplete is emitted when all files in a job are assembled.
 type JobComplete struct {

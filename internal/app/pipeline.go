@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -94,6 +95,15 @@ type pipeline struct {
 
 	// onHeartbeat is called when an article result is processed.
 	onHeartbeat func()
+
+	// factLog receives the Class A fact for every article decoded. Nil in a
+	// process with no history database, which disables Class A along with
+	// the barrier that reads it.
+	factLog durability.FactLog
+
+	// onArticleWritten reports an article's decoded byte count to the
+	// checkpoint cadence, which uses it for B1's volume bound.
+	onArticleWritten func(jobID string, n int)
 
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
@@ -326,6 +336,32 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		return
 	}
 
+	// Class A, recorded here because this is the one place that holds every
+	// field of it: the decoded offset and length are not knowable from the
+	// NZB — they come from the yEnc =ypart header inside the article body —
+	// so the article -> byte-range map is itself downloaded data.
+	//
+	// Deliberately NOT ordered against the write below, and the order of
+	// these two statements carries no meaning. A Class A fact asserts nothing
+	// about presence: it says only "if the bytes at [Offset, Offset+Length)
+	// are present, they hash to CRC32", which is true the instant the article
+	// is decoded and stays true whether the write succeeds, fails, or is
+	// never attempted. That independence is precisely what lets Class A
+	// commit with no barrier (R2), and imposing an order here would destroy
+	// it while looking like caution.
+	//
+	// nBytes is read before the write, because a successful WriteArticle
+	// hands res.Data to the assembler and the slice must not be touched
+	// afterwards.
+	nBytes := len(res.Data)
+	p.appendArticleFacts(ctx, res.JobID, durability.ArticleFact{
+		FileIdx: int32(res.FileIdx), //nolint:gosec // G115: file counts are far below int32
+		ArtIdx:  res.ArtIdx,
+		Offset:  res.Offset,
+		Length:  int32(nBytes), //nolint:gosec // G115: a decoded article is far below int32 bytes
+		CRC32:   res.CRC,
+	})
+
 	writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 		JobID:     res.JobID,
 		FileIdx:   res.FileIdx,
@@ -342,6 +378,12 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	} else if writeErr == nil {
 		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)
+		// B1's volume bound counts accepted bytes, not durable ones: it is
+		// measuring how much work is at risk between barriers, and an article
+		// the assembler took but has not fsynced is exactly that work.
+		if p.onArticleWritten != nil {
+			p.onArticleWritten(res.JobID, nBytes)
+		}
 	}
 }
 

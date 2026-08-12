@@ -391,9 +391,18 @@ It reads fully assembled RAR volume files from disk. It does NOT read partial
 articles or sparse file regions. The coordination model:
 
 1. **Volume completion signal**: The assembler's `OnFileComplete` callback
-   calls `DirectUnpacker.Add(filename, path)` when a RAR volume file has been
-   fully written, fsynced, and closed. The volume is complete and stable on
-   disk at this point.
+   reports a RAR volume whose parts have all been written. **The handle is
+   still open at that moment** — the assembler no longer closes a completed
+   file itself, because `durability.Barrier.FinalizeFile` has to `Drain`,
+   `Sync`, `Truncate` and `Stat` it through that handle, and a file closed at
+   completion can never be trimmed back to its decoded extent.
+
+   The volume is nevertheless complete, fsynced and closed by the time
+   DirectUnpack sees it: `Application.handleFileComplete` runs
+   `finalizeCompletedFile` — barrier, truncate, `CloseFile` — *before* it hands
+   the event to the DirectUnpack orchestrator. The ordering in that function is
+   load-bearing for exactly this reason; unrar reading a file that still
+   carried pre-allocation's trailing zeros would see a corrupt volume.
 
 2. **Volume waiting**: `waitForVolume()` blocks on the `volumeReady` channel
    until the requested volume number appears in `completedVols`. If the set is

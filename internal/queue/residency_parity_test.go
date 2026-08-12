@@ -11,9 +11,9 @@ import (
 // commitBarrierExtents writes the Class B extents a durability.Barrier would
 // have committed for job's currently-durable articles.
 //
-// It stands in for Task 10's barrier cadence, which does not exist yet, and it
-// goes through the real durability.SQLiteExtentStore rather than writing rows
-// by hand — so what the non-resident read path reads back is what production
+// It stands in for the application's barrier cadence rather than starting one,
+// and it goes through the real durability.SQLiteExtentStore rather than writing
+// rows by hand — so what the non-resident read path reads back is what production
 // will actually have written, not a shape invented by the test.
 //
 // A file's durable bits are its articles that are done and not failed, which
