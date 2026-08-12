@@ -108,7 +108,7 @@ type Application struct {
 	notifyDispatcher *notifier.Dispatcher
 
 	internalFileComplete chan FileComplete
-	onFileComplete       func(jobID string, fileIdx int, fileCRC uint32)
+	onFileComplete       func(jobID string, fileIdx int)
 	markArticlesDoneHook func(jobID string, messageIDs []string) error
 
 	wg     sync.WaitGroup
@@ -307,8 +307,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	})
 	app.postProcessor = pp
 
-	onFileComplete := func(jobID string, fileIdx int, fileCRC uint32) {
-		fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
+	onFileComplete := func(jobID string, fileIdx int) {
+		// CRC32 is no longer reported by the assembler: it cannot compute a
+		// whole-file CRC honestly, because a resumed run is never sent the
+		// articles an earlier run completed (#349). The verified figure is
+		// durability.FileExtent.PrefixCRC guarded by HasPrefixCRC, which
+		// Task 10 threads through here.
+		fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
 		select {
 		case app.internalFileComplete <- fc:
 		default:
@@ -322,24 +327,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
-	markDone := q.MarkArticlesDone
-	markDoneByIdx := q.MarkArticlesDoneByIdx
-	if app.markArticlesDoneHook != nil {
-		markDone = app.markArticlesDoneHook
-		markDoneByIdx = nil
-	}
-
+	// The assembler is given no ack callbacks at all. It has no authority to
+	// resolve an article in either direction any more: successes are acked by
+	// durability.Barrier, which is the only component that runs the fsync
+	// (X2), and permanent failures go to Queue.AckPermanentFailure from the
+	// pipeline. Task 10 wires the barrier's cadence; until it does, nothing
+	// mints a DurableProof and no download completes.
 	asm := assembler.New(assembler.Options{
-		FileInfo:                p.resolveFileInfo,
-		MarkArticlesDoneByIdx:   markDoneByIdx,
-		MarkArticlesFailedByIdx: q.MarkArticlesFailedByIdx,
-		MarkArticlesDone:        markDone,
-		MarkArticlesFailed:      q.MarkArticlesFailed,
-		SetFileExtents:          q.SetFileExtents,
-		MinFreeBytes:            minFreeBytes,
-		WriteCacheBytes:         writeCacheBytes,
-		OnLowDisk:               app.handleLowDisk,
-		OnFileComplete:          onFileComplete,
+		FileInfo:        p.resolveFileInfo,
+		MinFreeBytes:    minFreeBytes,
+		WriteCacheBytes: writeCacheBytes,
+		OnLowDisk:       app.handleLowDisk,
+		OnFileComplete:  onFileComplete,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm

@@ -90,8 +90,8 @@ type Queue struct {
 	notifyCh chan struct{}
 
 	// dirty is set to true by the five article/file mutation methods
-	// (MarkArticleDone, MarkArticleFailed, MarkFileComplete,
-	// MarkArticlesDone, MarkArticlesFailed) and cleared by Save on a
+	// (AckDurable, AckPermanentFailure, MarkFileComplete,
+	// SeedFromExtents) and cleared by Save on a
 	// successful write. The periodic checkpoint ticker no-ops when
 	// dirty is false, avoiding unnecessary I/O on idle queues.
 	dirty atomic.Bool
@@ -1361,7 +1361,7 @@ type UnfinishedArticle struct {
 // ForEachUnfinishedArticle invokes fn for every not-yet-Done article
 // in the queue, in priority/file/article order. The read lock is
 // held across the whole iteration — fn must not call back into the
-// Queue (e.g. Add, Remove, MarkArticleDone) or it will deadlock.
+// Queue (e.g. Add, Remove, AckDurable) or it will deadlock.
 //
 // fn returns false to stop iteration early; this mirrors Go's
 // iter.Seq convention and is useful when the caller is bounded (e.g.
@@ -1427,23 +1427,13 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	}
 }
 
-// MarkArticleDone flips the Done flag on the article with the given
-// Message-ID within jobID. Returns ErrNotFound if either the job or
-// the article is absent.
-//
-// Prefer MarkArticlesDone for batch operations — it takes the write lock
-// once for the entire batch rather than once per article.
-func (q *Queue) MarkArticleDone(jobID, messageID string) error {
-	return q.MarkArticlesDone(jobID, []string{messageID})
-}
-
 // MarkArticleEmitted flags an article as having a result in flight from the
 // downloader to the assembler. This is a transient, in-memory-only bit
 // (JobProgress's emitted array, never persisted): its purpose is to
 // prevent the dispatcher from re-dispatching the same article between the
 // moment the downloader sends
 // a result on the completions channel and the moment the assembler makes
-// the outcome durable (MarkArticleDone / MarkArticleFailed). On restart
+// the outcome durable (AckDurable / AckPermanentFailure). On restart
 // the flag is lost, so any article whose bytes weren't fsynced is
 // re-downloaded — that's the B.6 durability invariant.
 //
@@ -1504,7 +1494,7 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
 	// Only restore to pending if the article is not already done. An article
-	// can have Emitted=true and Done=true when MarkArticlesDone ran before
+	// can have Emitted=true and Done=true when AckDurable ran before
 	// ClearArticleEmitted (e.g. a late assembler flush after a downloader
 	// reload). In that case the article is finished and must not be counted
 	// as pending.
@@ -1564,7 +1554,7 @@ func (q *Queue) ClearAllEmitted() {
 			job.progress.recompute(m)
 		}
 	}
-	// Drain any stale notification (e.g. from MarkArticleDone calls during
+	// Drain any stale notification (e.g. from AckDurable calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
 	// notification is guaranteed to be delivered.
 	select {
@@ -1610,231 +1600,6 @@ func (q *Queue) CheckEarlyAbort(jobID string) bool {
 		return false
 	}
 	return job.IsEarlyAbort()
-}
-
-// MarkArticleFailed marks an article as Done and increments the FailedBytes
-// count. Returns (true, nil) if it was the first time this article was marked
-// done. Delegates to MarkArticlesFailed so both forms share identical counter
-// logic and cannot drift.
-func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
-	firstTime, err := q.MarkArticlesFailed(jobID, []string{messageID})
-	return len(firstTime) > 0, err
-}
-
-// MarkArticlesDone is the batched form of MarkArticleDone. It flips
-// Done on every article in messageIDs for jobID under a single write
-// lock. Articles already Done are skipped (no double-decrement of
-// RemainingBytes). Missing message-IDs are logged but do not abort the
-// batch; the method only errors if the job itself is not found.
-//
-// The single-lock-per-batch is the whole point: under a heavy
-// completions firehose the assembler previously took the queue write
-// lock once per article, serialising the hot path against every
-// RLock-reader (UI snapshots, dispatcher iteration). B.7 amortises
-// that to one lock acquisition per flush.
-func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
-	if len(messageIDs) == 0 {
-		return nil
-	}
-	q.mu.Lock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		q.mu.Unlock()
-		return err
-	}
-	var notFound []string
-	for _, id := range messageIDs {
-		i, ok := job.manifest.articleIndexByID(id)
-		if !ok {
-			notFound = append(notFound, id)
-			continue
-		}
-		job.progress.markDone(job.manifest, i)
-	}
-	q.dirty.Store(true)
-	q.mu.Unlock()
-	// --- No lock held below this line ---
-	for _, id := range notFound {
-		q.log.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
-	}
-	return nil
-}
-
-// MarkArticlesDoneByIdx is the O(1) index-based batched form of MarkArticlesDone.
-func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
-	if len(artIdxs) == 0 {
-		return nil
-	}
-	q.mu.Lock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		q.mu.Unlock()
-		return err
-	}
-	nArt := job.manifest.NumArticles()
-	var invalidCount int
-	for _, idx := range artIdxs {
-		i := int(idx)
-		if i >= 0 && i < nArt {
-			job.progress.markDone(job.manifest, i)
-		} else {
-			invalidCount++
-		}
-	}
-	q.dirty.Store(true)
-	q.mu.Unlock()
-	if invalidCount > 0 {
-		q.log.Warn("MarkArticlesDoneByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
-	}
-	return nil
-}
-
-// SetFileExtents records a file's resume figures: the assembler's contiguous
-// write frontier, and the highest byte position it has written (see
-// FileProgress.WriteCursor and FileProgress.MaxWritten). Called from the assembler's
-// batched flush, never per-article — taking the write lock once for both is
-// the reason they travel together.
-//
-// Both figures only ever advance, and the clamp is load-bearing rather than
-// defensive. The assembler reports whichever figure the write path that fired
-// happens to know: a coalesced run knows the new cursor, while a drained or
-// uncached write knows only the high-water mark and leaves the staged cursor
-// unchanged — usually zero, but whatever an earlier run in the same flush
-// cycle staged. Taking the report literally would reset the cursor on every
-// such flush.
-//
-// Neither figure is persisted any more: job_files lost write_cursor and
-// max_written along with the other derived columns, so both start at zero on
-// every run until the durable extents restore them.
-func (q *Queue) SetFileExtents(jobID string, fileIdx int, cursor, maxWritten int64) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
-	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	f := &job.progress.files[fileIdx]
-	f.WriteCursor = max(f.WriteCursor, cursor)
-	f.MaxWritten = max(f.MaxWritten, maxWritten)
-	q.dirty.Store(true)
-	return nil
-}
-
-// MarkArticlesFailed is the batched form of MarkArticleFailed. Like
-// MarkArticlesDone it takes the queue write lock exactly once. The
-// returned firstTimeIDs lists message-IDs that actually flipped from
-// not-Done to Done-Failed this call — callers that need the
-// "first-time failure" semantics of the singular form (e.g. for event
-// emission) should consult that list; duplicate or unknown IDs are
-// silently dropped from it.
-func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string, error) {
-	if len(messageIDs) == 0 {
-		return nil, nil
-	}
-	q.mu.Lock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		q.mu.Unlock()
-		return nil, err
-	}
-	firstTime := make([]string, 0, len(messageIDs))
-	var notFound []string
-	for _, id := range messageIDs {
-		i, ok := job.manifest.articleIndexByID(id)
-		if !ok {
-			notFound = append(notFound, id)
-			continue
-		}
-		if job.progress.markFailed(job.manifest, i) {
-			firstTime = append(firstTime, id)
-		}
-	}
-	var failedBytes, recoveryBytes int64
-	var releasedPar2 bool
-	if len(firstTime) > 0 {
-		failedBytes, recoveryBytes = job.progress.failedBytes, job.manifest.RecoveryBytes()
-		q.dirty.Store(true)
-		// On-demand par2: a permanent data-article failure proves this job
-		// will need repair. Release the deferred recovery volumes now — while
-		// the connection is live and the articles are freshest — rather than
-		// waiting for the download-complete verify. Par2Recovered guards it to
-		// fire once; RecoveryFiles>0 skips the scan for jobs with nothing to
-		// release, which now correctly includes a job carrying only a par2
-		// index.
-		if !job.progress.par2Recovered && job.manifest.RecoveryFiles() > 0 {
-			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
-				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
-				releasedPar2 = true
-			}
-		}
-		q.notifyLocked()
-	}
-	q.mu.Unlock()
-	// --- No lock held below this line ---
-	for _, id := range notFound {
-		q.log.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
-	}
-	if len(firstTime) > 0 {
-		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "recovery_bytes", recoveryBytes)
-		if releasedPar2 {
-			q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
-		}
-	}
-	return firstTime, nil
-}
-
-// MarkArticlesFailedByIdx is the O(1) index-based batched form of MarkArticlesFailed.
-func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32, error) {
-	if len(artIdxs) == 0 {
-		return nil, nil
-	}
-	q.mu.Lock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		q.mu.Unlock()
-		return nil, err
-	}
-	nArt := job.manifest.NumArticles()
-	firstTime := make([]int32, 0, len(artIdxs))
-	var invalidCount int
-	for _, idx := range artIdxs {
-		i := int(idx)
-		if i >= 0 && i < nArt {
-			if job.progress.markFailed(job.manifest, i) {
-				firstTime = append(firstTime, idx)
-			}
-		} else {
-			invalidCount++
-		}
-	}
-	var failedBytes, recoveryBytes int64
-	var releasedPar2 bool
-	if len(firstTime) > 0 {
-		failedBytes, recoveryBytes = job.progress.failedBytes, job.manifest.RecoveryBytes()
-		q.dirty.Store(true)
-		if !job.progress.par2Recovered && job.manifest.RecoveryFiles() > 0 {
-			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
-				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
-				releasedPar2 = true
-			}
-		}
-		q.notifyLocked()
-	}
-	q.mu.Unlock()
-	// --- No lock held below this line ---
-	if invalidCount > 0 {
-		q.log.Warn("MarkArticlesFailedByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
-	}
-	if len(firstTime) > 0 {
-		q.log.Warn("articles marked FAILED by idx", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "recovery_bytes", recoveryBytes)
-		if releasedPar2 {
-			q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
-		}
-	}
-	return firstTime, nil
 }
 
 // UndeferRecoveryVolumes clears the Deferred flag on the given file indices of

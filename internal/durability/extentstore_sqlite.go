@@ -32,7 +32,7 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 		return nil
 	}
 	for _, e := range exts {
-		if e.VerifiedTo < 0 || e.Size < 0 || e.BytesDurable < 0 || e.BytesFailed < 0 {
+		if e.VerifiedTo < 0 || e.Size < 0 || e.BytesDurable < 0 {
 			return fmt.Errorf("%w: file %d has a negative figure", ErrInvalidExtent, e.FileIdx)
 		}
 	}
@@ -45,8 +45,8 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT OR REPLACE INTO file_extents
 			(job_id, file_idx, durable_bitmap, verified_to, prefix_crc,
-			 has_prefix_crc, bytes_durable, bytes_failed, size, mod_time_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 has_prefix_crc, bytes_durable, size, mod_time_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("durability: prepare extent commit job=%s: %w", jobID, err)
 	}
@@ -58,7 +58,7 @@ func (s *SQLiteExtentStore) Commit(ctx context.Context, jobID string, exts []Fil
 			hasCRC = 1
 		}
 		if _, err := stmt.ExecContext(ctx, jobID, e.FileIdx, e.Durable.Bytes(), e.VerifiedTo,
-			e.PrefixCRC, hasCRC, e.BytesDurable, e.BytesFailed, e.Size, e.ModTimeNs); err != nil {
+			e.PrefixCRC, hasCRC, e.BytesDurable, e.Size, e.ModTimeNs); err != nil {
 			return fmt.Errorf("durability: commit extent file=%d: %w", e.FileIdx, err)
 		}
 	}
@@ -89,7 +89,7 @@ func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExten
 	// that guarantee.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT file_idx, durable_bitmap, verified_to, prefix_crc,
-		       has_prefix_crc, bytes_durable, bytes_failed, size, mod_time_ns
+		       has_prefix_crc, bytes_durable, size, mod_time_ns
 		  FROM file_extents WHERE job_id = ? ORDER BY file_idx`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("durability: query extents job=%s: %w", jobID, err)
@@ -102,7 +102,7 @@ func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExten
 		var raw []byte
 		var hasCRC int
 		if err := rows.Scan(&e.FileIdx, &raw, &e.VerifiedTo, &e.PrefixCRC,
-			&hasCRC, &e.BytesDurable, &e.BytesFailed, &e.Size, &e.ModTimeNs); err != nil {
+			&hasCRC, &e.BytesDurable, &e.Size, &e.ModTimeNs); err != nil {
 			return nil, fmt.Errorf("durability: scan extent job=%s: %w", jobID, err)
 		}
 		e.HasPrefixCRC = hasCRC != 0

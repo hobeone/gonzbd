@@ -1,7 +1,6 @@
 package assembler
 
 import (
-	"cmp"
 	"context"
 	"math"
 
@@ -9,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +15,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 
-	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
@@ -25,14 +22,6 @@ import (
 // Increased from the Python source's 12 to 2048 to absorb disk I/O spikes
 // on high-speed (1Gbps+) connections.
 const defaultQueueSize = 2048
-
-// defaultDoneFlushInterval is how often the worker flushes its pending
-// Done/Failed batches to the queue when no OnFileComplete has fired
-// recently. Short enough to keep UI progress lively on long-running
-// files; long enough to collapse bursts of small-article completions
-// into a single queue lock acquisition. 250ms is comfortably below
-// human reaction time for progress updates.
-const defaultDoneFlushInterval = 250 * time.Millisecond
 
 // diskCheckInterval is how many WriteRequests the worker processes between
 // disk-space checks. Checking every request would dominate the syscall budget
@@ -98,6 +87,11 @@ type WriteRequest struct {
 	// job's open file handles have been closed and removed. Set only by
 	// CancelJob; never used by ordinary write requests.
 	ackCh chan struct{}
+
+	// syncOp, when non-nil, carries a barrier operation for the worker to
+	// perform on its own goroutine. Set only by jobSyncTarget; never used by
+	// ordinary write requests. See synctarget.go.
+	syncOp *syncOp
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
@@ -131,43 +125,6 @@ type FileInfo struct {
 	// consumers depend on this being the larger of the two figures — see
 	// finalizeFile and offsetInRange.
 	ExpectedSize int64
-
-	// InitialWriteCursor seeds the write-coalescing cache's per-file cursor.
-	// Zero for a fresh download (file starts at byte 0). On resume the caller
-	// sets it to the file's persisted contiguous write frontier so coalescing
-	// doesn't stall waiting for an offset-0 article that was already written
-	// before the restart. See queue.FileProgress.WriteCursor.
-	//
-	// It doubles as a floor on the completed file's extent, for a file whose
-	// earlier run predates InitialMaxWritten being persisted. It is a weaker
-	// figure than that mark and is not a guarantee: drainFile advances the
-	// cursor past everything it returns — gaps included, and before any write
-	// is attempted — so a subsequent WriteAt that writeCachedArticles logs as
-	// failed leaves the cursor above the bytes actually on disk. That is why
-	// finalizeFile refuses to truncate upward rather than trusting either seed.
-	InitialWriteCursor int64
-
-	// InitialMaxWritten seeds the file's decoded high-water mark on resume.
-	// Zero for a fresh download, and zero for a file whose earlier run predates
-	// this figure being persisted — in which case InitialWriteCursor is the
-	// only floor available, which under-counts a tail that arrived out of
-	// order but never over-counts. See queue.FileProgress.MaxWritten.
-	InitialMaxWritten int64
-
-	// ResumedFile reports that some of this file's articles were already
-	// complete before this run started, so bytes an earlier run wrote are
-	// already on disk and TotalParts counts only what is still outstanding.
-	//
-	// The assembler cannot infer this for itself. A resumed file and a fresh
-	// one are indistinguishable from inside: both can arrive with either seed
-	// at zero, and treating a fresh file as resumed would skip the truncate
-	// that removes pre-allocation's trailing zeros on every download. Only
-	// the caller knows how many of the file's articles it withheld.
-	//
-	// It exists for finalizeFile's interim guard — see the INTERIM comment
-	// there. Once a resumed file carries a trustworthy extent again, the
-	// guard and this field go together.
-	ResumedFile bool
 }
 
 // Options configures an Assembler.
@@ -182,16 +139,16 @@ type Options struct {
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
 	// TotalParts for a file have been written and its handle has been closed.
-	// fileCRC is the CRC32 of the complete file, computed by combining
-	// per-article CRCs in offset order. It is zero when no such CRC is
-	// available: an article lacked CRC information (UU-encoded or failed), a
-	// write failed, the file could not be trimmed to its decoded extent, or
-	// this run's articles do not cover the whole file — the resume case,
-	// where an earlier run's articles are not re-dispatched (#349). Consumers
-	// must read zero as "unavailable", never as a mismatch.
+	//
+	// It no longer reports a whole-file CRC. The assembler cannot compute one
+	// honestly: a resumed run is not sent the articles an earlier run
+	// completed, so the parts it sees never tile the file (#349). The verified
+	// figure is durability.FileExtent.PrefixCRC, guarded by HasPrefixCRC,
+	// which the resumer derives from Class A over the file's real extent.
+	//
 	// The callback should be cheap; expensive work should be dispatched
 	// asynchronously.
-	OnFileComplete func(jobID string, fileIdx int, fileCRC uint32)
+	OnFileComplete func(jobID string, fileIdx int)
 
 	// OnLowDisk, if non-nil, is called when free space on the target
 	// filesystem falls below MinFreeBytes. It is called on the worker goroutine
@@ -201,56 +158,12 @@ type Options struct {
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
 
-	// MarkArticlesDoneByIdx is the O(1) index-based batched durability callback.
-	MarkArticlesDoneByIdx func(jobID string, artIdxs []int32) error
-
-	// MarkArticlesFailedByIdx is the O(1) index-based batched failure callback.
-	MarkArticlesFailedByIdx func(jobID string, artIdxs []int32) ([]int32, error)
-
-	// MarkArticlesDone is the batched durability callback: the assembler
-	// accumulates message-IDs of successfully fsynced articles and hands
-	// them to this function in groups, either when a file completes, on
-	// a periodic flush timer (DoneFlushInterval), or at Stop. Taking the
-	// queue write lock once per batch (instead of once per article) is
-	// the whole point — a completions firehose would otherwise serialise
-	// against every RLock-reader. Required when articles must survive a
-	// crash.
-	MarkArticlesDone func(jobID string, messageIDs []string) error
-
-	// MarkArticlesFailed is the batched form of the FatalErr callback.
-	// The returned firstTimeIDs slice is informational (consumers that
-	// care about first-time failure events can use it); the assembler
-	// itself dedupes locally via a per-file seen-set, so partsWritten
-	// tracking does not depend on this return value.
-	MarkArticlesFailed func(jobID string, messageIDs []string) (firstTimeIDs []string, err error)
-
-	// DoneFlushInterval overrides the default 250ms flush cadence for
-	// pending Done/Failed batches. Zero selects the default; negative
-	// disables the timer (flush only on file completion or Stop — useful
-	// for benchmarks that want to measure pure batching behaviour).
-	DoneFlushInterval time.Duration
-
 	// WriteCacheBytes is the memory limit for the write coalescing cache.
 	// When positive, decoded articles are buffered in memory and flushed
 	// as larger contiguous writes, reducing syscall count and improving
 	// sequential write patterns. Zero disables caching (each article is
 	// written individually, which is the pre-5.0 behavior).
 	WriteCacheBytes int64
-
-	// SetFileExtents persists a file's resume figures: the advanced contiguous
-	// write frontier, and the highest byte position written. Called from the
-	// worker's batched flush, never per-article — the two travel together so
-	// the flush takes the queue's write lock once per file rather than twice.
-	// Optional; nil disables persistence of both.
-	//
-	// An implementation must merge rather than overwrite, keeping the larger
-	// of the stored and reported value for each figure. A flush reports
-	// whichever figures the write paths that fired happen to know: a coalesced
-	// run knows the new cursor, while a drained or uncached write knows only
-	// the high-water mark and leaves the staged cursor unchanged — usually
-	// zero, but whatever an earlier run in the same cycle staged. Storing a
-	// report literally would erase the resume hint (#311) this call keeps.
-	SetFileExtents func(jobID string, fileIdx int, cursor, maxWritten int64) error
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -260,58 +173,24 @@ type fileKey struct {
 }
 
 // openFile tracks an in-progress file being assembled.
+//
+// It is now bookkeeping only: the file's handle, its cache and every byte that
+// moves belong to its FileWriter. What is left here is what the WORKER needs
+// to route a request — where the file's writer is, how many of its parts have
+// arrived, and what it was told about the file.
+//
+// maxWritten, crcParts and crcValid are gone. Each was a fact the assembler
+// maintained about bytes on disk in order to truncate or to report a CRC, and
+// both of those decisions moved to durability.Barrier, which is the only
+// component that knows whether an fsync has happened. Keeping a shadow copy
+// here is exactly the second-writer shape S5 forbids.
 type openFile struct {
-	handle *os.File
-	info   FileInfo
+	w    *FileWriter
+	info FileInfo
 	// key identifies this file, so the write paths can record its resume
 	// figures without threading the key through every call.
 	key          fileKey
 	partsWritten int
-	// maxWritten tracks the highest byte position written (offset + len).
-	// Used to truncate the file to its true decoded size at completion.
-	// Pre-allocation (fallocate/ftruncate) sets the file size to the
-	// NZB-declared encoded size, which is ~2% larger than the actual
-	// decoded content. Without truncation, the trailing zeros cause
-	// par2 to report files as damaged despite 100% download health.
-	maxWritten int64
-	// seenFailed dedupes FatalErr requests by Message-ID so a duplicate
-	// emission (shouldn't happen under B.6's Emitted gate, but defence
-	// in depth) cannot double-count a part toward TotalParts.
-	seenFailed map[string]struct{}
-	// seenDone dedupes successful writes symmetrically with seenFailed. The
-	// value is the offset the article was accepted at, which the duplicate
-	// branch needs in order to ask the write cache whether that copy's bytes
-	// are still buffered — a duplicate is deduped by Message-ID and may carry
-	// a different offset, so its own is the wrong one to look up.
-	seenDone map[string]int64
-	// crcParts accumulates per-article CRC32 values with their offsets, for
-	// the articles this run wrote. At file completion they are sorted by
-	// offset and combined with crc32util.Combine, which reconstructs the
-	// whole-file CRC32 only when they tile the file's extent exactly — see
-	// combineWholeFileCRC, which enforces that rather than assuming it.
-	crcParts []crcPart
-	// crcValid tracks whether a whole-file CRC is reportable for the bytes
-	// this run put on disk. It is cleared by a failed article, a failed
-	// write (inline or drained), an article with CRC=0 (UU-encoded), and by
-	// any finalizeFile branch that leaves the file untrimmed — a failed
-	// Stat, a truncate target above the file on disk, or a failed Truncate —
-	// since the trailing zeros that survive there are not bytes the recorded
-	// parts describe.
-	//
-	// It is not a statement about the file's coverage. A resumed run is not
-	// sent the articles a previous run completed, so nothing fails and
-	// nothing clears this flag, yet crcParts still describes only part of
-	// the file. That gap is why the combination is guarded separately (#349).
-	crcValid bool
-}
-
-// crcPart stores the CRC32 of a single article part along with its
-// byte offset and decoded length. Used to reconstruct the whole-file
-// CRC at completion time by combining parts in offset order.
-type crcPart struct {
-	offset int64
-	crc    uint32
-	len    int64
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -362,35 +241,6 @@ type Assembler struct {
 	// the worker goroutine, ensuring Stop() blocks cleanly without sleep
 	// polling until all in-flight work and the worker have finished.
 	wg sync.WaitGroup
-
-	// flushInterval is the computed interval for the periodic batch
-	// flush. A non-positive value disables the timer entirely (flush
-	// only on file completion or Stop).
-	flushInterval time.Duration
-
-	// pendingDone and pendingFailed are per-job batches accumulated by
-	// the worker goroutine between flushes. Exclusively owned by the
-	// worker — no locking.
-	pendingDone        map[string][]string
-	pendingFailed      map[string][]string
-	pendingDoneByIdx   map[string][]int32
-	pendingFailedByIdx map[string][]int32
-
-	// pendingExtent holds the latest resume figures per file, flushed to
-	// Options.SetFileExtents on the same cadence as pendingDone. Worker-owned.
-	pendingExtent map[fileKey]fileExtent
-}
-
-// fileExtent is a file's persisted resume state: how far the contiguous write
-// frontier has advanced, and the highest byte position written.
-//
-// Only maxWritten is a statement about bytes on disk. The cursor is advanced
-// by drainFile across everything it hands back, gaps included and before any
-// write is attempted, so it can outrun the file — see FileInfo.InitialWriteCursor
-// and the guard in finalizeFile.
-type fileExtent struct {
-	cursor     int64
-	maxWritten int64
 }
 
 // New creates an Assembler from opts. It panics if opts.FileInfo is nil.
@@ -404,22 +254,12 @@ func New(opts Options, log *slog.Logger) *Assembler {
 	if log == nil {
 		log = slog.Default()
 	}
-	flushInterval := opts.DoneFlushInterval
-	if flushInterval == 0 {
-		flushInterval = defaultDoneFlushInterval
-	}
 	a := &Assembler{
-		log:                log.With("component", "assembler"),
-		opts:               opts,
-		reqs:               make(chan WriteRequest, opts.QueueSize),
-		stopCh:             make(chan struct{}),
-		flushInterval:      flushInterval,
-		pendingDone:        make(map[string][]string),
-		pendingFailed:      make(map[string][]string),
-		pendingDoneByIdx:   make(map[string][]int32),
-		pendingFailedByIdx: make(map[string][]int32),
-		pendingExtent:      make(map[fileKey]fileExtent),
-		diskProbe:          NewDiskProbe(DefaultDiskProbeTTL),
+		log:       log.With("component", "assembler"),
+		opts:      opts,
+		reqs:      make(chan WriteRequest, opts.QueueSize),
+		stopCh:    make(chan struct{}),
+		diskProbe: NewDiskProbe(DefaultDiskProbeTTL),
 	}
 	a.minFreeBytes.Store(opts.MinFreeBytes)
 	return a
@@ -618,12 +458,11 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 // worker is the single goroutine that owns all file handles and performs disk
 // I/O. It runs until stopCh is closed and the request channel is drained.
 //
-// Batching: successful fsyncs and FatalErr accounting are collected into
-// pendingDone / pendingFailed maps and flushed to the queue in groups —
-// either when a file completes (inside processRequest, before the
-// OnFileComplete callback), when the flush ticker fires, or at Stop.
-// The per-article pwrite + fsync remains serial; only the queue-mutation
-// path is batched. See B.7 in docs/state_machine_hardening_plan.md.
+// It performs no queue mutation of any kind. Articles it writes are reported
+// to durability.Barrier when the barrier drains this assembler, and the
+// barrier is the only component that acks them (X2). The batching that used to
+// live here — pending Done/Failed maps flushed on a ticker — is gone with the
+// acks: there is nothing left to batch.
 func (a *Assembler) worker() {
 	defer a.wg.Done()
 
@@ -632,15 +471,6 @@ func (a *Assembler) worker() {
 	cancelledJobs := make(map[string]struct{}) // tombstone set for cancelled jobs
 	reqCount := 0
 	wc := newWriteCache(a.opts.WriteCacheBytes)
-
-	// A nil channel blocks forever in select; that's how we disable the
-	// flush timer when DoneFlushInterval < 0 (benchmark mode).
-	var tickC <-chan time.Time
-	if a.flushInterval > 0 {
-		t := time.NewTicker(a.flushInterval)
-		defer t.Stop()
-		tickC = t.C
-	}
 
 	reqsClosed := false
 
@@ -661,9 +491,6 @@ mainLoop:
 			if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
 			}
-
-		case <-tickC:
-			a.flush()
 
 		case <-a.stopCh:
 			// Drain any requests that were already in the channel before stopCh
@@ -707,13 +534,17 @@ mainLoop:
 	}
 
 	// Shared shutdown, reached from every exit above so no path can skip a
-	// step. Order matters: flush cached article bytes to disk BEFORE flush()
-	// reports articles Done to the queue, or a shutdown could mark articles
-	// complete whose bytes were still only in the write cache.
-	a.flushWriteCache(wc, open)
+	// step. Every open file is drained to disk and fsynced before its handle
+	// closes, so a clean shutdown leaves nothing buffered.
+	//
+	// There is no ack here any more, and no ordering to get right between the
+	// two: the articles this drain writes are reported by the next barrier,
+	// and if the process dies before one runs they stay Outstanding and are
+	// re-fetched. Losing that race used to mean marking articles complete
+	// whose bytes were still only in the write cache; now it costs a
+	// re-download, which is the direction the design trades toward.
+	a.drainAndCloseAll(open)
 	a.cacheUsedBytes.Store(wc.used)
-	a.flush()
-	a.closeAll(open)
 }
 
 // dispatchRequest handles a single request from the channel. It processes
@@ -733,6 +564,12 @@ func (a *Assembler) dispatchRequest(
 ) int {
 	defer func() { a.cacheUsedBytes.Store(wc.used) }()
 
+	if req.JobID == "" && req.FileIdx == fileIdxSyncOp {
+		// Control message: a barrier operation. Answered on this goroutine,
+		// which owns every file handle and every write cache (X1).
+		a.handleSyncOp(req.syncOp, open)
+		return 0
+	}
 	if req.JobID == "" && req.FileIdx == -1 {
 		// Control message: cancel a job. Close and remove all
 		// open files for the job encoded in MessageID.
@@ -742,7 +579,7 @@ func (a *Assembler) dispatchRequest(
 			if k.jobID != cancelID {
 				continue
 			}
-			_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
+			_ = f.w.Close() //nolint:errcheck // best-effort; file is immediately removed
 			if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
 				a.log.Warn("failed to remove cancelled file",
 					"path", f.info.Path, "error", err)
@@ -763,13 +600,10 @@ func (a *Assembler) dispatchRequest(
 			if k.jobID != targetID {
 				continue
 			}
-			a.drainCacheForFile(wc, f, k)
-			_ = f.handle.Sync()  //nolint:errcheck // best-effort sync before closing
-			_ = f.handle.Close() //nolint:errcheck // best-effort close
+			a.drainAndClose(f)
 			delete(open, k)
 			completed[k] = struct{}{}
 		}
-		a.flush()
 		if req.ackCh != nil {
 			close(req.ackCh)
 		}
@@ -786,74 +620,29 @@ func (a *Assembler) dispatchRequest(
 	return 1
 }
 
-// flush drains the pending Done and Failed batches to the queue. Called
-// on the worker goroutine (no locking on a.pending*). Errors are logged
-// and swallowed: the queue mutation is best-effort once bytes are on
-// disk, and the next completion will retry implicitly (partsWritten
-// tracking is local to the assembler).
-func (a *Assembler) flush() {
-	if len(a.pendingDoneByIdx) == 0 && len(a.pendingFailedByIdx) == 0 &&
-		len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 && len(a.pendingExtent) == 0 {
-		return
+// drainAndClose flushes a file's buffered bytes, fsyncs, and closes it.
+//
+// The articles the drain writes are NOT acked here — this package has no ack
+// authority. They are reported by the next Drain the barrier makes, or, if the
+// process ends first, left Outstanding to be re-fetched (S3).
+func (a *Assembler) drainAndClose(f *openFile) {
+	if _, err := f.w.Drain(context.Background()); err != nil {
+		a.log.Warn("drain file before close", "path", f.info.Path, "error", err)
 	}
-	if a.opts.MarkArticlesDoneByIdx != nil {
-		for jobID, artIdxs := range a.pendingDoneByIdx {
-			if err := a.opts.MarkArticlesDoneByIdx(jobID, artIdxs); err != nil {
-				a.log.Debug("batch mark articles done by idx skipped (job removed or not resident)",
-					"job", jobID, "count", len(artIdxs), "error", err)
-			}
-		}
-	} else if a.opts.MarkArticlesDone != nil {
-		for jobID, msgIDs := range a.pendingDone {
-			if err := a.opts.MarkArticlesDone(jobID, msgIDs); err != nil {
-				a.log.Debug("batch mark articles done skipped (job removed or not resident)",
-					"job", jobID, "count", len(msgIDs), "error", err)
-			}
-		}
+	if err := f.w.Sync(context.Background()); err != nil {
+		a.log.Warn("sync file before close", "path", f.info.Path, "error", err)
 	}
-
-	if a.opts.MarkArticlesFailedByIdx != nil {
-		for jobID, artIdxs := range a.pendingFailedByIdx {
-			if _, err := a.opts.MarkArticlesFailedByIdx(jobID, artIdxs); err != nil {
-				a.log.Debug("batch mark articles failed by idx skipped (job removed or not resident)",
-					"job", jobID, "count", len(artIdxs), "error", err)
-			}
-		}
-	} else if a.opts.MarkArticlesFailed != nil {
-		for jobID, msgIDs := range a.pendingFailed {
-			if _, err := a.opts.MarkArticlesFailed(jobID, msgIDs); err != nil {
-				a.log.Debug("batch mark articles failed skipped (job removed or not resident)",
-					"job", jobID, "count", len(msgIDs), "error", err)
-			}
-		}
+	if err := f.w.Close(); err != nil {
+		a.log.Warn("close file", "path", f.info.Path, "error", err)
 	}
-
-	if a.opts.SetFileExtents != nil {
-		for k, ext := range a.pendingExtent {
-			if err := a.opts.SetFileExtents(k.jobID, k.fileIdx, ext.cursor, ext.maxWritten); err != nil {
-				a.log.Debug("set file extents skipped (job removed or not resident)",
-					"job", k.jobID, "fileidx", k.fileIdx, "error", err)
-			}
-		}
-	}
-	clear(a.pendingDone)
-	clear(a.pendingFailed)
-	clear(a.pendingDoneByIdx)
-	clear(a.pendingFailedByIdx)
-	clear(a.pendingExtent)
 }
 
-// closeAll closes all remaining open file handles. Called on worker exit.
-// Completion callbacks do NOT fire for partial files — writing N-of-M parts
-// is not a completion event.
-func (a *Assembler) closeAll(open map[fileKey]*openFile) {
+// drainAndCloseAll drains and closes every remaining open file. Called on
+// worker exit. Completion callbacks do NOT fire for partial files — writing
+// N-of-M parts is not a completion event.
+func (a *Assembler) drainAndCloseAll(open map[fileKey]*openFile) {
 	for _, f := range open {
-		if err := f.handle.Close(); err != nil {
-			a.log.Warn("close partial file on shutdown",
-				"path", f.info.Path,
-				"error", err,
-			)
-		}
+		a.drainAndClose(f)
 	}
 }
 
@@ -885,7 +674,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
-	} else if !a.handleSuccessArticle(f, req, wc, open, key) {
+	} else if !a.handleSuccessArticle(f, req) {
 		return
 	}
 
@@ -899,43 +688,14 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 }
 
-func (a *Assembler) recordPendingDone(jobID, msgID string, artIdx int32) {
-	if a.opts.MarkArticlesDoneByIdx != nil {
-		if a.pendingDoneByIdx == nil {
-			a.pendingDoneByIdx = make(map[string][]int32)
-		}
-		a.pendingDoneByIdx[jobID] = append(a.pendingDoneByIdx[jobID], artIdx)
-	} else if a.opts.MarkArticlesDone != nil {
-		if a.pendingDone == nil {
-			a.pendingDone = make(map[string][]string)
-		}
-		a.pendingDone[jobID] = append(a.pendingDone[jobID], msgID)
-	}
-}
-
-func (a *Assembler) recordPendingFailed(jobID, msgID string, artIdx int32) {
-	if a.opts.MarkArticlesFailedByIdx != nil {
-		if a.pendingFailedByIdx == nil {
-			a.pendingFailedByIdx = make(map[string][]int32)
-		}
-		a.pendingFailedByIdx[jobID] = append(a.pendingFailedByIdx[jobID], artIdx)
-	} else if a.opts.MarkArticlesFailed != nil {
-		if a.pendingFailed == nil {
-			a.pendingFailed = make(map[string][]string)
-		}
-		a.pendingFailed[jobID] = append(a.pendingFailed[jobID], msgID)
-	}
-}
-
 // handleLateDuplicate handles articles arriving for a file that is already marked completed.
 func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
-	if req.FatalErr != nil {
-		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
-	} else {
-		a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
-	}
+	// No ack in either direction. A file this assembler has finished with is
+	// one whose articles the barrier has already reported on, or will report
+	// on from its own record; re-asserting anything about them here would be
+	// this package claiming authority it no longer has.
 	if req.Data != nil {
 		decoder.PutBuffer(req.Data)
 	}
@@ -993,340 +753,127 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 			"path", info.Path,
 		)
 	}
-	// Seed the high-water mark from what earlier runs are recorded as having
-	// written. Without this a resumed file's mark starts at zero and the
-	// completion truncate cuts away the tail those runs already wrote (#342).
+	// No seeded high-water mark, and no seeded write cursor. Both used to
+	// carry an earlier run's extent into this one so the completion truncate
+	// would not cut away what those runs wrote (#342). The truncate no longer
+	// derives its bound from anything this process measured — it comes from
+	// the durable facts, which describe the FILE rather than the session — so
+	// there is nothing left for a seed to protect.
 	//
-	// Neither input is a guarantee — both describe a file this process has not
-	// measured, and the cursor in particular can sit above the bytes actually
-	// on disk. finalizeFile refuses to truncate upward rather than trusting
-	// them; do not delete that guard on the strength of this seeding.
-	//
-	// Both are currently always zero in production: job_files no longer stores
-	// either figure, and nothing has replaced it yet. The seeding is kept
-	// because it is what task 9's verified extent will feed, and because the
-	// tests that pin #342 drive these fields directly. finalizeFile's INTERIM
-	// branch is what protects a resumed file meanwhile.
+	// The cursor starts at 0 for the same reason it is safe to: it is a
+	// coalescing hint, not an authority (#311, #353). A resumed file whose
+	// early articles are not re-delivered simply never forms a contiguous run
+	// from 0, and its articles are written individually instead. That costs
+	// syscalls, never correctness.
 	f := &openFile{
-		handle:     fh,
-		info:       info,
-		key:        key,
-		crcValid:   true,
-		maxWritten: max(info.InitialMaxWritten, info.InitialWriteCursor),
+		w:    newFileWriter(fh, info.Path, key, wc),
+		info: info,
+		key:  key,
 	}
 	open[key] = f
-	wc.initCursor(key, info.InitialWriteCursor)
 	return f
 }
 
+// handleFatalArticle counts a permanently failed article toward the file's
+// part total without writing anything.
+//
+// It records no ack. A permanent failure is the queue's to record via
+// AckPermanentFailure (R10), and this package no longer has an ack path in
+// either direction. What is left here is the dedup that keeps partsWritten
+// from overshooting TotalParts, which is purely local bookkeeping.
+//
+// Returns false when the article must not be counted again.
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
-	f.crcValid = false // Failed articles invalidate CRC tracking
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
 		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-	if f.seenFailed == nil {
-		f.seenFailed = make(map[string]struct{})
-	}
-	if _, dup := f.seenFailed[req.MessageID]; dup {
-		// Already recorded — re-emit the ack so the queue
-		// receives it even if a prior flush dropped it.
-		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
+	w := f.w
+	if _, dup := w.seenFailed[req.MessageID]; dup {
 		return false
 	}
-	// Cross-check: if this MessageID was already counted as a success, it must
-	// neither increment partsWritten again nor record a failure ack here. See
-	// the note below the seenFailed insert for why the ack is suppressed.
-	alreadyCounted := false
-	if f.seenDone != nil {
-		if _, was := f.seenDone[req.MessageID]; was {
-			alreadyCounted = true
-		}
-	}
-	f.seenFailed[req.MessageID] = struct{}{}
-	if !alreadyCounted {
-		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
-	}
-	// If this MessageID was already counted as a success, don't increment
-	// partsWritten again, and leave the ack to the success path.
-	//
-	// The ack half is load-bearing since the Done moved to the write. This
-	// used to record the failure too and lose harmlessly: both acks landed in
-	// one flush, which applies the Done batch first, and markDone/markFailed
-	// are first-writer-wins. Now the Done waits for the bytes, so a failure
-	// recorded here is published a batch earlier and wins — marking an article
-	// failed, charging failedBytes, and calling for a par2 repair on a file
-	// that is complete on disk.
+	_, alreadyCounted := w.seenDone[req.MessageID]
+	w.seenFailed[req.MessageID] = struct{}{}
+	// An article already counted as a success must not increment the part
+	// total a second time. The ack asymmetry that used to make this branch
+	// delicate is gone with the acks themselves.
 	return !alreadyCounted
 }
 
-func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writeCache, open map[fileKey]*openFile, key fileKey) bool {
+// handleSuccessArticle hands one article's bytes to the file's writer.
+//
+// Returns false when the article must not be counted toward the file's part
+// total — either it is a duplicate, or it is a retry of an article already
+// counted as failed.
+func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
+	w := f.w
+	id := articleID{msgID: req.MessageID, artIdx: req.ArtIdx}
 	if req.MessageID != "" {
-		if f.seenDone == nil {
-			f.seenDone = make(map[string]int64)
-		}
-		if acceptedAt, dup := f.seenDone[req.MessageID]; dup {
-			// Re-emit the ack so the queue receives it even if a prior flush
-			// dropped it — but only once the first copy's bytes have left the
-			// cache. While they are still buffered, seenDone means the article
-			// was accepted, not that the file holds it, and re-emitting here
-			// would put back exactly the premature Done this path removed.
-			// The write that drains it will ack it.
-			if !wc.buffered(key, acceptedAt) {
-				a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
-			}
+		if _, dup := w.seenDone[req.MessageID]; dup {
+			// A duplicate of an article already accepted. Its first copy is
+			// either still buffered or already written; either way this copy's
+			// bytes are redundant, and re-writing them would be a second
+			// WriteAt for the same range. Nothing is claimed here — the
+			// barrier absorbs duplicate reports itself (R12).
 			if req.Data != nil {
 				decoder.PutBuffer(req.Data)
 			}
 			return false
 		}
-		if f.seenFailed != nil {
-			if _, was := f.seenFailed[req.MessageID]; was {
-				// A retry of an article already counted as failed. The false
-				// return is what keeps partsWritten from counting it twice,
-				// so it stays; only the ack moves into writeAndSettle with
-				// every other write.
-				f.seenDone[req.MessageID] = req.Offset
-				a.writeAndSettle(f, key, req, wc, open)
-				return false
-			}
+		if _, was := w.seenFailed[req.MessageID]; was {
+			// A retry of an article already counted as failed. The false
+			// return keeps partsWritten from counting it twice; the bytes are
+			// still written, because they are still the file's content.
+			w.seenDone[req.MessageID] = req.Offset
+			a.acceptArticle(f, id, req)
+			return false
 		}
-		// Recorded before the write is attempted, not after, so that a write
-		// path which fails can move the article to seenFailed without this
-		// function putting it straight back.
-		f.seenDone[req.MessageID] = req.Offset
+		// Recorded before the write is attempted, not after, so a write path
+		// that fails can move the article to seenFailed without this function
+		// putting it straight back.
+		w.seenDone[req.MessageID] = req.Offset
 	}
-	a.writeAndSettle(f, key, req, wc, open)
+	a.acceptArticle(f, id, req)
 	return true
 }
 
-// writeAndSettle writes or buffers an article and settles what the outcome
-// owes the queue.
+// acceptArticle range-checks the write and hands it to the file's writer.
 //
-// The three outcomes divide by who owns the ack, which is the whole point of
-// the type. Only the uncached paths settle here; once an article is buffered,
-// the cache owns both its ack and its seen-set membership until its bytes
-// move, and this function deliberately does nothing about them.
-//
-// recordArticleCRC fires for a buffered article as well as a written one. Its
-// input is req.CRC, which the identity carried through the cache does not
-// include, so deferring it with the ack would leave every cached file without
-// a whole-file CRC. A part recorded for bytes that then fail to land is
-// covered instead by crcValid, which every failing write path that still has
-// the file clears (#349). failDrainedArticles is the exception, and only
-// because its file has already left the open map, so nothing remains to
-// finalize a CRC for it.
-func (a *Assembler) writeAndSettle(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) {
-	switch a.writeArticleOrBuffer(f, key, req, wc, open) {
-	case outcomeDurable:
-		a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
-		a.recordArticleCRC(f, req)
-	case outcomeDeferred:
-		a.recordArticleCRC(f, req)
-	default:
-		// outcomeFailed, and anything a later edit adds without saying what it
-		// means. Go does not check a switch over a named type for
-		// exhaustiveness and this repository enables no linter that does, so
-		// the unhandled case has to land somewhere by construction. It lands
-		// on the failing branch: the cost of a needless re-fetch is a wasted
-		// download, and the cost of a wrong Done is a file that is silently
-		// short forever.
-		//
-		// The file is now missing this part's bytes, so a whole-file CRC
-		// combined from the parts that did land would describe a byte range
-		// the file does not have. Report it as unavailable instead:
-		// quickcheck then classifies the file as NoCRC ("could not be
-		// checked") rather than Mismatched ("corrupted"). Both route to par2
-		// repair, but only one of them is true.
-		//
-		// This also covers the retry path in handleSuccessArticle: once any
-		// part has failed the file CRC stays invalid, even if a later attempt
-		// writes successfully.
-		f.crcValid = false
-		a.failArticle(f, articleID{msgID: req.MessageID, artIdx: req.ArtIdx})
-	}
-}
-
-// recordArticleCRC accumulates CRC information for a successfully written article.
-func (a *Assembler) recordArticleCRC(f *openFile, req WriteRequest) {
-	if req.CRC != 0 {
-		f.crcParts = append(f.crcParts, crcPart{
-			offset: req.Offset,
-			crc:    req.CRC,
-			len:    int64(len(req.Data)),
-		})
-	} else if len(req.Data) > 0 {
-		f.crcValid = false
-	}
-}
-
-// combineWholeFileCRC folds per-article CRCs into the CRC of the whole file.
-//
-// crc32util.Combine reconstructs CRC(A||B) from the two parts' CRCs and B's
-// length alone; it is given no offsets, so it cannot tell an adjacent part from
-// a distant one. The fold below therefore yields the CRC of the parts
-// concatenated, which is the CRC of the file only when they tile [0, total)
-// exactly. Skipping bytes is not harmless even when those bytes are zero:
-// appending n bytes multiplies the CRC state by M^n whatever their value.
-//
-// parts must already be sorted by offset. ok is false whenever they do not tile
-// exactly — a hole below a part, an overlap, or a span that does not end
-// precisely at total, whether short of it or past it. In
-// practice that is nearly always the resume case, where articles a previous run
-// completed are not re-dispatched and so contribute no part (#349); an overlap
-// would instead mean a defect upstream in the dedup or CRC-recording path, so
-// do not read a false here as proof the file was resumed.
-//
-// An empty parts slice tiles a zero-length file, so it reports ok — callers
-// distinguishing "no CRC recorded" from "verified empty" must check that
-// themselves, as finalizeFile does with its len(f.crcParts) > 0 guard.
-func combineWholeFileCRC(parts []crcPart, total int64) (uint32, bool) {
-	var (
-		crc  uint32
-		next int64
-	)
-	for _, p := range parts {
-		// Seeding from 0 rather than parts[0].crc is what makes this check
-		// cover the first part too: Combine(0, c, n) == c, so the old seed
-		// silently assumed parts[0] began at offset 0.
-		if p.offset != next {
-			return 0, false // a hole below this part, or an overlap
+// A storage fault is logged and left to the barrier, which is what surfaces it
+// to the job via Stallable. The article simply does not appear in the next
+// Drain, which leaves it Outstanding (A1): a full disk is never recorded as
+// article damage.
+func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) {
+	if !a.offsetInRange(f, req) {
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
 		}
-		crc = crc32util.Combine(crc, p.crc, p.len)
-		next += p.len
+		f.w.fail(id)
+		return
 	}
-	if next != total {
-		return 0, false // the parts stop short of the file's extent
+	if err := f.w.Accept(id, req.Offset, req.Data); err != nil {
+		a.log.Error("write article", "path", f.info.Path, "offset", req.Offset, "error", err)
 	}
-	return crc, true
 }
 
+// finalizeFile closes a file whose parts have all arrived.
+//
+// It no longer truncates and no longer computes a CRC. Both decisions moved to
+// durability.Barrier: the truncate bound is the highest end offset among the
+// file's DURABLE articles, which only the fact log knows, and the whole-file
+// CRC is FileExtent.PrefixCRC guarded by HasPrefixCRC. Doing either here would
+// be this package asserting something about bytes on disk that it cannot check
+// — the shape behind #342, #349 and #350.
+//
+// What remains is: get every buffered byte written, fsync, close, and tell the
+// caller the file is done so the barrier can finalize it.
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
-	// Drain any remaining cached articles for this file before close.
-	a.drainCacheForFile(wc, f, key)
-	// Truncate to the actual decoded size. Pre-allocation
-	// (fallocate/ftruncate) extends the file to the NZB-declared
-	// encoded size, which includes yEnc overhead (~2% larger).
-	// Without this truncation the file has trailing zero bytes,
-	// which causes par2 to report it as damaged.
-	//
-	// Never grow the file. maxWritten is seeded from state persisted by an
-	// earlier run, describing a file this process has not measured, so it can
-	// exceed what is actually on disk — the download directory may have been
-	// removed between runs, pre-allocation may have failed and been logged
-	// rather than fatal, or a persisted write cursor may have been advanced
-	// by drainFile across a range whose WriteAt then failed. Truncating to it
-	// would append exactly the trailing zeros this call exists to remove, and
-	// a job with no par2 has no repair stage to notice. Trimming is the only
-	// direction that was ever intended.
-	//
-	// Each outcome logs for itself rather than routing through the
-	// zero-length case: a file skipped because the target overshoots is not
-	// empty, and saying so would misdescribe the one event an operator has to
-	// go on.
-	//
-	// Every branch that leaves the file untrimmed also clears crcValid: the
-	// pre-allocated trailing zeros survive there, so the bytes on disk are not
-	// the [0, maxWritten) the recorded parts describe, and reporting a CRC over
-	// that range would hand par2 a mismatch on a file nothing is actually
-	// wrong with — the same false corruption claim #349 removes for resumed
-	// files. That covers a failed Stat, the interim resume guard, a truncate
-	// target above the file on disk, and a failed Truncate. The zero-length
-	// branch is not one of them: nothing was written, and there is no extent
-	// for a CRC to describe.
-	size, statErr := f.handle.Stat()
-	switch {
-	case f.maxWritten <= 0:
-		a.log.Debug("zero-length file completed", "path", f.info.Path)
-	case statErr != nil:
-		a.log.Warn("stat completed file; skipping truncate",
-			"path", f.info.Path, "error", statErr)
-		f.crcValid = false
-	case f.info.ResumedFile && f.info.InitialMaxWritten == 0 && f.info.InitialWriteCursor == 0:
-		// INTERIM (see plan task 9): job_files.max_written is gone and its
-		// replacement, FileExtent.VerifiedTo, does not exist until the barrier
-		// lands. Until then a resumed file has no trustworthy extent, and
-		// truncating to this run's high-water mark discards what earlier runs
-		// wrote (#342/#350). Skipping the truncate leaves trailing zeros that
-		// par2 reports as repairable damage — recoverable, unlike the bytes a
-		// wrong truncate destroys. Task 9 removes this and truncates to the
-		// verified extent.
-		//
-		// This is the same safe-direction reasoning the maxWritten >
-		// size.Size() branch below uses: where the target cannot be trusted,
-		// the only error worth making is the one par2 can undo.
-		//
-		// All three conditions are load-bearing. Without ResumedFile a fresh
-		// download would keep pre-allocation's zeros on every file; without
-		// the two seeds being zero this would suppress a truncate that a
-		// restored extent had made trustworthy again, which is precisely what
-		// task 9 needs to keep working.
-		a.log.Debug("resumed file has no persisted extent; skipping truncate",
-			"path", f.info.Path, "run_max_written", f.maxWritten, "size", size.Size())
-		f.crcValid = false
-	case f.maxWritten > size.Size():
-		a.log.Debug("truncate target exceeds the file on disk; leaving it alone",
-			"path", f.info.Path, "target", f.maxWritten, "size", size.Size())
-		f.crcValid = false
-	default:
-		if err := f.handle.Truncate(f.maxWritten); err != nil {
-			f.crcValid = false
-			a.log.Error("truncate completed file to decoded size",
-				"path", f.info.Path,
-				"expected", f.maxWritten,
-				"error", err,
-			)
-		}
-	}
-	// Durability: fsync before closing and reporting completion.
-	if err := f.handle.Sync(); err != nil {
-		a.log.Error("fsync completed file",
-			"path", f.info.Path,
-			"error", err,
-		)
-	}
-	if err := f.handle.Close(); err != nil {
-		a.log.Warn("close completed file",
-			"path", f.info.Path,
-			"error", err,
-		)
-	}
+	a.drainAndClose(f)
+	wc.forget(key)
 	delete(open, key)
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
-	// Flush pending Done/Failed before firing the callback. The
-	// pipeline's watchCompletions must not observe IsComplete()==true
-	// on a file whose articles are not yet marked Done in the queue,
-	// or it will race job-completion logic ahead of durability state.
-	a.flush()
-
-	// Compute the whole-file CRC32 by combining per-article CRCs
-	// in offset order. This produces the same CRC as if the file
-	// were read sequentially, which is what par2 files store — but only
-	// when this run recorded a part for every byte of the file. When it
-	// did not, there is no whole-file CRC to report and fileCRC stays 0,
-	// which quickcheck reads as NoCRC ("unavailable") rather than as a
-	// mismatch.
-	var fileCRC uint32
-	if f.crcValid && len(f.crcParts) > 0 {
-		slices.SortFunc(f.crcParts, func(a, b crcPart) int {
-			return cmp.Compare(a.offset, b.offset)
-		})
-		if crc, ok := combineWholeFileCRC(f.crcParts, f.maxWritten); ok {
-			fileCRC = crc
-			a.log.Debug("computed file CRC32",
-				"job", req.JobID, "fileidx", req.FileIdx,
-				"path", f.info.Path, "crc32", fileCRC,
-				"parts", len(f.crcParts))
-		} else {
-			a.log.Debug("partial article coverage; reporting file CRC as unavailable",
-				"job", req.JobID, "fileidx", req.FileIdx,
-				"path", f.info.Path, "parts", len(f.crcParts),
-				"extent", f.maxWritten)
-		}
-	}
-
 	if a.opts.OnFileComplete != nil {
-		a.opts.OnFileComplete(req.JobID, req.FileIdx, fileCRC)
+		a.opts.OnFileComplete(req.JobID, req.FileIdx)
 	}
 }
 
@@ -1443,305 +990,3 @@ const (
 	// point, including moving the article to seenFailed if its write is lost.
 	outcomeDeferred
 )
-
-// writeArticleOrBuffer either buffers the article in the write cache (if
-// enabled and coalescing is active) or writes it directly to disk. The
-// returned outcome says whether the bytes reached disk, are still buffered, or
-// are gone — and with that, who owes the queue an ack.
-//
-// When caching is enabled, the article is buffered in memory. After each
-// buffer insertion, contiguous runs are checked and flushed as a single
-// coalesced WriteAt. Under memory pressure (>90% of limit), the file with
-// the most buffered data is force-flushed.
-func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) writeOutcome {
-	if !a.offsetInRange(f, req) {
-		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
-		}
-		return outcomeFailed
-	}
-
-	art := bufferedArticle{
-		offset: req.Offset,
-		data:   req.Data,
-		id:     articleID{msgID: req.MessageID, artIdx: req.ArtIdx},
-	}
-	if cached, displaced := wc.buffer(key, art); cached {
-		telemetry.CacheHits.Add(1)
-		// An article evicted from this offset is settled as failed so it is
-		// fetched again; nothing else will write its bytes now. Its CRC part
-		// was recorded when it was accepted and describes a length the
-		// replacement does not have to match, so the file's CRC goes with it.
-		for _, id := range displaced {
-			f.crcValid = false
-			a.failArticle(f, id)
-		}
-		// Article buffered. Check for a flushable contiguous run.
-		if run := wc.flushContiguous(key); run != nil {
-			// A failed run is not reported to the caller. flushRun has
-			// already settled every article it coalesced, this one included
-			// if it was contiguous with the cursor — and if it was not, its
-			// bytes are still buffered and still owed a later ack. Returning
-			// failed here would fail-ack an article whose bytes are fine,
-			// which markFailed makes permanent: it and markDone both set the
-			// done bit, and both no-op once it is set, so the first ack wins.
-			if a.flushRun(f, run) {
-				a.pendingExtent[key] = fileExtent{
-					cursor:     wc.cursorFor(key),
-					maxWritten: f.maxWritten,
-				}
-			}
-		}
-		a.relievePressure(wc, open)
-		return outcomeDeferred
-	}
-	// Caching disabled — write directly.
-	telemetry.DiskWrites.Add(1)
-	telemetry.DiskWriteBytes.Add(int64(len(req.Data)))
-	if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
-		a.log.Error("write article",
-			"path", f.info.Path,
-			"offset", req.Offset,
-			"error", err,
-		)
-		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
-		}
-		return outcomeFailed
-	}
-	a.noteWritten(f, req.Offset, int64(len(req.Data)))
-	if req.Data != nil {
-		decoder.PutBuffer(req.Data)
-	}
-	return outcomeDurable
-}
-
-// ackArticleDone settles an article the file now holds on disk.
-func (a *Assembler) ackArticleDone(f *openFile, id articleID) {
-	a.recordPendingDone(f.key.jobID, id.msgID, id.artIdx)
-}
-
-// failArticle settles an article whose bytes did not reach disk and will not,
-// so a later run fetches it again.
-//
-// It moves the article out of seenDone as well as acking, because the two
-// answer different questions that this file's dedup logic would otherwise
-// conflate: seenDone means "accepted, counted toward TotalParts", and after a
-// failed write the article is still counted but is no longer on its way to
-// disk. Leaving it there would let the duplicate branch in handleSuccessArticle
-// re-emit a Done for bytes the file does not have.
-func (a *Assembler) failArticle(f *openFile, id articleID) {
-	if id.msgID != "" {
-		delete(f.seenDone, id.msgID)
-		if f.seenFailed == nil {
-			f.seenFailed = make(map[string]struct{})
-		}
-		f.seenFailed[id.msgID] = struct{}{}
-	}
-	a.recordPendingFailed(f.key.jobID, id.msgID, id.artIdx)
-}
-
-// failDrainedArticles settles articles drained out of the cache for a file
-// that is no longer open, and returns their buffers to the pool.
-//
-// Neither caller is believed reachable: every delete from the open-file map is
-// paired with a forget or a drain in the same call, with no yield to the
-// request channel in between. Nothing enforces that, and both call sites log
-// precisely because someone doubted it, so this settles what it discards
-// rather than trusting the argument.
-//
-// Settling matters here because an article acked neither Done nor Failed is
-// one no later run re-dispatches. Failing them keeps the worst case a
-// re-fetch.
-//
-// There is no openFile to update, so unlike failArticle this cannot correct
-// the seen sets — the file they belong to is gone.
-func (a *Assembler) failDrainedArticles(key fileKey, arts []bufferedArticle) {
-	for _, art := range arts {
-		a.recordPendingFailed(key.jobID, art.id.msgID, art.id.artIdx)
-		if art.data != nil {
-			decoder.PutBuffer(art.data)
-		}
-	}
-}
-
-// flushRun writes a coalesced run to the target file and records telemetry.
-// Returns true on success, false on I/O error.
-func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
-	telemetry.CacheFlushes.Add(1)
-	telemetry.CacheFlushBytes.Add(int64(len(run.data)))
-	telemetry.DiskWrites.Add(1)
-	telemetry.DiskWriteBytes.Add(int64(len(run.data)))
-	if _, err := f.handle.WriteAt(run.data, run.offset); err != nil {
-		a.log.Error("write coalesced run",
-			"path", f.info.Path,
-			"offset", run.offset,
-			"bytes", len(run.data),
-			"articles", len(run.ids),
-			"error", err,
-		)
-		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		// Every article in the run loses its bytes here, not just whichever
-		// one happened to trigger the flush: buildContiguousRun coalesced
-		// them all into one buffer and pooled the originals before this
-		// write was attempted. Settling only the triggering article would
-		// leave the rest marked Done from their own accept-time acks, with
-		// their bytes freed and no run able to fetch them again (#355).
-		f.crcValid = false
-		for _, id := range run.ids {
-			a.failArticle(f, id)
-		}
-		return false
-	}
-	a.noteWritten(f, run.offset, int64(len(run.data)))
-	for _, id := range run.ids {
-		a.ackArticleDone(f, id)
-	}
-	return true
-}
-
-// noteWritten raises the file's decoded high-water mark to cover a range that
-// has just reached WriteAt, and stages that mark for the next batched flush.
-// It leaves the staged cursor alone: this path knows nothing about the
-// contiguous frontier, which only a coalesced run advances.
-//
-// It is called from the write paths rather than from the point an article is
-// accepted, deliberately. The mark seeds a resumed file's truncate target, so
-// it must describe bytes that are on disk; a mark persisted ahead of the bytes
-// would make a later truncate extend a short file with zeros that nothing
-// fills.
-//
-// That reasoning used to run through the article ack — an article acked Done
-// while still buffered is never refetched, so the gap could never be closed.
-// The ack no longer moves ahead of the bytes (#355), so the mark no longer
-// depends on it. Staging only from the write paths remains correct on its own
-// terms, and is the same rule the ack now follows.
-func (a *Assembler) noteWritten(f *openFile, offset, n int64) {
-	if end := offset + n; end > f.maxWritten {
-		f.maxWritten = end
-	}
-	// New always allocates this map, so the nil case is unreachable in
-	// production; it exists for the tests that build an Assembler as a literal
-	// to exercise a single helper. Creating it rather than assuming it is one
-	// branch on a path that already writes to the map, against a nil-map panic
-	// on the single worker goroutine — which owns every open file handle and
-	// is the only drainer of a.reqs, so it would stop the pipeline rather than
-	// fail one write.
-	if a.pendingExtent == nil {
-		a.pendingExtent = make(map[fileKey]fileExtent)
-	}
-	ext := a.pendingExtent[f.key]
-	ext.maxWritten = f.maxWritten
-	a.pendingExtent[f.key] = ext
-}
-
-// relievePressure force-flushes the largest cached files until memory usage drops below the pressure threshold.
-func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) {
-	for wc.pressure() {
-		telemetry.CachePressureFlushes.Add(1)
-		a.flushPressure(wc, open)
-	}
-}
-
-func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, reason string) {
-	for _, art := range arts {
-		// Each drained article is its own WriteAt syscall (drains are not
-		// coalesced), so count one DiskWrite per article — matching the
-		// inline write paths in writeArticleOrBuffer.
-		telemetry.DiskWrites.Add(1)
-		telemetry.DiskWriteBytes.Add(int64(len(art.data)))
-		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
-			a.log.Error(reason,
-				"path", f.info.Path,
-				"offset", art.offset,
-				"error", err,
-			)
-			telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-			// The file is now missing this article's bytes, so a whole-file
-			// CRC combined from the parts that did land would describe a byte
-			// range the file does not have. The inline write path clears this
-			// for the same condition; a drained write is no different. Without
-			// it a later article can raise maxWritten past the failed range and
-			// the parts still tile it, producing a confident CRC over content
-			// the disk lacks (#349).
-			f.crcValid = false
-			a.failArticle(f, art.id)
-		} else {
-			a.noteWritten(f, art.offset, int64(len(art.data)))
-			a.ackArticleDone(f, art.id)
-		}
-		if art.data != nil {
-			decoder.PutBuffer(art.data)
-		}
-	}
-}
-
-// flushPressure force-flushes the file with the most buffered data to
-// relieve memory pressure. Called from writeArticleOrBuffer when the
-// cache exceeds 90% of its limit.
-func (a *Assembler) flushPressure(wc *writeCache, open map[fileKey]*openFile) {
-	fk, arts := wc.forceFlushLargest()
-	if len(arts) == 0 {
-		return
-	}
-	f, ok := open[fk]
-	if !ok {
-		a.log.Warn("pressure flush for unknown file",
-			"jobID", fk.jobID, "fileIdx", fk.fileIdx,
-			"articles", len(arts),
-		)
-		a.failDrainedArticles(fk, arts)
-		return
-	}
-	a.log.Debug("write cache pressure flush",
-		"path", f.info.Path,
-		"articles", len(arts),
-		"used", wc.used,
-		"limit", wc.limit,
-	)
-	a.writeCachedArticles(f, arts, "pressure flush write")
-}
-
-// drainCacheForFile writes all remaining cached articles for a file
-// directly to disk. Called just before file completion/close.
-func (a *Assembler) drainCacheForFile(wc *writeCache, f *openFile, key fileKey) {
-	if !wc.enabled() {
-		return
-	}
-	_, arts := wc.drainFile(key)
-	a.writeCachedArticles(f, arts, "drain cached article to disk")
-	// drainFile retains the entry so a pressure flush keeps its advanced
-	// cursor (#311). Both callers here are closing the handle, so the cursor
-	// has no further use in this pass and the entry would otherwise
-	// accumulate, one per file, until shutdown.
-	//
-	// The key can legitimately come back: CloseJobHandles runs at
-	// post-processing start, and a job retried from history is rebuilt under
-	// the same ID and file indices, so it re-enters on an identical fileKey.
-	// That is why this drops the entry rather than zeroing it — initCursor
-	// reseeds from the persisted write cursor on re-entry, which is the
-	// correct resume point, whereas a stale in-memory cursor would not be.
-	wc.forget(key)
-}
-
-// flushWriteCache drains all cached articles across all files to disk.
-// Called on assembler shutdown.
-func (a *Assembler) flushWriteCache(wc *writeCache, open map[fileKey]*openFile) {
-	if !wc.enabled() {
-		return
-	}
-	allArts := wc.drainAll()
-	for key, arts := range allArts {
-		f, ok := open[key]
-		if !ok {
-			a.log.Warn("cached articles for unknown file on shutdown",
-				"jobID", key.jobID, "fileIdx", key.fileIdx,
-				"articles", len(arts),
-			)
-			a.failDrainedArticles(key, arts)
-			continue
-		}
-		a.writeCachedArticles(f, arts, "flush cached article on shutdown")
-	}
-}

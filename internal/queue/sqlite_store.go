@@ -282,8 +282,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
 	const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count, failed_bytes)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	p := job.Progress()
 	for i := range m.NumFiles() {
 		isPar2 := 0
@@ -307,6 +307,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			complete, fetch,
 			p.FileFilename(i), p.FileAssembledCRC32(i),
 			artDoneStr, hi-lo,
+			// Written in the same statement as articles_done, whose failed
+			// half it sums. One writer, one transaction: the column cannot
+			// drift from the bits it caches, which is the property that
+			// distinguishes it from the derived columns removed in #306.
+			p.FileFailedBytes(i),
 		)
 		if err != nil {
 			return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
@@ -531,7 +536,23 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // delete) still gets each entry attributed to the right file instead of
 // shifted by position.
 func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
-	const q = `SELECT job_id, file_index, article_count, bytes, complete, fetch_policy, subject FROM job_files ORDER BY job_id ASC, file_index ASC`
+	// LEFT JOIN, not an inner one: file_extents holds a row only once a
+	// barrier has committed for that file, so an inner join would drop every
+	// job that has not yet checkpointed — the job would vanish from the queue
+	// rather than report zero bytes durable. COALESCE turns the resulting NULL
+	// into the same zero a fresh file legitimately has.
+	//
+	// One grouped query for the whole queue, which is what keeps restart at
+	// B3's O(incomplete files) bound. Reading file_extents per job instead
+	// would be N queries at startup.
+	const q = `
+SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
+       jf.fetch_policy, jf.subject, jf.failed_bytes,
+       COALESCE(fe.bytes_durable, 0)
+  FROM job_files jf
+  LEFT JOIN file_extents fe
+    ON fe.job_id = jf.job_id AND fe.file_idx = jf.file_index
+ ORDER BY jf.job_id ASC, jf.file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
@@ -542,9 +563,10 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 	for rows.Next() {
 		var jobID, subject string
 		var idx, count int
-		var fileBytes int64
+		var fileBytes, failedBytes, bytesDurable int64
 		var complete, fetch int
-		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &complete, &fetch, &subject); err != nil {
+		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &complete, &fetch, &subject,
+			&failedBytes, &bytesDurable); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -568,7 +590,9 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 			// Classified from the stored subject rather than from
 			// is_par2_recovery, which flags recovery volumes only. The par2
 			// index is the case this exists for, and it is not a volume.
-			IsPar2: isPar2File(subject),
+			IsPar2:       isPar2File(subject),
+			BytesDurable: bytesDurable,
+			FailedBytes:  failedBytes,
 		}
 		result[jobID] = counts
 	}
@@ -655,7 +679,10 @@ WHERE id = ?`
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and
 		// its manifest is available, rather than staying 0 forever.
-		const qF = `UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
+		// failed_bytes travels with articles_done for the same reason it does
+		// in insertJobFilesTx: it is a cache of that column's failed half, and
+		// the two are only guaranteed to agree if one statement writes both.
+		const qF = `UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ?, failed_bytes = ? WHERE job_id = ? AND file_index = ?`
 		for i := range m.NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -666,6 +693,7 @@ WHERE id = ?`
 			lo, hi := m.FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
 				complete, fetch, job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
+				job.Progress().FileFailedBytes(i),
 				job.ID, i,
 			); err != nil {
 				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)

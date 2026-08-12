@@ -126,14 +126,30 @@ CREATE INDEX idx_jobs_md5 ON jobs(md5);
 -- +goose StatementBegin
 -- The per-file rows of a queued job's manifest.
 --
--- This table carries no derived progress columns. bytes_downloaded,
--- failed_bytes, max_written, and write_cursor used to live here, each a value
--- summarising facts stored elsewhere and each maintained independently of
--- them. That is the direct cause of #306 (a stored figure loaded and then
--- overwritten by a recompute), #337 (one member of a set stored while its
--- siblings are derived), and #311 (a cursor serving as cache, authority, and
--- scheduling hint at once). The facts now live in article_facts and the
--- summaries in file_extents, which is labelled cache.
+-- This table carries almost no derived progress columns. bytes_downloaded,
+-- max_written, and write_cursor used to live here, each a value summarising
+-- facts stored elsewhere and each maintained independently of them. That is
+-- the direct cause of #306 (a stored figure loaded and then overwritten by a
+-- recompute), #337 (one member of a set stored while its siblings are
+-- derived), and #311 (a cursor serving as cache, authority, and scheduling
+-- hint at once). Those facts now live in article_facts and their summaries in
+-- file_extents, which is labelled cache.
+--
+-- failed_bytes is the one exception, and it is a cache rather than a second
+-- authority. It caches a sum over the failed half of this same row's
+-- articles_done, which is the authoritative record of which of the file's
+-- articles permanently failed. It cannot live in file_extents with the other
+-- summaries: every column there is derived from article_facts plus the file's
+-- bytes, and a permanently failed article never decodes, so it never writes an
+-- article_facts row at all. No recomputation from Class A can produce this
+-- figure, which is why file_extents has no column for it.
+--
+-- Restoring it is not a reversal of the removal above. It was removed because
+-- RestoreRetryProgress assigned it and recompute then overwrote it — two
+-- writers maintaining one fact in parallel, which is the S5 violation behind
+-- #306. That path is gone. A single writer caching a sum of the same row's
+-- authoritative bits is a cache; two writers maintaining a value in parallel
+-- is the defect. This is the first.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -148,6 +164,7 @@ CREATE TABLE job_files (
     articles_done    TEXT,
     article_count    INTEGER NOT NULL DEFAULT 0,
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
+    failed_bytes     INTEGER NOT NULL DEFAULT 0,
     UNIQUE(job_id, file_index)
 );
 
@@ -182,7 +199,6 @@ CREATE TABLE file_extents (
     prefix_crc     INTEGER NOT NULL DEFAULT 0,
     has_prefix_crc INTEGER NOT NULL DEFAULT 0,
     bytes_durable  INTEGER NOT NULL DEFAULT 0,
-    bytes_failed   INTEGER NOT NULL DEFAULT 0,
     size           INTEGER NOT NULL DEFAULT 0,
     mod_time_ns    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (job_id, file_idx)
@@ -208,15 +224,11 @@ CREATE TABLE file_extents (
 -- whatever prefix we have" — is what lets a partial extent's CRC be reported
 -- as the file's, which is the defect this column exists to prevent.
 --
--- bytes_failed is the exception, and the discard rule above does NOT extend
--- to it. A permanently failed article never decodes, so it never writes an
--- article_facts row — by design: Class A is recorded at decode, and a lost
--- failure ack is safe precisely because a restart re-attempts the article. No
--- recomputation from article_facts plus the file's bytes can produce a
--- non-zero bytes_failed, so treating a recomputed zero as correct would
--- discard a real failure count and report a damaged job as intact. Its
--- authority is the job's per-article failure record — the failed half of
--- job_files.articles_done — and this column caches that instead.
+-- There is deliberately no failed-byte column here. A permanently failed
+-- article never decodes, so it never writes an article_facts row, and no
+-- recomputation from Class A can produce that figure — which would make it the
+-- one column the discard rule above could not apply to. It is cached in
+-- job_files.failed_bytes instead, beside the articles_done bits it sums.
 -- +goose StatementEnd
 
 -- +goose StatementBegin

@@ -91,15 +91,15 @@ func BitmapFromBytes(buf []byte, n int) (Bitmap, error) {
 }
 
 // FileExtent is the Class B derivation cache for one file. Every field is
-// recomputable from the FactLog plus the file's bytes, with the documented
-// exception of BytesFailed, and none is authoritative.
+// recomputable from the FactLog plus the file's bytes, and none is
+// authoritative: where one disagrees with a recomputation, the recomputation
+// is correct by definition (S4).
 //
-// BytesFailed is the exception because a permanently failed article never
-// decodes, so it never writes an ArticleFact — Class A records what was
-// decoded. Its authority is the failed half of job_files.articles_done. S4's
-// "the recomputation is correct by definition" rule therefore does NOT extend
-// to it: recomputing from Class A yields zero and would discard a real
-// failure count.
+// That claim holds without exception, which is why there is no failed-byte
+// field here. A permanently failed article never decodes, so it never writes
+// an ArticleFact, and no recomputation from Class A could reproduce such a
+// figure — it would be the one field S4 could not be applied to. It is cached
+// in job_files.failed_bytes instead, beside the articles_done bits it sums.
 type FileExtent struct {
 	FileIdx int32
 	// Durable has one bit per article of this file, in file-local ordinal
@@ -125,25 +125,14 @@ type FileExtent struct {
 	// than adopting a committed one: the flag can outlive its condition when
 	// a file grows past a hole without VerifiedTo moving.
 	HasPrefixCRC bool
-	// BytesDurable and BytesFailed are cached aggregates. They exist so
-	// restart stays O(files) (B3) rather than O(articles).
+	// BytesDurable is a cached aggregate. It exists so restart stays
+	// O(files) (B3) rather than O(articles).
 	//
-	// They do not share an authority. BytesDurable summarises the FactLog,
-	// which remains authoritative for it (S5): every byte counted here has an
-	// ArticleFact behind it, so a recomputation from Class A plus the file's
-	// bytes reproduces the figure and supersedes this cache when they differ.
-	//
-	// BytesFailed has no Class A backing at all. A permanently failed article
-	// never decodes, so it never produces an ArticleFact — deliberately, since
-	// Class A is written at decode (S2) and R10 depends on a lost failure ack
-	// being re-attempted rather than recorded. Recomputing from the FactLog
-	// would therefore always yield zero for it, and S4's rule that a
-	// recomputation wins must NOT be applied here: doing so would silently
-	// discard a real failure count and report a damaged job as intact. Its
-	// authority is the job's per-article failure record (the failed half of
-	// job_files.articles_done), and this field is a cache of that.
+	// It summarises the FactLog, which remains authoritative for it (S5):
+	// every byte counted here has an ArticleFact behind it, so a
+	// recomputation from Class A plus the file's bytes reproduces the figure
+	// and supersedes this cache when the two differ.
 	BytesDurable int64
-	BytesFailed  int64
 	// Size and ModTimeNs stamp the file as it was at commit time. The
 	// resumer compares them against the file as it exists now; a mismatch
 	// invalidates every other field in this struct (S7).

@@ -191,11 +191,14 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 // per-article state through markFailed on top of that seed rather than onto a
 // fresh JobProgress, so the two stacked.
 //
-// Removing job_files.failed_bytes removes the seed, so the non-resident side
-// now reads zero. The test is kept because the replay half is unchanged and
-// still has to land on the right total exactly once: a future seed restored
-// from the durable extents would re-open the same defect, and this is where
-// it would be caught.
+// job_files.failed_bytes is back, so the seed is back, and this is the test
+// that says the defect did not come back with it. What makes the restored seed
+// safe is that RestoreJobProgress ends in JobProgress.recompute, which ASSIGNS
+// BytesDownloaded, FailedBytes and the job-level failedBytes from the manifest
+// and the article bitmaps rather than adding to them — so the replay
+// supersedes the seed wholesale (S4) instead of stacking on it. Both halves
+// are asserted below: the seed must be visible while non-resident, and the
+// total must land on the fixture's figure exactly once after hydration.
 //
 // Driven through Queue.SnapshotJob rather than an unexported-field write:
 // the reloaded job comes back non-resident (StatusQueued, per
@@ -225,9 +228,10 @@ func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	// No longer seeded: job_files carries no failed-byte column.
-	if got := reloaded.byID[job.ID].Progress().FailedBytes(); got != 0 {
-		t.Fatalf("non-resident FailedBytes = %d, want 0 (nothing seeds it now)", got)
+	// Seeded from job_files.failed_bytes: residency parity requires the
+	// non-resident figure to match, not to read zero.
+	if got := reloaded.byID[job.ID].Progress().FailedBytes(); got != want {
+		t.Fatalf("non-resident FailedBytes = %d, want %d (seeded from job_files.failed_bytes)", got, want)
 	}
 
 	// Hydrating replays per-article state. The total must land on the

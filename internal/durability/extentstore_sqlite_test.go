@@ -17,7 +17,7 @@ func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
 	bm.Set(99)
 	ext := FileExtent{
 		FileIdx: 3, Durable: bm, VerifiedTo: 4096, PrefixCRC: 0xABCD, HasPrefixCRC: true,
-		BytesDurable: 3000, BytesFailed: 120, Size: 8192, ModTimeNs: 1_700_000_000_000_000_000,
+		BytesDurable: 3000, Size: 8192, ModTimeNs: 1_700_000_000_000_000_000,
 	}
 	if err := es.Commit(ctx, "job-1", []FileExtent{ext}); err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
 	if g.FileIdx != 3 || g.VerifiedTo != 4096 || g.PrefixCRC != 0xABCD || !g.HasPrefixCRC {
 		t.Errorf("scalar round trip wrong: %+v", g)
 	}
-	if g.BytesDurable != 3000 || g.BytesFailed != 120 || g.Size != 8192 || g.ModTimeNs != 1_700_000_000_000_000_000 {
+	if g.BytesDurable != 3000 || g.Size != 8192 || g.ModTimeNs != 1_700_000_000_000_000_000 {
 		t.Errorf("cache/stamp round trip wrong: %+v", g)
 	}
 	if g.Durable.Count() != 3 || !g.Durable.Get(0) || !g.Durable.Get(42) || !g.Durable.Get(99) {
@@ -180,13 +180,10 @@ func TestSQLiteExtentStore_TransactionRollsBackMidBatch(t *testing.T) {
 	}
 }
 
-// TestSQLiteExtentStore_CommitRejectsEachNegativeField pins all four clauses
+// TestSQLiteExtentStore_CommitRejectsEachNegativeField pins all three clauses
 // of Commit's validation loop independently. Only VerifiedTo was previously
-// exercised — deleting the Size, BytesDurable, or BytesFailed guard was
-// invisible to the suite. BytesDurable is the R26 "bytes durable" aggregate;
-// BytesFailed has no Class A backing at all (S4's recompute-wins rule cannot
-// rescue a negative value there, since recomputing from article_facts always
-// yields zero for it).
+// exercised — deleting the Size or BytesDurable guard was invisible to the
+// suite. BytesDurable is the R26 "bytes durable" aggregate.
 func TestSQLiteExtentStore_CommitRejectsEachNegativeField(t *testing.T) {
 	tests := []struct {
 		name string
@@ -195,7 +192,6 @@ func TestSQLiteExtentStore_CommitRejectsEachNegativeField(t *testing.T) {
 		{"VerifiedTo", FileExtent{FileIdx: 0, Durable: NewBitmap(8), VerifiedTo: -1}},
 		{"Size", FileExtent{FileIdx: 0, Durable: NewBitmap(8), Size: -1}},
 		{"BytesDurable", FileExtent{FileIdx: 0, Durable: NewBitmap(8), BytesDurable: -1}},
-		{"BytesFailed", FileExtent{FileIdx: 0, Durable: NewBitmap(8), BytesFailed: -1}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

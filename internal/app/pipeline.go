@@ -403,22 +403,17 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return fmt.Errorf("count unfinished articles: %w", err)
 	}
 
-	// Whether this run is resuming a file an earlier run had partly written.
-	// totalParts counts only what is still outstanding, so it falling short of
-	// the file's article count is exactly the condition: articles were
-	// withheld because they are already done, which means their bytes are
-	// already on disk. finalizeFile needs this because it cannot tell a
-	// resumed file from a fresh one — see FileInfo.ResumedFile.
-	lo, hi := m.FileRange(fileIdx)
-	resumed := totalParts < hi-lo
-
+	// The assembler is no longer told whether this file is resumed, nor
+	// seeded with an earlier run's write cursor or high-water mark. It has no
+	// use for any of them: it does not truncate, so it needs no extent, and
+	// the coalescing cursor is a hint that costs syscalls rather than
+	// correctness when it starts at zero. The completion truncate now derives
+	// its bound from the durable facts, which describe the file rather than
+	// the session.
 	info := assembler.FileInfo{
-		Path:               path,
-		TotalParts:         totalParts,
-		ExpectedSize:       m.FileBytes(fileIdx),
-		InitialWriteCursor: snap.Progress().FileWriteCursor(fileIdx),
-		InitialMaxWritten:  snap.Progress().FileMaxWritten(fileIdx),
-		ResumedFile:        resumed,
+		Path:         path,
+		TotalParts:   totalParts,
+		ExpectedSize: m.FileBytes(fileIdx),
 	}
 
 	p.mu.Lock()

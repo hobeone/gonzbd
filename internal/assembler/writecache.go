@@ -78,12 +78,25 @@ type bufferedArticle struct {
 type flushRun struct {
 	offset int64  // starting byte offset
 	data   []byte // coalesced data
-	// ids names every article coalesced into data, so the write can settle
-	// them all rather than only the one whose arrival triggered the flush.
+	// parts names every article coalesced into data, with the byte range each
+	// one contributed, so the write can report them all rather than only the
+	// one whose arrival triggered the flush.
+	//
+	// The ranges are carried rather than recomputed because the coalesced
+	// buffer is flat: once the articles are merged and their originals pooled,
+	// nothing else can say which bytes belonged to which article, and a
+	// durability.WrittenArticle needs exactly that to be a checkable claim.
 	//
 	// Allocated per run, unlike data, which is a view into the cache's reused
 	// scratch buffer and is valid only until the next run is built.
-	ids []articleID
+	parts []runPart
+}
+
+// runPart is one article's contribution to a coalesced run.
+type runPart struct {
+	id     articleID
+	offset int64
+	length int
 }
 
 // newWriteCache creates a write cache with the given memory limit.
@@ -246,13 +259,13 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	// Coalesce into wc.scratchBuf to eliminate heap allocations during write coalescing.
 	wc.scratchBuf = wc.scratchBuf[:0]
 	startOffset := fb.writeCursor
-	ids := make([]articleID, 0, len(runArticles))
+	parts := make([]runPart, 0, len(runArticles))
 	for _, art := range runArticles {
 		wc.scratchBuf = append(wc.scratchBuf, art.data...)
 		// Copied out of art rather than read back from the map: the entry is
-		// gone by the time the run reaches disk, and the identity is what the
-		// write needs in order to ack.
-		ids = append(ids, art.id)
+		// gone by the time the run reaches disk, and the identity and extent
+		// are what the write needs in order to report the article Written.
+		parts = append(parts, runPart{id: art.id, offset: art.offset, length: len(art.data)})
 		delete(fb.articles, art.offset)
 		fb.totalBytes -= int64(len(art.data))
 		wc.used -= int64(len(art.data))
@@ -262,7 +275,7 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	}
 	fb.writeCursor = cursor
 
-	return &flushRun{offset: startOffset, data: wc.scratchBuf, ids: ids}
+	return &flushRun{offset: startOffset, data: wc.scratchBuf, parts: parts}
 }
 
 // pressure reports whether memory usage exceeds 90% of the limit.

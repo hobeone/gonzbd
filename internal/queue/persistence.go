@@ -98,18 +98,28 @@ func (q *Queue) saveStore(_ string) error {
 // including a job that restarted non-resident. They replace the pre-summed
 // figure this used to take from Store.RemainingBytesByJob.
 //
-// BytesDownloaded and FailedBytes are no longer among them, and both start at
-// zero here. They used to be restored from job_files columns, so a restarted
-// non-resident job reported its earlier progress before promotion; it now
-// reports a full remaining figure until promotion restores the article
-// bitmaps. Those columns were a summary maintained independently of the facts
-// they summarised and had to go with them (#306, #337); the durable extents
-// replace the reporting they supported.
+// BytesDownloaded and FailedBytes are seeded from FileMeta, and that is what
+// makes a non-resident job report the same figures a resident one does. They
+// arrive from two different places because they have two different
+// authorities — file_extents.bytes_durable for the first, job_files.failed_bytes
+// for the second — which FileMeta's own doc explains.
+//
+// Seeding them here does NOT recreate the two-writer defect that removed the
+// old columns (#306, #337). Nothing maintains these fields in parallel with
+// the facts: promotion calls Store.RestoreJobProgress, which ends in
+// JobProgress.recompute, and recompute ASSIGNS BytesDownloaded, FailedBytes and
+// the job-level failedBytes from the manifest and the article bitmaps rather
+// than adding to them. So the seed is superseded wholesale the moment real
+// per-article state exists, which is S4 — the recomputation is correct by
+// definition — rather than a second copy kept in step by hand. That assignment
+// is also what keeps TestFailedBytes_NotDoubledByHydration true: a seed and a
+// replay cannot stack.
 //
 // The per-article bitmaps genuinely do start clear here — every article
 // starts undone/unfailed/unemitted, since restoring true per-article state
 // needs the manifest and only happens once the job is promoted back to
-// resident.
+// resident. That is why the byte figures have to be seeded at all: with no
+// bits set there is nothing for a derivation to read.
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
 	for _, f := range files {
@@ -122,13 +132,23 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
 	}
+	var failedTotal int64
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
 		p.files[fi].Complete = f.Complete
 		p.files[fi].Fetch = f.Fetch
 		p.files[fi].IsPar2 = f.IsPar2
 		p.files[fi].Bytes = f.Bytes
+		p.files[fi].BytesDownloaded = f.BytesDurable
+		p.files[fi].FailedBytes = f.FailedBytes
+		// Summed over every file including deferred ones, matching what
+		// recompute does, so the job-level figure agrees with the per-file
+		// ones at both residencies. ExpectedBytes' identity
+		// (downloaded = expected - failed - remaining) depends on the two
+		// sides using the same exclusion set.
+		failedTotal += f.FailedBytes
 	}
+	p.failedBytes = failedTotal
 	return p
 }
 

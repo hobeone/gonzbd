@@ -280,3 +280,114 @@ func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, du
 	}
 	return prefix, nil
 }
+
+// Truncator is a SyncTarget that can also trim a completed file.
+//
+// It is separate from SyncTarget because trimming is not part of a checkpoint:
+// a barrier runs on a cadence over files that are still being written, and
+// truncating one of those would destroy the bytes of every article that has
+// not arrived yet. Only FinalizeFile trims, and only for a file whose parts
+// have all been delivered.
+type Truncator interface {
+	SyncTarget
+	Truncate(ctx context.Context, fileIdx int32, bound int64) error
+}
+
+// FinalizeFile checkpoints one completed file and trims it to its real extent.
+//
+// The bound is the highest end offset among the file's DURABLE articles —
+// max(Offset+Length) over the facts whose durable bit is set — and getting
+// that quantity right is the whole point of this function.
+//
+// It is emphatically NOT this run's high-water mark. That figure describes the
+// articles this process happened to fetch, so on a resumed file it sits below
+// what earlier runs wrote and truncating to it discards them. That is #342 and
+// #350, and it is silent without par2.
+//
+// It is also NOT FileExtent.VerifiedTo. VerifiedTo is the GAPLESS PREFIX and
+// deliberately stalls at the first hole, so a 40 GB file with one permanently
+// failed article at 2 GB would be cut to 2 GB — far worse than the bug above,
+// and it destroys precisely the blocks par2 would repair from. Extent and
+// gapless prefix are different quantities and the distinction is load-bearing.
+//
+// Deriving it from Class A rather than storing it means there is no second
+// copy to drift (S5), and it is correct by construction: every fact counted
+// has an article behind it whose bytes a completed fsync covered.
+//
+// Truncation only ever shrinks (S6). The writer refuses a bound above the file
+// on disk rather than clamping, because growing appends zeros, which asserts
+// content that exists nowhere.
+func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t Truncator) error {
+	written, err := t.Drain(ctx, idx)
+	if err != nil {
+		return b.routeFault(jobID, storagefault.Classify("write", "", err))
+	}
+	if err := t.Sync(ctx, idx); err != nil {
+		return b.routeFault(jobID, storagefault.Classify("sync", "", err))
+	}
+	ext, acked, err := b.buildExtent(ctx, jobID, idx, written, t)
+	if err != nil {
+		return err
+	}
+
+	bound, err := b.durableExtent(ctx, jobID, idx, ext.Durable, t)
+	if err != nil {
+		return err
+	}
+	if bound > 0 {
+		if err := t.Truncate(ctx, idx, bound); err != nil {
+			return b.routeFault(jobID, storagefault.Classify("truncate", "", err))
+		}
+		// The truncate changed the file, so the size/mtime stamp taken inside
+		// buildExtent describes a file that no longer exists. Re-stat and
+		// re-sync: a stamp that does not match the file on disk fails S7's
+		// validity check on the next resume and throws away a valid cache.
+		if err := t.Sync(ctx, idx); err != nil {
+			return b.routeFault(jobID, storagefault.Classify("sync", "", err))
+		}
+		size, modNs, err := t.Stat(idx)
+		if err != nil {
+			return b.routeFault(jobID, storagefault.Classify("stat", "", err))
+		}
+		ext.Size, ext.ModTimeNs = size, modNs
+	}
+
+	if err := b.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {
+		return fmt.Errorf("durability: finalize commit for %s file %d: %w", jobID, idx, err)
+	}
+	if len(acked) == 0 {
+		return nil
+	}
+	slices.Sort(acked)
+	if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
+		return fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
+	}
+	return nil
+}
+
+// durableExtent returns the highest end offset among the file's durable
+// articles, or 0 when none is durable.
+//
+// Unlike gaplessPrefix this does NOT stop at a hole. A hole means an article
+// permanently failed, and the bytes above it are still real bytes that par2
+// repairs from — stopping there is the data-loss bug this function exists to
+// avoid. The two walks read the same facts and answer deliberately different
+// questions: gaplessPrefix asks "what can I prove about a CRC anchor", this
+// asks "how long is the file".
+func (b *Barrier) durableExtent(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (int64, error) {
+	facts, err := b.facts.ForFile(ctx, jobID, idx)
+	if err != nil {
+		return 0, fmt.Errorf("durability: durable extent job=%s file=%d: %w", jobID, idx, err)
+	}
+	var high int64
+	for _, f := range facts {
+		ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx)
+		if !ok || !durable.Get(ord) {
+			continue
+		}
+		if end := f.Offset + int64(f.Length); end > high {
+			high = end
+		}
+	}
+	return high, nil
+}

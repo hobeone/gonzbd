@@ -26,6 +26,28 @@ type FileMeta struct {
 	// column: is_par2_recovery flags only volumes, and the index is exactly
 	// the case that matters here. See FileProgress.IsPar2.
 	IsPar2 bool
+	// BytesDurable and FailedBytes are what let a NON-RESIDENT job report the
+	// same byte figures a resident one does. A resident job derives both from
+	// its manifest and article bitmaps in JobProgress.recompute; a job whose
+	// manifest has been evicted has neither, so without these it reports zero
+	// failed bytes and an inflated remaining figure — the residency parity
+	// TestRemainingBytes_IdenticalResidentAndNonResident exists to forbid.
+	//
+	// They come from different tables because they have different authorities,
+	// and that split is deliberate rather than incidental. BytesDurable is
+	// Class B, derived from article_facts plus the file's bytes and committed
+	// only by durability.Barrier after the fsync that makes it true, so it
+	// reads from file_extents — via a LEFT JOIN, because a job whose barrier
+	// has never run has no row there and must report zero rather than vanish
+	// from the queue. FailedBytes has no Class A backing at all (a permanently
+	// failed article never decodes, so it writes no fact), so it is cached in
+	// job_files.failed_bytes beside the articles_done bits it sums.
+	//
+	// Both are caches and neither is authoritative: hydration runs
+	// JobProgress.recompute, which ASSIGNS these figures from the manifest and
+	// the bitmaps and so supersedes whatever was seeded here (S4).
+	BytesDurable int64
+	FailedBytes  int64
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.

@@ -81,7 +81,12 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	db := openMigratedTestDB(t)
 
 	t.Run("job_files carries no derived columns", func(t *testing.T) {
-		forbidden := []string{"bytes_downloaded", "failed_bytes", "max_written", "write_cursor"}
+		// failed_bytes is deliberately NOT forbidden — see the sibling
+		// subtest below. The other three are values maintained in parallel
+		// with the facts they summarise, which is the S5 violation; that one
+		// is a cache of the same row's articles_done bits, with a single
+		// writer.
+		forbidden := []string{"bytes_downloaded", "max_written", "write_cursor"}
 		rows, err := db.Query(`SELECT name FROM pragma_table_info('job_files')`)
 		if err != nil {
 			t.Fatal(err)
@@ -102,6 +107,41 @@ func TestMigrations_SchemaShape(t *testing.T) {
 			if slices.Contains(cols, f) {
 				t.Errorf("job_files still has derived column %q — S5 forbids a second authoritative copy", f)
 			}
+		}
+	})
+
+	// job_files.failed_bytes is the one cached figure that cannot live in
+	// file_extents: every column there is recomputable from article_facts plus
+	// the file's bytes, and a permanently failed article never decodes, so it
+	// writes no article_facts row for a recomputation to read. Both halves are
+	// asserted — present here, absent there — because the pair is the decision.
+	// Checking only one half would let a future change satisfy it by adding the
+	// column back to file_extents as well, which is the two-writer shape S5
+	// forbids and the reason this figure moved in the first place.
+	t.Run("job_files caches failed_bytes beside its authority", func(t *testing.T) {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = 'failed_bytes'`,
+		).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Error("job_files.failed_bytes is missing — a non-resident job cannot report " +
+				"failed bytes without it, and no recomputation from Class A can supply them")
+		}
+	})
+
+	t.Run("file_extents has no failed-byte column", func(t *testing.T) {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('file_extents') WHERE name = 'bytes_failed'`,
+		).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Error("file_extents.bytes_failed is back — it had no writer, because the " +
+				"barrier commits only what its fsync made true and a failed article " +
+				"never decodes. Its cache is job_files.failed_bytes")
 		}
 	})
 
@@ -129,7 +169,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	})
 
 	t.Run("file_extents exists with the validity stamp", func(t *testing.T) {
-		for _, col := range []string{"durable_bitmap", "verified_to", "prefix_crc", "has_prefix_crc", "bytes_durable", "bytes_failed", "size", "mod_time_ns"} {
+		for _, col := range []string{"durable_bitmap", "verified_to", "prefix_crc", "has_prefix_crc", "bytes_durable", "size", "mod_time_ns"} {
 			var n int
 			err := db.QueryRow(
 				`SELECT COUNT(*) FROM pragma_table_info('file_extents') WHERE name = ?`, col,
