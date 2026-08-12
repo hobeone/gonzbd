@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
@@ -661,8 +662,15 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 
 	f, ok := open[key]
 	if !ok {
-		f = a.openTargetFile(key, req, open, wc)
-		if f == nil {
+		var err error
+		f, err = a.openTargetFile(key, req, open, wc)
+		if err != nil {
+			// The article stays Outstanding: it is absent from every Drain, so
+			// nothing claims it reached disk and a later run fetches it again.
+			// The fault reaches the job through the barrier's Stallable rather
+			// than being recorded against the article (A1).
+			a.log.Error("open target file for article",
+				"job", req.JobID, "fileidx", req.FileIdx, "error", err)
 			return
 		}
 	}
@@ -677,6 +685,12 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	} else if !a.handleSuccessArticle(f, req) {
 		return
 	}
+	// Memory pressure is a whole-cache property, not a per-file one, so it is
+	// relieved here rather than inside FileWriter: only the worker can see
+	// every file and pick the largest. B2 bounds cached article memory by
+	// configuration independently of job size, file size and job count, and
+	// nothing else enforces that bound.
+	a.relievePressure(wc, open)
 
 	f.partsWritten++
 	a.log.Debug("processed part",
@@ -701,43 +715,43 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 	}
 }
 
-// openTargetFile resolves file information and creates the target file on disk for a new fileKey.
-func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile, wc *writeCache) *openFile {
+// openTargetFile resolves file information and creates the target file on disk
+// for a new fileKey.
+//
+// Every failure returns a classified *storagefault.Fault rather than logging
+// and discarding the article (#357). The distinction matters because of A2: a
+// dropped article is resolved neither way, so no later run re-dispatches it and
+// the job stalls at 99% forever. A returned fault leaves it Outstanding, which
+// costs a re-fetch and nothing else.
+//
+// A failing FileInfo resolver is classified against the path it could not
+// produce, which is empty — the honest answer, since the resolver failed before
+// there was a path. It is retryable by default under R18's "anything
+// unrecognised is retryable" rule, which is the correct direction: a resolver
+// failure is usually a job whose manifest is momentarily non-resident.
+func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile, wc *writeCache) (*openFile, error) {
 	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
 	if err != nil {
-		a.log.Warn("FileInfo resolver failed; discarding article",
-			"jobID", req.JobID,
-			"fileIdx", req.FileIdx,
-			"error", err,
-		)
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
-		return nil
+		return nil, storagefault.Classify("resolve", "", err)
 	}
 
 	dir := filepath.Dir(info.Path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		a.log.Error("mkdir parent",
-			"path", info.Path,
-			"error", err,
-		)
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
-		return nil
+		return nil, storagefault.Classify("mkdir", info.Path, err)
 	}
 	//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
 	fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
-		a.log.Error("open target file",
-			"path", info.Path,
-			"error", err,
-		)
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
-		return nil
+		return nil, storagefault.Classify("open", info.Path, err)
 	}
 	if info.ExpectedSize > 0 {
 		telemetry.PreallocCalls.Add(1)
@@ -771,7 +785,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		key:  key,
 	}
 	open[key] = f
-	return f
+	return f, nil
 }
 
 // handleFatalArticle counts a permanently failed article toward the file's
@@ -990,3 +1004,39 @@ const (
 	// point, including moving the article to seenFailed if its write is lost.
 	outcomeDeferred
 )
+
+// relievePressure force-flushes the largest cached files until memory usage
+// drops back under the threshold (B2).
+//
+// It writes through the owning file's FileWriter, so the flushed articles are
+// reported Written exactly like any other write and reach the barrier through
+// the same Drain. A file whose cache entry has no open writer cannot occur —
+// FileWriter and the cache entry are created and dropped together — but the
+// branch is kept and logged rather than assumed away, because the cost of
+// being wrong is a silent leak of buffered bytes.
+func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) {
+	for wc.pressure() {
+		telemetry.CachePressureFlushes.Add(1)
+		key, arts := wc.forceFlushLargest()
+		if len(arts) == 0 {
+			return
+		}
+		f, ok := open[key]
+		if !ok {
+			a.log.Warn("pressure flush for unknown file",
+				"jobID", key.jobID, "fileIdx", key.fileIdx, "articles", len(arts))
+			for _, art := range arts {
+				if art.data != nil {
+					decoder.PutBuffer(art.data)
+				}
+			}
+			continue
+		}
+		for _, art := range arts {
+			if err := f.w.writeOne(art); err != nil {
+				a.log.Error("pressure flush write",
+					"path", f.info.Path, "offset", art.offset, "error", err)
+			}
+		}
+	}
+}

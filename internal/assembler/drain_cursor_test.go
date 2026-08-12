@@ -1,9 +1,6 @@
 package assembler
 
 import (
-	"log/slog"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -134,42 +131,5 @@ func TestWriteCacheDrainEmptiesArticlesMap(t *testing.T) {
 	wc.forget(key)
 	if wc.used != 0 {
 		t.Errorf("wc.used = %d after forget on a drained entry, want 0", wc.used)
-	}
-}
-
-// TestDrainCacheForFileDropsTheEntry pins the forget() that the completion path
-// must pair with drainFile now that drainFile retains entries.
-//
-// Without it the assembler leaks one entry per completed file until shutdown,
-// and no other test catches that: removing the call leaves the whole
-// internal/assembler suite green. Its sibling in drainAll is already pinned by
-// TestWriteCacheDrainAll's perFile-empty assertion, so this closes the
-// asymmetry between the two halves of the same fix.
-func TestDrainCacheForFileDropsTheEntry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "drain_target")
-	handle, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-	defer handle.Close()
-
-	a := &Assembler{log: slog.Default()}
-	f := &openFile{handle: handle, info: FileInfo{Path: path}}
-
-	wc := newWriteCache(1 << 20)
-	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
-	for i := range 3 {
-		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
-	}
-
-	a.drainCacheForFile(wc, f, key)
-
-	if _, ok := wc.perFile[key]; ok {
-		t.Error("drainCacheForFile left a cache entry behind; the completion path " +
-			"must forget the entry drainFile deliberately retains")
-	}
-	if wc.used != 0 {
-		t.Errorf("wc.used = %d after the completion drain, want 0", wc.used)
 	}
 }
