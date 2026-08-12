@@ -192,7 +192,7 @@ When running in daemon mode (`--serve`), the application follows this sequence i
 4.  **Locking**: Acquires a filesystem lock to ensure only one instance runs per admin directory.
 5.  **Persistence**: Opens the SQLite history database (`history.db`) and runs any pending `goose` migrations.
 6.  **Application Core**: Constructs the `app.Application` orchestrator, which initializes the internal `queue`, `downloader`, `assembler`, and `postProcessor`.
-7.  **Subsystem Start**: Invokes `application.Start()`, which boots the background goroutines for the pipeline, downloader, and post-processor.
+7.  **Subsystem Start**: Invokes `application.Start()`, which first seeds every resident job's work set from the durability records an earlier run committed (`resumeAllJobs` — synchronous, and deliberately before the downloader can dispatch, so bytes already fsynced are never requested again), then boots the background goroutines for the pipeline, downloader, and post-processor.
 8.  **Ancillary services**: Starts the bandwidth meter (`bpsmeter`), notifier, and directory scanner (`dirscanner`).
 9.  **API & Web**: Constructs the `api.Server` and `web.Handler`, binding them to a single HTTP listener (and optionally a separate HTTPS listener).
 10. **Wait**: Blocks until a termination signal (SIGINT/SIGTERM) is received, then performs a graceful shutdown (stop producers → drain consumers → cancel context → wait → cleanup).

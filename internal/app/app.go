@@ -815,6 +815,16 @@ func (app *Application) Start(ctx context.Context) error {
 	// On a cold restart these flags are stale — the old downloader's
 	// in-flight articles are long gone.
 	app.queue.ClearAllEmitted()
+	// L3: seed each resident job's work set from what an earlier run already
+	// got onto stable storage, BEFORE the downloader below can dispatch a
+	// single article. Placed after ClearAllEmitted so the reset cannot undo
+	// it, and before dl.Start so a durable article is never requested at all
+	// — a seed that lands after dispatch begins still marks the right bits,
+	// but the re-fetch it exists to prevent has already gone out on the wire.
+	if err := app.resumeAllJobs(app.ctx); err != nil {
+		_ = app.assembler.Stop()
+		return err
+	}
 	// Snapshot app.downloader under app.mu once and reuse it below. started
 	// flips true (via CompareAndSwap) before this point, so a concurrent
 	// ReloadDownloader call could otherwise race an unguarded read of
