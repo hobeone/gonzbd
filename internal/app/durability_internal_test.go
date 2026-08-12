@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1096,7 +1097,6 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job) {
 func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T) {
 	application, job := newWedgedApp(t)
 
-	start := time.Now()
 	err := application.finalizeCompletedFile(t.Context(), job.ID, 0)
 	if err == nil {
 		t.Fatal("finalizing against a wedged worker returned nil; the caller proceeds to " +
@@ -1106,10 +1106,24 @@ func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T
 	if !errors.Is(err, ErrNotFinalized) {
 		t.Errorf("err = %v, want it to wrap ErrNotFinalized so the caller can act on it", err)
 	}
-	// It must give up on the bound rather than wait for the mount.
-	if elapsed := time.Since(start); elapsed > 30*time.Second {
-		t.Errorf("finalize took %v; the completion consumer is parked for as long as the "+
-			"mount stays down and every other job's completions queue behind it", elapsed)
+	// It must have ASKED the assembler and given up on the bound, rather than
+	// short-circuiting to an error without consulting it — a guard that
+	// refused every completed file would satisfy every assertion above while
+	// stalling healthy jobs.
+	//
+	// Asserted on the wrapped cause rather than on elapsed time. An earlier
+	// version measured the wall clock, and it did not pin this: the deferred
+	// CloseFile sits on the same 5s bound, so a finalize that short-circuited
+	// without ever reaching OpenFiles still took 5s and the assertion passed.
+	//
+	// The "gave up rather than waiting for the mount" half has no assertion at
+	// all, deliberately: without the bound this call never returns, so the
+	// only thing that can observe it is the test binary's own timeout. An
+	// assertion on it could run only in a world where the test had already
+	// died, which is what the version before that one was.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap the bound's own deadline — the finalize "+
+			"never reached the assembler, so it would refuse healthy completions too", err)
 	}
 }
 
@@ -1165,12 +1179,190 @@ func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
 	if got := application.filePathFor(job.ID, 0); got != want.Path {
 		t.Errorf("filePathFor = %q, want %q", got, want.Path)
 	}
-	// A file the pipeline never registered degrades to "" rather than
-	// fabricating a name or failing the stall.
-	if got := application.filePathFor(job.ID, 7); got != "" {
-		t.Errorf("filePathFor for an unregistered file = %q, want \"\"", got)
+	// A file the pipeline never registered must not be answered with ANOTHER
+	// file's path. This is the version of the negative case that can actually
+	// fail: an earlier one asserted only `== ""`, which no implementation
+	// reachable from here can violate — resolveFileInfo returns a zero
+	// FileInfo on miss, so ignoring its error yields "" either way. An
+	// implementation that ignored fileIdx and returned the job's first known
+	// path would have passed it, and fails this.
+	if got := application.filePathFor(job.ID, 7); got == want.Path {
+		t.Errorf("filePathFor for unregistered file 7 = %q, which is file 0's path — "+
+			"the stall reason would name the wrong file", got)
 	}
-	if got := application.filePathFor("no-such-job", 0); got != "" {
-		t.Errorf("filePathFor for an unknown job = %q, want \"\"", got)
+	if got := application.filePathFor("no-such-job", 0); got == want.Path {
+		t.Errorf("filePathFor for an unknown job = %q, which is another job's path", got)
+	}
+}
+
+// ---------- fault routing on the completion path ----------
+
+// TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted pins the
+// permanent case, which is the one the double-routing destroyed.
+//
+// Barrier.routeFault dispatches every storage fault it meets — Fail for
+// permanent, Stall for retryable — and then returns that same fault as its
+// error, so a caller that ignores Stallable still cannot mistake a fault for
+// success. Re-classifying that returned error and stalling again is a second,
+// WRONG dispatch that overwrites the first: a read-only filesystem was
+// correctly reported as "Failed: … read-only file system" and then relabelled
+// "Stalled: …", telling the operator to wait out a condition that cannot
+// clear, and destroying the actionable reason on the way.
+//
+// The fixture reproduces the barrier's exact sequence — route, then return the
+// fault — because that is the only shape the caller ever sees. A test written
+// against the retryable case alone would pass against the bug and pin nothing:
+// re-stalling an already-stalled job is idempotent.
+func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testing.T) {
+	const path = "/mnt/ro/movie.rar"
+
+	t.Run("permanent", func(t *testing.T) {
+		application, job := newDurabilityTestApp(t, 1, 1)
+
+		// Exactly what Barrier.routeFault does for a permanent fault.
+		fault := storagefault.Classify("truncate", path, syscall.EROFS)
+		if !fault.Permanent {
+			t.Fatal("EROFS is not classified permanent; this subtest is about the other branch")
+		}
+		application.Fail(job.ID, fault)
+
+		before := application.queue.SnapshotJob(job.ID)
+		if before == nil {
+			t.Skip("the permanent failure carried the job straight out of the queue")
+		}
+		if !strings.Contains(before.Warning, "Failed:") {
+			t.Fatalf("Fail set warning %q; the fixture is not in the state this test is about", before.Warning)
+		}
+
+		// ...and then returns the fault as its error, wrapped on the way out.
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0, fault)
+		application.routeFinalizeFailure(job.ID, 0, path, err)
+
+		after := application.queue.SnapshotJob(job.ID)
+		if after == nil {
+			t.Fatal("the job left the queue between the two reads")
+		}
+		if strings.Contains(after.Warning, "Stalled:") {
+			t.Errorf("warning = %q — a permanent fault was re-routed as a stall, so the "+
+				"operator is told to wait out a read-only filesystem", after.Warning)
+		}
+		if !strings.Contains(after.Warning, "Failed:") {
+			t.Errorf("warning = %q, want the permanent reason Fail set to survive", after.Warning)
+		}
+		if !strings.Contains(after.Warning, path) {
+			t.Errorf("warning = %q no longer names %q; the actionable reason was destroyed",
+				after.Warning, path)
+		}
+		if after.Status == constants.StatusPaused {
+			t.Errorf("status = Paused after a permanent fault; the job is presented as "+
+				"resumable and its warning says %q", after.Warning)
+		}
+	})
+
+	t.Run("retryable", func(t *testing.T) {
+		application, job := newDurabilityTestApp(t, 1, 1)
+
+		fault := storagefault.Classify("sync", path, syscall.ENOSPC)
+		if fault.Permanent {
+			t.Fatal("ENOSPC is classified permanent; this subtest is about the other branch")
+		}
+		application.Stall(job.ID, fault)
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0, fault)
+		application.routeFinalizeFailure(job.ID, 0, path, err)
+
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("job left the queue")
+		}
+		if snap.Status != constants.StatusPaused {
+			t.Errorf("status = %v, want Paused for a retryable fault", snap.Status)
+		}
+		if !strings.Contains(snap.Warning, path) {
+			t.Errorf("warning = %q does not name the file (R27)", snap.Warning)
+		}
+		if snap.Progress().ArticleFailed(0) || snap.Progress().FailedBytes() != 0 {
+			t.Error("a storage condition was recorded as article damage (A1, R21)")
+		}
+	})
+
+	t.Run("never routed", func(t *testing.T) {
+		application, job := newDurabilityTestApp(t, 1, 1)
+
+		// An OpenFiles timeout, or a target that cannot truncate: these never
+		// reach Barrier.routeFault, so nothing has surfaced a reason and this
+		// path must supply one — otherwise the job halts silently.
+		err := fmt.Errorf("%w: job %s file %d: cannot tell whether it is still open: %w",
+			ErrNotFinalized, job.ID, 0, context.DeadlineExceeded)
+		application.routeFinalizeFailure(job.ID, 0, path, err)
+
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("job left the queue")
+		}
+		if snap.Status != constants.StatusPaused {
+			t.Errorf("status = %v, want Paused — an unrouted failure left the job running "+
+				"and it completes with an untrimmed file", snap.Status)
+		}
+		if !strings.Contains(snap.Warning, path) {
+			t.Errorf("warning = %q does not name the file; the job halts with no reason "+
+				"the user can act on (R27)", snap.Warning)
+		}
+	})
+}
+
+// TestHandleFileComplete_ResolvesThePathBeforeFinalizing pins the second half
+// of the same finding, which stands on its own even after the double-routing
+// is fixed.
+//
+// Application.Fail carries a permanently faulted job into maybeFinalize, and
+// maybeFinalize drops the pipeline's cached FileInfo for it. A path asked for
+// AFTER the finalize therefore comes back empty, so the reason the operator is
+// shown names no file — on exactly the path where naming the volume matters
+// most.
+//
+// The fixture drops that cache from another goroutine WHILE the finalize is in
+// flight, which is what maybeFinalize does from inside it. The window is not a
+// guess: the wedged worker makes the finalize sit on a 5s bound, and the drop
+// happens a second in.
+func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
+	application, job := newWedgedApp(t)
+
+	want, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want.Path == "" {
+		t.Fatal("the fixture resolved an empty path; this test cannot show the difference")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
+	}()
+
+	// Well inside the finalize's 5s bound, and well after it has begun.
+	time.Sleep(time.Second)
+	application.pipeline.forgetJob(job.ID)
+	if got := application.filePathFor(job.ID, 0); got != "" {
+		t.Fatalf("filePathFor still returns %q after the cache was dropped; the fixture "+
+			"does not reproduce the condition it is about", got)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("handleFileComplete never returned")
+	}
+
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("job left the queue")
+	}
+	if !strings.Contains(snap.Warning, want.Path) {
+		t.Errorf("warning = %q does not name %q — the path was resolved after the "+
+			"finalize, by which point the job's FileInfo was gone, so the operator is "+
+			"told a download halted without being told which file or which mount",
+			snap.Warning, want.Path)
 	}
 }

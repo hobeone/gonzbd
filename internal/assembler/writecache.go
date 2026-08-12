@@ -15,8 +15,12 @@ import (
 // open-file map too: each removal from that map is paired with a forget in the
 // same call, with no yield to the request channel in between. A DRAIN is not
 // enough on its own — drainFile deliberately retains the per-file entry to
-// preserve its write cursor, so the four close paths (opClose, cancel,
-// close-handles, worker exit) each call forget as well.
+// preserve its write cursor — so opClose, cancel and close-handles each call
+// forget as well.
+//
+// Worker exit (drainAndCloseAll) is the one path that does not, and does not
+// need to: the whole cache goes out of scope with the worker, and there is no
+// subsequent request that could observe the difference.
 //
 // Nothing enforces the pairing, which is why the assembler's two "unknown
 // file" branches still exist and still log.

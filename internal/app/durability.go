@@ -511,10 +511,47 @@ func checkpointSettings(interval time.Duration, bytes int64) (resolvedInterval t
 // FileInfo — the same value the assembler opened the file with — because a
 // stall reason that names no file tells a user their download halted without
 // telling them which volume or which mount to look at (R27).
+//
+// The error is discarded rather than branched on, deliberately: resolveFileInfo
+// returns a zero FileInfo alongside it, so an `if err != nil { return "" }`
+// guard would be a branch whose two arms produce the same value — untestable by
+// construction, and the reason a test written against it had two assertions
+// that could not fail.
 func (app *Application) filePathFor(jobID string, fileIdx int) string {
-	info, err := app.pipeline.resolveFileInfo(jobID, fileIdx)
-	if err != nil {
-		return ""
-	}
+	info, _ := app.pipeline.resolveFileInfo(jobID, fileIdx)
 	return info.Path
+}
+
+// routeFinalizeFailure surfaces a failed finalize to the job, and routes it
+// only if nothing has routed it already.
+//
+// Barrier.routeFault dispatches every storage fault it meets per A1 — Fail for
+// permanent, Stall for retryable — and then RETURNS that same fault as its
+// error, so a caller that ignores Stallable still cannot mistake a fault for
+// success. Re-classifying that returned error and stalling again is therefore
+// not belt and braces; it is a second, wrong dispatch that overwrites the first.
+//
+// The observed damage: a permanent fault correctly reached Fail, which set the
+// job's reason to "Failed: … read-only file system", and the unconditional
+// Stall that followed replaced it with "Stalled: …" — presenting a condition
+// that cannot clear as one the operator should wait out, and destroying the
+// actionable reason on the way. The job's status and its warning ended up
+// disagreeing with each other.
+//
+// So: if a *storagefault.Fault is anywhere in the chain, the barrier has
+// already decided and acted, and there is nothing left to do but stop the
+// completion. Everything else — an OpenFiles timeout, a target that cannot
+// truncate, a bookkeeping error out of buildExtent — never reached routeFault
+// and would otherwise halt the job with no reason attached at all.
+func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path string, err error) {
+	app.log.Error("completed file was not finalized; the job is halted rather than "+
+		"shipping a file whose bytes are not known to be correct",
+		"job", jobID, "fileidx", fileIdx, "err", err)
+
+	if routed, ok := errors.AsType[*storagefault.Fault](err); ok {
+		app.log.Debug("the fault was already routed by the barrier; not routing it again",
+			"job", jobID, "permanent", routed.Permanent)
+		return
+	}
+	app.Stall(jobID, storagefault.Classify("finalize", path, err))
 }

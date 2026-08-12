@@ -34,7 +34,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
-	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -1101,11 +1100,15 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 	// failure to trim is a condition of storage, so no article is marked
 	// failed, the failed-byte count and the health percentage are untouched,
 	// and every article stays exactly as durable as it already was.
+	//
+	// The path is resolved BEFORE the finalize, not after. Application.Fail
+	// carries a permanently faulted job into maybeFinalize, which drops the
+	// pipeline's cached FileInfo for it — so a path asked for afterwards comes
+	// back empty and the reason the operator is shown names no file at all.
+	// That is a bug on its own, independent of the double-routing below.
+	path := app.filePathFor(fc.JobID, fc.FileIdx)
 	if err := app.finalizeCompletedFile(ctx, fc.JobID, fc.FileIdx); err != nil {
-		app.log.Error("completed file was not finalized; the job is stalled rather than "+
-			"shipping a file whose bytes are not known to be correct",
-			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
-		app.Stall(fc.JobID, storagefault.Classify("finalize", app.filePathFor(fc.JobID, fc.FileIdx), err))
+		app.routeFinalizeFailure(fc.JobID, fc.FileIdx, path, err)
 		return
 	}
 
