@@ -46,6 +46,11 @@ const (
 	defaultCheckpointInterval = constants.DefaultCheckpointInterval
 	defaultCheckpointBytes    = constants.DefaultCheckpointBytes
 
+	// closeHandlesTimeout bounds the pre-post-processing handle close. It
+	// matches assembler.barrierOpTimeout, the bound on every other control
+	// message that has to reach the single worker goroutine.
+	closeHandlesTimeout = 5 * time.Second
+
 	// shutdownCheckpointTimeout bounds R6's clean-shutdown barrier. It sits
 	// inside the 15s per-step budget Shutdown gives the assembler stop that
 	// follows it, so a wedged mount delays shutdown rather than preventing it.
@@ -381,6 +386,14 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			// Channel full — spawn goroutine on app.wg to ensure delivery.
 			// Ordering constraint: this is safe w.r.t. wg.Add-during-Wait only because OnFileComplete
 			// runs on the assembler worker, which Shutdown joins at step 2 — before app.wg.Wait() at step 4.
+			//
+			// This arm is why the channel's capacity is NOT a bound on
+			// anything. A completed file now keeps its assembler handle open
+			// until the consumer finalizes it (see assembler.finalizeFile), so
+			// an unbounded backlog here is an unbounded set of open handles.
+			// The arm is still required: blocking the worker on a consumer
+			// whose finalize path submits control messages back to that same
+			// worker deadlocks both.
 			app.wg.Go(func() {
 				app.internalFileComplete <- fc
 			})
@@ -1347,7 +1360,18 @@ func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defens
 		// Close any open assembler file handles for this job so post-processing
 		// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
 		// (.nfsXXXX) artifacts on open files.
-		if err := app.assembler.CloseJobHandles(context.Background(), jobID); err != nil {
+		//
+		// Bounded, because this is now reachable from the storage-fault path:
+		// Application.Fail routes a permanent fault here, and the whole reason
+		// the job is failing may be a mount that answers nothing. An unbounded
+		// wait would park whichever goroutine is finalizing — the completion
+		// consumer, or the checkpoint loop inside a barrier — for as long as
+		// the mount stays down. Handles that outlive the timeout are closed by
+		// the worker's shutdown drain instead.
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), closeHandlesTimeout)
+		err := app.assembler.CloseJobHandles(closeCtx, jobID)
+		closeCancel()
+		if err != nil {
 			app.log.Warn("maybeFinalize: failed to close assembler job handles", "job", jobID, "err", err)
 		}
 		// Force an immediate queue save so the PostProc=true flag survives

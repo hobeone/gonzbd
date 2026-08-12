@@ -8,22 +8,22 @@ import (
 )
 
 // FileComplete is emitted when a file assembly is finished.
-type FileComplete struct {
-	JobID   string
-	FileIdx int
-}
-
-// FileComplete carries no CRC32. The assembler used to compute a whole-file
-// value here by combining the per-article CRCs it happened to see, which was
-// #349: a resumed run is never sent the articles an earlier run completed, so
-// those parts never tile the file and the figure described a fragment while
-// claiming to describe the whole.
+//
+// It carries no CRC32. The assembler used to compute a whole-file value by
+// combining the per-article CRCs it happened to see, which was #349: a resumed
+// run is never sent the articles an earlier run completed, so those parts
+// never tile the file and the figure described a fragment while claiming to
+// describe the whole.
 //
 // The honest whole-file value is durability.FileExtent.PrefixCRC, guarded by
 // HasPrefixCRC, which the resumer derives from the Class A facts over the
 // file's real extent and off the barrier's critical path (R24). Nothing
 // consumes it yet — Queue.SetFileCRC32 is currently without a caller for that
 // reason.
+type FileComplete struct {
+	JobID   string
+	FileIdx int
+}
 
 // JobComplete is emitted when all files in a job are assembled.
 type JobComplete struct {

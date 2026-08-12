@@ -609,6 +609,15 @@ func (a *Assembler) dispatchRequest(
 			a.drainAndClose(f)
 			delete(open, k)
 			completed[k] = struct{}{}
+			// drainFile retains the per-file cache entry to preserve its
+			// write cursor, so a drain alone leaves the cache holding a key
+			// the open map no longer has. It used to be unreachable here —
+			// finalizeFile forgot the entry when it closed the file — but
+			// finalizeFile no longer closes, so this branch can now be the
+			// first to see a completed file and has to do it itself. Safe
+			// after a drain: drainFile cleared the articles map, so forget
+			// has nothing left to double-pool.
+			wc.forget(k)
 		}
 		if req.ackCh != nil {
 			close(req.ackCh)
@@ -896,11 +905,27 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) {
 // close, so a late duplicate is rejected during that window instead of being
 // written into a file the barrier is finalizing.
 //
-// The cost is file descriptors: a completed file holds its handle until the
-// completion consumer works through to it. That consumer is serial and the
-// event channel is bounded, so the excess is bounded too — and every path that
-// can abandon the handoff (CancelJob, CloseJobHandles, worker exit) already
-// closes whatever is left in `open`.
+// The cost is file descriptors, and it is worth stating the bound accurately
+// because the obvious one is wrong. A completed file holds its handle until the
+// completion consumer works through to it. That consumer is serial and its
+// event channel is bounded — but the channel is not the bound: the producer
+// side spawns a goroutine per event when the channel is full, precisely so the
+// worker here never blocks on a consumer that may need the worker. So the real
+// bound is the number of files an active job can complete before the consumer
+// catches up, which in the limit is every file of every active job.
+//
+// That is the same ORDER as the pre-existing worst case — a job's files are
+// largely open at once while they are being written, since the dispatcher fans
+// out across them — but it now persists past completion rather than ending at
+// it, and it grows when finalization is slow (a barrier per file) rather than
+// when writing is.
+//
+// Blocking here instead is not available: OnFileComplete runs on the worker,
+// and the consumer's finalize path submits control messages back to this same
+// worker, so making the worker wait for the consumer deadlocks both.
+//
+// Every path that can abandon the handoff (CancelJob, CloseJobHandles, worker
+// exit) still closes whatever is left in `open`.
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, _ map[fileKey]*openFile, completed map[fileKey]struct{}, _ *writeCache) {
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)

@@ -12,8 +12,12 @@ import (
 // worker goroutine, so it requires no locking.
 //
 // Every key the cache holds is believed to be a key of the assembler's
-// open-file map too: each removal from that map is paired with a forget or a
-// drain in the same call, with no yield to the request channel in between.
+// open-file map too: each removal from that map is paired with a forget in the
+// same call, with no yield to the request channel in between. A DRAIN is not
+// enough on its own — drainFile deliberately retains the per-file entry to
+// preserve its write cursor, so the four close paths (opClose, cancel,
+// close-handles, worker exit) each call forget as well.
+//
 // Nothing enforces the pairing, which is why the assembler's two "unknown
 // file" branches still exist and still log.
 //
