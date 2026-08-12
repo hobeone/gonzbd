@@ -431,23 +431,15 @@ func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 	}
 
 	// File 0: both articles succeed, file marked complete.
-	if err := q.MarkArticlesDone(job.ID, []string{"f0a0@t", "f0a1@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone(f0): %v", err)
-	}
+	ackDone(t, q, job.ID, "f0a0@t", "f0a1@t")
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete(0): %v", err)
 	}
 	// File 1: one succeeds, one fails.
-	if err := q.MarkArticlesDone(job.ID, []string{"f1a0@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone(f1): %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"f1a1@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed(f1): %v", err)
-	}
+	ackDone(t, q, job.ID, "f1a0@t")
+	ackFailed(t, q, job.ID, "f1a1@t")
 	// File 2: both articles fail.
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"f2a0@t", "f2a1@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed(f2): %v", err)
-	}
+	ackFailed(t, q, job.ID, "f2a0@t", "f2a1@t")
 
 	snap := q.SnapshotJob(job.ID)
 	if snap == nil {

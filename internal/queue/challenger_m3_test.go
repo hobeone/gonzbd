@@ -77,9 +77,7 @@ func TestChallenger_M3_SQLiteTimestampPersistenceAndDaemonRestart(t *testing.T) 
 	}
 
 	// Mark articles done so job completes
-	if err := q.MarkArticlesDone(job.ID, []string{"m3-crash-job-001@art1", "m3-crash-job-001@art2"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, "m3-crash-job-001@art1", "m3-crash-job-001@art2")
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
@@ -42,29 +43,11 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 		name string
 		call func(q *Queue, id string) error
 	}{
-		{"MarkArticlesDone", func(q *Queue, id string) error {
-			return q.MarkArticlesDone(id, []string{articleID(0, 0)})
+		{"SeedFromExtents", func(q *Queue, id string) error {
+			return q.SeedFromExtents(id, []durability.FileExtent{{FileIdx: 0, Durable: durability.NewBitmap(2)}})
 		}},
-		{"MarkArticleDone", func(q *Queue, id string) error {
-			return q.MarkArticleDone(id, articleID(0, 0))
-		}},
-		{"MarkArticlesFailed", func(q *Queue, id string) error {
-			_, err := q.MarkArticlesFailed(id, []string{articleID(0, 0)})
-			return err
-		}},
-		{"MarkArticleFailed", func(q *Queue, id string) error {
-			_, err := q.MarkArticleFailed(id, articleID(0, 0))
-			return err
-		}},
-		{"MarkArticlesDoneByIdx", func(q *Queue, id string) error {
-			return q.MarkArticlesDoneByIdx(id, []int32{0})
-		}},
-		{"MarkArticlesFailedByIdx", func(q *Queue, id string) error {
-			_, err := q.MarkArticlesFailedByIdx(id, []int32{0})
-			return err
-		}},
-		{"SetFileExtents", func(q *Queue, id string) error {
-			return q.SetFileExtents(id, 0, 128, 128)
+		{"AckPermanentFailure", func(q *Queue, id string) error {
+			return q.AckPermanentFailure(id, []int32{0})
 		}},
 		{"MarkFileComplete", func(q *Queue, id string) error {
 			return q.MarkFileComplete(id, 0)
@@ -177,20 +160,24 @@ func TestNonResident_ProgressTierDoesTheWork(t *testing.T) {
 	})
 }
 
-// MarkArticlesFailedByIdx's actual working paths, which the residency
+// AckPermanentFailure's actual working paths, which the residency
 // conversion above pulled into the function-scoped coverage gate and found
 // largely unexercised from inside this package: the empty-input short
 // circuit, the out-of-range tally, a real first-time failure, and the
 // early par2 release that a permanent failure triggers.
-func TestMarkArticlesFailedByIdx_WorkingPaths(t *testing.T) {
+//
+// AckPermanentFailure (the replacement for the deleted MarkArticlesFailedByIdx)
+// returns only an error, not a firstTime index slice, so the assertions below
+// that used to check the returned slice's length now check the same claim
+// indirectly through FailedBytes/ArticleFailed state instead.
+func TestAckPermanentFailure_WorkingPaths(t *testing.T) {
 	t.Run("empty input does nothing", func(t *testing.T) {
 		q, job := nonResidentJob(t)
 		// Deliberately a non-resident job: the length check precedes the
 		// residency lookup, so an empty batch is not an error even for a job
 		// that could not have serviced a non-empty one.
-		got, err := q.MarkArticlesFailedByIdx(job.ID, nil)
-		if err != nil || got != nil {
-			t.Errorf("MarkArticlesFailedByIdx(nil) = (%v, %v), want (nil, nil)", got, err)
+		if err := q.AckPermanentFailure(job.ID, nil); err != nil {
+			t.Errorf("AckPermanentFailure(nil) = %v, want nil", err)
 		}
 	})
 
@@ -201,12 +188,8 @@ func TestMarkArticlesFailedByIdx_WorkingPaths(t *testing.T) {
 			t.Fatalf("Add: %v", err)
 		}
 		nArt := job.NumArticles()
-		got, err := q.MarkArticlesFailedByIdx(job.ID, []int32{-1, int32(nArt), int32(nArt + 100)})
-		if err != nil {
-			t.Fatalf("MarkArticlesFailedByIdx: %v", err)
-		}
-		if len(got) != 0 {
-			t.Errorf("out-of-range indices reported %d first-time failures, want 0", len(got))
+		if err := q.AckPermanentFailure(job.ID, []int32{-1, int32(nArt), int32(nArt + 100)}); err != nil {
+			t.Fatalf("AckPermanentFailure: %v", err)
 		}
 		for i := range nArt {
 			if job.Progress().ArticleFailed(i) {
@@ -221,12 +204,8 @@ func TestMarkArticlesFailedByIdx_WorkingPaths(t *testing.T) {
 		if err := q.Add(job); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		got, err := q.MarkArticlesFailedByIdx(job.ID, []int32{0, 1})
-		if err != nil {
-			t.Fatalf("MarkArticlesFailedByIdx: %v", err)
-		}
-		if len(got) != 2 {
-			t.Fatalf("first call reported %d first-time failures, want 2", len(got))
+		if err := q.AckPermanentFailure(job.ID, []int32{0, 1}); err != nil {
+			t.Fatalf("AckPermanentFailure: %v", err)
 		}
 		if !job.Progress().ArticleFailed(0) || !job.Progress().ArticleFailed(1) {
 			t.Error("articles are not marked failed after a successful call")
@@ -234,15 +213,11 @@ func TestMarkArticlesFailedByIdx_WorkingPaths(t *testing.T) {
 		if fb := job.Progress().FailedBytes(); fb <= 0 {
 			t.Errorf("FailedBytes = %d after two failures, want > 0", fb)
 		}
-		// The return value is "newly failed", not "failed": re-reporting the
-		// same articles must not double-count them into failed bytes.
+		// Re-reporting the same articles must not double-count them into
+		// failed bytes.
 		before := job.Progress().FailedBytes()
-		again, err := q.MarkArticlesFailedByIdx(job.ID, []int32{0, 1})
-		if err != nil {
-			t.Fatalf("second MarkArticlesFailedByIdx: %v", err)
-		}
-		if len(again) != 0 {
-			t.Errorf("re-reporting the same articles returned %d as first-time, want 0", len(again))
+		if err := q.AckPermanentFailure(job.ID, []int32{0, 1}); err != nil {
+			t.Fatalf("second AckPermanentFailure: %v", err)
 		}
 		if after := job.Progress().FailedBytes(); after != before {
 			t.Errorf("FailedBytes moved from %d to %d on a repeat report", before, after)
@@ -263,8 +238,8 @@ func TestMarkArticlesFailedByIdx_WorkingPaths(t *testing.T) {
 		if !job.HasDeferredPar2() {
 			t.Fatal("fixture guard: no par2 volume is deferred, so the release path below cannot be reached")
 		}
-		if _, mErr := q.MarkArticlesFailedByIdx(job.ID, []int32{0}); mErr != nil {
-			t.Fatalf("MarkArticlesFailedByIdx: %v", mErr)
+		if mErr := q.AckPermanentFailure(job.ID, []int32{0}); mErr != nil {
+			t.Fatalf("AckPermanentFailure: %v", mErr)
 		}
 		if job.HasDeferredPar2() {
 			t.Error("par2 volumes are still deferred after a permanent article failure; recovery data will never be fetched")

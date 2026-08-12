@@ -99,9 +99,7 @@ func TestOnDemandPar2_PendingAndCompletion(t *testing.T) {
 
 	// Completing the non-deferred files makes the job complete even though the
 	// recovery volume was never downloaded.
-	if err := q.MarkArticlesDone(job.ID, []string{"c@x", "i@x"}); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, job.ID, "c@x", "i@x")
 	verifyPending(t, q, "after content+index done")
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatal(err)
@@ -168,9 +166,7 @@ func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
 	}
 
 	// A content article permanently fails — proves repair will be needed.
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"c@x"}); err != nil {
-		t.Fatal(err)
-	}
+	ackFailed(t, q, job.ID, "c@x")
 	verifyPending(t, q, "after data-article failure")
 
 	snap := q.SnapshotJob(job.ID)
@@ -325,9 +321,7 @@ func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
 	// Partially download the job before discarding: mark content-2's article
 	// done at its global index 2 (after content-1's 1 article and the
 	// deferred volume's 1 article).
-	if err := q.MarkArticlesDone(job.ID, []string{"c2@x"}); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, job.ID, "c2@x")
 	oldRemaining := q.SnapshotJob(job.ID).Progress().RemainingBytes()
 
 	if err := q.DiscardDeferredPar2(job.ID); err != nil {

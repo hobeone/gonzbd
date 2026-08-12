@@ -25,12 +25,12 @@ func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
 // partially downloaded, one file deferred), persists it, then reconstructs
 // progress the non-resident way via ArticleCountsByJob and
 // newJobProgressSized. It asserts the reconstruction's per-file
-// BytesDownloaded/Complete/Deferred match what MarkArticlesDone/
+// BytesDownloaded/Complete/Deferred match what the durable extents/
 // MarkFileComplete/the direct Deferred write actually stored, and that
 // TotalRemainingBytes still agrees with the residency-parity guarantee
 // TestTotalRemainingBytes_RestartReconstructsNonResident pins.
 func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
-	store, dir := setupResidencyTestStore(t)
+	store, dir, db := setupResidencyTestStoreWithDB(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "sized-roundtrip", 3, 2)
 	if err := q.Add(job); err != nil {
@@ -38,17 +38,13 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	}
 
 	// File 0: fully downloaded and marked complete.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0), articleID(0, 1)}); err != nil {
-		t.Fatalf("MarkArticlesDone file 0: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(0, 0), articleID(0, 1))
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete file 0: %v", err)
 	}
 
 	// File 1: partially downloaded, not complete.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(1, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone file 1: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(1, 0))
 
 	// File 2: deferred, untouched otherwise.
 	job.progress.files[2].Fetch = FetchIfNeeded
@@ -56,6 +52,7 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	if err := store.Update(t.Context(), job); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
+	commitBarrierExtents(t, db, job)
 
 	metas, err := store.ArticleCountsByJob(t.Context())
 	if err != nil {
@@ -72,17 +69,21 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	if got, want := sized.files[2].Fetch, FetchIfNeeded; got != want {
 		t.Errorf("file 2 Fetch = %v, want %v", got, want)
 	}
+	// The per-file downloaded bytes must survive the round trip, which is the
+	// half of this test that the durable extents restore. File 1's first
+	// article is on disk, so its BytesDownloaded is that article's size and
+	// not zero.
+	if got, want := sized.files[1].BytesDownloaded, int64(100_000); got != want {
+		t.Errorf("file 1 BytesDownloaded = %d, want %d", got, want)
+	}
 	// sized.RemainingBytes() runs the same derivation as the resident job's
 	// RemainingBytes(): sum(Bytes-BytesDownloaded-FailedBytes) over files
 	// that are neither Complete nor Deferred. File 0 (complete) and file 2
-	// (deferred) contribute nothing, so only file 1 does — and it
-	// contributes its whole size, not the half still outstanding, because a
-	// non-resident job no longer carries per-file downloaded bytes. Restoring
-	// them from the durable extents is the later half of this work; until
-	// then a non-resident job over-reports what is left, which is the
-	// direction that cannot cause a job to finish early.
-	if got, want := sized.RemainingBytes(), int64(200_000); got != want {
-		t.Errorf("sized.RemainingBytes() = %d, want %d (file 1's whole size)", got, want)
+	// (deferred) contribute nothing, so only file 1 does — and it contributes
+	// only the half still outstanding, because the non-resident job now
+	// carries its downloaded bytes again.
+	if got, want := sized.RemainingBytes(), int64(100_000); got != want {
+		t.Errorf("sized.RemainingBytes() = %d, want %d (file 1's outstanding half)", got, want)
 	}
 }
 

@@ -238,9 +238,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		// Fail only 5 articles (below the 10-article sample threshold).
 		for i := range 5 {
 			msgID := mustManifest(t, j).ArticleID(i)
-			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
-				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-			}
+			ackFailed(t, q, j.ID, msgID)
 		}
 		if q.CheckEarlyAbort(j.ID) {
 			t.Error("should return false when fewer than earlyAbortSample articles resolved")
@@ -257,14 +255,10 @@ func TestCheckEarlyAbort(t *testing.T) {
 		// Fail 9 out of 10 articles → 90% failure rate (above 80% threshold).
 		for i := range 9 {
 			msgID := mustManifest(t, j).ArticleID(i)
-			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
-				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-			}
+			ackFailed(t, q, j.ID, msgID)
 		}
 		// Succeed 1 article to reach 10 resolved.
-		if err := q.MarkArticleDone(j.ID, mustManifest(t, j).ArticleID(9)); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		ackDone(t, q, j.ID, mustManifest(t, j).ArticleID(9))
 
 		if !q.CheckEarlyAbort(j.ID) {
 			t.Error("should return true when failure rate exceeds threshold")
@@ -281,9 +275,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		// Fail 10 out of 10 articles → 100% failure rate.
 		for i := range 10 {
 			msgID := mustManifest(t, j).ArticleID(i)
-			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
-				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-			}
+			ackFailed(t, q, j.ID, msgID)
 		}
 
 		first := q.CheckEarlyAbort(j.ID)
@@ -306,15 +298,11 @@ func TestCheckEarlyAbort(t *testing.T) {
 		// Fail 7 out of 10 → 70% (below 80% threshold).
 		for i := range 7 {
 			msgID := mustManifest(t, j).ArticleID(i)
-			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
-				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-			}
+			ackFailed(t, q, j.ID, msgID)
 		}
 		// Succeed 3 articles.
 		for i := 7; i < 10; i++ {
-			if err := q.MarkArticleDone(j.ID, mustManifest(t, j).ArticleID(i)); err != nil {
-				t.Fatalf("MarkArticleDone(%d): %v", i, err)
-			}
+			ackDone(t, q, j.ID, mustManifest(t, j).ArticleID(i))
 		}
 
 		if q.CheckEarlyAbort(j.ID) {

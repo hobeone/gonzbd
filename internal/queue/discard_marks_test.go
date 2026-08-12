@@ -99,9 +99,7 @@ func TestDiscardDeferredPar2_LateFailureDoesNotResurrect(t *testing.T) {
 		t.Fatalf("DiscardDeferredPar2: %v", err)
 	}
 
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"a2"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "a2")
 
 	if got := job.Progress().FileFetchPolicy(1); got != FetchNever {
 		t.Errorf("file 1 policy = %d, want FetchNever — a late failure resurrected a discarded volume", got)

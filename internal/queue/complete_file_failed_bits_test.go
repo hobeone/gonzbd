@@ -37,12 +37,8 @@ func completeFileWithFailedArticle(t *testing.T) (*SQLiteStore, *history.Reposit
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0), articleID(0, 2)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{articleID(0, 1)}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(0, 0), articleID(0, 2))
+	ackFailed(t, q, job.ID, articleID(0, 1))
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}

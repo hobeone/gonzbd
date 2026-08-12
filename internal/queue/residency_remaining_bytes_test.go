@@ -101,9 +101,7 @@ func TestTotalRemainingBytes_RestartReconstructsNonResident(t *testing.T) {
 	if err := q.Add(jobA); err != nil {
 		t.Fatalf("Add jobA: %v", err)
 	}
-	if err := q.MarkArticlesDone(jobA.ID, []string{articleID(0, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, jobA.ID, articleID(0, 0))
 
 	// Jobs B, C: stay queued and non-resident (maxActive=1 already spent on A).
 	jobB := makeMultiFileJob(t, "restart-queued-b", 1, 1)

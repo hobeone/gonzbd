@@ -101,12 +101,8 @@ func newFailedNonResidentJob(t *testing.T) (*Queue, *failingStore, *Job) {
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{articleID(0, 1)}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(0, 0))
+	ackFailed(t, q, job.ID, articleID(0, 1))
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

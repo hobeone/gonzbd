@@ -19,13 +19,9 @@ func TestClearAllEmitted_RestoresFailedArticleBytes(t *testing.T) {
 	}
 
 	// Mark one article done (should not be touched by ClearAllEmitted).
-	if err := q.MarkArticleDone("j1", artID(0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, "j1", artID(0, 0))
 	// Mark one article failed (should be retried by ClearAllEmitted).
-	if _, err := q.MarkArticleFailed("j1", artID(0, 1)); err != nil {
-		t.Fatal(err)
-	}
+	ackFailed(t, q, "j1", artID(0, 1))
 
 	snap := q.SnapshotJob("j1")
 	failedBefore := snap.Progress().FailedBytes()
@@ -88,9 +84,7 @@ func TestClearAllEmitted_CompletedArticlesUntouched(t *testing.T) {
 
 	// Complete all three articles.
 	for ai := range 3 {
-		if err := q.MarkArticleDone("j1", artID(0, ai)); err != nil {
-			t.Fatalf("MarkArticleDone art %d: %v", ai, err)
-		}
+		ackDone(t, q, "j1", artID(0, ai))
 	}
 
 	snap := q.SnapshotJob("j1")

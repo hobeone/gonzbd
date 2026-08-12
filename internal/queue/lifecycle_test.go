@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
@@ -129,12 +130,8 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 
 	t.Run("count decreases after MarkArticleDone", func(t *testing.T) {
-		if err := q.MarkArticleDone(j.ID, articleID(0, 0)); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
-		if err := q.MarkArticleDone(j.ID, articleID(0, 1)); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		ackDone(t, q, j.ID, articleID(0, 0))
+		ackDone(t, q, j.ID, articleID(0, 1))
 		count, err := q.CountUnfinishedArticles(j.ID, 0)
 		if err != nil {
 			t.Fatalf("CountUnfinishedArticles: %v", err)
@@ -145,9 +142,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 
 	t.Run("count decreases after MarkArticleFailed", func(t *testing.T) {
-		if _, err := q.MarkArticleFailed(j.ID, articleID(0, 2)); err != nil {
-			t.Fatalf("MarkArticleFailed: %v", err)
-		}
+		ackFailed(t, q, j.ID, articleID(0, 2))
 		count, err := q.CountUnfinishedArticles(j.ID, 0)
 		if err != nil {
 			t.Fatalf("CountUnfinishedArticles: %v", err)
@@ -168,9 +163,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 
 	t.Run("zero after all done", func(t *testing.T) {
-		if err := q.MarkArticleDone(j.ID, articleID(0, 3)); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		ackDone(t, q, j.ID, articleID(0, 3))
 		count, err := q.CountUnfinishedArticles(j.ID, 0)
 		if err != nil {
 			t.Fatalf("CountUnfinishedArticles: %v", err)
@@ -377,8 +370,8 @@ func TestForEachUnfinishedArticle(t *testing.T) {
 	})
 
 	t.Run("skips Done articles", func(t *testing.T) {
-		_ = q.MarkArticleDone(j.ID, articleID(0, 0))
-		_ = q.MarkArticleDone(j.ID, articleID(1, 2))
+		ackDone(t, q, j.ID, articleID(0, 0))
+		ackDone(t, q, j.ID, articleID(1, 2))
 		var count int
 		q.ForEachUnfinishedArticle(func(_ UnfinishedArticle) bool {
 			count++
@@ -497,7 +490,7 @@ func TestTotalRemainingBytes(t *testing.T) {
 	})
 
 	// Mark one article done → remaining should decrease by 100_000.
-	_ = q.MarkArticleDone(a.ID, articleID(0, 0))
+	ackDone(t, q, a.ID, articleID(0, 0))
 
 	t.Run("decreases after MarkArticleDone", func(t *testing.T) {
 		if got := q.TotalRemainingBytes(); got != 500_000 {
@@ -506,7 +499,7 @@ func TestTotalRemainingBytes(t *testing.T) {
 	})
 
 	// Mark one article failed → remaining also decreases.
-	_, _ = q.MarkArticleFailed(a.ID, articleID(0, 1))
+	ackFailed(t, q, a.ID, articleID(0, 1))
 
 	t.Run("decreases after MarkArticleFailed", func(t *testing.T) {
 		if got := q.TotalRemainingBytes(); got != 400_000 {
@@ -766,9 +759,9 @@ func TestIsComplete_AbsentFileStateIsNotComplete(t *testing.T) {
 	})
 }
 
-// ---------- MarkArticlesDone (batch) ----------
+// ---------- SeedFromExtents (batch done, replaces MarkArticlesDone) ----------
 
-func TestMarkArticlesDone_Batch(t *testing.T) {
+func TestSeedFromExtents_Batch(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "batch-done", 1, 4)
@@ -776,10 +769,7 @@ func TestMarkArticlesDone_Batch(t *testing.T) {
 	initialRemaining := j.Progress().RemainingBytes() // 400_000
 
 	t.Run("marks multiple articles in one call", func(t *testing.T) {
-		ids := []string{articleID(0, 0), articleID(0, 2)}
-		if err := q.MarkArticlesDone(j.ID, ids); err != nil {
-			t.Fatalf("MarkArticlesDone: %v", err)
-		}
+		ackDone(t, q, j.ID, articleID(0, 0), articleID(0, 2))
 		got, _ := q.Get(j.ID)
 		if !got.Progress().ArticleDone(0) {
 			t.Error("article 0 should be Done")
@@ -799,10 +789,7 @@ func TestMarkArticlesDone_Batch(t *testing.T) {
 	t.Run("idempotent: re-marking already-done articles doesn't double-decrement", func(t *testing.T) {
 		got, _ := q.Get(j.ID)
 		beforeRemaining := got.Progress().RemainingBytes()
-		ids := []string{articleID(0, 0)} // already done
-		if err := q.MarkArticlesDone(j.ID, ids); err != nil {
-			t.Fatalf("MarkArticlesDone: %v", err)
-		}
+		ackDone(t, q, j.ID, articleID(0, 0)) // already done
 		got, _ = q.Get(j.ID)
 		if got.Progress().RemainingBytes() != beforeRemaining {
 			t.Errorf("RemainingBytes changed on re-mark: %d → %d", beforeRemaining, got.Progress().RemainingBytes())
@@ -810,47 +797,30 @@ func TestMarkArticlesDone_Batch(t *testing.T) {
 	})
 
 	t.Run("empty batch is no-op", func(t *testing.T) {
-		if err := q.MarkArticlesDone(j.ID, nil); err != nil {
+		if err := q.SeedFromExtents(j.ID, nil); err != nil {
 			t.Errorf("empty batch should not error: %v", err)
 		}
 	})
 
-	t.Run("nonexistent article IDs are tolerated", func(t *testing.T) {
-		ids := []string{articleID(0, 1), "nonexistent@test"}
-		if err := q.MarkArticlesDone(j.ID, ids); err != nil {
-			t.Fatalf("MarkArticlesDone with unknown IDs: %v", err)
-		}
-		got, _ := q.Get(j.ID)
-		if !got.Progress().ArticleDone(1) {
-			t.Error("valid article should still be marked done")
-		}
-	})
-
 	t.Run("error on nonexistent job", func(t *testing.T) {
-		if err := q.MarkArticlesDone("bogus", []string{"a"}); err == nil {
+		exts := []durability.FileExtent{{FileIdx: 0, Durable: durability.NewBitmap(4)}}
+		if err := q.SeedFromExtents("bogus", exts); err == nil {
 			t.Error("expected error for nonexistent job")
 		}
 	})
 }
 
-// ---------- MarkArticlesFailed (batch) ----------
+// ---------- AckPermanentFailure (batch, replaces MarkArticlesFailed) ----------
 
-func TestMarkArticlesFailed_Batch(t *testing.T) {
+func TestAckPermanentFailure_Batch(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "batch-fail", 1, 4)
 	_ = q.Add(j)
 	initialRemaining := j.Progress().RemainingBytes() // 400_000
 
-	t.Run("returns first-time IDs", func(t *testing.T) {
-		ids := []string{articleID(0, 0), articleID(0, 1)}
-		firstTime, err := q.MarkArticlesFailed(j.ID, ids)
-		if err != nil {
-			t.Fatalf("MarkArticlesFailed: %v", err)
-		}
-		if len(firstTime) != 2 {
-			t.Errorf("firstTime count = %d, want 2", len(firstTime))
-		}
+	t.Run("marks articles failed and decrements remaining/increments failed bytes", func(t *testing.T) {
+		ackFailed(t, q, j.ID, articleID(0, 0), articleID(0, 1))
 		got, _ := q.Get(j.ID)
 		if got.Progress().FailedBytes() != 200_000 {
 			t.Errorf("FailedBytes = %d, want 200000", got.Progress().FailedBytes())
@@ -861,23 +831,9 @@ func TestMarkArticlesFailed_Batch(t *testing.T) {
 		}
 	})
 
-	t.Run("re-fail returns empty firstTime list", func(t *testing.T) {
-		firstTime, err := q.MarkArticlesFailed(j.ID, []string{articleID(0, 0)})
-		if err != nil {
-			t.Fatalf("MarkArticlesFailed: %v", err)
-		}
-		if len(firstTime) != 0 {
-			t.Errorf("expected 0 firstTime on re-fail, got %d", len(firstTime))
-		}
-	})
-
 	t.Run("empty batch is no-op", func(t *testing.T) {
-		firstTime, err := q.MarkArticlesFailed(j.ID, nil)
-		if err != nil {
-			t.Fatalf("MarkArticlesFailed empty: %v", err)
-		}
-		if firstTime != nil {
-			t.Errorf("expected nil firstTime for empty batch, got %v", firstTime)
+		if err := q.AckPermanentFailure(j.ID, nil); err != nil {
+			t.Fatalf("AckPermanentFailure empty: %v", err)
 		}
 	})
 }
@@ -914,7 +870,7 @@ func TestFullArticleLifecycle(t *testing.T) {
 	}
 
 	// Phase 3: Mark file 0's articles done (simulating assembler completing a file).
-	_ = q.MarkArticlesDone(j.ID, []string{articleID(0, 0), articleID(0, 1)})
+	ackDone(t, q, j.ID, articleID(0, 0), articleID(0, 1))
 	_ = q.MarkFileComplete(j.ID, 0)
 
 	got, _ := q.Get(j.ID)
@@ -926,7 +882,7 @@ func TestFullArticleLifecycle(t *testing.T) {
 	}
 
 	// Phase 4: Mark file 1's articles done.
-	_ = q.MarkArticlesDone(j.ID, []string{articleID(1, 0), articleID(1, 1)})
+	ackDone(t, q, j.ID, articleID(1, 0), articleID(1, 1))
 	_ = q.MarkFileComplete(j.ID, 1)
 
 	got, _ = q.Get(j.ID)
@@ -976,8 +932,8 @@ func TestArticleRetryLifecycle(t *testing.T) {
 
 	// Step 3: Re-emit and this time it succeeds.
 	_ = q.MarkArticleEmitted(j.ID, msg0)
-	_ = q.MarkArticleDone(j.ID, msg0)
-	_ = q.MarkArticleDone(j.ID, msg1)
+	ackDone(t, q, j.ID, msg0)
+	ackDone(t, q, j.ID, msg1)
 	_ = q.MarkFileComplete(j.ID, 0)
 
 	got, _ := q.Get(j.ID)
@@ -1006,7 +962,7 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 			for ai := range nArticles {
 				msgID := articleID(fi, ai)
 				_ = q.MarkArticleEmitted(j.ID, msgID)
-				_ = q.MarkArticleDone(j.ID, msgID)
+				ackDone(t, q, j.ID, msgID)
 			}
 			_ = q.MarkFileComplete(j.ID, fi)
 		})
@@ -1070,8 +1026,8 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 	// complete file's failed bits are dropped on restore (#300), so putting
 	// both on file 0 would pin that pre-existing bug instead of the round
 	// trip this test is about.
-	_ = q.MarkArticleDone(j.ID, articleID(0, 0))
-	_, _ = q.MarkArticleFailed(j.ID, articleID(0, 1))
+	ackDone(t, q, j.ID, articleID(0, 0))
+	ackFailed(t, q, j.ID, articleID(0, 1))
 	_ = q.MarkFileComplete(j.ID, 1)
 	if err := q.RecordDownload(j.ID, "my-server", 42_000); err != nil {
 		t.Fatalf("RecordDownload: %v", err)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -729,8 +730,12 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Mutate progress (mark article index 1 as done)
-	q.MarkArticlesDone(job.ID, []string{"art2"})
+	// Mutate progress (mark article index 1, "art2", as done).
+	bm := durability.NewBitmap(2)
+	bm.Set(1)
+	if err := q.SeedFromExtents(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: bm}}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
 
 	// Update store (simulating checkpoint)
 	if err := store.Update(ctx, job); err != nil {

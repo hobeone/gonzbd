@@ -132,23 +132,17 @@ func TestPendingCounter_MarkDone(t *testing.T) {
 	_ = q.Add(job)
 
 	// Mark one article done (not emitted first)
-	if err := q.MarkArticleDone("j1", artID(0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, "j1", artID(0, 0))
 	verifyPending(t, q, "after MarkDone unemitted")
 
 	// Emit then mark done (normal path)
 	_ = q.MarkArticleEmitted("j1", artID(0, 1))
 	verifyPending(t, q, "after Emit")
-	if err := q.MarkArticleDone("j1", artID(0, 1)); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, "j1", artID(0, 1))
 	verifyPending(t, q, "after MarkDone emitted")
 
 	// Mark already-done article (idempotent)
-	if err := q.MarkArticleDone("j1", artID(0, 0)); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, "j1", artID(0, 0))
 	verifyPending(t, q, "after MarkDone idempotent")
 }
 
@@ -157,18 +151,12 @@ func TestPendingCounter_MarkFailed(t *testing.T) {
 	_ = q.Add(makeTestJob("j1", 1, 3))
 
 	// Fail unemitted article
-	_, err := q.MarkArticleFailed("j1", artID(0, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
+	ackFailed(t, q, "j1", artID(0, 0))
 	verifyPending(t, q, "after MarkFailed unemitted")
 
 	// Emit then fail
 	_ = q.MarkArticleEmitted("j1", artID(0, 1))
-	_, err = q.MarkArticleFailed("j1", artID(0, 1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	ackFailed(t, q, "j1", artID(0, 1))
 	verifyPending(t, q, "after MarkFailed emitted")
 }
 
@@ -180,14 +168,11 @@ func TestPendingCounter_BatchDone(t *testing.T) {
 	_ = q.MarkArticleEmitted("j1", artID(0, 0))
 	_ = q.MarkArticleEmitted("j1", artID(1, 2))
 
-	err := q.MarkArticlesDone("j1", []string{
+	ackDone(t, q, "j1",
 		artID(0, 0), // emitted
 		artID(0, 1), // unemitted
 		artID(1, 2), // emitted
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	)
 	verifyPending(t, q, "after BatchDone")
 }
 
@@ -197,13 +182,10 @@ func TestPendingCounter_BatchFailed(t *testing.T) {
 
 	_ = q.MarkArticleEmitted("j1", artID(0, 1))
 
-	_, err := q.MarkArticlesFailed("j1", []string{
+	ackFailed(t, q, "j1",
 		artID(0, 0), // unemitted
 		artID(0, 1), // emitted
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	)
 	verifyPending(t, q, "after BatchFailed")
 }
 
@@ -215,8 +197,8 @@ func TestPendingCounter_ClearAllEmitted(t *testing.T) {
 	_ = q.MarkArticleEmitted("j1", artID(0, 0))
 	_ = q.MarkArticleEmitted("j1", artID(0, 1))
 	_ = q.MarkArticleEmitted("j1", artID(1, 0))
-	_ = q.MarkArticleDone("j1", artID(0, 0))
-	_, _ = q.MarkArticleFailed("j1", artID(1, 0))
+	ackDone(t, q, "j1", artID(0, 0))
+	ackFailed(t, q, "j1", artID(1, 0))
 	verifyPending(t, q, "before ClearAllEmitted")
 
 	// ClearAllEmitted resets Emitted and Failed
@@ -229,8 +211,8 @@ func TestPendingCounter_ForEachSkipsCompletedFiles(t *testing.T) {
 	_ = q.Add(makeTestJob("j1", 2, 2))
 
 	// Mark all articles in file 0 as done
-	_ = q.MarkArticleDone("j1", artID(0, 0))
-	_ = q.MarkArticleDone("j1", artID(0, 1))
+	ackDone(t, q, "j1", artID(0, 0))
+	ackDone(t, q, "j1", artID(0, 1))
 	verifyPending(t, q, "after completing file 0")
 
 	// ForEach should only yield articles from file 1
@@ -255,8 +237,8 @@ func TestPendingCounter_ForEachSkipsCompletedJobs(t *testing.T) {
 	_ = q.Add(makeTestJob("j2", 1, 1))
 
 	// Complete all articles in j1
-	_ = q.MarkArticleDone("j1", artID(0, 0))
-	_ = q.MarkArticleDone("j1", artID(0, 1))
+	ackDone(t, q, "j1", artID(0, 0))
+	ackDone(t, q, "j1", artID(0, 1))
 	verifyPending(t, q, "after completing j1")
 
 	var seen []string
@@ -273,9 +255,9 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 	// Create queue, add job, mark some articles, save
 	q := New()
 	_ = q.Add(makeTestJob("j1", 2, 3))
-	_ = q.MarkArticleDone("j1", artID(0, 0))
-	_ = q.MarkArticleDone("j1", artID(0, 1))
-	_ = q.MarkArticleDone("j1", artID(0, 2))
+	ackDone(t, q, "j1", artID(0, 0))
+	ackDone(t, q, "j1", artID(0, 1))
+	ackDone(t, q, "j1", artID(0, 2))
 	verifyPending(t, q, "before save")
 
 	// Round-trip through the store — the only path that writes a live job
@@ -300,9 +282,7 @@ func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
 	_ = q.Add(job)
 
 	// Complete two articles in file 0.
-	if err := q.MarkArticlesDone("j1", []string{artID(0, 0), artID(0, 1)}); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, "j1", artID(0, 0), artID(0, 1))
 	verifyPending(t, q, "after partial done")
 
 	if got := job.Progress().FileBytesDownloaded(0); got != 2000 {
@@ -314,18 +294,14 @@ func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
 
 	// Failed articles do NOT add to BytesDownloaded — they failed,
 	// they weren't actually written.
-	if _, err := q.MarkArticleFailed("j1", artID(1, 0)); err != nil {
-		t.Fatal(err)
-	}
+	ackFailed(t, q, "j1", artID(1, 0))
 	verifyPending(t, q, "after one failure")
 	if got := job.Progress().FileBytesDownloaded(1); got != 0 {
 		t.Errorf("file 1 BytesDownloaded = %d; want 0 (failed article excluded)", got)
 	}
 
 	// Re-marking an already-done article is a no-op (idempotent).
-	if err := q.MarkArticlesDone("j1", []string{artID(0, 0)}); err != nil {
-		t.Fatal(err)
-	}
+	ackDone(t, q, "j1", artID(0, 0))
 	if got := job.Progress().FileBytesDownloaded(0); got != 2000 {
 		t.Errorf("file 0 BytesDownloaded = %d; want 2000 (idempotent)", got)
 	}
@@ -335,7 +311,7 @@ func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
 	q := New()
 	job := makeTestJob("j1", 2, 2)
 	_ = q.Add(job)
-	_ = q.MarkArticlesDone("j1", []string{artID(0, 0), artID(1, 0)})
+	ackDone(t, q, "j1", artID(0, 0), artID(1, 0))
 
 	// Through the store, for the same reason as above. The property —
 	// per-file BytesDownloaded rebuilt from the persisted done flags — is
@@ -379,10 +355,10 @@ func TestCounterConsistencyUnderRandomMutations(t *testing.T) {
 		op := rng.IntN(4)
 		id := pick()
 		switch op {
-		case 0: // MarkArticlesDone
-			_ = q.MarkArticlesDone("prop", []string{id})
-		case 1: // MarkArticlesFailed
-			_, _ = q.MarkArticlesFailed("prop", []string{id})
+		case 0: // MarkArticlesDone (now SeedFromExtents via ackDone)
+			ackDone(t, q, "prop", id)
+		case 1: // MarkArticlesFailed (now AckPermanentFailure via ackFailed)
+			ackFailed(t, q, "prop", id)
 		case 2: // MarkArticleEmitted (no-op if already Done)
 			_ = q.MarkArticleEmitted("prop", id)
 		case 3: // ClearArticleEmitted

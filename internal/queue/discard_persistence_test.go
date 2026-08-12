@@ -166,9 +166,7 @@ func TestDiscardDeferredPar2_RowsStayAtTheirIndices(t *testing.T) {
 	if pre := mustManifest(t, job); !pre.FileIsPar2Recovery(1) {
 		t.Fatalf("fixture guard: expected the deferred recovery volume at index 1")
 	}
-	if err := q.MarkArticlesDone(job.ID, []string{"c2@x"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, "c2@x")
 
 	if err := q.DiscardDeferredPar2(job.ID); err != nil {
 		t.Fatalf("DiscardDeferredPar2: %v", err)
