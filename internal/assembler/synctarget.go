@@ -81,15 +81,22 @@ type ArticleMap interface {
 // fileKey{jobID, fileIdx} and serves every job at once. This adapter supplies
 // the missing dimension, and am supplies the manifest facts.
 //
-// A nil am answers "unknown" to both manifest questions, which makes every
-// barrier over this target fail loudly on its first article rather than commit
-// a bitmap built from invented ordinals. That is the safe direction, not a
-// usable mode.
+// A nil am makes the target report NO FILES, so a barrier over it does
+// nothing at all. That is stronger than answering "unknown" to the two
+// manifest questions and letting the barrier discover it, which was the
+// previous behaviour and was only conditionally safe: a barrier that drained
+// at least one article did fail on the missing ordinal, but one whose drain
+// was empty never reached the lookup. It would then size the durable bitmap
+// from ArticleCount == 0 and commit a zero-width bitmap over the stored one,
+// erasing every durable bit the job had accumulated. The next restart reads
+// nothing as durable and re-downloads the whole job, which is exactly the
+// ground L3 says a restart must not lose.
 //
-// to supply the per-job dimension durability.SyncTarget requires and the
-// multi-job Assembler cannot.
+// Reporting no files removes the case rather than documenting it. Nil is for
+// a caller that has no manifest and therefore has no business running a
+// barrier; it is not a usable mode.
 //
-//nolint:ireturn // Returning the interface is the point: this accessor exists
+//nolint:ireturn // the adapter's whole purpose is to return the interface
 func (a *Assembler) SyncTargetFor(jobID string, am ArticleMap) durability.SyncTarget {
 	return &jobSyncTarget{a: a, jobID: jobID, am: am}
 }
@@ -136,6 +143,11 @@ func (t *jobSyncTarget) submit(ctx context.Context, op syncOp) (syncReply, error
 // Files returns the job's currently open files. R8 bounds barrier cost by this
 // set rather than by job size.
 func (t *jobSyncTarget) Files() []int32 {
+	// No manifest, no files. See SyncTargetFor: this is what keeps a nil
+	// ArticleMap inert instead of destructive.
+	if t.am == nil {
+		return nil
+	}
 	// Files has no context in the interface, and the barrier calls it first,
 	// before anything can block. Background is honest here: the operation is a
 	// map scan on the worker with no I/O in it.

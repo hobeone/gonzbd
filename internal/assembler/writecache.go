@@ -44,10 +44,18 @@ type fileBuf struct {
 	// articles maps byte offset → the buffered article at that offset.
 	articles map[int64]bufferedArticle
 	// writeCursor tracks the next expected contiguous offset for this file.
-	// Initially 0 (or the resume point seeded by initCursor). It advances as
-	// contiguous runs are flushed, and also on a drain — drainFile moves it
-	// past everything it hands back, which can jump an offset that was never
-	// buffered. See drainFile.
+	//
+	// It always starts at 0, including on a resumed download, and there is no
+	// longer any way to seed it. That is deliberate: it is a coalescing hint,
+	// not an authority (#311, #353). A resumed file whose early articles are
+	// not re-delivered simply never forms a run from 0 and its articles are
+	// written individually, which costs syscalls and never correctness. The
+	// completion truncate, which used to depend on a resume seed, now derives
+	// its bound from the durable facts instead.
+	//
+	// It advances as contiguous runs are flushed, and also on a drain —
+	// drainFile moves it past everything it hands back, which can jump an
+	// offset that was never buffered. See drainFile.
 	writeCursor int64
 	// totalBytes is the sum of len(data) for all buffered articles.
 	totalBytes int64
@@ -111,22 +119,6 @@ func newWriteCache(limit int64) *writeCache {
 // enabled reports whether write coalescing is active.
 func (wc *writeCache) enabled() bool {
 	return wc.limit > 0
-}
-
-// initCursor pre-creates the file's buffer entry with the given starting
-// write cursor if one doesn't already exist. Called once when a file is first
-// registered so a resumed download (whose [0,cursor) range was already written
-// and won't be re-delivered) doesn't wait forever for an offset-0 article that
-// never arrives. No-op when caching is disabled or the entry already exists (a
-// fresh download's first buffer() call legitimately starts the cursor at 0).
-func (wc *writeCache) initCursor(key fileKey, cursor int64) {
-	if !wc.enabled() {
-		return
-	}
-	if _, ok := wc.perFile[key]; ok {
-		return
-	}
-	wc.perFile[key] = &fileBuf{articles: make(map[int64]bufferedArticle), writeCursor: cursor}
 }
 
 // cursorFor returns the file's current contiguous write frontier, or 0 if the

@@ -140,7 +140,7 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tgt := a.SyncTargetFor("job1", nil)
+	tgt := a.SyncTargetFor("job1", oneFileMap{n: 2})
 	if got := tgt.Files(); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("Files() = %v through the worker, want [0]", got)
 	}
@@ -212,5 +212,40 @@ func TestSyncTargetFiles_AfterStopReportsNoFiles(t *testing.T) {
 	}
 	if got := a.SyncTargetFor("job1", oneFileMap{n: 1}).Files(); len(got) != 0 {
 		t.Errorf("Files() = %v after Stop, want empty", got)
+	}
+}
+
+// TestSyncTargetFor_NilArticleMapReportsNoFiles pins the inertness of a nil
+// ArticleMap, which is a data-loss guard rather than a tidiness rule.
+//
+// Answering "unknown" to the manifest questions is only conditionally safe. A
+// barrier that drains at least one article fails on the missing ordinal, but
+// one whose drain is empty never reaches the lookup: it sizes the durable
+// bitmap from ArticleCount == 0 and commits a zero-width bitmap over the
+// stored one, erasing every durable bit the job had. The next restart reads
+// nothing as durable and re-downloads everything — the ground L3 says a
+// restart must not lose.
+//
+// Reporting no files removes the case: the barrier iterates nothing, so there
+// is no extent to commit and nothing to erase.
+func TestSyncTargetFor_NilArticleMapReportsNoFiles(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]FileInfo{}
+	registerFile(t, dir, files, "job1", 0, 1000)
+	a := startAssembler(t, makeOpts(dir, files))
+
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0", Offset: 0, Data: []byte("abcd"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The file IS open, so a target with a manifest sees it...
+	if got := a.SyncTargetFor("job1", oneFileMap{n: 1}).Files(); len(got) != 1 {
+		t.Fatalf("Files() with an ArticleMap = %v, want one file — the fixture is not exercising the guard", got)
+	}
+	// ...and one without a manifest must still report nothing.
+	if got := a.SyncTargetFor("job1", nil).Files(); len(got) != 0 {
+		t.Errorf("Files() with a nil ArticleMap = %v, want none: a barrier would size a "+
+			"zero-width bitmap from ArticleCount==0 and commit it over the stored durable bits", got)
 	}
 }

@@ -297,7 +297,7 @@ func TestSyncTargetDrainReportsEachArticleExactlyOnce(t *testing.T) {
 		}
 	}
 
-	target := a.SyncTargetFor("job1", nil)
+	target := a.SyncTargetFor("job1", oneFileMap{n: 8})
 	waitUntil(t, func() bool { return len(target.Files()) == 1 }, 2*time.Second, "file 0 to open")
 
 	first, err := target.Drain(t.Context(), 0)

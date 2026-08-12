@@ -188,8 +188,8 @@ type fileKey struct {
 type openFile struct {
 	w    *FileWriter
 	info FileInfo
-	// key identifies this file, so the write paths can record its resume
-	// figures without threading the key through every call.
+	// key identifies this file to the worker's maps and to the shared write
+	// cache. It records no resume figures — there are none left to record.
 	key          fileKey
 	partsWritten int
 }

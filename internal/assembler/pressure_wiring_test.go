@@ -1,6 +1,8 @@
 package assembler
 
 import (
+	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -52,13 +54,13 @@ func TestWriteCachePressureIsRelievedOnTheWritePath(t *testing.T) {
 	const (
 		limit     = 8 << 10 // 8 KiB cache
 		artSize   = 1 << 10 // 1 KiB per article
-		numArts   = 40      // 40 KiB total, 5x the limit
+		numArts   = 40      // 40 KiB fed, 5x the limit
 		neverDone = 1000    // TotalParts the fixture will not reach
 	)
 
 	dir := t.TempDir()
 	files := map[string]FileInfo{}
-	registerFile(t, dir, files, "job1", 0, neverDone)
+	target := registerFile(t, dir, files, "job1", 0, neverDone)
 	opts := makeOpts(dir, files)
 	opts.WriteCacheBytes = limit
 	// One slot, so WriteArticle blocks until the worker takes the previous
@@ -66,11 +68,19 @@ func TestWriteCachePressureIsRelievedOnTheWritePath(t *testing.T) {
 	opts.QueueSize = 1
 	a := startAssembler(t, opts)
 
+	var peakBuffered int64
 	for i := range numArts {
+		if got := a.CacheUsageBytes(); got > peakBuffered {
+			peakBuffered = got
+		}
 		if err := a.WriteArticle(t.Context(), WriteRequest{
 			JobID: "job1", FileIdx: 0,
-			ArtIdx:    int32(i), //nolint:gosec // G115: loop bound is 40
-			MessageID: string(rune('a' + i%26)),
+			ArtIdx: int32(i), //nolint:gosec // G115: loop bound is 40
+			// Distinct per article. string(rune('a'+i%26)) collided for
+			// i>=26, so 14 of the 40 were dropped by handleSuccessArticle's
+			// duplicate branch and only 26 KiB was ever buffered — the pin
+			// still worked, but on a fixture that did not match its comment.
+			MessageID: fmt.Sprintf("art-%02d@test", i),
 			Offset:    int64(i) * artSize,
 			Data:      make([]byte, artSize),
 		}); err != nil {
@@ -85,9 +95,44 @@ func TestWriteCachePressureIsRelievedOnTheWritePath(t *testing.T) {
 			"processRequest is the only thing bounding this; deleting it makes cached "+
 			"memory grow with the download instead of with the configuration", used, limit)
 	}
-	// Guard the fixture: if nothing was ever buffered, the bound above holds
-	// vacuously and the test would pass with the call site deleted.
-	if total := int64(numArts) * artSize; total <= limit {
-		t.Fatalf("fixture feeds %d bytes into a %d-byte cache; it cannot exercise pressure", total, limit)
+	// Guard the fixture against vacuity, by POSITIVE observation rather than
+	// arithmetic. The previous guard compared two untyped constants
+	// (40*1024 <= 8192), which the compiler folds to a constant false — it
+	// could never fire, and it did not check what it claimed. What matters is
+	// not that enough bytes were offered but that pressure was actually
+	// reached and relieved: if nothing was ever buffered, `used` is 0, the
+	// bound above holds vacuously, and the test passes with the call site
+	// deleted.
+	//
+	// Two observations, because there are two distinct ways this could pass
+	// vacuously and neither one implies the other.
+	//
+	// Both are local to the fixture, deliberately in preference to
+	// telemetry.CachePressureFlushes: that counter is process-global and this
+	// package has parallel tests that also trigger pressure
+	// (writecache_test.go's 100-byte cache), so a delta on it could be
+	// satisfied by another test's work. A guard that can pass for the wrong
+	// reason is the defect class this replacement exists to remove.
+	//
+	// First: articles must actually have been BUFFERED. With caching off the
+	// cache holds nothing at any instant, `used` is permanently 0, and the
+	// bound above is satisfied by a code path that never touches the cache.
+	if peakBuffered == 0 {
+		t.Fatalf("the cache never held anything, so the %d-byte bound above is "+
+			"satisfied by a path that does not use the cache at all and would hold "+
+			"with the relievePressure call deleted", limit)
+	}
+	// Second: the buffered bytes must actually have been FLUSHED. Nothing else
+	// in this fixture can write — the articles never reach contiguousRunSize so
+	// no coalesced flush fires, and TotalParts is never reached so finalizeFile
+	// never drains — so a non-empty file means pressure relief, and only
+	// pressure relief, moved bytes.
+	st, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if st.Size() == 0 {
+		t.Fatalf("nothing reached disk, so no pressure flush ran: the %d-byte bound "+
+			"above holds vacuously", limit)
 	}
 }

@@ -17,7 +17,6 @@ const drainTestArt = 100 << 10 // 100 KiB, so runs cross contiguousRunSize predi
 func TestWriteCacheDrainKeepsCoalescingAlive(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	// Three articles is 300 KiB, below contiguousRunSize, so nothing flushes
 	// through the contiguous path and all three are still buffered.
@@ -58,7 +57,6 @@ func TestWriteCacheDrainKeepsCoalescingAlive(t *testing.T) {
 func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	// Articles 0 and 1, then a gap at 2, then article 3.
 	bufferAt(wc, key, 0, make([]byte, drainTestArt))
@@ -79,7 +77,6 @@ func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 func TestWriteCacheDrainClearsAccounting(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	for i := range 3 {
 		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
@@ -110,7 +107,6 @@ func TestWriteCacheDrainClearsAccounting(t *testing.T) {
 func TestWriteCacheDrainEmptiesArticlesMap(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	for i := range 3 {
 		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))

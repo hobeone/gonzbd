@@ -57,7 +57,7 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]FileInfo{}
 	path := filepath.Join(dir, "job1_0.dat")
-	files["job1:0"] = FileInfo{Path: path, TotalParts: 1000, ExpectedSize: 8192}
+	files["job1:0"] = FileInfo{Path: path, TotalParts: 1000}
 	opts := makeOpts(dir, files)
 	a := startAssembler(t, opts)
 
@@ -103,10 +103,28 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 		t.Fatal("the per-job adapter does not implement durability.Truncator, so no barrier can trim a completed file")
 	}
 
-	// Guard the fixture: pre-allocation must actually have inflated the file,
-	// or the truncate below has nothing to remove and passes vacuously.
-	if st, err := os.Stat(path); err == nil && st.Size() <= 300 {
-		t.Skipf("filesystem did not pre-allocate (size %d); the truncate has nothing to trim", st.Size())
+	// The file must be longer than the decoded content or the truncate has
+	// nothing to remove and the assertion below passes vacuously.
+	//
+	// This is done EXPLICITLY rather than by depending on pre-allocation. The
+	// previous version skipped when the filesystem had no fallocate, which
+	// meant the only test traversing FinalizeFile -> adapter -> Truncate could
+	// vanish from a CI run with no signal at all — and a skipped test is
+	// indistinguishable from a passing one in a summary. Extending the file
+	// here makes the fixture independent of filesystem capability, so the pin
+	// either runs or fails loudly.
+	//
+	// The extension is a plain ftruncate on a second handle: the assembler
+	// owns the writer's handle, and this must not race it. Nothing has been
+	// written past 300 bytes, so growing the file cannot destroy content.
+	if err := extendFileTo(path, 8192); err != nil {
+		t.Fatalf("extend target to 8192: %v", err)
+	}
+	if st, err := os.Stat(path); err != nil {
+		t.Fatalf("stat target: %v", err)
+	} else if st.Size() <= 300 {
+		t.Fatalf("target is %d bytes; the truncate has nothing to trim and the "+
+			"assertion below would pass vacuously", st.Size())
 	}
 
 	if err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
@@ -141,4 +159,17 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 			"the truncate, so the next resume sees a size mismatch and throws the cache away",
 			exts[0].Size)
 	}
+}
+
+// extendFileTo grows path to n bytes without touching its content.
+//
+// A separate handle, opened and closed here, so it never races the handle the
+// assembler's worker owns.
+func extendFileTo(path string, n int64) error {
+	fh, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fh.Close() }()
+	return fh.Truncate(n)
 }
