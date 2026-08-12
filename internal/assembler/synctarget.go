@@ -81,20 +81,20 @@ type ArticleMap interface {
 // fileKey{jobID, fileIdx} and serves every job at once. This adapter supplies
 // the missing dimension, and am supplies the manifest facts.
 //
-// A nil am makes the target report NO FILES, so a barrier over it does
-// nothing at all. That is stronger than answering "unknown" to the two
-// manifest questions and letting the barrier discover it, which was the
-// previous behaviour and was only conditionally safe: a barrier that drained
-// at least one article did fail on the missing ordinal, but one whose drain
-// was empty never reached the lookup. It would then size the durable bitmap
-// from ArticleCount == 0 and commit a zero-width bitmap over the stored one,
-// erasing every durable bit the job had accumulated. The next restart reads
-// nothing as durable and re-downloads the whole job, which is exactly the
-// ground L3 says a restart must not lose.
+// A nil am makes the target report NO FILES, so Barrier.Run over it iterates
+// nothing. Note the scope of that claim: Run is the only entry point that asks
+// for the file set. Barrier.FinalizeFile takes an explicit file index and never
+// calls Files(), so this alone does NOT make a nil-am target inert — an earlier
+// version of this comment said it did, which was a true statement about one
+// path generalised to a path it did not cover.
 //
-// Reporting no files removes the case rather than documenting it. Nil is for
-// a caller that has no manifest and therefore has no business running a
-// barrier; it is not a usable mode.
+// What actually closes the hole is Barrier.buildExtent refusing to build an
+// extent for a target reporting no articles. That is the chokepoint both entry
+// points pass through, and its doc explains the erasure it prevents. This guard
+// remains as the cheaper outer layer, not as the guarantee.
+//
+// Nil is for a caller that has no manifest and therefore has no business
+// running a barrier; it is not a usable mode.
 //
 //nolint:ireturn // the adapter's whole purpose is to return the interface
 func (a *Assembler) SyncTargetFor(jobID string, am ArticleMap) durability.SyncTarget {

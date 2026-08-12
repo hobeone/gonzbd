@@ -106,15 +106,46 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 // buildExtent derives one file's Class B cache from the articles the fsync
 // just made durable, and returns the article indices that may be acked.
 //
-// It is phase 3 of Run and claims nothing on its own: the extent it returns
-// is not persisted and the articles it names are not acked until Run's
-// phase 4 succeeds.
+// It claims nothing on its own: the extent it returns is not persisted and the
+// articles it names are not acked until the caller commits.
+//
+// This is the chokepoint for every extent that can reach ExtentStore.Commit.
+// Run's phase 3 and FinalizeFile are the only two callers, and Commit has no
+// other call site, so a guard here covers every path that can overwrite a
+// stored extent — which a guard on Files() did not, because FinalizeFile takes
+// an explicit file index and never calls it.
 func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drained []WrittenArticle, t SyncTarget) (FileExtent, []int32, error) {
+	// A target that cannot say how many articles the file holds must not have
+	// an extent built for it, and this is a data-loss guard rather than
+	// tidiness.
+	//
+	// priorExtent re-derives the stored bitmap at artCount bits. At zero, that
+	// yields a zero-WIDTH bitmap, and committing it replaces the stored one —
+	// erasing every durable bit the job had accumulated. The next restart then
+	// reads nothing as durable and re-downloads the whole job, which is exactly
+	// the ground L3 says a restart must not lose.
+	//
+	// A drain with at least one article happens to abort later on the
+	// FileLocalOrdinal lookup, so the erasure needs an EMPTY drain to be
+	// reachable — a checkpoint over a file that took no writes this interval,
+	// which is an ordinary event rather than an exotic one.
+	//
+	// Refusing loudly rather than skipping the file follows A2 and matches how
+	// the ordinal lookup below is already treated: an unusable article count is
+	// a bookkeeping defect, not a storage fault, so it does not go through
+	// Stallable — blaming storage for it would be the A1 conflation in reverse.
+	artCount := t.ArticleCount(idx)
+	if artCount <= 0 {
+		return FileExtent{}, nil, fmt.Errorf(
+			"durability: job %s file %d: target reports %d articles, refusing to build an extent "+
+				"(committing a zero-width bitmap would erase the stored durable bits)",
+			jobID, idx, artCount)
+	}
 	size, modNs, err := t.Stat(idx)
 	if err != nil {
 		return FileExtent{}, nil, b.routeFault(jobID, storagefault.Classify("stat", "", err))
 	}
-	ext, err := b.priorExtent(ctx, jobID, idx, t.ArticleCount(idx))
+	ext, err := b.priorExtent(ctx, jobID, idx, artCount)
 	if err != nil {
 		return FileExtent{}, nil, err
 	}
