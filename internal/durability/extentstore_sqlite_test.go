@@ -41,9 +41,14 @@ func TestSQLiteExtentStore_CommitRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSQLiteExtentStore_HasPrefixCRCRoundTrips pins the same distinction
-// TestSQLiteFactLog_HasCRCRoundTrips pins for Class A: a prefix CRC that is
-// genuinely zero must stay distinguishable from no prefix CRC at all.
+// TestSQLiteExtentStore_HasPrefixCRCRoundTrips pins that a prefix CRC which is
+// genuinely zero stays distinguishable from no prefix CRC at all.
+//
+// There is no Class A counterpart to this test any more. ArticleFact used to
+// carry a HasCRC companion for the same reason, and it was removed once every
+// decode path was made to produce a checksum: a per-article CRC is never
+// absent, so there is nothing to distinguish. A whole-file CRC still can be
+// absent, which is why this flag and this test remain.
 //
 // Both extents below carry PrefixCRC == 0 and differ only in HasPrefixCRC, so
 // the test fails if either side of that boolean is hardcoded. Without it every

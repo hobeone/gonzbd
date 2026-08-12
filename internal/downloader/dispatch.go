@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -885,7 +886,21 @@ func decodePayload(body []byte) (decoded []byte, offset int64, crc uint32, err e
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
-			return data, 0, 0, nil // UU encoding usually doesn't have offset info or CRC
+			// UU carries no offset and no checksum of its own, so the
+			// offset is genuinely 0 (single-part by construction) and the
+			// CRC is computed here rather than read from the article.
+			//
+			// That is not a weaker guarantee than yEnc's. The yEnc trailer's
+			// crc32 is a transfer check the decoder has already enforced
+			// (ErrCRCMismatch) before the bytes reach this point, and the
+			// value returned above is likewise the decoder's own checksum
+			// over the decoded output. The fact log uses it to verify OUR
+			// bytes on disk after a restart, not to validate the sender, so
+			// the format's silence about checksums does not matter — what
+			// matters is that every decoded article carries one. Returning 0
+			// here made UU articles unverifiable on resume and therefore
+			// re-fetched forever.
+			return data, 0, crc32.ChecksumIEEE(data), nil
 		}
 		if data != nil {
 			decoder.PutBuffer(data)

@@ -179,7 +179,6 @@ CREATE TABLE article_facts (
     offset    INTEGER NOT NULL,
     length    INTEGER NOT NULL,
     crc32     INTEGER NOT NULL,
-    has_crc   INTEGER NOT NULL,
     PRIMARY KEY (job_id, art_idx)
 ) WITHOUT ROWID;
 -- Class A. Append-only and immutable: a row is never updated, because an
@@ -187,6 +186,20 @@ CREATE TABLE article_facts (
 -- Idempotency is the primary key's job — Append uses INSERT OR IGNORE.
 -- These rows assert nothing about bytes being present on disk, which is
 -- why they may be committed at any time with no fsync ordering.
+--
+-- crc32 is NOT NULL and always meaningful. There is no has_crc companion
+-- column, and none is needed: every decode path that yields bytes also
+-- yields a checksum over them. yEnc's decoder computes one over the decoded
+-- output (the article's own trailer is only a transfer check, enforced
+-- before the bytes get here), and the UU path computes one explicitly in
+-- downloader.decodePayload for exactly this row. A crc32 of 0 therefore
+-- means "these bytes hash to zero", never "unknown".
+--
+-- This is deliberately unlike file_extents.has_prefix_crc below, which stays.
+-- A whole-file CRC genuinely can be unavailable — a verified prefix short of
+-- the file's end has no whole-file value to report — so that one needs the
+-- unavailable-versus-zero distinction R23 asks for. The per-article case does
+-- not, because the per-article CRC is never absent.
 CREATE INDEX idx_article_facts_file ON article_facts(job_id, file_idx, offset);
 -- +goose StatementEnd
 

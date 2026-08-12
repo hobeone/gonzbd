@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"errors"
+	"hash/crc32"
 	"testing"
 )
 
@@ -94,5 +95,46 @@ func TestDecodePayload_NonDMCA_NonYenc(t *testing.T) {
 	// Should NOT be ErrArticleRemoved
 	if errors.Is(err, ErrArticleRemoved) {
 		t.Error("non-DMCA body should not return ErrArticleRemoved")
+	}
+}
+
+// TestDecodePayload_UUYieldsACRCOverTheDecodedBytes pins the removal of
+// ArticleFact.HasCRC.
+//
+// The durability design records, for every decoded article, a CRC32 over its
+// decoded bytes, and a resume verifies the bytes on disk against it. UU is the
+// one decode path that used to report no CRC at all — not because the bytes
+// are unverifiable, but because the *format* carries no checksum to compare
+// against. That is irrelevant here: the fact log verifies our own bytes, not
+// the sender's honesty, so the checksum is ours to compute.
+//
+// With this, no successfully decoded article lacks a CRC, which is the closed
+// set that makes dropping the "unverifiable article" branch safe. If this test
+// goes red, that branch has to come back.
+func TestDecodePayload_UUYieldsACRCOverTheDecodedBytes(t *testing.T) {
+	// "Hello" UU-encoded: length char '%' (5 bytes), then two 4-char groups.
+	const payload = "Hello"
+	body := []byte("begin 644 test.bin\n%2&5L;&\\`\n`\nend\n")
+
+	data, offset, crc, err := decodePayload(body)
+	if err != nil {
+		t.Fatalf("decodePayload: %v", err)
+	}
+	if string(data) != payload {
+		t.Fatalf("decoded %q, want %q — the fixture is not exercising the UU branch", data, payload)
+	}
+	if offset != 0 {
+		t.Errorf("offset = %d, want 0", offset)
+	}
+	want := crc32.ChecksumIEEE(data)
+	if crc != want {
+		t.Errorf("crc = %#08x, want %#08x (CRC32 of the decoded UU output). "+
+			"A UU article with no CRC cannot be verified on resume, so its bytes "+
+			"are re-fetched forever", crc, want)
+	}
+	// A zero CRC here would also satisfy a CRC32-of-empty comparison, so
+	// assert the fixture's payload is one whose CRC is not zero.
+	if want == 0 {
+		t.Fatal("fixture payload has a zero CRC32; the assertion above cannot distinguish it from the old hardcoded 0")
 	}
 }

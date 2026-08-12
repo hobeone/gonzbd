@@ -86,8 +86,8 @@ func TestResume_TruncatedFileForcesRecompute(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +152,8 @@ func TestResume_SameSizeEditForcesRecompute(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -211,8 +211,8 @@ func TestResume_RecomputeYieldsAPrefixCRC(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -237,30 +237,31 @@ func TestResume_RecomputeYieldsAPrefixCRC(t *testing.T) {
 }
 
 // TestResume_ArticleWithoutACRCIsLeftOutstanding pins S3's conservative
-// default for the one article class that can never be verified.
+// default for an article whose bytes do not match what was recorded about them.
 //
-// A UU-encoded article carries no CRC, so recomputation cannot prove its bytes
-// are the right bytes — even when they are sitting on disk at the recorded
-// offset. The design's answer is that absence of evidence is absence: leave it
-// Outstanding and re-fetch. Re-fetching costs one article; assuming is the
-// optimism §1 forbids.
+// Recomputation cannot prove those bytes are the right bytes, and the design's
+// answer is that absence of evidence is absence: leave the article Outstanding
+// and re-fetch it. Re-fetching costs one article; assuming is the optimism §1
+// forbids.
 //
-// Without this, no fixture in the file sets HasCRC: false, and the branch that
-// implements the rule can be deleted with the suite still green.
-func TestResume_ArticleWithoutACRCIsLeftOutstanding(t *testing.T) {
+// This used to be about UU-encoded articles, which carried no CRC at all and
+// were skipped by a HasCRC guard. That guard is gone — every decode path now
+// produces a checksum — so the only way an article fails to verify is a CRC
+// that does not match, which is what the fixture below builds.
+func TestResume_ArticleWhoseBytesDoNotMatchItsCRCIsLeftOutstanding(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "movie.mkv")
 
 	a0 := bytes.Repeat([]byte{0x01}, 100)
-	a1 := bytes.Repeat([]byte{0x02}, 100) // UU-encoded: no CRC to check it against
+	a1 := bytes.Repeat([]byte{0x02}, 100) // recorded under a CRC these bytes do not have
 	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0, HasCRC: false},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -274,15 +275,15 @@ func TestResume_ArticleWithoutACRCIsLeftOutstanding(t *testing.T) {
 		t.Error("article 0 is not durable, but its bytes match its recorded CRC")
 	}
 	if got.Durable.Get(1) {
-		t.Error("article 1 is durable, but it carries no CRC — nothing proves those bytes are correct")
+		t.Error("article 1 is durable, but its bytes do not hash to its recorded CRC")
 	}
 	// The prefix stops at the unverifiable article, so no whole-file CRC is
 	// reportable. Unavailable must be distinguishable from a CRC of zero (R23).
 	if got.VerifiedTo != 100 {
-		t.Errorf("VerifiedTo = %d, want 100 — the prefix cannot cross an unverifiable article", got.VerifiedTo)
+		t.Errorf("VerifiedTo = %d, want 100 — the prefix cannot cross an article that failed to verify", got.VerifiedTo)
 	}
 	if got.HasPrefixCRC {
-		t.Error("HasPrefixCRC = true, but the prefix ends at an article with no CRC")
+		t.Error("HasPrefixCRC = true, but the prefix ends at an article that failed to verify")
 	}
 	if got.Restart {
 		t.Error("Restart = true for a file that exists and partly verified")
@@ -326,8 +327,8 @@ func TestResume_PrefixStopsAtAGap(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a2), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a2)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +370,7 @@ func TestResume_PrefixCRCUnavailableWhenTheFileExtendsBeyondTheFacts(t *testing.
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +403,7 @@ func TestResume_FactBeyondTheArticleCountFailsLoudly(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 7, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 7, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +472,7 @@ func TestResume_CancelledContextStops(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(context.Background(), "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -500,9 +501,9 @@ func TestResume_PrefixCRCCombinesAcrossThreeArticles(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 50, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 70, CRC32: crc32.ChecksumIEEE(a2), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 50, CRC32: crc32.ChecksumIEEE(a1)},
+		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 70, CRC32: crc32.ChecksumIEEE(a2)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -546,8 +547,8 @@ func TestResume_SizeChangeWithPreservedMtimeForcesRecompute(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -590,52 +591,6 @@ func TestResume_SizeChangeWithPreservedMtimeForcesRecompute(t *testing.T) {
 	}
 	if got.Durable.Get(1) {
 		t.Error("article 1 is still durable after its bytes were truncated away")
-	}
-}
-
-// TestResume_ArticleWithoutACRCIsNotAcceptedByAMatchingCRCField is what
-// actually pins the HasCRC branch.
-//
-// TestResume_ArticleWithoutACRCIsLeftOutstanding does not: its unverifiable
-// fact carries CRC32: 0, so the CRC comparison rejects those bytes anyway and
-// the HasCRC guard can be deleted with that test still green — observed, not
-// reasoned. When HasCRC is false the CRC32 field carries no meaning at all, so
-// the only fixture that can tell the two guards apart is one whose meaningless
-// field happens to hold the region's real CRC. Then nothing but HasCRC stands
-// between an unverifiable article and a durable bit.
-func TestResume_ArticleWithoutACRCIsNotAcceptedByAMatchingCRCField(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "movie.mkv")
-
-	a0 := bytes.Repeat([]byte{0x01}, 100)
-	a1 := bytes.Repeat([]byte{0x02}, 100)
-	if err := os.WriteFile(path, append(append([]byte{}, a0...), a1...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fl := NewSQLiteFactLog(openTestDB(t))
-	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		// The bytes on disk hash to exactly this value, and it still proves
-		// nothing: HasCRC is false, so the field is not a checksum of
-		// anything the decoder computed.
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: false},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	r := NewResumer(fl, NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
-	got, err := r.Resume(ctx, "job-1", 0, path, 0, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Durable.Get(1) {
-		t.Error("article 1 is durable, but it carries no CRC — the matching CRC32 field is not evidence")
-	}
-	if got.VerifiedTo != 100 {
-		t.Errorf("VerifiedTo = %d, want 100 — the prefix cannot cross an unverifiable article", got.VerifiedTo)
-	}
-	if got.HasPrefixCRC {
-		t.Error("HasPrefixCRC = true although the prefix stops at an article with no CRC")
 	}
 }
 
@@ -686,12 +641,12 @@ func TestGaplessPrefixCRC(t *testing.T) {
 	b := bytes.Repeat([]byte{0x02}, 100)
 	crcA, crcB := crc32.ChecksumIEEE(a), crc32.ChecksumIEEE(b)
 	abut := []ArticleFact{
-		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA, HasCRC: true},
-		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcB, HasCRC: true},
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcB},
 	}
 	gapped := []ArticleFact{
-		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA, HasCRC: true},
-		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crcB, HasCRC: true},
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crcB},
 	}
 
 	tests := []struct {
@@ -799,10 +754,10 @@ func TestResumerVerifyRegions(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	facts := []ArticleFact{
-		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true}, // wrong CRC
-		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true}, // past the end
-		{ArtIdx: 3, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: false},
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a0)}, // wrong CRC
+		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a1)}, // past the end
+		{ArtIdx: 3, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)}, // matches
 	}
 	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)), testLogger(t))
 	durable := NewBitmap(4)
@@ -810,7 +765,7 @@ func TestResumerVerifyRegions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []bool{true, false, false, false}
+	want := []bool{true, false, false, true}
 	for i := range want {
 		if verified[i] != want[i] {
 			t.Errorf("verified[%d] = %v, want %v", i, verified[i], want[i])
@@ -833,7 +788,7 @@ func TestResumerRecompute(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: -1, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: -1, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -966,8 +921,8 @@ func TestResume_BitsLandAtTheFileLocalOrdinal(t *testing.T) {
 	// and 1.
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 1, ArtIdx: 10, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 1, ArtIdx: 11, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1), HasCRC: true},
+		{FileIdx: 1, ArtIdx: 10, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 1, ArtIdx: 11, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +955,7 @@ func TestResume_FactBelowTheFirstArticleFailsLoudly(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 1, ArtIdx: 3, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
+		{FileIdx: 1, ArtIdx: 3, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1025,8 +980,8 @@ func TestResume_RegionAtTheOffsetLimitDoesNotWrap(t *testing.T) {
 	}
 	fl := NewSQLiteFactLog(openTestDB(t))
 	if err := fl.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0), HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: math.MaxInt64 - 10, Length: 100, CRC32: 0, HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: math.MaxInt64 - 10, Length: 100, CRC32: 0},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -73,9 +73,11 @@ func NewResumer(fl FactLog, es ExtentStore, log *slog.Logger) *Resumer {
 // recovery are the same operation, which is why a resumed file can report a
 // real whole-file CRC (R24) rather than the honest absence of one.
 //
-// An article whose fact carries no CRC (UU-encoded) cannot be verified and is
-// therefore left Outstanding. Re-fetching it is cheap; assuming it is correct
-// is exactly the optimism the design forbids (S3).
+// An article whose bytes do not hash to the CRC recorded for them is left
+// Outstanding. Re-fetching it is cheap; assuming it is correct is exactly the
+// optimism the design forbids (S3). Every fact carries a CRC, so a failure to
+// verify always means a mismatch or a region outside the file — never a
+// missing checksum.
 // firstArtIdx is the file's first global article index — lo from the
 // manifest's FileRange(fileIdx). FileExtent.Durable is indexed by file-local
 // ordinal, so a fact's bit is fact.ArtIdx - firstArtIdx. The barrier gets that
@@ -202,8 +204,17 @@ func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, pa
 // facts were proven. The slice is what the prefix walk reads, so verification
 // happens exactly once per article for both answers.
 //
-// A fact with no CRC is skipped rather than trusted: nothing can prove those
-// bytes are the right bytes, and S3 makes the unprovable Outstanding.
+// Every fact carries a CRC, so there is no unverifiable-article case to skip.
+// That used to be a branch here, guarded by ArticleFact.HasCRC, and it existed
+// for UU-encoded articles. It is gone because the premise was wrong: the CRC
+// is a checksum of the bytes this program decoded and wrote, so whether the
+// article's own format carried one is irrelevant. downloader.decodePayload now
+// computes it on the UU path, which closes the set — no decode path yields
+// bytes without a checksum over them.
+//
+// A fact can still fail to prove anything, and those cases remain below: a
+// region outside the file as it exists now, and a CRC that does not match. Both
+// leave the article Outstanding, per S3.
 func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []ArticleFact, durable Bitmap, size int64, firstArtIdx int32, artCount int, jobID string, fileIdx int32) ([]bool, error) {
 	verified := make([]bool, len(facts))
 	var buf []byte
@@ -217,9 +228,6 @@ func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []Article
 		if ord < 0 || ord >= artCount {
 			return nil, fmt.Errorf("%w: job=%s file=%d article=%d first=%d count=%d",
 				ErrArticleOutOfRange, jobID, fileIdx, fact.ArtIdx, firstArtIdx, artCount)
-		}
-		if !fact.HasCRC {
-			continue
 		}
 		// Offset is bounded against size before the addition, so the sum
 		// cannot wrap: a corrupt row with Offset near MaxInt64 would

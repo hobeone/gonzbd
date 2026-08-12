@@ -67,10 +67,10 @@ func TestFinalizeFile_TruncatesToTheHighestDurableFactEnd(t *testing.T) {
 	// Class A: articles 0, 1, 3, 4 decoded. Article 2 permanently failed, so
 	// it has no fact — by design, Class A records what was decoded.
 	if err := facts.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, HasCRC: true},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, HasCRC: true},
-		{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 100, HasCRC: true},
-		{FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100, HasCRC: true},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
+		{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 100},
+		{FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100},
 	}); err != nil {
 		t.Fatal(err)
 	}

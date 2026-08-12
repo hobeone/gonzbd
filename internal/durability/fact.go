@@ -34,11 +34,18 @@ type ArticleFact struct {
 	Offset int64
 	// Length is the decoded byte length.
 	Length int32
-	// CRC32 is the CRC32 of the decoded bytes, valid only when HasCRC.
+	// CRC32 is the CRC32 of the decoded bytes. It is always meaningful:
+	// every decode path that produces bytes also produces a checksum over
+	// them, so 0 means "hashes to zero" rather than "unknown".
+	//
+	// There is no HasCRC companion. It existed for UU-encoded articles, on
+	// the reading that UU "carries no CRC" — true of the format, irrelevant
+	// to this field, which records a checksum of OUR decoded bytes so a
+	// resume can verify what is on OUR disk. Nothing about that needs the
+	// sender to have supplied one, and downloader.decodePayload now computes
+	// it on the UU path. FileExtent.HasPrefixCRC is a different question and
+	// stays: a whole-file CRC really can be unavailable.
 	CRC32 uint32
-	// HasCRC is false for UU-encoded articles, which carry no CRC.
-	// Distinguishing this from CRC32 == 0 is required by R23.
-	HasCRC bool
 }
 
 // FactLog is the append-only store of Class A facts.

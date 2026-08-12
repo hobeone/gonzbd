@@ -32,19 +32,15 @@ func (s *SQLiteFactLog) Append(ctx context.Context, jobID string, facts []Articl
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT OR IGNORE INTO article_facts
-			(job_id, art_idx, file_idx, offset, length, crc32, has_crc)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+			(job_id, art_idx, file_idx, offset, length, crc32)
+		VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("durability: prepare fact append: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	for _, f := range facts {
-		hasCRC := 0
-		if f.HasCRC {
-			hasCRC = 1
-		}
-		if _, err := stmt.ExecContext(ctx, jobID, f.ArtIdx, f.FileIdx, f.Offset, f.Length, f.CRC32, hasCRC); err != nil {
+		if _, err := stmt.ExecContext(ctx, jobID, f.ArtIdx, f.FileIdx, f.Offset, f.Length, f.CRC32); err != nil {
 			return fmt.Errorf("durability: append fact job=%s art=%d: %w", jobID, f.ArtIdx, err)
 		}
 	}
@@ -57,7 +53,7 @@ func (s *SQLiteFactLog) Append(ctx context.Context, jobID string, facts []Articl
 // ForFile returns every recorded fact for one file, ordered by Offset.
 func (s *SQLiteFactLog) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]ArticleFact, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT art_idx, file_idx, offset, length, crc32, has_crc
+		SELECT art_idx, file_idx, offset, length, crc32
 		  FROM article_facts
 		 WHERE job_id = ? AND file_idx = ?
 		 ORDER BY offset`, jobID, fileIdx)
@@ -69,11 +65,9 @@ func (s *SQLiteFactLog) ForFile(ctx context.Context, jobID string, fileIdx int32
 	var out []ArticleFact
 	for rows.Next() {
 		var f ArticleFact
-		var hasCRC int
-		if err := rows.Scan(&f.ArtIdx, &f.FileIdx, &f.Offset, &f.Length, &f.CRC32, &hasCRC); err != nil {
+		if err := rows.Scan(&f.ArtIdx, &f.FileIdx, &f.Offset, &f.Length, &f.CRC32); err != nil {
 			return nil, fmt.Errorf("durability: scan fact job=%s file=%d: %w", jobID, fileIdx, err)
 		}
-		f.HasCRC = hasCRC != 0
 		out = append(out, f)
 	}
 	return out, rows.Err()
