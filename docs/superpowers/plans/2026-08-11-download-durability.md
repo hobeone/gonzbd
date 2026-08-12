@@ -2489,6 +2489,29 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Task 8: Derive the work set in the queue
 
+> **`failed_bytes` returns to `job_files`; `bytes_failed` leaves `file_extents`
+> (decided during review).** `file_extents.bytes_failed` had no writer anywhere:
+> the barrier sets every other field and correctly declines this one, because a
+> permanently failed article never decodes and so has no Class A record. The
+> column was structurally always zero, and the restored parity test could never
+> pass.
+>
+> Cache the figure in `job_files.failed_bytes` instead — beside its declared
+> authority, the failed half of `job_files.articles_done`, written by the same
+> code that writes it. `file_extents` then has exactly one writer, the barrier,
+> as its own migration comment already claims.
+>
+> **This restores a column Task 3 deleted, and the distinction matters.** Task 3
+> removed it because `RestoreRetryProgress` assigned it and `recompute` then
+> overwrote it — two writers of one fact, which is the S5 violation and the
+> cause of #306. That path is gone. A single writer caching a sum of the same
+> row's authoritative bits is a cache; two writers maintaining a value in
+> parallel is the defect. Say which one this is in the migration comment, since
+> that comment freezes.
+>
+> Both migrations are still unmerged, so edit `001_initial.sql` directly rather
+> than adding a second migration.
+>
 > **Non-resident Class B read path (decided during review).**
 > `ArticleCountsByJob` gains a `LEFT JOIN file_extents`, so a non-resident job's
 > `bytes_durable` / `bytes_failed` come back in the same grouped query the Store
