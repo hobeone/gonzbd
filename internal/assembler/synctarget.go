@@ -172,12 +172,7 @@ func (t *jobSyncTarget) Files() []int32 {
 	if t.am == nil {
 		return nil
 	}
-	// The operation itself is a map scan with no I/O in it, but it still has
-	// to reach the worker, and the worker can be blocked in someone else's
-	// fsync on a dead mount. Hence the bound; see barrierOpTimeout.
-	ctx, cancel := context.WithTimeout(context.Background(), barrierOpTimeout)
-	defer cancel()
-	r, err := t.submit(ctx, syncOp{kind: opFiles})
+	files, err := t.a.OpenFiles(context.Background(), t.jobID)
 	if err != nil {
 		// Reporting no files makes the barrier a no-op, which is safe — it
 		// claims nothing — but it is not nothing happening, so it is not
@@ -187,6 +182,14 @@ func (t *jobSyncTarget) Files() []int32 {
 		// A stopped assembler is the exception: it is the ordinary end of
 		// every process, and every completion still in flight at that point
 		// goes through here.
+		//
+		// This method cannot report the difference — durability.SyncTarget
+		// gives it no error to return, deliberately, because the barrier has
+		// nothing useful to do with one. A caller that DOES need to tell a
+		// wedged mount from an ordinary shutdown must call OpenFiles itself;
+		// Application.finalizeCompletedFile is the one that does, and the
+		// reason is that proceeding on a timeout there ships an untrimmed
+		// file.
 		if errors.Is(err, ErrAssemblerStopped) {
 			t.a.log.Debug("barrier asked a stopped assembler for a job's files", "job", t.jobID)
 			return nil
@@ -195,7 +198,32 @@ func (t *jobSyncTarget) Files() []int32 {
 			"job", t.jobID, "err", err)
 		return nil
 	}
-	return r.files
+	return files
+}
+
+// OpenFiles returns the job's currently open files, or an error saying why it
+// could not find out.
+//
+// It is the error-returning form of the SyncTarget adapter's Files, and it
+// exists because "no files" and "could not tell" are different answers with
+// different consequences. A caller deciding whether a completed file has been
+// trimmed must not read a barrierOpTimeout on a wedged mount as "there was
+// nothing to trim" — that ships pre-allocation's trailing zeros to par2 as
+// damage, which is #350 by another route.
+//
+// The bound is barrierOpTimeout for the same reason Files carries one: the
+// operation is a map scan with no I/O in it, but it still has to reach the
+// worker, and the worker can be blocked in someone else's fsync on a dead
+// mount.
+func (a *Assembler) OpenFiles(ctx context.Context, jobID string) ([]int32, error) {
+	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	defer cancel()
+	t := &jobSyncTarget{a: a, jobID: jobID}
+	r, err := t.submit(ctx, syncOp{kind: opFiles})
+	if err != nil {
+		return nil, err
+	}
+	return r.files, nil
 }
 
 // Path returns the file's on-disk path for a stall reason a user can act on
@@ -273,7 +301,16 @@ func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
 // complete, the caller finalizes it through the barrier, and then calls this.
 // Closing a file that is already gone — CancelJob, CloseJobHandles or shutdown
 // got there first — is a no-op rather than an error.
+// The wait is bounded by barrierOpTimeout on top of whatever the caller's
+// context already imposes. Releasing a handle is the LAST thing the completion
+// path does, and it runs on the single goroutine that consumes every file
+// completion for every job — so an unbounded wait here parks that consumer for
+// as long as a wedged mount stays down, and no job's files complete again. The
+// handle then leaks, which is the lesser of the two costs and the one the
+// worker's own shutdown drain still cleans up.
 func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) error {
+	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	defer cancel()
 	t := &jobSyncTarget{a: a, jobID: jobID}
 	_, err := t.submit(ctx, syncOp{kind: opClose, fileIdx: fileIdx})
 	return err

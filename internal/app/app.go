@@ -34,6 +34,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -1078,7 +1079,22 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 	// DirectUnpack, job finalization and the post-processing that follows —
 	// reads or consumes those bytes, and a file that still carries
 	// pre-allocation's trailing zeros is one par2 reports as damaged.
-	app.finalizeCompletedFile(ctx, fc.JobID, fc.FileIdx)
+	//
+	// A failure here therefore STOPS the completion rather than being logged
+	// past. The file is not marked complete, DirectUnpack is not fed it, and
+	// the job does not finalize — because none of those can be undone once
+	// done, while a stalled job can be resumed by an operator who has fixed
+	// the mount. The job pauses with the reason attached (A1, R19, R27): a
+	// failure to trim is a condition of storage, so no article is marked
+	// failed, the failed-byte count and the health percentage are untouched,
+	// and every article stays exactly as durable as it already was.
+	if err := app.finalizeCompletedFile(ctx, fc.JobID, fc.FileIdx); err != nil {
+		app.log.Error("completed file was not finalized; the job is stalled rather than "+
+			"shipping a file whose bytes are not known to be correct",
+			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		app.Stall(fc.JobID, storagefault.Classify("finalize", app.filePathFor(fc.JobID, fc.FileIdx), err))
+		return
+	}
 
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		// Returning bare here was itself the shape #261 describes: the file

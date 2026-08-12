@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -555,7 +556,10 @@ func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T)
 		t.Fatalf("assembler.Stop: %v", err)
 	}
 
-	application.finalizeCompletedFile(t.Context(), job.ID, 0)
+	if err := application.finalizeCompletedFile(t.Context(), job.ID, 0); err != nil {
+		t.Fatalf("finalizing after an ordinary assembler stop = %v, want nil — every "+
+			"completion drained during shutdown would stall its job", err)
+	}
 
 	snap := application.queue.SnapshotJob(job.ID)
 	if snap == nil {
@@ -605,7 +609,9 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	application.finalizeCompletedFile(ctx, job.ID, 0)
+	if err := application.finalizeCompletedFile(ctx, job.ID, 0); err != nil {
+		t.Fatalf("finalizeCompletedFile: %v", err)
+	}
 
 	st, err := os.Stat(info.Path)
 	if err != nil {
@@ -988,5 +994,183 @@ func TestNew_ResolvesBothCheckpointBoundsBeforeAnythingRuns(t *testing.T) {
 	}
 	if configured.checkpointBytes != 4096 {
 		t.Errorf("checkpointBytes = %d, want the configured 4096", configured.checkpointBytes)
+	}
+}
+
+// wedgeOnFile parks the assembler's worker goroutine when it opens one
+// particular file, and never lets it go.
+//
+// It reproduces a wedged mount without needing one. The worker owns every file
+// handle, so anything that blocks it blocks every barrier operation for every
+// job — which is exactly the condition barrierOpTimeout exists for, and the
+// reason SyncTarget.Files can return "no files" for a reason that is not "no
+// files".
+type wedgeOnFile struct {
+	fileIdx int
+	entered chan struct{}
+	release chan struct{}
+	inner   func(string, int) (assembler.FileInfo, error)
+}
+
+func (w *wedgeOnFile) resolve(jobID string, fileIdx int) (assembler.FileInfo, error) {
+	if fileIdx == w.fileIdx {
+		close(w.entered)
+		<-w.release
+	}
+	return w.inner(jobID, fileIdx)
+}
+
+// newWedgedApp builds an Application whose assembler holds file 0 open and
+// whose worker is then parked forever inside file 1's open.
+//
+// The assembler is constructed here rather than taken from New, because the
+// resolver has to be substituted before the worker ever runs and Application
+// exposes no hook for it — deliberately, since production has no reason to
+// swap one.
+func newWedgedApp(t *testing.T) (*Application, *queue.Job) {
+	t.Helper()
+	application, job := newDurabilityTestApp(t, 2, 1)
+	ctx := t.Context()
+
+	// Stop the assembler New built and replace it with one whose resolver
+	// wedges. Nothing has been written through the first one yet.
+	if err := application.assembler.Stop(); err != nil {
+		t.Fatalf("stop the original assembler: %v", err)
+	}
+	wedge := &wedgeOnFile{
+		fileIdx: 1,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		inner:   application.pipeline.resolveFileInfo,
+	}
+	application.assembler = assembler.New(assembler.Options{FileInfo: wedge.resolve},
+		slog.New(slog.DiscardHandler))
+	application.pipeline.assembler = application.assembler
+	if err := application.assembler.Start(ctx); err != nil {
+		t.Fatalf("start the wedging assembler: %v", err)
+	}
+	// Registered in this order so it runs FIRST: t.Cleanup is LIFO, and
+	// Assembler.Stop joins the worker, which is parked on this channel. The
+	// other way round the test deadlocks in its own teardown.
+	t.Cleanup(func() { _ = application.assembler.Stop() })
+	t.Cleanup(func() { close(wedge.release) })
+
+	// File 0 opens normally and stays open.
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	// File 1's open parks the worker, so no control message can be answered.
+	if err := application.pipeline.registerFile(job.ID, 1); err != nil {
+		t.Fatalf("registerFile 1: %v", err)
+	}
+	// FileIdx 1 explicitly: assemblerWrite always targets file 0, and sending
+	// this to file 0 would never reach the wedge.
+	if err := application.assembler.WriteArticle(ctx, assembler.WriteRequest{
+		JobID: job.ID, FileIdx: 1, ArtIdx: 1, MessageID: "b@t",
+		Offset: 0, Data: make([]byte, 100),
+	}); err != nil {
+		t.Fatalf("WriteArticle 1: %v", err)
+	}
+	select {
+	case <-wedge.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never reached the wedge; the fixture is not wedged and the " +
+			"assertions below would pass against a healthy assembler")
+	}
+	return application, job
+}
+
+// TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize pins the
+// difference between "nothing to finalize" and "cannot tell", which used to be
+// the same answer.
+//
+// SyncTarget.Files reports an error as "no files" — deliberately, because the
+// barrier has nothing useful to do with one. Reading that as "there was
+// nothing to trim" is what let a barrierOpTimeout on a wedged mount ship a
+// file with pre-allocation's trailing zeros intact, which par2 reports as
+// damage on a perfectly healthy download. #350, arriving silently by a
+// different route.
+//
+// The fixture wedges the assembler's worker rather than a filesystem: the
+// worker owns every handle, so a worker stuck in someone else's call is
+// exactly the condition barrierOpTimeout exists for, and it is reproducible
+// without a dead mount.
+func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T) {
+	application, job := newWedgedApp(t)
+
+	start := time.Now()
+	err := application.finalizeCompletedFile(t.Context(), job.ID, 0)
+	if err == nil {
+		t.Fatal("finalizing against a wedged worker returned nil; the caller proceeds to " +
+			"MarkFileComplete, DirectUnpack and post-processing with a file that was " +
+			"never trimmed and whose last drain was never acked")
+	}
+	if !errors.Is(err, ErrNotFinalized) {
+		t.Errorf("err = %v, want it to wrap ErrNotFinalized so the caller can act on it", err)
+	}
+	// It must give up on the bound rather than wait for the mount.
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Errorf("finalize took %v; the completion consumer is parked for as long as the "+
+			"mount stays down and every other job's completions queue behind it", elapsed)
+	}
+}
+
+// TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile pins the
+// caller's half of the same rule. The file must not be marked complete, which
+// is what keeps DirectUnpack, job finalization and post-processing away from
+// it, and the job must carry a reason a user can act on.
+//
+// No article may be marked failed by any of this: a failure to trim is a
+// condition of storage, and attributing it to an article would burn its retry
+// budget and degrade the job's reported health (A1, R21).
+func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing.T) {
+	application, job := newWedgedApp(t)
+
+	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
+
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("job left the queue")
+	}
+	if snap.Progress().FileComplete(0) {
+		t.Error("the file was marked complete although it was never finalized; " +
+			"DirectUnpack, job finalization and post-processing all act on that bit, " +
+			"and a file still carrying pre-allocation's zeros reads as par2 damage")
+	}
+	if snap.Status != constants.StatusPaused {
+		t.Errorf("status = %v, want Paused — the job carries on and completes with an "+
+			"untrimmed file", snap.Status)
+	}
+	if snap.Warning == "" {
+		t.Error("no reason was surfaced; the job halts and the user is told nothing (R27)")
+	}
+	if snap.Progress().ArticleFailed(0) || snap.Progress().FailedBytes() != 0 {
+		t.Error("a storage condition was recorded as article damage (A1, R21)")
+	}
+}
+
+// TestFilePathFor_NamesTheFileOrSaysNothing pins R27's input on the stall
+// path. A stall reason that names no file tells a user their download halted
+// without telling them which volume or which mount to look at — and both
+// polarities matter, because the "" case is what a caller must not branch on.
+func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+
+	want, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want.Path == "" {
+		t.Fatal("the fixture resolved an empty path; the assertion below cannot distinguish it from the failure case")
+	}
+	if got := application.filePathFor(job.ID, 0); got != want.Path {
+		t.Errorf("filePathFor = %q, want %q", got, want.Path)
+	}
+	// A file the pipeline never registered degrades to "" rather than
+	// fabricating a name or failing the stall.
+	if got := application.filePathFor(job.ID, 7); got != "" {
+		t.Errorf("filePathFor for an unregistered file = %q, want \"\"", got)
+	}
+	if got := application.filePathFor("no-such-job", 0); got != "" {
+		t.Errorf("filePathFor for an unknown job = %q, want \"\"", got)
 	}
 }

@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
@@ -269,6 +272,14 @@ func (app *Application) checkpointAll(ctx context.Context) {
 	}
 }
 
+// ErrNotFinalized reports that a completed file's bytes on disk are not known
+// to be correct, so the file must not be treated as complete.
+//
+// It exists because "there was nothing to finalize" and "we could not find out
+// whether there was anything to finalize" are different answers with the same
+// shape, and only the caller can act on the difference.
+var ErrNotFinalized = errors.New("app: completed file was not finalized")
+
 // finalizeCompletedFile checkpoints a file whose parts have all arrived, trims
 // it to its real extent, and hands its handle back to the assembler.
 //
@@ -284,66 +295,95 @@ func (app *Application) checkpointAll(ctx context.Context) {
 // would destroy the very blocks par2 repairs from). Barrier.FinalizeFile owns
 // that derivation; this function owns getting it called at all.
 //
-// The close is deferred so it happens even when the barrier fails. Leaving the
-// handle open would hold it for the rest of the job and, on NFS, turn
-// post-processing's unlink into a silly-rename.
-func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) {
+// # What the result means
+//
+// nil means the file's bytes on disk are as correct as this process can make
+// them: either it was finalized, or there was legitimately nothing to finalize
+// (the assembler has stopped, or the job has left the queue — both ordinary,
+// and in both cases nothing downstream will act on the file either).
+//
+// ErrNotFinalized means the opposite, and the caller MUST NOT treat the file
+// as complete. It used to return nothing at all, and the caller proceeded
+// identically either way — straight into MarkFileComplete, DirectUnpack, job
+// finalization and post-processing. That made a barrierOpTimeout on a wedged
+// mount indistinguishable from an ordinary shutdown: the file was never
+// trimmed, its last drain was never acked, and it was then closed for good and
+// shipped with pre-allocation's trailing zeros intact, which par2 reports as
+// damage on a download that was perfectly healthy. That is #350 arriving by a
+// different route, and it was silent.
+//
+// The close still happens on the failing path. Keeping the handle would buy
+// nothing — no path re-triggers a finalize for a file whose parts have all
+// arrived — while holding an fd for the rest of the job and turning
+// post-processing's unlink into an NFS silly-rename. What protects the user is
+// that the file does not move on, not that the handle stays open.
+func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) error {
 	defer func() {
 		if err := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); err != nil { //nolint:gosec // G115: file counts are far below int32
 			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", err)
 		}
 	}()
 	if app.barrier == nil {
-		return
+		return nil
 	}
+	tgt := app.syncTargetFor(jobID)
+	if tgt == nil {
+		// The job has left the queue or lost its manifest. Nothing downstream
+		// will act on this file either, so there is nothing to withhold.
+		return nil
+	}
+	trunc, ok := tgt.(durability.Truncator)
+	if !ok {
+		// Unreachable with the real adapter, which implements Truncate, and
+		// reported rather than assumed: without the trim a completed file
+		// keeps pre-allocation's trailing zeros and par2 reports a healthy
+		// download as damaged.
+		return fmt.Errorf("%w: job %s file %d: the assembler sync target cannot truncate",
+			ErrNotFinalized, jobID, fileIdx)
+	}
+
+	// Ask the assembler directly rather than through SyncTarget.Files, which
+	// reports an error as "no files" because the barrier has nothing useful to
+	// do with one. Here the difference decides whether a file ships: a stopped
+	// assembler means there is nothing to finalize, while a timeout means we
+	// do not know, and only one of those may proceed.
+	open, err := app.assembler.OpenFiles(ctx, jobID)
+	switch {
+	case errors.Is(err, assembler.ErrAssemblerStopped):
+		// The ordinary end of every process. watchCompletions drains its
+		// pending completions after the assembler has stopped, so every
+		// completion still in flight arrives here — and each is a file the
+		// assembler already drained, fsynced and closed on its way out.
+		app.log.Debug("completed file arrived after the assembler stopped; nothing to finalize",
+			"job", jobID, "fileidx", fileIdx)
+		return nil
+	case err != nil:
+		return fmt.Errorf("%w: job %s file %d: cannot tell whether it is still open: %w",
+			ErrNotFinalized, jobID, fileIdx, err)
+	}
+	if !slices.Contains(open, int32(fileIdx)) { //nolint:gosec // G115: file counts are far below int32
+		// Some other path closed it first — CancelJob, or CloseJobHandles on
+		// a job entering post-processing. Both are deliberate and both drain
+		// and sync before closing.
+		app.log.Debug("completed file is no longer open; nothing to finalize",
+			"job", jobID, "fileidx", fileIdx)
+		return nil
+	}
+
 	mu := app.jobBarrierLock(jobID)
 	mu.Lock()
 	// --- Barrier serialised per job below this line ---
-
-	var (
-		err         error
-		stillOpen   = true
-		canTruncate = true
-	)
-	if tgt := app.syncTargetFor(jobID); tgt != nil {
-		// Only finalize a file the assembler still holds open, and this guard
-		// is load-bearing rather than an optimisation.
-		//
-		// Every operation FinalizeFile performs goes through the worker, and
-		// a worker that has stopped — or a file some other path already
-		// closed, via CancelJob or CloseJobHandles — answers with an error.
-		// The barrier cannot tell that apart from a real storage fault, so it
-		// would classify it, stall the job and pause it. Shutdown is exactly
-		// when this happens in bulk: watchCompletions drains its pending
-		// completions after the assembler has stopped, so every one of them
-		// would pause its job on the way out.
-		stillOpen = slices.Contains(tgt.Files(), int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
-		if trunc, ok := tgt.(durability.Truncator); !ok {
-			canTruncate = false
-		} else if stillOpen {
-			err = app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
-		}
-	}
+	err = app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
 	mu.Unlock()
 	// --- No lock held below this line ---
 
-	// Every report happens after the unlock. The lock spans the barrier's I/O
-	// by design; a log write is I/O of its own and has no business extending
-	// that span.
-	switch {
-	case !canTruncate:
-		// Unreachable with the real adapter, which implements Truncate, and
-		// asserted rather than assumed: without the trim a completed file
-		// keeps pre-allocation's trailing zeros and par2 reports a healthy
-		// download as damaged.
-		app.log.Error("assembler sync target cannot truncate; completed files keep their pre-allocation padding",
-			"job", jobID, "fileidx", fileIdx)
-	case !stillOpen:
-		app.log.Debug("completed file is no longer open; nothing to finalize",
-			"job", jobID, "fileidx", fileIdx)
-	case err != nil:
-		app.log.Warn("finalize completed file", "job", jobID, "fileidx", fileIdx, "err", err)
+	if err != nil {
+		// Reported by the caller, not here: the lock spans the barrier's I/O
+		// by design, and a log write is I/O of its own with no business
+		// extending that span.
+		return fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, jobID, fileIdx, err)
 	}
+	return nil
 }
 
 // runCheckpoint is R6's cadence: a barrier per job on the lesser of a time
@@ -462,4 +502,19 @@ func checkpointSettings(interval time.Duration, bytes int64) (resolvedInterval t
 		bytes = defaultCheckpointBytes
 	}
 	return interval, bytes
+}
+
+// filePathFor resolves a job file's on-disk path for a surfaced reason, or ""
+// when it cannot be resolved.
+//
+// Diagnostic only; nothing may branch on it. It reads the pipeline's resolved
+// FileInfo — the same value the assembler opened the file with — because a
+// stall reason that names no file tells a user their download halted without
+// telling them which volume or which mount to look at (R27).
+func (app *Application) filePathFor(jobID string, fileIdx int) string {
+	info, err := app.pipeline.resolveFileInfo(jobID, fileIdx)
+	if err != nil {
+		return ""
+	}
+	return info.Path
 }
