@@ -156,7 +156,7 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int) { completed = true }
 
 	a := startAssembler(t, opts)
 
@@ -237,68 +237,4 @@ func TestPreallocationActuallyPreallocates(t *testing.T) {
 	allocBytes := stat.Blocks * 512
 	t.Logf("pre-allocated %d bytes: apparent=%d allocated=%d (%.1f%%)",
 		size, info.Size(), allocBytes, float64(allocBytes)/float64(size)*100)
-}
-
-func TestPreallocationTruncatesToDecodedSize(t *testing.T) {
-	// Regression test: when ExpectedSize (NZB encoded size) exceeds the
-	// actual decoded data written, the file must be truncated to the true
-	// decoded size at completion. Without this, fallocate leaves trailing
-	// zero bytes that cause par2 to report the file as damaged.
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-
-	path := filepath.Join(dir, "oversized_prealloc.dat")
-	key := "job1:0"
-	// Simulate NZB-declared size (encoded, ~2% larger) vs actual decoded.
-	// 3 articles × 4 bytes decoded = 12 bytes actual, but NZB says 100.
-	files[key] = FileInfo{
-		Path:         path,
-		TotalParts:   3,
-		ExpectedSize: 100, // NZB encoded size — larger than decoded
-	}
-
-	var completed bool
-	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
-
-	a := startAssembler(t, opts)
-
-	// Write 3 articles totaling 12 decoded bytes.
-	articles := []struct {
-		offset int64
-		data   []byte
-	}{
-		{0, []byte("AAAA")},
-		{4, []byte("BBBB")},
-		{8, []byte("CCCC")},
-	}
-	for _, art := range articles {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: art.offset, Data: art.data}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
-			t.Fatalf("WriteArticle: %v", err)
-		}
-	}
-
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	if !completed {
-		t.Error("OnFileComplete was not called")
-	}
-
-	// The file should be exactly 12 bytes (the decoded size), NOT 100
-	// (the pre-allocated/NZB encoded size).
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if info.Size() != 12 {
-		t.Errorf("file size = %d, want 12 (got NZB-declared size instead of decoded size)", info.Size())
-	}
-
-	data := readFile(t, path)
-	if string(data) != "AAAABBBBCCCC" {
-		t.Errorf("file content = %q, want %q", data, "AAAABBBBCCCC")
-	}
 }

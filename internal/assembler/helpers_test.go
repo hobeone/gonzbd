@@ -189,3 +189,71 @@ func TestRelievePressure(t *testing.T) {
 		}
 	})
 }
+
+// TestDrainAndClose_FlushesBeforeClosing pins the shutdown ordering. A file
+// closed with articles still buffered loses their bytes silently: they were
+// never written, so no Drain ever reported them, and the queue is told nothing
+// in either direction.
+func TestDrainAndClose_FlushesBeforeClosing(t *testing.T) {
+	dir := t.TempDir()
+	a := newHelperAssembler()
+	f := newHelperFile(t, dir, "drainclose.dat", 0)
+	f.w.wc = newWriteCache(1 << 20)
+
+	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
+		t.Fatal(err)
+	}
+	// Still buffered: nothing has reached the file yet.
+	if st, err := os.Stat(f.info.Path); err == nil && st.Size() != 0 {
+		t.Fatalf("fixture wrote through instead of buffering; size=%d", st.Size())
+	}
+
+	a.drainAndClose(f)
+
+	st, err := os.Stat(f.info.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != 8 {
+		t.Errorf("file is %d bytes after drainAndClose, want 8 — buffered bytes were dropped on close", st.Size())
+	}
+}
+
+// TestAcceptArticle_OutOfRangeOffsetIsNotReported pins the security check's
+// effect on the barrier's evidence. offsetInRange rejects an attacker-supplied
+// yEnc offset; the article must then be absent from what Drain reports, or the
+// barrier acks an article whose bytes were deliberately never written.
+func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
+	dir := t.TempDir()
+	a := newHelperAssembler()
+	f := newHelperFile(t, dir, "oor.dat", 1024)
+
+	a.acceptArticle(f, articleID{msgID: "bad", artIdx: 4}, WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 4, MessageID: "bad",
+		Offset: 1 << 40, Data: []byte("evil"),
+	})
+
+	if got := f.w.writtenSoFar(); len(got) != 0 {
+		t.Errorf("writtenSoFar = %v after a rejected offset, want empty", got)
+	}
+	if _, failed := f.w.seenFailed["bad"]; !failed {
+		t.Error("the rejected article was not moved to seenFailed")
+	}
+}
+
+// TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing pins what is left
+// of the late-duplicate path once the acks are gone: it must release the
+// decoder buffer (or the pool leaks one per late article) and must assert
+// nothing about the article, since the file it belonged to is already closed.
+func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
+	a := newHelperAssembler()
+	// Not a crash test: the point is that the method has no queue-facing
+	// effect left to make, so the only observable contract is that it runs
+	// and does not retain the buffer.
+	a.handleLateDuplicate(WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: []byte("xyz"),
+	})
+	a.handleLateDuplicate(WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
+	})
+}

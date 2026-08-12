@@ -3,7 +3,6 @@ package assembler
 import (
 	"fmt"
 	"os"
-	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -16,18 +15,8 @@ func TestWriteError_TreatedAsFailed(t *testing.T) {
 	path := registerFile(t, dir, files, "job1", 0, 2)
 
 	var completions atomic.Int32
-	var failedIDs []string
-	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
-	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
-		mu.Lock()
-		failedIDs = append(failedIDs, msgIDs...)
-		mu.Unlock()
-		return msgIDs, nil
-	}
-	opts.MarkArticlesDone = func(_ string, _ []string) error { return nil }
-	opts.DoneFlushInterval = -1
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -76,14 +65,8 @@ func TestDuplicateSuccessDedup(t *testing.T) {
 	registerFile(t, dir, files, "job1", 0, 2)
 
 	var completions atomic.Int32
-	var doneCount atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
-	opts.MarkArticlesDone = func(_ string, msgIDs []string) error {
-		doneCount.Add(int32(len(msgIDs)))
-		return nil
-	}
-	opts.DoneFlushInterval = -1
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -114,22 +97,7 @@ func TestSuccessAfterFailure_RecoveryWrite(t *testing.T) {
 	files := make(map[string]FileInfo)
 	path := registerFile(t, dir, files, "job1", 0, 2)
 
-	var doneIDs, failedIDs []string
-	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.MarkArticlesDone = func(_ string, msgIDs []string) error {
-		mu.Lock()
-		doneIDs = append(doneIDs, msgIDs...)
-		mu.Unlock()
-		return nil
-	}
-	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
-		mu.Lock()
-		failedIDs = append(failedIDs, msgIDs...)
-		mu.Unlock()
-		return msgIDs, nil
-	}
-	opts.DoneFlushInterval = -1
 
 	a := startAssembler(t, opts)
 
@@ -160,28 +128,6 @@ func TestSuccessAfterFailure_RecoveryWrite(t *testing.T) {
 	if len(got) < 9 || string(got[:9]) != "RECOVERED" {
 		t.Errorf("file content = %q, want to start with 'RECOVERED'", got)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	// The article should appear in both failed and done lists.
-	foundFailed := false
-	for _, id := range failedIDs {
-		if id == "retry-msg" {
-			foundFailed = true
-		}
-	}
-	foundDone := false
-	for _, id := range doneIDs {
-		if id == "retry-msg" {
-			foundDone = true
-		}
-	}
-	if !foundFailed {
-		t.Error("retry-msg should be in failedIDs")
-	}
-	if !foundDone {
-		t.Error("retry-msg should be in doneIDs (recovery write)")
-	}
 }
 
 // ---------- FailureAfterSuccess cross-check ----------
@@ -193,10 +139,7 @@ func TestFailureAfterSuccess_NoDoubleCount(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
-	opts.MarkArticlesDone = func(_ string, _ []string) error { return nil }
-	opts.MarkArticlesFailed = func(_ string, _ []string) ([]string, error) { return nil, nil }
-	opts.DoneFlushInterval = -1
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -224,36 +167,6 @@ func TestFailureAfterSuccess_NoDoubleCount(t *testing.T) {
 	}
 }
 
-// ---------- MarkArticlesDone error handling in flush ----------
-
-func TestFlush_MarkArticlesDoneError(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 10) // won't complete
-
-	var callCount atomic.Int32
-	opts := makeOpts(dir, files)
-	opts.DoneFlushInterval = -1
-	opts.MarkArticlesDone = func(_ string, _ []string) error {
-		callCount.Add(1)
-		return fmt.Errorf("database locked")
-	}
-
-	a := startAssembler(t, opts)
-
-	_ = a.WriteArticle(t.Context(), WriteRequest{
-		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("XX"),
-		MessageID: "err-msg",
-	})
-
-	// Stop triggers flush — the error should be logged, not crash.
-	_ = a.Stop()
-
-	if n := callCount.Load(); n == 0 {
-		t.Error("MarkArticlesDone should have been called")
-	}
-}
-
 // ---------- closeAll with partial files ----------
 
 func TestCloseAll_PartialFilesNoCallback(t *testing.T) {
@@ -263,7 +176,7 @@ func TestCloseAll_PartialFilesNoCallback(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -282,52 +195,5 @@ func TestCloseAll_PartialFilesNoCallback(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("partial file should still exist: %v", err)
-	}
-}
-
-// ---------- Multiple jobs, different flush batches ----------
-
-func TestFlush_MultipleJobs(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "jobA", 0, 10)
-	registerFile(t, dir, files, "jobB", 0, 10)
-
-	doneBatches := make(map[string]int)
-	var mu sync.Mutex
-	opts := makeOpts(dir, files)
-	opts.DoneFlushInterval = -1
-	opts.MarkArticlesDone = func(jobID string, msgIDs []string) error {
-		mu.Lock()
-		doneBatches[jobID] += len(msgIDs)
-		mu.Unlock()
-		return nil
-	}
-
-	a := startAssembler(t, opts)
-
-	// Write 2 articles for jobA, 3 for jobB.
-	for i := range 2 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
-			JobID: "jobA", FileIdx: 0, Offset: int64(i * 4), Data: []byte("AAAA"),
-			MessageID: fmt.Sprintf("a-msg%d", i),
-		})
-	}
-	for i := range 3 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
-			JobID: "jobB", FileIdx: 0, Offset: int64(i * 4), Data: []byte("BBBB"),
-			MessageID: fmt.Sprintf("b-msg%d", i),
-		})
-	}
-
-	_ = a.Stop()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if doneBatches["jobA"] != 2 {
-		t.Errorf("jobA done count = %d, want 2", doneBatches["jobA"])
-	}
-	if doneBatches["jobB"] != 3 {
-		t.Errorf("jobB done count = %d, want 3", doneBatches["jobB"])
 	}
 }

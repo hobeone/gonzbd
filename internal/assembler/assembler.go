@@ -980,31 +980,6 @@ func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
 	return true
 }
 
-// writeOutcome reports what happened to an article, and with it who owes the
-// queue an ack. Bytes that reached WriteAt and bytes that are merely buffered
-// are different answers to that question, and conflating them is #355.
-type writeOutcome int
-
-const (
-	// outcomeFailed means the bytes are not on disk and will not be. The
-	// caller fail-acks the article and invalidates the file CRC.
-	//
-	// It is deliberately the zero value: an outcome left unset by some future
-	// edit resolves to a re-fetch, never to a silent Done.
-	outcomeFailed writeOutcome = iota
-	// outcomeDurable means the bytes reached WriteAt. The caller acks Done.
-	outcomeDurable
-	// outcomeDeferred means the bytes are buffered in the write cache. The
-	// caller must not ack the article in either direction; one of the write
-	// paths will, when the bytes actually move.
-	//
-	// The caller still records the article as accepted in seenDone before
-	// handing it over — that is what "accepted" means, and partsWritten
-	// counts it. What passes to the cache is every transition after that
-	// point, including moving the article to seenFailed if its write is lost.
-	outcomeDeferred
-)
-
 // relievePressure force-flushes the largest cached files until memory usage
 // drops back under the threshold (B2).
 //

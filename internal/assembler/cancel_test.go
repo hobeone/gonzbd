@@ -80,7 +80,7 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -112,7 +112,7 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 
 	var completed sync.Map
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int, _ uint32) {
+	opts.OnFileComplete = func(jobID string, fileIdx int) {
 		completed.Store(fmt.Sprintf("%s:%d", jobID, fileIdx), true)
 	}
 
@@ -223,24 +223,21 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 
 // ---------- FatalErr (failed article) handling ----------
 
+// TestFatalErrCountsTowardCompletion is trimmed from its original shape: it
+// used to also assert MarkArticlesFailed received the fatal article's
+// Message-ID, but the assembler no longer has any ack authority (X2) — a
+// permanent failure is the queue's to record via AckPermanentFailure, not
+// this package's. What is still live, and still worth pinning, is
+// handleFatalArticle's local bookkeeping: a FatalErr article counts toward
+// TotalParts exactly like a written one, so the file still completes.
 func TestFatalErrCountsTowardCompletion(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
 	registerFile(t, dir, files, "job1", 0, 3)
 
 	var completions atomic.Int32
-	var failedIDs []string
-	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
-	opts.MarkArticlesFailed = func(jobID string, msgIDs []string) ([]string, error) {
-		mu.Lock()
-		failedIDs = append(failedIDs, msgIDs...)
-		mu.Unlock()
-		return msgIDs, nil
-	}
-	opts.MarkArticlesDone = func(_ string, _ []string) error { return nil }
-	opts.DoneFlushInterval = -1 // disable timer, flush only on file complete
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -264,17 +261,6 @@ func TestFatalErrCountsTowardCompletion(t *testing.T) {
 	if n := completions.Load(); n != 1 {
 		t.Errorf("OnFileComplete fired %d times, want 1 (fatal err counts as part)", n)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	found := false
-	for _, id := range failedIDs {
-		if id == "fail1" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("MarkArticlesFailed never received 'fail1', got %v", failedIDs)
-	}
 }
 
 func TestFatalErrDuplicate(t *testing.T) {
@@ -284,10 +270,7 @@ func TestFatalErrDuplicate(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
-	opts.MarkArticlesFailed = func(_ string, _ []string) ([]string, error) { return nil, nil }
-	opts.MarkArticlesDone = func(_ string, _ []string) error { return nil }
-	opts.DoneFlushInterval = -1
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -312,79 +295,6 @@ func TestFatalErrDuplicate(t *testing.T) {
 	}
 }
 
-// ---------- Batch flush ----------
-
-func TestBatchFlushOnFileComplete(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 3)
-
-	var doneIDs []string
-	var mu sync.Mutex
-	opts := makeOpts(dir, files)
-	opts.DoneFlushInterval = -1 // disable timer
-	opts.MarkArticlesDone = func(jobID string, msgIDs []string) error {
-		mu.Lock()
-		doneIDs = append(doneIDs, msgIDs...)
-		mu.Unlock()
-		return nil
-	}
-
-	a := startAssembler(t, opts)
-
-	for i := range 3 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
-			JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX"),
-			MessageID: fmt.Sprintf("msg%d", i),
-		})
-	}
-
-	_ = a.Stop()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(doneIDs) != 3 {
-		t.Errorf("MarkArticlesDone received %d IDs, want 3: %v", len(doneIDs), doneIDs)
-	}
-}
-
-func TestBatchFlushOnStop(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	// File with 10 parts — we only write 2, so it doesn't complete.
-	registerFile(t, dir, files, "job1", 0, 10)
-
-	var doneIDs []string
-	var mu sync.Mutex
-	opts := makeOpts(dir, files)
-	opts.DoneFlushInterval = -1 // disable timer
-	opts.MarkArticlesDone = func(_ string, msgIDs []string) error {
-		mu.Lock()
-		doneIDs = append(doneIDs, msgIDs...)
-		mu.Unlock()
-		return nil
-	}
-
-	a := startAssembler(t, opts)
-
-	// Write 2 of 10 articles — file won't complete.
-	for i := range 2 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
-			JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("YYYY"),
-			MessageID: fmt.Sprintf("stop-msg%d", i),
-		})
-	}
-
-	// Stop should flush the 2 pending Done IDs.
-	_ = a.Stop()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(doneIDs) != 2 {
-		t.Errorf("flush on Stop: MarkArticlesDone received %d IDs, want 2: %v", len(doneIDs), doneIDs)
-	}
-}
-
 // ---------- Late duplicate for completed file ----------
 
 func TestLateDuplicateForCompletedFile(t *testing.T) {
@@ -393,14 +303,8 @@ func TestLateDuplicateForCompletedFile(t *testing.T) {
 	registerFile(t, dir, files, "job1", 0, 2)
 
 	var completions atomic.Int32
-	var doneCount atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
-	opts.MarkArticlesDone = func(_ string, msgIDs []string) error {
-		doneCount.Add(int32(len(msgIDs)))
-		return nil
-	}
-	opts.DoneFlushInterval = -1
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 

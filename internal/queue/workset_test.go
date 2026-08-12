@@ -199,9 +199,9 @@ func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
 		"MarkArticlesFailed", "MarkArticlesFailedByIdx",
 		"SetFileExtents",
 	}
-	qt := reflect.TypeOf(&Queue{})
-	for i := range qt.NumMethod() {
-		name := qt.Method(i).Name
+	qt := reflect.TypeFor[*Queue]()
+	for method := range qt.Methods() {
+		name := method.Name
 		if slices.Contains(forbidden, name) {
 			t.Errorf("Queue.%s still exists — X2 requires the barrier to be the only ack path", name)
 		}
@@ -213,11 +213,11 @@ func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
 // durability.DurableProof, whose zero value is useless and which no package
 // outside internal/durability can construct with content.
 func TestAckDurable_RequiresAProof(t *testing.T) {
-	m, ok := reflect.TypeOf(&Queue{}).MethodByName("AckDurable")
+	m, ok := reflect.TypeFor[*Queue]().MethodByName("AckDurable")
 	if !ok {
 		t.Fatal("Queue.AckDurable is missing — the barrier has no way to ack")
 	}
-	want := reflect.TypeOf(durability.DurableProof{})
+	want := reflect.TypeFor[durability.DurableProof]()
 	if got := m.Type.In(1); got != want {
 		t.Errorf("AckDurable takes %v, want %v — a non-proof parameter reopens the "+
 			"pre-barrier ack path that R9 exists to close", got, want)

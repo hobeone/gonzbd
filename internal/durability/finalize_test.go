@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"testing"
 )
 
@@ -154,10 +155,69 @@ func TestFinalizeFile_NoDurableFactsDoesNotTruncate(t *testing.T) {
 }
 
 func slicesContains(s []int32, v int32) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
+	return slices.Contains(s, v)
+}
+
+// TestDurableExtent_DoesNotStopAtAHole is the direct pin on the one line that
+// separates durableExtent from gaplessPrefix. They read the same facts and
+// must answer differently: the prefix walk stops at the first gap because a
+// CRC anchor cannot be proven past it, while this walk must NOT, because the
+// bytes above the gap are real bytes on disk and truncating them away is the
+// data loss the bound exists to prevent.
+func TestDurableExtent_DoesNotStopAtAHole(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	facts := NewSQLiteFactLog(db)
+	if err := facts.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 100},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	return false
+	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	durable := NewBitmap(4)
+	durable.Set(0)
+	durable.Set(3)
+	tgt := &truncTarget{artCount: 4}
+
+	got, err := b.durableExtent(ctx, "job-1", 0, durable, tgt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 400 {
+		t.Errorf("durableExtent = %d, want 400 — a walk that stopped at the hole "+
+			"below article 3 would report 100 and truncate its bytes away", got)
+	}
+}
+
+// TestDurableExtent_IgnoresFactsThatAreNotDurable pins the other half: a fact
+// exists for every article that ever DECODED, whether or not its bytes reached
+// stable storage. Counting a non-durable fact would extend the file over a
+// range no fsync covered, which is the over-claim direction S1 forbids.
+func TestDurableExtent_IgnoresFactsThatAreNotDurable(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	facts := NewSQLiteFactLog(db)
+	if err := facts.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 900},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	durable := NewBitmap(2)
+	durable.Set(0) // article 1 decoded but never reached disk
+
+	got, err := b.durableExtent(ctx, "job-1", 0, durable, &truncTarget{artCount: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 100 {
+		t.Errorf("durableExtent = %d, want 100 — article 1 has a fact but no fsync "+
+			"covered it, so extending the file to 1000 claims bytes nothing wrote", got)
+	}
 }
