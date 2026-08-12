@@ -456,7 +456,8 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	// truncate derives its bound from the durable facts rather than from a
 	// seed, and the coalescing cursor is local to the assembler's cache.
 	const qFiles = `
-SELECT file_index, complete, fetch_policy, assembled_crc32, COALESCE(articles_done, '')
+SELECT file_index, complete, fetch_policy, assembled_crc32, COALESCE(articles_done, ''),
+       COALESCE(filename, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
 	if err != nil {
@@ -466,13 +467,33 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	for rows.Next() {
 		var idx, complete, fetch int
 		var crc32Val uint32
-		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &fetch, &crc32Val, &artDoneStr); err != nil {
+		var artDoneStr, filename string
+		if err := rows.Scan(&idx, &complete, &fetch, &crc32Val, &artDoneStr, &filename); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
 			fp := &job.progress.files[idx]
 			fp.AssembledCRC32 = crc32Val
+			// The resolved on-disk name, which this path used to drop while
+			// still persisting it — RestoreRetryProgress's "unlike
+			// RestoreJobProgress" note described a real asymmetry, and it was
+			// not a deliberate one.
+			//
+			// Two things depend on it and both were silently broken across a
+			// restart. pipeline.registerFile treats an empty name as "first
+			// time resolving this file" and calls GetUniqueFilename, which
+			// only returns a path that does not already exist — so a restart
+			// resumed into <name>.1 and orphaned every byte the previous run
+			// had written, which is the opposite of what registerFile's own
+			// comment about "preventing duplicate renaming across daemon
+			// restarts" claims. And the startup resume sweep locates a job's
+			// file by this name, so with it empty there was nothing to resume
+			// against and L3 could not hold.
+			//
+			// Restoring it is not a second writer of anything: job_files.filename
+			// is written by SetFileFilename and read here, and a file that was
+			// never registered still restores as empty.
+			fp.Filename = filename
 			// articles_done is the only source of per-article state;
 			// Complete is just a flag alongside it.
 			//
@@ -911,8 +932,10 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 	for _, f := range retained {
 		fp := &job.progress.files[f.FileIndex]
 		fp.AssembledCRC32 = f.AssembledCRC32
-		// Unlike RestoreJobProgress, the resolved on-disk filename is
-		// carried over. A retry can go straight back into post-processing
+		// The resolved on-disk filename is carried over, the same as
+		// RestoreJobProgress now does — that used to be an asymmetry this
+		// comment pointed at, and it was a defect there rather than a design
+		// choice here. A retry can go straight back into post-processing
 		// without a download pass (every article already resolved), and
 		// postproc's file list and QuickCheck read this name.
 		fp.Filename = f.Filename
