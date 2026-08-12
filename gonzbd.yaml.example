@@ -170,6 +170,18 @@ downloads:
   # disks but consume more RAM. "0" disables coalescing. Default: 500M.
   write_cache_size: 500M
 
+  # How often, in seconds, a durability checkpoint runs for each job with
+  # open files. A checkpoint flushes buffered writes, fsyncs the job's open
+  # files, and only then records what is safely on disk — so this and
+  # checkpoint_bytes together bound how much downloaded work a power loss
+  # can cost. Whichever arrives first triggers the checkpoint. Lower values
+  # cost more fsyncs and re-download less after a crash. Default: 30.
+  checkpoint_interval: 30
+
+  # The volume half of the same bound, for links fast enough that 30 seconds
+  # is a lot of data. Accepts K/M/G suffixes. Default: 64M.
+  checkpoint_bytes: 64M
+
   # Maximum retry attempts per article across all servers before
   # marking the article as permanently failed. Must be >= 1.
   max_art_tries: 3

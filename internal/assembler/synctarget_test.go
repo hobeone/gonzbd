@@ -36,7 +36,7 @@ func newSyncOpFixture(t *testing.T) (*Assembler, map[fileKey]*openFile, fileKey)
 func runSyncOp(t *testing.T, a *Assembler, open map[fileKey]*openFile, op syncOp) syncReply {
 	t.Helper()
 	op.reply = make(chan syncReply, 1)
-	a.handleSyncOp(&op, open)
+	a.handleSyncOp(&op, open, newWriteCache(0))
 	select {
 	case r := <-op.reply:
 		return r

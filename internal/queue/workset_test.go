@@ -22,7 +22,8 @@ type stubSyncTarget struct {
 	artCount int
 }
 
-func (s *stubSyncTarget) Files() []int32 { return s.files }
+func (s *stubSyncTarget) Files() []int32    { return s.files }
+func (s *stubSyncTarget) Path(int32) string { return "/downloads/stub.bin" }
 func (s *stubSyncTarget) Drain(context.Context, int32) ([]durability.WrittenArticle, error) {
 	return s.written, nil
 }

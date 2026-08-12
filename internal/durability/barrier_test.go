@@ -3,6 +3,7 @@ package durability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"syscall"
 
@@ -36,6 +37,12 @@ func (f *fakeTarget) Files() []int32 {
 		return f.files
 	}
 	return []int32{0}
+}
+
+// Path is the R27 stall-reason accessor. The fixture returns a fixed name so
+// the fault-routing tests can assert the fault carries it rather than "".
+func (f *fakeTarget) Path(fileIdx int32) string {
+	return fmt.Sprintf("/downloads/job-1/file%d.bin", fileIdx)
 }
 
 func (f *fakeTarget) Drain(_ context.Context, fileIdx int32) ([]WrittenArticle, error) {
@@ -168,6 +175,9 @@ func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 	if len(stall.stalled) != 1 {
 		t.Fatalf("stalled %d times, want 1 — ENOSPC is retryable", len(stall.stalled))
 	}
+	if got := stall.stalled[0].Path; got != "/downloads/job-1/file0.bin" {
+		t.Errorf("stall fault Path = %q, want the target's path (R27)", got)
+	}
 	if len(stall.failed) != 0 {
 		t.Errorf("failed the job on a retryable fault")
 	}
@@ -226,7 +236,15 @@ func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
 				t.Errorf("err = %v, want it to wrap ENOSPC", err)
 			}
 			if len(stall.stalled) != 1 {
-				t.Errorf("stalled %d times, want 1", len(stall.stalled))
+				t.Fatalf("stalled %d times, want 1", len(stall.stalled))
+			}
+			// R27: a stall reason has to be actionable, and "ENOSPC on
+			// sync" without a path does not say which volume filled up.
+			// A job's files can live on different mounts, so the job name
+			// does not identify the device either.
+			if got := stall.stalled[0].Path; got != "/downloads/job-1/file0.bin" {
+				t.Errorf("stall fault Path = %q, want the target's path — "+
+					"the user is told a disk is full without being told which one", got)
 			}
 			if len(ack.proofs) != 0 {
 				t.Errorf("acked after a storage fault")

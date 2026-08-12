@@ -568,7 +568,7 @@ func (a *Assembler) dispatchRequest(
 	if req.JobID == "" && req.FileIdx == fileIdxSyncOp {
 		// Control message: a barrier operation. Answered on this goroutine,
 		// which owns every file handle and every write cache (X1).
-		a.handleSyncOp(req.syncOp, open)
+		a.handleSyncOp(req.syncOp, open, wc)
 		return 0
 	}
 	if req.JobID == "" && req.FileIdx == -1 {
@@ -868,7 +868,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) {
 	}
 }
 
-// finalizeFile closes a file whose parts have all arrived.
+// finalizeFile records that a file's parts have all arrived and reports it.
 //
 // It no longer truncates and no longer computes a CRC. Both decisions moved to
 // durability.Barrier: the truncate bound is the highest end offset among the
@@ -877,12 +877,26 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) {
 // be this package asserting something about bytes on disk that it cannot check
 // — the shape behind #342, #349 and #350.
 //
-// What remains is: get every buffered byte written, fsync, close, and tell the
-// caller the file is done so the barrier can finalize it.
-func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
-	a.drainAndClose(f)
-	wc.forget(key)
-	delete(open, key)
+// It no longer CLOSES the file either, and that is the load-bearing part. The
+// barrier's FinalizeFile must Drain, Sync, Truncate and Stat this file, and
+// every one of those goes through the handle this package owns. Closing here
+// would leave the completed file untrimmed — pre-allocation's trailing zeros
+// intact, which par2 reports as damage — and would discard the last drain's
+// Written articles with nothing to ack them, so they would be re-fetched on
+// every restart forever.
+//
+// So the handle stays open and the file stays in `open` until the caller asks
+// for it back via CloseFile, which the completion consumer calls after the
+// barrier has finalized the file. The tombstone below is set NOW rather than at
+// close, so a late duplicate is rejected during that window instead of being
+// written into a file the barrier is finalizing.
+//
+// The cost is file descriptors: a completed file holds its handle until the
+// completion consumer works through to it. That consumer is serial and the
+// event channel is bounded, so the excess is bounded too — and every path that
+// can abandon the handoff (CancelJob, CloseJobHandles, worker exit) already
+// closes whatever is left in `open`.
+func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, _ map[fileKey]*openFile, completed map[fileKey]struct{}, _ *writeCache) {
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)

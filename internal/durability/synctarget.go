@@ -61,6 +61,21 @@ type SyncTarget interface {
 	// the Sync it describes.
 	Stat(fileIdx int32) (size int64, modTimeNs int64, err error)
 
+	// Path returns the file's path on disk, for a stall reason a user can
+	// act on (R27).
+	//
+	// A storage fault stalls the job until a human clears the condition, and
+	// "ENOSPC on sync" without a path does not say which volume filled up.
+	// A job's files can sit on different mounts — a category directory, a
+	// symlinked incomplete dir — so the job name does not identify the
+	// device either.
+	//
+	// It returns a string rather than (string, error) and has no context:
+	// an implementation that cannot name the file returns "", which degrades
+	// the message and nothing else. Nothing may branch on this value; it is
+	// diagnostic only.
+	Path(fileIdx int32) string
+
 	// ArticleCount returns how many articles this file has in total. The
 	// barrier needs it to size the durable bitmap, and to re-derive a
 	// loaded one at its true width rather than the byte width persistence

@@ -57,7 +57,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	for _, idx := range files {
 		w, err := t.Drain(ctx, idx)
 		if err != nil {
-			return b.routeFault(jobID, storagefault.Classify("write", "", err))
+			return b.routeFault(jobID, storagefault.Classify("write", t.Path(idx), err))
 		}
 		drained[idx] = w
 	}
@@ -68,7 +68,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	// first either.
 	for _, idx := range files {
 		if err := t.Sync(ctx, idx); err != nil {
-			return b.routeFault(jobID, storagefault.Classify("sync", "", err))
+			return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
 		}
 	}
 
@@ -143,7 +143,7 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	}
 	size, modNs, err := t.Stat(idx)
 	if err != nil {
-		return FileExtent{}, nil, b.routeFault(jobID, storagefault.Classify("stat", "", err))
+		return FileExtent{}, nil, b.routeFault(jobID, storagefault.Classify("stat", t.Path(idx), err))
 	}
 	ext, err := b.priorExtent(ctx, jobID, idx, artCount)
 	if err != nil {
@@ -351,10 +351,10 @@ type Truncator interface {
 func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t Truncator) error {
 	written, err := t.Drain(ctx, idx)
 	if err != nil {
-		return b.routeFault(jobID, storagefault.Classify("write", "", err))
+		return b.routeFault(jobID, storagefault.Classify("write", t.Path(idx), err))
 	}
 	if err := t.Sync(ctx, idx); err != nil {
-		return b.routeFault(jobID, storagefault.Classify("sync", "", err))
+		return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
 	}
 	ext, acked, err := b.buildExtent(ctx, jobID, idx, written, t)
 	if err != nil {
@@ -367,14 +367,14 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	}
 	if bound > 0 {
 		if err := t.Truncate(ctx, idx, bound); err != nil {
-			return b.routeFault(jobID, storagefault.Classify("truncate", "", err))
+			return b.routeFault(jobID, storagefault.Classify("truncate", t.Path(idx), err))
 		}
 		// The truncate changed the file, so the size/mtime stamp taken inside
 		// buildExtent describes a file that no longer exists. Re-stat and
 		// re-sync: a stamp that does not match the file on disk fails S7's
 		// validity check on the next resume and throws away a valid cache.
 		if err := t.Sync(ctx, idx); err != nil {
-			return b.routeFault(jobID, storagefault.Classify("sync", "", err))
+			return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
 		}
 		size, modNs, err := t.Stat(idx)
 		if err != nil {

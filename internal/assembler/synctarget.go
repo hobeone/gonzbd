@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
 )
@@ -39,7 +40,28 @@ const (
 	opSync
 	opStat
 	opTruncate
+	opClose
 )
+
+// barrierOpTimeout bounds the two barrier operations whose interface signature
+// carries no context: Files and Stat.
+//
+// B4 and R22 require every storage syscall on the critical path to be
+// timeout-bounded, and the bound has to come from here because the interface
+// gives the barrier no context to impose one. A `stat` on a wedged NFS mount
+// is exactly the case: the operation runs on the worker goroutine, which owns
+// every handle, so an unbounded wait for its reply parks the checkpoint loop
+// for as long as the mount stays down and every other job's barrier with it.
+//
+// What this bounds is the WAIT, not the syscall. Go cannot interrupt a blocked
+// fstat, so the worker stays stuck either way — which is the intended
+// division: a wedged mount stalls the job, never the process. Drain, Sync and
+// Truncate need no constant because Barrier passes them a context and the
+// caller's deadline already bounds their wait the same way.
+//
+// Five seconds matches diskCheckTimeout, the other bound this package places
+// on a syscall against a possibly-dead mount.
+const barrierOpTimeout = 5 * time.Second
 
 // syncReply carries a worker answer back to the barrier's goroutine.
 type syncReply struct {
@@ -148,14 +170,38 @@ func (t *jobSyncTarget) Files() []int32 {
 	if t.am == nil {
 		return nil
 	}
-	// Files has no context in the interface, and the barrier calls it first,
-	// before anything can block. Background is honest here: the operation is a
-	// map scan on the worker with no I/O in it.
-	r, err := t.submit(context.Background(), syncOp{kind: opFiles})
+	// The operation itself is a map scan with no I/O in it, but it still has
+	// to reach the worker, and the worker can be blocked in someone else's
+	// fsync on a dead mount. Hence the bound; see barrierOpTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), barrierOpTimeout)
+	defer cancel()
+	r, err := t.submit(ctx, syncOp{kind: opFiles})
 	if err != nil {
+		// Reporting no files makes the barrier a no-op, which is safe — it
+		// claims nothing — but it is not nothing happening, so it is not
+		// silent. Without this the job simply stops checkpointing and the
+		// only symptom is rework after a restart.
+		t.a.log.Warn("barrier could not list a job's open files; this checkpoint claims nothing",
+			"job", t.jobID, "err", err)
 		return nil
 	}
 	return r.files
+}
+
+// Path returns the file's on-disk path for a stall reason a user can act on
+// (R27), or "" when it cannot be resolved.
+//
+// It deliberately does NOT go through the worker. Path is called from the
+// barrier's fault-routing path, and a wedged worker is precisely the condition
+// that gets it called, so asking the worker would be asking the thing that is
+// stuck. Options.FileInfo is the same resolver the worker itself used to open
+// the file, and it is a pure lookup with no I/O.
+func (t *jobSyncTarget) Path(fileIdx int32) string {
+	info, err := t.a.opts.FileInfo(t.jobID, int(fileIdx))
+	if err != nil {
+		return ""
+	}
+	return info.Path
 }
 
 func (t *jobSyncTarget) Drain(ctx context.Context, fileIdx int32) ([]durability.WrittenArticle, error) {
@@ -168,8 +214,12 @@ func (t *jobSyncTarget) Sync(ctx context.Context, fileIdx int32) error {
 	return err
 }
 
+// Stat reads the file's size and mtime, bounded by barrierOpTimeout because
+// the interface hands it no context to bound it with. See that constant.
 func (t *jobSyncTarget) Stat(fileIdx int32) (size, modTimeNs int64, err error) {
-	r, e := t.submit(context.Background(), syncOp{kind: opStat, fileIdx: fileIdx})
+	ctx, cancel := context.WithTimeout(context.Background(), barrierOpTimeout)
+	defer cancel()
+	r, e := t.submit(ctx, syncOp{kind: opStat, fileIdx: fileIdx})
 	return r.size, r.modTimeNs, e
 }
 
@@ -200,8 +250,27 @@ func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
 	return t.am.FileLocalOrdinal(fileIdx, artIdx)
 }
 
+// CloseFile drains, fsyncs, and closes one completed file's handle, and blocks
+// until the worker has done so.
+//
+// It exists because the assembler no longer closes a file the moment its last
+// part arrives. The barrier's FinalizeFile has to Drain, Sync, Truncate and
+// Stat that file, and every one of those needs the handle the assembler owns —
+// so closing at completion would leave the completed file untrimmed and its
+// last articles unacked, which is #342/#350 by a different route.
+//
+// The handoff is therefore: the worker tombstones the file and reports it
+// complete, the caller finalizes it through the barrier, and then calls this.
+// Closing a file that is already gone — CancelJob, CloseJobHandles or shutdown
+// got there first — is a no-op rather than an error.
+func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) error {
+	t := &jobSyncTarget{a: a, jobID: jobID}
+	_, err := t.submit(ctx, syncOp{kind: opClose, fileIdx: fileIdx})
+	return err
+}
+
 // handleSyncOp performs one barrier operation on the worker goroutine.
-func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
+func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *writeCache) {
 	var r syncReply
 	switch op.kind {
 	case opFiles:
@@ -214,6 +283,12 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
 		key := fileKey{jobID: op.jobID, fileIdx: int(op.fileIdx)}
 		f, ok := open[key]
 		if !ok {
+			if op.kind == opClose {
+				// Closing a file that is already gone is the expected
+				// outcome of a race with CancelJob, CloseJobHandles or
+				// shutdown, not a disagreement. Idempotent, not an error.
+				break
+			}
 			// A file the barrier believes open but the worker does not. That
 			// is a bookkeeping disagreement, not a storage fault, so it is
 			// reported as an error rather than routed through Stallable —
@@ -230,6 +305,10 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
 			r.size, r.modTimeNs, r.err = f.w.Stat()
 		case opTruncate:
 			r.err = f.w.Truncate(op.bound)
+		case opClose:
+			a.drainAndClose(f)
+			delete(open, key)
+			wc.forget(key)
 		case opFiles:
 		}
 	}

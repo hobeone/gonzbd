@@ -22,6 +22,24 @@ type DownloadConfig struct {
 	// coalescing (each article is written individually).
 	WriteCacheSize ByteSize `yaml:"write_cache_size" json:"write_cache_size"`
 
+	// CheckpointInterval is how often, in seconds, a durability barrier runs
+	// for each job with open files. Together with CheckpointBytes it is the
+	// stated bound on how much downloaded work a power loss can cost: a
+	// barrier fsyncs the job's open files and only then commits what it may
+	// claim, so at most one bound's worth of articles is re-fetched on
+	// restart. 0 selects constants.DefaultCheckpointInterval (30s).
+	//
+	// Lowering it costs fsyncs and buys a shorter rework window. It cannot be
+	// disabled: with no barrier nothing is ever acked as downloaded, so the
+	// job would re-fetch everything on every restart.
+	CheckpointInterval int `yaml:"checkpoint_interval" json:"checkpoint_interval"`
+
+	// CheckpointBytes bounds the same rework window by volume, for a link
+	// fast enough that 30 seconds is a lot of data. The barrier fires on
+	// whichever bound arrives first. 0 selects
+	// constants.DefaultCheckpointBytes (64 MiB).
+	CheckpointBytes ByteSize `yaml:"checkpoint_bytes" json:"checkpoint_bytes"`
+
 	// MaxArtTries is the per-article attempt count across all servers
 	// before the article is marked bad. Must be >= 1.
 	MaxArtTries int `yaml:"max_art_tries" json:"max_art_tries"`

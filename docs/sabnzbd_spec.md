@@ -650,6 +650,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
 | `min_free_space` | int | `1024` | Min free disk space in MB before pause |
 | `write_cache_size` | string | `64M` | Write coalescing buffer size (e.g., `64M`, `0`=disabled) |
+| `checkpoint_interval` | int | `30` | Seconds between durability checkpoints per job (`0`=default) |
+| `checkpoint_bytes` | string | `64M` | Bytes downloaded per job between durability checkpoints (`0`=default) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |

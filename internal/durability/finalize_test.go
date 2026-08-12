@@ -6,6 +6,8 @@ import (
 	"slices"
 	"syscall"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // truncTarget is a Truncator that records the bound it was asked for.
@@ -20,7 +22,8 @@ type truncTarget struct {
 	called   bool
 }
 
-func (s *truncTarget) Files() []int32 { return []int32{0} }
+func (s *truncTarget) Files() []int32    { return []int32{0} }
+func (s *truncTarget) Path(int32) string { return "/tmp/trunc-target.bin" }
 func (s *truncTarget) Drain(context.Context, int32) ([]WrittenArticle, error) {
 	return s.drained, nil
 }
@@ -390,9 +393,15 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 			if err := b.FinalizeFile(ctx, "job-1", 0, tc.target()); err == nil {
 				t.Fatal("FinalizeFile returned nil on a storage fault")
 			}
-			if len(stall.stalled)+len(stall.failed) == 0 {
-				t.Error("the fault never reached Stallable, so the job has no surfaced reason " +
+			routed := append(append([]*storagefault.Fault{}, stall.stalled...), stall.failed...)
+			if len(routed) == 0 {
+				t.Fatal("the fault never reached Stallable, so the job has no surfaced reason " +
 					"and the user sees an unexplained halt")
+			}
+			// R27: the reason has to name the file, or the user is told a
+			// disk failed without being told which one.
+			if got := routed[0].Path; got != "/tmp/trunc-target.bin" {
+				t.Errorf("routed fault Path = %q, want the target's path", got)
 			}
 			if len(ack.proofs) != 0 {
 				t.Error("articles were acked despite a storage fault; a failed barrier must ack nothing (R7)")

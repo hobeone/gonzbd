@@ -830,11 +830,12 @@ func TestAssembler_HelperMethods(t *testing.T) {
 	})
 
 	t.Run("finalizeFile", func(t *testing.T) {
-		// finalizeFile no longer truncates and no longer computes a CRC —
-		// both moved to durability.Barrier, which is the only component that
-		// knows an fsync has happened (see finalizeFile's doc comment). What
-		// is left to pin here is: drain+close, the open/completed map
-		// transition, and that OnFileComplete fires with (jobID, fileIdx).
+		// finalizeFile no longer truncates, no longer computes a CRC, and no
+		// longer closes the handle — all three moved to durability.Barrier,
+		// which is the only component that knows an fsync has happened (see
+		// finalizeFile's doc comment). What is left to pin here is: the
+		// tombstone goes down, the handle stays OPEN for the barrier to
+		// finalize through, and OnFileComplete fires with (jobID, fileIdx).
 		var callbackJobID string
 		var callbackFileIdx int
 		var callbackFired int
@@ -869,10 +870,16 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		a.finalizeFile(f, key, req, open, completed, wc)
 
-		// Check maps updated.
-		if _, ok := open[key]; ok {
-			t.Error("expected file to be removed from open map")
+		// The file stays open. Removing it here would take the handle away
+		// from Barrier.FinalizeFile, which still has to Drain, Sync, Truncate
+		// and Stat it — so the completed file would keep pre-allocation's
+		// trailing zeros and its last articles would never be acked.
+		if _, ok := open[key]; !ok {
+			t.Error("finalizeFile removed the file from the open map; the barrier can no longer finalize it")
 		}
+		// The tombstone goes down immediately even so, or a late duplicate
+		// would be written into a file the barrier is mid-way through
+		// truncating.
 		if _, ok := completed[key]; !ok {
 			t.Error("expected file to be added to completed map")
 		}

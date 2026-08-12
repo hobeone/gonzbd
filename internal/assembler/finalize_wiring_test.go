@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -172,4 +173,127 @@ func extendFileTo(path string, n int64) error {
 	}
 	defer func() { _ = fh.Close() }()
 	return fh.Truncate(n)
+}
+
+// TestCompletedFileStaysOpenForTheBarrierThenCloses pins the handoff that
+// makes the completion truncate reachable at all.
+//
+// The assembler used to drain, fsync and CLOSE a file the moment its last part
+// arrived, and only then report it complete. Every operation
+// durability.Barrier.FinalizeFile performs — Drain, Sync, Truncate, Stat —
+// goes through that handle, so under the old order a completed file could
+// never be trimmed: it would keep pre-allocation's trailing zeros, which par2
+// reports as damage on a file whose download was perfectly healthy.
+//
+// The order is now: tombstone and report, caller finalizes, caller calls
+// CloseFile. This test walks that sequence against a real file, asserting the
+// handle is still usable in between and gone afterwards.
+func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "job1_0.dat")
+	// TotalParts 1 means the single article below completes the file, which is
+	// what puts finalizeFile on the path. Every other test in this file keeps
+	// the file incomplete precisely to avoid it.
+	files := map[string]FileInfo{"job1:0": {Path: path, TotalParts: 1}}
+
+	done := make(chan struct{}, 1)
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(string, int) {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
+	a := startAssembler(t, opts)
+
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
+		Offset: 0, Data: make([]byte, 100),
+	}); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the file never completed; the fixture is not exercising finalizeFile")
+	}
+
+	tgt := a.SyncTargetFor("job1", oneFileMap{n: 1})
+	if got := tgt.Files(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("Files() = %v after completion, want [0] — the handle was closed "+
+			"before the barrier could finalize the file, so it keeps pre-allocation's "+
+			"trailing zeros and its last articles are never acked", got)
+	}
+
+	if err := extendFileTo(path, 4096); err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+
+	hdb, err := history.Open(t.Context(), filepath.Join(dir, "h.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = hdb.Close() })
+	db := history.NewRepository(hdb).DB()
+	facts := durability.NewSQLiteFactLog(db)
+	if err := facts.Append(ctx, "job1", []durability.ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	ack := &noopAcker{}
+	b := durability.NewBarrier(facts, durability.NewSQLiteExtentStore(db), ack, noopStall{},
+		slog.New(slog.DiscardHandler))
+
+	trunc, ok := tgt.(durability.Truncator)
+	if !ok {
+		t.Fatal("the per-job adapter does not implement durability.Truncator")
+	}
+	if err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
+		t.Fatalf("FinalizeFile on a completed file: %v", err)
+	}
+	if st, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if st.Size() != 100 {
+		t.Errorf("file is %d bytes after finalizing a completed file, want 100", st.Size())
+	}
+	if len(ack.acked) != 1 || ack.acked[0] != 0 {
+		t.Errorf("acked %v, want [0] — the last drain's articles are the ones a "+
+			"close-at-completion would have thrown away", ack.acked)
+	}
+
+	if err := a.CloseFile(t.Context(), "job1", 0); err != nil {
+		t.Fatalf("CloseFile: %v", err)
+	}
+	if got := tgt.Files(); len(got) != 0 {
+		t.Errorf("Files() = %v after CloseFile, want none — the handle leaks for the "+
+			"rest of the job", got)
+	}
+	// Idempotent: CancelJob, CloseJobHandles and shutdown can all get there
+	// first, and the completion consumer must not turn that race into an error.
+	if err := a.CloseFile(t.Context(), "job1", 0); err != nil {
+		t.Errorf("second CloseFile returned %v, want nil — closing an already-closed "+
+			"file is a race with cancel/shutdown, not a disagreement", err)
+	}
+}
+
+// TestSyncTargetPath_ReportsTheResolvedTargetPath pins R27's input. The
+// barrier stamps this onto every storage fault it routes, and an empty one
+// tells a user their disk is full without saying which disk.
+func TestSyncTargetPath_ReportsTheResolvedTargetPath(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]FileInfo{}
+	path := registerFile(t, dir, files, "job1", 0, 2)
+	a := New(makeOpts(dir, files), slog.New(slog.DiscardHandler))
+
+	tgt := a.SyncTargetFor("job1", oneFileMap{n: 2})
+	if got := tgt.Path(0); got != path {
+		t.Errorf("Path(0) = %q, want %q", got, path)
+	}
+	// A file the resolver does not know about degrades to "" rather than
+	// failing: Path is diagnostic, and nothing may branch on it.
+	if got := tgt.Path(99); got != "" {
+		t.Errorf("Path(99) = %q for an unregistered file, want \"\"", got)
+	}
 }
