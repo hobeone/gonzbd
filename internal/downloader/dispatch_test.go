@@ -408,9 +408,7 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	if err := d.queue.Add(job); err != nil {
 		t.Fatalf("queue.Add: %v", err)
 	}
-	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, d.queue, job.ID, "h@h")
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
@@ -459,9 +457,7 @@ func TestBuildDispatchPlan_UnrecognizedPar2KeepsDispatching(t *testing.T) {
 	// One article of two fails: 50 bytes of damaged content against a
 	// recognized capacity of zero. Acting on that comparison would kill the
 	// job; the capacity is unknown, so the gate declines to.
-	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, d.queue, job.ID, "h@h")
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)

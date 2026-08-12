@@ -52,16 +52,12 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	if err := q1.MarkJobStarted(job1q.ID, now.Add(-10*time.Second)); err != nil {
 		t.Fatalf("MarkJobStarted: %v", err)
 	}
-	if _, err := q1.MarkArticlesFailed(job1q.ID, []string{"a0@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q1, job1q.ID, "a0@t")
 	doneIDs := make([]string, 8)
 	for i := range doneIDs {
 		doneIDs[i] = fmt.Sprintf("a%d@t", i+1)
 	}
-	if err := q1.MarkArticlesDone(job1q.ID, doneIDs); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q1, job1q.ID, doneIDs...)
 	if err := q1.RecordDownload(job1q.ID, "serverA", 1024*1024*5); err != nil { // 5 MB
 		t.Fatalf("RecordDownload: %v", err)
 	}
@@ -261,9 +257,7 @@ func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
 	if !qjob.HasDeferredPar2() {
 		t.Fatal("fixture guard: recovery volume not deferred — NewJob's OnDemandPar2 wiring didn't take, nothing is being tested")
 	}
-	if err := q.MarkArticlesDone(qjob.ID, []string{"c1@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, qjob.ID, "c1@t")
 
 	job := &postproc.Job{Queue: qjob}
 	entry := buildHistoryEntry(job)

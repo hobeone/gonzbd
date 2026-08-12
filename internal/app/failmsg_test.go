@@ -46,9 +46,7 @@ func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *queue.J
 		t.Fatalf("Add: %v", err)
 	}
 	for _, i := range failIdx {
-		if _, err := q.MarkArticleFailed(job.ID, fmt.Sprintf("a%d@t", i)); err != nil {
-			t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-		}
+		ackFailed(t, q, job.ID, fmt.Sprintf("a%d@t", i))
 	}
 	return job
 }

@@ -99,9 +99,9 @@ func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 }
 
 // TriggerOnFileComplete invokes the OnFileComplete callback directly for testing.
-func (a *Application) TriggerOnFileComplete(jobID string, fileIdx int, fileCRC uint32) {
+func (a *Application) TriggerOnFileComplete(jobID string, fileIdx int) {
 	if a.onFileComplete != nil {
-		a.onFileComplete(jobID, fileIdx, fileCRC)
+		a.onFileComplete(jobID, fileIdx)
 	}
 }
 

@@ -56,9 +56,7 @@ func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc
 	startTime := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
 	finishTime := time.Now().Truncate(time.Second)
 	_ = seed.MarkJobStarted(job.ID, startTime)
-	if err := seed.MarkArticlesDone(job.ID, []string{"a@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, seed, job.ID, "a@t")
 	if err := seed.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}

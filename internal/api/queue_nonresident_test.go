@@ -105,7 +105,7 @@ func TestBuildSlot_NonResidentJobHasNoCurrentFile(t *testing.T) {
 // starts Deferred (see Job.NewJob's Deferred: isRecovery &&
 // opts.OnDemandPar2). No store is needed: unlike newEvictedJob, this test
 // needs the manifest resident, not evicted. Returns the queue alongside the
-// job so a caller can drive MarkArticlesDone through it.
+// job so a caller can drive ackDone through it.
 func newOnDemandPar2Job(t *testing.T) (*queue.Queue, *queue.Job) {
 	t.Helper()
 	parsed := &nzb.NZB{
@@ -171,9 +171,7 @@ func TestBuildSlot_DeferredPar2VolumeExcludedAfterDownload(t *testing.T) {
 	t.Parallel()
 	q, job := newOnDemandPar2Job(t)
 
-	if err := q.MarkArticlesDone(job.ID, []string{"c1@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, "c1@t")
 
 	slot := buildSlot(job, false, 0, 0, nil)
 

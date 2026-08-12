@@ -66,12 +66,8 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	// One article succeeds and one fails. The successful one is what makes
 	// the assertions below non-vacuous: it must survive the retry, which
 	// only a loaded overlay can achieve.
-	if err := q.MarkArticlesDone(jobID, []string{"a1@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(jobID, []string{"a2@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackDone(t, q, jobID, "a1@t")
+	ackFailed(t, q, jobID, "a2@t")
 	seeded.MarkDownloadFinished(finished)
 	if err := q.Save(h.adminDir); err != nil {
 		t.Fatalf("Save: %v", err)

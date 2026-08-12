@@ -93,9 +93,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	}
 
 	// Mark article 3 (first article of File 1) done by ArtIdx
-	if err := q.MarkArticlesDoneByIdx(job.ID, []int32{3}); err != nil {
-		t.Fatalf("MarkArticlesDoneByIdx(3): %v", err)
-	}
+	ackDoneIdx(t, q, job.ID, 3)
 
 	snap, _ := q.Get(job.ID)
 	p := snap.Progress()
@@ -114,9 +112,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	for i := range 9 {
 		allIdxs = append(allIdxs, int32(i))
 	}
-	if err := q.MarkArticlesDoneByIdx(job.ID, allIdxs); err != nil {
-		t.Fatalf("MarkArticlesDoneByIdx(all): %v", err)
-	}
+	ackDoneIdx(t, q, job.ID, allIdxs...)
 
 	snap, _ = q.Get(job.ID)
 	p = snap.Progress()

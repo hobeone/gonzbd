@@ -220,10 +220,9 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 	}
 	if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
 		!isRetryableDownloaderError(res.Err) {
-		// Terminal failure (all servers exhausted or unrecoverable
-		// decode error). Hand to the assembler so it can mark the
-		// article Failed in the queue.
-		p.log.Warn("article permanently failed, handing to assembler",
+		// Terminal failure: all servers exhausted, or an unrecoverable
+		// decode error.
+		p.log.Warn("article permanently failed",
 			"job", res.JobID, "msgid", res.MessageID, "file", res.Subject, "err", res.Err)
 
 		if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
@@ -231,9 +230,28 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 				"job", res.JobID, "fileidx", res.FileIdx, "err", err)
 		}
 
-		// The assembler marks the article Failed in the queue (with dup
-		// suppression) so failure and completion accounting stay ordered
-		// with file writes on the single worker goroutine.
+		// Record the permanent failure directly. R10 puts this outside the
+		// barrier deliberately: a permanent failure asserts nothing about
+		// disk, so there is no fsync for it to be ordered after, and losing
+		// one in a crash costs a re-attempt that fails again. Only the
+		// success direction needs the barrier's proof.
+		//
+		// The assembler used to do this, on the argument that failure and
+		// completion accounting should be ordered with file writes on its
+		// single worker goroutine. That argument died with the assembler's
+		// ack authority: a Done now comes only from the barrier, and
+		// markDone/markFailed are both first-writer-wins on the same bit, so
+		// there is no ordering left for the two to get wrong. Without this
+		// call nothing records the failure at all, and a job whose every
+		// article failed finishes as Completed with an empty fail message.
+		if err := p.queue.AckPermanentFailure(res.JobID, []int32{res.ArtIdx}); err != nil {
+			p.log.Warn("record permanent article failure",
+				"job", res.JobID, "msgid", res.MessageID, "err", err)
+		}
+
+		// The article still goes to the assembler, which counts it toward the
+		// file's part total so the file can complete with a hole in it. It
+		// writes nothing and acks nothing.
 		writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 			JobID:     res.JobID,
 			FileIdx:   res.FileIdx,

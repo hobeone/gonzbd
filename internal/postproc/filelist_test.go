@@ -7,10 +7,53 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
+
+// artIdxForID resolves a message ID to its global article index using only
+// exported Manifest accessors — job.manifest itself is unexported outside
+// package queue, so tests in this package cannot reach the fast lookup the
+// queue package uses internally.
+func artIdxForID(t *testing.T, m *queue.Manifest, msgID string) int32 {
+	t.Helper()
+	for i := range m.NumArticles() {
+		if m.ArticleID(i) == msgID {
+			return int32(i) //nolint:gosec // G115: article counts are far below int32
+		}
+	}
+	t.Fatalf("artIdxForID: no article with message ID %s", msgID)
+	return 0
+}
+
+// fileIdxForArticle returns the manifest file index owning global article
+// index i, using only exported Manifest accessors (Manifest.fileIndexForArticle
+// is unexported outside package queue).
+func fileIdxForArticle(m *queue.Manifest, i int) (int, bool) {
+	for fi := range m.NumFiles() {
+		lo, hi := m.FileRange(fi)
+		if i >= lo && i < hi {
+			return fi, true
+		}
+	}
+	return 0, false
+}
+
+// ackFailedIDs is AckPermanentFailure keyed by message ID, replacing the
+// deleted MarkArticlesFailed. A permanent failure asserts nothing about
+// disk, so unlike done articles it needs no durable-extent proof.
+func ackFailedIDs(t *testing.T, q *queue.Queue, m *queue.Manifest, jobID string, msgIDs []string) {
+	t.Helper()
+	idxs := make([]int32, 0, len(msgIDs))
+	for _, id := range msgIDs {
+		idxs = append(idxs, artIdxForID(t, m, id))
+	}
+	if err := q.AckPermanentFailure(jobID, idxs); err != nil {
+		t.Fatalf("AckPermanentFailure: %v", err)
+	}
+}
 
 func TestCompletionPct(t *testing.T) {
 	tests := []struct {
@@ -78,19 +121,59 @@ func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Qu
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	// Collect done/failed state per file first, then apply it in two batched
+	// calls: SeedFromExtents installs a file's whole durable bitmap rather
+	// than merging into one, and AckPermanentFailure asserts nothing about
+	// disk so it needs no proof. Since buildQueueJob knows the full spec
+	// upfront there is no need to reconstruct "current" state from the
+	// job's progress (which is unexported outside package queue anyway).
+	//
+	// specs' file order is NOT the manifest's: NewJob calls sortJobFiles,
+	// so every lookup below goes through the message ID rather than
+	// trusting fi/ai to line up with the manifest's file/article indices.
+	doneByFile := make(map[int][]int) // manifest file index -> local ordinals
+	var failedIDs []string
 	for fi, f := range specs {
 		for ai, a := range f.articles {
 			id := fmt.Sprintf("f%da%d@t", fi, ai)
 			switch {
 			case a.failed:
-				if _, err := q.MarkArticlesFailed(job.ID, []string{id}); err != nil {
-					t.Fatalf("MarkArticlesFailed: %v", err)
-				}
+				failedIDs = append(failedIDs, id)
 			case a.done:
-				if err := q.MarkArticlesDone(job.ID, []string{id}); err != nil {
-					t.Fatalf("MarkArticlesDone: %v", err)
+				globalIdx := int(artIdxForID(t, m, id))
+				mfi, ok := fileIdxForArticle(m, globalIdx)
+				if !ok {
+					t.Fatalf("buildQueueJob: article %s (global idx %d) not owned by any manifest file", id, globalIdx)
 				}
+				lo, _ := m.FileRange(mfi)
+				doneByFile[mfi] = append(doneByFile[mfi], globalIdx-lo)
 			}
+		}
+	}
+	var exts []durability.FileExtent
+	for mfi, ordinals := range doneByFile {
+		lo, hi := m.FileRange(mfi)
+		bm := durability.NewBitmap(hi - lo)
+		for _, o := range ordinals {
+			bm.Set(o)
+		}
+		exts = append(exts, durability.FileExtent{
+			FileIdx: int32(mfi), //nolint:gosec // G115: file counts are far below int32
+			Durable: bm,
+		})
+	}
+	if len(failedIDs) > 0 {
+		ackFailedIDs(t, q, m, job.ID, failedIDs)
+	}
+	if len(exts) > 0 {
+		if err := q.SeedFromExtents(job.ID, exts); err != nil {
+			t.Fatalf("SeedFromExtents: %v", err)
 		}
 	}
 	return q, job

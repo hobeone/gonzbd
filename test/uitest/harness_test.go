@@ -206,9 +206,7 @@ func (e *testEnv) seedQueue(t *testing.T, n int) {
 		if err := e.Queue.Add(job); err != nil {
 			t.Fatalf("queue.Add: %v", err)
 		}
-		if err := e.Queue.MarkArticleDone(id, fmt.Sprintf("test-job-%04d-a@t", i)); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		ackDone(t, e.Queue, id, fmt.Sprintf("test-job-%04d-a@t", i))
 	}
 }
 

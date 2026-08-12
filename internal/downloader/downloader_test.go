@@ -353,9 +353,7 @@ func TestDownloaderHappyPath(t *testing.T) {
 				continue
 			}
 			got[r.MessageID] = string(r.Data)
-			if err := q.MarkArticleDone(r.JobID, r.MessageID); err != nil {
-				t.Fatalf("MarkArticleDone: %v", err)
-			}
+			ackDone(t, q, r.JobID, r.MessageID)
 		case <-deadline:
 			t.Fatalf("timeout waiting for completions; got=%d", len(got))
 		}
@@ -397,9 +395,7 @@ func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 		if r.Err != nil {
 			t.Fatalf("unexpected err for %s: %v", r.MessageID, r.Err)
 		}
-		if err := q.MarkArticleDone(r.JobID, r.MessageID); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		ackDone(t, q, r.JobID, r.MessageID)
 	}
 
 	// After all articles are successfully processed, tryList and
@@ -882,7 +878,7 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 			if res.Err != nil {
 				t.Errorf("unexpected error for %s: %v", res.MessageID, res.Err)
 			}
-			_ = q.MarkArticleDone(res.JobID, res.MessageID)
+			ackDone(t, q, res.JobID, res.MessageID)
 		}
 		close(done)
 	}()

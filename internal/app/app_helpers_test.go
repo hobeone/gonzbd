@@ -134,9 +134,7 @@ func buildFailArticleJob(t *testing.T) (*queue.Queue, *queue.Job) {
 // second article in the same file still pending.
 func TestHasFailedArticle_TrueWhenAnyArticleInRangeFailed(t *testing.T) {
 	q, job := buildFailArticleJob(t)
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"second@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "second@t")
 
 	m, p := mustManifest(t, job), job.Progress()
 	if !hasFailedArticle(m, p, 0) {
@@ -170,9 +168,7 @@ func TestHasFailedArticle_RespectsFileBoundary(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"a@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "a@t")
 
 	m, p := mustManifest(t, job), job.Progress()
 	if !hasFailedArticle(m, p, 0) {

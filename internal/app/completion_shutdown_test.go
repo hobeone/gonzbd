@@ -81,7 +81,7 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	// Events 1-128 fill internalFileComplete (capacity 128).
 	// Events 129-149 take the fallback goroutine path.
 	for i := range numFiles {
-		application.TriggerOnFileComplete(job.ID, i, 0)
+		application.TriggerOnFileComplete(job.ID, i)
 	}
 
 	// When app.cancel() runs during Shutdown, unblock emitter so watchCompletions

@@ -36,9 +36,7 @@ func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int
 		t.Fatalf("Add: %v", err)
 	}
 	for _, i := range failIdx {
-		if _, err := q.MarkArticleFailed(job.ID, fmt.Sprintf("a%d@t", i)); err != nil {
-			t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-		}
+		ackFailed(t, q, job.ID, fmt.Sprintf("a%d@t", i))
 	}
 	return job
 }

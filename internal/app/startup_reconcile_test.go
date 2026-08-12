@@ -60,9 +60,7 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 	if err := application.Queue().Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := application.Queue().MarkArticlesDone(job.ID, []string{"rec1@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, application.Queue(), job.ID, "rec1@t")
 	// IsComplete keys on the per-file Complete flag, which the assembler
 	// sets, not on article state.
 	if err := application.Queue().MarkFileComplete(job.ID, 0); err != nil {

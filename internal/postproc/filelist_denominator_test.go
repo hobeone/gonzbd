@@ -40,17 +40,15 @@ func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing
 	if err := q.DiscardDeferredPar2(qjob.ID); err != nil {
 		t.Fatalf("DiscardDeferredPar2: %v", err)
 	}
-	// Only now does an article fail permanently. The volume is FetchNever, so
-	// it is not released and stays out of the expected set.
-	if _, err := q.MarkArticlesFailed(qjob.ID, []string{"f0a1@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
-
-	p := qjob.Progress()
 	m, err := qjob.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
+	// Only now does an article fail permanently. The volume is FetchNever, so
+	// it is not released and stays out of the expected set.
+	ackFailedIDs(t, q, m, qjob.ID, []string{"f0a1@t"})
+
+	p := qjob.Progress()
 
 	expected, total, failed := p.ExpectedBytes(), m.TotalBytes(), p.FailedBytes()
 	if failed == 0 {

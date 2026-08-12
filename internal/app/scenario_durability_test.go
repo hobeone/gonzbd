@@ -51,7 +51,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 		default:
 		}
 		<-pauseCh
-		return rawApp.Queue().MarkArticlesDone(jobID, messageIDs)
+		return seedDoneByMsgIDs(rawApp.Queue(), jobID, messageIDs)
 	}
 
 	a, err := app.New(cfg, repo,

@@ -573,9 +573,7 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 		t.Fatalf("expected 1 file, got %d", m.NumFiles())
 	}
 	doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
-	if err := q.MarkArticlesDone(job.ID, doneIDs); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, doneIDs...)
 
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&nzo_id="+job.ID+"&files=1&apikey="+testAPIKey)
@@ -672,25 +670,17 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 	}{
 		{"queued", func(*testing.T, *queue.Queue, string) {}, "queued"},
 		{"downloading", func(t *testing.T, q *queue.Queue, jobID string) {
-			if err := q.MarkArticlesDone(jobID, []string{"a0@t"}); err != nil {
-				t.Fatalf("MarkArticlesDone: %v", err)
-			}
+			ackDone(t, q, jobID, "a0@t")
 		}, "downloading"},
 		{"done", func(t *testing.T, q *queue.Queue, jobID string) {
-			if err := q.MarkArticlesDone(jobID, []string{"a0@t", "a1@t"}); err != nil {
-				t.Fatalf("MarkArticlesDone: %v", err)
-			}
+			ackDone(t, q, jobID, "a0@t", "a1@t")
 			if err := q.MarkFileComplete(jobID, 0); err != nil {
 				t.Fatalf("MarkFileComplete: %v", err)
 			}
 		}, "done"},
 		{"failed", func(t *testing.T, q *queue.Queue, jobID string) {
-			if err := q.MarkArticlesDone(jobID, []string{"a0@t"}); err != nil {
-				t.Fatalf("MarkArticlesDone: %v", err)
-			}
-			if _, err := q.MarkArticlesFailed(jobID, []string{"a1@t"}); err != nil {
-				t.Fatalf("MarkArticlesFailed: %v", err)
-			}
+			ackDone(t, q, jobID, "a0@t")
+			ackFailed(t, q, jobID, "a1@t")
 			if err := q.MarkFileComplete(jobID, 0); err != nil {
 				t.Fatalf("MarkFileComplete: %v", err)
 			}
@@ -2688,9 +2678,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 		t.Fatalf("SetStatusIf: %v", err)
 	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"big-article-001@example.com"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "big-article-001@example.com")
 
 	live, err := q.Get(job.ID)
 	if err != nil {
@@ -2727,7 +2715,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 		t.Errorf("Warning = %q, want %q", slot.Warning, "low disk space")
 	}
 	if slot.FailedBytes == 0 {
-		t.Error("FailedBytes = 0, want > 0 after MarkArticlesFailed")
+		t.Error("FailedBytes = 0, want > 0 after ackFailed")
 	}
 	if slot.Bytes != 10*1024*1024 {
 		t.Errorf("Bytes = %d, want %d", slot.Bytes, 10*1024*1024)

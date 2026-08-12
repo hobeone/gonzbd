@@ -97,41 +97,6 @@ type opaqueTimeoutError struct{}
 func (e *opaqueTimeoutError) Error() string { return "operation deadline reached" }
 func (e *opaqueTimeoutError) Timeout() bool { return true }
 
-func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
-	q := queue.New()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
-			{ID: "a1@x", Bytes: 100, Number: 1},
-			{ID: "a2@x", Bytes: 100, Number: 2},
-			{ID: "a3@x", Bytes: 100, Number: 3},
-		}},
-	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := q.Add(job); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.SetFileExtents(job.ID, 0, 4096, 4096); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &pipeline{
-		log:         slog.Default(),
-		queue:       q,
-		downloadDir: t.TempDir(),
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
-	}
-	if err := p.registerFile(job.ID, 0); err != nil {
-		t.Fatalf("registerFile: %v", err)
-	}
-	info := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
-	if info.InitialWriteCursor != 4096 {
-		t.Errorf("InitialWriteCursor = %d, want 4096", info.InitialWriteCursor)
-	}
-}
-
 func TestPipeline_HandleFailureResult(t *testing.T) {
 	q := queue.New()
 	// a1@x is the article under test (left pending); 9 filler articles are
@@ -155,12 +120,8 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	for i := range 9 {
 		failIDs = append(failIDs, fmt.Sprintf("fail%d@x", i))
 	}
-	if _, err := q.MarkArticlesFailed(job.ID, failIDs); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
-	if err := q.MarkArticlesDone(job.ID, []string{"filldone@x"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackFailed(t, q, job.ID, failIDs...)
+	ackDone(t, q, job.ID, "filldone@x")
 
 	// Create an assembler (not started, so WriteArticle fails with ErrNotStarted)
 	a := assembler.New(assembler.Options{
