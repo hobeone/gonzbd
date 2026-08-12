@@ -2,6 +2,7 @@ package assembler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -296,7 +297,7 @@ func TestSyncTargetDrainReportsEachArticleExactlyOnce(t *testing.T) {
 		}
 	}
 
-	target := a.SyncTargetFor("job1")
+	target := a.SyncTargetFor("job1", nil)
 	waitUntil(t, func() bool { return len(target.Files()) == 1 }, 2*time.Second, "file 0 to open")
 
 	first, err := target.Drain(t.Context(), 0)
@@ -407,3 +408,61 @@ func TestRelievePressureForUnknownFileIsSkippedSafely(t *testing.T) {
 		t.Error("relievePressure did not drain the orphaned entry")
 	}
 }
+
+// TestFatalAfterAWrittenArticleCannotRetractIt replaces
+// TestFatalAfterBufferedSuccessDoesNotOutraceTheDoneAck, which the plan
+// authorised deleting because "the ordering it guards is gone once one
+// component acks".
+//
+// That is true, but it was asserted rather than shown, so this shows it. The
+// old race was a Done ack racing a Failed ack for the same article, with the
+// loser's claim winning. Both acks are gone from this package: a success is
+// reported only by appearing in Drain, and a permanent failure produces no
+// report here at all — it goes to Queue.AckPermanentFailure from the pipeline.
+// With one reporter and one direction, there is no second claim to outrace.
+//
+// What that means concretely is the assertion below: a FatalErr arriving after
+// an article's bytes have landed cannot retract the Written report. It could
+// not be demonstrated by inspection, because "nothing acks" is a claim about
+// absence — so it is demonstrated by driving both events through the real
+// worker in the losing order and reading what the barrier would see.
+func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]FileInfo{}
+	registerFile(t, dir, files, "job1", 0, 1000) // never completes
+	a := startAssembler(t, makeOpts(dir, files))
+
+	// The article's bytes land first.
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
+		Offset: 0, Data: []byte("abcd"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Then a permanent failure arrives for the SAME article — the order that
+	// used to let a Failed ack overwrite a Done one.
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
+		FatalErr: errFatalProbe,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	written, err := a.SyncTargetFor("job1", oneFileMap{n: 1}).Drain(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	var found bool
+	for _, w := range written {
+		if w.ArtIdx == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("article 0 is absent from Drain after a later FatalErr — a permanent " +
+			"failure retracted bytes that are on disk, which is the ordering inversion " +
+			"the deleted test guarded")
+	}
+}
+
+var errFatalProbe = errors.New("permanent article failure (test)")

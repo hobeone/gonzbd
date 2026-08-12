@@ -53,22 +53,51 @@ type syncReply struct {
 // ErrAssemblerStopped reports a barrier operation submitted after Stop.
 var ErrAssemblerStopped = errors.New("assembler: stopped before the barrier operation ran")
 
+// ArticleMap supplies the two manifest facts the assembler does not have and
+// cannot derive: how many articles a file holds, and where a global article
+// index sits within it.
+//
+// The assembler deliberately never learns them. It is fed one article at a
+// time and has no view of the job's manifest, so any answer it invented would
+// be a guess — and the barrier uses these to place bits in a durable bitmap,
+// where a wrong ordinal marks the wrong article durable and costs a silently
+// short file. The caller that owns the manifest supplies them instead.
+type ArticleMap interface {
+	// ArticleCount returns how many articles the file holds in total. The
+	// barrier needs it to size the durable bitmap at its true width rather
+	// than the byte width persistence rounds it up to.
+	ArticleCount(fileIdx int32) int
+	// FileLocalOrdinal maps a global article index to the file's bit
+	// position. False means the article does not belong to the file, which
+	// the barrier treats as a bookkeeping defect and fails loudly on rather
+	// than skipping the article (A2).
+	FileLocalOrdinal(fileIdx, artIdx int32) (int, bool)
+}
+
 // SyncTargetFor returns a durability.SyncTarget scoped to one job.
 //
 // The assembler itself cannot implement SyncTarget: the interface is per-job —
 // Files() returns one job's files — while the assembler is keyed on
 // fileKey{jobID, fileIdx} and serves every job at once. This adapter supplies
-// the missing dimension and nothing else.
-// supplies the per-job dimension SyncTarget needs and the Assembler cannot.
+// the missing dimension, and am supplies the manifest facts.
 //
-//nolint:ireturn // returning the interface is the point: this is the adapter that
-func (a *Assembler) SyncTargetFor(jobID string) durability.SyncTarget {
-	return &jobSyncTarget{a: a, jobID: jobID}
+// A nil am answers "unknown" to both manifest questions, which makes every
+// barrier over this target fail loudly on its first article rather than commit
+// a bitmap built from invented ordinals. That is the safe direction, not a
+// usable mode.
+//
+// to supply the per-job dimension durability.SyncTarget requires and the
+// multi-job Assembler cannot.
+//
+//nolint:ireturn // Returning the interface is the point: this accessor exists
+func (a *Assembler) SyncTargetFor(jobID string, am ArticleMap) durability.SyncTarget {
+	return &jobSyncTarget{a: a, jobID: jobID, am: am}
 }
 
 type jobSyncTarget struct {
 	a     *Assembler
 	jobID string
+	am    ArticleMap
 }
 
 var _ durability.SyncTarget = (*jobSyncTarget)(nil)
@@ -142,14 +171,22 @@ func (t *jobSyncTarget) Truncate(ctx context.Context, fileIdx int32, bound int64
 	return err
 }
 
-// ArticleCount and FileLocalOrdinal are answered from the manifest, not from
-// the worker, so they are supplied by the caller that owns it. Until Task 10
-// wires that, they report the honest "unknown" answers: a zero count and a
-// false ordinal, both of which the barrier treats as a bookkeeping defect and
-// fails loudly on rather than skipping an article.
-func (t *jobSyncTarget) ArticleCount(int32) int { return 0 }
+// ArticleCount and FileLocalOrdinal come from the manifest, not the worker, so
+// they do not go through the control channel at all — they are pure lookups
+// against the ArticleMap the caller supplied.
+func (t *jobSyncTarget) ArticleCount(fileIdx int32) int {
+	if t.am == nil {
+		return 0
+	}
+	return t.am.ArticleCount(fileIdx)
+}
 
-func (t *jobSyncTarget) FileLocalOrdinal(int32, int32) (int, bool) { return 0, false }
+func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
+	if t.am == nil {
+		return 0, false
+	}
+	return t.am.FileLocalOrdinal(fileIdx, artIdx)
+}
 
 // handleSyncOp performs one barrier operation on the worker goroutine.
 func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {

@@ -110,19 +110,22 @@ type FileProgress struct {
 	// Both construction paths classify by subject rather than reading a
 	// column, which is why no schema change is needed — job_files already
 	// stores the subject.
-	IsPar2      bool
-	WriteCursor int64
-	// MaxWritten is the highest byte position the assembler has written for
-	// this file — its decoded high-water mark. Persisted so a resumed run
-	// starts from the file's real extent instead of zero; without it the
-	// completion truncate cuts away whatever an earlier run wrote above the
-	// articles this run happens to receive (#342).
+	IsPar2 bool
+	// There is deliberately no WriteCursor or MaxWritten here.
 	//
-	// Distinct from WriteCursor, which is the *contiguous* frontier and so
-	// normally lags this figure whenever articles arrive out of order. Only
-	// this one is a statement about bytes on disk; see the assembler's
-	// FileInfo.InitialWriteCursor for why the cursor is not.
-	MaxWritten     int64
+	// Both used to be persisted and fed back to the assembler on resume, so
+	// the completion truncate would not cut below what earlier runs wrote
+	// (#342). The truncate no longer derives its bound from anything the
+	// queue knows: durability.Barrier computes it as the highest end offset
+	// among the file's DURABLE facts, which describes the FILE rather than
+	// the session, and needs no seed. The write cursor was only ever a
+	// coalescing hint and is now local to the assembler's cache, starting at
+	// zero each run (#311, #353).
+	//
+	// They are gone rather than retained-at-zero because a field that is
+	// always zero and documented as a resume seed is worse than no field: a
+	// reader chasing #342 would find it, read that the truncate depends on
+	// it, see it return 0, and conclude the bug is back.
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32
 }
@@ -232,24 +235,6 @@ func (p *JobProgress) FileFailedBytes(fi int) int64 {
 		return 0
 	}
 	return p.files[fi].FailedBytes
-}
-
-// FileWriteCursor returns the assembler's contiguous write frontier for file fileIdx.
-func (p *JobProgress) FileWriteCursor(fi int) int64 {
-	if p == nil || fi < 0 || fi >= len(p.files) {
-		return 0
-	}
-	return p.files[fi].WriteCursor
-}
-
-// FileMaxWritten returns the highest byte position written for file fileIdx —
-// the file's decoded high-water mark, used to seed a resumed run so the
-// completion truncate does not cut below what earlier runs already wrote.
-func (p *JobProgress) FileMaxWritten(fi int) int64 {
-	if p == nil || fi < 0 || fi >= len(p.files) {
-		return 0
-	}
-	return p.files[fi].MaxWritten
 }
 
 // FileFilename returns the resolved on-disk filename for file fileIdx, or empty if unresolved.
@@ -746,8 +731,6 @@ func (p *JobProgress) resetForReload(m *Manifest, i int) {
 type fileProgressJSON struct {
 	Complete       bool        `json:"complete,omitempty"`
 	Fetch          FetchPolicy `json:"fetch_policy,omitempty"`
-	WriteCursor    int64       `json:"write_cursor,omitempty"`
-	MaxWritten     int64       `json:"max_written,omitempty"`
 	Filename       string      `json:"filename,omitempty"`
 	AssembledCRC32 uint32      `json:"assembled_crc32,omitempty"`
 }
@@ -780,8 +763,6 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 		files[fi] = fileProgressJSON{
 			Complete:       f.Complete,
 			Fetch:          f.Fetch,
-			WriteCursor:    f.WriteCursor,
-			MaxWritten:     f.MaxWritten,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
 		}
@@ -817,8 +798,6 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 		p.files[fi] = FileProgress{
 			Complete:       f.Complete,
 			Fetch:          f.Fetch,
-			WriteCursor:    f.WriteCursor,
-			MaxWritten:     f.MaxWritten,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
 		}

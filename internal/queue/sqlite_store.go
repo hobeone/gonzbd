@@ -452,8 +452,9 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	// job_files stores no byte or cursor figures at all. The recompute at the
 	// end of this function derives Bytes, BytesDownloaded and FailedBytes from
 	// the manifest and the article bitmaps, so those never needed a column;
-	// WriteCursor and MaxWritten no longer have one either, and a resumed file
-	// starts both at zero until the durable extents restore them.
+	// The write cursor and high-water mark are gone entirely: the completion
+	// truncate derives its bound from the durable facts rather than from a
+	// seed, and the coalescing cursor is local to the assembler's cache.
 	const qFiles = `
 SELECT file_index, complete, fetch_policy, assembled_crc32, COALESCE(articles_done, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`

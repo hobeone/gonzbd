@@ -189,20 +189,46 @@ func TestAssembler_HasNoAckSurface(t *testing.T) {
 // of the cutover, in a const block between two deleted functions, and this is
 // what found it. A report had already claimed it was gone.
 //
-// Scoped to '*.go' across the WHOLE repository, not to internal/assembler.
-// Repo-wide because the name must not reappear in any package; Go files only
-// because docs/ legitimately discuss the old symbol when explaining why it was
-// removed, and a test that fails on prose describing history would be noise
-// that trains its own suppression.
+// It walks the working tree with grep rather than asking git, because git grep
+// sees only TRACKED files: a reintroduction in a file not yet added would pass
+// a git-based check and then land with the commit that adds it.
+//
+// Scoped to Go sources across the whole repository. Repo-wide because the name
+// must not reappear in any package; Go-only because docs/ legitimately discuss
+// the old symbol when explaining why it was removed, and a test that fails on
+// prose describing history is noise that trains its own suppression.
 func TestNoSymbolNamesWriteAtDurable(t *testing.T) {
 	// The needle is assembled at run time so this file does not contain the
 	// literal and therefore cannot match itself. A self-listing grep test
 	// fails forever for a reason that has nothing to do with the code it
 	// guards, and the usual repair is to delete the guard.
 	needle := "outcome" + "Durable"
-	out, err := exec.Command("git", "grep", "-n", needle, "--", "*.go").CombinedOutput()
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatalf("locate repo root: %v", err)
+	}
+	out, err := exec.Command("grep", "-rn", "--include=*.go", needle, root).CombinedOutput()
 	if err == nil && len(out) > 0 {
 		t.Errorf("%s still present; a not-durable state must not be named durable:\n%s", needle, out)
+	}
+}
+
+// repoRoot returns the module root, so the grep above covers every package
+// rather than only the one the test happens to run in.
+func repoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", os.ErrNotExist
+		}
+		dir = parent
 	}
 }
 
@@ -264,5 +290,169 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	}
 	if _, failed := w.seenFailed["a9"]; !failed {
 		t.Error("a9 was not moved to seenFailed")
+	}
+}
+
+// TestFileWriter_TruncateIgnoresANegativeBound pins the degenerate input. A
+// negative bound reaches Truncate only from a derivation that produced
+// nonsense, and os.File.Truncate would return an error for it; treating it as
+// "nothing to do" keeps a completed file intact rather than failing the job
+// over an arithmetic result nothing can act on.
+func TestFileWriter_TruncateIgnoresANegativeBound(t *testing.T) {
+	w := newTestFileWriter(t)
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcd")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Truncate(-1); err != nil {
+		t.Fatalf("Truncate(-1) = %v, want nil", err)
+	}
+	st, err := os.Stat(w.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != 4 {
+		t.Errorf("file is %d bytes after Truncate(-1), want 4 unchanged", st.Size())
+	}
+}
+
+// TestFileWriter_DrainOnACancelledContextClaimsNothing pins B4's shape at the
+// writer: a cancelled context must stop the drain and report a storage fault,
+// never return the buffered articles as though their bytes had landed.
+func TestFileWriter_DrainOnACancelledContextClaimsNothing(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
+	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 4096, []byte("abcd")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := w.Drain(ctx)
+	if err == nil {
+		t.Fatal("Drain returned nil error on a cancelled context")
+	}
+	var f *storagefault.Fault
+	if !errors.As(err, &f) {
+		t.Fatalf("Drain error = %T, want *storagefault.Fault", err)
+	}
+	for _, a := range got {
+		if a.ArtIdx == 1 {
+			t.Fatal("article 1 reported written although the drain was cancelled before its write")
+		}
+	}
+}
+
+// TestFileWriter_StatOnAClosedHandleIsAStorageFault pins Stat's failure branch.
+// The barrier reads this pair as the S7 validity stamp, so a failure must come
+// back classified rather than as a zero size that would look like an empty file.
+func TestFileWriter_StatOnAClosedHandleIsAStorageFault(t *testing.T) {
+	w := newTestFileWriter(t)
+	if err := w.handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := w.Stat()
+	if err == nil {
+		t.Fatal("Stat on a closed handle returned nil error; a zero size would read as an empty file")
+	}
+	var f *storagefault.Fault
+	if !errors.As(err, &f) {
+		t.Fatalf("Stat error = %T, want *storagefault.Fault", err)
+	}
+}
+
+// TestFileWriter_DrainReleasesUnattemptedBuffersOnFailure pins the pooling half
+// of Drain's error path. Everything after the failing write was never attempted
+// and still holds a pooled buffer; leaking those costs one decoder buffer per
+// article for the rest of the drain.
+func TestFileWriter_DrainReleasesUnattemptedBuffersOnFailure(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(1<<20), withWriteError(syscall.ENOSPC))
+	for i, off := range []int64{4096, 8192, 12288} {
+		if err := w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: int32(i)}, off, make([]byte, 64)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := w.Drain(context.Background())
+	if err == nil {
+		t.Fatal("Drain returned nil after ENOSPC")
+	}
+	if len(got) != 0 {
+		t.Errorf("Drain reported %d articles written although every WriteAt failed", len(got))
+	}
+}
+
+// TestFileWriter_CoalescedRunWriteFailureReportsNothing pins flushRun's error
+// branch. A coalesced run is one WriteAt for many articles, so a failure loses
+// all of their bytes at once — reporting any of them would claim bytes the file
+// does not have for articles whose originals are already pooled.
+func TestFileWriter_CoalescedRunWriteFailureReportsNothing(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(4<<20), withWriteError(syscall.EIO))
+
+	// Fill a contiguous run past contiguousRunSize so a flush actually fires.
+	const chunk = 64 << 10
+	var off int64
+	var lastErr error
+	for i := range 12 {
+		lastErr = w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: int32(i)}, off, make([]byte, chunk))
+		off += chunk
+		if lastErr != nil {
+			break
+		}
+	}
+	if lastErr == nil {
+		t.Fatal("no coalesced flush fired; the fixture never reached contiguousRunSize")
+	}
+	var f *storagefault.Fault
+	if !errors.As(lastErr, &f) {
+		t.Fatalf("run write error = %T, want *storagefault.Fault", lastErr)
+	}
+	if got := w.writtenSoFar(); len(got) != 0 {
+		t.Errorf("writtenSoFar = %d articles after the run's WriteAt failed, want 0", len(got))
+	}
+}
+
+// TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange pins the success half
+// of coalescing, which is the write cache's entire purpose: many articles
+// become one WriteAt, and each must still be reported with its OWN offset and
+// length.
+//
+// The ranges cannot be recovered from the coalesced buffer — it is flat, and
+// the originals are pooled before the write — so they are carried on runPart.
+// Getting that wrong misreports every article in the run at once, and the
+// barrier charges durable bytes from exactly these numbers.
+func TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(4<<20))
+
+	const chunk = 64 << 10
+	const n = 12 // 768 KiB, past contiguousRunSize (512 KiB)
+	for i := range n {
+		if err := w.Accept(
+			articleID{msgID: string(rune('a' + i)), artIdx: int32(i)}, //nolint:gosec // G115: loop bound is 12
+			int64(i)*chunk, make([]byte, chunk),
+		); err != nil {
+			t.Fatalf("Accept %d: %v", i, err)
+		}
+	}
+
+	got := w.writtenSoFar()
+	if len(got) == 0 {
+		t.Fatal("no coalesced flush fired; the fixture never reached contiguousRunSize")
+	}
+	for _, a := range got {
+		wantOff := int64(a.ArtIdx) * chunk
+		if a.Offset != wantOff {
+			t.Errorf("article %d reported at offset %d, want %d — the run's ranges were "+
+				"derived from the coalesced buffer instead of carried per article",
+				a.ArtIdx, a.Offset, wantOff)
+		}
+		if a.Length != chunk {
+			t.Errorf("article %d reported length %d, want %d", a.ArtIdx, a.Length, chunk)
+		}
+	}
+	// The bytes must actually be on disk at those offsets, not merely claimed.
+	st, err := os.Stat(w.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(len(got)) * chunk; st.Size() < want {
+		t.Errorf("file is %d bytes but %d articles were reported written", st.Size(), len(got))
 	}
 }

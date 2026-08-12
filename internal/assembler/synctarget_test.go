@@ -120,7 +120,7 @@ func TestSyncTargetSubmit_AfterStopDoesNotBlock(t *testing.T) {
 	if err := a.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	tgt := a.SyncTargetFor("job1").(*jobSyncTarget)
+	tgt := a.SyncTargetFor("job1", nil).(*jobSyncTarget)
 	if _, err := tgt.submit(context.Background(), syncOp{kind: opFiles}); err == nil {
 		t.Fatal("submit returned nil error after Stop; the barrier would block on a dead worker")
 	}
@@ -140,7 +140,7 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tgt := a.SyncTargetFor("job1")
+	tgt := a.SyncTargetFor("job1", nil)
 	if got := tgt.Files(); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("Files() = %v through the worker, want [0]", got)
 	}
@@ -156,4 +156,61 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 	}
 	_ = path
 
+}
+
+// TestSyncTargetFor_NilArticleMapAnswersUnknown pins the safe direction of the
+// manifest dependency. The adapter has no manifest of its own, so with no
+// ArticleMap it must answer "I don't know" rather than invent an ordinal: the
+// barrier places durable bits by that ordinal, and a plausible-looking wrong
+// answer marks the wrong article durable and costs a silently short file.
+//
+// A false ordinal makes Barrier.buildExtent fail loudly on the first article,
+// which is the intended outcome — a barrier that cannot place an article must
+// stop, not guess.
+func TestSyncTargetFor_NilArticleMapAnswersUnknown(t *testing.T) {
+	a := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, slog.Default())
+	tgt := a.SyncTargetFor("job1", nil)
+
+	if got := tgt.ArticleCount(0); got != 0 {
+		t.Errorf("ArticleCount with no ArticleMap = %d, want 0", got)
+	}
+	if _, ok := tgt.FileLocalOrdinal(0, 3); ok {
+		t.Error("FileLocalOrdinal reported a usable ordinal with no ArticleMap; " +
+			"the barrier would place a durable bit from an invented position")
+	}
+}
+
+// TestSyncTargetFor_ArticleMapRejectsOutOfRangeArticles pins the false result
+// on the supplied-map path too. An article that does not belong to the file is
+// a bookkeeping defect, and reporting a usable ordinal for it would write the
+// bit into some other article's position.
+func TestSyncTargetFor_ArticleMapRejectsOutOfRangeArticles(t *testing.T) {
+	a := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, slog.Default())
+	tgt := a.SyncTargetFor("job1", oneFileMap{n: 3})
+
+	if got := tgt.ArticleCount(0); got != 3 {
+		t.Errorf("ArticleCount = %d, want 3", got)
+	}
+	if ord, ok := tgt.FileLocalOrdinal(0, 2); !ok || ord != 2 {
+		t.Errorf("FileLocalOrdinal(0,2) = (%d,%v), want (2,true)", ord, ok)
+	}
+	if _, ok := tgt.FileLocalOrdinal(0, 9); ok {
+		t.Error("FileLocalOrdinal accepted article 9 for a 3-article file")
+	}
+}
+
+// TestSyncTargetFiles_AfterStopReportsNoFiles pins Files' error branch. It has
+// no error return, so a dead worker has to surface as an empty set — the
+// barrier then fsyncs nothing and claims nothing, which is the safe answer.
+func TestSyncTargetFiles_AfterStopReportsNoFiles(t *testing.T) {
+	a := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, slog.Default())
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.SyncTargetFor("job1", oneFileMap{n: 1}).Files(); len(got) != 0 {
+		t.Errorf("Files() = %v after Stop, want empty", got)
+	}
 }

@@ -941,8 +941,9 @@ const offsetSlackDivisor = 8
 // as an unbounded int64 from the article body returned by the NNTP server. It
 // is therefore attacker-controlled: without this check, a hostile or
 // compromised server can return a single article whose offset makes WriteAt
-// produce a file of arbitrary apparent size (finalizeFile then truncates to
-// that inflated high-water mark, committing it).
+// produce a file of arbitrary apparent size. The completion truncate no longer
+// commits that size — it is bounded by the durable facts — but the sparse file
+// itself is still the attack, so the offset is rejected before the write.
 func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
 	reject := func(reason string) bool {
 		a.log.Warn("rejecting out-of-range article write offset",
