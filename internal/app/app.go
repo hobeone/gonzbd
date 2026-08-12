@@ -230,6 +230,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	for _, o := range opts {
 		o(app)
 	}
+	// Resolve both checkpoint bounds HERE, not in Start.
+	//
+	// They are read by noteJobBytes on the pipeline's worker goroutines and by
+	// runCheckpoint on its own, and New is the last point at which nothing is
+	// running yet — the options loop above is the final writer either way.
+	// Resolving in Start would write the field after Start has already
+	// launched pipeline.run, which is a data race with a concrete cost rather
+	// than a theoretical one: this is where the DEFAULT is substituted, so a
+	// stale read of the configured 0 (the documented "use the default") makes
+	// `bytes >= checkpointBytes` true for every article and runs a full
+	// barrier per article.
+	app.checkpointInterval, app.checkpointBytes = checkpointSettings(app.checkpointInterval, app.checkpointBytes)
 	if app.log == nil {
 		app.log = slog.Default().With("component", "app")
 	}
@@ -811,8 +823,9 @@ func (app *Application) Start(ctx context.Context) error {
 	app.pipeline.ctx = app.ctx // must be set before goroutine launch (setCompletions reads it)
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
 	app.wg.Go(func() { app.watchCompletions(app.ctx) })
-	interval, cpBytes := checkpointSettings(app.checkpointInterval, app.checkpointBytes)
-	app.checkpointBytes = cpBytes
+	// Read only. Both bounds were resolved in New, before anything was
+	// running; writing either here would race every goroutine launched above.
+	interval := app.checkpointInterval
 	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
 

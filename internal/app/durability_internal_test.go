@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
@@ -920,5 +922,71 @@ func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
 	if !sawStallUpdate {
 		t.Error("a stall broadcast nothing; the queue halts and the UI shows the " +
 			"pre-stall state until an unrelated event refreshes it")
+	}
+}
+
+// ---------- bound resolution ----------
+
+// TestNew_ResolvesBothCheckpointBoundsBeforeAnythingRuns pins where the
+// defaults are substituted, which is a question about data races rather than
+// about defaults.
+//
+// Both bounds are read from goroutines Start launches: noteJobBytes runs on
+// every pipeline worker, runCheckpoint on its own. Resolving them in Start
+// means writing the fields after those goroutines exist. That is a race with a
+// concrete cost, not a theoretical one — the substitution is what turns the
+// configured 0 ("use the default") into 64 MiB, so a reader that sees the
+// unresolved 0 finds `bytes >= 0` true for every article and asks for a full
+// barrier per article: a few dozen fsyncs per 700 KB.
+//
+// The assertion is on behaviour rather than on the field, because a test that
+// only read the field would pass against a Start-time resolution the moment
+// the test happened to call Start first.
+func TestNew_ResolvesBothCheckpointBoundsBeforeAnythingRuns(t *testing.T) {
+	adminDir := t.TempDir()
+	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+	})
+	// 0 is the documented "use the default" for both.
+	cfg.With(func(c *config.Config) {
+		c.Downloads.CheckpointInterval = 0
+		c.Downloads.CheckpointBytes = 0
+	})
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	application, err := New(cfg, history.NewRepository(db))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Start has NOT been called. A single byte must not cross a 64 MiB bound.
+	application.noteJobBytes("job-a", 1)
+	if n := len(application.barrierKick); n != 0 {
+		t.Fatalf("%d barrier kicks from one byte against an unresolved bound; the "+
+			"default was substituted after the readers were already running, so every "+
+			"article asks for a full barrier", n)
+	}
+
+	if application.checkpointInterval != defaultCheckpointInterval {
+		t.Errorf("checkpointInterval = %v after New, want %v",
+			application.checkpointInterval, defaultCheckpointInterval)
+	}
+	if application.checkpointBytes != defaultCheckpointBytes {
+		t.Errorf("checkpointBytes = %d after New, want %d",
+			application.checkpointBytes, defaultCheckpointBytes)
+	}
+
+	// And a configured value still wins over the default.
+	cfg.With(func(c *config.Config) { c.Downloads.CheckpointBytes = 4096 })
+	configured, err := New(cfg, history.NewRepository(db))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if configured.checkpointBytes != 4096 {
+		t.Errorf("checkpointBytes = %d, want the configured 4096", configured.checkpointBytes)
 	}
 }
