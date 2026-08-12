@@ -3333,6 +3333,163 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+## Task 10b: Resume on restart (wire the resumer)
+
+**Why this task exists.** Task 7 built `durability.Resumer` and Task 8 built
+`Queue.SeedFromExtents`; Task 10 constructs the resumer in `app.go`. Nothing
+ever *calls* either one. A restart therefore re-downloads every byte an
+earlier run already fsynced, so **L3 is unsatisfied** — the plan specified the
+mechanism and never named its caller. This is the fourth gap of that shape on
+this branch (`file_extents.bytes_failed`, `FactLog.Append`, the CRC presence
+flag). Task 12's crash-consistency harness cannot measure anything until this
+lands, so this task comes first.
+
+**USER DECISION (2026-08-12): startup sweep in `app.Start`, synchronous.**
+Rejected: a `queue.WithPromoteHook` (inverts layering — the queue would call
+into the app, and it is a new public cross-package interface) and a lazy
+resume in `pipeline.registerFile` (runs only *after* an article has been
+downloaded, which is too late to prevent the re-fetch it exists to avoid).
+
+The sweep is complete despite running only at startup: a freshly added job has
+no committed extents, and a job's extents cannot change while it is not
+running, so a job promoted hours after startup is still correctly seeded.
+
+**Files:**
+- Create: `internal/app/resume_startup.go`
+- Test: `internal/app/resume_startup_test.go`
+- Modify: `internal/app/app.go` — call the sweep inside `Start`, after
+  `queue.Load` has produced `app.queue` and **before** the pipeline begins
+  dispatching.
+
+**Interfaces:**
+- Consumes: `(*durability.Resumer).Resume(ctx, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (durability.ResumeResult, error)`;
+  `(*queue.Queue).SeedFromExtents(jobID string, exts []durability.FileExtent) error`;
+  `storagefault.Classify(op, path string, err error) *storagefault.Fault`.
+- Produces: `func (app *Application) resumeAllJobs(ctx context.Context) error`.
+
+### Four rules that are easy to get wrong
+
+1. **Only `FileIdx` and `Durable` may be populated on the converted
+   `FileExtent`.** Read `SeedFromExtents` — those are the only two fields it
+   consumes. `ResumeResult` carries no `Size`/`ModTimeNs`/`BytesDurable`, and
+   inventing them would manufacture a Class B record that asserts a stat
+   nobody performed.
+2. **Do NOT write the resumed extents back to `ExtentStore`.** The barrier is
+   the only writer of Class B, because a committed extent claims a completed
+   fsync stands behind it. A resume proves what is on disk; it does not
+   perform the fsync that would license a new commit. Re-verification on the
+   next restart is bounded rework and is the correct cost.
+3. **A `Resume` error is a storage fault, never an article fault (A1).**
+   Classify it and stall the job with a surfaced reason, leaving its articles
+   Outstanding. Never mark an article permanently failed because a *disk*
+   read failed — that is precisely the attribution defect this design exists
+   to eliminate.
+4. **`Restart == true` means seed nothing for that file.** Its bitmap is
+   already empty, and every article is correctly Outstanding under S3.
+
+### Steps
+
+- [ ] **Step 1: Write the failing tests**
+
+Put all six in `internal/app/resume_startup_test.go`.
+
+Every fixture MUST contain, in one file, **at least one durable article and at
+least one non-durable article**. This is not stylistic. On this branch, 15+
+inert tests have been found whose fixtures made the code under test
+unnecessary; a fixture where every article is durable passes against a
+`markDone`-everything mutation, and one where none are passes against a
+seed-nothing mutation. Both mutations must go red.
+
+1. `TestResumeAtStartup_SeedsDurableArticles` — commit an extent whose bitmap
+   marks articles 0 and 2 durable but not 1, with the on-disk file's size and
+   mtime matching the committed extent. After `Start`, assert `ArticleDone(0)`
+   and `ArticleDone(2)` are true and `ArticleDone(1)` is false.
+2. `TestResumeAtStartup_DurableArticlesAreNeverRefetched` — the ordering pin,
+   and the one that actually states L3. Record the message IDs the
+   `nntptest` server is asked for. Assert the durable articles' IDs are
+   **never requested** and the non-durable one is. A resume that runs after
+   dispatch begins passes test 1 and fails this one.
+3. `TestResumeAtStartup_MismatchedFileIsNotAdopted` — truncate the file after
+   committing the extent, so the size check fails. Assert the seeded set
+   reflects recomputation from the file's bytes, not the stale cache (S7).
+4. `TestResumeAtStartup_MissingFileLeavesEverythingOutstanding` — delete the
+   file. Assert no article is Done and `Start` returns no error.
+5. `TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles` — force a
+   non-`ErrNotExist` stat/read failure (e.g. chmod the directory to 0). Assert
+   the job is stalled with a surfaced reason and that no article is marked
+   permanently failed (A1).
+6. `TestResumeAtStartup_DoesNotCommitClassB` — snapshot `file_extents` before
+   and after `Start`; assert byte-identical. Pins rule 2.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+```bash
+go test -count=1 -run 'TestResumeAtStartup' ./internal/app/ -v
+```
+
+`-count=1` is mandatory. Without it Go replays a cached pass and prints `ok`,
+which reads as "the test is inert" — the inverse of the truth.
+
+- [ ] **Step 3: Implement `resumeAllJobs`**
+
+For each job in the queue in a resident or queued state: hydrate it if needed,
+take its manifest, and for each file index `f` derive `lo, hi :=
+m.FileRange(f)`, build the on-disk path the assembler would use, and call
+`Resume(ctx, jobID, int32(f), path, int32(lo), hi-lo)`. Convert each
+`ResumeResult` to a `durability.FileExtent{FileIdx: int32(f), Durable: r.Durable}`
+— those two fields only, per rule 1 — and pass the job's slice to
+`SeedFromExtents`. Log a per-job summary (files resumed, articles seeded,
+whether any file recomputed) at Info.
+
+`ctx` cancellation must abort the sweep promptly (R15, interruptible): check
+it between files, not merely between jobs, since one file's recompute is the
+long operation.
+
+- [ ] **Step 4: Verify green, then prove each test is a pin**
+
+Copy the file to a scratch dir first and restore from **your own copy**. Never
+`git stash` (the stash stack is shared with other sessions in this repo), never
+`git checkout -- <path>`, never `git reset`.
+
+Run each mutation with `-count=1` and record the actual failure message in the
+commit body. A red-green claim without the message it produced is an
+assertion, not evidence.
+
+| Mutation | Must redden |
+|---|---|
+| Delete the `SeedFromExtents` call | 1, 2 |
+| Move the sweep to after the pipeline starts | 2 |
+| Seed every article regardless of the bitmap | 1 |
+| Drop the size/mtime check (adopt unconditionally) | 3 |
+| Treat a `Resume` error as a permanent article failure | 5 |
+| Commit the resumed extents to `ExtentStore` | 6 |
+
+- [ ] **Step 5: Gates, then commit**
+
+```bash
+go fix ./... && goimports -w . && go vet ./...
+go test -count=1 -race ./... && golangci-lint run ./...
+go run ./scripts/check_lock_io      # the sweep does whole-file reads; it must hold no queue lock
+go test -count=1 -tags=integration ./test/integration/...
+```
+
+`check_lock_io` is called out because it is the gate this task can most
+plausibly break: resume CRCs entire files, and `hydrateJobLocked` runs under
+the queue's write lock. The sweep must do its I/O outside any queue lock.
+
+```bash
+git add internal/app/resume_startup.go internal/app/resume_startup_test.go internal/app/app.go
+git commit -m "feat(app): seed the work set from committed extents at startup
+
+Resumer and SeedFromExtents had no production caller, so every restart
+re-downloaded bytes an earlier run had already fsynced (L3).
+
+<paste the observed red output for each mutation above>"
+```
+
+---
+
+
 ## Task 11: Surface stall state and durability figures
 
 **Files:**
