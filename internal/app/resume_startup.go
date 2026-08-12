@@ -11,6 +11,22 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
+// fileResumer is the sweep's whole view of durability.Resumer: one file in,
+// what stable storage can prove about it out.
+//
+// A field of this type rather than *durability.Resumer so a test can count
+// and interleave the per-file calls. R15 requires the sweep to be
+// interruptible BETWEEN FILES, not merely between jobs, and that is a claim
+// about how many files were processed — which is unobservable from outside
+// unless the calls can be counted. A test that asserted only "an error came
+// back" was satisfied by ExtentStore.Load failing on the cancelled context,
+// and so passed with both checks deleted.
+//
+// durability.Resumer satisfies this and its signature is unchanged.
+type fileResumer interface {
+	Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (durability.ResumeResult, error)
+}
+
 // resumeAllJobs seeds every resident job's work set from what is actually on
 // stable storage, and is the production caller L3 was missing.
 //
@@ -66,6 +82,26 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// Seeded BEFORE the stall below, and unconditionally, because a fault
+		// on one file says nothing about the files already resumed.
+		//
+		// This used to return early on the first fault and discard them, and
+		// the cost was permanent rather than transient: the stall pauses the
+		// job, a paused job is not resident, and a non-resident job is skipped
+		// by every future sweep — which only runs at startup anyway. So an NFS
+		// flap on file 7 of 20 threw away the seed for all 20 and no later
+		// retry could recover it. A transient fault turning into a permanent
+		// loss of ground is the exact failure class this task exists to
+		// prevent.
+		//
+		// The order is load-bearing the other way too: Stall pauses the job,
+		// which evicts its manifest, and SeedFromExtents needs a resident one.
+		if err := app.queue.SeedFromExtents(snap.ID, exts); err != nil {
+			// Not fatal to startup: the job simply re-fetches what it could
+			// not be told it already has.
+			app.log.Warn("resume sweep could not seed a job's work set; it will re-fetch",
+				"job", snap.ID, "err", err)
+		}
 		if fault != nil {
 			// A1: a failure to READ the disk says nothing about any article.
 			// The job stalls with a surfaced reason and every article stays
@@ -73,21 +109,16 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 			// retry budget and degrade the job's reported health over a
 			// condition of the device.
 			//
-			// Stalled even when the fault classifies permanent. At this point
-			// nothing has been downloaded in this process, so there is no
-			// work to protect by failing the job outright — while an EACCES
-			// or EROFS on a mount that has not finished coming up at boot is
-			// both common and cleared by the operator in seconds. Failing
-			// would send a recoverable job to history and discard the bytes
-			// an earlier run left on disk.
+			// Stalled even when the fault classifies permanent, which is
+			// deliberately NOT what Barrier.routeFault does. The two answer
+			// different questions: the barrier asks "is this condition
+			// recoverable", while startup asks "is there work to protect by
+			// failing". Here there is none — nothing has been downloaded in
+			// this process — so failing would send a job to history and
+			// discard the bytes an earlier run left on disk, over an EACCES
+			// or EROFS on a mount that has not finished coming up at boot and
+			// that the operator clears in seconds.
 			app.Stall(snap.ID, fault)
-			continue
-		}
-		if err := app.queue.SeedFromExtents(snap.ID, exts); err != nil {
-			// Not fatal to startup: the job simply re-fetches what it could
-			// not be told it already has.
-			app.log.Warn("resume sweep could not seed a job's work set; it will re-fetch",
-				"job", snap.ID, "err", err)
 		}
 	}
 	return nil
@@ -109,6 +140,10 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 // The three returns are distinct outcomes and are deliberately not collapsed
 // into one error: a storage fault stalls this job and the sweep continues, a
 // context error aborts the sweep entirely, and neither is the other.
+//
+// A fault returns the extents gathered from the files BEFORE it, not nil. Its
+// caller seeds them and then stalls; see the note there for why discarding
+// them turned a transient fault into a permanent loss of ground.
 func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *queue.Manifest) ([]durability.FileExtent, *storagefault.Fault, error) {
 	nFiles := m.NumFiles()
 	exts := make([]durability.FileExtent, 0, nFiles)
@@ -136,7 +171,7 @@ func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, nil, fmt.Errorf("app: resume sweep aborted: %w", ctxErr)
 			}
-			return nil, storagefault.Classify("resume", path, err), nil
+			return exts, storagefault.Classify("resume", path, err), nil
 		}
 		if res.Recomputed {
 			recomputed++

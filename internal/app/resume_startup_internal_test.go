@@ -6,6 +6,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -117,6 +118,34 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 		t.Fatalf("ExtentStore.Commit: %v", err)
 	}
 	return f
+}
+
+// nameSecondFile gives file 1 a resolved on-disk name and a file to match, so
+// the sweep has two files to walk rather than one. Without it the per-file
+// context check has nothing to stop at.
+func (f *resumeUnitFixture) nameSecondFile(t *testing.T) {
+	t.Helper()
+	if err := f.app.queue.SetFileFilename(f.job.ID, 1, "B.bin"); err != nil {
+		t.Fatalf("SetFileFilename(1): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "B.bin"), make([]byte, 2*unitArtLen), 0o600); err != nil {
+		t.Fatalf("write B.bin: %v", err)
+	}
+}
+
+// faultOnSecondFile gives file 1 a resolved name pointing at a
+// self-referential symlink, so its stat fails with ELOOP — neither
+// fs.ErrNotExist nor a listed permanent errno, so it is a retryable storage
+// fault. File 0 is untouched and still resumes cleanly.
+func (f *resumeUnitFixture) faultOnSecondFile(t *testing.T) {
+	t.Helper()
+	if err := f.app.queue.SetFileFilename(f.job.ID, 1, "B.bin"); err != nil {
+		t.Fatalf("SetFileFilename(1): %v", err)
+	}
+	loop := filepath.Join(f.dir, "B.bin")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatalf("symlink loop: %v", err)
+	}
 }
 
 func (f *resumeUnitFixture) snapshot(t *testing.T) (*queue.Job, *queue.Manifest) {
@@ -256,18 +285,123 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	}
 }
 
-// TestResumeAllJobs_AbortsOnCancelledContext pins R15: a shutdown arriving
-// during the sweep stops it rather than waiting out a whole-file CRC walk.
-func TestResumeAllJobs_AbortsOnCancelledContext(t *testing.T) {
+// countingResumer records every per-file Resume call and lets a test act
+// between them.
+//
+// It exists because R15's "interruptible between FILES, not merely between
+// jobs" is a claim about how many files were processed, and nothing outside
+// the sweep can observe that otherwise. The previous version of the test
+// below asserted only that an error came back, which ExtentStore.Load
+// produces on its own when the context is already dead — so it passed with
+// both context checks deleted.
+type countingResumer struct {
+	inner  fileResumer
+	calls  []int32
+	onCall func(fileIdx int32)
+}
+
+func (c *countingResumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (durability.ResumeResult, error) {
+	c.calls = append(c.calls, fileIdx)
+	res, err := c.inner.Resume(ctx, jobID, fileIdx, path, firstArtIdx, artCount)
+	// AFTER the inner call, not before. Cancelling first makes the inner
+	// Resume fail on the dead context, and the sweep's own error branch then
+	// aborts — so the count would be 1 whether or not the per-file check
+	// exists. That is the inert version of this test, and it was written
+	// before it was caught.
+	if c.onCall != nil {
+		c.onCall(fileIdx)
+	}
+	return res, err
+}
+
+// TestResumeAllJobs_CancelBetweenFilesStopsAtTheNextFile pins R15's per-FILE
+// check.
+//
+// The context is cancelled from inside the first file's Resume, so the job
+// loop's own check has already passed and only the per-file check can stop
+// the sweep. The assertion is on how many files were resumed, not on the
+// existence of an error: an error is produced by the cancelled context
+// reaching SQLite whether or not either check exists.
+func TestResumeAllJobs_CancelBetweenFilesStopsAtTheNextFile(t *testing.T) {
 	f := newResumeUnitFixture(t)
+	f.nameSecondFile(t)
+
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	counter := &countingResumer{inner: f.app.resumer}
+	counter.onCall = func(int32) { cancel() }
+	f.app.resumer = counter
 
 	if err := f.app.resumeAllJobs(ctx); err == nil {
-		t.Fatal("resumeAllJobs returned nil on a cancelled context, so a shutdown would wait for it")
+		t.Error("resumeAllJobs returned nil after its context was cancelled")
+	}
+	if len(counter.calls) != 1 {
+		t.Errorf("resumed %d files (%v), want 1 — the sweep must stop at the next file "+
+			"rather than run the rest of the job to completion (R15)", len(counter.calls), counter.calls)
+	}
+}
+
+// TestResumeAllJobs_CancelBeforeAnyJobResumesNothing pins the per-JOB check,
+// which the per-file check cannot stand in for.
+//
+// The only job here is non-resident, so the sweep never reaches a file loop
+// and the per-file check can never fire. Without the per-job check the sweep
+// skips the job, finds nothing else, and returns nil — a cancelled startup
+// that reports success.
+func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
+	f := newResumeUnitFixture(t)
+	if err := f.app.queue.SetStatus(f.job.ID, constants.StatusPaused); err != nil {
+		t.Fatalf("SetStatus(Paused): %v", err)
+	}
+	counter := &countingResumer{inner: f.app.resumer}
+	f.app.resumer = counter
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := f.app.resumeAllJobs(ctx); err == nil {
+		t.Error("resumeAllJobs returned nil on an already-cancelled context, so a shutdown " +
+			"racing startup would be reported as a clean sweep")
+	}
+	if len(counter.calls) != 0 {
+		t.Errorf("resumed %d files on a cancelled context, want 0", len(counter.calls))
 	}
 	if f.app.queue.SnapshotJob(f.job.ID).Progress().ArticleDone(0) {
 		t.Error("an aborted sweep still seeded; the abort must leave the work set untouched")
+	}
+}
+
+// TestResumeAllJobs_SeedsFilesResumedBeforeAFault pins that a fault on one
+// file does not discard the files already resumed.
+//
+// The cost of discarding them is permanent, not transient: the stall pauses
+// the job, a paused job is not resident, and a non-resident job is skipped by
+// every future sweep — which only runs at startup. So a momentary NFS error
+// on the second file would throw away the first file's seed with no path back
+// to it.
+//
+// Asserting only that the job stalled would hold for both versions. The
+// assertion that discriminates is that file 0's durable article is Done
+// anyway.
+func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
+	f := newResumeUnitFixture(t)
+	f.faultOnSecondFile(t)
+
+	if err := f.app.resumeAllJobs(t.Context()); err != nil {
+		t.Fatalf("resumeAllJobs: %v", err)
+	}
+
+	snap := f.app.queue.SnapshotJob(f.job.ID)
+	if !snap.Progress().ArticleDone(0) {
+		t.Error("file 0 resumed cleanly, but its durable article was discarded because file 1 " +
+			"faulted afterwards — a transient fault must not cost the ground already recovered")
+	}
+	if snap.Progress().ArticleDone(1) {
+		t.Error("an article whose bytes are not on disk came back Done")
+	}
+	if snap.Status != constants.StatusPaused {
+		t.Errorf("status = %q, want %q — the faulting file must still stall the job", snap.Status, constants.StatusPaused)
+	}
+	if !strings.HasPrefix(snap.Warning, "Stalled: ") {
+		t.Errorf("warning = %q, want a surfaced stall reason (R27)", snap.Warning)
 	}
 }
 

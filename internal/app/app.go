@@ -133,7 +133,7 @@ type Application struct {
 	barrier *durability.Barrier
 	factLog durability.FactLog
 	extents durability.ExtentStore
-	resumer *durability.Resumer
+	resumer fileResumer
 
 	// checkpointBytes is B1's volume bound. checkpointInterval above is its
 	// time bound; the barrier fires on whichever arrives first.
@@ -811,9 +811,12 @@ func (app *Application) Start(ctx context.Context) error {
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
 	}
-	// Reset transient download state: Downloading → Queued, Emitted → false.
-	// On a cold restart these flags are stale — the old downloader's
-	// in-flight articles are long gone.
+	// Clear the Emitted flags and un-fail the articles the old downloader's
+	// teardown marked, so both are re-dispatchable. It changes no job's
+	// STATUS — the comment here used to say "Downloading → Queued", which it
+	// has never done, and that is worth being exact about directly above the
+	// sweep below: the sweep can only seed a RESIDENT job, and a job's status
+	// is what decides its residency at load.
 	app.queue.ClearAllEmitted()
 	// L3: seed each resident job's work set from what an earlier run already
 	// got onto stable storage, BEFORE the downloader below can dispatch a

@@ -483,7 +483,8 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// restart. pipeline.registerFile treats an empty name as "first
 			// time resolving this file" and calls GetUniqueFilename, which
 			// only returns a path that does not already exist — so a restart
-			// resumed into <name>.1 and orphaned every byte the previous run
+			// resumed into <name>.1.<ext> (the counter goes before the
+			// extension) and orphaned every byte the previous run
 			// had written, which is the opposite of what registerFile's own
 			// comment about "preventing duplicate renaming across daemon
 			// restarts" claims. And the startup resume sweep locates a job's

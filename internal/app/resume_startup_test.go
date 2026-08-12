@@ -357,45 +357,90 @@ func TestResumeAtStartup_MissingFileLeavesEverythingOutstanding(t *testing.T) {
 	f.assertDone(a, [resumeArts]bool{false, false, false})
 }
 
-// TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles pins A1.
+// TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles pins A1, and
+// the deliberate divergence from Barrier.routeFault that goes with it.
 //
 // A failure to READ the disk is a condition of the device and says nothing
 // about any article's availability. Attributing it to the articles would burn
 // their retry budget and make the job's reported health describe the disk
 // instead of the download.
 //
-// The fault is a self-referential symlink, which makes os.Stat return ELOOP:
-// not fs.ErrNotExist, so it cannot be mistaken for the missing-file case
-// above, and not one of the permanent errnos, so it classifies retryable.
+// Both classifications are exercised, and the permanent one is the point. The
+// barrier routes a permanent fault to Fail; the startup sweep routes it to
+// Stall, because at startup nothing has been downloaded yet, so failing
+// protects no work while it does send the job to history and discard the
+// bytes an earlier run left on disk. That divergence is invisible in a
+// retryable-only fixture — restoring `if fault.Permanent { app.Fail(...) }`
+// leaves every other test in this package green — so a later "harmonise the
+// fault routing" change would silently start binning recoverable jobs on a
+// boot-order EROFS.
 func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) {
-	f := newResumeFixture(t)
-	f.appendFacts()
-	if err := os.MkdirAll(f.dir, 0o750); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.Symlink(f.path, f.path); err != nil {
-		t.Fatalf("symlink loop: %v", err)
-	}
+	tests := []struct {
+		name string
+		// fault makes the target file's stat fail, and reports whether the
+		// resulting errno classifies permanent.
+		fault func(t *testing.T, f *resumeFixture)
+	}{{
+		// ELOOP: not fs.ErrNotExist, so it cannot be confused with the
+		// missing-file case, and not a listed permanent errno.
+		name: "retryable ELOOP",
+		fault: func(t *testing.T, f *resumeFixture) {
+			t.Helper()
+			if err := os.Symlink(f.path, f.path); err != nil {
+				t.Fatalf("symlink loop: %v", err)
+			}
+		},
+	}, {
+		// EACCES, which storagefault classifies PERMANENT. The barrier would
+		// Fail on this; the sweep must not.
+		name: "permanent EACCES",
+		fault: func(t *testing.T, f *resumeFixture) {
+			t.Helper()
+			if os.Geteuid() == 0 {
+				t.Skip("running as root: mode bits do not deny access, so no EACCES can be produced")
+			}
+			f.writePartial(0, 2)
+			f.commitExtent(0, 2)
+			if err := os.Chmod(f.dir, 0o000); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(f.dir, 0o750) })
+		},
+	}}
 
-	a := f.start(1)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			f.appendFacts()
+			if err := os.MkdirAll(f.dir, 0o750); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			tt.fault(t, f)
 
-	snap := a.Queue().SnapshotJob(f.jobID)
-	if snap == nil {
-		t.Fatal("the job left the queue on a storage fault; it must stall, not vanish")
+			a := f.start(1)
+
+			snap := a.Queue().SnapshotJob(f.jobID)
+			if snap == nil {
+				t.Fatal("the job left the queue on a storage fault; it must stall, not be " +
+					"failed into history — the bytes an earlier run left on disk go with it")
+			}
+			if snap.Status != constants.StatusPaused {
+				t.Errorf("status = %q, want %q — a storage fault must park the job rather than "+
+					"fail it or let it keep dispatching into a device that cannot be read",
+					snap.Status, constants.StatusPaused)
+			}
+			if !strings.HasPrefix(snap.Warning, "Stalled: ") {
+				t.Errorf("warning = %q, want a surfaced stall reason beginning \"Stalled: \" (R27); "+
+					"a \"Failed: \" reason here means the fault was routed as terminal", snap.Warning)
+			}
+			for i := range resumeArts {
+				if snap.Progress().ArticleFailed(i) {
+					t.Errorf("article %d was marked permanently failed by a DISK read failure (A1)", i)
+				}
+			}
+			f.assertDone(a, [resumeArts]bool{false, false, false})
+		})
 	}
-	if snap.Status != constants.StatusPaused {
-		t.Errorf("status = %q, want %q — a storage fault must park the job rather than let it "+
-			"keep dispatching into a device that cannot be read", snap.Status, constants.StatusPaused)
-	}
-	if !strings.HasPrefix(snap.Warning, "Stalled: ") {
-		t.Errorf("warning = %q, want a surfaced stall reason (R27)", snap.Warning)
-	}
-	for i := range resumeArts {
-		if snap.Progress().ArticleFailed(i) {
-			t.Errorf("article %d was marked permanently failed by a DISK read failure (A1)", i)
-		}
-	}
-	f.assertDone(a, [resumeArts]bool{false, false, false})
 }
 
 // TestResumeAtStartup_DoesNotCommitClassB pins the rule that the barrier is
