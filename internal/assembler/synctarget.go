@@ -59,6 +59,9 @@ var ErrAssemblerStopped = errors.New("assembler: stopped before the barrier oper
 // Files() returns one job's files — while the assembler is keyed on
 // fileKey{jobID, fileIdx} and serves every job at once. This adapter supplies
 // the missing dimension and nothing else.
+// supplies the per-job dimension SyncTarget needs and the Assembler cannot.
+//
+//nolint:ireturn // returning the interface is the point: this is the adapter that
 func (a *Assembler) SyncTargetFor(jobID string) durability.SyncTarget {
 	return &jobSyncTarget{a: a, jobID: jobID}
 }
@@ -124,9 +127,9 @@ func (t *jobSyncTarget) Sync(ctx context.Context, fileIdx int32) error {
 	return err
 }
 
-func (t *jobSyncTarget) Stat(fileIdx int32) (int64, int64, error) {
-	r, err := t.submit(context.Background(), syncOp{kind: opStat, fileIdx: fileIdx})
-	return r.size, r.modTimeNs, err
+func (t *jobSyncTarget) Stat(fileIdx int32) (size, modTimeNs int64, err error) {
+	r, e := t.submit(context.Background(), syncOp{kind: opStat, fileIdx: fileIdx})
+	return r.size, r.modTimeNs, e
 }
 
 // Truncate trims a completed file to bound.

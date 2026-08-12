@@ -11,6 +11,10 @@ import (
 )
 
 // newSyncOpFixture builds a worker-side open-file map with one real file.
+// The adapter must satisfy the barrier's interface; asserted at package scope
+// so a signature drift is a compile error rather than a runtime surprise.
+var _ durability.SyncTarget = (*jobSyncTarget)(nil)
+
 func newSyncOpFixture(t *testing.T) (*Assembler, map[fileKey]*openFile, fileKey) {
 	t.Helper()
 	dir := t.TempDir()
@@ -151,5 +155,5 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = path
-	var _ durability.SyncTarget = tgt
+
 }

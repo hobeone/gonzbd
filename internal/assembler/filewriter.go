@@ -264,7 +264,7 @@ func (w *FileWriter) Sync(ctx context.Context) error {
 // Stat returns the file's size and modification time as they are now. The pair
 // is the S7 validity stamp a later resume checks the file against, so it must
 // be read after the Sync it describes.
-func (w *FileWriter) Stat() (size int64, modTimeNs int64, err error) {
+func (w *FileWriter) Stat() (size, modTimeNs int64, err error) {
 	fi, err := w.handle.Stat()
 	if err != nil {
 		return 0, 0, storagefault.Classify("stat", w.path, err)

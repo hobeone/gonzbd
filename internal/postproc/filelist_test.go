@@ -156,7 +156,7 @@ func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Qu
 			}
 		}
 	}
-	var exts []durability.FileExtent
+	exts := make([]durability.FileExtent, 0, len(doneByFile))
 	for mfi, ordinals := range doneByFile {
 		lo, hi := m.FileRange(mfi)
 		bm := durability.NewBitmap(hi - lo)

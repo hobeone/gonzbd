@@ -2,7 +2,6 @@ package durability
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"slices"
 	"testing"
@@ -90,7 +89,7 @@ func TestFinalizeFile_TruncatesToTheHighestDurableFactEnd(t *testing.T) {
 		drained:  []WrittenArticle{{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 100}},
 	}
 	ack := &recordingAcker{}
-	b := NewBarrier(facts, exts, ack, &recordingStall{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b := NewBarrier(facts, exts, ack, &recordingStall{}, slog.New(slog.DiscardHandler))
 
 	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
@@ -145,7 +144,7 @@ func TestFinalizeFile_NoDurableFactsDoesNotTruncate(t *testing.T) {
 	exts := NewSQLiteExtentStore(db)
 
 	tgt := &truncTarget{artCount: 4}
-	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
 	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
@@ -175,7 +174,7 @@ func TestDurableExtent_DoesNotStopAtAHole(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+		slog.New(slog.DiscardHandler))
 
 	durable := NewBitmap(4)
 	durable.Set(0)
@@ -207,7 +206,7 @@ func TestDurableExtent_IgnoresFactsThatAreNotDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+		slog.New(slog.DiscardHandler))
 
 	durable := NewBitmap(2)
 	durable.Set(0) // article 1 decoded but never reached disk

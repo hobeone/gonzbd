@@ -29,7 +29,7 @@ func commitBarrierExtents(t *testing.T, db *sql.DB, job *Job) {
 		t.Fatalf("commitBarrierExtents: manifest: %v", err)
 	}
 	p := job.Progress()
-	var exts []durability.FileExtent
+	exts := make([]durability.FileExtent, 0, m.NumFiles())
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
 		bm := durability.NewBitmap(hi - lo)

@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -87,7 +86,7 @@ func mintProof(t *testing.T, jobID string, arts []int32, artCount int) durabilit
 		durability.NewSQLiteExtentStore(db),
 		captured,
 		noopStallable{},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		slog.New(slog.DiscardHandler),
 	)
 	if err := b.Run(context.Background(), jobID, tgt); err != nil {
 		t.Fatalf("mintProof: barrier run: %v", err)
