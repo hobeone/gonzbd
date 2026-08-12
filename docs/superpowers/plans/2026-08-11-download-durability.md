@@ -3119,6 +3119,44 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Task 10: Wire the barrier into the application
 
+> **Class A has no production writer — wire it here (decided during review).**
+> Nothing calls `FactLog.Append` anywhere in the tree. Without it `durableExtent`
+> computes a truncate bound of 0 and `Resume`'s recompute has nothing to verify
+> against, so the entire Class A layer is inert.
+>
+> Append in `internal/app/pipeline.go`'s `handleSuccessResult`, which already
+> holds `JobID`, `FileIdx`, `ArtIdx`, `Offset`, `len(Data)` and `CRC` at the
+> point it calls `WriteArticle`. **There is deliberately no ordering constraint
+> between the append and the write** (R2): a Class A fact asserts nothing about
+> presence, which is the property that lets it be committed without a barrier.
+> Do not add one.
+>
+> **Every decoded article now carries a CRC, and `HasCRC` is removed
+> (decided during review).** The decoder already computes its own checksum over
+> decoded yEnc output (`decoder.go:296`); the yEnc trailer is only a transfer
+> check, and a mismatch is `ErrCRCMismatch` before the data ever reaches us. The
+> UU path (`internal/decoder/uu.go`) simply never computed one, because the
+> *format* carries none to compare against — but our use is verification of our
+> own bytes on disk, not validation of the sender, so the format's silence is
+> irrelevant. Add the `crc32.ChecksumIEEE` over the decoded UU output.
+>
+> With that, no successfully decoded article lacks a CRC, so remove
+> `ArticleFact.HasCRC` and the `has_crc` column, along with:
+> `internal/durability/fact.go`, `factlog_sqlite.go`'s read/write of the column,
+> `001_initial.sql`'s column and its comment (still unmerged — edit in place),
+> and `internal/durability/resume.go`'s unverifiable branch plus
+> `TestResume_ArticleWithoutACRCIsLeftOutstanding`.
+>
+> **Keep `FileExtent.HasPrefixCRC` — it is a different fact.** It means "this is
+> a verified *whole-file* CRC", which stays necessary because a prefix that does
+> not reach the file's end still has no whole-file value. R23's
+> unavailable-vs-zero distinction survives at the file level; only the
+> per-article case disappears.
+>
+> **Before removing the branch, confirm the premise**: verify no decode path
+> other than UU can yield data without a CRC. If one exists, stop and report —
+> the removal is only safe because the set is closed.
+>
 > **Obligations carried from Task 6, reported by its implementer.**
 >
 > - **`Barrier.Run` is not reentrant and takes no lock.** Task 10 owns the
