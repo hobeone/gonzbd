@@ -236,7 +236,8 @@ func (q *Queue) SeedFromExtents(jobID string, exts []durability.FileExtent) erro
 // populated" rule would re-download on every restart.
 //
 // This mirrors what the retry path already does when it resets a file's failed
-// articles (see Job.applyRetryOverlay), for the same reason: an assembler that
+// articles (see Job.ResetForRetry, which clears FileProgress.Complete for every
+// file it reopens), for the same reason: an assembler that
 // must write more bytes into a file is not finished with it.
 //
 // AssembledCRC32 goes with the flag. It is the combined CRC of a whole

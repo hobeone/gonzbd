@@ -115,14 +115,38 @@ non-resident job must reconstruct. `Store.ArticleCountsByJob` returns a whole
 (`FetchPolicy`, exposed as `FileMeta.Fetch`) — because the derivation reads all
 of them.
 
-It no longer carries `bytes_downloaded` or `failed_bytes`. Those were columns
-on `job_files`, and they were removed along with `write_cursor` and
-`max_written`: each summarised facts held elsewhere while being maintained
-independently of them (#306, #337, #311). **A non-resident job therefore
-reports zero downloaded and zero failed bytes, and a full remaining figure,
-until promotion replays its article bitmaps** — the residency parity this
-section previously claimed does not currently hold. Restoring it from
-`file_extents` is the remaining half of the durability work.
+It no longer carries `bytes_downloaded`. That was a column on `job_files`, and
+it was removed along with `write_cursor` and `max_written`: each summarised
+facts held elsewhere while being maintained independently of them (#306, #337,
+#311). A **resident** job derives downloaded bytes from the `articles_done`
+bitmap the same rows already carry, in `JobProgress.recompute`. A
+**non-resident** one gets them from `file_extents.bytes_durable`, LEFT JOINed
+into `Store.ArticleCountsByJob`'s single grouped query — left, not inner,
+because `file_extents` holds a row only once a barrier has committed for that
+file, and an inner join would drop every job that has not yet checkpointed.
+
+`failed_bytes` **is** still a column, and is the one deliberate exception. It
+cannot be re-derived: a permanently failed article never decodes, so it writes
+no `article_facts` row, and no recomputation from Class A can produce the
+figure. `internal/history/migrations/001_initial.sql` records that reasoning at
+the schema, and `docs/durability-contract.md` § *The two classes of fact*
+records why `durability.FileExtent` has no column for it either.
+
+**Residency parity therefore holds again**: a non-resident job reports its
+downloaded, failed and remaining bytes from `job_files` alone, without a
+manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin, and
+its fixture deliberately needs **both** persistence paths — failed bytes from
+`job_files.failed_bytes`, downloaded bytes from `file_extents.bytes_durable` —
+so either one missing shows up there as a divergence.
+
+The article-level work set is a separate question, and `job_files.articles_done`
+is not the authority on it. At startup `Application.resumeAllJobs` re-derives
+every downloading job's work set from the files' actual bytes and installs the
+result through `Queue.ReplaceFromResume`, which **clears** a bit the
+recomputation could not prove as well as setting the ones it could. That column
+is a belief a previous process wrote; the recomputation is correct by definition
+(#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —
+it covers only resident jobs in `PhaseActive`, and only at startup.
 
 ## Memory budget
 
@@ -351,7 +375,9 @@ Recorded so these are not re-investigated as open questions:
   would change an exported signature for an unreachable branch.
 
   Four of the ten were nearly missed. `MarkArticlesDone`, `MarkArticleDone`,
-  `MarkArticlesFailed` and `MarkArticleFailed` write the guard inverted —
+  `MarkArticlesFailed` and `MarkArticleFailed` — all four since deleted by the
+  durability work, which replaced the assembler's six ack sites with
+  `Queue.AckDurable`/`AckPermanentFailure` — wrote the guard inverted —
   `if job.manifest != nil && job.progress != nil { ...whole body... }` — so a
   search for `== nil` does not find them, and `MarkDownloadFinished` and
   `MarkJobStarted` hide their dead progress guard the same way. This is the

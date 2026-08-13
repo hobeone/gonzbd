@@ -31,11 +31,15 @@ import (
 //   - ErrClosed: connection was torn down (server disconnect, timeout)
 //   - io.ErrUnexpectedEOF: premature server disconnect mid-transfer
 //   - ErrCRCMismatch: article data CRC doesn't match — try another server
+//   - context.Canceled / context.DeadlineExceeded: a shutdown or a deadline cut
+//     this attempt short, which says nothing about the article
 //   - Dial errors / connection resets / I/O timeouts
 //
-// Terminal errors (other decode failures, ErrAuthRejected, etc.) return false
-// and should be routed through the assembler's FatalErr path for failure
-// accounting.
+// Terminal errors (other decode failures, ErrAuthRejected, etc.) return false.
+// The caller records those with Queue.AckPermanentFailure and then still hands
+// the article to the assembler with FatalErr set, so the file's part count
+// reaches its total and the file can complete with a hole in it. The failure
+// accounting is the pipeline's; the assembler only counts parts.
 func isRetryableDownloaderError(err error) bool {
 	// Sentinel-based checks (preferred — no string fragility).
 	sentinels := [...]error{

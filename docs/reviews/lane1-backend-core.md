@@ -3,6 +3,15 @@
 Scope: `internal/queue/`, `internal/downloader/`, `internal/assembler/`, `internal/decoder/`, `internal/nntp/`
 Repo state at review: `main` @ `9be19e24`, working tree clean.
 
+> **Frozen record.** This is a dated audit snapshot of `main` @ `9be19e24`, not
+> a living contract. Several identifiers and schema columns it describes have
+> since been removed by the download-durability work — `MarkArticlesDone`,
+> `MarkArticlesDoneByIdx`, `MarkArticlesFailed`, `SetFileExtents`, `maxWritten`,
+> `crcParts`/`crcValid`, and the `job_files.write_cursor` / `bytes_downloaded` /
+> `max_written` columns. It is kept unedited as a record of what the code was
+> and what the audit found. For the current contract see
+> [`../durability-contract.md`](../durability-contract.md).
+
 ## Subsystem map
 
 **`internal/nntp`** owns one TCP/TLS socket per `Conn`. `Dial` does a synchronous

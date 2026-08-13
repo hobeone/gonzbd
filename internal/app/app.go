@@ -85,8 +85,8 @@ const (
 	factAppendTimeout = 5 * time.Second
 )
 
-// Downloader defines the interface for the Usenet article downloader.
-// Downloader defines the lifecycle and control interface for the Usenet article downloader.
+// Downloader defines the lifecycle and control interface for the Usenet
+// article downloader.
 type Downloader interface {
 	Start(ctx context.Context) error
 	Stop() error
@@ -1017,22 +1017,8 @@ func waitBounded(name string, d time.Duration, wait func() error, log *slog.Logg
 	}
 }
 
-// Shutdown stops the downloader, post-processor, and assembler, flushes the
-// cache, and persists the queue to disk. Safe to call multiple times.
-//
-// Ordering matters:
-//  1. Stop the downloader — no new articles are dispatched.
-//  2. Stop the assembler — drains in-flight writes and delivers any remaining
-//     OnFileComplete events to watchCompletions, which is still running.
-//  3. Cancel the context — watchCompletions exits.
-//  4. Wait for background goroutines to finish.
-//  5. Stop the post-processor, save queue.
-//
-// stopWorkers stops the downloader, aborts active DirectUnpackers, and stops
-// the assembler in exact documented order. Shared between Shutdown and
-// ForceStopWorkers (in export_test.go) to guarantee consistent teardown ordering.
-// finalBarrier tells stopWorkers whether to run R6's clean-shutdown
-// checkpoint between stopping the downloader and stopping the assembler.
+// finalBarrier tells stopWorkers whether to run R6's clean-shutdown checkpoint
+// between stopping the downloader and stopping the assembler.
 //
 // Shutdown passes barrierOnStop. ForceStopWorkers passes noBarrierOnStop
 // because its whole purpose is to reproduce a hard kill, and a process that
@@ -1044,6 +1030,15 @@ const (
 	noBarrierOnStop finalBarrier = false
 )
 
+// stopWorkers stops the downloader, optionally runs the clean-shutdown barrier,
+// aborts active DirectUnpackers, and stops the assembler, in exactly that order.
+// Shared between Shutdown and ForceStopWorkers (in export_test.go) so the
+// teardown ordering cannot drift between them.
+//
+// The barrier sits between the downloader stopping and the assembler stopping
+// because that is the only window where both halves hold: no new article can
+// arrive, and the file handles the barrier needs still exist. See
+// Application.shutdownCheckpoint.
 func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, barrier finalBarrier) {
 	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
 	// that arrives after this point sees it and returns immediately without
@@ -1091,11 +1086,15 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 //
 // Ordering matters:
 //  1. Stop the downloader — no new articles are dispatched.
-//  2. Stop the assembler — drains in-flight writes and delivers any remaining
+//  2. Run R6's clean-shutdown barrier, so work since the last checkpoint is not
+//     re-fetched on the next start, and abort active DirectUnpackers.
+//  3. Stop the assembler — drains in-flight writes and delivers any remaining
 //     OnFileComplete events to watchCompletions, which is still running.
-//  3. Cancel the context — watchCompletions exits.
-//  4. Wait for background goroutines to finish.
-//  5. Stop the post-processor, save queue.
+//  4. Cancel the context — watchCompletions exits.
+//  5. Wait for background goroutines to finish.
+//  6. Stop the post-processor, save queue.
+//
+// Steps 1-3 are stopWorkers; see its doc for why the barrier sits between them.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil

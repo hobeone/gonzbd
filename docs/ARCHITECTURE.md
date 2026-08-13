@@ -16,7 +16,7 @@ The project follows a standard Go project layout:
 - `internal/`: Core application logic, restricted from external import.
     - `api/`: Implementation of the legacy SABnzbd HTTP API (`/api?mode=...`) and modern WebSocket events.
     - `app/`: The central orchestrator (`Application`) and the download pipeline bridge.
-    - `assembler/`: Logic for writing decoded article parts to disk using `pwrite`, with a write cache for coalescing contiguous runs.
+    - `assembler/`: Logic for writing decoded article parts to disk using `pwrite`, with a write cache for coalescing contiguous runs. It reports which bytes reached `WriteAt`; it does not decide that an article is done.
     - `bpsmeter/`: Bandwidth statistics and speed limiting.
     - `cmdutil/`: Helpers for building and validating external command invocations (nice/ionice wrapping, extra-param parsing).
     - `config/`: YAML configuration schema, loading, validation, and atomic saves (marshal under RLock, then write lock-free).
@@ -26,6 +26,7 @@ The project follows a standard Go project layout:
     - `deobfuscate/`: Renames obfuscated filenames using NZB subject hints, PAR2 filenames, and extension detection.
     - `directunpack/`: In-flight RAR extraction that runs in parallel with downloading.
     - `dirscanner/`: Watches a folder for new NZB files.
+    - `durability/`: The checkpoint barrier, the Class A fact log and Class B extent cache, `DurableProof`, and the restart resumer. See [`docs/durability-contract.md`](durability-contract.md).
     - `downloader/`: The NNTP engine, handling server pools, connection management, and article dispatch with O(1) pending-article tracking.
     - `fsutil/`: File system utilities: path sanitization, atomic writes (temp+fsync+rename), symlink-safe containment checks, and cross-device move.
     - `history/`: Persistence layer for completed jobs using SQLite and `goose` migrations.
@@ -37,6 +38,7 @@ The project follows a standard Go project layout:
     - `postproc/`: Post-processing pipeline: quickcheck, repair, unpack, deobfuscate, finalize, script, and supporting stages.
     - `queue/`: The active download queue and job state management with lazy article index and transient field recomputation.
     - `rarheader/`: RAR archive header parsing with filename sanitization.
+    - `storagefault/`: Classification of storage errors into retryable (stall the job) and permanent (fail the job), carrying the operation and path for a reason a user can act on.
     - `telemetry/`: Runtime metrics collection and export.
     - `types/`: Shared type definitions used across packages.
     - `unpack/`: Archive extraction wrappers for RAR, 7z, and split file joining.
@@ -61,9 +63,10 @@ Data flows through the system in a multi-stage pipeline designed for maximum con
 4.  **Fetching**: Each connection goroutine fetches articles (segments) from Usenet servers.
 5.  **Decoding**: The connection goroutine decodes raw NNTP bodies (usually yEnc or UU-encoded) using the `decoder` package concurrently to ensure maximum overlap.
 6.  **Pipeline Bridge**: As decoded article parts are emitted, they are routed through a `pipeline` goroutine (in `internal/app/pipeline.go`) which fans them out.
-7.  **Assembly**: The `pipeline` hands decoded parts to the `assembler`, which writes them to their exact byte offset in the target file using `pwrite`. This allows for out-of-order assembly as segments arrive.
-8.  **On-Demand PAR2 Gate** (optional, default on): when every file the job is actually fetching is assembled, if PAR2 recovery volumes were held back (see *On-Demand PAR2* below), the downloaded data is CRC-verified against the PAR2 index *before* post-processing. Clean ⇒ the job finalizes and the held volumes are marked as never fetched; damaged ⇒ the volumes are released and fetched via the normal download path, then completion fires again and proceeds to post-processing.
-9.  **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, user script, and finalize (move to complete directory). Sorting/renaming is intentionally not implemented — it is handled by external tools (Sonarr, Radarr, etc.).
+7.  **Assembly**: The `pipeline` hands decoded parts to the `assembler`, which writes them to their exact byte offset in the target file using `pwrite`. This allows for out-of-order assembly as segments arrive. In parallel and with no ordering against the write, the pipeline appends the article's Class A fact (`article → {offset, length, CRC32}`) to `article_facts`.
+8.  **Durability barrier**: An article is *not* done because it was written. `durability.Barrier` runs a checkpoint per job — on a time bound (30s), a byte bound (64 MiB), at file completion, and at clean shutdown — which drains the write cache, `fsync`s every open file, commits the Class B extent cache, and only then mints a `DurableProof` that `Queue.AckDurable` requires. `DurableProof` has no exported constructor outside `internal/durability`, so the ordering is a compile-time guarantee rather than a convention. A storage fault here stalls or fails the *job* and never marks an article failed. See [`docs/durability-contract.md`](durability-contract.md).
+9.  **On-Demand PAR2 Gate** (optional, default on): when every file the job is actually fetching is assembled, if PAR2 recovery volumes were held back (see *On-Demand PAR2* below), the downloaded data is CRC-verified against the PAR2 index *before* post-processing. Clean ⇒ the job finalizes and the held volumes are marked as never fetched; damaged ⇒ the volumes are released and fetched via the normal download path, then completion fires again and proceeds to post-processing.
+10. **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, user script, and finalize (move to complete directory). Sorting/renaming is intentionally not implemented — it is handled by external tools (Sonarr, Radarr, etc.).
 
 ### Concurrency Model
 
@@ -81,11 +84,11 @@ Unlike the original Python implementation's single-threaded selector loop, GoNZB
 
 - **State Ownership**: The `Queue` owns the ordered list of active `Job`s and a map for fast ID-based lookup. All mutations are protected by a `sync.RWMutex`.
 - **Downloader Signaling**: The `Queue` provides a `Notify()` channel (cap-1) that wakes up the `downloader` whenever new work is added or a job is resumed.
-- **Batched Updates**: To minimize lock contention on high-speed connections, the `Queue` supports batched updates for article completions (`MarkArticlesDone`, `MarkArticlesFailed`).
+- **Batched Updates**: To minimize lock contention on high-speed connections, a successful download's resolution arrives in batches — `AckDurable` applies one barrier's whole proof under a single write lock, so the hot path takes that lock once per checkpoint rather than once per article. `AckPermanentFailure` also takes a slice, but its only production caller (`internal/app/pipeline.go`) passes one article at a time; a permanent failure is rare enough that this has never been the contended path.
 - **Manifest/Progress split**: a `Job` holds an immutable `Manifest` (parsed-once article/file structure — subjects, byte counts, the flat global article arrays) and a mutable `JobProgress` (per-article done/failed/emitted state, per-file assembly bookkeeping, job-level counters). `Manifest` is safe to share by reference across every `Snapshot`/`SnapshotJob` clone since nothing mutates it after construction; `JobProgress` is deep-copied per clone. External packages reach both only through `Job.Manifest()`/`Job.Progress()` accessor methods, and neither type exposes a mutating exported method. Those accessors take a per-`Job` `residencyMu` rather than reading the fields directly: `Get`/`List` hand out `*Job` pointers that alias queue storage, and lazy eviction and promotion reassign both fields under `q.mu`, so an unsynchronized read would race them. `residencyMu` covers *which* `Manifest`/`JobProgress` a job points to and nothing else — `Manifest` contents are immutable, but `JobProgress` fields are mutated in place under `q.mu` and remain unsynchronized for readers outside the package.
-- **O(1) Article Lookup**: `Manifest`'s lazy `messageIDIndex` (built on first access via `articleIndexByID`) provides O(1) article lookups by message-ID, avoiding linear scans. Derived counters on `JobProgress` (`Pending`, `PendingArticles`) are excluded from JSON and recomputed on load via `recompute()`; the transient `Emitted` bit is likewise excluded so a restart re-dispatches articles the assembler hadn't written before the crash (`Done` means the bytes reached `WriteAt`, not that they were fsynced — see `nntp-downloader-contract.md` §5).
+- **O(1) Article Lookup**: `Manifest`'s lazy `messageIDIndex` (built on first access via `articleIndexByID`) provides O(1) article lookups by message-ID, avoiding linear scans. Derived counters on `JobProgress` (`Pending`, `PendingArticles`) are excluded from JSON and recomputed on load via `recompute()`; the transient `Emitted` bit is likewise excluded so a restart re-dispatches articles no barrier had made durable before the crash (`Done` means a completed `fsync` covered the bytes — see `nntp-downloader-contract.md` §5 and [`docs/durability-contract.md`](durability-contract.md)).
 - **ActiveSet & Promotion Loop**: `ActiveSet` manages in-memory resident `(Manifest, JobProgress)` pairs exclusively for active/processing jobs. Pending jobs are stored in SQLite (`history.db`) with zero resident manifests in RAM. The promotion loop (`Pending -> Active`) is single-caller bounded by `MaxActiveJobs` (default 4). Residency is not merely a performance detail — which state a job is guaranteed to have, and which operations are therefore allowed to fail, is a contract in its own right: see [`docs/queue-lifecycle.md`](queue-lifecycle.md), which is authoritative wherever this overview is less specific.
-- **Persistence**: Active queue state and job metadata are persisted in SQLite, in the `jobs`, `job_files` and `queue_meta` tables of `<AdminDir>/history.db` — the same database file history uses, not a separate one. `<AdminDir>/queue/` holds only the immutable job manifests, at `<AdminDir>/queue/manifests/<id>.json.gz`.
+- **Persistence**: Active queue state and job metadata are persisted in SQLite, in the `jobs`, `job_files`, `queue_meta`, `article_facts` and `file_extents` tables of `<AdminDir>/history.db` — the same database file history uses, not a separate one. `<AdminDir>/queue/` holds only the immutable job manifests, at `<AdminDir>/queue/manifests/<id>.json.gz`.
 
 ### On-Demand PAR2 (`internal/queue`, `internal/app`, `internal/par2`)
 
@@ -97,7 +100,7 @@ To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded
 - **Decision = existing CRC oracle**: at download-complete (`handleFileComplete`), `par2NeedsRecovery` runs the same `par2.VerifyCRCs` check as the QuickCheck stage against the on-disk index. Repair is needed iff `Mismatched + NoCRC + Unverified > 0`; a missing/unusable index falls back to fetching all volumes.
 - **Re-activation is download→download, not postproc→download**: on damage, `UndeferRecoveryVolumes(jobID, fileIdxs)` promotes those files from `FetchIfNeeded` to `FetchAlways`, recomputes counters, sets `Par2Recovered` (guards re-firing), and wakes the dispatcher. The job becomes incomplete again and the *normal* download path fetches the volumes — no back-edge from post-processing.
 - **Clean verdict**: `DiscardDeferredPar2` moves every still-`FetchIfNeeded` volume to `FetchNever`. That state is terminal within a run — `undeferRecoveryLocked` skips anything that is not `FetchIfNeeded`, so nothing promotes it back. Only `ResetForRetry` leaves it, downgrading to `FetchIfNeeded` rather than to `FetchAlways`, so a retry re-derives the verdict by re-verifying instead of re-downloading volumes the oracle already ruled out.
-- **Early un-defer**: a permanent data-article failure during download releases the volumes immediately (`MarkArticlesFailed`), shrinking the window in which the volumes themselves could age off the server.
+- **Early un-defer**: a permanent data-article failure during download releases the volumes immediately (`AckPermanentFailure`), shrinking the window in which the volumes themselves could age off the server.
 - **Phasing**: Phase 1 fetches *all* recovery volumes on damage (the `fileIdxs` selection arg is the seam for Phase 2's block-exact subset selection).
 
 ### NNTP & Downloader (`internal/nntp`, `internal/downloader`)
@@ -114,7 +117,7 @@ To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded
 - **High-Performance Decoding**: The `decoder` provides yEnc and UU decoding. The yEnc implementation uses a 256-byte lookup table (`specialLUT`) via `indexSpecial` to find CR/LF/`=` bytes in O(1) per byte, and a fused `sub42Span` function that combines the subtract-42 transform with the output copy in a single pass for L1 cache efficiency. Both are capped at 10MB to reject oversized payloads.
 - **Out-of-Order Assembly**: The `assembler` uses a single worker goroutine and `pwrite` (via `WriteAt` in Go) to write articles directly to their target offsets. This avoids the need for a sequential assembly step and handles articles arriving in any order.
 - **Write Cache**: A write cache coalesces contiguous articles into single `WriteAt` calls, reducing syscall overhead. Under memory pressure (>90% of limit), the cache force-flushes the largest pending file.
-- **Batching**: Successful writes are batched and periodically flushed to the queue to minimize locking overhead on high-speed connections.
+- **No ack path**: the assembler cannot mark an article done, record a whole-file CRC, or truncate. `FileWriter` reports only that bytes reached `WriteAt`; `durability.Barrier` reaches it through the worker's control channel to drain, fsync, stat and truncate, and is the only component that resolves an article. See [`docs/durability-contract.md`](durability-contract.md).
 
 ### Post-Processing (`internal/postproc`)
 

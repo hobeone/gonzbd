@@ -140,7 +140,8 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		// triggered by another worker's signalDispatch doesn't re-see
 		// the article as dispatchable (all try-list entries would still
 		// be present, so it would keep re-emitting ErrNoServersLeft in
-		// a tight loop until the assembler finally marked it Failed).
+		// a tight loop until the pipeline finally recorded it Failed
+		// through Queue.AckPermanentFailure).
 		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
@@ -697,18 +698,20 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		return
 	}
 
-	// Durability (B.6): the article is not marked Done here. The assembler
-	// calls MarkArticleDone once the bytes have reached WriteAt.
+	// The article is not marked Done here, and this package cannot mark it
+	// Done at all: Queue.AckDurable takes a durability.DurableProof, which has
+	// no exported constructor outside internal/durability. Only a barrier that
+	// has drained and fsynced the file can mint one.
 	//
-	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher
-	// from re-picking this article between now and the assembler's Done
-	// write. If the process crashes before that, Emitted is lost on restart
-	// and the article is re-dispatched.
+	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher from
+	// re-picking this article between now and that barrier. If the process
+	// crashes first, Emitted is lost on restart, the startup resume sweep
+	// cannot prove the bytes, and the article is re-dispatched — which is S3,
+	// absence of evidence read as absence.
 	//
-	// Done means the bytes reached WriteAt, not that they were fsynced: the
-	// assembler syncs per file completion, not per article. Page-cache loss
-	// on an already-acked article is par2's to repair, not this path's. See
-	// nntp-downloader-contract.md §5.
+	// So Done means a completed fsync covered the bytes, not merely that they
+	// reached WriteAt. See nntp-downloader-contract.md §5 and
+	// docs/durability-contract.md.
 	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}

@@ -10,8 +10,9 @@ import (
 )
 
 // Barrier is the single place the Written → Durable → Resolved transition
-// happens (X2). It is the only caller of newProof, so no other code path —
-// inside this package or out — can ack an article as downloaded.
+// happens (X2). Its two methods Run and FinalizeFile are the only callers of
+// newProof, so no other code path — inside this package or out — can ack an
+// article as downloaded.
 //
 // Before this design the assembler could ack from six places, and the same
 // defect was refiled twice (#355, #356). One place is the whole point;
@@ -94,7 +95,9 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 		return nil
 	}
 	slices.Sort(acked)
-	// The only call to newProof in the program. See the Barrier type doc.
+	// One of the two calls to newProof in the program; FinalizeFile has the
+	// other. Both are on Barrier and both sit below a Sync that returned nil.
+	// See the Barrier type doc.
 	if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
 		return fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
 	}

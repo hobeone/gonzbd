@@ -133,6 +133,31 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
    nameable and the switch in `stage_repair.go` exhaustive.
 
+   **Where QuickCheck's CRCs come from, and why there currently are none.**
+   The stage compares the par2 index's per-file checksums against
+   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32`.
+   That method **has no production caller**. The assembler used to compute a
+   whole-file value by folding the per-article CRCs it happened to see, which
+   was #349 — a resumed run is never sent the articles an earlier run
+   completed, so its parts do not tile the file — and that writer is gone with
+   the rest of the assembler's authority (see
+   [`docs/durability-contract.md`](durability-contract.md)).
+
+   The honest replacement exists but is not wired up: `durability.Resumer`
+   derives `FileExtent.PrefixCRC` guarded by `HasPrefixCRC`, which is a real
+   whole-file CRC when the verification run consumed every recorded fact and
+   reached the file's end — so a *resumed* file can supply one, which the old
+   design could not. Nothing threads it to `Queue.SetFileCRC32`.
+
+   Until it is threaded, every par2-tracked file reads as `NoCRC` — zero's
+   documented "unavailable" meaning, not a mismatch — so `unverifiable > 0`
+   and the stage lands on `Damaged`. The consequences are conservative in both
+   places that consume the verdict: `repair` is never bypassed by clause one,
+   and `app.par2NeedsRecovery` returns true, so on-demand par2 always fetches
+   the recovery volumes. That costs bandwidth and a par2 pass on an intact
+   download; it never ships an unrepaired one. Tracked in
+   `docs/durability-contract.md` § *Open gaps*.
+
    `Inconclusive` is also the **default** the quickcheck stage adopts as soon
    as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on
    paths that actually verified something (#314). This inverts which state is

@@ -228,7 +228,7 @@ type Assembler struct {
 	// documented as single-goroutine, no-lock). Updated after every
 	// dispatchRequest call (via defer, covering processRequest and
 	// wc.forget on job cancel) and again after the shutdown drain
-	// (flushWriteCache in worker()), so it stays accurate through the
+	// (drainAndCloseAll in worker()), so it stays accurate through the
 	// only two places writeCache.used can change.
 	cacheUsedBytes atomic.Int64
 
@@ -488,8 +488,8 @@ mainLoop:
 				// Channel was closed; this path is not taken in normal operation
 				// (we never close reqs), but defend against it. Breaks to the
 				// shared shutdown block below rather than returning here, so
-				// this path cannot skip flushWriteCache and drop cached bytes
-				// that flush() has already reported Done.
+				// this path cannot skip drainAndCloseAll and leave cached bytes
+				// unwritten with their handles still open.
 				reqsClosed = true
 				break mainLoop
 			}

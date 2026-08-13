@@ -155,7 +155,10 @@ func TestDownload_FileSizeMatchesPayload(t *testing.T) {
 // TestDownload_MultiPartFileSizeExact verifies that a multi-part download
 // produces a file whose size matches the original payload exactly, not the
 // pre-allocated size. This uses a more realistic scenario with varied part
-// sizes to exercise the maxWritten tracking across out-of-order delivery.
+// sizes to exercise the completion truncate across out-of-order delivery. The
+// bound comes from durability.Barrier.FinalizeFile — the highest end offset
+// among the file's durable Class A facts — not from any high-water mark the
+// assembler tracks, since it tracks none.
 func TestDownload_MultiPartFileSizeExact(t *testing.T) {
 	t.Parallel()
 

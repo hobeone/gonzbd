@@ -1,19 +1,12 @@
 # Download Durability & Article Cache — Design
 
-**Status:** design, not yet implemented.
+**Status:** implemented. `docs/durability-contract.md` is the contract the
+code is held to; this document records the design and its reasoning.
 **Scope:** the article → disk → ack loop, and restart reconstruction.
 **Deliberately implementation-independent.** This document describes the
 problem to be solved and the rules any solution must obey. It does not
 describe `internal/assembler` as it stands, and it is not a refactoring plan
 for it.
-
-**Relationship to the existing contracts.** `docs/assembler-storage-contract.md`
-and `docs/queue-lifecycle.md` remain authoritative: they are the contract the
-current code is held to, and a disagreement between them and the code is still a
-bug in the code. This document is a *design proposal* and carries no authority
-over the implementation until it is accepted and implemented. On acceptance,
-those two contracts must be revised to match — and until that revision lands,
-they win. Nothing here should be cited as a reason the current code is wrong.
 
 ## Why this document exists
 

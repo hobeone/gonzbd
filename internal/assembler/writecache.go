@@ -69,15 +69,17 @@ type fileBuf struct {
 	totalBytes int64
 }
 
-// articleID names an article to the queue. It travels with the article's bytes
-// through the cache so that the write which makes those bytes durable can say
-// which articles it settled — the cache is the only place that knows an
-// article's bytes are still in memory, and an ack sent before then is a claim
-// no later run can check (#355).
+// articleID identifies an article as it travels with its bytes through the
+// cache, so the write that finally moves those bytes can say which articles it
+// carried. The cache is the only place that knows an article's bytes are still
+// in memory, and a claim made before then is one no later run can check (#355).
 //
-// Both fields are carried because the assembler supports two queue callback
-// shapes: the index-based one, and the Message-ID one it falls back to when
-// the index form is not wired. recordPendingDone picks between them.
+// Both fields are carried because they answer different questions. msgID drives
+// this package's own duplicate handling (FileWriter.seenDone / seenFailed),
+// which is keyed on Message-ID. artIdx is what FileWriter.noteWritten puts on a
+// durability.WrittenArticle, and is therefore what the barrier places a durable
+// bit for — so it must match the queue's numbering. Neither reaches the queue
+// from here: this package has no ack path in either direction.
 type articleID struct {
 	msgID  string
 	artIdx int32

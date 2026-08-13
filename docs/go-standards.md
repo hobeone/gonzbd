@@ -321,7 +321,7 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 
 - **Never iterate all articles to find pending work.** `ForEachUnfinishedArticle` uses `Pending` counters on `JobFile` and `PendingArticles` on `Job` to skip completed files/jobs in O(1). Any new code that walks articles must respect these counters — do not introduce new linear scans over the article slice.
 
-- **Maintain pending counters on every state mutation.** When changing `art.Done`, `art.Emitted`, or `art.Failed`, you **must** update `job.Files[art.FileIdx].Pending` and `job.PendingArticles`. The pattern: decrement when an article leaves the pending state (Emitted, Done, or Failed for the first time); increment when it returns (ClearArticleEmitted). If a bulk operation makes incremental tracking fragile, call `job.recomputePending()` instead. See `MarkArticleEmitted`, `MarkArticlesDone`, `ClearAllEmitted` for canonical examples.
+- **Maintain pending counters on every state mutation.** When setting an article's done/emitted/failed bit, you **must** keep `FileProgress.Pending` and `JobProgress.pendingArticles` in step. The pattern: decrement when an article leaves the pending state (Emitted, Done, or Failed for the first time); increment when it returns. If a bulk operation makes incremental tracking fragile, call `JobProgress.recompute(m)` instead. See `markEmitted`, `markDone`, `markFailed` and `ClearAllEmitted` for canonical examples. The single-article and batch mark helpers the assembler used to call are gone; article resolution now enters the queue only through `AckDurable` (which takes a `durability.DurableProof`) and `AckPermanentFailure`.
 
 - **Cache per-server data once per dispatch pass, not per article.** `srv.Cfg()` returns a by-value struct copy. Calling it per-article per-server cost 0.69s in production profiles. The `serverCfgs []config.ServerConfig` slice in `dispatchPass` caches these. Any new per-server state queries (e.g., `Active()`, penalty checks) should follow the same pattern: snapshot once, pass the slice to `tryDispatch`.
 
@@ -343,13 +343,13 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 
 #### Queue (`internal/queue/`)
 
-- **Use `job.articleByID()` for O(1) lookups, never linear scans.** The `artIdx` map is built lazily on first access. All queue mutation methods (`MarkArticlesDone`, `MarkArticleFailed`, `MarkArticleEmitted`, etc.) must use this, not nested `for fi / for ai` loops.
+- **Use `Manifest.articleIndexByID()` for O(1) message-ID lookups, never linear scans.** The `messageIDIndex` map is built lazily on first access. Any queue method that resolves a message-ID must use it, not nested `for fi / for ai` loops. Index-keyed entry points (`AckDurable`, `AckPermanentFailure`, `MarkArticleEmittedByIdx`) skip the lookup entirely and are the production path.
 
-- **`JobArticle.FileIdx` is a back-pointer set by `recomputePending` / `buildArtIndex`.** It allows mutation methods to update per-file `Pending` without scanning for the parent file. This field is `json:"-"` (not persisted) — it must be recomputed on load.
+- **A global article index maps to its file through `Manifest.fileIndexForArticle`.** That is what lets a mutation update per-file `Pending` without scanning for the parent file. It is derived from the manifest's file ranges, never persisted separately.
 
-- **All transient fields (`Pending`, `PendingArticles`, `FileIdx`, `artIdx`, `Emitted`) are `json:"-"`.** They are recomputed by `recomputePending()` on load and `ClearAllEmitted`. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
+- **All transient fields (`Pending`, `pendingArticles`, the lazy message-ID index, `emitted`) are excluded from the persisted shape.** They are recomputed by `JobProgress.recompute()` on load, and `emitted` is additionally cleared by `ClearAllEmitted` so a restart re-dispatches anything no barrier made durable. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
 
-- **`ClearAllEmitted` is the self-healing reset.** It calls `recomputePending()` to rebuild all counters from ground truth. If you suspect counter drift during development, calling `recomputePending()` on a job will correct it. The `pending_test.go` `verifyPending` helper validates counters against ground truth.
+- **`ClearAllEmitted` is the self-healing reset.** It calls `JobProgress.recompute()` to rebuild all counters from ground truth. If you suspect counter drift during development, calling `recompute()` on a job will correct it. The `pending_test.go` `verifyPending` helper validates counters against ground truth.
 
 #### General Performance Rules
 

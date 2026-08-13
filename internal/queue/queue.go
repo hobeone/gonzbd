@@ -1431,11 +1431,12 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 // downloader to the assembler. This is a transient, in-memory-only bit
 // (JobProgress's emitted array, never persisted): its purpose is to
 // prevent the dispatcher from re-dispatching the same article between the
-// moment the downloader sends
-// a result on the completions channel and the moment the assembler makes
-// the outcome durable (AckDurable / AckPermanentFailure). On restart
-// the flag is lost, so any article whose bytes weren't fsynced is
-// re-downloaded — that's the B.6 durability invariant.
+// moment the downloader sends a result on the completions channel and the
+// moment the outcome is resolved — by durability.Barrier through AckDurable
+// for a success, or by internal/app's pipeline through AckPermanentFailure for
+// a permanent failure. Neither comes from the assembler, which has no ack path
+// in either direction. On restart the flag is lost, so any article no barrier
+// made durable is re-downloaded; see docs/nntp-downloader-contract.md §5.
 //
 // Idempotent: setting Emitted on an article that is already Emitted, Done,
 // or Failed is a no-op. Returns ErrNotFound if the job/article is absent, or

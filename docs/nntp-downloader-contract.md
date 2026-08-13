@@ -148,28 +148,39 @@ of their failure ratio.
    and `downloader` is commonly configured at `info`).
 
 5. **Emitted-is-transient durability contract**: `MarkArticleEmitted` is not
-   persisted to disk. If the process crashes before the assembler marks the
-   article `Done`, the `Emitted` flag is lost on restart and the article is
+   persisted to disk. If the process crashes before a barrier makes the
+   article durable, the `Emitted` flag is lost on restart and the article is
    re-dispatched.
 
-   What `Done` means is narrower than "bytes on stable storage", and the
-   boundary moved in #355. The assembler acks an article once its bytes have
-   reached `WriteAt` — never while they are only in its write cache, which is
-   what makes the re-dispatch above reliable. It does not wait for an `fsync`:
-   the assembler syncs once per file completion, not once per article, so an
-   ack published by the periodic flush describes bytes that are in the page
-   cache and may not be on the platter. Only a file's final acks, flushed by
-   `finalizeFile` after its `Sync`, are fsync-backed.
+   This is no longer a standalone rule. It is a consequence of S3 — *absence of
+   evidence is absence* — in `docs/durability-contract.md`: an article a restart
+   cannot prove is on disk is Outstanding, and `Emitted` is by construction not
+   evidence about disk, so it is not persisted at all.
 
-   The two crash classes therefore differ, and only one is the download path's
-   to repair:
+   `Done` now means what it says. `durability.Barrier` drains the assembler's
+   write cache, `fsync`s the file, commits the Class B extent, and only then
+   mints a `DurableProof` — which `Queue.AckDurable` requires and which has no
+   exported constructor outside `internal/durability`. So an acked article's
+   bytes were covered by a completed `fsync`; the ack does not describe bytes
+   sitting in a page cache.
+
+   The barrier does *not* wait for file completion to do this. It runs on a
+   cadence — a 30-second time bound, a 64 MiB byte bound, file completion, and
+   clean shutdown — so the window between "written" and "durable" is one
+   checkpoint interval rather than one whole file.
+
+   The two crash classes that remain, and which path repairs each:
 
    | Lost | Acked? | Recovery |
    |------|--------|----------|
-   | bytes that never reached `WriteAt` — still buffered, or never received | no | `Emitted` is lost, the next run re-dispatches the article. This contract. |
-   | bytes that reached `WriteAt` but not the platter | yes | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
+   | an article no barrier covered — still buffered, written but not yet fsynced, or never received | no | `Emitted` is lost, the startup resume sweep leaves it Outstanding, and the next run re-dispatches it. This contract. |
+   | a fsync the storage layer acknowledged but did not honour (a lying disk, an NFS server that acks early) | yes | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
 
-   See `assembler-storage-contract.md` §3 for the assembler side of this.
+   The second row is genuinely outside what this program can observe, and it is
+   the *only* remaining case in that column — the "written but not fsynced yet
+   and therefore acked" case that used to sit there is gone.
+
+   See `docs/durability-contract.md` for the assembler and barrier side of this.
 
 ## `nntp.Conn` pipelining contract
 
@@ -322,4 +333,4 @@ Landed:
 - Full penalty classification matrix with `NoPenalties` clamp.
 - Optional server auto-deactivation via `shouldDeactivateOptional`.
 - Per-connection goroutine bounding via local semaphore.
-- Emitted-is-transient durability contract matching assembler handoff.
+- Emitted-is-transient durability contract, now derived from the durability design's S3 rather than standing alone.

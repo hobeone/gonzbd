@@ -76,3 +76,17 @@ page underneath.
 ## Child component updates
 
 ConfigInput/ConfigSwitch and similar child components should receive an `onupdate` callback prop rather than importing store functions directly. This keeps the data flow explicit and avoids the module-level `$state` reactivity issue.
+
+## Do not run `npx prettier --write` in `ui/`
+
+`ui/` has **no Prettier configuration and no Prettier dependency** — there is no
+`.prettierrc`, and `package.json` does not list it. `npx prettier --write .`
+therefore downloads Prettier and reformats the entire tree with its defaults,
+which do not match the style the files are written in. The result is a
+~1400-line diff that touches almost every component and hides the change you
+actually made inside it. An implementer has already lost work to this.
+
+If you need formatting, format only the file you edited and check the diff
+before staging it. Adding a `.prettierrc` would be a project-wide style
+decision, not a local convenience, and needs to be agreed rather than
+introduced as a side effect of an unrelated change.

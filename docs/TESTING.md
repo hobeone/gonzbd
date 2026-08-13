@@ -216,11 +216,17 @@ plainly.
 - **That an fsync'd byte reached the platter.** No unprivileged userspace call
   can discard dirty page-cache data: `POSIX_FADV_DONTNEED` invalidates clean
   pages and skips dirty ones, and `/proc/sys/vm/drop_caches` skips them too.
-  The suite calls `fadvise(DONTNEED)` after each kill, which forces
-  already-written-back ranges to be re-read from the block device — a real
-  strengthening of the read-back, and not a power-loss simulation. Testing the
-  page-cache half needs a device the test can cut underneath the filesystem
-  (a device-mapper `log-writes` or `flakey` target), which needs root.
+  `O_DIRECT` does not help either: it flushes before it bypasses. The suite
+  calls `fadvise(DONTNEED)` after each kill, which forces already-written-back
+  ranges to be re-read from the block device — a real strengthening of the
+  read-back, and not a power-loss simulation. Testing the page-cache half needs
+  a device the test can cut underneath the filesystem (a device-mapper
+  `log-writes` or `flakey` target), which needs root.
+
+  This is measured, not inferred: **removing the `Sync()` syscall from the
+  write path entirely left the suite byte-identical to baseline** — six passes,
+  same assertions, no diagnostic difference. Read that as the bound on what a
+  green run means, not as evidence that the fsync is unnecessary.
 - **NFS or SMB fsync behaviour.** The bound is measured on the test's own
   filesystem only. A server that acknowledges an fsync it has not honoured is
   outside what any of this can see.
@@ -422,5 +428,5 @@ To maintain green CI and ensure testing reliability, follow these anti-pattern a
 | Svelte UI components, layout | Add: `go test -v -tags=uitest ./test/uitest/...` |
 | NZB parsing, file naming | Add: `go test -v -tags=integration -run TestNaming ./test/integration/...` |
 | Download pipeline | Add: `go test -v -tags=integration -run TestDownload ./test/integration/...` |
-| Durability, checkpoints, assembler writes, resume | Add: `go test -tags=crash -timeout=20m ./test/crash/` (see §3a — two tests fail today against a known defect) |
+| Durability, checkpoints, assembler writes, resume | Add: `go test -count=1 -tags=crash -timeout=20m ./test/crash/` (all six must pass; see §3a for what a pass does and does not bound) |
 | Pre-release validation | All: unit + integration + uitest + contract |

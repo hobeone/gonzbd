@@ -2871,7 +2871,7 @@ tests are the only coverage of cases this design still has.
 | `TestZeroLengthArticleIsNotBuffered` | **Keep as-is** — pure cache behaviour |
 | `TestBuildContiguousRunStopsAtAZeroLengthArticle` | **Keep as-is** |
 | `TestBufferedReportsUnknownKey` | **Keep as-is** |
-| `TestCompletedFileAcksEveryArticleExactlyOnce` | **Translate** — becomes "reported exactly once across all `Drain` calls" |
+| `TestCompletedFileAcksEveryArticleExactlyOnce` | **Translate** — planned as "reported exactly once across all `Drain` calls", which the implementation falsified: `85f2313d` made `Drain` re-report until a successful `Sync` discards the set (R12, at-least-once). No test of this name landed; the property it named is covered by the barrier's idempotent apply (`Barrier.buildExtent` charges bytes only on a 0->1 transition) and by `FileWriter`'s `written`/`reported` split. |
 | `TestBufferedArticleIsNotAckedUntilItsBytesLand` | **Delete** — superseded by `TestFileWriter_DrainReportsOnlyWrittenArticles`, which makes the stronger claim |
 | `TestWriteOutcomesSettleTheirAcks` | **Delete** — settling moves to the barrier |
 | `TestFatalAfterBufferedSuccessDoesNotOutraceTheDoneAck` | **Delete** — the ordering it guards is gone once one component acks |

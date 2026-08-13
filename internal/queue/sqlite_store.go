@@ -449,9 +449,12 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	if job == nil || job.manifest == nil || job.progress == nil {
 		return nil
 	}
-	// job_files stores no byte or cursor figures at all. The recompute at the
-	// end of this function derives Bytes, BytesDownloaded and FailedBytes from
-	// the manifest and the article bitmaps, so those never needed a column;
+	// No byte or cursor figure is READ here. The recompute at the end of this
+	// function derives Bytes, BytesDownloaded and FailedBytes from the manifest
+	// and the article bitmaps, which is why this query does not select
+	// job_files.failed_bytes even though the column exists — that column is for
+	// the NON-resident path (ArticleCountsByJob), where there is no manifest to
+	// recompute from;
 	// The write cursor and high-water mark are gone entirely: the completion
 	// truncate derives its bound from the durable facts rather than from a
 	// seed, and the coalescing cursor is local to the assembler's cache.
@@ -577,8 +580,8 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 }
 
 // ArticleCountsByJob returns every job's per-file FileMeta — article count,
-// byte size, and complete/fetch state — in a single grouped query, indexed by
-// file_index within each job.
+// byte size, failed bytes, durable (downloaded) bytes, and complete/fetch
+// state — in a single grouped query, indexed by file_index within each job.
 // Used to size JobProgress at restart without loading each job's manifest individually,
 // and to give newJobProgressSized everything it needs to reconstruct a
 // non-resident job's RemainingBytes, so a large queued backlog costs one

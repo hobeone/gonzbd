@@ -347,3 +347,88 @@ func TestDetectDuplicateNZB(t *testing.T) {
 		}
 	})
 }
+
+// TestPushDispatchOptions_ForwardsEachSetterToTheRunningDownloader pins the
+// helper every one of the four dispatch setters delegates to.
+//
+// It asserts through the setters rather than by calling pushDispatchOptions
+// with hand-set config, because the defect the helper can have is not "it
+// forwards the wrong number" — it is a setter writing one config field and the
+// push reading another, which only a round trip through the real setter can
+// catch. Each step moves exactly one field and then checks that the other three
+// still hold the values the earlier steps left, so a helper that pushed a stale
+// snapshot of any field would redden here.
+func TestPushDispatchOptions_ForwardsEachSetterToTheRunningDownloader(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	fd := newFakeDownloader()
+	app, err := New(cfg, nil, WithDownloader(fd))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	read := func() (tries, opt int, top bool, delay time.Duration) {
+		fd.mu.Lock()
+		defer fd.mu.Unlock()
+		return fd.maxArtTries, fd.maxArtOpt, fd.topOnly, fd.propagationDelay
+	}
+
+	app.SetMaxArtTries(7)
+	if tries, _, _, _ := read(); tries != 7 {
+		t.Errorf("SetMaxArtTries: maxArtTries = %d, want 7", tries)
+	}
+
+	app.SetMaxArtOpt(3)
+	tries, opt, _, _ := read()
+	if opt != 3 {
+		t.Errorf("SetMaxArtOpt: maxArtOpt = %d, want 3", opt)
+	}
+	if tries != 7 {
+		t.Errorf("SetMaxArtOpt clobbered maxArtTries: got %d, want 7", tries)
+	}
+
+	app.SetTopOnly(true)
+	tries, opt, top, _ := read()
+	if !top {
+		t.Error("SetTopOnly: topOnly = false, want true")
+	}
+	if tries != 7 || opt != 3 {
+		t.Errorf("SetTopOnly clobbered the retry limits: tries=%d opt=%d, want 7 and 3", tries, opt)
+	}
+
+	app.SetPropagationDelay(15)
+	tries, opt, top, delay := read()
+	if delay != 15*time.Minute {
+		t.Errorf("SetPropagationDelay: propagationDelay = %v, want 15m — the helper converts minutes to a Duration", delay)
+	}
+	if tries != 7 || opt != 3 || !top {
+		t.Errorf("SetPropagationDelay clobbered the rest: tries=%d opt=%d top=%v", tries, opt, top)
+	}
+}
+
+// TestPushDispatchOptions_NoDownloaderIsANoOp pins the nil guard, and pins what
+// it is worth: the state is forced here rather than reached, because New always
+// installs a real downloader when WithDownloader supplies none, so no
+// constructor leaves the field nil.
+//
+// The guard is therefore defensive, and the test says so rather than dressing
+// it as reachable. What it does establish is the direction of the defence — a
+// nil downloader must make the push a no-op and leave the config write intact,
+// not panic and lose it — which is the only behaviour a later change to this
+// helper could get wrong without any other test noticing.
+func TestPushDispatchOptions_NoDownloaderIsANoOp(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	app, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	app.mu.Lock()
+	app.downloader = nil
+	app.mu.Unlock()
+
+	app.pushDispatchOptions() // must not panic
+	app.SetMaxArtTries(4)     // and neither must the setter that calls it
+
+	if got := app.config.GetDownloads().MaxArtTries; got != 4 {
+		t.Errorf("MaxArtTries = %d, want 4 — the config write must still land", got)
+	}
+}

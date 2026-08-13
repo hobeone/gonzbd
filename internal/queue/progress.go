@@ -97,8 +97,13 @@ type FileProgress struct {
 	// never downloaded, so BytesDownloaded does not account for it, and
 	// without this the derivation would report its bytes as still to fetch
 	// forever. Recomputable from the article bitmaps when a manifest is
-	// resident. It has no column of its own: a non-resident job reports zero
-	// here until promotion replays the article bitmaps.
+	// resident, and read from job_files.failed_bytes when not — which is why
+	// that column exists at all. It is the one per-file byte figure that
+	// cannot be re-derived from durability's Class A facts: a permanently
+	// failed article never decodes, so it writes no article_facts row, so
+	// durability.FileExtent has no field for it either. See
+	// internal/history/migrations/001_initial.sql and
+	// docs/durability-contract.md.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so

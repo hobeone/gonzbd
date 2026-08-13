@@ -158,26 +158,6 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 			// clone" are two facts, not one. Read the absence of a test as the
 			// absence of a state to write one against, not as permission to
 			// delete the guard.
-			//
-			// No reachable state gets here any more, and the reason is worth
-			// writing down so nobody spends an afternoon building a fixture
-			// for it. The phase bound above already excluded everything that
-			// used to arrive non-resident, and a PhaseActive job is resident
-			// on every route into that phase: promotion attaches the manifest
-			// before it sets StatusDownloading, SetStatus re-hydrates on the
-			// way into a resident status (or fails and leaves the status
-			// alone), and SQLiteStore.Get REMOVES a job with files whose
-			// manifest is missing rather than returning it non-resident — so
-			// the crash-with-a-lost-manifest case never reaches the queue at
-			// all. Verified by replacing this arm with a panic: nothing in
-			// ./internal/app reaches it.
-			//
-			// It stays because the alternative is a nil dereference if any of
-			// those three ever changes, and because Snapshot deliberately does
-			// not hydrate, so "resident status" and "has a manifest here" are
-			// two facts rather than one. Do not read the absence of a test as
-			// permission to delete it; read it as the absence of a state to
-			// write one against.
 			app.log.Debug("resume sweep skipped a non-resident job",
 				"job", snap.ID, "status", snap.Status, "err", err)
 			continue

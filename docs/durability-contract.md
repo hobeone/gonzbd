@@ -1,0 +1,892 @@
+# Download Durability & Storage Contract
+
+This document is the contract for `internal/durability`, `internal/storagefault`,
+`internal/assembler` and `internal/directunpack`: what it means for a downloaded
+article to be *done*, when that claim may be made, what survives a crash, how a
+restart re-derives its work set, and how a storage fault reaches the user.
+
+It replaces `docs/assembler-storage-contract.md`, which described a model in
+which the write path acked articles, combined per-article CRCs into a whole-file
+CRC, and truncated a completed file to this run's high-water mark. None of that
+is true any more.
+
+`docs/ARCHITECTURE.md` places these packages in the download pipeline.
+`docs/queue-lifecycle.md` owns residency and the manifest/progress split, which
+this contract depends on and does not restate.
+
+**This states the contract in the present tense.** Where the code and this
+document disagree, the code is wrong and the gap is a bug, not a documentation
+error. Known gaps are named in *Accepted limitations* and *Open gaps* at the
+end, rather than left for a reader to discover.
+
+## Upgrading from a pre-durability build
+
+**A job that was mid-download when you upgraded re-downloads from scratch,
+once.** This is the design's own answer under S3, not an oversight, and nothing
+softer preserves the invariant.
+
+Such a job has `job_files.articles_done` bits from the old build, but no
+`article_facts` rows and no `file_extents`. The startup sweep therefore has no
+recorded region for any of its articles, cannot verify a single byte, and
+returns every article to Outstanding. The partial files on disk are overwritten
+in place by the re-download.
+
+The alternative — "there is no evidence, so trust the column" — is
+indistinguishable at runtime from a lost or truncated fact log, which is
+precisely the case #362 exists to catch: a partial file that was truncated or
+deleted out of band finishing as a complete file with a zero-filled hole in it,
+silently. There is no signal that separates "this job predates the fact log"
+from "this job's fact log is gone", so any rule that trusts the column in the
+first case also trusts it in the second.
+
+Completed jobs, history, configuration and the queue's ordering are unaffected.
+Only in-progress downloads pay, and only once.
+
+## Why this exists
+
+Nine open issues (#306, #311, #337, #344, #349, #353, #355, #356, #357) and five
+of the eight merged fixes before them (#305, #315, #341, #343, #350) were two
+defects wearing different clothes — see
+`docs/superpowers/specs/2026-08-11-download-durability-design.md` for the full
+derivation. The dominant one is **a fact recorded before the thing it asserts
+becomes true**: an article marked `Done` while its bytes sat in a memory buffer
+(#355, refiled as #356), a truncate bound describing one process's writes applied
+to a file built by several (#342, #350), a CRC over a subrange reported as the
+CRC of a file (#349).
+
+The costs are asymmetric, and that asymmetry is the whole design:
+
+- **Over-fetching is a cost.** An article re-downloaded needlessly wastes
+  bandwidth and time. It is bounded, visible and recoverable.
+- **Over-claiming is a defect.** `ForEachUnfinishedArticle` skips any article
+  whose `done` bit is set, and `ResetForRetry` clears `done` only where `failed`
+  is also set — so a `Done` published for bytes that never landed is permanent.
+  No later run re-dispatches that article, and the file stays short. Without
+  par2 it is silent.
+
+So every rule below resolves ambiguity toward re-fetching, and the one claim
+that can over-claim — "this article is on disk" — is made in exactly one place
+and is enforced by the compiler rather than by review.
+
+## The two classes of fact
+
+Everything persisted about download progress is either Class A or Class B. Which
+class a fact belongs to determines whether it needs a barrier.
+
+| | **Class A — `durability.ArticleFact`** | **Class B — `durability.FileExtent`** |
+|---|---|---|
+| Content | `article → {FileIdx, Offset, Length, CRC32}` | durable bitmap, `VerifiedTo`, `PrefixCRC`, `BytesDurable`, `Size`, `ModTimeNs` |
+| Asserts | *If* the bytes at `[Offset, Offset+Length)` are present, they hash to `CRC32`. **Nothing about presence.** | Those bytes **are** present on stable storage. |
+| True from | the moment the article is decoded — and forever after | only after a completed `fsync` |
+| Ordering vs. the write | **none** (R2). May be committed before, during or after the write, or when the write never happens at all | strictly after the `fsync` (S1) |
+| Barrier required | no | yes — `durability.Barrier` is the only writer |
+| Authoritative | yes (S5) | **never**. Where it disagrees with a recomputation, the recomputation is correct by definition (S4) |
+| Losing a suffix costs | a re-fetch (R3) | a recomputation |
+| Stored in | `article_facts` | `file_extents` |
+
+Two consequences worth stating explicitly, because both have been got wrong:
+
+- **Class A is appended at decode time and is deliberately not ordered against
+  the write** (`pipeline.appendArticleFacts`). Adding an ordering there would
+  destroy the property that makes Class A cheap. The append runs on a
+  `context.WithoutCancel` copy of the caller's context, bounded by
+  `factAppendTimeout` (5s), because a shutdown that cancels the pipeline while
+  an article is still being applied can still let the write land — and a fact
+  lost to that race makes a resume unable to prove bytes that are on disk.
+- **`FileExtent` has no failed-byte field, and cannot.** A permanently failed
+  article never decodes, so it never writes an `ArticleFact`, so no
+  recomputation from Class A could reproduce such a figure — it would be the one
+  field S4 could not be applied to. It is cached in `job_files.failed_bytes`
+  instead, beside the `articles_done` bits it sums. `internal/history/migrations/001_initial.sql`
+  records the same reasoning at the schema.
+
+## The state of an article
+
+```
+                  decoded                writeAt returned nil        fsync returned nil
+  Outstanding ───────────────► Decoded ──────────────────────► Written ──────────────────► Durable
+       ▲                          │                               │                           │
+       │                          │ appends a Class A fact        │                           │ Barrier mints a
+       │                          │ (no barrier, no ordering)     │                           │ DurableProof
+       │                          ▼                               │                           ▼
+       │                    article_facts                         │                       Queue.AckDurable
+       │                                                          │                        (article is Done)
+       └──────────────────────────────────────────────────────────┘
+              a write failure, a storage fault, or a restart that cannot
+              prove the bytes returns the article to Outstanding — never Failed
+```
+
+`Decoded`, `Written` and `Durable` are three different things and the design
+turns on not conflating them:
+
+- **Decoded** is what the downloader produced. It says nothing about disk.
+- **Written** is `FileWriter.noteWritten` — the bytes came back from `WriteAt`
+  without an error. It is the *only* evidence the barrier has, and it is not
+  durability: the page cache can still lose it.
+- **Durable** is what a completed `Sync` covers, and only the barrier can say
+  so.
+
+`Emitted` is the fourth, transient state and is not persisted at all; see
+`docs/nntp-downloader-contract.md` §5.
+
+## The tiers
+
+| Tier | Component | Responsibility | Synchronization |
+|---|---|---|---|
+| **Ingest** | `Assembler.WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into a bounded channel (`reqs`, cap 2048). Control messages for cancel and close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` drains cleanly. |
+| **Worker** | `Assembler.worker` goroutine | Owns the open-file map, the shared write cache, and every `FileWriter`. Routes requests, counts parts, checks disk space, performs barrier operations. | Single goroutine (X1). No locks over file handles. |
+| **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its share of the write cache, its coalescing, its pre-allocation. Reports `Written`. | Worker-owned; never touched from another goroutine. |
+| **Barrier** | `durability.Barrier` | The **only** place `Written → Durable → Resolved` happens. Drains, fsyncs, commits Class B, mints the proof. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
+| **Cadence** | `Application.runCheckpoint`, `noteJobBytes` | *When* a barrier runs. Time bound, byte bound, file completion, clean shutdown. | One goroutine; per-job mutex around each barrier. |
+| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | What is actually on disk, at startup, from stable storage alone. | Per-file, shares no state between calls. |
+| **Fault routing** | `internal/storagefault`, `Application.Stall` / `Fail` | Turns a storage error into a stalled or failed job with a reason a user can act on — never into a failed article. | — |
+| **DirectUnpack** | `internal/directunpack` | Streams RAR extraction as whole volumes complete. Reads assembled files, never partial article data. | Mutex over volume tracking and kill state; blocking `volumeReady` channel. |
+
+## Mandatory invariants
+
+### 1. One barrier, one proof, one ack
+
+`Queue.AckDurable` takes a `durability.DurableProof`. `DurableProof` has no
+exported fields and no exported constructor, so **no package outside
+`internal/durability` can create one**. "Ack only after fsync" is therefore not a
+rule six call sites must each remember; it is a signature no outside caller can
+satisfy.
+
+Inside `internal/durability` the guarantee is package-scoped: `newProof` is
+reachable from anywhere in the package, and exactly two functions call it —
+`Barrier.Run` and `Barrier.FinalizeFile`. That pair is what review has to hold.
+Outside the package the guarantee is absolute.
+
+This replaces a design in which the assembler could ack from six places, each
+independently responsible for knowing that acceptance into a buffer is not
+evidence about disk. That is why the same defect kept being refiled.
+
+### 2. The barrier's order is the invariant
+
+`Barrier.Run` performs, for one job:
+
+```
+  phase 1: Drain every open file          — no claim of any kind yet
+  phase 2: Sync  every open file          — only now may anything be claimed
+  phase 3: build one FileExtent per file  — derived, not yet persisted
+  phase 4: ExtentStore.Commit (atomic)    — then, and only then, AckDurable
+```
+
+Every file is synced before any file's extent is built, so a barrier that fails
+on the second file's sync has claimed nothing about the first either. Nothing may
+be inserted between the commit and the ack: the commit is what makes the proof
+true after a crash.
+
+**A failed barrier claims nothing** (R7). It acks no article and leaves the
+previously committed cache wholly intact, because `ExtentStore.Commit` is atomic
+and is the last thing that can fail before the ack.
+
+### 3. A drain is at-least-once, and a report survives a failed sync
+
+`SyncTarget.Drain` may re-report an article a previous `Drain` already returned,
+and the barrier's apply absorbs the duplicate (R12) — `ext.Durable.Set` is
+idempotent and `BytesDurable` is charged only on a 0→1 transition.
+
+`FileWriter` keeps two slices to make that true: `written` (reported by no
+`Drain` yet) and `reported` (handed to a `Drain`, not yet confirmed by a
+`Sync`). **Only a successful `Sync` discards `reported`.** A barrier that drains
+and then fails — at the sync, the extent commit, or the truncate — re-reports on
+the next attempt.
+
+This is load-bearing rather than tidy. For a file still being written, losing a
+report costs a re-fetch. For a **completed** file it costs bytes: the retry
+drains nothing, so the durable extent `FinalizeFile` trims to sits below bytes
+that are genuinely on disk, and the truncate destroys them.
+
+The split between the two slices is what keeps an article written *between* a
+`Drain` and its `Sync` from being discarded by that `Sync`: it is still in
+`written`, which `Sync` does not touch.
+
+### 4. The truncate bound is derived from Class A, and only ever shrinks
+
+`Barrier.FinalizeFile` trims a completed file to **the highest end offset among
+its durable articles** — `max(Offset+Length)` over the facts whose durable bit is
+set. Three quantities are easy to confuse here and the distinction is
+load-bearing:
+
+| Quantity | What it is | Why it is not the bound |
+|---|---|---|
+| this run's high-water mark | the highest byte *this process* wrote | on a resumed file it sits below what earlier runs wrote; truncating to it discards them (#342, #350) |
+| `FileExtent.VerifiedTo` | the **gapless prefix** from byte 0 | stalls at the first permanently failed article; a 40 GB file with a hole at 2 GB would be cut to 2 GB, destroying exactly the blocks par2 repairs from |
+| the durable extent | `max(Offset+Length)` over durable facts | **this is the bound** |
+
+Deriving it from Class A rather than storing it means there is no second copy to
+drift (S5), and it is correct by construction: every fact counted has an article
+behind it whose bytes a completed fsync covered.
+
+`FileWriter.Truncate` refuses a bound above the file on disk rather than clamping
+(S6). Growing appends zeros, which asserts content that exists nowhere, and a job
+with no par2 has no repair stage to notice.
+
+**One exception, and it is a recovery path.** If a completed file's recorded
+facts are not *all* durable, `FinalizeFile` trims to the **recorded** extent
+instead. In the healthy case the two sets coincide — every article of a completed
+file is either durable or permanently failed, and a failed article wrote no fact.
+A gap between them means this is a retry of a finalize whose earlier attempt
+consumed the writer's drain report without committing the bits it earned. Those
+bytes are on disk, the durable bound sits below them, and trimming to it would
+destroy them silently. Trailing zeros par2 reports as damage is a visible,
+repairable cost; downloaded bytes gone is not.
+
+### 5. A storage fault never marks an article failed
+
+This is A1, and it is a hard rule. `ENOSPC`, `EIO`, `EROFS` and a wedged mount
+are conditions of *storage*. They say nothing about any article's availability on
+any server.
+
+`internal/storagefault.Classify(op, path, err)` produces a `*Fault` carrying the
+operation, the path, and whether the condition is `Permanent`.
+`Barrier.routeFault` dispatches it:
+
+| Classification | Route | Job outcome | Articles |
+|---|---|---|---|
+| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
+| permanent | `Stallable.Fail` → `Application.Fail` | stopped, reason carried into history (R20) | stay **Outstanding** |
+
+In neither case is `Queue.AckPermanentFailure` called, the failed-byte count
+touched, or the job's reported health degraded (R21). Attributing a full disk to
+the article would burn its retry budget over something a user often fixes in ten
+seconds.
+
+`routeFault` also **returns** the fault as its error, and
+`Application.routeFinalizeFailure` treats a `*storagefault.Fault` anywhere in an
+error chain as proof that it was already dispatched. That inference is sound only
+while `routeFault` is the only thing that lets a `*Fault` escape the barrier.
+`filewriter.go` and `assembler.go` both *mint* faults via `Classify`; a new fault
+site inside `internal/durability` must either route through `routeFault` or not
+surface a `*Fault` to its caller at all. Wrapping one in a plain error hides it
+from the check and is the wrong direction.
+
+The one thing that must **not** go through `Stallable` is a bookkeeping defect —
+an article with no file-local ordinal, a target reporting zero articles. Those
+fail loudly as ordinary errors (A2, R28). Routing them through the fault path
+would blame storage for a numbering bug, which is the A1 conflation in reverse.
+
+### 6. Class B is a cache, and a recomputation wins
+
+`FileExtent` carries `Size` and `ModTimeNs` as an S7 validity stamp. On resume,
+`durability.Resumer` compares them against the file as it exists now:
+
+- **Both match** → the cache is adopted without reading a byte. This is the fast
+  path, and correctness never depends on it being right.
+- **Either differs** → fall through to recomputation, which reads each recorded
+  region and checks it against the CRC the fact log recorded at decode time.
+
+Both halves of the stamp are load-bearing: a truncation moves the size, an
+in-place edit of the same length moves only the mtime.
+
+`HasPrefixCRC` is **re-checked** against the file's current size rather than
+adopted, because the flag can outlive its condition: a resume commits it true for
+a whole file, an article then lands beyond a hole so the file grows while
+`VerifiedTo` does not, and the barrier clears the flag only when `VerifiedTo`
+*changes*. Adopting a stale one would report a partial extent's CRC as the file's
+(#349).
+
+`Bitmap` widths are the other place the cache can over-claim.
+`ExtentStore.Load` rebuilds each bitmap at its full **byte** width, which is
+always a multiple of 64, so `Bitmap`'s tail-word mask never fires and padding
+bits in a damaged blob would survive into `Count()`. Every consumer that knows
+the file's true article count therefore re-derives through `BitmapFromBytes`
+rather than adopting what `Load` returned — `Barrier.priorExtent`,
+`Resumer.committedExtent` and `queue.fileDurableBitmap` each do this, and each
+documents it. A stored bitmap *narrower* than the article count is zero-padded,
+which reads as "not durable yet": the safe direction under S3.
+
+### 7. Absence of evidence is absence
+
+S3. An article a restart cannot prove is Outstanding. A region outside the file
+as it exists now, a CRC that does not match, a missing file, a missing fact — all
+resolve the same way, and none of them is an error.
+
+This is why the startup sweep is **authoritative** rather than additive, which is
+the fix for #362. `Store.RestoreJobProgress` marks done every article in
+`job_files.articles_done` before any of this runs, and that column is a *belief*
+a previous process wrote. `durability.Resumer` answers the same question from the
+file's bytes, and S4 makes its answer correct by definition. With only an additive
+entry point the belief always won, so a truncated or deleted partial finished as a
+complete file with a zero-filled hole in it and no warning.
+
+There are consequently two seeding entry points on `Queue`, and **they must not
+be merged**:
+
+| Entry point | Caller | Contract |
+|---|---|---|
+| `ReplaceFromResume` | `Application.resumeAllJobs` (startup sweep) | **authoritative** — sets *and clears*. The only caller that has just read the files' bytes. |
+| `SeedFromExtents` | `Application.reevaluateStall` phase 3 | **additive** — only ever sets. Replaying an ack whose fsync already landed; it has verified nothing. |
+
+The union of the two contracts is either #362 (a stale bit outliving the
+recomputation that disproved it) or a stall recovery that throws away live acks.
+`TestSeedFromExtents_StaysAdditive` and
+`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade` are the guards,
+and they are the only tests in the repository that redden when the two are
+merged.
+
+`ReplaceFromResume` never clears a permanently failed article: its bytes were
+never on disk, so their absence is the recorded outcome and not new information.
+It clears a file's `Complete` flag and its `AssembledCRC32` only where a bit was
+actually cleared — `Complete` means "the assembler is finished with this file",
+not "every article arrived", so it cannot be re-derived from the article bits.
+
+### 8. A checkpoint is bounded by the open-file set, not by job size
+
+R8. `SyncTarget.Files()` returns the job's **currently open** files, and
+`Assembler.OpenJobIDs` returns the jobs holding any. A barrier fsyncs open files,
+not every file the job will eventually produce. The set comes from the assembler
+rather than from job status because "has an open file" is the assembler's fact,
+and deriving it from the queue would be a second representation free to drift
+(S5).
+
+### 9. Barrier work is serialised per job
+
+`Barrier.Run` holds no lock — it does I/O throughout, and the project bans I/O
+under a lock — so `Application.jobBarrierLock` guarantees at most one barrier in
+flight per job. Two concurrent barriers over one job would interleave the
+read-modify-write of its `FileExtent`: both load the same stored bitmap, each adds
+its own bits, and the second commit overwrites the first, so the committed cache
+describes neither run and the articles the loser acked are durable with no bit to
+say so.
+
+The lock is **per job**, not global: a barrier is a few dozen fsyncs, and one
+job's slow mount must not park every other job's checkpoint. `FinalizeFile` takes
+it too — it is a barrier by another name, same `buildExtent`, same
+`ExtentStore.Commit`.
+
+### 10. Every barrier syscall on the critical path is timeout-bounded
+
+B4/R22. `Drain`, `Sync` and `Truncate` take a context and are bounded by the
+caller's deadline. `Files` and `Stat` have no context in their interface
+signature, so `internal/assembler` imposes `barrierOpTimeout` (5s, matching
+`diskCheckTimeout`) on the *wait* for the worker's reply.
+
+What that bounds is the wait, not the syscall: Go cannot interrupt a blocked
+`fstat`, so the worker stays stuck either way. That is the intended division —
+**a wedged mount stalls the job, never the process.**
+
+`SyncTarget.Path` deliberately does **not** go through the worker. It is called
+from the fault-routing path, and a wedged worker is precisely the condition that
+gets it called, so asking the worker would be asking the thing that is stuck.
+It reads `Options.FileInfo`, a pure lookup with no I/O, and returns `""` rather
+than an error when it cannot resolve. Nothing may branch on its value; it is
+diagnostic only.
+
+## The checkpoint cadence
+
+*What* a checkpoint means lives in `durability.Barrier`. *When* one happens lives
+in `internal/app`, so that "when to checkpoint" stays a policy question.
+
+R6 names five triggers:
+
+| Trigger | Implementation | Bound |
+|---|---|---|
+| Time | `runCheckpoint`'s ticker → `checkpointAll` | `downloads.checkpoint_interval`, default **30s** (`constants.DefaultCheckpointInterval`) |
+| Volume | `noteJobBytes` → `barrierKick` → `checkpointJob` | `downloads.checkpoint_bytes`, default **64 MiB** (`constants.DefaultCheckpointBytes`) |
+| File completion | `Application.handleFileComplete` → `finalizeCompletedFile` → `Barrier.FinalizeFile` | per file |
+| Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAll` | `shutdownCheckpointTimeout` (10s) |
+| Pause | via the stall/resume path; a paused job stops writing | — |
+
+The two bounds answer different failure shapes and neither subsumes the other.
+The time bound is what limits rework on a slow link, where 30 seconds is a few
+articles; the byte bound is what limits it on a fast one, where 30 seconds can be
+a gigabyte. The barrier fires on whichever arrives first.
+
+**Neither can be disabled.** `checkpointSettings` substitutes the default for a
+zero or negative value. A barrier is the only thing that acks a downloaded
+article, so a job with no barrier re-fetches everything it has on every restart —
+"off" is not a faster mode, it is a broken one.
+
+Three details that have each been got wrong once:
+
+- **The byte accumulator resets before the run, not after.** An article written
+  while the barrier is in flight belongs to the *next* window.
+- **A dropped kick is not a lost kick.** `barrierKick` is a non-blocking send;
+  the accumulator is not reset by `noteJobBytes`, so the next article re-raises
+  it and the interval tick covers the job regardless.
+- **`lastBarrier` stamps only a barrier that returned nil, and only one that
+  actually ran.** "The barrier ran and failed" and "no barrier ran at all" are
+  different facts. Folding the second into the first's nil-error case is how a
+  job on a dead mount came to report a fresh stamp every 30 seconds — the exact
+  inversion of what R26 asks that figure to distinguish. When `checkpointJob`
+  finds no sync target it also declines to reset the accumulator, because
+  zeroing it would report zero pending bytes beside a stale timestamp, two
+  figures agreeing that nothing is at risk at the moment when everything is.
+
+The queue save follows the barrier rather than running on its own timer, because
+the barrier is what produces something worth saving: an ack marks articles done
+in memory, and until the queue is written a crash re-fetches them anyway.
+
+`shutdownCheckpoint` runs **after the downloader has stopped and before the
+assembler does** — the only window where no new article can arrive and the file
+handles the barrier needs still exist. Without it, everything downloaded since
+the last barrier is re-fetched on the next start: up to a full checkpoint window
+thrown away on every deliberate restart, which is the cost B1 bounds for a crash
+and nobody should pay for a clean stop.
+
+## File completion and the handoff
+
+The assembler **no longer closes a file when its last part arrives**. It
+tombstones the file, fires `OnFileComplete`, and leaves the handle open, because
+`Barrier.FinalizeFile` has to `Drain`, `Sync`, `Truncate` and `Stat` it through
+that handle. A file closed at completion can never be trimmed back to its decoded
+extent.
+
+The sequence is:
+
+```
+  worker: partsWritten == TotalParts
+        └─► tombstone in `completed`, OnFileComplete  (handle still OPEN)
+              └─► Application.handleFileComplete
+                    ├─ filePathFor            (resolved BEFORE the finalize — a
+                    │                          permanently faulted job drops its
+                    │                          cached FileInfo, so a path asked
+                    │                          for afterwards comes back empty)
+                    ├─ finalizeCompletedFile
+                    │     ├─ Barrier.FinalizeFile   (drain, sync, extent, trim,
+                    │     │                          re-sync, re-stat, commit, ack)
+                    │     └─ Assembler.CloseFile    (ONLY on success)
+                    └─ completeFinalizedFile
+                          ├─ Queue.MarkFileComplete
+                          └─ DirectUnpack handoff
+```
+
+**A failed finalize stops the completion.** The file is not marked complete,
+DirectUnpack is not fed it, and the job does not finalize — because none of those
+can be undone once done, while a stalled job can be resumed by an operator who
+has fixed the mount. `ErrNotFinalized` exists so the caller can tell "there was
+nothing to finalize" from "we could not find out whether there was anything to
+finalize"; the second must never proceed, or a `barrierOpTimeout` on a wedged
+mount ships a file with pre-allocation's trailing zeros intact and par2 reports a
+healthy download as damaged.
+
+**The handle is retained on the failing path.** `Application.reevaluateStall`
+retries the finalize on an interval and on user resume, and every operation it
+needs goes through that handle; nothing reopens a file the assembler has
+tombstoned. Closing it there would leave the stall unable to clear for the rest of
+the process.
+
+### The retained-fd bound, and the boundary it holds within
+
+The retained set is **cumulative**, not the concurrently-open set: one fd per
+completed-but-unfinalized file. Its ceiling is the files that had already
+completed, or were already queued on `internalFileComplete` (cap 128), when the
+fault hit.
+
+**That bound, and the claim that a job is never unpaused while a finalize is
+failing, hold while the job is parked.** `reevaluateStall` does not resume a job
+until every interrupted finalize has landed, so the automatic cadence cannot grow
+the set.
+
+**A user Resume is the boundary, and is deliberately outside the guarantee.**
+`mode=queue&name=resume` and `name=resume_all` (`internal/api/queue.go`) unpause
+the job and *then* ask for a re-evaluation, because a user who has cleared the
+condition is entitled to have their job run. If it has not cleared, the job
+downloads until the next re-evaluation parks it again, completing more files and
+retaining a handle for each — bounded by one re-evaluation interval's worth of
+downloading per Resume, and not silent: every one of those files raises its own
+routed fault.
+
+`CancelJob`, `CloseJobHandles` and the worker's own shutdown drain all still
+release the handles, and post-processing's unlink cannot become an NFS
+silly-rename because a parked job does not reach post-processing.
+
+## Restart
+
+`Application.resumeAllJobs` runs **once, synchronously, inside `Start`** — after
+`queue.Load` and **before the downloader can dispatch**. The ordering is the whole
+point: a seed that lands after dispatch has begun still marks the right articles
+done, but the request for them is already on the wire.
+
+For each job it sweeps, per file:
+
+1. Resolve the path from the filename the queue already recorded
+   (`pipeline.jobFilePath`, same `JoinSafe` sanitisation the writer used). A file
+   whose filename was never resolved is **skipped**, contributing no extent —
+   no process ever opened a path for it, so there is nothing to have proved
+   absent.
+2. `durability.Resumer.Resume` — stat, adopt-or-recompute, per §6 above.
+3. Collect a `FileExtent` carrying only `FileIdx` and `Durable`, because those are
+   the only two fields `ReplaceFromResume` reads.
+
+Then `Queue.ReplaceFromResume` installs the finding **authoritatively**: an
+article the resume did not verify goes back to Outstanding, and the job's derived
+figures are recomputed from the bitmaps so its reported health matches its
+per-article state.
+
+**Running only at startup is complete.** A job admitted later has no committed
+extents to seed from, and a job's extents cannot change while it is not running —
+only a barrier commits Class B, and a barrier runs only for a job with open
+files. So a job promoted hours after startup is still correctly seeded by the
+sweep that ran before it was promoted.
+
+**The sweep never commits an extent.** A committed extent asserts that a completed
+fsync stands behind it, and a resume proves what is on disk without performing
+that fsync. Paying the verification again on the next restart is bounded rework
+and is the correct cost.
+
+**A fault does not discard the files already resumed.** `resumeJobFiles` returns
+the extents gathered *before* the fault, `resumeAllJobs` seeds them, and only then
+stalls the job. Returning early and discarding them turned a transient NFS flap on
+file 7 of 20 into a permanent loss of ground for all 20: the stall pauses the job,
+a paused job is not resident, and a non-resident job is skipped by every future
+sweep — which only runs at startup anyway.
+
+**A startup fault always stalls, even when it classifies permanent** — which is
+deliberately *not* what `Barrier.routeFault` does. The two answer different
+questions: the barrier asks "is this condition recoverable", while startup asks
+"is there work to protect by failing". At startup there is none — nothing has been
+downloaded in this process — so failing would send a job to history and discard the
+bytes an earlier run left on disk, over an `EACCES` on a mount that has not
+finished coming up at boot.
+
+### Which jobs the sweep covers
+
+Two bounds, and both are **accepted limitations rather than design**; see that
+section below.
+
+- **`PhaseActive` only.** Not residency — `JobPhase.IsResident` is also true for
+  `PhaseProcessing`, and in those phases something other than the assembler owns
+  the job's files: par2 repairs a file **in place**, unpack reads it, the move
+  relocates it out of the download directory entirely. The property the sweep
+  needs is *the assembler is the only writer of these files*.
+- **Resident jobs only.** `ReplaceFromResume` installs bits into the live job's
+  `JobProgress`, which requires a resident manifest.
+
+## Pre-allocation
+
+Pre-allocation reduces per-write filesystem metadata overhead and fragmentation.
+It is platform-specific:
+
+| Platform | Mechanism | Failure behaviour |
+|---|---|---|
+| **Linux** | `fallocate(2)` — reserves contiguous extents without zeroing | falls back to `ftruncate` (sparse file) on `ENOTSUP`/`EOPNOTSUPP` (NFS, tmpfs, older FUSE) |
+| **Non-Linux** | `ftruncate` — sparse on APFS, HFS+, ext4, xfs, btrfs | may allocate real blocks on a non-sparse filesystem; acceptable, since the file will be filled |
+
+It uses `FileInfo.ExpectedSize`, the NZB's declared **encoded** byte count, which
+runs ~2% above the file's decoded size. That difference is exactly why a completed
+file must be trimmed: left in place it is trailing zeros, which par2 reports as
+damage on a download that was perfectly healthy. The trim bound comes from the
+durable facts (§4), never from a high-water mark the assembler maintained — there
+is no longer any such figure, and `openFile` records no resume state at all.
+
+`SupportsSparse()` (`sparse.go`) probes whether the target filesystem supports
+sparse files by creating a temporary file, truncating it to 1 MiB and checking
+`st_blocks * 512 < apparent_size`. It is an **informational probe** used at
+startup for logging; it does not gate pre-allocation. The assembler always
+attempts `fallocate`/`ftruncate` regardless of the result.
+
+## Write coalescing cache
+
+When `Options.WriteCacheBytes > 0`, the shared `writeCache` buffers decoded
+articles in memory and coalesces contiguous runs into larger `WriteAt` calls.
+
+The cache is **assembler-wide, not per-writer**, because the memory bound in B2 is
+global across files: `forceFlushLargest` has to compare files against each other,
+and the coalescing scratch buffer is reused across all of them.
+
+- **Buffering**: each article is stored in `fileBuf.articles[offset]`, keyed by
+  byte offset; total memory is tracked in `writeCache.used`.
+- **A zero-length article is refused, and the contiguous scan stops at one.**
+  `offsetInRange` admits an empty write, so nothing upstream rules one out.
+  Buffering it would wedge the scan, which advances by the length of the article
+  at the cursor: a zero-length entry there never moves it and the loop never
+  terminates — on the worker goroutine that owns every file handle, so it takes
+  all assembly with it. `buffer()` returns `cached == false` so the caller writes
+  it inline, where the `WriteAt` is a no-op. `buildContiguousRun` also breaks on
+  one rather than trusting that.
+- **Contiguous flush**: after each `buffer()`, `flushContiguous()` scans from the
+  file's `writeCursor` for a contiguous run ≥ 512 KiB (`contiguousRunSize`),
+  coalesces it into the reusable `scratchBuf` and writes it as a single
+  `WriteAt`.
+- **Pressure relief**: at `used > 90%` of the limit, the file with the most
+  buffered data is force-flushed regardless of contiguity, articles written
+  individually in offset order.
+- **A drain advances the cursor and keeps the file's entry.** `drainFile()` moves
+  `writeCursor` past every article it returns — gaps included — and clears the
+  entry rather than deleting it, so the cursor survives into the next round of
+  buffering. An entry deleted here would be recreated at cursor 0, an offset
+  whose article was just written and will never be re-buffered, stranding the
+  scan for the rest of the file (#311). An article arriving later below the
+  advanced cursor is still buffered and still written by the next drain; it just
+  does not join a coalesced run.
+
+**`writeCursor` is an in-memory coalescing frontier and nothing else.** It is not
+persisted, not seeded from anything at open, and is not evidence about disk:
+`drainFile` advances it past gaps and before any write is attempted, so it sits
+above the bytes actually written whenever a write then fails. Collapsing the
+frontier and the durability anchor into one value is what made the old
+`write_cursor` column unusable, and the two questions are now answered separately
+— `FileExtent.Durable` for resume, `FileExtent.VerifiedTo` for the CRC anchor.
+
+When `WriteCacheBytes == 0` (the default), caching is disabled and each article
+is written directly through `FileWriter.writeOne`. Decoder buffers are returned
+to `sync.Pool` (`decoder.PutBuffer`) on every path, including every failure path.
+
+## Duplicate and late-article handling
+
+- **Per-writer `seenDone` / `seenFailed`**: dedup by Message-ID. `seenDone`'s
+  value is the **offset the first copy was accepted at**, which the duplicate
+  branch needs: dedup is keyed on the Message-ID, so a duplicate may carry a
+  different yEnc offset, and asking about its own would interrogate a slot the
+  first copy never occupied — reading empty as "already written".
+- A write path that **fails** moves its articles out of `seenDone` into
+  `seenFailed`, so a later duplicate is not read as a success. The article is
+  simply absent from the next `Drain`, which leaves it Outstanding — there is no
+  ack in either direction on a failed write (A1).
+- An article **displaced** from an offset a later one claimed loses its bytes.
+  It made no claim, so failing it only corrects the seen-sets.
+- **Cross-state dedup**: a Message-ID previously counted as a success arriving as
+  a failure (or vice versa) does not increment `partsWritten` again.
+- **Late articles**: an article for a file already in the `completed` tombstone is
+  handled by `handleLateDuplicate` — data returned to the pool, no disk write, no
+  claim.
+
+## Control messages
+
+All four are encoded as sentinel `FileIdx` values on `WriteRequest` and are
+synchronous from the caller's perspective: the caller blocks until the worker,
+which owns every file handle, has done the work and answered.
+
+| Control | Encoding | Worker behaviour |
+|---|---|---|
+| **CancelJob** | `JobID=""`, `FileIdx=-1`, `MessageID=jobID` | closes and *deletes* all open files for the job, tombstones the job in `cancelledJobs`, discards cached articles, closes `ackCh` |
+| **CloseJobHandles** | `JobID=""`, `FileIdx=-2`, `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, closes `ackCh`. Used when a job enters post-processing or par2 repair |
+| **Barrier op** | `JobID=""`, `FileIdx=-3`, `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
+
+The barrier-op indirection is invariant X1, not ceremony. One goroutine owns all
+the state, so the barrier can reach a file's cache and handle without a lock. The
+alternative — a mutex over the open-file map and the writers — would put `WriteAt`
+and `fsync` inside a critical section, which is both a contention disaster on the
+hot path and exactly what `scripts/check_lock_io` exists to catch.
+
+Closing a file that is already gone is a **no-op, not an error**: a race with
+`CancelJob`, `CloseJobHandles` or shutdown is the expected outcome, not a
+disagreement. A file the barrier believes open but the worker does not **is** an
+error, reported rather than routed through `Stallable`.
+
+## Disk-space pre-flight
+
+`checkDiskSpace` runs every 16 `WriteRequest` items (`diskCheckInterval`), and is
+skipped entirely when `MinFreeBytes` is zero. Two distinct timeouts bound it:
+
+- **Caller timeout** (`diskCheckTimeout = 5s`) — each per-directory `FreeBytes`
+  call bounds how long the worker blocks waiting for a result.
+- **Cache TTL** (`DefaultDiskProbeTTL = 5s`) — `DiskProbe` caches a completed
+  `statfs` for this long before launching a new probe. The two values match today
+  but serve independent purposes.
+
+`DiskProbe` keeps **at most one outstanding `statfs` goroutine per directory**:
+repeated calls against a stuck mount return the cached result or the timeout
+error rather than accumulating goroutines. Stale entries are evicted after 10
+minutes (`diskProbeEvictAfter`).
+
+When free space drops below `MinFreeBytes` the `OnLowDisk` callback fires. **The
+assembler does not pause itself** — the callback owns that decision — and it
+continues processing requests in the channel.
+
+## Offset bounds checking
+
+`offsetInRange` rejects a `WriteRequest` whose offset is negative, whose
+`offset+length` overflows `int64`, or whose write extends past
+`ExpectedSize + ExpectedSize/8` (12.5% slack). This prevents a hostile NNTP server
+from inflating a file's apparent size with a crafted yEnc `=ypart begin=` header.
+A rejected write returns its buffer to the pool and makes no claim.
+
+## DirectUnpack streaming contract
+
+DirectUnpack is a **volume-level** streaming extractor, not an article-level one.
+It reads fully assembled RAR volume files from disk; it never reads partial
+articles or sparse regions.
+
+1. **Volume completion signal**: `OnFileComplete` reports a volume whose parts
+   have all been written, with the handle **still open**. The volume is
+   nevertheless complete, fsynced, trimmed and closed by the time DirectUnpack
+   sees it, because `handleFileComplete` runs `finalizeCompletedFile` *before*
+   handing the event to the orchestrator. That ordering is load-bearing: unrar
+   reading a file that still carried pre-allocation's trailing zeros would see a
+   corrupt volume. When the finalize fails, DirectUnpack is not reached at all
+   and the handle is not closed (see the handoff section above).
+2. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
+   requested volume number appears in `completedVols`, and returns immediately if
+   the set is in `corruptSets`.
+3. **Sequential volume feeding**: `startVolumeFeed()` opens completed volumes in
+   order and sends their `*os.File` handles to `rarengine.StreamDecompressor`.
+4. **Corrupt volume handling**: `MarkCorrupt(setname, reason)` is called by the
+   queue when a volume was assembled from a download with missing or failed
+   articles. Once marked, the set can never be reported as successfully
+   extracted — `waitForVolume` checks on each wake, and `extractSet` re-checks
+   after extraction as a backstop for volumes that arrived before the corruption
+   was detected.
+5. **Non-RAR handling**: `extractSet` calls `rarheader.Version()` on the first
+   volume's magic bytes. Any error — including I/O errors, not just format
+   mismatches — yields `errNotRAR` and the set is recorded as `SkippedSet`, not
+   failed; the normal unpack stage's external `unrar` handles it.
+6. **Format support**: `rarengine` (pure Go RAR3/RAR5). Other formats, legacy
+   RAR2, and non-RAR files identified by filename go to post-processing.
+7. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and
+   queued sets, clears success results, and signals the reader goroutine. If
+   `run()` was never started it closes `done` directly.
+8. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
+   `extractDir` and writes every entry through it, so archive entries with `..`
+   components, absolute paths, or symlinked path components cannot escape.
+
+## Memory & allocation budget
+
+| Component | Bound / strategy |
+|---|---|
+| Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
+| Write cache | `Options.WriteCacheBytes`, pressure relief at 90%. Zero (disabled) by default. |
+| Contiguous flush threshold | 512 KiB (`contiguousRunSize`). Shorter runs stay buffered. |
+| Coalescing scratch buffer | one reusable `[]byte` per `writeCache`, grown to the largest flush. |
+| `FileWriter.written` / `.reported` | bounded by one checkpoint window; `reported` accumulates only between *successful* syncs, and a job whose syncs are failing stalls (R19) and stops writing. |
+| `internalFileComplete` | cap 128. **Not** a bound on retained fds — see the handoff section. |
+| Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
+| Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
+| Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. |
+| Durability rows | `article_facts` and `file_extents`, deleted per job by `deleteJobDurability`. Neither table has a foreign key to the queue, so nothing else removes them. |
+
+## Failure & degradation rules
+
+- **Write error (`pwrite` failure)** — the article is *not* acked and *not*
+  failed. It is absent from the next `Drain`, so it stays Outstanding, and the
+  classified `*storagefault.Fault` travels separately. A coalesced run fails
+  **every** article merged into it, not just the one whose arrival triggered the
+  flush: `buildContiguousRun` pooled the originals before the write was
+  attempted, so reporting only the trigger would leave the rest believed written
+  with their bytes freed.
+- **Drain stops at the first write failure**, returning the articles that *did*
+  land plus the fault, so the barrier sees both what it may claim and why the
+  drain stopped. Continuing would be optimistic: a storage fault is a condition
+  of the device. Articles after the failure are released to the pool and cleared
+  from the seen-sets so a re-delivery is not mistaken for a duplicate.
+- **`FileInfo` resolution, `MkdirAll`, or `OpenFile` failure** — the article's
+  data is returned to the pool and the request is discarded. The file is never
+  opened and never appears in `open`.
+- **CancelJob** — closes and deletes open files, tombstones the job so subsequent
+  articles are discarded. The `ackCh` synchronisation lets the caller delete the
+  job directory the moment `CancelJob` returns.
+- **Shutdown (`Stop`)** — closes `stopCh`, waits for in-flight senders, drains
+  remaining channel items, flushes the write cache, and closes all open files.
+  Partial files are closed without firing `OnFileComplete`.
+
+## Accepted limitations
+
+These are known, deliberate, and **not** claims about correctness. They are
+recorded here so the next reader does not mistake them for design.
+
+1. **The startup sweep skips non-resident jobs.** `ReplaceFromResume` needs a
+   resident manifest, and hydrating the whole queue at startup would blow the
+   residency budget `docs/queue-lifecycle.md` exists to bound. Note that the
+   durability subsystem's own fault response can manufacture that state:
+   `Application.Stall` → `Queue.Pause` → eviction. A job stalled at startup is
+   therefore not re-swept by a later run of the sweep — there is no later run,
+   since the sweep is startup-only.
+
+2. **The sweep is bounded to `PhaseActive`, and `PhaseActive` is not
+   download-only.** It comprises `StatusDownloading` **and** `StatusFetching`,
+   and `constants.StatusFetching` means "downloading extra par2 files for
+   repair" — a repair-time status. The guard is sound today only because
+   **nothing assigns `StatusFetching`**: it exists in the transition table, the
+   phase mapping and the API's vocabulary, and no code path sets it. That is a
+   fact about the writers, not an invariant the type enforces. The first code
+   that starts setting it puts a repair-time job inside the window this guard
+   trusts, and must either move it out of `PhaseActive` or bound the sweep on
+   status rather than phase. The other way in is any non-assembler writer
+   arriving inside `PhaseActive` — a DirectUnpack that wrote back into its
+   source rather than reading it, or a repair moved earlier than
+   download-complete.
+
+3. **The SPLIT case in stall recovery.** `reevaluateStall` phase 3
+   (`seedFromCommittedExtents`) logs and returns on failure, while phase 4 still
+   delivers the completion. The result is a file marked `Complete` with some of
+   its articles still Outstanding — `IsComplete` is file-based
+   (`internal/queue/job.go`), so the two do not have to agree. The cost is wrong
+   figures and a wasted re-fetch, not corruption or a short file. Recorded and
+   unfixed.
+
+4. **A resumed file's whole-file CRC is derived but not consumed.**
+   `durability.Resumer` produces `FileExtent.PrefixCRC` guarded by
+   `HasPrefixCRC`, and it is a genuine whole-file CRC when the run consumed every
+   recorded fact and reached the file's end. Nothing threads it to
+   `Queue.SetFileCRC32`, which has no production caller, so
+   `FileProgress.AssembledCRC32` is zero for every freshly downloaded file. Zero
+   is the documented "unavailable" value (#349): QuickCheck reads it as `NoCRC`
+   and `par2NeedsRecovery` conservatively returns true. The cost is that
+   on-demand par2 always fetches the recovery volumes and the repair stage is
+   never bypassed by a CRC match. It never ships an unrepaired download. See
+   *Open gaps*.
+
+5. **The crash suite does not test fsync-to-platter.** See below.
+
+## What the crash suite actually pins
+
+`test/crash/` (build tag `crash`, Linux only, six tests) runs the real daemon as
+a child process and kills it. It is the strongest evidence in the repository for
+this contract, and its scope is narrower than "durability":
+
+**It pins the assembler's in-process write cache.** A SIGKILL destroys that cache
+for real, with no flush, so an article acked before its bytes left the process has
+no bytes in the file afterwards and the CRC read-back sees it.
+
+**It does not pin fsync-to-platter.** No unprivileged userspace call can discard
+dirty page-cache data: `POSIX_FADV_DONTNEED` invalidates clean pages and skips
+dirty ones, `/proc/sys/vm/drop_caches` skips them too, and `O_DIRECT` flushes
+first. This was verified empirically, not reasoned: **removing the `Sync()`
+syscall entirely left the suite byte-identical to baseline.** Real coverage needs
+a device the test can cut underneath the filesystem — a device-mapper
+`log-writes` or `flakey` target — which needs root.
+
+`ENOSPC` is likewise not covered by the crash suite; the stall path is covered
+in-process instead. Both gaps are tracked as issue **#363**.
+
+`docs/TESTING.md` §3a is the full account, including the per-test table and what
+a green run does and does not bound.
+
+## Status
+
+### Landed
+
+- `internal/durability`: `Barrier` (checkpoint and `FinalizeFile`), `Resumer`,
+  `DurableProof`, `Bitmap`, SQLite `FactLog` and `ExtentStore`.
+- `internal/storagefault`: classification into retryable/permanent with the
+  operation and path attached.
+- Compiler-enforced ack path: `Queue.AckDurable(durability.DurableProof)`.
+- `assembler.FileWriter` — per-file ownership with no authority to ack, record a
+  CRC, decide completion, or truncate.
+- Barrier operations over the assembler's control channel (`fileIdxSyncOp`),
+  timeout-bounded.
+- Checkpoint cadence: time bound, byte bound, file completion, clean shutdown,
+  with `lastBarrier`/`PendingBytes` surfaced through the API and UI.
+- Authoritative startup sweep (`resumeAllJobs` → `Queue.ReplaceFromResume`) and
+  the additive stall-recovery replay (`SeedFromExtents`).
+- Storage-fault stall/fail with a surfaced, actionable reason and interval-based
+  re-evaluation.
+- `article_facts` and `file_extents` tables; `job_files.bytes_downloaded`,
+  `max_written` and `write_cursor` removed.
+- Crash-consistency suite (`test/crash/`, six tests).
+
+### Open gaps
+
+- **`PrefixCRC` is not wired to QuickCheck.** See *Accepted limitations* #4. The
+  work is to thread `FileExtent.PrefixCRC`/`HasPrefixCRC` from the resumer (and
+  from a completed file's own extent) to `Queue.SetFileCRC32`, so a healthy
+  download can bypass par2 verification again.
+- **The startup sweep is startup-only and resident-only.** See *Accepted
+  limitations* #1.
+- **`ENOSPC` and page-cache loss are untested** (#363).
+- **In-flight coalescing still stalls on a permanently failed article.** A gap
+  the download will never fill leaves `buildContiguousRun` stranded at the cursor
+  until the next drain re-anchors it. #311 fixed the pressure-drain route to the
+  same symptom; this route remains. Its cost is memory residency rather than
+  syscalls, and two designs targeting it directly were measured and found worse
+  than leaving it alone. Measure the residency cost before attempting it again.
+- **Write coalescing has no measured win on a local filesystem.** A sweep of
+  `WriteAt` chunk sizes over the same payload found wall-clock flat on btrfs and
+  *worse* for large chunks on tmpfs, because coalescing trades N syscalls for one
+  syscall plus a second memcpy of the same bytes. The mechanism is sound where a
+  write is expensive per call — NFS/SMB, where each `pwrite` is a round trip —
+  and the local-filesystem case should be measured or the cache left disabled,
+  which is the default.

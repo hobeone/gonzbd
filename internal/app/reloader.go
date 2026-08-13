@@ -161,9 +161,9 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// buffered results and detected the channel close.
 	app.pipeline.setCompletions(nil)
 
-	// Now it's safe to clear emitted: no more MarkArticleDone calls
-	// from old results, so notifyCh won't be consumed between clear
-	// and the new downloader's first dispatch pass.
+	// Now it's safe to clear emitted: no more article resolutions arrive from
+	// old results, so notifyCh won't be consumed between clear and the new
+	// downloader's first dispatch pass.
 	app.queue.ClearAllEmitted()
 
 	servers := make([]*downloader.Server, len(scs))

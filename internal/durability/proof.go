@@ -10,8 +10,10 @@ import "slices"
 // remember — it is code that does not compile.
 //
 // The guarantee is package-scoped: within internal/durability, newProof is
-// reachable from anywhere. Only Barrier.Run calls it, and that is the one
-// place review has to hold. Outside this package it is absolute.
+// reachable from anywhere. Exactly two functions call it — Barrier.Run and
+// Barrier.FinalizeFile — and both are methods on Barrier, reached only after a
+// Sync returned nil. That pair is what review has to hold. Outside this package
+// the guarantee is absolute.
 type DurableProof struct {
 	jobID string
 	arts  []int32
