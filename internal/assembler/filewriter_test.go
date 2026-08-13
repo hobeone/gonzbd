@@ -476,3 +476,45 @@ func TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange(t *testing.T) {
 		t.Errorf("file is %d bytes but %d articles were reported written", st.Size(), len(got))
 	}
 }
+
+// TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported pins the split
+// between w.written and w.reported, which is the half the earlier pin missed.
+//
+// Folding the two — having Sync clear both — left every package green, and it
+// is the exact loss this writer's own doc calls out: an article accepted
+// BETWEEN a Drain and its Sync is covered by that fsync but was never handed
+// to the barrier, so nothing can ever ack it. It stays Outstanding for a file
+// the assembler has already tombstoned, which no re-fetch can reach.
+//
+// Sequenced deliberately: a1 is reported and confirmed, a2 arrives inside the
+// window, and only the second Drain may mention a2.
+func TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported(t *testing.T) {
+	w := newTestFileWriter(t)
+	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, []byte("abcd")); err != nil {
+		t.Fatal(err)
+	}
+	if first := w.take(); len(first) != 1 || first[0].ArtIdx != 1 {
+		t.Fatalf("first take = %v, want article 1 alone", first)
+	}
+
+	// Accepted after the Drain that reported a1, before the Sync that
+	// confirms it. The worker handles Drain and Sync as two separate control
+	// messages, so a write can land between them.
+	if err := w.Accept(articleID{msgID: "a2", artIdx: 2}, 4, []byte("efgh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	second := w.take()
+	if len(second) != 1 {
+		t.Fatalf("second take = %v, want exactly article 2 — a1 was confirmed by the Sync and "+
+			"a2 was not yet reported", second)
+	}
+	if second[0].ArtIdx != 2 {
+		t.Errorf("second take = %v, want article 2: the Sync discarded an article no Drain had "+
+			"reported, so no ack can ever reach it and it stays Outstanding on a file the "+
+			"assembler has already tombstoned", second)
+	}
+}

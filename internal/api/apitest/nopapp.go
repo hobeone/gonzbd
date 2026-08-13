@@ -132,6 +132,11 @@ func (n NopApp) CheckpointStates() map[string]app.JobCheckpointState {
 	return n.CheckpointStatesVal
 }
 
+// CheckpointState returns one job's configured figures, or the zero value.
+func (n NopApp) CheckpointState(jobID string) app.JobCheckpointState {
+	return n.CheckpointStatesVal[jobID]
+}
+
 // BinaryVersionsInfo is a stub.
 func (n NopApp) BinaryVersionsInfo() app.BinaryVersions { return app.BinaryVersions{} }
 

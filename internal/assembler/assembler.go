@@ -638,8 +638,17 @@ func (a *Assembler) dispatchRequest(
 // drainAndClose flushes a file's buffered bytes, fsyncs, and closes it.
 //
 // The articles the drain writes are NOT acked here — this package has no ack
-// authority. They are reported by the next Drain the barrier makes, or, if the
-// process ends first, left Outstanding to be re-fetched (S3).
+// authority — and no later Drain reports them either: this function's own
+// Drain takes the report, and the Sync that follows is what discards a
+// confirmed one. They are therefore left Outstanding and re-fetched (S3),
+// which is the safe direction and is what this path is for.
+//
+// That costs nothing in the ordinary case. A clean stop runs
+// Application.shutdownCheckpoint — a full barrier, ack included — while the
+// downloader is already stopped and the handles still exist, so by the time
+// this runs there is little left to report. The comment previously claimed the
+// next barrier Drain would pick these up; it will not, and had not since the
+// writer began discarding its report on a successful Sync.
 func (a *Assembler) drainAndClose(f *openFile) {
 	if _, err := f.w.Drain(context.Background()); err != nil {
 		a.log.Warn("drain file before close", "path", f.info.Path, "error", err)

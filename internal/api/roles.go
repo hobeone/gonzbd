@@ -74,6 +74,10 @@ type StatusReporter interface {
 	// and stall reason, keyed by job ID. Snapshotted once per request for the
 	// same reason DirectUnpackStatuses is.
 	CheckpointStates() map[string]app.JobCheckpointState
+	// CheckpointState returns one job's figures, for the single-job detail
+	// endpoint. Separate from the map above so the drawer does not build a
+	// snapshot of every job in the queue to read one entry out of it.
+	CheckpointState(jobID string) app.JobCheckpointState
 	// BinaryVersionsInfo returns resolved external-tool version strings
 	// captured at startup, for the status page.
 	BinaryVersionsInfo() app.BinaryVersions

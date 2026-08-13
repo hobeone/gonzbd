@@ -143,8 +143,9 @@ type JobDurability struct {
 	DurableBytes int64
 }
 
-// checkpointState reads one job's application-side figures.
-func (app *Application) checkpointState(jobID string) JobCheckpointState {
+// CheckpointState reads one job's application-side figures, for the single-job
+// detail endpoint. The whole-queue listing uses CheckpointStates instead.
+func (app *Application) CheckpointState(jobID string) JobCheckpointState {
 	var out JobCheckpointState
 	app.barrierMu.Lock()
 	out.PendingBytes = app.jobBarrierBytes[jobID]
@@ -178,11 +179,11 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 
 	app.stallMu.Lock()
 	for jobID, rec := range app.stalls {
-		if rec.fault == nil {
+		if rec.reason == "" {
 			continue
 		}
 		st := out[jobID]
-		st.StallReason = "Stalled: " + rec.fault.Error()
+		st.StallReason = rec.reason
 		out[jobID] = st
 	}
 	app.stallMu.Unlock()
@@ -199,7 +200,7 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // SeedFromExtents, which replays a committed Class B cache. A second counter
 // would be a second representation of one fact, free to drift (S5).
 func (app *Application) JobDurability(jobID string) JobDurability {
-	out := JobDurability{JobCheckpointState: app.checkpointState(jobID)}
+	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
 	if app.queue != nil {
 		if snap := app.queue.SnapshotJob(jobID); snap != nil {
 			out.DurableBytes = DurableBytesOf(snap.Progress())

@@ -1418,3 +1418,56 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 			snap.Warning, want.Path)
 	}
 }
+
+// TestCheckpointJob_DoesNotStampABarrierThatNeverRan pins R26's last-barrier
+// figure against its own inversion.
+//
+// checkpointJob had two outcomes where the world has three. A job with no sync
+// target ran no barrier at all, but `err` stayed nil, so control fell through
+// to the success stamp — and resetJobBytes had already zeroed the window. The
+// operator then sees a fresh barrier timestamp beside zero pending bytes: two
+// figures agreeing that nothing is at risk, at the moment when everything
+// written since the last real barrier is.
+//
+// The fixture removes the job from the queue while the assembler still holds
+// its file open, because that is what actually produces a nil target.
+// Eviction does NOT: syncTargetFor goes through Queue.SnapshotJob, which
+// hydrates one job's manifest from disk, so a merely paused job still has a
+// target. The reachable nil cases are a job that has left the queue between
+// checkpointAll's OpenJobIDs and this call, and a manifest that cannot be
+// read.
+func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096)
+
+	if err := application.queue.Remove(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if application.syncTargetFor(job.ID) != nil {
+		t.Fatal("the fixture still has a sync target; the assertions below would pass against " +
+			"a barrier that really ran")
+	}
+	// The assembler is unaware the job left, so checkpointAll still lists it.
+	jobs, err := application.assembler.OpenJobIDs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(jobs, job.ID) {
+		t.Fatal("the assembler no longer holds the job's file, so checkpointJob would never " +
+			"be called for it and this test asserts nothing reachable")
+	}
+
+	application.checkpointJob(t.Context(), job.ID)
+
+	got := application.JobDurability(job.ID)
+	if !got.LastBarrier.IsZero() {
+		t.Errorf("LastBarrier = %v after a checkpoint that ran no barrier, want the zero time — "+
+			"the figure exists to tell a job that is checkpointing from one whose barriers "+
+			"stopped, and this reports the opposite", got.LastBarrier)
+	}
+	if got.PendingBytes != 4096 {
+		t.Errorf("PendingBytes = %d, want 4096 — a window that was never closed was zeroed, so "+
+			"the bytes at risk read as none", got.PendingBytes)
+	}
+}

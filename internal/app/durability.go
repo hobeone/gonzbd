@@ -237,17 +237,38 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	mu.Lock()
 	// --- Barrier serialised per job below this line ---
 
+	// Three outcomes, not two. "The barrier ran and failed" and "no barrier
+	// ran at all" are different facts, and folding the second into the first's
+	// nil-error case is how a job on a dead mount came to report a fresh
+	// last_barrier stamp every 30 seconds — the exact inversion of what R26
+	// asks that figure to distinguish.
+	//
+	// The path is ordinary, not defensive: a stalled job is paused, Pause
+	// evicts its manifest, syncTargetFor answers nil for a job it cannot
+	// describe — and the job still holds an open file, so checkpointAll keeps
+	// visiting it.
+	tgt := app.syncTargetFor(jobID)
+	if tgt == nil {
+		mu.Unlock()
+		// --- No lock held below this line ---
+		//
+		// The accumulator is deliberately NOT reset. It measures a window
+		// this call did not close, and zeroing it would report zero pending
+		// bytes beside the stale timestamp above — two figures agreeing that
+		// nothing is at risk, at the moment when everything written since the
+		// last real barrier is.
+		app.log.Debug("checkpoint skipped, no sync target for the job", "job", jobID)
+		return
+	}
+
 	// Reset before the run, not after. An article written while the barrier
 	// is in flight belongs to the NEXT window: it may or may not have made
 	// it into this drain, and charging it to the window that just closed
 	// would let it go uncounted until the following one.
 	app.resetJobBytes(jobID)
 
-	var err error
-	if tgt := app.syncTargetFor(jobID); tgt != nil {
-		app.barrierRuns.Add(1)
-		err = app.barrier.Run(ctx, jobID, tgt)
-	}
+	app.barrierRuns.Add(1)
+	err := app.barrier.Run(ctx, jobID, tgt)
 	mu.Unlock()
 	// --- No lock held below this line ---
 
@@ -346,11 +367,25 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // Closing here left the stall unable to clear for the rest of the process,
 // which is the L2 violation this reversal exists to remove.
 //
-// The costs the earlier reasoning named are real but bounded: one fd per
-// unfinalized completed file, held while the job is parked and released the
-// moment a retry succeeds, and post-processing's unlink cannot become an NFS
-// silly-rename because a parked job does not reach post-processing. CancelJob,
-// CloseJobHandles and the assembler's own shutdown drain all still release it.
+// # What the retained set is actually bounded by
+//
+// Not the concurrently-open set, which is what the close bounded. This is a
+// CUMULATIVE set: one fd per completed-but-unfinalized file, held until a
+// retry succeeds. Its ceiling is the files that had already completed, or were
+// already queued on internalFileComplete, when the fault hit — the open-file
+// set plus that channel's 128-entry buffer.
+//
+// It cannot grow past that while the job stays parked, and
+// reevaluateStall is what guarantees it does: the job is not resumed until
+// every interrupted finalize has landed, so no further file of that job can
+// complete and add to the set. An earlier draft resumed first and returned at
+// the first failing file, which let each interval complete more files, retry
+// only one of them, and retain the rest — an unbounded climb toward EMFILE on
+// a mount that stays broken.
+//
+// post-processing's unlink cannot become an NFS silly-rename because a parked
+// job does not reach post-processing. CancelJob, CloseJobHandles and the
+// assembler's own shutdown drain all still release the handles.
 func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) (err error) {
 	defer func() {
 		if err != nil {
@@ -446,7 +481,11 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 	// re-evaluation retries a finalize, which takes the same per-job barrier
 	// lock a checkpoint does; running the two from one loop means they are
 	// serialised by construction rather than by that lock.
-	stallTicker := time.NewTicker(stallRecheckInterval)
+	recheck := app.stallRecheckInterval
+	if recheck <= 0 {
+		recheck = stallRecheckInterval
+	}
+	stallTicker := time.NewTicker(recheck)
 	defer stallTicker.Stop()
 	for {
 		select {

@@ -153,6 +153,11 @@ type queueSlot struct {
 	// ArticlesRemaining is the count of articles not yet completed.
 	// Reflects job.PendingArticles, which is updated on every state
 	// mutation (downloaded, failed, retried).
+	//
+	// This is also R26's "articles outstanding": an article is resolved only
+	// by a barrier's ack or a permanent failure, so what is left here is
+	// exactly what a crash would re-fetch, alongside the two byte figures
+	// below.
 	ArticlesRemaining int `json:"articles_remaining"`
 
 	// ETASeconds is RemainingBytes divided by current aggregate speed.
@@ -166,13 +171,15 @@ type queueSlot struct {
 	CurrentFile string `json:"current_file"`
 
 	// StallReason is why the job is parked on a storage fault, or "" when it
-	// is not (R27). It is the difference between a recoverable full disk and
+	// is not (R27). Always present rather than omitempty, so a client can
+	// tell an unstalled job from an older server that does not send the
+	// field at all. It is the difference between a recoverable full disk and
 	// a job that appears to have silently stopped.
 	//
 	// Sourced from the application rather than from Warning, which the queue
 	// wipes on the Resume each re-evaluation performs — a user polling during
 	// one would watch the reason blink out and come back.
-	StallReason string `json:"stall_reason,omitempty"`
+	StallReason string `json:"stall_reason"`
 
 	// BytesDurable is what a completed fsync covers. BytesPending is what has
 	// been written since the job's current checkpoint window opened: accepted
@@ -620,7 +627,7 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 		if status, ok := s.status.DirectUnpackStatus(job.ID); ok {
 			duStatus = &status
 		}
-		cp = s.status.CheckpointStates()[job.ID]
+		cp = s.status.CheckpointState(job.ID)
 	}
 	slot := buildSlot(job, paused, speed, 0, duStatus, cp)
 	slot.Files = buildQueueFiles(job)

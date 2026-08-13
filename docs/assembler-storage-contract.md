@@ -413,6 +413,13 @@ articles or sparse file regions. The coordination model:
    the rest of the process. `CancelJob`, `CloseJobHandles` and the worker's
    own shutdown drain all still release it.
 
+   The retained set is **cumulative**, not the concurrently-open set: one fd
+   per completed-but-unfinalized file. Its ceiling is the files that had
+   already completed, or were already queued on `internalFileComplete`, when
+   the fault hit. It cannot grow past that because `reevaluateStall` does not
+   resume the job until every interrupted finalize has landed, so no further
+   file of that job can complete while it is parked.
+
 2. **Volume waiting**: `waitForVolume()` blocks on the `volumeReady` channel
    until the requested volume number appears in `completedVols`. If the set is
    marked corrupt (`corruptSets`), it returns an error immediately.

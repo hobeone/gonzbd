@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	appkg "github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -47,6 +48,17 @@ func TestNopApp_Contract(t *testing.T) {
 	}
 	if states := app.CheckpointStates(); states != nil {
 		t.Errorf("CheckpointStates() = %v on an unconfigured NopApp, want nil", states)
+	}
+	if st := app.CheckpointState("job1"); st != (appkg.JobCheckpointState{}) {
+		t.Errorf("CheckpointState() = %+v on an unconfigured NopApp, want the zero value", st)
+	}
+	configured := NopApp{CheckpointStatesVal: map[string]appkg.JobCheckpointState{
+		"job1": {PendingBytes: 42, StallReason: "Stalled: disk full"},
+	}}
+	if st := configured.CheckpointState("job1"); st.PendingBytes != 42 || st.StallReason == "" {
+		t.Errorf("CheckpointState(job1) = %+v, want the configured figures — the queue detail "+
+			"endpoint reads this one, and a stub that dropped them would make its assertions "+
+			"pass against a handler that sends nothing", st)
 	}
 	// ReevaluateStalls must tolerate a nil counter — most tests do not wire
 	// one — and must count when one is present, or the R19 "on user action"

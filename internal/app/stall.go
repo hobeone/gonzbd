@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -40,8 +42,17 @@ const (
 // stallRecord is one job's parked state: why it stopped, and what has to
 // happen before it can move again.
 type stallRecord struct {
-	fault *storagefault.Fault
-	since time.Time
+	// reason is the rendered, surfaced text, not the fault it came from.
+	//
+	// A string rather than a *storagefault.Fault because not every reason IS
+	// one. A completed file whose handle was released can never be finalized
+	// in this process, and dressing that up as a "retryable storage fault"
+	// told the operator to wait for a condition that will never clear —
+	// with an empty path, since there is no longer a file to name. A2 asks
+	// for an actionable reason, and the fault vocabulary cannot express this
+	// one.
+	reason string
+	since  time.Time
 	// files carries the completed files whose finalize the stall interrupted.
 	//
 	// This map is the whole of concern 8. When a file's parts have all
@@ -69,12 +80,24 @@ func (app *Application) stalledJobIDs() []string {
 func (app *Application) noteStall(jobID string, f *storagefault.Fault) {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
+	app.setStallReasonLocked(jobID, "Stalled: "+f.Error())
+}
+
+// noteStallReason parks a job with a reason that is not a storage fault.
+func (app *Application) noteStallReason(jobID, reason string) {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	app.setStallReasonLocked(jobID, reason)
+}
+
+// setStallReasonLocked records a reason, creating the record if needed.
+func (app *Application) setStallReasonLocked(jobID, reason string) {
 	rec, ok := app.stalls[jobID]
 	if !ok {
 		rec = &stallRecord{files: map[int]finalizeState{}, since: time.Now()}
 		app.stalls[jobID] = rec
 	}
-	rec.fault = f
+	rec.reason = reason
 }
 
 // notePendingFinalize records a completed file whose finalize must be retried
@@ -142,10 +165,10 @@ func (app *Application) StallReason(jobID string) StallInfo {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
 	rec, ok := app.stalls[jobID]
-	if !ok || rec.fault == nil {
+	if !ok || rec.reason == "" {
 		return StallInfo{}
 	}
-	return StallInfo{Reason: "Stalled: " + rec.fault.Error(), Since: rec.since}
+	return StallInfo{Reason: rec.reason, Since: rec.since}
 }
 
 // ReevaluateStalls asks the checkpoint loop to re-evaluate every parked job
@@ -173,58 +196,104 @@ func (app *Application) reevaluateStalls(ctx context.Context) {
 	}
 }
 
+// errFinalizeUnrecoverable reports a completed file no retry in this process
+// can finalize, because its handle is gone.
+//
+// A sentinel rather than a storage fault, because it is neither: the disk is
+// fine and there is nothing to wait for. Routing it through
+// storagefault.Classify produced "Stalled: storage retryable fault on
+// finalize \"\"" — an empty path, and the one instruction that would actually
+// help erased. A1 read backwards.
+var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is gone")
+
 // reevaluateStall tries to get one parked job moving again.
 //
-// The job is resumed FIRST, before anything is retried, and that ordering is
-// not cosmetic. Application.Stall pauses the job, and Queue.Pause evicts its
-// manifest; a retried finalize ends in Barrier.FinalizeFile's AckDurable,
-// which needs the job resident and fails outright on one that is not. The
-// resume is what re-promotes it. Retrying first looked safer — it kept an
-// unfinalized file away from a running job — and it simply does not work: the
-// finalize gets as far as committing the extent and then fails to ack, so the
-// stall re-raises itself with a reason about residency rather than storage.
+// # The job is not resumed until every interrupted finalize has landed
 //
-// Resuming before the file is finalized is nonetheless safe, and concern 8 is
-// why: the assembler reports a file complete exactly once, so nothing in the
-// resumed job's own path can mark this file complete. The only route to that
-// is completeFinalizedFile below, which runs after the finalize has succeeded.
+// The first draft resumed first, because Barrier.FinalizeFile ends in
+// AckDurable and that needs a resident job, which Stall -> Queue.Pause evicted.
+// It works, and it costs too much: an unpaused job dispatches articles into the
+// device that has just refused them, for the length of every retry, every
+// interval, forever — contradicting the reason Stall pauses at all.
+//
+// The ack is the ONLY part that needs residency, and it is also the only part
+// that is recoverable afterwards: ExtentStore.Commit runs before it, so a
+// finalize that fails at the ack has already put the durable bits on stable
+// record. Phase 3 replays them with SeedFromExtents, exactly as the startup
+// sweep does. So a residency error is treated as the finalize having landed,
+// and everything else keeps the job parked without it ever dispatching.
+//
+// # Every file is retried, not just the first
+//
+// Returning at the first failure left the rest of a job's interrupted
+// finalizes untried until the following interval, one per 30 seconds, each
+// holding a file handle in the meantime. The first failure is routed — it is
+// the reason the operator sees — and the rest are logged and retried in the
+// same pass.
 //
 // Nothing here is idempotent by accident: each file is dropped from the
 // recovery set only once the queue has accepted its completion, so a step that
 // could not run this time runs at the next interval instead.
 func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	files := app.recoveryFiles(jobID)
-	for _, st := range files {
-		if st == finalizeLost {
-			// Nothing this process can do. The reason already says so.
-			return
+
+	// Phase 1 — retry, while the job is still paused.
+	var blocked int
+	for _, fileIdx := range slices.Sorted(maps.Keys(files)) {
+		switch files[fileIdx] {
+		case finalizeDone:
+			continue
+		case finalizeLost:
+			// Nothing this process can do, and the reason already says so.
+			blocked++
+			continue
+		case finalizePending:
+		}
+		err := app.retryFinalize(ctx, jobID, fileIdx)
+		switch {
+		case err == nil:
+			app.setFinalizeState(jobID, fileIdx, finalizeDone)
+			files[fileIdx] = finalizeDone
+		case errors.Is(err, errFinalizeUnrecoverable):
+			app.stallLost(jobID, fileIdx)
+			files[fileIdx] = finalizeLost
+			blocked++
+		default:
+			if blocked == 0 {
+				// The first failure is the one the operator is shown. The
+				// rest are the same condition seen again.
+				app.routeFinalizeFailure(jobID, fileIdx, app.filePathFor(jobID, fileIdx), err)
+			} else {
+				app.log.Info("stall re-evaluation: another file still cannot be finalized",
+					"job", jobID, "fileidx", fileIdx, "err", err)
+			}
+			blocked++
 		}
 	}
+	if blocked > 0 {
+		app.log.Info("stall re-evaluation: the job stays parked",
+			"job", jobID, "files_blocked", blocked, "files_to_recover", len(files))
+		return
+	}
 
+	// Phase 2 — resume, which is what re-promotes the job and makes it
+	// resident again.
 	if err := app.queue.Resume(jobID); err != nil {
 		app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
 		app.clearStall(jobID)
 		return
 	}
 	app.log.Info("stall re-evaluated; the job has been resumed",
-		"job", jobID, "files_to_recover", len(files))
+		"job", jobID, "files_recovered", len(files))
 
-	for _, fileIdx := range slices.Sorted(maps.Keys(files)) {
-		if files[fileIdx] == finalizeDone {
-			continue
-		}
-		if err := app.retryFinalize(ctx, jobID, fileIdx); err != nil {
-			app.log.Info("stall re-evaluation: the file still cannot be finalized; the job stays parked",
-				"job", jobID, "fileidx", fileIdx, "err", err)
-			app.routeFinalizeFailure(jobID, fileIdx, app.filePathFor(jobID, fileIdx), err)
-			return
-		}
-		app.setFinalizeState(jobID, fileIdx, finalizeDone)
+	// Phase 3 — replay what the retries committed but could not ack.
+	if len(files) > 0 {
+		app.seedFromCommittedExtents(ctx, jobID)
 	}
 
-	// Deliver the completions the stall interrupted. Each needs the job
-	// resident, which it is not if the active set was full when Resume ran —
-	// so an entry survives to be tried again rather than being dropped.
+	// Phase 4 — deliver the completions the stall interrupted. Each needs the
+	// job resident, which it is not if the active set was full when Resume ran
+	// — so an entry survives to be tried again rather than being dropped.
 	for _, fileIdx := range slices.Sorted(maps.Keys(files)) {
 		if err := app.completeFinalizedFile(ctx, FileComplete{JobID: jobID, FileIdx: fileIdx}); err != nil {
 			app.log.Info("stall re-evaluation: the completion could not be delivered yet",
@@ -237,6 +306,31 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 		app.clearStall(jobID)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
+}
+
+// seedFromCommittedExtents installs a job's committed Class B bits into its
+// live work set, so a retry that finalized a file while the job was paused
+// does not leave that file's articles Outstanding.
+//
+// It is the same move the startup sweep makes, for the same reason: the extent
+// is what a completed fsync stands behind, and SeedFromExtents is how that
+// becomes the running job's belief about what is left to fetch. A failure here
+// costs a re-fetch and nothing else, which is why it is logged rather than
+// returned.
+func (app *Application) seedFromCommittedExtents(ctx context.Context, jobID string) {
+	if app.extents == nil {
+		return
+	}
+	exts, err := app.extents.Load(ctx, jobID)
+	if err != nil {
+		app.log.Warn("stall re-evaluation: could not load committed extents; the job will re-fetch",
+			"job", jobID, "err", err)
+		return
+	}
+	if err := app.queue.SeedFromExtents(jobID, exts); err != nil {
+		app.log.Warn("stall re-evaluation: could not seed the work set; the job will re-fetch",
+			"job", jobID, "err", err)
+	}
 }
 
 // recoveryFiles copies one job's recovery set so the walk above holds no lock
@@ -263,14 +357,21 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // pre-allocation's trailing zeros to par2 and report a healthy download as
 // damaged. That is exactly the failure the stall was raised to prevent.
 //
-// So the handle is checked first, and its absence is recorded as
-// finalizeLost rather than as success. That state is terminal within this
-// process: a restart re-derives the job's outstanding work from its committed
-// extents, which is the path that does recover it.
+// So the handle is checked first, and its absence comes back as
+// errFinalizeUnrecoverable rather than as success. The caller surfaces that as
+// its own reason; classifying it as a storage fault is what erased the one
+// instruction that helps.
+//
+// A residency error is the one failure treated as success, and the ordering
+// inside FinalizeFile is why: ExtentStore.Commit runs before AckDurable, so an
+// ack that could not reach a non-resident job left the durable bits on stable
+// record anyway. The caller replays them. The handle is released here rather
+// than by finalizeCompletedFile's own defer, which sees only a non-nil error
+// and keeps it for a retry that is no longer needed.
 func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx int) error {
 	if app.assembler == nil || app.barrier == nil {
-		app.setFinalizeState(jobID, fileIdx, finalizeLost)
-		return fmt.Errorf("%w: job %s file %d: no barrier in this process", ErrNotFinalized, jobID, fileIdx)
+		return fmt.Errorf("%w: job %s file %d: no barrier in this process",
+			errFinalizeUnrecoverable, jobID, fileIdx)
 	}
 	open, err := app.assembler.OpenFiles(ctx, jobID)
 	if err != nil {
@@ -278,30 +379,40 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 			ErrNotFinalized, jobID, fileIdx, err)
 	}
 	if !slices.Contains(open, int32(fileIdx)) { //nolint:gosec // G115: file counts are far below int32
-		app.setFinalizeState(jobID, fileIdx, finalizeLost)
-		app.stallLost(jobID, fileIdx)
-		return fmt.Errorf("%w: job %s file %d: its handle is gone", ErrNotFinalized, jobID, fileIdx)
+		return fmt.Errorf("%w: job %s file %d", errFinalizeUnrecoverable, jobID, fileIdx)
 	}
-	return app.finalizeCompletedFile(ctx, jobID, fileIdx)
+	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
+	if errors.Is(err, queue.ErrJobNotResident) {
+		app.log.Debug("retried finalize committed its extent but could not ack a non-resident job; "+
+			"the bits are replayed from Class B after the resume", "job", jobID, "fileidx", fileIdx)
+		if cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); cerr != nil { //nolint:gosec // G115: file counts are far below int32
+			app.log.Debug("close finalized file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
+		}
+		return nil
+	}
+	return err
 }
 
 // stallLost re-surfaces a stall whose file can no longer be finalized in this
 // process, with the one action left.
 //
 // A2: the condition has a subject (this file) and a disposition (the job stays
-// parked until a restart). Leaving the previous reason in place would tell the
-// user to fix a mount they have already fixed.
+// parked until a restart, which re-derives its outstanding work from committed
+// extents). Leaving the storage reason in place would tell the operator to fix
+// a mount they have already fixed; dressing this up as a retryable storage
+// fault told them to wait for a condition that cannot clear.
 func (app *Application) stallLost(jobID string, fileIdx int) {
-	path := app.filePathFor(jobID, fileIdx)
-	f := &storagefault.Fault{
-		Op:   "finalize",
-		Path: path,
-		Err: fmt.Errorf("the completed file's handle was released before it could be trimmed; "+
-			"restart gonzbd to resume job %s from its committed extents", jobID),
-		Permanent: false,
+	app.setFinalizeState(jobID, fileIdx, finalizeLost)
+	reason := fmt.Sprintf(
+		"Stalled: completed file %d could not be trimmed and its handle has been released; "+
+			"restart gonzbd to resume this job from its committed extents", fileIdx)
+	if path := app.filePathFor(jobID, fileIdx); path != "" {
+		reason = fmt.Sprintf(
+			"Stalled: completed file %q could not be trimmed and its handle has been released; "+
+				"restart gonzbd to resume this job from its committed extents", path)
 	}
-	app.noteStall(jobID, f)
-	if err := app.queue.SetWarning(jobID, "Stalled: "+f.Error()); err != nil {
+	app.noteStallReason(jobID, reason)
+	if err := app.queue.SetWarning(jobID, reason); err != nil {
 		app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
 	}
 }

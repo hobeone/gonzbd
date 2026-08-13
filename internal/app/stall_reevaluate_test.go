@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -106,7 +107,8 @@ func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
 // reporting success marks complete a file that was never trimmed and ships
 // pre-allocation's trailing zeros to par2 as damage.
 //
-// The job therefore stays parked, with a reason naming the one action left.
+// The sentinel matters as much as the refusal: it is what keeps the caller
+// from re-classifying this as a storage fault, which is A1 running backwards.
 func TestRetryFinalize_RefusesAFileWhoseHandleIsGone(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
@@ -117,14 +119,105 @@ func TestRetryFinalize_RefusesAFileWhoseHandleIsGone(t *testing.T) {
 		t.Fatal("retryFinalize reported success for a file no handle is open for; the " +
 			"caller marks it complete and post-processing consumes an untrimmed file")
 	}
-	if !errors.Is(err, ErrNotFinalized) {
-		t.Errorf("err = %v, want it to wrap ErrNotFinalized", err)
+	if !errors.Is(err, errFinalizeUnrecoverable) {
+		t.Errorf("err = %v, want it to wrap errFinalizeUnrecoverable — the caller cannot "+
+			"otherwise tell it apart from a mount that may yet come back, and re-routes it "+
+			"as a retryable storage fault", err)
 	}
+}
+
+// TestReevaluateStall_KeepsTheActionableReasonForALostFile pins I5: the reason
+// the operator is left with must name the action that recovers the job.
+//
+// The reason used to be built as a *storagefault.Fault and then handed to
+// routeFinalizeFailure, which re-classified it — producing "Stalled: storage
+// retryable fault on finalize \"\"" with an empty path and the restart
+// instruction gone. A2 asks for an ACTIONABLE reason; that one tells the
+// operator to wait for a condition that will never clear.
+func TestReevaluateStall_KeepsTheActionableReasonForALostFile(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.Stall(job.ID, &storagefault.Fault{
+		Op: "sync", Path: "/data/x.bin", Err: syscall.EIO,
+	})
+	// File 1 has no handle, so the retry can never finalize it.
+	application.notePendingFinalize(job.ID, 1)
+
+	application.reevaluateStall(t.Context(), job.ID)
+
 	reason := application.StallReason(job.ID).Reason
-	if reason == "" {
-		t.Error("no reason was surfaced; the job is parked with nothing the user can act on (R27, A2)")
+	if !strings.Contains(reason, "restart") {
+		t.Errorf("reason = %q, want it to name the restart that recovers the job", reason)
 	}
-	if snap := application.queue.SnapshotJob(job.ID); snap.Warning == "" {
-		t.Error("the queue carries no warning, so the stall is invisible in the listing")
+	if strings.Contains(reason, "retryable storage fault") || strings.Contains(reason, "storage retryable") {
+		t.Errorf("reason = %q, was re-classified as a storage fault — the operator is told to "+
+			"wait for a condition that cannot clear", reason)
+	}
+	if snap := application.queue.SnapshotJob(job.ID); snap.Warning != reason {
+		t.Errorf("queue warning = %q, want it to match the surfaced reason %q", snap.Warning, reason)
+	}
+	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+		t.Errorf("status = %v, want the job still Paused — a file that cannot be trimmed would "+
+			"otherwise be marked complete and fed to post-processing", snap.Status)
+	}
+}
+
+// TestReevaluateStall_DoesNotResumeAJobWhoseFinalizeStillFails pins I6.
+//
+// A resumed job dispatches articles into the device that has just refused
+// them, and re-evaluation happens every interval for as long as the condition
+// lasts. Resuming before the retry has landed therefore turns a stall into a
+// repeating re-download against a dead mount.
+func TestReevaluateStall_DoesNotResumeAJobWhoseFinalizeStillFails(t *testing.T) {
+	application, job, _ := newWedgedApp(t)
+
+	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
+	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+		t.Fatalf("status = %v before re-evaluation, want Paused; the fixture did not stall", snap.Status)
+	}
+
+	// The wedge is NOT released: the condition still holds.
+	application.reevaluateStall(t.Context(), job.ID)
+
+	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+		t.Errorf("status = %v after a re-evaluation that could not finalize the file, want "+
+			"Paused — the job dispatches articles into the device that just refused them, "+
+			"every interval, for as long as the condition lasts", snap.Status)
+	}
+	if got := application.StallReason(job.ID).Reason; got == "" {
+		t.Error("the reason was dropped while the job is still parked (R27)")
+	}
+}
+
+// TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass pins the fd
+// bound's other half.
+//
+// Returning at the first failing file left the rest of a job's interrupted
+// finalizes untried until the following interval — one per 30 seconds, each
+// holding a file handle in the meantime — so a job with several completed
+// files on a broken mount took minutes to clear after the mount came back, and
+// held every handle throughout.
+//
+// Both files here are unrecoverable, which makes the difference visible as
+// state rather than as timing: under a first-failure return only file 1 would
+// be classified.
+func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.Stall(job.ID, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
+	// Neither file has an open handle, so each retry classifies it in turn.
+	application.notePendingFinalize(job.ID, 1)
+	application.notePendingFinalize(job.ID, 2)
+
+	application.reevaluateStall(t.Context(), job.ID)
+
+	files := application.recoveryFiles(job.ID)
+	if got := files[1]; got != finalizeLost {
+		t.Errorf("file 1 state = %v, want finalizeLost", got)
+	}
+	if got := files[2]; got != finalizeLost {
+		t.Errorf("file 2 state = %v, want finalizeLost — the pass stopped at the first file, so "+
+			"every other interrupted finalize waits another interval and holds its handle "+
+			"until then", got)
 	}
 }

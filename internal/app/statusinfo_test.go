@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -223,24 +224,40 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 // article Done are the barrier's ack and a replay of a committed extent cache,
 // so a downloaded byte IS a durable byte. A second counter would be a second
 // representation of one fact, free to drift.
+//
+// The fixture makes articles durable through Queue.SeedFromExtents — the same
+// replay a resume performs — because that is the only route to a NON-ZERO
+// figure that a test can drive. An earlier version asserted only that the
+// number was 0 before any barrier, which the fixture guarantees on its own:
+// `DurableBytesOf` could `return 0` unconditionally and every assertion in this
+// file still passed.
 func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
-	application, job := newDurabilityTestApp(t, 1, 2)
-	snap := application.queue.SnapshotJob(job.ID)
-	want := DurableBytesOf(snap.Progress())
-	if want != 0 {
+	application, job := newDurabilityTestApp(t, 1, 3)
+	if got := DurableBytesOf(application.queue.SnapshotJob(job.ID).Progress()); got != 0 {
 		t.Fatalf("fixture already reports %d durable bytes; the assertion below cannot tell "+
-			"a real figure from a leaked one", want)
+			"a real figure from a leaked one", got)
 	}
-	application.noteJobBytes(job.ID, 300)
+	application.noteJobBytes(job.ID, 999)
+
+	// Two of the file's three 100-byte articles are on stable storage.
+	durable := durability.NewBitmap(3)
+	durable.Set(0)
+	durable.Set(1)
+	if err := application.queue.SeedFromExtents(job.ID, []durability.FileExtent{
+		{FileIdx: 0, Durable: durable},
+	}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
 
 	got := application.JobDurability(job.ID)
 
-	if got.DurableBytes != 0 {
-		t.Errorf("DurableBytes = %d before any barrier acked, want 0 — written bytes are "+
-			"being reported as surviving a power loss", got.DurableBytes)
+	if got.DurableBytes != 200 {
+		t.Errorf("DurableBytes = %d, want 200 — two 100-byte articles are covered by a "+
+			"committed extent and the figure does not report them", got.DurableBytes)
 	}
-	if got.PendingBytes != 300 {
-		t.Errorf("PendingBytes = %d, want 300", got.PendingBytes)
+	if got.PendingBytes != 999 {
+		t.Errorf("PendingBytes = %d, want 999 — the written-but-not-fsynced window is being "+
+			"folded into the durable figure or dropped", got.PendingBytes)
 	}
 }
 
@@ -265,7 +282,7 @@ func TestCheckpointState_ComposesTheThreeSourcesForOneJob(t *testing.T) {
 		Op: "sync", Path: "/data/y.bin", Err: syscall.EIO,
 	})
 
-	got := application.checkpointState("job-1")
+	got := application.CheckpointState("job-1")
 
 	if got.PendingBytes != 128 {
 		t.Errorf("PendingBytes = %d, want 128", got.PendingBytes)
@@ -277,7 +294,7 @@ func TestCheckpointState_ComposesTheThreeSourcesForOneJob(t *testing.T) {
 		t.Errorf("StallReason = %q, want it to name the condition", got.StallReason)
 	}
 
-	if empty := application.checkpointState("job-2"); empty != (JobCheckpointState{}) {
+	if empty := application.CheckpointState("job-2"); empty != (JobCheckpointState{}) {
 		t.Errorf("checkpointState for an unknown job = %+v, want the zero value — a listing "+
 			"would show every job as stalled", empty)
 	}

@@ -173,6 +173,12 @@ type Application struct {
 	// non-blockingly, for the same reason barrierKick is.
 	stallKick chan struct{}
 
+	// stallRecheckInterval is R19's interval cadence. A field rather than the
+	// constant directly so a test can drive the ticker arm of runCheckpoint's
+	// select without waiting 30 seconds — the seam between the loop and
+	// reevaluateStalls is otherwise unpinnable, and was.
+	stallRecheckInterval time.Duration
+
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
 	cancel context.CancelFunc
@@ -249,6 +255,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.stalls = make(map[string]*stallRecord)
 	app.barrierKick = make(chan string, 64)
 	app.stallKick = make(chan struct{}, 1)
+	app.stallRecheckInterval = stallRecheckInterval
 	app.checkpointInterval = time.Duration(dl.CheckpointInterval) * time.Second
 	app.checkpointBytes = int64(dl.CheckpointBytes)
 	for _, o := range opts {
@@ -476,6 +483,17 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 // written a crash re-fetches them anyway.
 func WithCheckpointInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.checkpointInterval = d }
+}
+
+// WithStallRecheckInterval overrides R19's re-evaluation cadence.
+//
+// Separate from the checkpoint interval because they measure different things:
+// one bounds rework on a healthy job, the other bounds how long a user waits
+// after clearing a full disk. A test that drove the re-evaluation off the
+// checkpoint interval would be asserting against a coupling production does
+// not have.
+func WithStallRecheckInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.stallRecheckInterval = d }
 }
 
 // WithCheckpointBytes overrides B1's volume bound, for tests that cannot

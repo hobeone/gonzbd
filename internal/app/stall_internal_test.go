@@ -2,12 +2,17 @@ package app
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -259,9 +264,14 @@ func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteStall(job.ID, testFault("sync"))
+	application.notePendingFinalize(job.ID, 0)
 
 	application.stallLost(job.ID, 0)
 
+	if st := application.recoveryFiles(job.ID)[0]; st != finalizeLost {
+		t.Errorf("file state = %v after stallLost, want finalizeLost — the file is retried "+
+			"every interval against a handle that no longer exists", st)
+	}
 	got := application.StallReason(job.ID).Reason
 	if !strings.Contains(got, "restart") {
 		t.Errorf("reason = %q, want it to name the restart that recovers the job — the "+
@@ -311,12 +321,13 @@ func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
 	application.noteStall(job.ID, testFault("sync"))
 	application.notePendingFinalize(job.ID, 0)
 
-	if err := application.retryFinalize(t.Context(), job.ID, 0); err == nil {
+	err := application.retryFinalize(t.Context(), job.ID, 0)
+	if err == nil {
 		t.Fatal("retryFinalize reported success with no barrier in the process")
 	}
-	if got := application.recoveryFiles(job.ID)[0]; got != finalizeLost {
-		t.Errorf("file state = %v, want finalizeLost — no barrier will ever appear in this "+
-			"process, so retrying every interval is churn that cannot succeed", got)
+	if !errors.Is(err, errFinalizeUnrecoverable) {
+		t.Errorf("err = %v, want errFinalizeUnrecoverable — no barrier will ever appear in "+
+			"this process, so retrying every interval is churn that cannot succeed", err)
 	}
 }
 
@@ -361,5 +372,246 @@ func TestCompleteFinalizedFile_MarksTheFileAndReportsARefusal(t *testing.T) {
 	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: job.ID, FileIdx: 99}); err == nil {
 		t.Error("a completion the queue refused was reported as success; the retry drops the " +
 			"entry and the file is never marked complete")
+	}
+}
+
+// TestRunCheckpoint_ReevaluatesStallsOnItsTicker pins the R19 seam itself.
+//
+// It exists because the two tests that looked like they covered this were both
+// proxies that never met: the API test asserts a counter on a fake, and the app
+// test calls reevaluateStalls directly. Deleting BOTH arms of the select in
+// runCheckpoint left every package green — the interval half of R19 was wired
+// to nothing that any test could see.
+//
+// This drives the real loop and asserts the job actually leaves Paused, which
+// only happens if the ticker arm reaches reevaluateStalls.
+func TestRunCheckpoint_ReevaluatesStallsOnItsTicker(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(10*time.Millisecond))
+	job := addStallTestJob(t, application, "ticker-job")
+	application.Stall(job.ID, testFault("write"))
+	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+		t.Fatalf("status = %v after Stall, want Paused; the fixture is not parked", snap.Status)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go application.runCheckpoint(ctx, time.Hour) // checkpoint bound long: only the stall ticker may fire
+
+	waitForResumed(t, application, job.ID,
+		"the checkpoint loop's stall ticker never reached reevaluateStalls; R19's interval "+
+			"half is wired to nothing and a parked job waits for a restart")
+}
+
+// TestRunCheckpoint_ReevaluatesStallsOnAKick pins the other arm — R19's "on
+// user action" — through the same real loop, so that ReevaluateStalls is shown
+// to reach reevaluateStalls rather than only to increment something.
+func TestRunCheckpoint_ReevaluatesStallsOnAKick(t *testing.T) {
+	// An interval far longer than the test, so only the kick can explain a
+	// resumed job.
+	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(time.Hour))
+	job := addStallTestJob(t, application, "kick-job")
+	application.Stall(job.ID, testFault("write"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go application.runCheckpoint(ctx, time.Hour)
+
+	application.ReevaluateStalls()
+
+	waitForResumed(t, application, job.ID,
+		"ReevaluateStalls did not reach the checkpoint loop; resuming a job from the API "+
+			"leaves it parked until the interval or a restart")
+}
+
+// addStallTestJob adds a one-file job to the application's queue.
+func addStallTestJob(t *testing.T, application *Application, name string) *queue.Job {
+	t.Helper()
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  name + ".bin",
+		Bytes:    100,
+		Articles: []nzb.Article{{ID: name + "0@t", Bytes: 100, Number: 1}},
+	}}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := application.queue.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return job
+}
+
+// waitForResumed blocks until the job is off Paused, or fails with why.
+func waitForResumed(t *testing.T, application *Application, jobID, why string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := application.queue.SnapshotJob(jobID)
+		if snap != nil && snap.Status != constants.StatusPaused {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal(why)
+}
+
+// TestNoteStallReason_RecordsAReasonThatIsNotAStorageFault pins the entry
+// point that exists because not every reason IS a fault.
+//
+// A completed file whose handle was released can never be finalized in this
+// process. Expressing that through storagefault.Classify produced "Stalled:
+// storage retryable fault on finalize \"\"" — an empty path, and the restart
+// instruction erased. This path keeps the text the caller wrote, and creates
+// the record when the job is not yet on the stalled list.
+func TestNoteStallReason_RecordsAReasonThatIsNotAStorageFault(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+
+	application.noteStallReason("job-1", "Stalled: restart gonzbd to recover this job")
+
+	got := application.StallReason("job-1")
+	if got.Reason != "Stalled: restart gonzbd to recover this job" {
+		t.Errorf("reason = %q, want the text as written — routing it through the fault "+
+			"vocabulary is what erased the actionable half", got.Reason)
+	}
+	if got.Since.IsZero() {
+		t.Error("Since is zero, so the record was never created and the job is not on the " +
+			"stalled list at all")
+	}
+	if ids := application.stalledJobIDs(); len(ids) != 1 {
+		t.Errorf("stalledJobIDs = %v, want the job parked", ids)
+	}
+
+	// A later fault replaces the text rather than accumulating.
+	application.noteStall("job-1", testFault("write"))
+	if r := application.StallReason("job-1").Reason; !strings.Contains(r, "no space") {
+		t.Errorf("reason = %q, want the newer fault", r)
+	}
+}
+
+// TestSeedFromCommittedExtents_InstallsWhatTheRetryCouldNotAck pins phase 3 of
+// the re-evaluation.
+//
+// A finalize retried while the job is paused commits its durable bits and then
+// fails to ack, because AckDurable needs a resident job. Without this replay
+// those articles stay Outstanding on a file the assembler has already
+// tombstoned, so no re-fetch can ever resolve them.
+func TestSeedFromCommittedExtents_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+	ctx := t.Context()
+	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+		t.Fatal("the fixture already reports article 0 done; the assertion below cannot " +
+			"distinguish a replay from the starting state")
+	}
+
+	durable := durability.NewBitmap(2)
+	durable.Set(0)
+	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{
+		{FileIdx: 0, Durable: durable},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	application.seedFromCommittedExtents(ctx, job.ID)
+
+	p := application.queue.SnapshotJob(job.ID).Progress()
+	if !p.ArticleDone(0) {
+		t.Error("article 0 is still Outstanding although a committed extent covers it; the " +
+			"retry's work is thrown away and the article can never be resolved, because the " +
+			"assembler has tombstoned its file")
+	}
+	if p.ArticleDone(1) {
+		t.Error("article 1 was marked done although no extent covers it — the replay is " +
+			"claiming durability the barrier never established")
+	}
+}
+
+// TestSeedFromCommittedExtents_IsInertWithoutAnExtentStore pins the process
+// with no history database, where there is no Class B to replay. The
+// re-evaluation must still complete rather than panicking on a nil store.
+func TestSeedFromCommittedExtents_IsInertWithoutAnExtentStore(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	application.extents = nil
+
+	application.seedFromCommittedExtents(t.Context(), job.ID)
+
+	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+		t.Error("an article was marked durable with no extent store to prove it")
+	}
+}
+
+// TestSeedFromCommittedExtents_ReportsAJobItCannotSeed pins the disposition
+// when the queue refuses the seed — a job the active set had no room to
+// re-promote. The articles stay Outstanding and are re-fetched, which is the
+// safe direction, and it must not abort the rest of the re-evaluation.
+func TestSeedFromCommittedExtents_ReportsAJobItCannotSeed(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	durable := durability.NewBitmap(1)
+	durable.Set(0)
+	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{
+		{FileIdx: 0, Durable: durable},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	// Pause evicts the manifest, and SeedFromExtents needs a resident one.
+	if err := application.queue.Pause(job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	application.seedFromCommittedExtents(ctx, job.ID)
+
+	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+		t.Error("a non-resident job was seeded anyway; SeedFromExtents installs bits into the " +
+			"LIVE job, so this can only mean the assertion is reading a hydrated clone")
+	}
+}
+
+// TestSeedFromCommittedExtents_ReportsAFailedLoad pins the arm where Class B
+// cannot be read at all. It must not be mistaken for "nothing is durable": the
+// job simply re-fetches, and the re-evaluation carries on to deliver the
+// completions it was in the middle of.
+func TestSeedFromCommittedExtents_ReportsAFailedLoad(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	durable := durability.NewBitmap(1)
+	durable.Set(0)
+	if err := application.extents.Commit(t.Context(), job.ID, []durability.FileExtent{
+		{FileIdx: 0, Durable: durable},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	application.seedFromCommittedExtents(ctx, job.ID)
+
+	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+		t.Error("an article was marked durable from a load that failed; a read error is not " +
+			"evidence about what is on disk")
+	}
+}
+
+// TestSetStallReasonLocked_CreatesTheRecordItNeeds pins the shared half of the
+// two entry points above. Both may be the FIRST thing that parks a job — a
+// fault routed by the barrier, or a file whose handle is gone — so a helper
+// that only updated an existing record would silently drop the reason and
+// leave the job off the stalled list, unreachable by any re-evaluation.
+func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+
+	application.stallMu.Lock()
+	application.setStallReasonLocked("job-1", "Stalled: first")
+	application.setStallReasonLocked("job-1", "Stalled: second")
+	rec := application.stalls["job-1"]
+	application.stallMu.Unlock()
+
+	if rec == nil {
+		t.Fatal("no record was created, so the job is not on the stalled list and no " +
+			"re-evaluation will ever visit it")
+	}
+	if rec.reason != "Stalled: second" {
+		t.Errorf("reason = %q, want the newer text", rec.reason)
+	}
+	if rec.files == nil {
+		t.Error("the record's recovery map is nil; notePendingFinalize would panic writing to it")
 	}
 }

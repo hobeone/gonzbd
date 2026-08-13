@@ -20,7 +20,7 @@ import (
 // Start — the goroutine-driven helpers under test here take their own ctx
 // argument and only need app.queue/app.config/app.log/app.historyRepo
 // wired, which New already does.
-func newLifecycleTestApp(t *testing.T) (*Application, *history.Repository, string) {
+func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application, *history.Repository, string) {
 	t.Helper()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
@@ -32,7 +32,7 @@ func newLifecycleTestApp(t *testing.T) (*Application, *history.Repository, strin
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	repo := history.NewRepository(db)
-	application, err := New(cfg, repo)
+	application, err := New(cfg, repo, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

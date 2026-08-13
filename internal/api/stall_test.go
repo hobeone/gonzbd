@@ -11,6 +11,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -129,21 +130,40 @@ func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 		job.ID: {PendingBytes: 512, LastBarrier: barrierAt},
 	}}
 
-	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
+	before := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
 
-	if slot.BytesPending != 512 {
+	if before.BytesPending != 512 {
 		t.Errorf("bytes_pending = %d, want 512 — the rework window is not reported at all",
-			slot.BytesPending)
+			before.BytesPending)
 	}
-	// The fixture's job has downloaded nothing, so anything non-zero here can
-	// only be the pending bytes leaking into the durable figure.
-	if slot.BytesDurable != 0 {
+	// Nothing is durable yet, so anything non-zero here can only be the
+	// pending bytes leaking into the durable figure.
+	if before.BytesDurable != 0 {
 		t.Errorf("bytes_durable = %d before any barrier ran, want 0; the written-but-not-durable "+
 			"bytes are being counted as durable, which claims they survive a power loss",
-			slot.BytesDurable)
+			before.BytesDurable)
 	}
-	if slot.LastBarrierUnix != barrierAt.Unix() {
-		t.Errorf("last_barrier_unix = %d, want %d", slot.LastBarrierUnix, barrierAt.Unix())
+	if before.LastBarrierUnix != barrierAt.Unix() {
+		t.Errorf("last_barrier_unix = %d, want %d", before.LastBarrierUnix, barrierAt.Unix())
+	}
+
+	// Now make the job's single 1024-byte article durable, through the same
+	// committed-extent replay a resume performs. Asserting only the zero above
+	// pinned nothing: a bytes_durable that always answered 0 satisfied it.
+	durable := durability.NewBitmap(1)
+	durable.Set(0)
+	if err := q.SeedFromExtents(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: durable}}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
+
+	after := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
+	if after.BytesDurable != 1024 {
+		t.Errorf("bytes_durable = %d after a committed extent covered the job's only article, "+
+			"want 1024 — the field reports nothing a barrier achieved", after.BytesDurable)
+	}
+	if after.BytesPending != 512 {
+		t.Errorf("bytes_pending = %d, want it unchanged at 512 — the two figures are being "+
+			"derived from one source", after.BytesPending)
 	}
 }
 
