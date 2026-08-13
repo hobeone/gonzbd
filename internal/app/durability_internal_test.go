@@ -661,6 +661,48 @@ func TestAppendArticleFacts_RecordsTheDecodedRange(t *testing.T) {
 	}
 }
 
+// TestAppendArticleFacts_SurvivesTheCallersCancellation pins the shutdown
+// case, which is not hypothetical: the daemon cancels the pipeline's context
+// while an article is still being applied, and the write that follows this
+// call can still land — the assembler takes the buffer, the shutdown
+// checkpoint fsyncs it and acks it. On the caller's context the insert loses
+// that race, so the committed extent claims an article durable that Class A
+// cannot prove, and the next resume re-fetches bytes sitting on disk.
+//
+// Measured on the crash harness before the fix: one article in roughly one run
+// in ten, always the last applied, with
+// `err="durability: append fact job=... art=18: context canceled"` in the log.
+//
+// Dropping the cancellation cannot over-claim: a fact is true when it is
+// minted and asserts nothing about presence, so the worst case is a fact for
+// bytes that never reached disk, which a resume fails to verify and leaves
+// Outstanding.
+func TestAppendArticleFacts_SurvivesTheCallersCancellation(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if ctx.Err() == nil {
+		t.Fatal("the context is not cancelled, so this asserts against the ordinary path")
+	}
+
+	application.pipeline.appendArticleFacts(ctx, job.ID, durability.ArticleFact{
+		FileIdx: 0, ArtIdx: 0, Offset: 512, Length: 100, CRC32: 0xABCD,
+	})
+
+	got, err := application.factLog.ForFile(t.Context(), job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("recorded %d facts, want 1 — the article's Class A fact was lost to a "+
+			"cancellation that did not stop its bytes reaching disk, so a resume cannot "+
+			"prove them and re-fetches them", len(got))
+	}
+	if got[0].Offset != 512 || got[0].CRC32 != 0xABCD {
+		t.Errorf("fact = %+v, want offset 512 and crc 0xABCD", got[0])
+	}
+}
+
 // TestAppendArticleFacts_IsInertWithoutAFactLog pins the degraded mode: no
 // history database means no Class A, and the write path must not dereference
 // nil for every article it decodes.

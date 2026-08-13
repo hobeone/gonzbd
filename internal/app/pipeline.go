@@ -350,6 +350,11 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	// commit with no barrier (R2), and imposing an order here would destroy
 	// it while looking like caution.
 	//
+	// appendArticleFacts drops ctx's cancellation, and that is not an
+	// ordering: it is there because a shutdown can cancel ctx while the write
+	// below still lands, leaving an article durable that Class A cannot prove.
+	// See its doc.
+	//
 	// nBytes is read before the write, because a successful WriteArticle
 	// hands res.Data to the assembler and the slice must not be touched
 	// afterwards.

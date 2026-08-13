@@ -580,12 +580,41 @@ func (app *Application) shutdownCheckpoint() {
 // reason Class A needs no barrier (R2), and adding an ordering here would
 // quietly destroy it.
 //
-// A failure costs a re-fetch and nothing else (R3): the missing fact makes the
-// article unprovable on resume, and unprovable resolves to Outstanding.
+// # Why the caller's cancellation is dropped
+//
+// The append runs on a context.WithoutCancel copy of the caller's, bounded by
+// its own timeout. Shutdown cancels the pipeline's context while an article is
+// still being applied, and the write below it can still land — the assembler
+// takes the buffer, the shutdown checkpoint fsyncs it and acks it. On the
+// caller's context the fact insert loses that race and fails with "context
+// canceled", so the committed extent claims an article durable that Class A
+// cannot prove. The next resume reads the file, finds no recorded region for
+// it, and re-fetches bytes that are sitting on disk.
+//
+// Measured before this change, on the crash harness's clean stop-restart: one
+// article in roughly one run in ten, always the last one applied, which is the
+// only one that can still be in flight when the cancel arrives. It is bounded
+// rework rather than a correctness fault — that is R3, and the fallback below
+// still holds — but it is rework a clean shutdown should not be paying at all,
+// and it was invisible until the startup sweep became authoritative over
+// job_files.articles_done (#362).
+//
+// Dropping the cancellation is safe in the direction that matters. A fact is
+// unconditionally true when it is minted and asserts nothing about presence,
+// so recording one can never over-claim; the worst case is a fact for bytes
+// that never reached disk, which a resume then fails to verify and leaves
+// Outstanding. The timeout is what keeps this bounded: it must not turn a
+// shutdown into an unbounded wait on a contended database.
+//
+// A failure still costs a re-fetch and nothing else (R3): the missing fact
+// makes the article unprovable on resume, and unprovable resolves to
+// Outstanding.
 func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durability.ArticleFact) {
 	if p.factLog == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), factAppendTimeout)
+	defer cancel()
 	if err := p.factLog.Append(ctx, jobID, []durability.ArticleFact{f}); err != nil {
 		p.log.Warn("append article fact; the article will be re-fetched after a restart",
 			"job", jobID, "artidx", f.ArtIdx, "err", err)

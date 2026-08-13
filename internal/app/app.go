@@ -54,6 +54,15 @@ const (
 	// inside the 15s per-step budget Shutdown gives the assembler stop that
 	// follows it, so a wedged mount delays shutdown rather than preventing it.
 	shutdownCheckpointTimeout = 10 * time.Second
+
+	// factAppendTimeout bounds one Class A insert. It exists because the
+	// append drops the caller's cancellation (see pipeline.appendArticleFacts)
+	// and something must still stop a contended database from holding the
+	// pipeline — or a shutdown — open indefinitely. Sized to the SQLite
+	// busy_timeout the connection already carries, so a lock this waits out is
+	// one the driver would have waited out anyway, and anything longer is a
+	// stuck writer rather than contention.
+	factAppendTimeout = 5 * time.Second
 )
 
 // Downloader defines the interface for the Usenet article downloader.
