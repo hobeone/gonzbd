@@ -33,7 +33,6 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,10 +43,21 @@ import (
 
 // occurrence is one appearance of a normalised comment block.
 type occurrence struct {
-	file string
-	line int // 1-based line of the block's first // line
-	n    int // how many // lines the block spans
+	file   string
+	line   int    // 1-based line of the block's first // line
+	n      int    // how many // lines the block spans
+	reason string // the //dupcomment:ok reason on THIS occurrence, if any
 }
+
+// The defaults. min-lines was 4 until a sweep showed that the documented
+// failure shape — a block copied across packages and left naming the original
+// declaration — routinely fits in three lines, so 4 made the tool's own stated
+// purpose unreportable. min-chars carries most of the filtering work; three
+// lines totalling 120+ normalised characters is prose, not boilerplate.
+const (
+	defaultMinLines = 3
+	defaultMinChars = 120
+)
 
 var wsRun = regexp.MustCompile(`\s+`)
 
@@ -64,8 +74,8 @@ var wsRun = regexp.MustCompile(`\s+`)
 var markerRe = regexp.MustCompile(`dupcomment:ok\s*(.*)$`)
 
 func main() {
-	minLines := flag.Int("min-lines", 4, "minimum consecutive // lines for a block to be considered")
-	minChars := flag.Int("min-chars", 120, "minimum normalised length for a block to be considered")
+	minLines := flag.Int("min-lines", defaultMinLines, "minimum consecutive // lines for a block to be considered")
+	minChars := flag.Int("min-chars", defaultMinChars, "minimum normalised length for a block to be considered")
 	flag.Parse()
 
 	files, err := goFiles(flag.Args())
@@ -75,9 +85,8 @@ func main() {
 	}
 
 	groups := map[string][]occurrence{}
-	marked := map[string]string{}
 	for _, f := range files {
-		blocks, marks, err := scan(f, *minLines, *minChars)
+		blocks, err := scan(f, *minLines, *minChars)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "check_dup_comments: %s: %v\n", f, err)
 			os.Exit(2)
@@ -85,12 +94,11 @@ func main() {
 		for key, occs := range blocks {
 			groups[key] = append(groups[key], occs...)
 		}
-		maps.Copy(marked, marks)
 	}
 
 	var keys []string
 	for key, occs := range groups {
-		if len(occs) < 2 || sameBasename(occs) || marked[key] != "" {
+		if len(occs) < 2 || sameBasename(occs) || allMarked(occs) {
 			continue
 		}
 		keys = append(keys, key)
@@ -123,6 +131,27 @@ func main() {
 	os.Exit(1)
 }
 
+// allMarked reports whether EVERY occurrence in the group carries an exemption
+// marker with a reason.
+//
+// Every, not any. Keying the exemption on the block's text alone — which is
+// what the first version of this file did, via a repo-wide map from normalised
+// text to reason — meant a single //dupcomment:ok anywhere permanently
+// whitelisted that text everywhere, including in a copy pasted by accident
+// months later. The marker would then be doing the opposite of its job: the
+// deliberate repetition it was written for would keep the accidental one
+// invisible. Requiring it on each occurrence costs one comment line per copy
+// and makes a new copy re-trigger the report, which is the behaviour the gate
+// exists for.
+func allMarked(occs []occurrence) bool {
+	for _, o := range occs {
+		if o.reason == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // sameBasename reports whether every occurrence lives in a file with the same
 // base name, which is the per-package-test-helper shape described in the
 // command doc. A group with two occurrences in ONE file is not exempt: that is
@@ -140,35 +169,32 @@ func sameBasename(occs []occurrence) bool {
 	return len(dirs) == len(occs)
 }
 
-// scan extracts every qualifying comment block from one file. It returns the
-// blocks keyed by normalised text, and separately the keys carrying an
-// exemption marker, so a marker on any one copy exempts the group.
-func scan(path string, minLines, minChars int) (blocks map[string][]occurrence, marked map[string]string, err error) {
+// scan extracts every qualifying comment block from one file, keyed by
+// normalised text. Each occurrence carries the exemption reason found on that
+// occurrence, if any; allMarked decides what to do with them.
+func scan(path string, minLines, minChars int) (blocks map[string][]occurrence, err error) {
 	f, err := os.Open(path) //nolint:gosec // G304: paths come from git ls-files or argv
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
-	blocks, marked = map[string][]occurrence{}, map[string]string{}
+	blocks = map[string][]occurrence{}
 	var cur []string
-	var reason string
 	start := 0
 	lineNo := 0
 
 	flush := func() {
-		defer func() { cur, reason = nil, "" }()
-		if len(cur) < minLines {
+		defer func() { cur = nil }()
+		body, reason := splitMarker(cur)
+		if len(body) < minLines {
 			return
 		}
-		key := strings.Join(cur, "\n")
+		key := strings.Join(body, "\n")
 		if len(key) < minChars {
 			return
 		}
-		blocks[key] = append(blocks[key], occurrence{file: path, line: start, n: len(cur)})
-		if reason != "" {
-			marked[key] = reason
-		}
+		blocks[key] = append(blocks[key], occurrence{file: path, line: start, n: len(body), reason: reason})
 	}
 
 	sc := bufio.NewScanner(f)
@@ -183,20 +209,10 @@ func scan(path string, minLines, minChars int) (blocks map[string][]occurrence, 
 		if len(cur) == 0 {
 			start = lineNo
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(text, "//"))
-		if m := markerRe.FindStringSubmatch(body); m != nil {
-			// Strip unconditionally so a marked copy still hashes equal to
-			// its unmarked twin; record the reason only when there is one,
-			// so a bare marker is reported rather than obeyed.
-			if r := strings.TrimSpace(m[1]); r != "" {
-				reason = r
-			}
-			continue
-		}
-		cur = append(cur, wsRun.ReplaceAllString(body, " "))
+		cur = append(cur, strings.TrimSpace(strings.TrimPrefix(text, "//")))
 	}
 	flush()
-	return blocks, marked, sc.Err()
+	return blocks, sc.Err()
 }
 
 // goFiles resolves the files to scan: the arguments if any were given,
@@ -217,4 +233,53 @@ func goFiles(args []string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// splitMarker separates a raw comment block into the lines that form its
+// identity and the //dupcomment:ok reason, if any.
+//
+// The marker owns a PARAGRAPH — its own line plus every following line up to a
+// blank comment line — because a one-line reason is the exception. If no blank
+// line terminates it, only the marker's own line is consumed; swallowing to the
+// end of the block instead would erase the very text being identified, which is
+// how an unterminated bare marker made its whole block disappear from the key.
+//
+// This runs over the collected block rather than while scanning, so the
+// "is it terminated?" question is answerable at all. Doing it in one streaming
+// pass is what produced three separate suppression-by-accident bugs in this
+// file: an unmatched bare marker, a blank line after a matched one, and a
+// multi-line reason. The rule they all violate is the same — marker placement
+// and length must not affect the key — and only a two-pass split enforces it
+// structurally rather than case by case.
+//
+// Empty lines are dropped from the identity for the same reason: they are
+// paragraph breaks, and a marker is conventionally followed by one.
+func splitMarker(raw []string) (body []string, reason string) {
+	skip := map[int]bool{}
+	for i, l := range raw {
+		m := markerRe.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		if r := strings.TrimSpace(m[1]); r != "" && reason == "" {
+			reason = r
+		}
+		skip[i] = true
+		// Consume the continuation only when a blank line closes it.
+		for j := i + 1; j < len(raw); j++ {
+			if raw[j] == "" {
+				for k := i + 1; k < j; k++ {
+					skip[k] = true
+				}
+				break
+			}
+		}
+	}
+	for i, l := range raw {
+		if skip[i] || l == "" {
+			continue
+		}
+		body = append(body, wsRun.ReplaceAllString(l, " "))
+	}
+	return body, reason
 }

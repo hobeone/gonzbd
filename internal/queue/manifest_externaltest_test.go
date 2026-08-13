@@ -18,6 +18,9 @@ func mustManifest(t *testing.T, j *queue.Job) *queue.Manifest {
 	return m
 }
 
+// dupcomment:ok the queue and queue_test packages each need their own
+// copy; Go cannot share an unexported helper across that boundary.
+//
 // manifestResident reports whether j currently has a manifest, without
 // caring why not. Fixture guards assert on residency itself, where the
 // difference between "evicted" and "unreadable" is not the point — and

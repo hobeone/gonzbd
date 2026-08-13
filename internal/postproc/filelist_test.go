@@ -28,6 +28,9 @@ func artIdxForID(t *testing.T, m *queue.Manifest, msgID string) int32 {
 	return 0
 }
 
+// dupcomment:ok four packages each need their own copy of this helper;
+// Manifest.fileIndexForArticle is unexported outside package queue.
+//
 // fileIdxForArticle returns the manifest file index owning global article
 // index i, using only exported Manifest accessors (Manifest.fileIndexForArticle
 // is unexported outside package queue).

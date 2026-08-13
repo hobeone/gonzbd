@@ -1,7 +1,6 @@
 package main
 
 import (
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,20 +38,18 @@ func writeGo(t *testing.T, files map[string]string) []string {
 func scanAll(t *testing.T, paths []string) map[string][]occurrence {
 	t.Helper()
 	groups := map[string][]occurrence{}
-	marked := map[string]string{}
 	for _, p := range paths {
-		b, m, err := scan(p, 4, 120)
+		b, err := scan(p, defaultMinLines, defaultMinChars)
 		if err != nil {
 			t.Fatalf("scan %s: %v", p, err)
 		}
 		for k, v := range b {
 			groups[k] = append(groups[k], v...)
 		}
-		maps.Copy(marked, m)
 	}
 	reported := map[string][]occurrence{}
 	for k, occs := range groups {
-		if len(occs) < 2 || sameBasename(occs) || marked[k] != "" {
+		if len(occs) < 2 || sameBasename(occs) || allMarked(occs) {
 			continue
 		}
 		reported[k] = occs
@@ -116,14 +113,30 @@ func TestScan_DifferentBasenamesAreNotExempt(t *testing.T) {
 // before normalisation. If it were not, the marked copy would hash differently
 // and the group would never match in the first place — the exemption would
 // appear to work for the wrong reason.
-func TestScan_MarkerOnOneCopyExemptsTheGroup(t *testing.T) {
+func TestScan_MarkerOnEveryCopyExemptsTheGroup(t *testing.T) {
+	marked := "// dupcomment:ok the two backends assert one shared contract\n" + block
+	got := scanAll(t, writeGo(t, map[string]string{
+		"a/a.go": "package a\n\n" + marked + "func A() {}\n",
+		"b/b.go": "package b\n\n" + marked + "func B() {}\n",
+	}))
+	if len(got) != 0 {
+		t.Fatalf("reported %d groups, want 0 (every copy marked)", len(got))
+	}
+}
+
+// TestScan_MarkerOnOneCopyDoesNotExemptTheGroup pins the fix for a real defect
+// in the first version of this tool: the exemption was a repo-wide map from
+// normalised text to reason, so one //dupcomment:ok anywhere whitelisted that
+// text EVERYWHERE — including a copy pasted by accident later. The marker would
+// then hide exactly what it exists to surface.
+func TestScan_MarkerOnOneCopyDoesNotExemptTheGroup(t *testing.T) {
 	marked := "// dupcomment:ok the two backends assert one shared contract\n" + block
 	got := scanAll(t, writeGo(t, map[string]string{
 		"a/a.go": "package a\n\n" + marked + "func A() {}\n",
 		"b/b.go": "package b\n\n" + block + "func B() {}\n",
 	}))
-	if len(got) != 0 {
-		t.Fatalf("reported %d groups, want 0 (marker on one copy exempts the group)", len(got))
+	if len(got) != 1 {
+		t.Fatalf("reported %d groups, want 1 (an unmarked copy must still be reported)", len(got))
 	}
 }
 
@@ -131,9 +144,10 @@ func TestScan_MarkerOnOneCopyExemptsTheGroup(t *testing.T) {
 // unexplained exemption is the thing the tool exists to surface.
 func TestScan_BareMarkerDoesNotExempt(t *testing.T) {
 	bare := "// dupcomment:ok\n" + block
+	good := "// dupcomment:ok a real reason\n" + block
 	got := scanAll(t, writeGo(t, map[string]string{
 		"a/a.go": "package a\n\n" + bare + "func A() {}\n",
-		"b/b.go": "package b\n\n" + block + "func B() {}\n",
+		"b/b.go": "package b\n\n" + good + "func B() {}\n",
 	}))
 	if len(got) != 1 {
 		t.Fatalf("reported %d groups, want 1 (a marker with no reason must not suppress)", len(got))
@@ -144,11 +158,11 @@ func TestScan_BareMarkerDoesNotExempt(t *testing.T) {
 // independently: a block under the line count and a block over the line count
 // but under the character count must each be ignored.
 func TestScan_ShortAndSmallBlocksAreBelowThreshold(t *testing.T) {
-	threeLines := "// one line here\n// two lines here\n// three lines here now\n"
+	twoLines := "// one line here that is quite long indeed and says a fair amount\n// two lines here that also runs on for a good while to pass chars\n"
 	fiveTiny := "// a\n// b\n// c\n// d\n// e\n"
 	got := scanAll(t, writeGo(t, map[string]string{
-		"a/a.go": "package a\n\n" + threeLines + "func A() {}\n\n" + fiveTiny + "func C() {}\n",
-		"b/b.go": "package b\n\n" + threeLines + "func B() {}\n\n" + fiveTiny + "func D() {}\n",
+		"a/a.go": "package a\n\n" + twoLines + "func A() {}\n\n" + fiveTiny + "func C() {}\n",
+		"b/b.go": "package b\n\n" + twoLines + "func B() {}\n\n" + fiveTiny + "func D() {}\n",
 	}))
 	if len(got) != 0 {
 		t.Fatalf("reported %d groups, want 0 (both blocks are below a threshold)", len(got))
@@ -174,5 +188,42 @@ func TestScan_NormalisesWhitespace(t *testing.T) {
 	}))
 	if len(got) != 1 {
 		t.Fatalf("reported %d groups, want 1 (reindentation must not hide a copy)", len(got))
+	}
+}
+
+// TestScan_MarkerPlacementDoesNotAffectGrouping pins that a marker followed by
+// a blank comment line — the conventional way to write one — still hashes equal
+// to the unmarked twin.
+//
+// Without it the marked copy carries an extra empty entry in its key, the group
+// never forms, and the finding vanishes. That is suppression by accident rather
+// than by exemption, and it is the second time this tool grew that bug: once
+// via an unmatched bare marker, once via the blank line after a matched one.
+func TestScan_MarkerPlacementDoesNotAffectGrouping(t *testing.T) {
+	spaced := "// dupcomment:ok a real reason\n//\n" + block
+	got := scanAll(t, writeGo(t, map[string]string{
+		"a/a.go": "package a\n\n" + spaced + "func A() {}\n",
+		"b/b.go": "package b\n\n" + block + "func B() {}\n",
+	}))
+	if len(got) != 1 {
+		t.Fatalf("reported %d groups, want 1; a blank line after the marker must "+
+			"not stop the marked copy grouping with its unmarked twin", len(got))
+	}
+}
+
+// TestScan_MultiLineReasonDoesNotAffectGrouping pins that the marker owns its
+// whole paragraph. A one-line reason is the exception, not the rule, and if the
+// continuation lines stayed in the key the marked copy would stop matching its
+// twin — suppressing the finding by accident instead of exempting it.
+func TestScan_MultiLineReasonDoesNotAffectGrouping(t *testing.T) {
+	long := "// dupcomment:ok the queue and queue_test packages each need their\n" +
+		"// own copy; Go cannot share an unexported helper across that boundary.\n//\n" + block
+	got := scanAll(t, writeGo(t, map[string]string{
+		"a/a.go": "package a\n\n" + long + "func A() {}\n",
+		"b/b.go": "package b\n\n" + block + "func B() {}\n",
+	}))
+	if len(got) != 1 {
+		t.Fatalf("reported %d groups, want 1; a multi-line reason must not stop "+
+			"the marked copy grouping with its unmarked twin", len(got))
 	}
 }

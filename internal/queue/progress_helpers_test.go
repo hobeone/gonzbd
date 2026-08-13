@@ -163,6 +163,9 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 // failedBytes, and RemainingBytes must be untouched, including for a Done
 // (successfully completed) article, which must not be reopened by a reload.
 func TestResetForReload_NotFailedArticle(t *testing.T) {
+	// dupcomment:ok the two resetForReload fixtures state the same
+	// constraint because they set up the same manifest for the same reason.
+	//
 	// Bytes is the sum of the articles' bytes, as internal/nzb's parser
 	// always makes it. RemainingBytes derives from the file's own size, so a
 	// fixture leaving it zero would clamp the figure to zero and make the

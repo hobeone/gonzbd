@@ -48,3 +48,13 @@ fix_revert_audit_results.txt
 .superpowers/
 .gremlins/
 /.worktrees/
+
+# Stray binaries from `go build ./scripts/<tool>` run without -o. The check_*
+# tools are normally invoked with `go run`, which leaves nothing behind, but a
+# `go build` drops a multi-megabyte binary at the repo root and one has already
+# been committed by accident.
+/check_dup_comments
+/check_review_banner
+/check_lock_io
+/check_coverage
+/check_test_alignment
