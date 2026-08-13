@@ -321,18 +321,38 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 // what every production Assembler built outside New() uses. Without it the seam
 // could be left nil-only-safe by accident and silently stop releasing.
 func TestReleaseBuffer_FallsBackToTheDecoderPool(t *testing.T) {
+	// The hook, when set, receives exactly the slice handed in. This is the
+	// half that is observable; see below for the half that is not.
 	a := newHelperAssembler()
 	if a.putBuffer != nil {
 		t.Fatal("newHelperAssembler set putBuffer; this test needs the nil path")
 	}
-	// The observable is that it does not panic and does not divert: with a nil
-	// hook the only correct behaviour is to call decoder.PutBuffer, which
-	// accepts any slice including an empty one.
-	a.releaseBuffer(make([]byte, 0, 64))
+	buf := make([]byte, 8)
+	var seen [][]byte
+	a.putBuffer = func(b []byte) { seen = append(seen, b) }
+	a.releaseBuffer(buf)
+	if len(seen) != 1 || &seen[0][:1][0] != &buf[:1][0] {
+		t.Fatalf("releaseBuffer delivered %d buffers to the hook, want exactly the one passed in", len(seen))
+	}
 
-	a.putBuffer = func([]byte) { t.Error("releaseBuffer used the hook after it was set to nil") }
+	// With a nil hook the only observable is that it does not panic — whether
+	// the slice reached decoder's pool is NOT checkable, because sync.Pool is
+	// emptied at every GC (see TestHandleLateDuplicate for the measurement
+	// that established this). So the fallback is pinned negatively, by the
+	// assertion below that production never takes it.
 	a.putBuffer = nil
+	a.releaseBuffer(buf)
 	a.releaseBuffer(nil)
+
+	// The load-bearing assertion: an Assembler built the production way has a
+	// non-nil hook, so the nil path above is reachable only from tests that
+	// construct the struct directly. Without this, New() could stop setting
+	// putBuffer and nothing would notice.
+	prod := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, nil)
+	if prod.putBuffer == nil {
+		t.Error("New() left putBuffer nil; production would take the fallback path, " +
+			"which no test can observe")
+	}
 }
 
 // TestControlOps_CancelledContextBeatsEveryOtherOutcome is the DETERMINISTIC

@@ -850,6 +850,24 @@ func (f failingExtentStore) Load(context.Context, string) ([]durability.FileExte
 }
 func (f failingExtentStore) DeleteJob(context.Context, string) error { return f.err }
 
+// recordingExtentStore notes whether DeleteJob was reached. The alternative —
+// comparing application.extents to a copy of itself taken two lines earlier —
+// is a tautology, which is what this replaces.
+type recordingExtentStore struct{ deleted []string }
+
+func (r *recordingExtentStore) Commit(context.Context, string, []durability.FileExtent) error {
+	return nil
+}
+
+func (r *recordingExtentStore) Load(context.Context, string) ([]durability.FileExtent, error) {
+	return nil, nil
+}
+
+func (r *recordingExtentStore) DeleteJob(_ context.Context, jobID string) error {
+	r.deleted = append(r.deleted, jobID)
+	return nil
+}
+
 // TestAppendArticleFacts_SurvivesAFailedWrite pins R3: losing a Class A record
 // costs a re-fetch and nothing else.
 //
@@ -927,14 +945,24 @@ func TestDeleteJobDurability_ReportsAFailedDelete(t *testing.T) {
 	boom := errors.New("database is locked")
 	application.factLog = failingFactLog{err: boom}
 
-	realExtents := application.extents
+	rec := &recordingExtentStore{}
+	application.extents = rec
 	application.deleteJobDurability(t.Context(), "job-a")
 
-	// The extent store still ran despite the fact log failing first.
-	if application.extents != realExtents {
-		t.Fatal("fixture replaced the extent store")
+	// The load-bearing assertion: the extent store still ran even though the
+	// fact log failed FIRST. An early return on the fact log's error would
+	// leave half a job's rows behind, which is worse than leaving all of them
+	// — the surviving half describes a job that no longer exists.
+	//
+	// This replaces `if application.extents != realExtents`, which compared
+	// the field to a copy of itself taken two lines earlier with nothing in
+	// between that could change it. It could not fail.
+	if !slices.Equal(rec.deleted, []string{"job-a"}) {
+		t.Fatalf("extent store DeleteJob calls = %v, want [job-a]; a failing fact log "+
+			"must not stop the extent store from being tried", rec.deleted)
 	}
 
+	// The mirror case: the extent store failing must not panic or abort either.
 	application.factLog = nil
 	application.extents = failingExtentStore{err: boom}
 	application.deleteJobDurability(t.Context(), "job-a")

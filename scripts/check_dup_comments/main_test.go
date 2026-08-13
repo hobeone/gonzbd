@@ -109,10 +109,16 @@ func TestScan_DifferentBasenamesAreNotExempt(t *testing.T) {
 	}
 }
 
-// TestScan_MarkerOnOneCopyExemptsTheGroup pins that the marker line is stripped
-// before normalisation. If it were not, the marked copy would hash differently
-// and the group would never match in the first place — the exemption would
-// appear to work for the wrong reason.
+// TestScan_MarkerOnEveryCopyExemptsTheGroup pins that a group is exempt when
+// EVERY copy carries a marker, and that the marker lines are stripped before
+// normalisation — without the stripping the marked copies would hash
+// differently from each other and the group would never form, so the exemption
+// would appear to work for the wrong reason.
+//
+// This doc block previously named TestScan_MarkerOnOneCopyExemptsTheGroup, a
+// function that no longer exists, and described one-copy exemption — the
+// behaviour f7071c6a deliberately REMOVED. A stale doc asserting the opposite
+// of the code, sitting inside the gate built to catch exactly that class.
 func TestScan_MarkerOnEveryCopyExemptsTheGroup(t *testing.T) {
 	marked := "// dupcomment:ok the two backends assert one shared contract\n" + block
 	got := scanAll(t, writeGo(t, map[string]string{

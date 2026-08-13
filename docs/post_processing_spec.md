@@ -189,6 +189,7 @@ State carried on `NzbFile`:
 - `crc32` — running combined CRC32 of all contiguous bytes written so far.
   Set to `None` the moment a non-contiguous write happens (because crc-combine
   requires sequential consumption).
+  **GoNZBD does not do this** — see the note in §3.3.
 
 ### 3.2 Disk-space checks
 
@@ -212,9 +213,29 @@ This produces a CRC32 that matches what par2 records as the **file-level CRC32**
 `nzf.crc32` against the par2 `filehash` field without re-reading the file.
 **This is the optimization that lets SABnzbd skip repair on most healthy jobs.**
 
-Go: implement `crc32Combine(crc1, crc2 uint32, len2 int64) uint32` using GF(2)
-matrix doubling — see zlib's `crc32_combine64`. Keep `nullableCRC = *uint32`
-because the value must be invalidatable on non-contiguous writes.
+> **Superseded for GoNZBD by the download-durability work. This section
+> describes SABnzbd and remains accurate about SABnzbd; the `Go:` directive
+> below is dead and must not be implemented as written.**
+>
+> GoNZBD does **not** maintain a running combined CRC at write time. The
+> assembler has no authority to record a whole-file CRC at all, and nothing
+> accumulates `crc32_combine` per write. Instead `durability.Resumer`
+> recomputes a gapless-prefix CRC from the bytes on disk during resume, guarded
+> by `HasPrefixCRC`, and that is the only CRC the design produces — deliberately
+> off the barrier's critical path.
+>
+> Consequence, recorded honestly: nothing threads that value to
+> `Queue.SetFileCRC32`, which has no production caller, so
+> `FileProgress.AssembledCRC32` is zero for every freshly downloaded file. Zero
+> is the documented "unavailable" value, QuickCheck reads it as `NoCRC`, and the
+> par2 bypass described below therefore does **not** happen. That is *Accepted
+> limitations #4* in [`durability-contract.md`](durability-contract.md), not a
+> claim that the optimisation is present.
+
+Go (superseded): implement `crc32Combine(crc1, crc2 uint32, len2 int64) uint32`
+using GF(2) matrix doubling — see zlib's `crc32_combine64`. Keep
+`nullableCRC = *uint32` because the value must be invalidatable on
+non-contiguous writes.
 
 ### 3.4 File completion → job completion
 
