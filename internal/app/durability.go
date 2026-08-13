@@ -76,6 +76,12 @@ func (a manifestArticleMap) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) 
 func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	reason := "Stalled: " + f.Error()
 	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
+	// Recorded BEFORE the pause, and kept after it. The queue's own warning is
+	// wiped by the Resume a re-evaluation performs, so it cannot be what the
+	// re-evaluation reads to know the job is parked — and R19 requires the
+	// condition to be re-evaluated at all, which needs a list of what is
+	// parked. See reevaluateStall.
+	app.noteStall(jobID, f)
 	if err := app.queue.Pause(jobID); err != nil {
 		app.log.Warn("stall: could not pause the job", "job", jobID, "err", err)
 	}
@@ -100,6 +106,10 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	reason := "Failed: " + f.Error()
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
+	// A permanent fault is not re-evaluated (R20): the job leaves the queue
+	// with its reason, so keeping it on the stalled list would have the
+	// re-evaluation resume a job that is on its way to history.
+	app.clearStall(jobID)
 	if err := app.queue.SetWarning(jobID, reason); err != nil {
 		app.log.Warn("fail: could not surface the reason", "job", jobID, "err", err)
 	}
@@ -133,10 +143,11 @@ func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
 	return mu
 }
 
-// forgetJobBarrierState drops a departed job's lock and byte accumulator.
+// forgetJobBarrierState drops a departed job's lock, byte accumulator and
+// last-barrier stamp.
 //
-// Both maps are keyed by job ID and would otherwise grow for the life of the
-// process, one entry per job ever downloaded. Called from the same places
+// All three maps are keyed by job ID and would otherwise grow for the life of
+// the process, one entry per job ever downloaded. Called from the same places
 // pipeline.forgetJob is, which is where a job stops being the assembler's
 // business.
 func (app *Application) forgetJobBarrierState(jobID string) {
@@ -144,6 +155,7 @@ func (app *Application) forgetJobBarrierState(jobID string) {
 	defer app.barrierMu.Unlock()
 	delete(app.jobBarrierMu, jobID)
 	delete(app.jobBarrierBytes, jobID)
+	delete(app.lastBarrier, jobID)
 }
 
 // noteJobBytes accumulates a job's freshly written bytes and asks for a
@@ -248,7 +260,21 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 		// failed barrier claims nothing — the prior committed cache is
 		// intact and no article was acked. Logging is all that is left.
 		app.log.Warn("checkpoint barrier failed", "job", jobID, "err", err)
+		return
 	}
+	app.noteBarrierRun(jobID)
+}
+
+// noteBarrierRun stamps a job's last successful barrier (R26).
+//
+// Only a barrier that returned nil counts. The figure exists to tell a job
+// that is checkpointing normally from one whose barriers have been failing
+// since the mount went away, and stamping the attempt rather than the success
+// would erase exactly that distinction.
+func (app *Application) noteBarrierRun(jobID string) {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	app.lastBarrier[jobID] = time.Now()
 }
 
 // checkpointAll runs a barrier for every job holding an open file.
@@ -312,15 +338,30 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // damage on a download that was perfectly healthy. That is #350 arriving by a
 // different route, and it was silent.
 //
-// The close still happens on the failing path. Keeping the handle would buy
-// nothing — no path re-triggers a finalize for a file whose parts have all
-// arrived — while holding an fd for the rest of the job and turning
-// post-processing's unlink into an NFS silly-rename. What protects the user is
-// that the file does not move on, not that the handle stays open.
-func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) error {
+// The handle is RETAINED on the failing path, reversing the earlier decision
+// to close it there. That decision rested on a premise that no longer holds:
+// "no path re-triggers a finalize for a file whose parts have all arrived".
+// Application.reevaluateStall is now that path, and every operation it needs —
+// Drain, Sync, Truncate, Stat — goes through the handle the assembler owns.
+// Closing here left the stall unable to clear for the rest of the process,
+// which is the L2 violation this reversal exists to remove.
+//
+// The costs the earlier reasoning named are real but bounded: one fd per
+// unfinalized completed file, held while the job is parked and released the
+// moment a retry succeeds, and post-processing's unlink cannot become an NFS
+// silly-rename because a parked job does not reach post-processing. CancelJob,
+// CloseJobHandles and the assembler's own shutdown drain all still release it.
+func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) (err error) {
 	defer func() {
-		if err := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); err != nil { //nolint:gosec // G115: file counts are far below int32
-			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", err)
+		if err != nil {
+			// The handle stays open on the failing path, so the retry in
+			// reevaluateStall has something to finalize. Drain, Sync,
+			// Truncate and Stat all need it, and nothing reopens a file the
+			// assembler has tombstoned.
+			return
+		}
+		if cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); cerr != nil { //nolint:gosec // G115: file counts are far below int32
+			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
 		}
 	}()
 	if app.barrier == nil {
@@ -401,6 +442,12 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 func (app *Application) runCheckpoint(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// R19's second cadence, on this goroutine rather than its own. A
+	// re-evaluation retries a finalize, which takes the same per-job barrier
+	// lock a checkpoint does; running the two from one loop means they are
+	// serialised by construction rather than by that lock.
+	stallTicker := time.NewTicker(stallRecheckInterval)
+	defer stallTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -409,6 +456,10 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 			app.checkpointAll(ctx)
 		case jobID := <-app.barrierKick:
 			app.checkpointJob(ctx, jobID)
+		case <-stallTicker.C:
+			app.reevaluateStalls(ctx)
+		case <-app.stallKick:
+			app.reevaluateStalls(ctx)
 		}
 		app.saveQueueIfDirty()
 	}
@@ -522,8 +573,15 @@ func (app *Application) filePathFor(jobID string, fileIdx int) string {
 	return info.Path
 }
 
-// routeFinalizeFailure surfaces a failed finalize to the job, and routes it
-// only if nothing has routed it already.
+// routeFinalizeFailure surfaces a failed finalize to the job, routes it only if
+// nothing has routed it already, and records the file for retry.
+//
+// The record is the half concern 8 was missing. The assembler reports a file
+// complete exactly once, so a failed finalize is the end of the road for that
+// file unless something remembers it — and without that, the job stayed parked
+// after the mount came back, which L2 calls a defect rather than a wait. Only
+// a retryable fault is recorded: a permanent one took the job to Fail, which
+// carries it into history rather than leaving it to recover.
 //
 // Barrier.routeFault dispatches every storage fault it meets per A1 — Fail for
 // permanent, Stall for retryable — and then RETURNS that same fault as its
@@ -551,7 +609,14 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 	if routed, ok := errors.AsType[*storagefault.Fault](err); ok {
 		app.log.Debug("the fault was already routed by the barrier; not routing it again",
 			"job", jobID, "permanent", routed.Permanent)
+		if !routed.Permanent {
+			app.notePendingFinalize(jobID, fileIdx)
+		}
 		return
 	}
-	app.Stall(jobID, storagefault.Classify("finalize", path, err))
+	f := storagefault.Classify("finalize", path, err)
+	app.Stall(jobID, f)
+	if !f.Permanent {
+		app.notePendingFinalize(jobID, fileIdx)
+	}
 }

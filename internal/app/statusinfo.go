@@ -105,3 +105,50 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	}
 	return true
 }
+
+// JobDurability is what R26 asks a job to be able to report at any time: how
+// much of it is on stable storage, how much is written but not yet covered by
+// an fsync, and when its last barrier succeeded.
+//
+// The two byte figures are reported separately and are never summed. They make
+// different claims — one survives a power loss, the other is the rework window
+// B1 bounds — and adding them produces a number that asserts the stronger of
+// the two about all of it.
+type JobDurability struct {
+	// DurableBytes is what a completed fsync covers.
+	DurableBytes int64
+	// PendingBytes is what has been written since this job's current
+	// checkpoint window opened: accepted by the OS, not yet fsynced, and lost
+	// on a power failure.
+	PendingBytes int64
+	// LastBarrier is when this job's last barrier completed without error, or
+	// the zero time when none has.
+	LastBarrier time.Time
+}
+
+// JobDurability reports one job's durability figures. Safe to call from any
+// goroutine, and safe at any residency.
+//
+// DurableBytes comes from the job's downloaded-byte total rather than from a
+// counter of its own, because on this design they are the same quantity: the
+// only things that mark an article Done are Queue.AckDurable, which takes a
+// DurableProof no path outside a completed barrier can mint, and
+// SeedFromExtents, which replays a committed Class B cache. A second counter
+// would be a second representation of one fact, free to drift (S5).
+func (app *Application) JobDurability(jobID string) JobDurability {
+	var out JobDurability
+	if app.queue != nil {
+		if snap := app.queue.SnapshotJob(jobID); snap != nil {
+			p := snap.Progress()
+			// expected - failed - remaining is the downloaded identity
+			// internal/app/history_helper.go already relies on; see
+			// JobProgress.ExpectedBytes for why the three legs close.
+			out.DurableBytes = p.ExpectedBytes() - p.FailedBytes() - p.RemainingBytes()
+		}
+	}
+	app.barrierMu.Lock()
+	out.PendingBytes = app.jobBarrierBytes[jobID]
+	out.LastBarrier = app.lastBarrier[jobID]
+	app.barrierMu.Unlock()
+	return out
+}

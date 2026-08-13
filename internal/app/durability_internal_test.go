@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1022,13 +1023,18 @@ func (w *wedgeOnFile) resolve(jobID string, fileIdx int) (assembler.FileInfo, er
 }
 
 // newWedgedApp builds an Application whose assembler holds file 0 open and
-// whose worker is then parked forever inside file 1's open.
+// whose worker is parked inside file 1's open until the returned func is
+// called.
+//
+// Releasing it is what makes the recovery tests real: a stall test that never
+// unwedges can only observe a flag, while one that does can watch the job
+// actually finish the work the stall interrupted.
 //
 // The assembler is constructed here rather than taken from New, because the
 // resolver has to be substituted before the worker ever runs and Application
 // exposes no hook for it — deliberately, since production has no reason to
 // swap one.
-func newWedgedApp(t *testing.T) (*Application, *queue.Job) {
+func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
 	t.Helper()
 	application, job := newDurabilityTestApp(t, 2, 1)
 	ctx := t.Context()
@@ -1054,7 +1060,9 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job) {
 	// Assembler.Stop joins the worker, which is parked on this channel. The
 	// other way round the test deadlocks in its own teardown.
 	t.Cleanup(func() { _ = application.assembler.Stop() })
-	t.Cleanup(func() { close(wedge.release) })
+	var once sync.Once
+	release := func() { once.Do(func() { close(wedge.release) }) }
+	t.Cleanup(release)
 
 	// File 0 opens normally and stays open.
 	writeFixtureArticle(t, application, job.ID, 0, 0)
@@ -1076,7 +1084,7 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job) {
 		t.Fatal("the worker never reached the wedge; the fixture is not wedged and the " +
 			"assertions below would pass against a healthy assembler")
 	}
-	return application, job
+	return application, job, release
 }
 
 // TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize pins the
@@ -1095,7 +1103,7 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job) {
 // exactly the condition barrierOpTimeout exists for, and it is reproducible
 // without a dead mount.
 func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T) {
-	application, job := newWedgedApp(t)
+	application, job, _ := newWedgedApp(t)
 
 	err := application.finalizeCompletedFile(t.Context(), job.ID, 0)
 	if err == nil {
@@ -1136,7 +1144,7 @@ func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T
 // condition of storage, and attributing it to an article would burn its retry
 // budget and degrade the job's reported health (A1, R21).
 func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing.T) {
-	application, job := newWedgedApp(t)
+	application, job, _ := newWedgedApp(t)
 
 	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
 
@@ -1369,7 +1377,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 // guess: the wedged worker makes the finalize sit on a 5s bound, and the drop
 // happens a second in.
 func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
-	application, job := newWedgedApp(t)
+	application, job, _ := newWedgedApp(t)
 
 	want, err := application.pipeline.resolveFileInfo(job.ID, 0)
 	if err != nil {

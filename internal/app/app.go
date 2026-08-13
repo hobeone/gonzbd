@@ -156,6 +156,22 @@ type Application struct {
 	barrierMu       sync.Mutex
 	jobBarrierMu    map[string]*sync.Mutex
 	jobBarrierBytes map[string]int64
+	// lastBarrier is when each job's last barrier completed without error.
+	// R26 asks a job to be able to report it, and it is the figure that tells
+	// "this job is checkpointing normally" from "this job has not had a
+	// successful barrier since the mount went away".
+	lastBarrier map[string]time.Time
+
+	// stallMu guards stalls. It is never held across I/O: every walk copies
+	// what it needs and releases first, because a re-evaluation runs barrier
+	// operations against a mount that is suspected of being wedged.
+	stallMu sync.Mutex
+	stalls  map[string]*stallRecord
+
+	// stallKick carries R19's "on user action" re-evaluation request from an
+	// HTTP handler to the checkpoint loop. Buffered and sent to
+	// non-blockingly, for the same reason barrierKick is.
+	stallKick chan struct{}
 
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
@@ -229,7 +245,10 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.finalizer = newJobFinalizer(app)
 	app.jobBarrierMu = make(map[string]*sync.Mutex)
 	app.jobBarrierBytes = make(map[string]int64)
+	app.lastBarrier = make(map[string]time.Time)
+	app.stalls = make(map[string]*stallRecord)
 	app.barrierKick = make(chan string, 64)
+	app.stallKick = make(chan struct{}, 1)
 	app.checkpointInterval = time.Duration(dl.CheckpointInterval) * time.Second
 	app.checkpointBytes = int64(dl.CheckpointBytes)
 	for _, o := range opts {
@@ -1078,7 +1097,6 @@ func (app *Application) watchCompletions(ctx context.Context) {
 	}
 }
 
-// handleFileComplete processes a single file completion event.
 // logQueueWriteFailure reports a failed per-file queue write at a level that
 // matches what the failure means.
 //
@@ -1097,6 +1115,7 @@ func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err 
 	app.log.Warn(op+" failed", "job", jobID, "fileidx", fileIdx, "err", err)
 }
 
+// handleFileComplete processes a single file completion event.
 func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete) {
 	// FIRST, before anything downstream can act on the file. finalizeCompletedFile
 	// runs the barrier over it, trims it to its real extent and hands the
@@ -1124,13 +1143,33 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 		app.routeFinalizeFailure(fc.JobID, fc.FileIdx, path, err)
 		return
 	}
+	if err := app.completeFinalizedFile(ctx, fc); err != nil {
+		app.log.Debug("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+	}
+}
 
+// completeFinalizedFile is everything the completion path does AFTER the
+// file's bytes on disk are known to be correct.
+//
+// Split out of handleFileComplete because a stall raised by a failed finalize
+// interrupts the completion between the two halves, and
+// Application.reevaluateStall has to resume it from exactly there — the
+// finalize retried on its own, then this. Inlining it would have meant a
+// second copy of the mark-complete/DirectUnpack/finalize sequence, free to
+// drift from this one (S5).
+//
+// It returns an error only so the retry can tell whether the queue accepted
+// the completion: MarkFileComplete needs the job resident, and a job the
+// active set had no room to re-promote must be tried again rather than have
+// its completion silently dropped. handleFileComplete's own call has already
+// logged everything a live pipeline can act on.
+func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComplete) error {
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		// Returning bare here was itself the shape #261 describes: the file
 		// never gets marked complete, no event is emitted, and nothing says
 		// why.
 		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-		return
+		return err
 	}
 	app.emit(Event{Type: "queue_updated"})
 
@@ -1146,10 +1185,11 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 	snap := app.queue.SnapshotJob(fc.JobID)
 	if snap != nil && snap.IsComplete() {
 		if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
-			return // downloader will fetch recovery volumes
+			return nil // downloader will fetch recovery volumes
 		}
 		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
 	}
+	return nil
 }
 
 // maybeReleaseRecoveryVolumes checks whether a completed job with deferred par2

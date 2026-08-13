@@ -475,3 +475,58 @@ func TestFinalizeFile_RetryDoesNotTrimBelowRecordedBytes(t *testing.T) {
 		t.Errorf("truncated to %d, want 1000 (highest end offset among recorded facts)", tgt.bound)
 	}
 }
+
+// TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes pins the two
+// answers FinalizeFile's guard depends on, and they are not the same question.
+//
+// The bound must cover every fact, durable or not — that is the point of the
+// fallback. The count must fire on ANY non-durable fact, including one below
+// the durable high-water mark, because "the durable set is incomplete" is what
+// says this is a retry, not "the recorded extent is longer".
+func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	facts := NewSQLiteFactLog(db)
+	if err := facts.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
+		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
+		slog.New(slog.DiscardHandler))
+
+	// Article 1 is the LOW non-durable one: the highest durable end (300) is
+	// already the recorded end, so a count derived from comparing the two
+	// bounds would report nothing wrong.
+	durable := NewBitmap(3)
+	durable.Set(0)
+	durable.Set(2)
+
+	high, missing, err := b.recordedExtent(ctx, "job-1", 0, durable, &truncTarget{artCount: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing != 1 {
+		t.Errorf("missing = %d, want 1 — a non-durable article below the durable high-water "+
+			"mark still means the durable set is incomplete, which is what marks a retry", missing)
+	}
+	if high != 300 {
+		t.Errorf("recorded extent = %d, want 300 (highest end over every fact)", high)
+	}
+
+	// With every fact durable there is nothing to fall back to, and
+	// FinalizeFile must keep the durable bound.
+	all := NewBitmap(3)
+	all.Set(0)
+	all.Set(1)
+	all.Set(2)
+	if _, missing, err = b.recordedExtent(ctx, "job-1", 0, all, &truncTarget{artCount: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if missing != 0 {
+		t.Errorf("missing = %d on a fully durable file, want 0 — the fallback would fire on "+
+			"every healthy finalize and stop trimming pre-allocation's zeros", missing)
+	}
+}
