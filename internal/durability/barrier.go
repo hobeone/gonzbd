@@ -12,7 +12,17 @@ import (
 // Barrier is the single place the Written → Durable → Resolved transition
 // happens (X2). Its two methods Run and FinalizeFile are the only callers of
 // newProof, so no other code path — inside this package or out — can ack an
-// article as downloaded.
+// article THROUGH Queue.AckDurable.
+//
+// That is narrower than "can ack an article as downloaded", which is what this
+// comment used to say and is false. Queue.SeedFromExtents and
+// Queue.ReplaceFromResume also reach markDone, take a fully exported
+// durability.FileExtent whose Bitmap is exported and settable, and are
+// therefore callable from any package with no barrier and no proof. That is by
+// DESIGN — their evidence is stable storage re-read at startup, not an fsync
+// this process performed, which is the one kind of evidence a proof cannot
+// represent — but it means the proof gates the barrier door only. The seeding
+// doors are held by their own contracts and tests, not by the compiler.
 //
 // Before this design the assembler could ack from six places, and the same
 // defect was refiled twice (#355, #356). One place is the whole point;

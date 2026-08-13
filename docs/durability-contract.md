@@ -148,14 +148,35 @@ turns on not conflating them:
 
 `Queue.AckDurable` takes a `durability.DurableProof`. `DurableProof` has no
 exported fields and no exported constructor, so **no package outside
-`internal/durability` can create one**. "Ack only after fsync" is therefore not a
-rule six call sites must each remember; it is a signature no outside caller can
-satisfy.
+`internal/durability` can create a proof that names any article**. "Ack only
+after fsync" is therefore not a rule six call sites must each remember; it is a
+signature no outside caller can satisfy with a non-empty payload.
+
+State the bound precisely, because an earlier version of this section did not.
+Go permits a composite literal with no field values even when every field is
+unexported, so `durability.DurableProof{}` compiles in any package — this was
+checked by compiling it, not reasoned about. Such a proof is necessarily empty,
+and `Queue.AckDurable` returns `nil` without touching an article when
+`Articles()` is empty. The compiler bounds the **payload**; a one-line early
+return makes an empty payload inert. That early return is therefore part of the
+invariant, and
+`TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing` pins it.
 
 Inside `internal/durability` the guarantee is package-scoped: `newProof` is
 reachable from anywhere in the package, and exactly two functions call it —
 `Barrier.Run` and `Barrier.FinalizeFile`. That pair is what review has to hold.
-Outside the package the guarantee is absolute.
+
+**This gate covers one door.** `Queue.SeedFromExtents` and
+`Queue.ReplaceFromResume` also reach `markDone`, take a fully exported
+`durability.FileExtent` whose `Bitmap` is exported and settable, and are
+callable from any package with no barrier and no proof. That is deliberate —
+their evidence is stable storage re-read at startup, which is exactly the kind
+of evidence a proof cannot represent — but it means "ack before fsync is code
+that does not compile" is true of `AckDurable` and **false as a statement about
+the queue as a whole**. The seeding doors are held by their contracts and by
+`TestSeedFromExtents_StaysAdditive` /
+`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade`, not by the
+compiler.
 
 This replaces a design in which the assembler could ack from six places, each
 independently responsible for knowing that acceptance into a buffer is not

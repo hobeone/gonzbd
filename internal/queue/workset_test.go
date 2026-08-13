@@ -662,3 +662,59 @@ func TestFileDurableBitmap_ReDerivesAtTheFilesArticleCount(t *testing.T) {
 		}
 	})
 }
+
+// TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing pins the runtime
+// half of the proof guarantee.
+//
+// The compile-time half is narrower than the design's headline. Go permits a
+// composite literal with no field values even when every field is unexported,
+// so `durability.DurableProof{}` compiles in THIS package — which is outside
+// internal/durability, and the fact that this file builds is itself the
+// evidence. What the compiler actually bounds is the proof's PAYLOAD: there is
+// no exported way to put an article into one, so an externally built proof is
+// necessarily empty. AckDurable's `len(arts) == 0` early return is what turns
+// "empty" into "inert", and that one line is therefore part of the invariant
+// rather than a defensive nicety.
+//
+// The assertion is deliberately not "nothing is done", which the fixture would
+// satisfy on its own before any ack. A real proof for article 0 is applied
+// first, so the done-set has a non-trivial value to preserve, and the empty
+// proof must leave it EXACTLY there — neither widening it (the over-claim the
+// design forbids) nor erroring.
+func TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing(t *testing.T) {
+	const jobID, nArts = "empty-proof", 4
+	q := newTestQueueWithJob(t, jobID, nArts)
+
+	// A genuine barrier-minted ack first, so the state under test is not the
+	// zero state.
+	if err := q.AckDurable(mintProof(t, jobID, []int32{0}, nArts)); err != nil {
+		t.Fatalf("AckDurable(real proof): %v", err)
+	}
+	before := outstandingFor(q, jobID)
+	if want := []int32{1, 2, 3}; !slices.Equal(before, want) {
+		t.Fatalf("outstanding after the real ack = %v, want %v", before, want)
+	}
+
+	// The only kind of proof a package outside internal/durability can build.
+	// If this line ever fails to compile, the compile-time bound got STRONGER
+	// and this test should be deleted, not weakened.
+	var external durability.DurableProof
+	if got := external.Articles(); len(got) != 0 {
+		t.Fatalf("an externally constructed proof named %d articles, want 0; "+
+			"the compile-time payload bound is broken", len(got))
+	}
+	if got := external.JobID(); got != "" {
+		t.Fatalf("an externally constructed proof named job %q, want empty", got)
+	}
+
+	if err := q.AckDurable(external); err != nil {
+		t.Fatalf("AckDurable(empty proof) = %v, want nil (an empty proof is a no-op, "+
+			"not an error and not a job-wide ack)", err)
+	}
+
+	after := outstandingFor(q, jobID)
+	if !slices.Equal(after, before) {
+		t.Errorf("outstanding changed across an empty-proof ack: %v -> %v; "+
+			"an empty proof must resolve nothing", before, after)
+	}
+}

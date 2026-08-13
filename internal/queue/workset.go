@@ -10,9 +10,19 @@ import (
 //
 // It takes a durability.DurableProof rather than a slice of indices, and that
 // is the whole point. DurableProof has no exported constructor outside
-// internal/durability, so this method is unreachable from any code path that
-// has not actually run a barrier — R9 is enforced by the compiler rather than
-// by six call sites each remembering it (X3).
+// internal/durability, so no code path that has not run a barrier can reach
+// this method WITH ANY ARTICLE IN HAND — R9 is enforced by the compiler rather
+// than by six call sites each remembering it (X3).
+//
+// The bound is on the payload, not on the type: `durability.DurableProof{}`
+// compiles in any package. The `len(arts) == 0` early return below is what
+// makes such a proof inert, so it is part of the invariant rather than a
+// defensive nicety. See the DurableProof type doc.
+//
+// This gate covers THIS door only. SeedFromExtents and ReplaceFromResume also
+// reach markDone without a proof, deliberately — their evidence is stable
+// storage, which a proof cannot express. Do not read "AckDurable is
+// proof-gated" as "nothing marks an article done without a barrier".
 //
 // Before this design the assembler could ack from six places, each
 // independently responsible for knowing that acceptance into a buffer is not

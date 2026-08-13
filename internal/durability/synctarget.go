@@ -94,7 +94,9 @@ type SyncTarget interface {
 // AckDurable takes a DurableProof, which has no exported constructor. That
 // is X3 made concrete: "ack only after fsync" is not a rule six call sites
 // must each remember, it is a signature no caller outside this package can
-// satisfy. R9 is therefore enforced by the compiler.
+// satisfy WITH ANY ARTICLE IN IT. R9 is enforced by the compiler to that
+// bound, and no further — see the DurableProof type doc for what an outside
+// package can still construct, and why it is inert rather than impossible.
 type Acker interface {
 	AckDurable(p DurableProof) error
 }
