@@ -58,10 +58,26 @@ const (
 	// factAppendTimeout bounds one Class A insert. It exists because the
 	// append drops the caller's cancellation (see pipeline.appendArticleFacts)
 	// and something must still stop a contended database from holding the
-	// pipeline — or a shutdown — open indefinitely. Sized to the SQLite
-	// busy_timeout the connection already carries, so a lock this waits out is
-	// one the driver would have waited out anyway, and anything longer is a
-	// stuck writer rather than contention.
+	// pipeline — or a shutdown — open indefinitely.
+	//
+	// Sized to the busy_timeout(5000) the history connection carries
+	// (internal/history/db.go), which with _txlock=immediate is what covers
+	// contention: a lock this waits out is one the driver would have waited
+	// out anyway.
+	//
+	// It does NOT bound the worst case of one Append. SQLiteFactLog.Append is
+	// BeginTx, Prepare, Exec and Commit in sequence, and each may run the busy
+	// handler for its own full 5s, so this ceiling can cut that sequence short
+	// part-way through. That is deliberate and safe in the only direction that
+	// matters: a truncated append rolls back and records nothing, which costs
+	// a re-fetch and nothing else (R3). Do not read the figure as "one Append
+	// always completes or fails within 5s".
+	//
+	// The cost it buys is a shutdown that can now block here for up to this
+	// long per in-flight article, where a cancelled context previously
+	// returned immediately. In-flight means the handful of articles being
+	// applied when the cancel lands, not the queue; the alternative is losing
+	// their facts and re-fetching bytes that are on disk.
 	factAppendTimeout = 5 * time.Second
 )
 

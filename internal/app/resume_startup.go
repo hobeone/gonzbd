@@ -69,6 +69,37 @@ type fileResumer interface {
 // manifest, and hydrating the whole queue at startup would blow the residency
 // budget docs/queue-lifecycle.md exists to bound. See the note on residency in
 // resumeJobFiles for what that leaves uncovered.
+//
+// # Only PhaseActive, because only there is the assembler the sole writer
+//
+// Residency is NOT the right bound now that the seed is authoritative.
+// JobPhase.IsResident is true for PhaseProcessing as well — Verifying,
+// QuickCheck, Repairing, Extracting, Moving — and in those phases something
+// other than the assembler owns the job's files. par2 repairs a file IN PLACE,
+// unpack reads it, and the move relocates it out of the download directory
+// altogether. Those bytes are correct, and they are not the bytes the fact log
+// recorded at download time, so a recomputation over them proves nothing: it
+// would clear real progress, drop Complete and discard the assembled CRC on a
+// file that is fine. A repaired file is the clear case; a moved one is the
+// blunt one — the path no longer exists, Resume reports Restart, and every
+// article of a fully downloaded job goes back to Outstanding.
+//
+// The direction is pessimistic rather than corrupting, which is why it was
+// harmless while seeding was additive and stopped being harmless the moment it
+// was not.
+//
+// Skipping those phases costs nothing this exists to buy. The seed prevents a
+// re-fetch, and a job in post-processing dispatches no articles; if par2 sends
+// it back to the queue, the bits Store.RestoreJobProgress restored are still
+// there, because skipping leaves them alone. So the conservative direction for
+// a processing job is precisely to keep the record and not re-derive it.
+//
+// What would break this argument, stated so a later change has to notice:
+// anything that rewrites a job's files while it is still PhaseActive — a
+// DirectUnpack that wrote back into its source rather than reading it, or a
+// repair moved earlier than download-complete — and any new status mapped into
+// PhaseActive that is not download-only. Both would put a non-assembler writer
+// inside the window this guard trusts.
 func (app *Application) resumeAllJobs(ctx context.Context) error {
 	if app.resumer == nil {
 		return nil
@@ -76,6 +107,14 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 	for _, snap := range app.queue.Snapshot() {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("app: resume sweep aborted: %w", err)
+		}
+		if phase := snap.Phase(); phase != queue.PhaseActive {
+			// Not a residency check — see the phase note above. A job past
+			// downloading has files the assembler no longer owns, and there
+			// is no re-fetch to prevent for it either way.
+			app.log.Debug("resume sweep skipped a job that is not downloading",
+				"job", snap.ID, "status", snap.Status, "phase", phase)
+			continue
 		}
 		m, err := snap.Manifest()
 		if err != nil {

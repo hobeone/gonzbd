@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -493,5 +494,124 @@ func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
 	jobDir := filepath.Join(root, "a job")
 	if !bytes.HasPrefix([]byte(escape), []byte(jobDir+string(os.PathSeparator))) {
 		t.Errorf("jobFilePath = %q, want it confined to %q", escape, jobDir)
+	}
+}
+
+// repairedInPlace makes file 0 look like par2 repaired it: the bytes on disk
+// are correct output but they are not the bytes the fact log recorded at
+// download time, and the extent's stamp no longer matches, so the fast path is
+// refused and a recomputation can prove nothing about the file.
+//
+// It also records the state a fully downloaded job carries into
+// post-processing — both articles Done, the file Complete, an assembled CRC —
+// because that is what the sweep would destroy.
+func (f *resumeUnitFixture) repairedInPlace(t *testing.T) {
+	t.Helper()
+	both := durability.NewBitmap(2)
+	both.Set(0)
+	both.Set(1)
+	if err := f.app.queue.SeedFromExtents(f.job.ID, []durability.FileExtent{
+		{FileIdx: 0, Durable: both},
+	}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
+	if err := f.app.queue.MarkFileComplete(f.job.ID, 0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+	if err := f.app.queue.SetFileCRC32(f.job.ID, 0, 0xC0FFEE); err != nil {
+		t.Fatalf("SetFileCRC32: %v", err)
+	}
+	repaired := bytes.Repeat([]byte{'r'}, 2*unitArtLen)
+	if err := os.WriteFile(f.path, repaired, 0o600); err != nil {
+		t.Fatalf("rewrite repaired file: %v", err)
+	}
+	// Explicit rather than relying on the write moving it: a coarse timestamp
+	// granularity could leave the stamp matching, the fast path would adopt
+	// the cached bitmap, and both cases below would pass for the wrong reason.
+	stamp := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(f.path, stamp, stamp); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	p := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	if !p.ArticleDone(0) || !p.ArticleDone(1) || !p.FileComplete(0) {
+		t.Fatalf("fixture did not reach the post-download state: done=%v/%v complete=%v",
+			p.ArticleDone(0), p.ArticleDone(1), p.FileComplete(0))
+	}
+}
+
+// TestResumeAllJobs_SkipsAJobPastDownloading pins the phase bound, and both
+// halves are needed: the guard is only meaningful if the very same on-disk
+// state WOULD have been cleared without it.
+//
+// JobPhase.IsResident is true for the post-processing statuses too, so
+// residency is not the bound this sweep needs now that it is authoritative.
+// par2 repairs a file in place, and the repaired bytes will not match the CRCs
+// the fact log recorded at download time — so a recomputation over them proves
+// nothing and would clear real progress, drop Complete and discard the
+// assembled CRC on a file that is fine.
+func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
+	tests := []struct {
+		name string
+		// walk is the transition path from Downloading, because SetStatus
+		// enforces the legal-edge table and Downloading -> Moving is not one
+		// of its edges.
+		walk       []constants.Status
+		wantSwept  bool
+		wantReason string
+	}{{
+		// The control, and it is what stops the two cases below from passing
+		// against a sweep that does nothing at all: the SAME on-disk state
+		// must be cleared here. Downloading is the phase where the assembler
+		// is the only writer, so a file whose bytes stopped matching its facts
+		// really did lose them.
+		name:       "downloading is still swept",
+		walk:       nil,
+		wantSwept:  true,
+		wantReason: "the sweep must still be authoritative over a job it is downloading",
+	}, {
+		name:       "verifying is skipped",
+		walk:       []constants.Status{constants.StatusVerifying},
+		wantSwept:  false,
+		wantReason: "par2 rewrote this file and its bytes are correct; the fact log describes what the assembler wrote, not what the repair produced",
+	}, {
+		name:       "moving is skipped",
+		walk:       []constants.Status{constants.StatusVerifying, constants.StatusMoving},
+		wantSwept:  false,
+		wantReason: "the file is being relocated out of the download directory, so what is or is not there is not evidence about any article",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newResumeUnitFixture(t)
+			f.repairedInPlace(t)
+			want := constants.StatusDownloading
+			for _, st := range tt.walk {
+				if err := f.app.queue.SetStatus(f.job.ID, st); err != nil {
+					t.Fatalf("SetStatus(%s): %v", st, err)
+				}
+				want = st
+			}
+			if got := f.app.queue.SnapshotJob(f.job.ID); got == nil || got.Status != want {
+				t.Fatalf("the job did not reach %s", want)
+			}
+
+			if err := f.app.resumeAllJobs(t.Context()); err != nil {
+				t.Fatalf("resumeAllJobs: %v", err)
+			}
+
+			p := f.app.queue.SnapshotJob(f.job.ID).Progress()
+			gotSwept := !p.ArticleDone(0) || !p.ArticleDone(1) || !p.FileComplete(0)
+			if gotSwept != tt.wantSwept {
+				t.Errorf("swept = %v, want %v (done=%v/%v complete=%v crc=%#x) — %s",
+					gotSwept, tt.wantSwept, p.ArticleDone(0), p.ArticleDone(1),
+					p.FileComplete(0), p.FileAssembledCRC32(0), tt.wantReason)
+			}
+			if tt.wantSwept {
+				return
+			}
+			if got := p.FileAssembledCRC32(0); got != 0xC0FFEE {
+				t.Errorf("assembled CRC = %#x, want 0xC0FFEE — %s", got, tt.wantReason)
+			}
+		})
 	}
 }

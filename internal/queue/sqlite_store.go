@@ -516,10 +516,14 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// the job completed a file with a zero-filled hole in it.
 			//
 			// The sweep's authority is bounded to the files it actually read.
-			// A file it never resumed — a non-resident job, a file whose name
-			// was never resolved, a file a storage fault stopped it reaching —
-			// keeps exactly what this function restored, because an omission is
-			// silence rather than a finding of absence. A permanently failed
+			// A file it never resumed — a job that is not downloading or not
+			// resident, a file whose name was never resolved, a file a storage
+			// fault stopped it reaching — keeps exactly what this function
+			// restored, because an omission is silence rather than a finding of
+			// absence. The phase bound is the load-bearing one: past
+			// downloading, par2 and the move rewrite these files, so the
+			// download-time fact log no longer describes them and a
+			// recomputation over them would clear correct state. A permanently failed
 			// article keeps its bits for the same reason: its bytes were never
 			// on disk, so their absence is the outcome recorded below and not
 			// new evidence.

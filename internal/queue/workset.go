@@ -217,8 +217,8 @@ func (q *Queue) SeedFromExtents(jobID string, exts []durability.FileExtent) erro
 //
 //   - A file with no extent in exts keeps its state entirely. The startup
 //     sweep omits a file it never resumed — one whose name was never resolved,
-//     and one it did not reach before a storage fault — and an omission is
-//     silence, not a finding of absence.
+//     one it did not reach before a storage fault, and every file of a job
+//     past downloading — and an omission is silence, not a finding of absence.
 //   - A permanently failed article is never cleared. See markNotDone: its
 //     bytes were never on disk, so their absence is the recorded outcome and
 //     not new information.
