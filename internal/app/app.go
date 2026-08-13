@@ -75,7 +75,9 @@ const (
 	// single 5s than four — but that is a property of the DSN, not of this
 	// constant. Being cut short is deliberate and safe in the only direction
 	// that matters: a truncated append rolls back and records nothing, which
-	// costs a re-fetch and nothing else (R3).
+	// leaves the article unprovable rather than wrongly proven (R3). See
+	// pipeline.appendArticleFacts for what that actually costs — it is
+	// bounded, but it is not "a re-fetch and nothing else".
 	//
 	// The cost it buys is a shutdown that can now block here for up to this
 	// long per in-flight article, where a cancelled context previously

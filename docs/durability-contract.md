@@ -81,7 +81,7 @@ class a fact belongs to determines whether it needs a barrier.
 | Ordering vs. the write | **none** (R2). May be committed before, during or after the write, or when the write never happens at all | strictly after the `fsync` (S1) |
 | Barrier required | no | yes — `durability.Barrier` is the only writer |
 | Authoritative | yes (S5) | **never**. Where it disagrees with a recomputation, the recomputation is correct by definition (S4) |
-| Losing a suffix costs | a re-fetch (R3) | a recomputation |
+| Losing a suffix costs | a re-fetch (R3), and a skipped truncate if the file completes first (§4) | a recomputation |
 | Stored in | `article_facts` | `file_extents` |
 
 Two consequences worth stating explicitly, because both have been got wrong:
@@ -258,15 +258,31 @@ behind it whose bytes a completed fsync covered.
 (S6). Growing appends zeros, which asserts content that exists nowhere, and a job
 with no par2 has no repair stage to notice.
 
-**One exception, and it is a recovery path.** If a completed file's recorded
-facts are not *all* durable, `FinalizeFile` trims to the **recorded** extent
-instead. In the healthy case the two sets coincide — every article of a completed
-file is either durable or permanently failed, and a failed article wrote no fact.
-A gap between them means this is a retry of a finalize whose earlier attempt
-consumed the writer's drain report without committing the bits it earned. Those
-bytes are on disk, the durable bound sits below them, and trimming to it would
-destroy them silently. Trailing zeros par2 reports as damage is a visible,
-repairable cost; downloaded bytes gone is not.
+**Two exceptions, and both are the same hazard from opposite sides.** The
+durable set and the fact log can disagree in either direction, and each
+direction makes a different bound unsafe.
+
+*A recorded article that is not durable.* If a completed file's recorded facts
+are not *all* durable, `FinalizeFile` trims to the **recorded** extent instead.
+In the healthy case the two sets coincide — every article of a completed file is
+either durable or permanently failed, and a failed article wrote no fact. A gap
+means this is a retry of a finalize whose earlier attempt consumed the writer's
+drain report without committing the bits it earned. Those bytes are on disk, the
+durable bound sits below them, and trimming to it would destroy them silently.
+
+*A durable article the fact log does not name.* Reachable because the Class A
+append is independent of the write (R2): `pipeline.appendArticleFacts` logs its
+error and lets the write proceed, so an article can reach disk, be drained, be
+fsynced and earn a truthful durable bit while having no fact. **Both** bounds
+above are computed by walking facts, so both walk past its bytes; when it holds
+the file's top offset they land below its end, and `buildExtent` has already
+added it to the ack set, so the truncate destroys bytes that are simultaneously
+marked Done. `FinalizeFile` counts these and **declines to truncate at all** —
+no bound derived from an incomplete record can be trusted, and since S6 only
+ever shrinks, declining to shrink is always safe.
+
+In both cases trailing zeros par2 reports as damage is a visible, repairable
+cost; downloaded bytes gone is not.
 
 ### 5. A storage fault never marks an article failed
 

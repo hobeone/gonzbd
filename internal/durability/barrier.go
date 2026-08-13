@@ -415,7 +415,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// padding, and Truncate only ever shrinks (S6). Trailing zeros par2 reports
 	// as damage is a visible, repairable cost; downloaded bytes gone is not.
 	if bound > 0 {
-		recorded, missing, err := b.recordedExtent(ctx, jobID, idx, ext.Durable, t)
+		recorded, missing, unrecorded, err := b.recordedExtent(ctx, jobID, idx, ext.Durable, t)
 		if err != nil {
 			return err
 		}
@@ -426,6 +426,34 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 				"job", jobID, "file", idx, "not_durable", missing,
 				"durable_extent", bound, "recorded_extent", recorded)
 			bound = recorded
+		}
+		// The mirror case, and the one no fact-derived bound can survive: an
+		// article that is durable but that Class A does not name.
+		//
+		// It is reachable because R2 makes the fact append independent of the
+		// write — pipeline.appendArticleFacts logs its error and lets the
+		// write proceed — so an article can reach disk, be drained, be
+		// fsynced, and earn a truthful durable bit while having no fact. Both
+		// durableExtent and recordedExtent answer by walking facts, so both
+		// walk straight past its bytes. When it holds the file's top offset
+		// they return a bound below its end and the truncate destroys it,
+		// while buildExtent has already added it to acked — so it is marked
+		// Done in the same call and never re-fetched.
+		//
+		// Refuse to truncate at all rather than trying to repair the bound.
+		// The bytes are on disk and correct; what is missing is the record
+		// that would let a walk find them, and no bound derived from that
+		// record can be trusted while it is incomplete. Leaving pre-allocation
+		// zeros is the same visible, repairable cost the recorded-bound
+		// fallback above already accepts (S6 only ever shrinks, so declining
+		// to shrink is always safe).
+		if unrecorded > 0 {
+			b.log.Warn("finalizing a file with durable articles the fact log does not name; "+
+				"skipping the truncate entirely, because every fact-derived bound sits "+
+				"below their bytes and would destroy them",
+				"job", jobID, "file", idx, "unrecorded", unrecorded,
+				"durable_extent", bound, "recorded_extent", recorded)
+			bound = 0
 		}
 	}
 	if bound > 0 {
@@ -441,7 +469,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		}
 		size, modNs, err := t.Stat(idx)
 		if err != nil {
-			return b.routeFault(jobID, storagefault.Classify("stat", "", err))
+			return b.routeFault(jobID, storagefault.Classify("stat", t.Path(idx), err))
 		}
 		ext.Size, ext.ModTimeNs = size, modNs
 	}
@@ -495,18 +523,32 @@ func (b *Barrier) durableExtent(ctx context.Context, jobID string, idx int32, du
 // than derived again by the caller: "some fact has no durable bit" and "the
 // recorded extent is longer than the durable one" are not the same condition,
 // and a non-durable article at a LOW offset satisfies only the first.
-func (b *Barrier) recordedExtent(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (high int64, missing int, err error) {
+//
+// unrecorded is the OTHER direction: durable articles the fact log does not
+// name at all. It is counted here because this walk already holds both sides,
+// and it is separate from missing because the two have opposite remedies — a
+// recorded-but-not-durable article makes the recorded bound the safe one,
+// while a durable-but-unrecorded article makes EVERY fact-derived bound
+// unsafe, since no walk over facts can see the bytes it holds.
+func (b *Barrier) recordedExtent(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (high int64, missing, unrecorded int, err error) {
 	facts, err := b.facts.ForFile(ctx, jobID, idx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("durability: recorded extent job=%s file=%d: %w", jobID, idx, err)
+		return 0, 0, 0, fmt.Errorf("durability: recorded extent job=%s file=%d: %w", jobID, idx, err)
 	}
+	// Distinct rather than a plain counter: Class A is appended at least once
+	// per article (R12), so a replayed append would otherwise cancel out a
+	// genuinely unrecorded article and hide the very case this counts.
+	covered := make(map[int]struct{}, len(facts))
 	for _, f := range facts {
 		if end := f.Offset + int64(f.Length); end > high {
 			high = end
 		}
-		if ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx); !ok || !durable.Get(ord) {
+		ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx)
+		if !ok || !durable.Get(ord) {
 			missing++
+			continue
 		}
+		covered[ord] = struct{}{}
 	}
-	return high, missing, nil
+	return high, missing, durable.Count() - len(covered), nil
 }

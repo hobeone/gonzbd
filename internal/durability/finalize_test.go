@@ -504,9 +504,13 @@ func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
 	durable.Set(0)
 	durable.Set(2)
 
-	high, missing, err := b.recordedExtent(ctx, "job-1", 0, durable, &truncTarget{artCount: 3})
+	high, missing, unrecorded, err := b.recordedExtent(ctx, "job-1", 0, durable, &truncTarget{artCount: 3})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if unrecorded != 0 {
+		t.Errorf("unrecorded = %d, want 0 — every durable article here has a fact, and a "+
+			"non-zero count would skip the truncate on a file that needs one", unrecorded)
 	}
 	if missing != 1 {
 		t.Errorf("missing = %d, want 1 — a non-durable article below the durable high-water "+
@@ -522,11 +526,15 @@ func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
 	all.Set(0)
 	all.Set(1)
 	all.Set(2)
-	if _, missing, err = b.recordedExtent(ctx, "job-1", 0, all, &truncTarget{artCount: 3}); err != nil {
+	if _, missing, unrecorded, err = b.recordedExtent(ctx, "job-1", 0, all, &truncTarget{artCount: 3}); err != nil {
 		t.Fatal(err)
 	}
 	if missing != 0 {
 		t.Errorf("missing = %d on a fully durable file, want 0 — the fallback would fire on "+
 			"every healthy finalize and stop trimming pre-allocation's zeros", missing)
+	}
+	if unrecorded != 0 {
+		t.Errorf("unrecorded = %d on a fully durable file, want 0 — a non-zero count would "+
+			"skip the truncate on every healthy finalize", unrecorded)
 	}
 }

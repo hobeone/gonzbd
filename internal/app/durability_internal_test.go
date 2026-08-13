@@ -868,13 +868,14 @@ func (r *recordingExtentStore) DeleteJob(_ context.Context, jobID string) error 
 	return nil
 }
 
-// TestAppendArticleFacts_SurvivesAFailedWrite pins R3: losing a Class A record
-// costs a re-fetch and nothing else.
+// TestAppendArticleFacts_SurvivesAFailedWrite pins R2: losing a Class A record
+// must not abort the write path.
 //
-// The write path must not abort over it. The article is still handed to the
-// assembler and still written; the only consequence is that a restart cannot
-// prove those bytes and fetches them again — which is the safe direction under
-// S3.
+// The article is still handed to the assembler and still written. What it
+// costs is NOT "a re-fetch and nothing else" — see pipeline.appendArticleFacts
+// and Barrier.FinalizeFile's unrecorded guard, since a fact the log never
+// received also hides the article from the walks that bound the truncate.
+// This test pins only the half stated above: the write proceeds.
 func TestAppendArticleFacts_SurvivesAFailedWrite(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.pipeline.factLog = failingFactLog{err: errors.New("disk on fire")}

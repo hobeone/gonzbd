@@ -648,9 +648,20 @@ func (app *Application) shutdownCheckpoint() {
 // third is a race whose loss costs one recomputation on the next start,
 // which is R3's bounded rework. This is correct by design, not a defect.
 //
-// A failure still costs a re-fetch and nothing else (R3): the missing fact
-// makes the article unprovable on resume, and unprovable resolves to
-// Outstanding.
+// A failure is bounded, but "a re-fetch and nothing else" is NOT the bound,
+// and this comment claimed it was. The missing fact also makes the article
+// invisible to every walk over Class A — including the two that derive the
+// truncate bound in Barrier.FinalizeFile. The article is still drained,
+// fsynced and given a truthful durable bit, so if it holds a completing
+// file's top offset the fact-derived bound sits below its bytes and the
+// truncate destroys them, while the same call acks it Done.
+//
+// FinalizeFile now counts durable articles the fact log does not name and
+// declines to truncate at all when there are any, so the real cost of a
+// failure here is: pre-allocation's trailing zeros survive on that file, and
+// the article is re-fetched only if a later resume has to recompute (a
+// mismatched size/mtime stamp), where unprovable resolves to Outstanding
+// under S3.
 func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durability.ArticleFact) {
 	if p.factLog == nil {
 		return
