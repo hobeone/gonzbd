@@ -3,6 +3,7 @@ package assembler
 import (
 	"context"
 	"os"
+	"slices"
 
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -47,15 +48,31 @@ type FileWriter struct {
 	wc *writeCache
 
 	// written accumulates the articles whose bytes reached WriteAt without
-	// error since the last Drain. It is the ONLY evidence the barrier has, so
-	// nothing may be appended here that has not come back from a successful
-	// writeAt (S2).
-	//
-	// Drain hands the slice over and resets it. An article dropped because a
-	// barrier failed after draining is re-fetched, not lost: it stays
-	// Outstanding, which is the safe direction under S3. Retaining it to save
-	// the re-fetch would trade a bounded cost for an unbounded slice.
+	// error and have not yet been reported by a Drain. It is the ONLY evidence
+	// the barrier has, so nothing may be appended here that has not come back
+	// from a successful writeAt (S2).
 	written []durability.WrittenArticle
+
+	// reported holds what a Drain has already handed to the barrier but no
+	// Sync has yet confirmed. Drain returns it again, and a successful Sync is
+	// what finally discards it.
+	//
+	// This is R12's at-least-once delivery, which SyncTarget.Drain explicitly
+	// blesses ("re-reporting an article a previous Drain already returned is
+	// permitted and expected"), and it is load-bearing rather than tidy. A
+	// barrier that drains and then fails — the sync, the extent commit, the
+	// truncate — used to lose the report outright. For a file still being
+	// written that only cost a re-fetch. For a COMPLETED file it costs bytes:
+	// the retry drains nothing, so the durable extent FinalizeFile trims to
+	// sits below bytes that are genuinely on disk, and the truncate destroys
+	// them. That is the #342/#350 family arriving through the recovery path.
+	//
+	// An earlier version of this comment argued the opposite — that retaining
+	// the report would "trade a bounded cost for an unbounded slice". The
+	// bound it was worried about is real but small: entries accumulate only
+	// between SUCCESSFUL syncs, and a job whose syncs are failing stalls (R19)
+	// and stops writing.
+	reported []durability.WrittenArticle
 
 	// seenDone and seenFailed keep duplicate handling idempotent (R12).
 	// They moved here from openFile because the writer is now the only
@@ -108,6 +125,10 @@ func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
 // without draining. Used by tests to assert that a merely-buffered article has
 // made no claim.
 func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.written }
+
+// unconfirmed returns the articles a Drain has reported that no Sync has yet
+// confirmed. Used by tests to assert the report survives a failed Sync.
+func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
 
 // fail marks an article as not-on-disk so a later run fetches it again.
 //
@@ -242,11 +263,18 @@ func (w *FileWriter) Drain(ctx context.Context) ([]durability.WrittenArticle, er
 	return w.take(), nil
 }
 
-// take hands over the accumulated Written articles and resets the buffer.
+// take moves the newly written articles into the unconfirmed set and returns
+// the whole of it — everything written since the last SUCCESSFUL Sync.
+//
+// The split between the two slices is what keeps an article written BETWEEN a
+// Drain and its Sync from being discarded by that Sync: it is still in
+// w.written, which Sync does not touch, so the next Drain reports it. Folding
+// the two together would silently drop it — covered by the fsync, but never
+// claimed, so never acked.
 func (w *FileWriter) take() []durability.WrittenArticle {
-	out := w.written
+	w.reported = append(w.reported, w.written...)
 	w.written = nil
-	return out
+	return slices.Clone(w.reported)
 }
 
 // Sync fsyncs the handle. Until this returns nil, nothing a preceding Drain
@@ -258,6 +286,11 @@ func (w *FileWriter) Sync(ctx context.Context) error {
 	if err := w.handle.Sync(); err != nil {
 		return storagefault.Classify("sync", w.path, err)
 	}
+	// The fsync covers every byte a preceding Drain reported, so the barrier
+	// can now build and commit their durable bits from the report it already
+	// holds. Discarding the set here — and nowhere else — is what makes Drain
+	// re-report across a failure without accumulating forever.
+	w.reported = nil
 	return nil
 }
 

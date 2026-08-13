@@ -232,10 +232,18 @@ func repoRoot() (string, error) {
 	}
 }
 
-// TestFileWriter_TakeHandsOverAndResets pins Drain's hand-off contract. take
-// must clear the buffer, or every barrier re-reports every article this writer
-// has ever written and the slice grows without bound.
-func TestFileWriter_TakeHandsOverAndResets(t *testing.T) {
+// TestFileWriter_TakeReportsUntilASyncConfirms pins the two halves of the
+// hand-off separately, because they fail in opposite directions.
+//
+// take must move the new articles out of w.written, or an article is reported
+// twice within one unconfirmed window and the report grows per barrier. And it
+// must NOT drop the unconfirmed set, or a barrier whose Sync failed strands
+// articles that no later Drain will ever mention again — which for a completed
+// file is the bound FinalizeFile trims to, sitting below real bytes.
+//
+// The Sync is the only thing that may discard the set, so it is asserted last
+// and on its own.
+func TestFileWriter_TakeReportsUntilASyncConfirms(t *testing.T) {
 	w := newTestFileWriter(t)
 	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, []byte("abcd")); err != nil {
 		t.Fatal(err)
@@ -245,10 +253,22 @@ func TestFileWriter_TakeHandsOverAndResets(t *testing.T) {
 		t.Fatalf("take = %v, want one article", first)
 	}
 	if got := w.writtenSoFar(); len(got) != 0 {
-		t.Fatalf("writtenSoFar = %v after take, want empty — a second barrier would re-report it forever", got)
+		t.Errorf("writtenSoFar = %v after take, want empty — the article would be reported "+
+			"twice within one window and the report would grow per barrier", got)
 	}
-	if second := w.take(); len(second) != 0 {
-		t.Errorf("take = %v on an emptied writer, want empty", second)
+	if second := w.take(); len(second) != 1 {
+		t.Errorf("take = %v with no Sync in between, want the same one article — a barrier "+
+			"whose Sync failed would otherwise strand it with no ack able to reach it", second)
+	}
+	if err := w.Sync(t.Context()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if got := w.unconfirmed(); len(got) != 0 {
+		t.Errorf("unconfirmed = %v after a successful Sync, want empty — the fsync covered "+
+			"them, so keeping them grows the report without bound", got)
+	}
+	if third := w.take(); len(third) != 0 {
+		t.Errorf("take = %v after a successful Sync, want empty", third)
 	}
 }
 

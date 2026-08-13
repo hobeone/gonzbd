@@ -269,13 +269,17 @@ func TestBufferedReportsUnknownKey(t *testing.T) {
 	}
 }
 
-// TestSyncTargetDrainReportsEachArticleExactlyOnce translates
-// TestCompletedFileAcksEveryArticleExactlyOnce. There is no ack left to
-// double-fire; the equivalent defect now would be an article appearing in
-// two different Drain calls the barrier makes through SyncTargetFor. This
-// pins that Drain resets its evidence: every article lands in the return of
-// the FIRST call and never reappears in a second.
-func TestSyncTargetDrainReportsEachArticleExactlyOnce(t *testing.T) {
+// TestSyncTargetDrainReportsUntilASyncConfirms pins WHEN Drain stops
+// re-reporting an article: on the Sync that covers it, and not before.
+//
+// It replaces a pin that asserted the first Drain was the last — that every
+// article appeared once and never again. That was the wrong boundary. A
+// barrier that drains and then fails its Sync has claimed nothing, so an
+// article dropped at that point is never acked by anyone; for a COMPLETED
+// file the retry then drains nothing and FinalizeFile trims to a durable
+// extent that sits below bytes genuinely on disk. R12 makes at-least-once the
+// contract precisely so the report can survive that.
+func TestSyncTargetDrainReportsUntilASyncConfirms(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
 	const parts = 4
@@ -308,12 +312,27 @@ func TestSyncTargetDrainReportsEachArticleExactlyOnce(t *testing.T) {
 		t.Fatalf("first Drain = %v, want %d articles", first, parts)
 	}
 
+	// No Sync in between, so nothing has confirmed the first report and the
+	// barrier is entitled to see it again.
 	second, err := target.Drain(t.Context(), 0)
 	if err != nil {
 		t.Fatalf("second Drain: %v", err)
 	}
-	if len(second) != 0 {
-		t.Errorf("second Drain = %v, want empty — every article was already reported once", second)
+	if len(second) != parts {
+		t.Errorf("second Drain = %v, want the same %d articles — no Sync confirmed the "+
+			"first report, so dropping it strands articles no ack will ever reach", second, parts)
+	}
+
+	if err := target.Sync(t.Context(), 0); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	third, err := target.Drain(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("third Drain: %v", err)
+	}
+	if len(third) != 0 {
+		t.Errorf("third Drain = %v, want empty — the Sync covered every reported article, "+
+			"so retaining them past it grows the report without bound", third)
 	}
 
 	if err := a.Stop(); err != nil {
