@@ -110,6 +110,16 @@ echo -e "\n[5/6] Running UI E2E Tests..."
 go test -tags=uitest -v ./test/uitest/...
 echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
 
+# The crash-consistency suite (`-tags=crash`, test/crash/) is deliberately NOT
+# run here. It kills a real child process and takes ~10s, which would fit, but
+# two of its tests fail today against a real defect (#362): a resume discards its own
+# recomputation and ships a completed file with a hole in it (docs/TESTING.md
+# §3a). Adding it to this script as a gate would either turn the canonical
+# pre-commit gate red for everyone or invite someone to weaken the assertions
+# to keep it green. Run it directly instead:
+#
+#   go test -tags=crash -timeout=20m ./test/crash/
+
 echo -e "\n${GREEN}===================================================="
 echo "ALL TESTS PASSED SUCCESSFULLY"
 echo -e "====================================================${NC}"

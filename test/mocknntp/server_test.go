@@ -304,3 +304,53 @@ func TestServerCustomGreeting201(t *testing.T) {
 func EncodeYEncForTest(filename string, payload []byte) []byte {
 	return mocknntp.EncodeYEnc(filename, payload)
 }
+
+// TestArticlesServed_CountsOnlyDeliveredBodies pins the counter a
+// crash-consistency harness measures rework with. Two facts have to hold for
+// that measurement to mean anything: a repeated fetch increments, and a BODY
+// that could not be answered does not appear at all. A counter incremented on
+// receipt of the command rather than on delivery would satisfy the first and
+// fail the second, and would then attribute a 430 to the download as work
+// redone.
+func TestArticlesServed_CountsOnlyDeliveredBodies(t *testing.T) {
+	t.Parallel()
+
+	srv := startServer(t, mocknntp.Config{})
+	srv.AddArticle("msg1@host", EncodeYEncForTest("test.bin", []byte("payload")))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() }) //nolint:errcheck // test cleanup
+
+	if got := srv.ArticlesServed(); len(got) != 0 {
+		t.Fatalf("ArticlesServed before any fetch = %v, want empty", got)
+	}
+	for range 2 {
+		if _, err := conn.Fetch(ctx, "msg1@host"); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+	}
+	if _, err := conn.Fetch(ctx, "absent@host"); !errors.Is(err, nntp.ErrNoArticle) {
+		t.Fatalf("Fetch absent = %v, want ErrNoArticle", err)
+	}
+
+	served := srv.ArticlesServed()
+	if got := served["msg1@host"]; got != 2 {
+		t.Errorf("served[msg1@host] = %d, want 2", got)
+	}
+	if _, ok := served["absent@host"]; ok {
+		t.Errorf("an unanswerable BODY was counted as served: %v", served)
+	}
+
+	// The returned map is a copy: mutating it must not corrupt the server's
+	// own tally, or a caller that diffs two snapshots would poison the second.
+	served["msg1@host"] = 99
+	if got := srv.ArticlesServed()["msg1@host"]; got != 2 {
+		t.Errorf("after mutating the returned map, served[msg1@host] = %d, want 2", got)
+	}
+}

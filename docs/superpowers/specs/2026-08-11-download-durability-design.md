@@ -421,8 +421,22 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
   and asserts the re-fetch set falls within the bound — not by reasoning.
 - **R32** Crash-consistency tests MUST cover all four failure modes, including a
   page-cache-dropping harness for simulated power loss.
+
+  **Superseded in part — a page-cache drop does not simulate power loss.**
+  `POSIX_FADV_DONTNEED` invalidates clean pages and skips dirty ones, and
+  `/proc/sys/vm/drop_caches` skips them too, so no unprivileged call discards
+  unfsynced data; the harness that this obligation asks for cannot exist without
+  root. What `test/crash` does instead is stated in `docs/TESTING.md` §3a: the
+  SIGKILL is real and destroys the assembler's in-process write cache, which is
+  the process-boundary half of S1/S2, and the `fadvise(DONTNEED)` forces
+  already-written-back ranges to be re-read from the block device rather than
+  from cache. The page-cache half — that an fsync'd byte reached the platter —
+  needs a device-mapper `log-writes` or `flakey` target under root and is
+  **untested**.
 - **R33** External modification MUST be tested: truncate, delete, append, and
-  mtime-only touch.
+  mtime-only touch. All four are covered in `test/crash/external_test.go`;
+  truncate and delete currently FAIL, against a real defect (#362; see
+  `docs/TESTING.md` §3a).
 - **R34** Per `AGENTS.md`, every invariant MUST have a test **observed** to fail
   against a mutation that violates it, with the failure message recorded.
 

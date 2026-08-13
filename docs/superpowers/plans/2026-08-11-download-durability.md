@@ -3609,6 +3609,18 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 This task discharges R31, R32, and R33 — the obligations that no other task can
 satisfy, because they require killing a real process.
 
+> **Correction, added after Task 12 was implemented.** The plan below asserts
+> that "a page-cache drop ... is the closest a userspace test can get to losing
+> unfsynced data". That is wrong, and every sentence in this task that rests on
+> it is wrong with it. `POSIX_FADV_DONTNEED` invalidates CLEAN pages and skips
+> dirty ones, and `/proc/sys/vm/drop_caches` skips them too, so neither loses
+> unfsynced data at all — with or without root. What the delivered harness
+> actually tests, and what it explicitly does not, is stated in
+> `docs/TESTING.md` §3a and in the `test/crash` package doc. The `DiskFull`
+> test is also not delivered: there is no unprivileged way to inject `ENOSPC`
+> into a real child process. Read the code, not this block.
+
+
 - [ ] **Step 1: Write the failing test**
 
 ```go

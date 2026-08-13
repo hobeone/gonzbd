@@ -93,6 +93,7 @@ go test -bench=. ./internal/decoder/                        # Run benchmarks
 go test -v -tags=integration ./test/integration/...         # Integration (requires par2, rar, unrar, 7z)
 go test -v -tags=uitest ./test/uitest/...                   # UI/Playwright (requires pre-built UI + Playwright Chromium)
 go test -tags=e2e -timeout=10m ./test/e2e/                  # E2E (requires live Usenet server)
+go test -tags=crash -timeout=20m ./test/crash/              # Crash consistency (Linux; kills a real child process)
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
