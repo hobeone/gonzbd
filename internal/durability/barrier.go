@@ -385,6 +385,36 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	if err != nil {
 		return err
 	}
+	// A completed file whose recorded articles are not ALL durable must not be
+	// trimmed to the durable bound.
+	//
+	// In the healthy case the two sets coincide: every article of a completed
+	// file is Done — hence durable — or permanently failed, and a failed
+	// article never decoded and so wrote no Class A fact. A gap between them
+	// means this is a RETRY of a finalize whose earlier attempt consumed the
+	// writer's drain report without committing the bits it earned. Those bytes
+	// are on disk; the durable bound sits below them; truncating to it destroys
+	// them. That is the #342/#350 family arriving through the recovery path,
+	// and it is silent.
+	//
+	// The recorded bound is safe where the durable one is not: every fact names
+	// an article that decoded, so nothing below its end is pre-allocation
+	// padding, and Truncate only ever shrinks (S6). Trailing zeros par2 reports
+	// as damage is a visible, repairable cost; downloaded bytes gone is not.
+	if bound > 0 {
+		recorded, missing, err := b.recordedExtent(ctx, jobID, idx, ext.Durable, t)
+		if err != nil {
+			return err
+		}
+		if missing > 0 {
+			b.log.Warn("finalizing a file whose recorded articles are not all durable; "+
+				"trimming to the recorded extent rather than the durable one so an "+
+				"interrupted finalize's bytes are not destroyed",
+				"job", jobID, "file", idx, "not_durable", missing,
+				"durable_extent", bound, "recorded_extent", recorded)
+			bound = recorded
+		}
+	}
 	if bound > 0 {
 		if err := t.Truncate(ctx, idx, bound); err != nil {
 			return b.routeFault(jobID, storagefault.Classify("truncate", t.Path(idx), err))
@@ -441,4 +471,29 @@ func (b *Barrier) durableExtent(ctx context.Context, jobID string, idx int32, du
 		}
 	}
 	return high, nil
+}
+
+// recordedExtent returns the highest end offset among ALL of the file's
+// recorded facts, and how many of them are not durable.
+//
+// It is the fallback bound FinalizeFile uses when the durable set is provably
+// incomplete — see the guard there for why a durable-only bound is unsafe on a
+// retried finalize. The count is what decides that, so it is returned rather
+// than derived again by the caller: "some fact has no durable bit" and "the
+// recorded extent is longer than the durable one" are not the same condition,
+// and a non-durable article at a LOW offset satisfies only the first.
+func (b *Barrier) recordedExtent(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (high int64, missing int, err error) {
+	facts, err := b.facts.ForFile(ctx, jobID, idx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("durability: recorded extent job=%s file=%d: %w", jobID, idx, err)
+	}
+	for _, f := range facts {
+		if end := f.Offset + int64(f.Length); end > high {
+			high = end
+		}
+		if ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx); !ok || !durable.Get(ord) {
+			missing++
+		}
+	}
+	return high, missing, nil
 }

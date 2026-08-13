@@ -416,3 +416,62 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 		})
 	}
 }
+
+// TestFinalizeFile_RetryDoesNotTrimBelowRecordedBytes pins the guard that makes
+// Application.reevaluateStall's finalize retry non-destructive.
+//
+// The fixture is the state a retry finds. An earlier attempt drained the
+// writer's report, fsynced it, and then failed before committing the bits it
+// earned — so article 1's bytes are on disk and fsynced, its Class A fact
+// exists, and its durable bit does not. The retry drains nothing, because the
+// report was consumed.
+//
+// The durable-only bound is 100 there. Truncating to it cuts 900 downloaded,
+// fsynced bytes off a completed file, silently, and it is the #342/#350 family
+// reached through the recovery path rather than the write path. The recorded
+// bound is 1000: every fact names an article that decoded, so nothing below
+// that end is pre-allocation padding.
+//
+// The gap between the two sets is only reachable on a retry — a completed
+// file's articles are Done (durable) or permanently failed, and a failed
+// article never decoded and so wrote no fact.
+func TestFinalizeFile_RetryDoesNotTrimBelowRecordedBytes(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	facts := NewSQLiteFactLog(db)
+	exts := NewSQLiteExtentStore(db)
+
+	if err := facts.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 900},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Only article 0 was ever committed durable. Article 1's bits were lost
+	// with the drain report the failed attempt consumed.
+	prior := NewBitmap(2)
+	prior.Set(0)
+	if err := exts.Commit(ctx, "job-1", []FileExtent{{FileIdx: 0, Durable: prior}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The retry drains nothing: the report is gone.
+	tgt := &truncTarget{artCount: 2}
+	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
+
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+		t.Fatalf("FinalizeFile: %v", err)
+	}
+
+	if !tgt.called {
+		t.Fatal("the retry did not truncate at all; pre-allocation's trailing zeros survive " +
+			"and par2 reports a healthy file as damaged")
+	}
+	if tgt.bound == 100 {
+		t.Fatalf("truncated to %d — that is the DURABLE bound, and article 1's 900 bytes are "+
+			"on disk and fsynced above it. A retried finalize would destroy them", tgt.bound)
+	}
+	if tgt.bound != 1000 {
+		t.Errorf("truncated to %d, want 1000 (highest end offset among recorded facts)", tgt.bound)
+	}
+}
