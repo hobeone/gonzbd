@@ -105,16 +105,30 @@ Two consequences worth stating explicitly, because both have been got wrong:
 ```
                   decoded                writeAt returned nil        fsync returned nil
   Outstanding ───────────────► Decoded ──────────────────────► Written ──────────────────► Durable
-       ▲                          │                               │                           │
-       │                          │ appends a Class A fact        │                           │ Barrier mints a
-       │                          │ (no barrier, no ordering)     │                           │ DurableProof
-       │                          ▼                               │                           ▼
-       │                    article_facts                         │                       Queue.AckDurable
-       │                                                          │                        (article is Done)
-       └──────────────────────────────────────────────────────────┘
-              a write failure, a storage fault, or a restart that cannot
-              prove the bytes returns the article to Outstanding — never Failed
+       ▲                          │                               │                          │
+       │                          │ appends a Class A fact        │                          │ Barrier mints a
+       │                          │ (no barrier, no ordering)     │                          │ DurableProof
+       │                          ▼                               │                          ▼
+       │                    article_facts ──────────┐             │                    Queue.AckDurable
+       │                                            │             │                          │
+       └────────────────────────────────────────────┼─────────────┘                          ▼
+          a write failure, a storage fault, or a    │                                  ARTICLE IS DONE
+          restart that cannot prove the bytes       │                                        ▲
+          returns the article to Outstanding        │                                        │
+          — never Failed                            │  ON RESTART, the SECOND way in:        │
+                                                    │  Resumer re-reads the file and checks  │
+                                                    └─►the bytes against the recorded CRC; ──┘
+                                                       Queue.ReplaceFromResume then resolves
+                                                       it — no barrier, no proof, no fsync by
+                                                       this process. Evidence is stable
+                                                       storage. See §1.
 ```
+
+There are therefore **two** ways an article becomes Done, and only the first
+goes through a barrier. The resume path is not a loophole — it is the only way
+to credit bytes an earlier process wrote, which no proof can express — but any
+statement of the form "X is the only thing that resolves an article" is false
+unless it says *during a download*.
 
 `Decoded`, `Written` and `Durable` are three different things and the design
 turns on not conflating them:
@@ -136,9 +150,9 @@ turns on not conflating them:
 | **Ingest** | `Assembler.WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into a bounded channel (`reqs`, cap 2048). Control messages for cancel and close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` drains cleanly. |
 | **Worker** | `Assembler.worker` goroutine | Owns the open-file map, the shared write cache, and every `FileWriter`. Routes requests, counts parts, checks disk space, performs barrier operations. | Single goroutine (X1). No locks over file handles. |
 | **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its share of the write cache, its coalescing, its pre-allocation. Reports `Written`. | Worker-owned; never touched from another goroutine. |
-| **Barrier** | `durability.Barrier` | The **only** place `Written → Durable → Resolved` happens. Drains, fsyncs, commits Class B, mints the proof. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
+| **Barrier** | `durability.Barrier` | The only place `Written → Durable → Resolved` happens **during a download**. Drains, fsyncs, commits Class B, mints the proof. Not the only place an article becomes Done: the Resume tier below resolves articles too, with no barrier and no proof — see the state diagram above and §1. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
 | **Cadence** | `Application.runCheckpoint`, `noteJobBytes` | *When* a barrier runs. Time bound, byte bound, file completion, clean shutdown. | One goroutine; per-job mutex around each barrier. |
-| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | What is actually on disk, at startup, from stable storage alone. | Per-file, shares no state between calls. |
+| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | What is actually on disk, at startup, from stable storage alone — and, through `Queue.ReplaceFromResume`, the second path by which an article becomes Done. Authoritative over the files it is passed: it *clears* bits it cannot verify. | Per-file, shares no state between calls. |
 | **Fault routing** | `internal/storagefault`, `Application.Stall` / `Fail` | Turns a storage error into a stalled or failed job with a reason a user can act on — never into a failed article. | — |
 | **DirectUnpack** | `internal/directunpack` | Streams RAR extraction as whole volumes complete. Reads assembled files, never partial article data. | Mutex over volume tracking and kill state; blocking `volumeReady` channel. |
 

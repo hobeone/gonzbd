@@ -540,7 +540,10 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 //
 // It performs no queue mutation of any kind. Articles it writes are reported
 // to durability.Barrier when the barrier drains this assembler, and the
-// barrier is the only component that acks them (X2). The batching that used to
+// barrier is the only component that acks them while the download is running
+// (X2). Articles this assembler never saw — those an EARLIER process wrote —
+// are resolved by the startup resume sweep instead, with no barrier involved;
+// see docs/durability-contract.md §1. The batching that used to
 // live here — pending Done/Failed maps flushed on a ticker — is gone with the
 // acks: there is nothing left to batch.
 func (a *Assembler) worker() {
