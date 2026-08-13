@@ -44,11 +44,8 @@ func (r FailReason) String() string {
 	}
 }
 
-// ClassifyUnrarOutput examines unrar's combined stdout+stderr output and
-// returns a FailReason. This matches SABnzbd's unrar output parsing from
-// newsunpack.py (lines 730–860).
-//
-// isUnrarPasswordError checks lowercased unrar output for wrong password indicators.
+// isUnrarPasswordError checks lowercased unrar output for wrong password
+// indicators.
 func isUnrarPasswordError(lower string) bool {
 	return strings.Contains(lower, "incorrect password") ||
 		strings.Contains(lower, "the specified password is incorrect") ||
@@ -57,8 +54,11 @@ func isUnrarPasswordError(lower string) bool {
 		(strings.Contains(lower, "encrypted file") && strings.Contains(lower, "crc failed"))
 }
 
-// ClassifyUnrarOutput analyzes unrar output to determine the failure reason.
-// Only call this when the extraction has already failed (exit code != 0).
+// ClassifyUnrarOutput examines unrar's combined stdout+stderr output and
+// returns a FailReason. This matches SABnzbd's unrar output parsing from
+// newsunpack.py (lines 730-860).
+//
+// Only call it when the extraction has already failed (exit code != 0).
 func ClassifyUnrarOutput(output string) FailReason {
 	lower := strings.ToLower(output)
 

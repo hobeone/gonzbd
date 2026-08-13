@@ -3,6 +3,18 @@
 Scope: `internal/postproc/`, `internal/unpack/`, `internal/par2/`, `internal/directunpack/`,
 `internal/deobfuscate/`, `internal/rarheader/`, `internal/cmdutil/`, `internal/fsutil/` (postproc-facing parts).
 
+> **Frozen record.** This is a dated audit snapshot of `main` @ `9be19e24`, not
+> a living contract, and it is kept unedited as a record of what the code was and
+> what the audit found. Where it disagrees with the code today, the code wins.
+> Several identifiers, columns and orderings it describes were removed or moved
+> by the download-durability work: `MarkArticlesDone`, `MarkArticlesDoneByIdx`,
+> `MarkArticlesFailed`, `SetFileExtents`, `maxWritten`, `crcParts`/`crcValid`,
+> the `job_files.write_cursor` / `bytes_downloaded` / `max_written` columns, the
+> five-step shutdown order (a clean-shutdown barrier now sits between stopping
+> the downloader and stopping the assembler), and `FileAssembledCRC32`, which no
+> longer has a production writer. For the current contract see
+> [`../durability-contract.md`](../durability-contract.md).
+
 Read first: `AGENTS.md`, `docs/ARCHITECTURE.md` §Post-Processing + §External subprocess containment,
 `docs/post_processing_spec.md`, `docs/go-standards.md` (all, incl. Lessons Learned §1–§7).
 

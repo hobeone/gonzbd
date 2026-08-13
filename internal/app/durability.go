@@ -505,9 +505,16 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // them anyway, so saving first would persist a snapshot that is stale by
 // construction.
 //
-// The other three triggers R6 names are not here, because they are events
-// rather than a cadence: file completion goes through finalizeCompletedFile,
-// and pause and clean shutdown go through Shutdown's final pass.
+// Two of the other three triggers R6 names are not here, because they are
+// events rather than a cadence: file completion goes through
+// finalizeCompletedFile, and clean shutdown through shutdownCheckpoint, which
+// stopWorkers calls between stopping the downloader and stopping the assembler.
+//
+// The third, PAUSE, is NOT IMPLEMENTED anywhere. No code path runs a barrier
+// when a job is paused; a paused job stops writing and its buffered bytes wait
+// for the next interval tick or for shutdown. Said plainly because an earlier
+// version of this comment folded pause into "Shutdown's final pass", which
+// reads as coverage and is not.
 func (app *Application) runCheckpoint(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

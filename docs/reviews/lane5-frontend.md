@@ -4,6 +4,10 @@ Scope: `ui/src/lib/stores/**`, `ui/src/lib/api.ts`, `ui/src/lib/types.ts`,
 `ui/src/lib/components/**`, `ui/src/routes/**`, `ui/src/lib/{shortcuts,utils,favicon}*`,
 build config (`vite.config.ts`, `tsconfig.json`, `package.json`).
 
+> **Frozen record.** This is a dated audit snapshot of `main` @ `9be19e24`, not
+> a living contract, and it is kept unedited as a record of what the code was and
+> what the audit found. Where it disagrees with the code today, the code wins.
+
 ## State architecture map
 
 There is **no interval-based polling anywhere in the app** despite the naming

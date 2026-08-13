@@ -1596,7 +1596,6 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Files go directly into the category directory ("flat layout").
 	// e.g. catDir="movies*" → complete_dir/movies/file.mkv
 	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
-	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
 	flatLayout := strings.HasSuffix(catDir, "*")
 	if flatLayout {
 		catDir = strings.TrimSuffix(catDir, "*")

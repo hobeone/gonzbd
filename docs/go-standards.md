@@ -253,7 +253,11 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 ### 3. Shutdown & Lifecycle Ordering
 
-- **Shutdown order: stop producers → drain consumers → cancel context → wait → cleanup.** The correct order is: (1) Stop downloader (no new articles), (2) Stop assembler (drains in-flight writes, delivers completions), (3) Cancel context (watchCompletions exits), (4) Wait for goroutines, (5) Stop post-processor, flush cache, save queue. Getting this wrong drops file completion events.
+- **Shutdown order: stop producers → checkpoint → drain consumers → cancel context → wait → cleanup.** The correct order is: (1) Stop downloader (no new articles), (2) Run the clean-shutdown durability barrier and abort active DirectUnpackers, (3) Stop assembler (drains in-flight writes, delivers completions), (4) Cancel context (watchCompletions exits), (5) Wait for goroutines, (6) Stop post-processor, flush cache, save queue. `Application.Shutdown` and `stopWorkers` implement exactly this; their doc comments are the authority.
+
+  Step (2) is not optional and its **position** is the whole of it. The barrier has to sit after the downloader stops and before the assembler does, because that is the only window where both halves hold: no new article can arrive, and the file handles the barrier needs still exist. Run it earlier and whatever arrives in between is never acked; run it later and there is nothing open to fsync. Omitting it entirely re-fetches everything downloaded since the last checkpoint on the next start — a full checkpoint window thrown away on every deliberate restart, which is the cost a crash is *supposed* to pay and a clean stop is not. See `internal/app/app.go`'s `stopWorkers` and `Application.shutdownCheckpoint`, and `docs/durability-contract.md` § *The checkpoint cadence*.
+
+  Getting the rest of the order wrong drops file completion events.
 
 - **Fallback goroutines spawned for channel delivery must watch `ctx.Done()`.** A `go func() { ch <- val }()` goroutine leaks forever if the receiver has exited. Always add a `case <-ctx.Done()` branch.
 
@@ -319,7 +323,7 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 
 #### Dispatch Loop (`internal/downloader/dispatch.go`)
 
-- **Never iterate all articles to find pending work.** `ForEachUnfinishedArticle` uses `Pending` counters on `JobFile` and `PendingArticles` on `Job` to skip completed files/jobs in O(1). Any new code that walks articles must respect these counters — do not introduce new linear scans over the article slice.
+- **Never iterate all articles to find pending work.** `Queue.ForEachUnfinishedArticle` uses the per-file `FileProgress.Pending` counters and `JobProgress.pendingArticles` to skip completed files and jobs in O(1). (Neither lives on `JobFile` or `Job`: `JobFile` is NZB-parse scaffolding with no counters, and the job-level figure is reached through `JobProgress.PendingArticles()`.) Any new code that walks articles must respect these counters — do not introduce new linear scans over the article slice.
 
 - **Maintain pending counters on every state mutation.** When setting an article's done/emitted/failed bit, you **must** keep `FileProgress.Pending` and `JobProgress.pendingArticles` in step. The pattern: decrement when an article leaves the pending state (Emitted, Done, or Failed for the first time); increment when it returns. If a bulk operation makes incremental tracking fragile, call `JobProgress.recompute(m)` instead. See `markEmitted`, `markDone`, `markFailed` and `ClearAllEmitted` for canonical examples. The single-article and batch mark helpers the assembler used to call are gone; article resolution now enters the queue only through `AckDurable` (which takes a `durability.DurableProof`) and `AckPermanentFailure`.
 
@@ -347,9 +351,9 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 
 - **A global article index maps to its file through `Manifest.fileIndexForArticle`.** That is what lets a mutation update per-file `Pending` without scanning for the parent file. It is derived from the manifest's file ranges, never persisted separately.
 
-- **All transient fields (`Pending`, `pendingArticles`, the lazy message-ID index, `emitted`) are excluded from the persisted shape.** They are recomputed by `JobProgress.recompute()` on load, and `emitted` is additionally cleared by `ClearAllEmitted` so a restart re-dispatches anything no barrier made durable. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
+- **All transient fields (`Pending`, `pendingArticles`, the lazy message-ID index, `emitted`) are excluded from the persisted shape.** They are recomputed by `JobProgress.recompute(m)` on load, and `emitted` is additionally cleared by `ClearAllEmitted` so a restart re-dispatches anything no barrier made durable. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
 
-- **`ClearAllEmitted` is the self-healing reset.** It calls `JobProgress.recompute()` to rebuild all counters from ground truth. If you suspect counter drift during development, calling `recompute()` on a job will correct it. The `pending_test.go` `verifyPending` helper validates counters against ground truth.
+- **`ClearAllEmitted` is the self-healing reset.** It calls `JobProgress.recompute(m)` to rebuild all counters from ground truth. If you suspect counter drift during development, calling `recompute(m)` on a job will correct it. The `pending_test.go` `verifyPending` helper validates counters against ground truth.
 
 #### General Performance Rules
 

@@ -529,11 +529,6 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-// handleRequest is the per-article workhorse. It owns the
-// bookkeeping for try-lists, penalty application, and success/error
-// emission. The *nntp.Conn pointer is passed by reference so the
-// function can replace it with nil on connection-level failure
-// (forcing a re-dial on the next call).
 func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)

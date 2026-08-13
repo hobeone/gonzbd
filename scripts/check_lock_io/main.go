@@ -223,8 +223,6 @@ func gatherTargetFiles(all bool) ([]string, error) {
 	return files, nil
 }
 
-// checkFile parses one Go source file and returns every mutex-held-during-
-// I/O finding in it, filtered by //lockio: suppression comments.
 // lockedFuncCache memoises the per-package map of *Locked declarations so a
 // package with many changed files is parsed once rather than once per file.
 var lockedFuncCache = map[string]map[string]*ast.FuncDecl{}
@@ -274,6 +272,8 @@ func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
 	return funcs
 }
 
+// checkFile parses one Go source file and returns every mutex-held-during-
+// I/O finding in it, filtered by //lockio: suppression comments.
 func checkFile(path string) ([]finding, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)

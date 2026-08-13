@@ -379,7 +379,8 @@ diagnostic only.
 *What* a checkpoint means lives in `durability.Barrier`. *When* one happens lives
 in `internal/app`, so that "when to checkpoint" stays a policy question.
 
-R6 names five triggers:
+R6 names five triggers. Four are implemented; the fifth is listed so its
+absence is visible rather than assumed:
 
 | Trigger | Implementation | Bound |
 |---|---|---|
@@ -387,7 +388,7 @@ R6 names five triggers:
 | Volume | `noteJobBytes` → `barrierKick` → `checkpointJob` | `downloads.checkpoint_bytes`, default **64 MiB** (`constants.DefaultCheckpointBytes`) |
 | File completion | `Application.handleFileComplete` → `finalizeCompletedFile` → `Barrier.FinalizeFile` | per file |
 | Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAll` | `shutdownCheckpointTimeout` (10s) |
-| Pause | via the stall/resume path; a paused job stops writing | — |
+| Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its buffered bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
 
 The two bounds answer different failure shapes and neither subsumes the other.
 The time bound is what limits rework on a slow link, where 30 seconds is a few
@@ -621,9 +622,16 @@ frontier and the durability anchor into one value is what made the old
 `write_cursor` column unusable, and the two questions are now answered separately
 — `FileExtent.Durable` for resume, `FileExtent.VerifiedTo` for the CRC anchor.
 
-When `WriteCacheBytes == 0` (the default), caching is disabled and each article
-is written directly through `FileWriter.writeOne`. Decoder buffers are returned
-to `sync.Pool` (`decoder.PutBuffer`) on every path, including every failure path.
+**The cache is on by default at 64 MiB** — `constants.DefaultWriteCacheBytes`,
+seeded into `Downloads.WriteCacheSize` by `config.Default()` and threaded to
+`Options.WriteCacheBytes` in `app.New`. Setting `write_cache_size: 0` disables
+it, and each article is then written directly through `FileWriter.writeOne`. The
+default is a tuning choice, not a durability one: the barrier drains the cache
+before every fsync, so neither setting changes what may be claimed. See
+*Open gaps* for what is and is not measured about the win.
+
+Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
+including every failure path.
 
 ## Duplicate and late-article handling
 
@@ -646,7 +654,7 @@ to `sync.Pool` (`decoder.PutBuffer`) on every path, including every failure path
 
 ## Control messages
 
-All four are encoded as sentinel `FileIdx` values on `WriteRequest` and are
+All three are encoded as sentinel `FileIdx` values on `WriteRequest` and are
 synchronous from the caller's perspective: the caller blocks until the worker,
 which owns every file handle, has done the work and answered.
 
@@ -738,7 +746,7 @@ articles or sparse regions.
 | Component | Bound / strategy |
 |---|---|
 | Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
-| Write cache | `Options.WriteCacheBytes`, pressure relief at 90%. Zero (disabled) by default. |
+| Write cache | `Options.WriteCacheBytes`, pressure relief at 90%. Default 64 MiB (`constants.DefaultWriteCacheBytes`); `write_cache_size: 0` disables it. |
 | Contiguous flush threshold | 512 KiB (`contiguousRunSize`). Shorter runs stay buffered. |
 | Coalescing scratch buffer | one reusable `[]byte` per `writeCache`, grown to the largest flush. |
 | `FileWriter.written` / `.reported` | bounded by one checkpoint window; `reported` accumulates only between *successful* syncs, and a job whose syncs are failing stalls (R19) and stops writing. |
@@ -888,5 +896,9 @@ a green run does and does not bound.
   *worse* for large chunks on tmpfs, because coalescing trades N syscalls for one
   syscall plus a second memcpy of the same bytes. The mechanism is sound where a
   write is expensive per call — NFS/SMB, where each `pwrite` is a round trip —
-  and the local-filesystem case should be measured or the cache left disabled,
-  which is the default.
+  and the local-filesystem case is unmeasured rather than known-good. Note that
+  the cache is **on by default at 64 MiB**, so this gap describes the shipped
+  configuration: the work is to measure it on a local filesystem and either
+  justify the default or change it. Do not read this bullet as advice to turn
+  the cache off; nothing here establishes that off is better, only that on is
+  unproven locally.
