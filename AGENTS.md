@@ -206,6 +206,16 @@ changed, the grep finds the ones you didn't.
 Do this **once, on the last round** of a review-fix loop, not on every round:
 each round's own fix creates fresh drift, so an early sweep goes stale.
 
+**Sweep against the diff the commit will land as, not the diff that motivated
+the edit.** The failure is subtler than "comments drift", and it has now
+happened three times on this branch — twice shipping the drift in the *same*
+commit as the change that caused it. Each time the sweep ran against the state
+that *prompted* the correction: a reviewer names a stale sentence, the sentence
+is rewritten to describe the fix, and a clause the same fix also invalidated is
+carried forward untouched. The correction is real and the comment is still
+wrong. Re-read each comment you touched against `git diff --cached` at the end,
+as a reader who has not seen the finding that prompted it.
+
 **Migrations are the case that cannot be fixed later.** A wrong claim in an
 applied `goose` migration is frozen — the file must not be edited afterwards.
 Sweep any migration this change adds *before* it merges; if a stale claim is
