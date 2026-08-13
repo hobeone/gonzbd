@@ -136,6 +136,24 @@
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
 
+	// The durability window, spelled out rather than summed. bytes_pending is
+	// what a power loss would cost right now — written, accepted by the OS,
+	// not yet covered by an fsync — and adding it to bytes_durable would claim
+	// the whole total survives a crash. The two are always shown as two
+	// numbers for that reason.
+	let durabilityTooltip = $derived.by(() => {
+		const parts = [
+			`${formatBytes(slot.bytes_durable ?? 0)} durable (fsynced)`,
+			`${formatBytes(slot.bytes_pending ?? 0)} written but not yet fsynced`
+		];
+		parts.push(
+			slot.last_barrier_unix
+				? `last checkpoint ${new Date(slot.last_barrier_unix * 1000).toLocaleTimeString()}`
+				: 'no checkpoint yet'
+		);
+		return parts.join(' · ');
+	});
+
 	// Bytes listed in the drawer that the row's size deliberately excludes.
 	// The row reports what the job expects to fetch, which leaves out par2
 	// recovery volumes held back ('held') or already ruled unnecessary
@@ -424,7 +442,20 @@
 					</div>
 				{/if}
 			</div>
-			{#if slot.warning}
+			{#if slot.stall_reason}
+				<!-- The stall reason wins over slot.warning rather than being shown
+				     beside it: the backend sets both to the same text when it parks a
+				     job, and the reason survives the resume a re-evaluation performs
+				     while the warning does not. -->
+				<div
+					class="flex items-center text-destructive shrink-0 max-w-[140px]"
+					title={slot.stall_reason}
+					data-testid="stall-reason"
+				>
+					<AlertTriangle class="size-3.5 leading-none shrink-0" />
+					<span class="ml-1 text-xs font-bold truncate">{slot.stall_reason}</span>
+				</div>
+			{:else if slot.warning}
 				<div class="flex items-center text-amber-500 shrink-0 max-w-[100px]" title={slot.warning}>
 					<AlertTriangle class="size-3.5 leading-none shrink-0" />
 					<span class="ml-1 text-xs font-bold truncate">{slot.warning}</span>
@@ -452,7 +483,11 @@
 			<span class="text-xs font-mono tabular-nums text-muted-foreground w-9 text-right font-semibold">{slot.percentage}%</span>
 		</div>
 	</td>
-	<td class="px-5 py-3.5 text-xs font-mono font-medium whitespace-nowrap tabular-nums">{slot.size}</td>
+	<td
+		class="px-5 py-3.5 text-xs font-mono font-medium whitespace-nowrap tabular-nums"
+		title={durabilityTooltip}
+		data-testid="durability-tooltip"
+	>{slot.size}</td>
 	<td class="px-5 py-3.5 text-xs font-mono font-medium whitespace-nowrap tabular-nums">
 		{slot.sizeleft}
 		{#if etaText && isDownloading}

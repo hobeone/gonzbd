@@ -2,6 +2,7 @@ import { render, screen, fireEvent, within } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import QueueRow from './QueueRow.svelte';
 import type { QueueSlot } from '$lib/types';
+import { formatSize } from '$lib/utils';
 
 vi.mock('$lib/stores/queue.svelte', () => ({
 	pauseJob: vi.fn().mockResolvedValue(undefined),
@@ -47,6 +48,9 @@ describe('QueueRow', () => {
 		script: 'none',
 		password: '',
 		failed_bytes: 0,
+		bytes_durable: 0,
+		bytes_pending: 0,
+		last_barrier_unix: 0,
 		repair_state: 'intact',
 		recovery_bytes: 0,
 		recovery_files: 0,
@@ -610,5 +614,67 @@ describe('QueueRow', () => {
 			expect(health.className).not.toMatch(/text-red/);
 		});
 	});
-});
 
+	describe('durability and stall state', () => {
+		it('renders the stall reason so a parked job is not just a stopped one', () => {
+			render(QueueRow, {
+				slot: {
+					...baseSlot,
+					stall_reason:
+						'Stalled: storage retryable fault on write "/data/x.bin": no space left on device'
+				},
+				onremove: () => {}
+			});
+			const badge = screen.getByTestId('stall-reason');
+			expect(badge.getAttribute('title')).toContain('no space left on device');
+			expect(badge.getAttribute('title')).toContain('/data/x.bin');
+		});
+
+		it('shows no stall badge for a healthy job', () => {
+			render(QueueRow, { slot: baseSlot, onremove: () => {} });
+			expect(screen.queryByTestId('stall-reason')).toBeNull();
+		});
+
+		it('prefers the stall reason over the generic warning', () => {
+			// The backend sets both to the same text when it parks a job, and the
+			// reason outlives the resume a re-evaluation performs. Rendering both
+			// duplicates the row's only free horizontal space.
+			render(QueueRow, {
+				slot: { ...baseSlot, warning: 'Stalled: disk full', stall_reason: 'Stalled: disk full' },
+				onremove: () => {}
+			});
+			expect(screen.getAllByText('Stalled: disk full')).toHaveLength(1);
+		});
+
+		it('reports durable and pending bytes as two figures, never a total', () => {
+			render(QueueRow, {
+				slot: { ...baseSlot, bytes_durable: 1048576, bytes_pending: 524288 },
+				onremove: () => {}
+			});
+			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
+			expect(title).toContain('durable');
+			expect(title).toContain('written but not yet fsynced');
+			expect(title).toContain(formatSize(1048576));
+			expect(title).toContain(formatSize(524288));
+			// A summed figure would claim the pending bytes survive a power loss.
+			expect(title).not.toContain(formatSize(1048576 + 524288));
+		});
+
+		it('says so when a job has never checkpointed', () => {
+			render(QueueRow, { slot: { ...baseSlot, last_barrier_unix: 0 }, onremove: () => {} });
+			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
+			expect(title).toContain('no checkpoint yet');
+		});
+
+		it('names the time of the last successful checkpoint', () => {
+			const at = new Date('2026-08-11T12:34:56Z');
+			render(QueueRow, {
+				slot: { ...baseSlot, last_barrier_unix: Math.floor(at.getTime() / 1000) },
+				onremove: () => {}
+			});
+			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
+			expect(title).toContain(at.toLocaleTimeString());
+			expect(title).not.toContain('no checkpoint yet');
+		});
+	});
+});
