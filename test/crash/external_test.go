@@ -51,9 +51,16 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 	h.WaitForDurableBytes(jobID, durableArticles*int64(opts.Files[0].PartSize))
 	h.Stop()
 	servedBefore := h.Server.ArticlesServed()
-	if len(servedBefore) < durableArticles {
-		t.Fatalf("only %d articles were served before the stop, need at least %d",
-			len(servedBefore), durableArticles)
+
+	// The durable set as stable storage recorded it at the stop. Read here
+	// rather than assumed to be the first `durableArticles` articles: a clean
+	// stop runs a shutdown checkpoint, so it acks everything outstanding and
+	// the real set reaches past the threshold the wait above returned on. The
+	// first draft classified only the first 32 ordinals and would have ignored
+	// a destroyed article at ordinal 33.
+	durableAtStop := h.DurableOrdinals(jobID)[0]
+	if len(durableAtStop) == 0 {
+		t.Fatal("no durable bits were recorded for file 0 at the stop")
 	}
 
 	// Cut the file in half, at an article boundary, so the surviving and
@@ -78,31 +85,46 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 	h.WaitForJobComplete(jobID)
 	servedAfter := h.Server.ArticlesServed()
 
+	// Classify EVERY article that was durable at the stop by where it sits
+	// relative to the cut, rather than by the ordinal the wait returned on.
 	ids := h.MsgIDs[0]
+	var below, above int
 	var survivedRefetched, destroyedMissed []string
-	for i := range keepArticles {
-		if servedAfter[ids[i]] > servedBefore[ids[i]] {
-			survivedRefetched = append(survivedRefetched, ids[i])
+	for i, wasDurable := range durableAtStop {
+		if !wasDurable {
+			continue
 		}
-	}
-	for i := keepArticles; i < durableArticles; i++ {
-		if servedAfter[ids[i]] <= servedBefore[ids[i]] {
+		refetched := servedAfter[ids[i]] > servedBefore[ids[i]]
+		if i < keepArticles {
+			below++
+			if refetched {
+				survivedRefetched = append(survivedRefetched, ids[i])
+			}
+			continue
+		}
+		above++
+		if !refetched {
 			destroyedMissed = append(destroyedMissed, ids[i])
 		}
 	}
+	if above == 0 {
+		t.Fatal("the truncation destroyed no durable article — the destroyed-set " +
+			"assertion below would hold vacuously")
+	}
 	if len(survivedRefetched) > 0 {
-		t.Errorf("%d of the %d articles BELOW the truncation point were re-fetched; a "+
-			"recomputation reads their bytes and proves them, so re-fetching them is "+
-			"unbounded rework a falsified cache did not cause: %v",
-			len(survivedRefetched), keepArticles, survivedRefetched)
+		t.Errorf("%d of the %d durable articles BELOW the truncation point were re-fetched; "+
+			"a recomputation reads their bytes and proves them, so re-fetching them is "+
+			"rework a falsified cache did not cause: %v",
+			len(survivedRefetched), below, survivedRefetched)
 	}
 	if len(destroyedMissed) > 0 {
-		t.Errorf("%d of the %d articles the truncation DESTROYED were not re-fetched; "+
-			"their bytes are gone, so treating them as present is S3's absence-of-evidence "+
-			"read as evidence: %v", len(destroyedMissed), durableArticles-keepArticles, destroyedMissed)
+		t.Errorf("%d of the %d durable articles the truncation DESTROYED were not "+
+			"re-fetched; their bytes are gone, so treating them as present is S3's "+
+			"absence-of-evidence read as evidence: %v",
+			len(destroyedMissed), above, destroyedMissed)
 	}
-	t.Logf("%d articles below the cut, %d above it; %d below were re-fetched, %d above were not",
-		keepArticles, durableArticles-keepArticles, len(survivedRefetched), len(destroyedMissed))
+	t.Logf("%d durable articles below the cut, %d above it; %d below were re-fetched, "+
+		"%d above were not", below, above, len(survivedRefetched), len(destroyedMissed))
 }
 
 // TestExternalModification_DeletedPartialRestartsTheFile FAILS TODAY against

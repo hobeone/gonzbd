@@ -495,8 +495,23 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// is written by SetFileFilename and read here, and a file that was
 			// never registered still restores as empty.
 			fp.Filename = filename
-			// articles_done is the only source of per-article state;
-			// Complete is just a flag alongside it.
+			// articles_done is the only source of per-article state THIS
+			// FUNCTION reads; Complete is just a flag alongside it.
+			//
+			// It is no longer the only source in the process. The startup
+			// resume sweep (internal/app/resume_startup.go) verifies each
+			// file's bytes against the Class A fact log and installs its
+			// result through Queue.SeedFromExtents, which is a second writer
+			// of the same per-article bits. The design's S4 makes that
+			// recomputation the authority — "where it disagrees with a
+			// recomputation, the recomputation is correct by definition" —
+			// so the sentence above must not be read as "what this restores
+			// is final". It is not, and today it wrongly wins: SeedFromExtents
+			// only SETS bits and never clears one, so an article this restore
+			// marks done stays done even when the recomputation has just
+			// proved its bytes are gone, and the job completes a file with a
+			// hole in it. That is #362, and it is the precedence bug, not a
+			// bug in what this function reads.
 			//
 			// Complete used to short-circuit the decode and mark every
 			// article of the file done. That is wrong because Complete means

@@ -140,10 +140,22 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 //
 // The extents are Class B — a cache the barrier committed after the fsync that
 // made its claims true — and this is the point at which that cache becomes the
-// running job's belief about what is outstanding. Anything NOT marked durable
-// here stays Outstanding, which is S3: absence of evidence is absence, and an
-// article whose state cannot be established from stable storage is one to
-// fetch again.
+// running job's belief about what is outstanding.
+//
+// "Anything NOT marked durable here stays Outstanding" is what this doc used to
+// claim, and it is FALSE. This function only ever SETS a bit; it clears none.
+// By the time it runs, Store.RestoreJobProgress has already marked done every
+// article in job_files.articles_done, so an article the caller's recomputation
+// has just proved absent from the disk stays done and is never fetched again —
+// and the job completes a file with a hole in it. That is #362. S3 is what the
+// behaviour SHOULD be here and is not yet; do not read the additive semantics
+// as a deliberate expression of it.
+//
+// The additive semantics are nonetheless right for the OTHER caller.
+// Application.reevaluateStall replays extents loaded from the store, not a
+// fresh resume, so a clear there would discard acks this process made since the
+// last commit. Whatever closes #362 needs a separate entry point rather than a
+// change of meaning here.
 //
 // Two indexing rules make this safe, and both are easy to get wrong in a way
 // no range check catches:

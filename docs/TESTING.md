@@ -229,6 +229,8 @@ plainly.
   unique-filename resolution, and `EACCES`/`EROFS`/`EFBIG` classify permanent
   rather than retryable. The stall path is covered in-process instead, by
   `internal/app/scenario_durability_test.go` and `internal/api/stall_test.go`.
+  Tracked as issue #363, which also records the one route that would close both
+  this gap and the page-cache gap above: a FUSE filesystem the harness controls.
 
 ```bash
 go test -tags=crash -timeout=20m ./test/crash/ -v

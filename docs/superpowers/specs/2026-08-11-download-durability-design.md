@@ -432,7 +432,7 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
   already-written-back ranges to be re-read from the block device rather than
   from cache. The page-cache half — that an fsync'd byte reached the platter —
   needs a device-mapper `log-writes` or `flakey` target under root and is
-  **untested**.
+  **untested** (#363).
 - **R33** External modification MUST be tested: truncate, delete, append, and
   mtime-only touch. All four are covered in `test/crash/external_test.go`;
   truncate and delete currently FAIL, against a real defect (#362; see

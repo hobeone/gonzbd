@@ -49,6 +49,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -701,6 +702,32 @@ func (h *harness) findUnder(root, name string) (string, error) {
 	}
 }
 
+// CompletedJobFileNames returns the base names of the regular files in the
+// job's directory after it has been moved to the complete directory.
+//
+// The whole job directory is renamed into place by post-processing, so a file
+// the daemon orphaned during the download travels with it and is visible here.
+// That is what makes this the deterministic place to check for one: it needs no
+// race against the job finishing, unlike sampling the live partial set.
+func (h *harness) CompletedJobFileNames() []string {
+	h.t.Helper()
+	var out []string
+	err := filepath.WalkDir(h.CompleteDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			out = append(out, filepath.Base(path))
+		}
+		return nil
+	})
+	if err != nil {
+		h.t.Fatalf("walk the complete directory: %v", err)
+	}
+	slices.Sort(out)
+	return out
+}
+
 // JobDir returns the job's working directory under the download directory.
 func (h *harness) JobDir() string {
 	h.t.Helper()
@@ -863,6 +890,31 @@ func (h *harness) DurableBits(db *sql.DB, jobID string, counts map[int32]int) ma
 	return out
 }
 
+// DurableOrdinals reads the committed Class B bitmaps and returns, per file
+// index, one bool per FILE-LOCAL article ordinal: true where a completed fsync
+// covered that article's bytes.
+//
+// The daemon must already be stopped; see openDB.
+func (h *harness) DurableOrdinals(jobID string) map[int32][]bool {
+	h.t.Helper()
+	db := h.openDB()
+	files := h.JobFiles(db, jobID)
+	counts := map[int32]int{}
+	for _, f := range files {
+		counts[f.FileIdx] = f.ArticleCount
+	}
+	stored := h.DurableBits(db, jobID, counts)
+	out := map[int32][]bool{}
+	for _, f := range files {
+		bits := make([]bool, f.ArticleCount)
+		for i := range f.ArticleCount {
+			bits[i] = i < len(stored[f.FileIdx]) && stored[f.FileIdx][i]
+		}
+		out[f.FileIdx] = bits
+	}
+	return out
+}
+
 // DurableMessageIDs reads the committed Class B bitmaps and returns the
 // Message-ID of every article a completed fsync covered.
 //
@@ -876,21 +928,13 @@ func (h *harness) DurableBits(db *sql.DB, jobID string, counts map[int32]int) ma
 // The daemon must already be stopped; see openDB.
 func (h *harness) DurableMessageIDs(jobID string) map[string]bool {
 	h.t.Helper()
-	db := h.openDB()
-	files := h.JobFiles(db, jobID)
-	counts := map[int32]int{}
-	for _, f := range files {
-		counts[f.FileIdx] = f.ArticleCount
-	}
-	durable := h.DurableBits(db, jobID, counts)
 	out := map[string]bool{}
-	for _, f := range files {
-		bits := durable[f.FileIdx]
-		for i := range f.ArticleCount {
-			if i < len(bits) && bits[i] {
+	for fileIdx, bits := range h.DurableOrdinals(jobID) {
+		for i, durable := range bits {
+			if durable {
 				// MsgIDs is indexed by (file, file-local part), which is
 				// exactly the ordinal a durable bit is placed at.
-				out[h.MsgIDs[f.FileIdx][i]] = true
+				out[h.MsgIDs[fileIdx][i]] = true
 			}
 		}
 	}
@@ -1008,32 +1052,51 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// describeDiff locates the first differing byte and names the article part it
-// falls in, so a wrong file says which article is wrong rather than only that
-// something is.
+// describeDiff summarises how two byte slices differ, in the terms someone
+// reading a 3am failure needs: where the damage starts, how far it reaches, how
+// much of it there is, and whether it looks like a hole.
+//
+// It deliberately does NOT report the length of the first contiguous differing
+// run. That is what it used to do, and a 12 MiB hole printed as "2 bytes
+// differ" whenever the expected payload happened to contain a zero two bytes
+// in — the run ends at the first coincidental match, which says nothing about
+// the size of the damage.
 func describeDiff(got, want []byte, partSize int) string {
 	n := min(len(got), len(want))
+	first, last, count, zeros := -1, -1, 0, 0
 	for i := range n {
 		if got[i] == want[i] {
 			continue
 		}
-		{
-			run := 0
-			for j := i; j < n && got[j] != want[j]; j++ {
-				run++
-			}
-			zeros := true
-			for j := i; j < min(i+run, n); j++ {
-				if got[j] != 0 {
-					zeros = false
-					break
-				}
-			}
-			return fmt.Sprintf("offset %d (part %d, offset %d within it), %d bytes differ, "+
-				"all-zero=%v", i, i/partSize, i%partSize, run, zeros)
+		if first < 0 {
+			first = i
+		}
+		last = i
+		count++
+		if got[i] == 0 {
+			zeros++
 		}
 	}
-	return fmt.Sprintf("no differing byte in the common prefix of %d", n)
+	if first < 0 {
+		return fmt.Sprintf("no differing byte in the common prefix of %d", n)
+	}
+	return fmt.Sprintf("offset %d (part %d, offset %d within it); %d bytes differ across "+
+		"[%d,%d]; %d of them are zero on disk (%s)",
+		first, first/partSize, first%partSize, count, first, last, zeros,
+		holeVerdict(count, zeros))
+}
+
+// holeVerdict names the shape the differing bytes have, since "the region is
+// zeros" and "the region holds the wrong data" are different defects.
+func holeVerdict(count, zeros int) string {
+	switch zeros {
+	case count:
+		return "every differing byte is zero: a hole, not wrong data"
+	case 0:
+		return "no differing byte is zero: wrong data, not a hole"
+	default:
+		return "a mix of zeros and wrong data"
+	}
 }
 
 // str, i64 and f64 read a JSON value that the API may render as a string or

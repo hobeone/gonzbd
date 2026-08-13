@@ -5,6 +5,7 @@ package crash
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -101,11 +102,11 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 	// bytes in the file that hash to the CRC its own Class A fact recorded.
 	checked := 0
 	for _, f := range files {
-		path := filepath.Join(h.JobDir(), f.Filename)
 		if f.Filename == "" {
 			t.Fatalf("file %d has no resolved filename in job_files; the partial it "+
 				"wrote cannot be located, which is issue #361's shape", f.FileIdx)
 		}
+		path := filepath.Join(h.JobDir(), f.Filename)
 		bits := durable[f.FileIdx]
 		for i := range f.ArticleCount {
 			claimedDone := f.Done[i] && !f.Failed[i]
@@ -173,10 +174,11 @@ func TestSIGKILL_ReworkStaysWithinTheCheckpointBound(t *testing.T) {
 	h.WaitForUnackedBacklog(jobID, 3)
 	servedBefore := h.Server.ArticlesServed()
 
-	// Captured before the kill so the resumed file can be compared against
-	// it: issue #361 was a restart that resumed into "<name>.1.<ext>" and
-	// orphaned the partial, and the only assertion that catches it is one on
-	// the identity of the file, not on the job finishing.
+	// Captured before the kill so the completed file can be compared against
+	// it. This pins CONTINUITY — that the file which finishes is the one the
+	// crashed run was writing, moved into place by a rename rather than
+	// rebuilt beside it. It is NOT the #361 pin; see the file-set assertion at
+	// the end of this test for why it cannot be.
 	partials := h.PartialPaths()
 	if len(partials) != 1 {
 		t.Fatalf("expected one partial file before the kill, found %v", partials)
@@ -247,16 +249,43 @@ func TestSIGKILL_ReworkStaysWithinTheCheckpointBound(t *testing.T) {
 		rework, len(servedBefore), reworkBytes, bound, len(durableIDs), len(lostAck))
 
 	// #361: the resume must continue the partial it left, not orphan it and
-	// start "<name>.1.<ext>". The completed file is renamed within one
-	// filesystem, so its inode is the partial's inode when — and only when —
-	// the resume reopened the same file.
+	// start "<name>.1.<ext>".
+	//
+	// Asserted on the job's FILE SET, because the defect's shape is the
+	// opposite of the obvious guess and the obvious assertion cannot fail on
+	// it. Under #361 the NEW file is the orphan: the original partial keeps
+	// its name and its inode and is the one that completes, while
+	// "<name>.1.<ext>" is written beside it and abandoned. Probed with the fix
+	// (775873ad) reverted — the completed job directory held payload.bin AND
+	// payload.1.bin, both 16 MiB, with payload.bin's inode unchanged. An
+	// identity check on the surviving file is therefore satisfied BY the
+	// defect, which is what the first draft of this test asserted.
+	//
+	// The whole job directory is renamed into the complete directory by
+	// post-processing, so an orphan travels with it and is visible there with
+	// no race against the job finishing.
+	wantNames := make([]string, 0, len(opts.Files))
+	for _, f := range opts.Files {
+		wantNames = append(wantNames, f.Name)
+	}
+	slices.Sort(wantNames)
+	if got := h.CompletedJobFileNames(); !slices.Equal(got, wantNames) {
+		t.Errorf("the completed job directory holds %v, want exactly %v — the restart "+
+			"wrote a second file beside the partial it should have continued (#361)",
+			got, wantNames)
+	}
+
+	// Continuity, which the file set alone does not give: the file that
+	// finished is the one the crashed run was writing, moved by a rename
+	// rather than rebuilt. A regression that copied the bytes into a fresh
+	// inode would leave the file set correct and fail here.
 	final, err := h.findUnder(h.CompleteDir, opts.Files[0].Name)
 	if err != nil {
 		t.Fatalf("locate the completed file: %v", err)
 	}
 	if got := inodeOf(t, final); got != beforeIno {
 		t.Errorf("the completed file is inode %d but the partial written before the crash "+
-			"was inode %d — the restart did not resume into the file it left (#361)", got, beforeIno)
+			"was inode %d — the restart did not resume into the file it left", got, beforeIno)
 	}
 }
 
