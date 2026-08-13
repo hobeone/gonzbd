@@ -783,8 +783,10 @@ func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 
 // TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds pins that neither
 // bound can be switched off. A barrier is the only thing that acks a
-// downloaded article, so a job with no barrier re-fetches everything on every
-// restart — "off" is not a faster mode, it is a broken one.
+// downloaded article while the job is running, so with checkpoints off a job
+// holds every article Outstanding until it stops, and a restart must re-read
+// every partial file instead of adopting the Class B cache. See
+// checkpointSettings for why that is not the same as re-fetching everything.
 func TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds(t *testing.T) {
 	for _, tc := range []struct {
 		name           string

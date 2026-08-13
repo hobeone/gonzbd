@@ -686,9 +686,21 @@ var _ durability.Stallable = (*Application)(nil)
 // checkpointSettings resolves the two bounds from config, substituting the
 // defaults for unset or nonsensical values.
 //
-// Neither can be disabled. A barrier is the only thing that acks a downloaded
-// article, so a job with no barrier re-fetches everything it has on every
-// restart — "off" is not a faster mode, it is a broken one.
+// Neither can be disabled, and it is worth stating the reason accurately
+// because the obvious version of it is wrong.
+//
+// A barrier is the only thing that acks a downloaded article WHILE THE JOB IS
+// RUNNING, so with checkpoints off a job makes no visible progress and holds
+// every article Outstanding until it stops. It does NOT follow that the work
+// is re-fetched: Resume falls through to recompute when no committed extent
+// exists, and recompute re-derives the done-set from Class A facts and the
+// bytes on disk. What is actually lost is (a) the whole point of Class B,
+// which exists so a restart does not have to re-read every partial file, and
+// (b) anything the write cache had not flushed when the process died, which
+// has no fact-plus-bytes pair to recover from.
+//
+// So "off" is not a faster mode, it is a mode that trades a bounded fsync
+// cadence for an unbounded startup read plus real re-fetch.
 func checkpointSettings(interval time.Duration, bytes int64) (resolvedInterval time.Duration, resolvedBytes int64) {
 	if interval <= 0 {
 		interval = defaultCheckpointInterval

@@ -418,8 +418,17 @@ a gigabyte. The barrier fires on whichever arrives first.
 
 **Neither can be disabled.** `checkpointSettings` substitutes the default for a
 zero or negative value. A barrier is the only thing that acks a downloaded
-article, so a job with no barrier re-fetches everything it has on every restart —
-"off" is not a faster mode, it is a broken one.
+article *while the job is running*, so with checkpoints off a job makes no
+visible progress and holds every article Outstanding until it stops.
+
+It does **not** follow that the work is re-fetched, and an earlier version of
+this paragraph claimed it did. `Resume` falls through to `recompute` when no
+committed extent exists, and `recompute` re-derives the done-set from Class A
+facts and the bytes on disk. What is lost is the point of Class B — a restart
+must then re-read every partial file in full — plus whatever the write cache had
+not flushed when the process died, which has no fact-and-bytes pair to recover
+from. "Off" trades a bounded fsync cadence for an unbounded startup read and
+real re-fetch.
 
 Three details that have each been got wrong once:
 
