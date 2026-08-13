@@ -905,7 +905,9 @@ a green run does and does not bound.
   `DurableProof`, `Bitmap`, SQLite `FactLog` and `ExtentStore`.
 - `internal/storagefault`: classification into retryable/permanent with the
   operation and path attached.
-- Compiler-enforced ack path: `Queue.AckDurable(durability.DurableProof)`.
+- Compiler-enforced ack path: `Queue.AckDurable(durability.DurableProof)` —
+  enforced on the proof's *payload*, and on that one door. See §1 for the exact
+  bound and for the seeding doors it does not cover.
 - `assembler.FileWriter` — per-file ownership with no authority to ack, record a
   CRC, decide completion, or truncate.
 - Barrier operations over the assembler's control channel (`fileIdxSyncOp`),
