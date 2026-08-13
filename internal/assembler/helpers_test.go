@@ -1,6 +1,8 @@
 package assembler
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -331,4 +333,39 @@ func TestReleaseBuffer_FallsBackToTheDecoderPool(t *testing.T) {
 	a.putBuffer = func([]byte) { t.Error("releaseBuffer used the hook after it was set to nil") }
 	a.putBuffer = nil
 	a.releaseBuffer(nil)
+}
+
+// TestControlOps_CancelledContextBeatsEveryOtherOutcome is the DETERMINISTIC
+// half of the cancelled-context contract.
+//
+// TestAssembler_CloseJobHandles_ContextCanceled asserts the same rule against a
+// started assembler, but it can only ever be a probabilistic pin: without the
+// up-front ctx.Err() check both selects have ctx.Done() ready and Go picks
+// among ready cases at random, so that test passed ~95% of the time against the
+// broken code and failed about 1 package run in 20 under -race.
+//
+// This one cannot be probabilistic. On a NOT-STARTED assembler the two possible
+// answers are distinguishable with no scheduling involved at all: the ctx check
+// yields context.Canceled, the started check yields ErrNotStarted. Asserting
+// context.Canceled therefore pins the ORDER of the two checks, which is the
+// thing the fix actually established.
+func TestControlOps_CancelledContextBeatsEveryOtherOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for name, call := range map[string]func(*Assembler) error{
+		"CloseJobHandles": func(a *Assembler) error { return a.CloseJobHandles(ctx, "job1") },
+		"CancelJob":       func(a *Assembler) error { return a.CancelJob(ctx, "job1") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Never started, so ErrNotStarted is the answer if the ctx check
+			// does not come first.
+			a := &Assembler{log: slog.Default()}
+			if err := call(a); !errors.Is(err, context.Canceled) {
+				t.Errorf("%s with a cancelled context = %v, want context.Canceled; "+
+					"an already-cancelled context must be honoured before any other "+
+					"state check and before any work is enqueued", name, err)
+			}
+		})
+	}
 }

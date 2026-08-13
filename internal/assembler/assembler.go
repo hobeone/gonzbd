@@ -398,6 +398,29 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 // NFS-mounted directories produces .nfsXXXXXX silly-rename artifacts and a
 // directory the caller's delete can't remove).
 func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
+	// A context that is ALREADY cancelled resolves here, before the selects
+	// below, and that is a correctness requirement rather than a fast path.
+	//
+	// Both selects have ctx.Done() ready from the start, and Go picks
+	// uniformly at random among ready cases. So the first select had a ~50%
+	// chance of enqueueing the control message anyway, and if the worker then
+	// acked before the second select was evaluated, that select could pick
+	// <-ack and return nil — reporting success for a call the caller had
+	// already cancelled, after doing the work it asked not to be done.
+	//
+	// It is a real race, not a test artifact: the equivalent test on CloseJobHandles asserted
+	// context.Canceled and failed about 1 run in 20 at package scope under
+	// -race. Measured directly at -count=2000, the rate moved from 8/8000 to
+	// 77/8000 across an unrelated nearby change, because the probability
+	// depends on worker scheduling that any edit can perturb. Checking up
+	// front removes the randomness at its source instead of tuning it.
+	//
+	// Matches the pre-check convention already used in this package by
+	// filewriter.go and diskspace.go.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	if !a.started {
 		a.mu.Unlock()
@@ -448,6 +471,29 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 // enters post-processing or Par2 repair, ensuring no open handles remain that
 // would trigger NFS silly-rename (.nfs*) leaks when post-processing unlinks files.
 func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
+	// A context that is ALREADY cancelled resolves here, before the selects
+	// below, and that is a correctness requirement rather than a fast path.
+	//
+	// Both selects have ctx.Done() ready from the start, and Go picks
+	// uniformly at random among ready cases. So the first select had a ~50%
+	// chance of enqueueing the control message anyway, and if the worker then
+	// acked before the second select was evaluated, that select could pick
+	// <-ack and return nil — reporting success for a call the caller had
+	// already cancelled, after doing the work it asked not to be done.
+	//
+	// It is a real race, not a test artifact: TestAssembler_CloseJobHandles_ContextCanceled asserted
+	// context.Canceled and failed about 1 run in 20 at package scope under
+	// -race. Measured directly at -count=2000, the rate moved from 8/8000 to
+	// 77/8000 across an unrelated nearby change, because the probability
+	// depends on worker scheduling that any edit can perturb. Checking up
+	// front removes the randomness at its source instead of tuning it.
+	//
+	// Matches the pre-check convention already used in this package by
+	// filewriter.go and diskspace.go.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	if !a.started {
 		a.mu.Unlock()
