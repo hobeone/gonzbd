@@ -89,6 +89,17 @@ type FileWriter struct {
 	// overridden. Never reassigned after the writer is in service, so the
 	// single-goroutine ownership rule covers it.
 	writeAt func(p []byte, off int64) (int, error)
+
+	// syncFile is handle.Sync in production, on the same terms as writeAt.
+	//
+	// It exists so that REMOVING the fsync is detectable. Deleting
+	// w.handle.Sync() used to leave the entire suite green, crash suite
+	// included, because no unprivileged test can tell a synced file from an
+	// unsynced one — dirty page cache survives process death, so only a
+	// machine-level power cut distinguishes them. The seam does not pin
+	// fsync-to-platter and cannot; it pins that the syscall is on the path at
+	// all, which is the part that was silently deletable.
+	syncFile func() error
 }
 
 // newFileWriter wraps an already-open handle.
@@ -102,6 +113,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 		seenFailed: make(map[string]struct{}),
 	}
 	w.writeAt = handle.WriteAt
+	w.syncFile = handle.Sync
 	return w
 }
 
@@ -221,7 +233,16 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 }
 
 // Drain flushes every buffered article for this file and returns the articles
-// whose bytes reached WriteAt without error since the last call.
+// whose bytes reached WriteAt without error since the last SUCCESSFUL Sync —
+// NOT since the last Drain.
+//
+// The distinction is load-bearing and this comment used to get it wrong. take()
+// re-reports everything a Drain has already handed over but no Sync has yet
+// confirmed, which is R12's at-least-once delivery. Reading "since the last
+// call" as the contract makes the re-report look redundant, and removing it
+// destroys bytes on a retried finalize: the retry drains nothing, so the
+// durable extent FinalizeFile trims to sits below bytes genuinely on disk. See
+// take() and the FileWriter.reported field doc, which are the authority.
 //
 // It must NOT return an article that is merely buffered. S2 makes acceptance
 // and durability different things, and this return value is the only evidence
@@ -283,7 +304,7 @@ func (w *FileWriter) Sync(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return storagefault.Classify("sync", w.path, err)
 	}
-	if err := w.handle.Sync(); err != nil {
+	if err := w.syncFile(); err != nil {
 		return storagefault.Classify("sync", w.path, err)
 	}
 	// The fsync covers every byte a preceding Drain reported, so the barrier
