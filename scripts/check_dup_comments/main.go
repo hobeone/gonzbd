@@ -33,6 +33,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,9 +85,7 @@ func main() {
 		for key, occs := range blocks {
 			groups[key] = append(groups[key], occs...)
 		}
-		for key, reason := range marks {
-			marked[key] = reason
-		}
+		maps.Copy(marked, marks)
 	}
 
 	var keys []string
@@ -113,7 +112,7 @@ func main() {
 		for _, o := range occs {
 			fmt.Printf("  %s:%d\n", o.file, o.line)
 		}
-		for _, l := range strings.Split(key, "\n") {
+		for l := range strings.SplitSeq(key, "\n") {
 			fmt.Printf("    | %s\n", l)
 		}
 		fmt.Println()
@@ -212,7 +211,7 @@ func goFiles(args []string) ([]string, error) {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
 	var files []string
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if l != "" {
 			files = append(files, l)
 		}

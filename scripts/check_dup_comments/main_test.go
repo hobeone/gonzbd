@@ -1,8 +1,10 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +20,7 @@ const block = `// This is a long explanatory comment block that exists only so t
 func writeGo(t *testing.T, files map[string]string) []string {
 	t.Helper()
 	dir := t.TempDir()
-	var paths []string
+	paths := make([]string, 0, len(files))
 	for name, body := range files {
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
@@ -46,9 +48,7 @@ func scanAll(t *testing.T, paths []string) map[string][]occurrence {
 		for k, v := range b {
 			groups[k] = append(groups[k], v...)
 		}
-		for k, r := range m {
-			marked[k] = r
-		}
+		maps.Copy(marked, m)
 	}
 	reported := map[string][]occurrence{}
 	for k, occs := range groups {
@@ -158,7 +158,7 @@ func TestScan_ShortAndSmallBlocksAreBelowThreshold(t *testing.T) {
 // TestScan_NormalisesWhitespace pins that reindentation does not hide a copy —
 // the commonest way a pasted block differs from its original.
 func TestScan_NormalisesWhitespace(t *testing.T) {
-	indented := ""
+	var indented strings.Builder
 	for _, l := range []string{
 		"\t// This is a long explanatory comment block that exists only so the test",
 		"\t//   has something over the minimum line count and the minimum character",
@@ -166,11 +166,11 @@ func TestScan_NormalisesWhitespace(t *testing.T) {
 		"\t// which is exactly the property that makes a copy of it hard to notice",
 		"\t// when it is pasted above a second, unrelated function.",
 	} {
-		indented += l + "\n"
+		indented.WriteString(l + "\n")
 	}
 	got := scanAll(t, writeGo(t, map[string]string{
 		"a/a.go": "package a\n\n" + block + "func A() {}\n",
-		"b/b.go": "package b\n\nfunc B() {\n" + indented + "\tx := 1\n\t_ = x\n}\n",
+		"b/b.go": "package b\n\nfunc B() {\n" + indented.String() + "\tx := 1\n\t_ = x\n}\n",
 	}))
 	if len(got) != 1 {
 		t.Fatalf("reported %d groups, want 1 (reindentation must not hide a copy)", len(got))
