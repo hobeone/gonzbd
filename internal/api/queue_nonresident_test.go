@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -74,7 +75,7 @@ func TestBuildSlot_NonResidentJob(t *testing.T) {
 			wantBytes, wantPar2Bytes, wantPar2Files)
 	}
 
-	slot := buildSlot(job, false, 0, 0, nil)
+	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
 
 	if slot.Bytes != wantBytes {
 		t.Errorf("Bytes = %d, want %d", slot.Bytes, wantBytes)
@@ -95,7 +96,7 @@ func TestBuildSlot_NonResidentJobHasNoCurrentFile(t *testing.T) {
 	t.Parallel()
 	job := newEvictedJob(t)
 
-	if got := buildSlot(job, false, 0, 0, nil).CurrentFile; got != "" {
+	if got := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{}).CurrentFile; got != "" {
 		t.Errorf("CurrentFile = %q, want empty for a non-resident job", got)
 	}
 }
@@ -149,7 +150,7 @@ func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
 		t.Fatalf("fixture guard: TotalBytes() = %d, want %d", got, want)
 	}
 
-	slot := buildSlot(job, false, 0, 0, nil)
+	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
 
 	if got, want := slot.Bytes, int64(10_000); got != want {
 		t.Errorf("Bytes = %d, want %d (deferred recovery volume must not count)", got, want)
@@ -173,7 +174,7 @@ func TestBuildSlot_DeferredPar2VolumeExcludedAfterDownload(t *testing.T) {
 
 	ackDone(t, q, job.ID, "c1@t")
 
-	slot := buildSlot(job, false, 0, 0, nil)
+	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
 
 	if got, want := slot.Percentage, 100; got != want {
 		t.Errorf("Percentage = %d, want %d (content complete, deferred volume must not count)", got, want)

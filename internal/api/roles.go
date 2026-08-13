@@ -37,6 +37,11 @@ type DownloaderControl interface {
 	ResumeDownloads()
 	DisconnectAll()
 	UnblockServer(name string) bool
+	// ReevaluateStalls asks the application to re-check every job parked by a
+	// storage fault, now rather than at its next interval. This is R19's "and
+	// on user action": a user who has just cleared a full disk and pressed
+	// resume should not wait out the interval as well. Non-blocking.
+	ReevaluateStalls()
 }
 
 // ConfigReloader covers hot-reload of configuration subsections.
@@ -65,6 +70,10 @@ type StatusReporter interface {
 	// application-wide mutex once per request instead of once per job
 	// (OPT-12).
 	DirectUnpackStatuses() map[string]directunpack.Status
+	// CheckpointStates returns every job's pending bytes, last-barrier time
+	// and stall reason, keyed by job ID. Snapshotted once per request for the
+	// same reason DirectUnpackStatuses is.
+	CheckpointStates() map[string]app.JobCheckpointState
 	// BinaryVersionsInfo returns resolved external-tool version strings
 	// captured at startup, for the status page.
 	BinaryVersionsInfo() app.BinaryVersions

@@ -3,11 +3,14 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 var _ = (*Application).enqueuePostProc
@@ -180,5 +183,102 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	_ = histDB.Close()
 	if err := app.PingDB(ctx); err == nil {
 		t.Error("expected PingDB error after DB close, got nil")
+	}
+}
+
+// TestCheckpointStates_ReportsEveryJobWithAFigureToReport pins the snapshot the
+// queue listing reads. It is one pass under each lock rather than one per job
+// because a listing is polled continuously, and a job that has any of the three
+// figures must appear even when the other two are absent — a job that has
+// written bytes but never checkpointed, and one parked before it wrote
+// anything, are both real and both invisible if the map were keyed off one
+// source.
+func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	application.noteJobBytes("wrote-only", 512)
+	application.noteBarrierRun("barriered-only")
+	application.noteStall("stalled-only", &storagefault.Fault{
+		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
+	})
+
+	got := application.CheckpointStates()
+
+	if n := got["wrote-only"].PendingBytes; n != 512 {
+		t.Errorf("wrote-only PendingBytes = %d, want 512", n)
+	}
+	if got["barriered-only"].LastBarrier.IsZero() {
+		t.Error("barriered-only has no LastBarrier; a job that has checkpointed but written " +
+			"nothing since is missing from the snapshot entirely")
+	}
+	if r := got["stalled-only"].StallReason; !strings.Contains(r, "no space") {
+		t.Errorf("stalled-only StallReason = %q, want it to name the condition", r)
+	}
+	if _, ok := got["never-seen"]; ok {
+		t.Error("a job with nothing to report appears in the snapshot")
+	}
+}
+
+// TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
+// listing's bytes_durable rests on: on this design the only things that mark an
+// article Done are the barrier's ack and a replay of a committed extent cache,
+// so a downloaded byte IS a durable byte. A second counter would be a second
+// representation of one fact, free to drift.
+func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+	snap := application.queue.SnapshotJob(job.ID)
+	want := DurableBytesOf(snap.Progress())
+	if want != 0 {
+		t.Fatalf("fixture already reports %d durable bytes; the assertion below cannot tell "+
+			"a real figure from a leaked one", want)
+	}
+	application.noteJobBytes(job.ID, 300)
+
+	got := application.JobDurability(job.ID)
+
+	if got.DurableBytes != 0 {
+		t.Errorf("DurableBytes = %d before any barrier acked, want 0 — written bytes are "+
+			"being reported as surviving a power loss", got.DurableBytes)
+	}
+	if got.PendingBytes != 300 {
+		t.Errorf("PendingBytes = %d, want 300", got.PendingBytes)
+	}
+}
+
+// TestDurableBytesOf_IsSafeOnAJobWithNoProgress pins the nil case the listing
+// can reach: Job.Progress() is nil for a job whose hydration failed, and a
+// panic in a queue poll takes the whole API down.
+func TestDurableBytesOf_IsSafeOnAJobWithNoProgress(t *testing.T) {
+	if got := DurableBytesOf(nil); got != 0 {
+		t.Errorf("DurableBytesOf(nil) = %d, want 0", got)
+	}
+}
+
+// TestCheckpointState_ComposesTheThreeSourcesForOneJob pins the single-job form
+// the whole-queue snapshot and JobDurability both build on. The three figures
+// come from three different maps under two different locks, and a job that has
+// only one of them must still report that one.
+func TestCheckpointState_ComposesTheThreeSourcesForOneJob(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	application.noteJobBytes("job-1", 128)
+	application.noteBarrierRun("job-1")
+	application.noteStall("job-1", &storagefault.Fault{
+		Op: "sync", Path: "/data/y.bin", Err: syscall.EIO,
+	})
+
+	got := application.checkpointState("job-1")
+
+	if got.PendingBytes != 128 {
+		t.Errorf("PendingBytes = %d, want 128", got.PendingBytes)
+	}
+	if got.LastBarrier.IsZero() {
+		t.Error("LastBarrier is zero although a barrier was recorded")
+	}
+	if !strings.Contains(got.StallReason, "input/output error") {
+		t.Errorf("StallReason = %q, want it to name the condition", got.StallReason)
+	}
+
+	if empty := application.checkpointState("job-2"); empty != (JobCheckpointState{}) {
+		t.Errorf("checkpointState for an unknown job = %+v, want the zero value — a listing "+
+			"would show every job as stalled", empty)
 	}
 }

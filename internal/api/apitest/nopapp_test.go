@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -44,6 +45,20 @@ func TestNopApp_Contract(t *testing.T) {
 	if statuses := app.DirectUnpackStatuses(); statuses != nil {
 		t.Errorf("DirectUnpackStatuses() = %v, want nil", statuses)
 	}
+	if states := app.CheckpointStates(); states != nil {
+		t.Errorf("CheckpointStates() = %v on an unconfigured NopApp, want nil", states)
+	}
+	// ReevaluateStalls must tolerate a nil counter — most tests do not wire
+	// one — and must count when one is present, or the R19 "on user action"
+	// assertions in internal/api would pass against a handler that never asks.
+	app.ReevaluateStalls()
+	var calls atomic.Int64
+	counting := NopApp{ReevaluatedVal: &calls}
+	counting.ReevaluateStalls()
+	if got := calls.Load(); got != 1 {
+		t.Errorf("ReevaluateStalls calls = %d, want 1", got)
+	}
+
 	if cache := app.ArticleCacheBytes(); cache != 0 {
 		t.Errorf("ArticleCacheBytes() = %d, want 0", cache)
 	}
