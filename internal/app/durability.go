@@ -613,6 +613,41 @@ func (app *Application) shutdownCheckpoint() {
 // Outstanding. The timeout is what keeps this bounded: it must not turn a
 // shutdown into an unbounded wait on a contended database.
 //
+// # Why the apply loop is NOT also stopped, which Task 12b left open
+//
+// The paragraph above describes a race, and it is worth being exact about it
+// rather than reading "the checkpoint acks it" as a guarantee. On a signal,
+// signal.NotifyContext cancels the root context BEFORE Application.Shutdown
+// runs, so pipeline.run returns at once, and its deferred close(work) +
+// wg.Wait() lets the workers finish the results already buffered in `work` —
+// up to 2*numWorkers of them — each with an already-cancelled ctx. Those
+// applies run CONCURRENTLY with the shutdown checkpoint.
+//
+// Task 12b bounded Class A here and explicitly did not decide whether the
+// apply loop should stop instead. It should not, for three reasons:
+//
+//   - Stopping it moves the wrong way. Those articles are already downloaded
+//     and decoded; dropping them guarantees a re-fetch, where letting them
+//     apply usually converts them into bytes on disk. The proposal costs
+//     strictly more rework than the status quo.
+//   - It cannot over-claim. The ack set is exactly what SyncTarget.Drain
+//     returned, and Drain is a syncOp on the assembler's single worker
+//     goroutine — the same goroutine and the same channel that serve
+//     WriteArticle (X1). A late write therefore lands wholly inside the
+//     drained set or wholly outside it; there is no interleaving that could
+//     ack an article whose bytes are not covered by the fsync.
+//   - Losing the ack is not losing the bytes. An article written after the
+//     checkpoint's Drain is on disk with a Class A fact and no durable bit.
+//     The write moved the file's mtime, so the next start fails Resume's
+//     stat fast path, recomputes from the bytes, verifies the region against
+//     its recorded CRC, and sets the bit. The article is recovered, not
+//     re-fetched.
+//
+// So all three of "the write lands", "the fact records it" and "the
+// checkpoint acks it" are wanted, but only the first two are ordered. The
+// third is a race whose loss costs one recomputation on the next start,
+// which is R3's bounded rework. This is correct by design, not a defect.
+//
 // A failure still costs a re-fetch and nothing else (R3): the missing fact
 // makes the article unprovable on resume, and unprovable resolves to
 // Outstanding.
