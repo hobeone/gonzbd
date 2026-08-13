@@ -43,6 +43,16 @@ type ResumeResult struct {
 	// Restart reports that the file is gone, so nothing can be resumed
 	// against it and every article is Outstanding.
 	Restart bool
+	// BytesDurable is the summed Length of the facts this result proved
+	// durable. It is carried rather than re-derived because committing an
+	// extent without it would zero the figure the API reports for the file.
+	BytesDurable int64
+	// Size and ModTimeNs are the file's stat at the moment this result was
+	// produced. They are R13's validity stamp, and a written-back extent
+	// carrying anything else fails S7 on the next start and throws away a
+	// cache that is actually valid.
+	Size      int64
+	ModTimeNs int64
 }
 
 // Resumer answers, from stable storage alone, which of a file's articles still
@@ -124,9 +134,44 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 			VerifiedTo:   ext.VerifiedTo,
 			PrefixCRC:    ext.PrefixCRC,
 			HasPrefixCRC: ext.HasPrefixCRC && ext.VerifiedTo == fi.Size(),
+			BytesDurable: ext.BytesDurable,
+			Size:         ext.Size,
+			ModTimeNs:    ext.ModTimeNs,
 		}, nil
 	}
-	return r.recompute(ctx, jobID, fileIdx, path, fi.Size(), firstArtIdx, artCount)
+	res, err := r.recompute(ctx, jobID, fileIdx, path, fi.Size(), firstArtIdx, artCount)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+	res.ModTimeNs = fi.ModTime().UnixNano()
+
+	// Write the recomputation back over the record it disproved.
+	//
+	// This makes the Resumer a second writer of Class B, which the original
+	// design forbade on the grounds that "a committed extent claims a
+	// completed fsync stands behind it, and a resume does not perform that
+	// fsync". The premise conflates the mechanism with the property: the fsync
+	// exists to make bytes survive a restart, and reading those bytes back
+	// AFTER a restart and matching their recorded CRC observes that same
+	// property directly, with strictly better evidence.
+	//
+	// The cost of not doing it was mis-stated as "re-verification on the next
+	// restart is bounded rework". There is no re-verification. Nothing clears
+	// a bit in the store, priorExtent ORs the stored bitmap as its base, so
+	// the next checkpoint re-commits the disproven bit with a fresh stamp that
+	// then validates — and the next start's fast path adopts it without
+	// reading a byte. The bit does not cost rework; it comes back.
+	//
+	// Safe as a second writer because of WHEN it runs: the startup sweep
+	// completes before the downloader can dispatch, so no barrier is running
+	// for any job and there is exactly one writer at this moment.
+	//
+	// Only after a recomputation. The fast path adopted what is already
+	// stored, so committing it would rewrite a row with its own contents.
+	if err := r.writeBack(ctx, jobID, fileIdx, res); err != nil {
+		return ResumeResult{}, err
+	}
+	return res, nil
 }
 
 // committedExtent loads the Class B cache for one file, reporting whether one
@@ -165,6 +210,30 @@ func (r *Resumer) committedExtent(ctx context.Context, jobID string, fileIdx int
 	return FileExtent{}, false, nil
 }
 
+// writeBack commits a recomputed result as the file's Class B record.
+//
+// Every field is filled from the result rather than merged into the stored
+// row, because the stored row is exactly what the recomputation disproved:
+// carrying any part of it forward would preserve the claim being corrected.
+// BytesDurable in particular has to come from the recomputation — committing
+// without it would zero the figure the API reports for this file.
+func (r *Resumer) writeBack(ctx context.Context, jobID string, fileIdx int32, res ResumeResult) error {
+	ext := FileExtent{
+		FileIdx:      fileIdx,
+		Durable:      res.Durable,
+		VerifiedTo:   res.VerifiedTo,
+		PrefixCRC:    res.PrefixCRC,
+		HasPrefixCRC: res.HasPrefixCRC,
+		BytesDurable: res.BytesDurable,
+		Size:         res.Size,
+		ModTimeNs:    res.ModTimeNs,
+	}
+	if err := r.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {
+		return fmt.Errorf("durability: resume write-back job=%s file=%d: %w", jobID, fileIdx, err)
+	}
+	return nil
+}
+
 // recompute derives the done-set from the file's bytes, which S4 makes correct
 // by definition, and the gapless-prefix CRC from the same read (R24).
 func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, path string, size int64, firstArtIdx int32, artCount int) (ResumeResult, error) {
@@ -186,6 +255,16 @@ func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, pa
 		return ResumeResult{}, err
 	}
 
+	// Summed here rather than by the caller: verified is parallel to facts and
+	// is the only place that knows which regions were proven, so deriving it
+	// anywhere else would re-walk the same two slices to reach the same answer.
+	var bytesDurable int64
+	for i, f := range facts {
+		if verified[i] {
+			bytesDurable += int64(f.Length)
+		}
+	}
+
 	prefix, crc, whole := gaplessPrefixCRC(facts, verified, size)
 	r.log.Info("durability resume recomputed a file from its bytes",
 		"job", jobID, "file", fileIdx, "articles_durable", durable.Count(),
@@ -196,6 +275,8 @@ func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, pa
 		PrefixCRC:    crc,
 		HasPrefixCRC: whole,
 		Recomputed:   true,
+		BytesDurable: bytesDurable,
+		Size:         size,
 	}, nil
 }
 

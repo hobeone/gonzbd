@@ -443,14 +443,26 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 	}
 }
 
-// TestResumeAtStartup_DoesNotCommitClassB pins the rule that the barrier is
-// the only writer of Class B.
+// TestResumeAtStartup_LeavesClassBAloneOnTheFastPath pins the half of the
+// write-back rule that still holds: an ADOPTED result rewrites nothing.
 //
-// A committed extent asserts that a completed fsync stands behind it. A resume
-// proves what is on disk without performing that fsync, so it has no licence
-// to mint one — re-verifying on the next restart is bounded rework and is the
-// correct cost.
-func TestResumeAtStartup_DoesNotCommitClassB(t *testing.T) {
+// This test previously asserted the stronger rule that the sweep never writes
+// Class B at all, on the reasoning that a resume "has no licence to mint" a
+// committed extent without performing an fsync. That rule was overturned,
+// because its stated cost was wrong: not writing back does not buy
+// re-verification on the next restart, it lets a disproven bit survive.
+// Nothing clears a bit in the store, priorExtent ORs the stored bitmap as its
+// base, so the next checkpoint re-commits the bit with a fresh stamp that
+// validates, and the next start adopts it without reading a byte.
+//
+// What survives is the narrower rule this fixture actually exercises. Its
+// committed stamp matches the file, so Resume takes the stat fast path and
+// adopts what is already stored — and rewriting a row with its own contents is
+// pointless work. Note that the old test's name outran its fixture: it could
+// only ever observe the fast path, so it never held the general rule it
+// claimed. The recomputation half is pinned in
+// TestResume_WritesTheRecomputationBackToTheStore.
+func TestResumeAtStartup_LeavesClassBAloneOnTheFastPath(t *testing.T) {
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
 	f.appendFacts()
@@ -469,7 +481,8 @@ func TestResumeAtStartup_DoesNotCommitClassB(t *testing.T) {
 	f.assertDone(a, [resumeArts]bool{true, false, true})
 
 	if after := f.dumpExtents(); after != before {
-		t.Errorf("resume rewrote Class B:\n before %q\n after  %q", before, after)
+		t.Errorf("an ADOPTED resume rewrote Class B with its own contents:\n before %q\n after  %q",
+			before, after)
 	}
 }
 

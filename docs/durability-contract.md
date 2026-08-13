@@ -79,7 +79,7 @@ class a fact belongs to determines whether it needs a barrier.
 | Asserts | *If* the bytes at `[Offset, Offset+Length)` are present, they hash to `CRC32`. **Nothing about presence.** | Those bytes **are** present on stable storage. |
 | True from | the moment the article is decoded — and forever after | only after a completed `fsync` |
 | Ordering vs. the write | **none** (R2). May be committed before, during or after the write, or when the write never happens at all | strictly after the `fsync` (S1) |
-| Barrier required | no | yes — `durability.Barrier` is the only writer |
+| Barrier required | no | yes during a download — `durability.Barrier` is the only writer once articles are arriving. `durability.Resumer` also writes, at startup only, when a recomputation disproves the stored record (see §Resume write-back). |
 | Authoritative | yes (S5) | **never**. Where it disagrees with a recomputation, the recomputation is correct by definition (S4) |
 | Losing a suffix costs | a re-fetch (R3), and a skipped truncate if the file completes first (§4) | a recomputation |
 | Stored in | `article_facts` | `file_extents` |
@@ -577,6 +577,40 @@ Then `Queue.ReplaceFromResume` installs the finding. It is authoritative
 so for each file named there an article the resume did not verify goes back to
 Outstanding, and the job's derived figures are recomputed from the bitmaps so its
 reported health matches its per-article state.
+
+### Resume write-back
+
+A **recomputed** result is committed back over the Class B record it disproved,
+from inside `Resumer.Resume`. An **adopted** result is not: it came from the
+stored row, so rewriting it would restate its own contents.
+
+This makes the `Resumer` a second writer of Class B, and the design originally
+forbade it: *"a committed extent claims a completed fsync stands behind it, and
+a resume does not perform that fsync."* Two things are wrong with that.
+
+The premise conflates the mechanism with the property. An `fsync` exists to
+make bytes survive a restart. Reading those bytes back **after** a restart and
+matching their recorded CRC observes that property directly, with strictly
+better evidence than a syscall's return value.
+
+The stated cost of omitting the write-back — *"re-verification on the next
+restart is bounded rework"* — does not exist. Nothing clears a bit in
+`file_extents`: `Durable.Set` is the only bit mutation in the package.
+`Barrier.priorExtent` adopts the stored bitmap as an **OR-base**, so the next
+checkpoint re-commits the disproven bit together with a fresh `Size`/`ModTimeNs`
+from its own `Stat` — a stamp that then validates against the file. The next
+start's fast path adopts it without reading a byte, and `reevaluateStall`'s
+third phase replays the same rows through the additive `SeedFromExtents`. A bit
+the recomputation disproved does not cost rework; it comes back.
+
+Safe as a second writer because of **when** it runs: the startup sweep
+completes before the downloader can dispatch, so no barrier is running for any
+job and there is exactly one writer at that moment.
+
+Every field of the written-back extent comes from the recomputation, including
+`BytesDurable` — merging any part of the stored row forward would preserve the
+claim being corrected, and committing without `BytesDurable` would zero the
+figure the API reports for the file.
 
 **A correction that CLEARS a bit is persisted before it returns**, and that is
 load-bearing rather than tidy. Every re-hydration in the queue re-reads

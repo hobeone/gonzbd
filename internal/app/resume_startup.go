@@ -63,11 +63,20 @@ type fileResumer interface {
 //
 // # What it does NOT do
 //
-// It never commits an extent. The barrier is the only writer of Class B,
-// because a committed extent asserts that a completed fsync stands behind it,
-// and a resume proves what is on disk without performing that fsync. Paying
-// the verification again on the next restart is bounded rework and is the
-// correct cost.
+// It commits no extent ITSELF, but it is no longer true that the barrier is
+// the only writer of Class B: durability.Resumer writes a RECOMPUTED result
+// back over the record it disproved, from inside Resume.
+//
+// The rule that used to sit here — a resume "has no licence to mint" a
+// committed extent without performing the fsync — mis-stated the cost of
+// omission as "paying the verification again on the next restart". There is no
+// second verification. Nothing clears a bit in the store, priorExtent ORs the
+// stored bitmap as its base, so the next checkpoint re-commits a disproven bit
+// with a fresh stamp that validates, and the next start's fast path adopts it
+// without reading a byte. The bit does not cost rework; it comes back.
+//
+// An ADOPTED result still writes nothing, because it came from the stored row
+// in the first place.
 //
 // A non-resident job is skipped rather than hydrated: ReplaceFromResume
 // installs bits into the LIVE job's JobProgress, which requires a resident
