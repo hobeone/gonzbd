@@ -657,3 +657,41 @@ func TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport(t *testing.T) {
 			"re-report nothing and FinalizeFile would trim below real bytes")
 	}
 }
+
+// TestNewFileWriter_BindsSyncFileToTheRealHandle closes the one level of hole
+// the syncFile seam still had.
+//
+// TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport pins that Sync
+// CALLS w.syncFile in the right order. It says nothing about what syncFile
+// holds, because that test installs its own stub. So rebinding
+// `w.syncFile = handle.Sync` to `func() error { return nil }` in newFileWriter
+// compiled and left the ENTIRE suite green — the same "delete the fsync and
+// nothing notices" hole that motivated the seam, one level down.
+//
+// This is a problem the writeAt seam does not have. Its default binding is
+// pinned implicitly by every test that writes through and asserts bytes on
+// disk. A successful fsync has no observable effect at all, so nothing pins
+// syncFile's binding implicitly and it has to be asserted directly.
+//
+// The observable used here is failure, not success: with the handle closed, a
+// syncFile bound to the real *os.File returns ErrClosed, while any stand-in
+// that ignores the handle returns nil. That distinguishes the binding without
+// needing to observe a successful fsync, which is not observable.
+func TestNewFileWriter_BindsSyncFileToTheRealHandle(t *testing.T) {
+	w := newTestFileWriter(t)
+
+	// Control: while the handle is open the real fsync succeeds. Without this,
+	// a syncFile that ALWAYS errored would satisfy the assertion below.
+	if err := w.syncFile(); err != nil {
+		t.Fatalf("syncFile on an open handle = %v, want nil", err)
+	}
+
+	if err := w.handle.Close(); err != nil {
+		t.Fatalf("close handle: %v", err)
+	}
+	if err := w.syncFile(); err == nil {
+		t.Error("syncFile returned nil after its file handle was closed; it is not " +
+			"bound to the real *os.File, so the fsync every ack depends on is not " +
+			"actually being issued")
+	}
+}
