@@ -276,7 +276,7 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
+func TestBytesDownloaded_TrackedByDurableAcks(t *testing.T) {
 	q := New()
 	job := makeTestJob("j1", 2, 3) // 6 articles × 1000 bytes = 6000 bytes total
 	_ = q.Add(job)

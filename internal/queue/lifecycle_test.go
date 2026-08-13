@@ -129,7 +129,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 		}
 	})
 
-	t.Run("count decreases after MarkArticleDone", func(t *testing.T) {
+	t.Run("count decreases after a durable ack", func(t *testing.T) {
 		ackDone(t, q, j.ID, articleID(0, 0))
 		ackDone(t, q, j.ID, articleID(0, 1))
 		count, err := q.CountUnfinishedArticles(j.ID, 0)
@@ -141,7 +141,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 		}
 	})
 
-	t.Run("count decreases after MarkArticleFailed", func(t *testing.T) {
+	t.Run("count decreases after a permanent-failure ack", func(t *testing.T) {
 		ackFailed(t, q, j.ID, articleID(0, 2))
 		count, err := q.CountUnfinishedArticles(j.ID, 0)
 		if err != nil {
@@ -492,7 +492,7 @@ func TestTotalRemainingBytes(t *testing.T) {
 	// Mark one article done → remaining should decrease by 100_000.
 	ackDone(t, q, a.ID, articleID(0, 0))
 
-	t.Run("decreases after MarkArticleDone", func(t *testing.T) {
+	t.Run("decreases after a durable ack", func(t *testing.T) {
 		if got := q.TotalRemainingBytes(); got != 500_000 {
 			t.Errorf("TotalRemainingBytes = %d, want 500000", got)
 		}
@@ -501,7 +501,7 @@ func TestTotalRemainingBytes(t *testing.T) {
 	// Mark one article failed → remaining also decreases.
 	ackFailed(t, q, a.ID, articleID(0, 1))
 
-	t.Run("decreases after MarkArticleFailed", func(t *testing.T) {
+	t.Run("decreases after a permanent-failure ack", func(t *testing.T) {
 		if got := q.TotalRemainingBytes(); got != 400_000 {
 			t.Errorf("TotalRemainingBytes = %d, want 400000", got)
 		}
