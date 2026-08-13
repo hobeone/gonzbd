@@ -27,8 +27,13 @@ type fileResumer interface {
 	Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (durability.ResumeResult, error)
 }
 
-// resumeAllJobs seeds every resident job's work set from what is actually on
-// stable storage, and is the production caller L3 was missing.
+// resumeAllJobs re-derives every DOWNLOADING job's work set from what is
+// actually on stable storage, and is the production caller L3 was missing.
+//
+// "Downloading" rather than "resident", and that word is the guard rather than
+// a description of it — see the phase note below. It re-derives rather than
+// seeds: the result REPLACES what Store.RestoreJobProgress restored, including
+// clearing a bit whose bytes are gone (#362).
 //
 // durability.Resumer and the queue's seeding entry points were both built and
 // tested with nothing calling either, so a restart re-downloaded every byte an
@@ -94,12 +99,24 @@ type fileResumer interface {
 // there, because skipping leaves them alone. So the conservative direction for
 // a processing job is precisely to keep the record and not re-derive it.
 //
-// What would break this argument, stated so a later change has to notice:
-// anything that rewrites a job's files while it is still PhaseActive — a
-// DirectUnpack that wrote back into its source rather than reading it, or a
-// repair moved earlier than download-complete — and any new status mapped into
-// PhaseActive that is not download-only. Both would put a non-assembler writer
-// inside the window this guard trusts.
+// What would break this argument, stated so a later change has to notice.
+//
+// PhaseActive is StatusDownloading and StatusFetching, and the second one is
+// ALREADY not download-only: constants.StatusFetching is "downloading extra
+// par2 files for repair", which is a repair-time status. The guard is sound
+// today only because nothing assigns it — it exists in the transition table,
+// the phase mapping and the API's vocabulary, and no code path sets it. That
+// is a fact about the writers, not an invariant the type enforces (Job.Phase's
+// own doc makes the same point about Grabbing and Checking, and notes that the
+// load paths assign Status from a persisted string without validating it). So
+// the hazard here is present and load-bearing on unreachability: the first
+// code that starts setting StatusFetching puts a repair-time job inside the
+// window this guard trusts, and must move it out of PhaseActive or bound the
+// sweep on the status rather than the phase.
+//
+// The other way in is a non-assembler writer arriving inside PhaseActive at
+// all — a DirectUnpack that wrote back into its source rather than reading it,
+// or a repair moved earlier than download-complete.
 func (app *Application) resumeAllJobs(ctx context.Context) error {
 	if app.resumer == nil {
 		return nil
@@ -121,6 +138,46 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 			// Not resident. Nothing here can install bits into it, and that
 			// is reported rather than silently skipped so the gap is visible
 			// in a log rather than only in this comment.
+			//
+			// No reachable state gets here any more, and that is worth writing
+			// down so nobody spends an afternoon building a fixture for it.
+			// The phase bound above already excluded everything that used to
+			// arrive non-resident, and a PhaseActive job is resident on every
+			// route into that phase: promotion attaches the manifest before it
+			// sets StatusDownloading; SetStatus re-hydrates on the way into a
+			// resident status, or fails and leaves the status alone; and
+			// SQLiteStore.Get REMOVES a job with files whose manifest file is
+			// missing rather than returning it non-resident, so the
+			// crash-with-a-lost-manifest case never reaches the queue at all.
+			// Verified by replacing this arm with a panic: nothing in
+			// ./internal/app reaches it.
+			//
+			// It stays because the alternative is a nil dereference if any of
+			// those three changes, and because Snapshot deliberately does not
+			// hydrate — "has a resident status" and "has a manifest on this
+			// clone" are two facts, not one. Read the absence of a test as the
+			// absence of a state to write one against, not as permission to
+			// delete the guard.
+			//
+			// No reachable state gets here any more, and the reason is worth
+			// writing down so nobody spends an afternoon building a fixture
+			// for it. The phase bound above already excluded everything that
+			// used to arrive non-resident, and a PhaseActive job is resident
+			// on every route into that phase: promotion attaches the manifest
+			// before it sets StatusDownloading, SetStatus re-hydrates on the
+			// way into a resident status (or fails and leaves the status
+			// alone), and SQLiteStore.Get REMOVES a job with files whose
+			// manifest is missing rather than returning it non-resident — so
+			// the crash-with-a-lost-manifest case never reaches the queue at
+			// all. Verified by replacing this arm with a panic: nothing in
+			// ./internal/app reaches it.
+			//
+			// It stays because the alternative is a nil dereference if any of
+			// those three ever changes, and because Snapshot deliberately does
+			// not hydrate, so "resident status" and "has a manifest here" are
+			// two facts rather than one. Do not read the absence of a test as
+			// permission to delete it; read it as the absence of a state to
+			// write one against.
 			app.log.Debug("resume sweep skipped a non-resident job",
 				"job", snap.ID, "status", snap.Status, "err", err)
 			continue

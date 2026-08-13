@@ -203,15 +203,29 @@ func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 // TestResumeAllJobs_SeedsResidentAndSkipsNonResident pins the residency rule
 // in both directions at once.
 //
-// SeedFromExtents installs bits into the LIVE job's progress, which needs a
+// ReplaceFromResume installs bits into the LIVE job's progress, which needs a
 // resident manifest. A non-resident job cannot be seeded, and the sweep must
 // step over it rather than fail the whole startup — while the resident job
 // beside it is still seeded.
+//
+// # Which guard actually stops the second job
+//
+// The second job is Paused, and since the phase bound was added for the
+// post-processing hazard, THE PHASE BOUND is what skips it — a paused job
+// never reaches the residency check. So read this as "a job that is neither
+// downloading nor resident contributes nothing", not as a pin on the residency
+// arm specifically. Verified rather than assumed: replacing that arm with a
+// panic leaves the whole of ./internal/app green.
+//
+// The residency arm has no pin because no reachable state builds one; the
+// reachability argument is on resumeAllJobs, at the arm itself. It is a guard,
+// not a branch with a test owing against it.
 func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	f := newResumeUnitFixture(t)
 
-	// A second job, paused so the queue evicts its manifest. It carries a
-	// committed extent of its own; nothing may reach it.
+	// A second job, paused so the queue evicts its manifest — and so the
+	// phase bound skips it. It carries a committed extent of its own; nothing
+	// may reach it.
 	other, err := queue.NewJob(&nzb.NZB{Files: []nzb.File{{
 		Subject:  "B.bin",
 		Bytes:    unitArtLen,
@@ -258,6 +272,22 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := f.app.queue.SetStatus(other.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(other, Paused): %v", err)
 	}
+	// Read through Snapshot rather than SnapshotJob: SnapshotJob hydrates the
+	// CLONE it returns, so it reports a manifest for an evicted job and would
+	// make this guard unfalsifiable. Snapshot does not hydrate, and it is also
+	// the exact list resumeAllJobs walks.
+	var otherResident bool
+	for _, snap := range f.app.queue.Snapshot() {
+		if snap.ID != other.ID {
+			continue
+		}
+		_, mErr := snap.Manifest()
+		otherResident = mErr == nil
+	}
+	if otherResident {
+		t.Fatal("pausing did not evict the second job's manifest, so it is resident and " +
+			"the assertion below says nothing")
+	}
 	if snap := f.app.queue.Snapshot(); len(snap) != 2 {
 		t.Fatalf("fixture guard: %d jobs in the queue, want 2", len(snap))
 	}
@@ -278,9 +308,9 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 			t.Errorf("article %d belongs to the file with no resolved name and must stay Outstanding", i)
 		}
 	}
-	// A guard rather than a pin on today's code: SeedFromExtents rejects a
-	// non-resident job outright, so nothing currently reachable could set this
-	// bit. It is here for the change that would — hydrating the queue at
+	// A guard rather than a pin on today's code: the sweep steps over a job
+	// it cannot read a manifest for, so nothing currently reachable could set
+	// this bit. It is here for the change that would — hydrating the queue at
 	// startup to widen the sweep's coverage — because that change must bring
 	// a verified path with it, not adopt the cache on residency alone.
 	if got := f.app.queue.SnapshotJob(other.ID); got.Progress().ArticleDone(0) {

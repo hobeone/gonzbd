@@ -65,13 +65,17 @@ const (
 	// contention: a lock this waits out is one the driver would have waited
 	// out anyway.
 	//
-	// It does NOT bound the worst case of one Append. SQLiteFactLog.Append is
-	// BeginTx, Prepare, Exec and Commit in sequence, and each may run the busy
-	// handler for its own full 5s, so this ceiling can cut that sequence short
-	// part-way through. That is deliberate and safe in the only direction that
-	// matters: a truncated append rolls back and records nothing, which costs
-	// a re-fetch and nothing else (R3). Do not read the figure as "one Append
-	// always completes or fails within 5s".
+	// It does NOT bound the worst case of one Append, so do not read the
+	// figure as "one Append always completes or fails within 5s".
+	// SQLiteFactLog.Append is BeginTx, Prepare, Exec and Commit in sequence
+	// and this ceiling covers the whole sequence, so a wait in the first step
+	// can leave the rest of it without room and cut it short part-way through.
+	// In practice _txlock=immediate takes the write lock at BEGIN, so
+	// contention is one wait at BeginTx rather than one per step — nearer a
+	// single 5s than four — but that is a property of the DSN, not of this
+	// constant. Being cut short is deliberate and safe in the only direction
+	// that matters: a truncated append rolls back and records nothing, which
+	// costs a re-fetch and nothing else (R3).
 	//
 	// The cost it buys is a shutdown that can now block here for up to this
 	// long per in-flight article, where a cancelled context previously
@@ -877,15 +881,24 @@ func (app *Application) Start(ctx context.Context) error {
 	// teardown marked, so both are re-dispatchable. It changes no job's
 	// STATUS — the comment here used to say "Downloading → Queued", which it
 	// has never done, and that is worth being exact about directly above the
-	// sweep below: the sweep can only seed a RESIDENT job, and a job's status
-	// is what decides its residency at load.
+	// sweep below, because a job's status is what decides whether the sweep
+	// touches it at all.
 	app.queue.ClearAllEmitted()
-	// L3: seed each resident job's work set from what an earlier run already
-	// got onto stable storage, BEFORE the downloader below can dispatch a
-	// single article. Placed after ClearAllEmitted so the reset cannot undo
-	// it, and before dl.Start so a durable article is never requested at all
-	// — a seed that lands after dispatch begins still marks the right bits,
-	// but the re-fetch it exists to prevent has already gone out on the wire.
+	// L3: re-derive each DOWNLOADING job's work set from what is actually on
+	// stable storage, BEFORE the downloader below can dispatch a single
+	// article. Placed after ClearAllEmitted so the reset cannot undo it, and
+	// before dl.Start so a durable article is never requested at all — a seed
+	// that lands after dispatch begins still marks the right bits, but the
+	// re-fetch it exists to prevent has already gone out on the wire.
+	//
+	// "Downloading", not "resident", and the distinction is load-bearing
+	// rather than pedantic. The sweep is AUTHORITATIVE: it clears a bit whose
+	// bytes it cannot find (#362). JobPhase.IsResident is also true for the
+	// post-processing statuses, where par2 repairs a file in place and the
+	// move relocates it, so a recomputation there would clear correct state.
+	// Do not widen this to residency on the strength of "it can only seed a
+	// resident job" — that was the bound before #362 and it is the bug.
+	// resumeAllJobs' own doc has the full argument.
 	if err := app.resumeAllJobs(app.ctx); err != nil {
 		_ = app.assembler.Stop()
 		return err
