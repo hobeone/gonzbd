@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -62,28 +64,122 @@ func TestFailedCoalescedRunFailsEveryArticleInTheRun(t *testing.T) {
 	}
 }
 
-// TestFailedRunClearsSeenDone pins the half of the failure path that is not
-// an ack. seenDone means "accepted and counted toward TotalParts", so
-// leaving a lost article there would let handleSuccessArticle's duplicate
-// branch discard a retry instead of writing it.
-func TestFailedRunClearsSeenDone(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(8<<20))
-	_ = w.handle.Close()
-
+// TestFailedCoalescedRun_RetryIsWrittenNotDiscarded pins the half of the
+// failure path that is not an ack, end to end.
+//
+// seenDone means "accepted and counted toward TotalParts". flushRun's failure
+// branch calls w.fail on every part of the run, and fail() BOTH inserts into
+// seenFailed AND deletes from seenDone. The delete is the load-bearing half:
+// without it handleSuccessArticle's duplicate branch discards the retry
+// (assembler.go, the `if _, dup := w.seenDone[...]` arm) instead of writing it,
+// so a coalesced run that hit ENOSPC leaves the file permanently short, never
+// acked and never failed. Silent without par2.
+//
+// # Why this test drives the Assembler and not the FileWriter
+//
+// It replaces a version that called w.Accept on a bare FileWriter and asserted
+// len(w.seenDone) == 0. That assertion held UNCONDITIONALLY: seenDone is only
+// ever written by handleSuccessArticle, so a bare writer's map is empty no
+// matter what fail() does. Deleting the seenDone clear left the whole suite
+// green. Reaching the map at all requires the real Assembler path.
+//
+// The assertion is also deliberately the BYTES, not the maps. Asserting
+// "seenDone is empty" re-tests fail() against itself; asserting that a retry
+// actually lands on disk is the property the maps exist to produce, and it is
+// what fails when the clear is dropped.
+func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
+	// 6 x 100_000 = 600_000 bytes, over contiguousRunSize (512 KiB), so the
+	// sixth Accept coalesces all six into ONE run and flushes it. Five would
+	// stay buffered and never reach flushRun at all.
 	const (
 		artCount = 6
 		artSize  = 100_000
 	)
-	for i := range int32(artCount) {
-		_ = w.Accept(articleID{msgID: fmt.Sprintf("msg%d", i), artIdx: i}, int64(i)*artSize, make([]byte, artSize))
+
+	a := newHelperAssembler()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "coalesced.dat")
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = fh.Close() })
+
+	key := fileKey{jobID: "job", fileIdx: 0}
+	w := newFileWriter(fh, path, key, newWriteCache(8<<20))
+	f := &openFile{
+		w:    w,
+		info: FileInfo{Path: path, ExpectedSize: artCount * artSize},
+		key:  key,
 	}
 
+	failWrites := true
+	w.writeAt = func(p []byte, off int64) (int, error) {
+		if failWrites {
+			return 0, syscall.ENOSPC
+		}
+		return fh.WriteAt(p, off)
+	}
+
+	// Each article is filled with a distinct byte, so a short or mis-ordered
+	// file is distinguishable from a merely zero-filled one.
+	body := func(i int) []byte {
+		b := make([]byte, artSize)
+		for j := range b {
+			b[j] = byte('A' + i)
+		}
+		return b
+	}
+	send := func(i int) {
+		a.handleSuccessArticle(f, WriteRequest{
+			JobID:     "job",
+			MessageID: fmt.Sprintf("msg%d", i),
+			ArtIdx:    int32(i), //nolint:gosec // G115: tiny test index
+			Offset:    int64(i) * artSize,
+			Data:      body(i),
+		})
+	}
+
+	// Phase 1 — the whole coalesced run hits ENOSPC.
+	for i := range artCount {
+		send(i)
+	}
 	if len(w.seenDone) != 0 {
-		t.Errorf("seenDone still holds %d articles after their run failed; a later "+
-			"duplicate would be discarded over bytes that are not on disk", len(w.seenDone))
+		t.Errorf("seenDone still holds %d articles after their run failed; a retry "+
+			"would be discarded as a duplicate over bytes that are not on disk",
+			len(w.seenDone))
 	}
 	if len(w.seenFailed) != artCount {
 		t.Errorf("seenFailed holds %d articles, want %d", len(w.seenFailed), artCount)
+	}
+
+	// Phase 2 — the device recovers and every article is re-delivered.
+	failWrites = false
+	for i := range artCount {
+		send(i)
+	}
+	if _, err := w.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain after the retries: %v", err)
+	}
+
+	// Phase 3 — the bytes are the assertion.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(got) != artCount*artSize {
+		t.Fatalf("file is %d bytes, want %d; the retried articles were discarded as "+
+			"duplicates and their bytes never reached disk", len(got), artCount*artSize)
+	}
+	for i := range artCount {
+		want := byte('A' + i)
+		seg := got[i*artSize : (i+1)*artSize]
+		for j, b := range seg {
+			if b != want {
+				t.Fatalf("article %d byte %d = %q, want %q; the retry did not write",
+					i, j, b, want)
+			}
+		}
 	}
 }
 
@@ -485,3 +581,79 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 }
 
 var errFatalProbe = errors.New("permanent article failure (test)")
+
+// TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport is S1's
+// syscall-level pin, and its scope is deliberately narrow.
+//
+// # What it pins
+//
+// That the fsync is ON THE PATH, and that the reported-set is discarded only
+// AFTER it returns nil. Before this test, deleting w.handle.Sync() outright
+// left the whole suite green — crash suite included — so the one syscall the
+// entire durability design rests on was silently deletable.
+//
+// # What it does NOT pin, and what a reader must not conclude
+//
+// It does not pin fsync-to-platter. No unprivileged test can: dirty page cache
+// survives process death, so a SIGKILL cannot distinguish a synced file from an
+// unsynced one, and POSIX_FADV_DONTNEED / drop_caches both skip dirty pages.
+// Real coverage needs a device-mapper log-writes or flakey target, which needs
+// root. See docs/durability-contract.md, Accepted limitations #5, and #363.
+//
+// So this is "the program calls fsync in the right order", not "the bytes are
+// on the platter". The second claim remains unverified in this repository.
+func TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport(t *testing.T) {
+	w := newTestFileWriter(t)
+
+	var syncs int
+	var reportedAtSync int
+	w.syncFile = func() error {
+		syncs++
+		// Captured DURING the syscall: if Sync cleared the set first, the
+		// ordering bug would be invisible to an after-the-fact assertion.
+		reportedAtSync = len(w.reported)
+		return nil
+	}
+
+	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if _, err := w.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(w.reported) == 0 {
+		t.Fatal("nothing was reported before Sync; the fixture proves nothing")
+	}
+
+	if err := w.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if syncs != 1 {
+		t.Errorf("fsync issued %d times, want exactly 1; the durability of every "+
+			"ack rests on this syscall being on the path", syncs)
+	}
+	if reportedAtSync == 0 {
+		t.Error("the reported set was already empty when fsync was called; it must be " +
+			"discarded only AFTER a successful fsync, or a failed sync loses the report")
+	}
+	if len(w.reported) != 0 {
+		t.Errorf("reported set still holds %d after a successful fsync, want 0", len(w.reported))
+	}
+
+	// A FAILING fsync must keep the report, or the next Drain has nothing to
+	// re-report and a retried finalize truncates below bytes that are on disk.
+	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if _, err := w.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	w.syncFile = func() error { return syscall.EIO }
+	if err := w.Sync(context.Background()); err == nil {
+		t.Fatal("Sync returned nil despite a failing fsync")
+	}
+	if len(w.reported) == 0 {
+		t.Error("a FAILED fsync discarded the reported set; the next Drain would " +
+			"re-report nothing and FinalizeFile would trim below real bytes")
+	}
+}
