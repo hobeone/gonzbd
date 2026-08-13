@@ -180,8 +180,17 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 		// Size JobProgress for every job store.Get left non-resident
 		// (progress == nil): Get only restores progress for a
 		// resident-status job whose manifest file is present on disk, so
-		// every StatusQueued/StatusPaused job — and a resident-status job
-		// whose manifest is missing — comes back from List() without one.
+		// every StatusQueued/StatusPaused job comes back from List()
+		// without one.
+		//
+		// A resident-status job whose manifest is MISSING is not in that
+		// set, and the difference matters to anyone trying to build a
+		// fixture for it: when the job has files, Get calls s.Remove and
+		// returns an error, and List drops it entirely rather than
+		// yielding it progress-less. Only the file-less case survives Get,
+		// and it reaches this loop by the StatusQueued/StatusPaused route
+		// anyway. Do not write a test that expects a manifest-less resident
+		// job with files to appear here — it cannot.
 		// The invariant this task establishes is job.progress != nil for
 		// every job in q.byID (docs/queue-lifecycle.md), so this must run
 		// for all of them, not just the subset the loop below re-hydrates.
