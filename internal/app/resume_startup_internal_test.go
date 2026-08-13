@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -361,11 +363,76 @@ func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
 		t.Error("resumeAllJobs returned nil on an already-cancelled context, so a shutdown " +
 			"racing startup would be reported as a clean sweep")
 	}
+	// A forward guard rather than a pin, like the one in the residency test
+	// above: this fixture's only job is non-resident, so the file loop is
+	// never entered and no mutation of either context check can make this
+	// count non-zero. It is here to catch a later change that widens the
+	// sweep to non-resident jobs without carrying the abort with it.
 	if len(counter.calls) != 0 {
 		t.Errorf("resumed %d files on a cancelled context, want 0", len(counter.calls))
 	}
 	if f.app.queue.SnapshotJob(f.job.ID).Progress().ArticleDone(0) {
 		t.Error("an aborted sweep still seeded; the abort must leave the work set untouched")
+	}
+}
+
+// cancelledDuringResume is a shutdown landing in the middle of one file's
+// Resume: it cancels the context and then fails, which is exactly the shape
+// durability.Resumer returns when its stat, read or SQLite query is
+// interrupted.
+//
+// A five-line stub rather than a real interruption because the distinction
+// under test is entirely in how the sweep READS the pair (error, ctx.Err()),
+// and a real race would make which of the two arrived first non-deterministic.
+type cancelledDuringResume struct{ cancel context.CancelFunc }
+
+func (c *cancelledDuringResume) Resume(_ context.Context, jobID string, fileIdx int32, _ string, _ int32, _ int) (durability.ResumeResult, error) {
+	c.cancel()
+	return durability.ResumeResult{}, fmt.Errorf(
+		"durability: resume stat job=%s file=%d: %w", jobID, fileIdx, context.Canceled)
+}
+
+// TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault pins the guard that
+// separates the two ways Resume can fail.
+//
+// They are not interchangeable. A storage fault stalls the job, and a stalled
+// job is paused, non-resident, and skipped by every future sweep — which only
+// runs at startup. So misreading a shutdown as a storage fault costs that job
+// its seed permanently, and persists a "Stalled: context canceled" reason
+// describing a condition that never existed. It is the same
+// permanent-L3-regression loop as discarding the partial extents, reached by
+// an ordinary Ctrl-C during startup rather than by a flaking mount.
+//
+// The assertions are on the distinction, not on the existence of an error:
+// that the abort carries context.Canceled, and that the job was NOT stalled.
+// "An error came back" is the assertion shape that made the cancellation test
+// inert twice on this branch.
+func TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault(t *testing.T) {
+	f := newResumeUnitFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f.app.resumer = &cancelledDuringResume{cancel: cancel}
+
+	err := f.app.resumeAllJobs(ctx)
+
+	// The job's state is checked FIRST, and with t.Error rather than t.Fatal,
+	// so that a regression reports the distinction it actually broke. Leading
+	// with a fatal "an error came back" check would abort the test before
+	// these ran, and "no error" is the same message a dozen unrelated defects
+	// produce.
+	snap := f.app.queue.SnapshotJob(f.job.ID)
+	if snap.Status == constants.StatusPaused {
+		t.Errorf("a shutdown during Resume was routed as a storage fault: status = %q. "+
+			"A stalled job is non-resident and is skipped by every future sweep, so this "+
+			"costs the job its seed permanently", snap.Status)
+	}
+	if strings.HasPrefix(snap.Warning, "Stalled: ") {
+		t.Errorf("a shutdown during Resume was surfaced as a storage condition that never "+
+			"existed: warning = %q", snap.Warning)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to carry context.Canceled — the sweep must report a "+
+			"shutdown as a shutdown rather than reclassify it as a fault of the device", err)
 	}
 }
 
@@ -394,6 +461,11 @@ func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
 		t.Error("file 0 resumed cleanly, but its durable article was discarded because file 1 " +
 			"faulted afterwards — a transient fault must not cost the ground already recovered")
 	}
+	// Also a forward guard, not a pin. On the fault path Resume returns the
+	// zero ResumeResult, so the bitmap is empty and seeds nothing however the
+	// conversion is mutated. S3 itself is pinned by assertDone under
+	// TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles, so nothing
+	// is uncovered here — only this line is not what covers it.
 	if snap.Progress().ArticleDone(1) {
 		t.Error("an article whose bytes are not on disk came back Done")
 	}
