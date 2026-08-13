@@ -498,20 +498,31 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// articles_done is the only source of per-article state THIS
 			// FUNCTION reads; Complete is just a flag alongside it.
 			//
-			// It is no longer the only source in the process. The startup
-			// resume sweep (internal/app/resume_startup.go) verifies each
-			// file's bytes against the Class A fact log and installs its
-			// result through Queue.SeedFromExtents, which is a second writer
-			// of the same per-article bits. The design's S4 makes that
-			// recomputation the authority — "where it disagrees with a
-			// recomputation, the recomputation is correct by definition" —
-			// so the sentence above must not be read as "what this restores
-			// is final". It is not, and today it wrongly wins: SeedFromExtents
-			// only SETS bits and never clears one, so an article this restore
-			// marks done stays done even when the recomputation has just
-			// proved its bytes are gone, and the job completes a file with a
-			// hole in it. That is #362, and it is the precedence bug, not a
-			// bug in what this function reads.
+			// It is not the last word in the process, and must not be read as
+			// one. The startup resume sweep (internal/app/resume_startup.go)
+			// verifies each file's bytes against the Class A fact log and
+			// installs its result through Queue.ReplaceFromResume, which
+			// OVERWRITES the per-article bits restored here for every file it
+			// resumed — including clearing one. The design's S4 is why: "where
+			// it disagrees with a recomputation, the recomputation is correct
+			// by definition". What this function restores is a belief a
+			// previous process wrote; what the sweep installs is what the
+			// bytes on disk support.
+			//
+			// The precedence used to run the other way, and that was #362: the
+			// sweep seeded through the additive Queue.SeedFromExtents, which
+			// never clears a bit, so an article this restore marked done stayed
+			// done even after the recomputation proved its bytes were gone, and
+			// the job completed a file with a zero-filled hole in it.
+			//
+			// The sweep's authority is bounded to the files it actually read.
+			// A file it never resumed — a non-resident job, a file whose name
+			// was never resolved, a file a storage fault stopped it reaching —
+			// keeps exactly what this function restored, because an omission is
+			// silence rather than a finding of absence. A permanently failed
+			// article keeps its bits for the same reason: its bytes were never
+			// on disk, so their absence is the outcome recorded below and not
+			// new evidence.
 			//
 			// Complete used to short-circuit the decode and mark every
 			// article of the file done. That is wrong because Complete means

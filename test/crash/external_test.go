@@ -25,10 +25,12 @@ func externalFixture() harnessOpts {
 // TestExternalModification_TruncatedPartialIsRecomputed pins S4 and the bound
 // on what a falsified cache costs.
 //
-// IT FAILS TODAY, against issue #362, and the failure is this suite working.
-// The recomputation gets the right answer and the answer is discarded, so the
-// job finishes with a completed file that has a hole in it. Do not relax the
-// assertions to make it green.
+// It was committed RED, against issue #362, and the failure was this suite
+// working: the recomputation got the right answer and the answer was
+// discarded, so the job finished with a completed file that had a hole in it.
+// It is green as of the fix — the startup sweep installs its result through
+// the authoritative Queue.ReplaceFromResume rather than the additive
+// Queue.SeedFromExtents. Do not relax the assertions.
 //
 // A clean stop commits an extent whose size and mtime match the file, so the
 // next start would adopt it without reading a byte. Truncating the file
@@ -127,11 +129,11 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 		"%d above were not", below, above, len(survivedRefetched), len(destroyedMissed))
 }
 
-// TestExternalModification_DeletedPartialRestartsTheFile FAILS TODAY against
-// issue #362, the same defect as the test above. It pins the absence
-// branch of S3: with no file there is no evidence for any article, so every
-// one of them is Outstanding again — including the ones a committed extent
-// still claims are durable.
+// TestExternalModification_DeletedPartialRestartsTheFile was committed RED
+// against issue #362, the same defect as the test above, and is green as of
+// the same fix. It pins the absence branch of S3: with no file there is no
+// evidence for any article, so every one of them is Outstanding again —
+// including the ones a committed extent still claims are durable.
 func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
 	opts := externalFixture()
 	h := newHarness(t, opts)
@@ -185,9 +187,8 @@ func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
 // disk must NOT come back over the wire, and the completed file must be
 // exactly the bytes the server served, with the appended garbage gone.
 //
-// The TRIM half is the one that discriminates here. See the note on
-// TestExternalModification_MtimeTouchCostsNoRefetch for why the no-refetch half
-// does not yet.
+// Both halves discriminate. The no-refetch half did not until #362 was fixed —
+// see the note on TestExternalModification_MtimeTouchCostsNoRefetch.
 func TestExternalModification_AppendedGarbageIsTrimmed(t *testing.T) {
 	opts := externalFixture()
 	h := newHarness(t, opts)
@@ -258,16 +259,19 @@ func TestExternalModification_AppendedGarbageIsTrimmed(t *testing.T) {
 // point. A file that finishes correctly says nothing about whether the daemon
 // threw away 2 MiB of verified bytes to get there.
 //
-// # What this test does NOT currently discriminate
+// # What this test discriminates, and what it used to not
 //
-// The no-refetch half passes even with durability.Resumer.Resume neutered to
-// return an empty bitmap — observed, not reasoned. Queue.SeedFromExtents is
-// not the only carrier of "this article is already done": Store.RestoreJobProgress
-// restores job_files.articles_done unconditionally, and that alone is enough to
-// keep the articles off the wire. So this assertion is a regression guard on the
-// OUTCOME, not a pin on the recomputation producing it. It becomes a real pin
-// once the resume sweep is made authoritative over that column — the same change
-// the two failing tests above are waiting for.
+// It is a pin on the recomputation, not merely on the outcome: with
+// durability.Resumer.Resume neutered to return an empty bitmap, every durable
+// article is re-fetched and this fails — observed, not reasoned.
+//
+// That was not true before #362 was fixed. Queue.SeedFromExtents was not the
+// only carrier of "this article is already done": Store.RestoreJobProgress
+// restores job_files.articles_done unconditionally, and that alone kept the
+// articles off the wire whatever the resume concluded. Making the startup sweep
+// authoritative over that column — Queue.ReplaceFromResume — is what turned this
+// assertion into a pin, and the same neutering that leaves it green again would
+// mean the precedence has been reverted.
 func TestExternalModification_MtimeTouchCostsNoRefetch(t *testing.T) {
 	opts := externalFixture()
 	h := newHarness(t, opts)

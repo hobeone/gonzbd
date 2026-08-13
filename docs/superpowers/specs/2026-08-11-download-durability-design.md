@@ -435,8 +435,8 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
   **untested** (#363).
 - **R33** External modification MUST be tested: truncate, delete, append, and
   mtime-only touch. All four are covered in `test/crash/external_test.go`;
-  truncate and delete currently FAIL, against a real defect (#362; see
-  `docs/TESTING.md` §3a).
+  truncate and delete were committed red against a real defect and are green as
+  of #362's fix, `Queue.ReplaceFromResume` (see `docs/TESTING.md` §3a).
 - **R34** Per `AGENTS.md`, every invariant MUST have a test **observed** to fail
   against a mutation that violates it, with the failure message recorded.
 

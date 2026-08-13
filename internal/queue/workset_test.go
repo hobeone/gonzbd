@@ -263,3 +263,402 @@ func TestSetWarning_IsReadableWithoutResidency(t *testing.T) {
 		t.Errorf("SetWarning on an unknown job = %v, want ErrNotFound", err)
 	}
 }
+
+// ---------- ReplaceFromResume (#362) ----------
+
+// bitmapOf builds a durable bitmap over n file-local ordinals with the named
+// ones set.
+func bitmapOf(n int, set ...int) durability.Bitmap {
+	bm := durability.NewBitmap(n)
+	for _, i := range set {
+		bm.Set(i)
+	}
+	return bm
+}
+
+// restoreDone puts a job into the state Store.RestoreJobProgress leaves it in:
+// the named articles marked done because job_files.articles_done said so, with
+// nothing on disk having been consulted.
+//
+// It goes through SeedFromExtents rather than reaching for markDone, so the
+// fixture cannot drift from what the additive path actually does — and so a
+// mutation that breaks markDone shows up as a fixture failure rather than as a
+// silent agreement between fixture and subject.
+func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
+	t.Helper()
+	if err := q.SeedFromExtents(jobID, []durability.FileExtent{
+		{FileIdx: 0, Durable: bitmapOf(nArts, done...)},
+	}); err != nil {
+		t.Fatalf("restoreDone: SeedFromExtents: %v", err)
+	}
+	for _, i := range done {
+		if !q.SnapshotJob(jobID).Progress().ArticleDone(i) {
+			t.Fatalf("restoreDone: article %d is not Done after the restore; the fixture "+
+				"never reached the state under test", i)
+		}
+	}
+}
+
+// TestReplaceFromResume_ClearsArticlesTheResumerDidNotVerify is #362's core
+// claim: a bit that was merely restored from job_files.articles_done loses to
+// a resume that read the file's bytes and did not find the article there.
+//
+// The fixture claims MORE than the resume verifies (0,1,2 restored against 0,2
+// verified) and keeps at least one article durable in both (0 and 2). Both
+// halves are load-bearing: with nothing surviving, a clear-everything mutation
+// would pass; with nothing cleared, a no-op would.
+func TestReplaceFromResume_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
+	const nArts = 4
+	q := newTestQueueWithJob(t, "job-1", nArts)
+	restoreDone(t, q, "job-1", nArts, 0, 1, 2)
+
+	// The resume read the file and proved only 0 and 2.
+	if err := q.ReplaceFromResume("job-1", []durability.FileExtent{
+		{FileIdx: 0, Durable: bitmapOf(nArts, 0, 2)},
+	}); err != nil {
+		t.Fatalf("ReplaceFromResume: %v", err)
+	}
+
+	p := q.SnapshotJob("job-1").Progress()
+	for _, i := range []int{0, 2} {
+		if !p.ArticleDone(i) {
+			t.Errorf("article %d is Outstanding, but the resume proved its bytes are on "+
+				"disk; re-fetching it is rework nothing caused", i)
+		}
+	}
+	if p.ArticleDone(1) {
+		t.Error("article 1 is still Done after a resume that did not find its bytes — a " +
+			"persisted belief outlived the recomputation that disproved it, so the file " +
+			"completes with a zero-filled hole (#362)")
+	}
+	if p.ArticleDone(3) {
+		t.Error("article 3 became Done, although neither the restore nor the resume " +
+			"claimed it")
+	}
+}
+
+// TestReplaceFromResume_CorrectsTheDerivedFigures pins the half a naive
+// inverse gets wrong. JobProgress derives failedBytes, byte counts and health
+// from the article bits, so clearing a bit without correcting them produces a
+// job reporting numbers its own per-article state does not support — which is
+// #300 arriving from the other direction.
+//
+// The reference is a second job that never had the extra bit set at all, so
+// the assertion is on agreement with ground truth rather than on figures a
+// test author computed by hand.
+func TestReplaceFromResume_CorrectsTheDerivedFigures(t *testing.T) {
+	const nArts = 4
+	type figures struct {
+		fileDownloaded, fileFailed, remaining int64
+		filePending, jobPending, resolved     int
+	}
+	read := func(q *Queue, jobID string) figures {
+		snap := q.SnapshotJob(jobID)
+		p := snap.Progress()
+		return figures{
+			fileDownloaded: p.FileBytesDownloaded(0),
+			fileFailed:     p.FileFailedBytes(0),
+			remaining:      p.RemainingBytes(),
+			filePending:    p.FilePending(0),
+			jobPending:     p.PendingArticles(),
+			resolved:       p.ArticlesResolved(),
+		}
+	}
+
+	// Reference: 0 and 2 are the only articles that were ever Done.
+	ref := newTestQueueWithJob(t, "job-ref", nArts)
+	restoreDone(t, ref, "job-ref", nArts, 0, 2)
+	want := read(ref, "job-ref")
+
+	// Subject: 0, 1 and 2 restored, then a resume that proves only 0 and 2.
+	sub := newTestQueueWithJob(t, "job-sub", nArts)
+	restoreDone(t, sub, "job-sub", nArts, 0, 1, 2)
+	before := read(sub, "job-sub")
+	if before == want {
+		t.Fatalf("the extra restored article moved no figure (%+v) — every assertion "+
+			"below would hold against a do-nothing implementation", before)
+	}
+
+	if err := sub.ReplaceFromResume("job-sub", []durability.FileExtent{
+		{FileIdx: 0, Durable: bitmapOf(nArts, 0, 2)},
+	}); err != nil {
+		t.Fatalf("ReplaceFromResume: %v", err)
+	}
+	if got := read(sub, "job-sub"); got != want {
+		t.Errorf("figures after the clear = %+v, want %+v (a job that never had the bit "+
+			"set) — the bit was cleared without correcting what derives from it, so the "+
+			"job reports a health its per-article state does not support", got, want)
+	}
+}
+
+// TestReplaceFromResume_HandlesAFileAlreadyComplete pins the rule for a file
+// the assembler had finished with.
+//
+// Complete means "the assembler is finished with this file", NOT "every
+// article arrived": a permanently failed article is handed to the assembler,
+// which closes the file with a gap. So the rule cannot be "a Complete file
+// whose articles are not all durable is stale". It is narrower — the flag is
+// dropped only where a bit was actually CLEARED.
+//
+// Both files are exercised in one job so the two outcomes cannot be asserted
+// against different fixtures:
+//
+//	file 0 — Complete, one article permanently failed, every SUCCESSFUL
+//	         article verified. Nothing changes: the failed article's bytes
+//	         were never on disk, so their absence is the recorded outcome.
+//	file 1 — Complete, every article recorded done, one of them disproved.
+//	         The flag and the assembled CRC both go.
+func TestReplaceFromResume_HandlesAFileAlreadyComplete(t *testing.T) {
+	const perFile = 3
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir))
+	job := makeMultiFileJob(t, "job-1", 2, perFile)
+	job.ID = "job-1"
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// File 0: articles 0 and 1 downloaded, article 2 permanently failed.
+	if err := q.SeedFromExtents("job-1", []durability.FileExtent{
+		{FileIdx: 0, Durable: bitmapOf(perFile, 0, 1)},
+		{FileIdx: 1, Durable: bitmapOf(perFile, 0, 1, 2)},
+	}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
+	if err := q.AckPermanentFailure("job-1", []int32{2}); err != nil {
+		t.Fatalf("AckPermanentFailure: %v", err)
+	}
+	for _, fi := range []int{0, 1} {
+		if err := q.MarkFileComplete("job-1", fi); err != nil {
+			t.Fatalf("MarkFileComplete(%d): %v", fi, err)
+		}
+		if err := q.SetFileCRC32("job-1", fi, 0xC0FFEE); err != nil {
+			t.Fatalf("SetFileCRC32(%d): %v", fi, err)
+		}
+	}
+	pre := q.SnapshotJob("job-1").Progress()
+	if !pre.ArticleFailed(2) || !pre.ArticleDone(2) {
+		t.Fatalf("file 0's article 2 is not permanently failed (done=%v failed=%v); the "+
+			"Complete-with-a-gap case is not what this fixture built",
+			pre.ArticleDone(2), pre.ArticleFailed(2))
+	}
+	if !pre.FileComplete(0) || !pre.FileComplete(1) {
+		t.Fatal("a file did not come out of the fixture Complete")
+	}
+
+	// The resume finds every successful article of file 0, and only two of
+	// file 1's three.
+	if err := q.ReplaceFromResume("job-1", []durability.FileExtent{
+		{FileIdx: 0, Durable: bitmapOf(perFile, 0, 1)},
+		{FileIdx: 1, Durable: bitmapOf(perFile, 0, 2)},
+	}); err != nil {
+		t.Fatalf("ReplaceFromResume: %v", err)
+	}
+
+	p := q.SnapshotJob("job-1").Progress()
+	if !p.FileComplete(0) {
+		t.Error("file 0 lost its Complete flag, although every article the resume could " +
+			"prove was proved — its only missing article is permanently failed, and a " +
+			"restart that un-completes it re-downloads the whole file forever")
+	}
+	if !p.ArticleDone(2) || !p.ArticleFailed(2) {
+		t.Errorf("file 0's permanently failed article came back done=%v failed=%v, want "+
+			"true/true — its bytes were never on disk, so their absence is the recorded "+
+			"outcome and not new evidence", p.ArticleDone(2), p.ArticleFailed(2))
+	}
+	if got := p.FileAssembledCRC32(0); got != 0xC0FFEE {
+		t.Errorf("file 0's assembled CRC = %#x, want %#x — nothing about the file changed",
+			got, 0xC0FFEE)
+	}
+	if p.FileComplete(1) {
+		t.Error("file 1 is still Complete after the resume disproved one of its articles " +
+			"— the assembler has bytes left to write into it, so it is not finished (#362)")
+	}
+	if got := p.FileAssembledCRC32(1); got != 0 {
+		t.Errorf("file 1's assembled CRC = %#x, want 0; it describes a whole assembled "+
+			"file that has since lost bytes, and QuickCheck would trust it", got)
+	}
+	if p.ArticleDone(perFile + 1) {
+		t.Error("file 1's article 1 is still Done after the resume did not find its bytes")
+	}
+	for _, i := range []int{perFile + 0, perFile + 2} {
+		if !p.ArticleDone(i) {
+			t.Errorf("global article %d is Outstanding, although the resume proved it", i)
+		}
+	}
+}
+
+// TestSeedFromExtents_StaysAdditive is the regression guard for the whole of
+// #362's fix, and it fails the moment someone "simplifies" the two seeding
+// entry points into one.
+//
+// Application.reevaluateStall's phase 3 replays extents loaded from the store
+// after a stall recovery. It is re-delivering an ack whose fsync already
+// landed and it has verified nothing about any file, so a clear there would
+// discard the acks this process made since the last commit — the exact bits
+// that phase exists to preserve.
+func TestSeedFromExtents_StaysAdditive(t *testing.T) {
+	const nArts = 4
+	q := newTestQueueWithJob(t, "job-1", nArts)
+	restoreDone(t, q, "job-1", nArts, 1)
+
+	// The committed extent covers only article 0. Article 1's bit came from
+	// an ack this process made after that commit.
+	if err := q.SeedFromExtents("job-1", []durability.FileExtent{
+		{FileIdx: 0, Durable: bitmapOf(nArts, 0)},
+	}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
+
+	p := q.SnapshotJob("job-1").Progress()
+	if !p.ArticleDone(1) {
+		t.Error("article 1 lost its Done bit to a replay of a committed extent that " +
+			"predates it; the stall recovery threw away an ack that had already landed")
+	}
+	if !p.ArticleDone(0) {
+		t.Error("article 0 was not marked Done, so the replay installed nothing and the " +
+			"additive claim above holds vacuously")
+	}
+}
+
+// TestMarkNotDone_GuardsWhatItMayUndo pins the inverse of markDone at its own
+// level, because two of its three arms are invisible from ReplaceFromResume's
+// return value — it reports nothing, and both refusals leave the article
+// exactly as it found it.
+//
+// The permanently-failed arm is the load-bearing one. failed implies done, so
+// a naive "clear whatever is done" inverse would un-fail an article whose
+// bytes were never on disk, re-fetch it on every restart and return its bytes
+// to the job's health figures as if they might still arrive.
+func TestMarkNotDone_GuardsWhatItMayUndo(t *testing.T) {
+	q := newTestQueueWithJob(t, "job-1", 3)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job := q.byID["job-1"]
+	m, p := job.manifest, job.progress
+
+	// article 0: downloaded. article 1: permanently failed. article 2: never
+	// resolved.
+	p.markDone(m, 0)
+	if !p.markFailed(m, 1) {
+		t.Fatal("the fixture's markFailed was a no-op, so article 1 is not in the state " +
+			"this test is about")
+	}
+	if !p.done.Get(1) || !p.failed.Get(1) {
+		t.Fatalf("article 1 is done=%v failed=%v, want both true", p.done.Get(1), p.failed.Get(1))
+	}
+
+	if !p.markNotDone(0) {
+		t.Error("markNotDone refused a plainly downloaded article, so the resume sweep " +
+			"can never contradict a stale bit at all")
+	}
+	if p.done.Get(0) {
+		t.Error("article 0 is still Done although markNotDone reported it cleared")
+	}
+	if p.markNotDone(1) {
+		t.Error("markNotDone cleared a permanently failed article; its bytes were never " +
+			"on disk, so their absence is the recorded outcome and not new evidence")
+	}
+	if !p.done.Get(1) || !p.failed.Get(1) {
+		t.Errorf("article 1 came out done=%v failed=%v, want both still true",
+			p.done.Get(1), p.failed.Get(1))
+	}
+	if p.markNotDone(2) {
+		t.Error("markNotDone reported a change on an article that was never Done; the " +
+			"caller counts that return to decide whether the file stops being Complete")
+	}
+	if p.markNotDone(0) {
+		t.Error("markNotDone reported a second change on an article it had already " +
+			"cleared, so the count of cleared articles double-counts")
+	}
+}
+
+// TestFileDurableBitmap_ReDerivesAtTheFilesArticleCount pins the two indexing
+// rules both seeding entry points depend on and neither can observe.
+//
+// A stored bitmap is a byte blob: ExtentStore.Load rebuilds it at its full BYTE
+// width with no idea how many articles the file has. Reading it as-is
+// over-reports durability by however many padding bits happen to be set, which
+// is the over-claim direction the design forbids, and reading a SHORT one at
+// its own width would silently drop the file's tail articles from the mapping.
+func TestFileDurableBitmap_ReDerivesAtTheFilesArticleCount(t *testing.T) {
+	const perFile = 100 // > 64, so the bitmap spans two words and can be short
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir))
+	job := makeMultiFileJob(t, "job-1", 2, perFile)
+	job.ID = "job-1"
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	m := job.manifest
+
+	t.Run("a short bitmap is widened with zeros", func(t *testing.T) {
+		// One word where the file needs two. The articles it cannot describe
+		// read as not-durable, which is the safe direction under S3.
+		narrow := durability.NewBitmap(64)
+		narrow.Set(3)
+		if len(narrow.Bytes()) >= len(durability.NewBitmap(perFile).Bytes()) {
+			t.Fatalf("the fixture's bitmap is %d bytes and the file needs %d — nothing is "+
+				"being widened, so this asserts against the ordinary path",
+				len(narrow.Bytes()), len(durability.NewBitmap(perFile).Bytes()))
+		}
+		bm, lo, n, err := fileDurableBitmap(m, durability.FileExtent{FileIdx: 1, Durable: narrow})
+		if err != nil {
+			t.Fatalf("fileDurableBitmap: %v", err)
+		}
+		if n != perFile || bm.Len() != perFile {
+			t.Errorf("article count = %d and bitmap length = %d, want %d for both",
+				n, bm.Len(), perFile)
+		}
+		if wantLo, _ := m.FileRange(1); lo != wantLo {
+			t.Errorf("first article index = %d, want %d — Durable is file-local and "+
+				"JobProgress is global, so a wrong offset marks another file's articles",
+				lo, wantLo)
+		}
+		if !bm.Get(3) {
+			t.Error("the bit the short bitmap did carry was lost in the widening")
+		}
+		if bm.Count() != 1 {
+			t.Errorf("count = %d, want 1 — widening must add zeros, not durability", bm.Count())
+		}
+	})
+
+	t.Run("padding bits past the article count are masked off", func(t *testing.T) {
+		// A damaged or externally written blob with every bit of the second
+		// word set. Only 100 - 64 = 36 of them describe an article.
+		raw := make([]byte, 16)
+		for i := range raw {
+			raw[i] = 0xFF
+		}
+		wide, err := durability.BitmapFromBytes(raw, 128)
+		if err != nil {
+			t.Fatalf("BitmapFromBytes: %v", err)
+		}
+		if wide.Count() != 128 {
+			t.Fatalf("the fixture's blob has %d bits set, want 128 — there is no padding "+
+				"for the mask to strip", wide.Count())
+		}
+		bm, _, n, err := fileDurableBitmap(m, durability.FileExtent{FileIdx: 0, Durable: wide})
+		if err != nil {
+			t.Fatalf("fileDurableBitmap: %v", err)
+		}
+		if bm.Count() != n {
+			t.Errorf("count = %d over a %d-article file — padding bits survived as durable "+
+				"articles, which over-claims durability", bm.Count(), n)
+		}
+	})
+
+	t.Run("a file index outside the manifest is an error", func(t *testing.T) {
+		if _, _, _, err := fileDurableBitmap(m, durability.FileExtent{
+			FileIdx: int32(m.NumFiles()), Durable: durability.NewBitmap(perFile),
+		}); err == nil {
+			t.Error("no error for a file index the job does not have; the caller would " +
+				"index past its own per-file slice")
+		}
+		if _, _, _, err := fileDurableBitmap(m, durability.FileExtent{
+			FileIdx: -1, Durable: durability.NewBitmap(perFile),
+		}); err == nil {
+			t.Error("no error for a negative file index")
+		}
+	})
+}

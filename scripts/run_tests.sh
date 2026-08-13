@@ -111,12 +111,12 @@ go test -tags=uitest -v ./test/uitest/...
 echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
 
 # The crash-consistency suite (`-tags=crash`, test/crash/) is deliberately NOT
-# run here. It kills a real child process and takes ~10s, which would fit, but
-# two of its tests fail today against a real defect (#362): a resume discards its own
-# recomputation and ships a completed file with a hole in it (docs/TESTING.md
-# §3a). Adding it to this script as a gate would either turn the canonical
-# pre-commit gate red for everyone or invite someone to weaken the assertions
-# to keep it green. Run it directly instead:
+# run here. It builds and SIGKILLs a real child process, so it needs a working
+# `go build` of ./cmd/gonzbd and is Linux-only, and its cost is dominated by
+# process startup rather than by anything this script already does. Keeping it
+# out means this script stays runnable on a machine where the child cannot be
+# built or killed. All six of its tests pass (docs/TESTING.md §3a). Run it
+# directly:
 #
 #   go test -tags=crash -timeout=20m ./test/crash/
 

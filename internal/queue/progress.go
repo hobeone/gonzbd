@@ -683,6 +683,41 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 	return true
 }
 
+// markNotDone returns article i to Outstanding. It is the inverse of markDone,
+// and it exists for exactly one caller: Queue.ReplaceFromResume, which holds
+// evidence about the file's bytes and is entitled to contradict a bit that was
+// merely restored from job_files.articles_done (#362). Nothing on the download
+// path may call it — an ack is a one-way transition (R9).
+//
+// It clears the bit and nothing else. The figures markDone maintains are
+// deliberately NOT unwound here article by article: JobProgress.recompute
+// already derives every one of them from the bitmaps, and it applies rules a
+// per-article inverse would have to reproduce by hand — Pending counts only
+// files whose Fetch is FetchAlways, and only articles that are neither done
+// nor emitted. A copy of those rules that drifts is a half-inverse, and a
+// half-inverse of markDone is how #300 arose from the other direction: bits
+// and derived figures disagreeing, so the job reports a health its per-article
+// state does not support. ReplaceFromResume recomputes once for the whole job
+// instead.
+//
+// A permanently failed article is never cleared, and that is a rule about what
+// the caller's evidence covers rather than an optimisation. failed implies
+// done, but a failed article's bytes were never written, so their absence from
+// the file is not new information — it is the recorded outcome. Clearing it
+// would re-fetch the article on every restart, return its bytes to the
+// job's health figures as if they might still arrive, and burn its retry
+// budget over a fact already established (R10, R21).
+//
+// Returns false when it changed nothing: the article was already Outstanding,
+// or it is permanently failed.
+func (p *JobProgress) markNotDone(i int) bool {
+	if !p.done.Get(i) || p.failed.Get(i) {
+		return false
+	}
+	p.done.Clear(i)
+	return true
+}
+
 // markFailed flips Done+Failed on article i and updates counters. Returns
 // false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {

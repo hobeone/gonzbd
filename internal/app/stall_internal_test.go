@@ -615,3 +615,57 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 		t.Error("the record's recovery map is nil; notePendingFinalize would panic writing to it")
 	}
 }
+
+// TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade is the caller
+// half of #362's two-contracts rule, and it is the guard on the mistake the
+// fix makes newly possible.
+//
+// Phase 3 replays Class B after a stall recovery. It has verified NOTHING
+// about any file — it is re-delivering an ack whose fsync already landed — so
+// it must stay on the additive Queue.SeedFromExtents. Pointing it at
+// Queue.ReplaceFromResume instead compiles, reads as a tidy-up, and silently
+// destroys exactly the bits this phase exists to preserve: an ack this process
+// made AFTER the last extent commit is not in that extent, so an authoritative
+// replay would clear it and the article would be re-fetched on a file the
+// assembler has already tombstoned.
+//
+// Verified as the only test in the repository that reddens on that swap: with
+// phase 3 switched to ReplaceFromResume, ./internal/app and ./internal/api
+// were both still green before this test existed.
+func TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+	ctx := t.Context()
+
+	// Article 1 was acked by a barrier in THIS process, after the commit
+	// below was stamped. Article 0 is the one that commit covers.
+	ackDoneIdx(t, application.queue, job.ID, 1)
+	pre := application.queue.SnapshotJob(job.ID).Progress()
+	if !pre.ArticleDone(1) {
+		t.Fatal("the fixture's ack did not land, so there is no live bit for the replay " +
+			"to destroy and the assertion below would hold vacuously")
+	}
+	if pre.ArticleDone(0) {
+		t.Fatal("article 0 is already done, so the replay cannot be shown to have run at all")
+	}
+
+	durable := durability.NewBitmap(2)
+	durable.Set(0)
+	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{
+		{FileIdx: 0, Durable: durable},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	application.seedFromCommittedExtents(ctx, job.ID)
+
+	p := application.queue.SnapshotJob(job.ID).Progress()
+	if !p.ArticleDone(1) {
+		t.Error("article 1 lost its Done bit to a replay of an extent that predates it — " +
+			"phase 3 has read no file and proved nothing, so it may not contradict an ack " +
+			"that already landed; it must stay on the additive SeedFromExtents (#362)")
+	}
+	if !p.ArticleDone(0) {
+		t.Error("article 0 is still Outstanding, so the replay installed nothing and the " +
+			"assertion above holds vacuously")
+	}
+}

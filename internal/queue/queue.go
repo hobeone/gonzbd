@@ -89,9 +89,9 @@ type Queue struct {
 	// can coalesce multiple signals into one wake-up.
 	notifyCh chan struct{}
 
-	// dirty is set to true by the five article/file mutation methods
-	// (AckDurable, AckPermanentFailure, MarkFileComplete,
-	// SeedFromExtents) and cleared by Save on a
+	// dirty is set to true by the article/file mutation methods
+	// (AckDurable, AckPermanentFailure, MarkFileComplete, SeedFromExtents,
+	// ReplaceFromResume) and cleared by Save on a
 	// successful write. The periodic checkpoint ticker no-ops when
 	// dirty is false, avoiding unnecessary I/O on idle queues.
 	dirty atomic.Bool

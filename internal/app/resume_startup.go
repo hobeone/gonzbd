@@ -30,9 +30,17 @@ type fileResumer interface {
 // resumeAllJobs seeds every resident job's work set from what is actually on
 // stable storage, and is the production caller L3 was missing.
 //
-// durability.Resumer and Queue.SeedFromExtents were both built and tested with
-// nothing calling either, so a restart re-downloaded every byte an earlier run
-// had already fsynced. This is where the two meet.
+// durability.Resumer and the queue's seeding entry points were both built and
+// tested with nothing calling either, so a restart re-downloaded every byte an
+// earlier run had already fsynced. This is where the two meet.
+//
+// It seeds through Queue.ReplaceFromResume rather than Queue.SeedFromExtents,
+// and that is the whole of #362's fix. This is the ONLY caller that has just
+// read the files' bytes, so it is the only one entitled to contradict what
+// Store.RestoreJobProgress restored from job_files.articles_done. Every other
+// seeding path is replaying an ack that already landed and must stay additive;
+// see SeedFromExtents' doc for why merging the two is a silent regression in
+// one direction or the other.
 //
 // # Why a startup sweep, and why that is complete
 //
@@ -56,10 +64,10 @@ type fileResumer interface {
 // the verification again on the next restart is bounded rework and is the
 // correct cost.
 //
-// A non-resident job is skipped rather than hydrated: SeedFromExtents installs
-// bits into the LIVE job's JobProgress, which requires a resident manifest,
-// and hydrating the whole queue at startup would blow the residency budget
-// docs/queue-lifecycle.md exists to bound. See the note on residency in
+// A non-resident job is skipped rather than hydrated: ReplaceFromResume
+// installs bits into the LIVE job's JobProgress, which requires a resident
+// manifest, and hydrating the whole queue at startup would blow the residency
+// budget docs/queue-lifecycle.md exists to bound. See the note on residency in
 // resumeJobFiles for what that leaves uncovered.
 func (app *Application) resumeAllJobs(ctx context.Context) error {
 	if app.resumer == nil {
@@ -95,8 +103,15 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		// prevent.
 		//
 		// The order is load-bearing the other way too: Stall pauses the job,
-		// which evicts its manifest, and SeedFromExtents needs a resident one.
-		if err := app.queue.SeedFromExtents(snap.ID, exts); err != nil {
+		// which evicts its manifest, and ReplaceFromResume needs a resident one.
+		//
+		// A fault also bounds what "authoritative" may mean here. exts holds
+		// only the files this sweep actually resumed, and ReplaceFromResume
+		// touches only those — a file the fault stopped it from reaching is
+		// omitted, and omission is silence rather than a finding of absence.
+		// Clearing on behalf of a file nobody read would turn one unreadable
+		// mount into a full re-download of the job.
+		if err := app.queue.ReplaceFromResume(snap.ID, exts); err != nil {
 			// Not fatal to startup: the job simply re-fetches what it could
 			// not be told it already has.
 			app.log.Warn("resume sweep could not seed a job's work set; it will re-fetch",
@@ -125,17 +140,24 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 }
 
 // resumeJobFiles resumes each of one job's files and converts the results into
-// the extents SeedFromExtents consumes.
+// the extents ReplaceFromResume consumes.
 //
 // Only FileIdx and Durable are set, because those are the only two fields
-// SeedFromExtents reads. ResumeResult carries no Size or ModTimeNs, so filling
+// ReplaceFromResume reads. ResumeResult carries no Size or ModTimeNs, so filling
 // the rest would manufacture a record asserting a stat nobody performed — and
 // the value never reaches ExtentStore in any case (see resumeAllJobs).
 //
 // ResumeResult.Restart needs no branch of its own: Resume returns an empty
-// bitmap alongside it, and an empty bitmap seeds nothing. A guard here would
-// be a branch whose two arms produce the same result, which is untestable by
-// construction and precisely the kind of inert code this branch keeps finding.
+// bitmap alongside it, and an empty bitmap proves nothing — which under
+// ReplaceFromResume returns every one of the file's articles to Outstanding,
+// exactly what a missing file means. A guard here would be a branch whose two
+// arms produce the same result, which is untestable by construction and
+// precisely the kind of inert code this branch keeps finding.
+//
+// A file whose filename was never resolved is skipped and so contributes no
+// extent at all, which is deliberately NOT the same thing: no process ever
+// opened a path for it, so there is nothing to have proved absent, and
+// ReplaceFromResume leaves a file it is not given alone.
 //
 // The three returns are distinct outcomes and are deliberately not collapsed
 // into one error: a storage fault stalls this job and the sweep continues, a

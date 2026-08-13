@@ -236,34 +236,42 @@ plainly.
 go test -tags=crash -timeout=20m ./test/crash/ -v
 ```
 
-### Status: two tests currently FAIL, against a real defect
+### Status: all six pass, and two of them were red until #362 was fixed
 
 `TestExternalModification_TruncatedPartialIsRecomputed` and
-`TestExternalModification_DeletedPartialRestartsTheFile` fail today (issue #362),
-and the failure is the suite working. Both produce a **completed file with a hole in
-it**: the daemon declares the job finished and moves a file to the complete
-directory whose destroyed region reads back as zeros.
+`TestExternalModification_DeletedPartialRestartsTheFile` were committed red on
+purpose, against a real defect. Both produced a **completed file with a hole in
+it**: the daemon declared the job finished and moved a file to the complete
+directory whose destroyed region read back as zeros.
 
-The cause is that the recomputation is discarded rather than wrong.
-`durability.Resumer` gets the right answer — the daemon logs
-`articles_durable=16 facts=33` for a file truncated in half — but
-`Queue.SeedFromExtents` only *sets* durable bits and never clears one, while
-`Store.RestoreJobProgress` has already restored `job_files.articles_done` with
-every article the last barrier acked. So the queue's own cache of the same
-fact outranks the recomputation that disproves it, which is exactly the
-precedence S4 inverts.
+The cause was that the recomputation was discarded rather than wrong.
+`durability.Resumer` got the right answer — the daemon logs
+`articles_durable=16 facts=33` for a file truncated in half — but the startup
+sweep installed it through `Queue.SeedFromExtents`, which only *sets* durable
+bits and never clears one, while `Store.RestoreJobProgress` had already
+restored `job_files.articles_done` with every article the last barrier acked.
+So the queue's own cache of the same fact outranked the recomputation that
+disproved it, which is exactly the precedence S4 inverts.
 
-The same defect makes two of the passing tests weaker than they read.
-`TestExternalModification_MtimeTouchCostsNoRefetch` and the no-refetch half of
-`TestExternalModification_AppendedGarbageIsTrimmed` still pass with
-`durability.Resumer.Resume` neutered to return an empty bitmap — observed, not
-reasoned — because `articles_done` alone keeps those articles off the wire. They
-are regression guards on the outcome, not pins on the recomputation, until the
-seed is made authoritative. Their doc comments say so.
+The fix (#362) is `Queue.ReplaceFromResume`: a second, **authoritative**
+seeding entry point that the startup sweep uses in place of `SeedFromExtents`,
+because it is the one caller that has just read the files' bytes. Every other
+seeding path — `Application.reevaluateStall`'s phase 3 — is replaying an ack
+that already landed and stays additive. `TestSeedFromExtents_StaysAdditive` and
+`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade` are the guards
+on that split; they are the only tests in the repository that redden when the
+two entry points are merged.
 
-**Do not silence the two failing tests by weakening them.** They should go green by the
-resume sweep applying its result authoritatively to the files it resumed, not
-by the assertions being relaxed.
+Making the sweep authoritative also turned two of the other four tests into
+real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the
+no-refetch half of `TestExternalModification_AppendedGarbageIsTrimmed` used to
+pass with `durability.Resumer.Resume` neutered to return an empty bitmap,
+because `articles_done` alone kept those articles off the wire. With the sweep
+authoritative, that neutering reddens both — observed, not reasoned.
+
+**Do not silence a failing test here by weakening it.** The assertions are
+about WHICH articles came back over the wire, and a test that only checked the
+final file would pass against an implementation that threw the whole file away.
 
 ## 4. Config ↔ UI Contract Tests
 

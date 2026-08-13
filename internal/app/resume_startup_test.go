@@ -472,3 +472,111 @@ func TestResumeAtStartup_DoesNotCommitClassB(t *testing.T) {
 		t.Errorf("resume rewrote Class B:\n before %q\n after  %q", before, after)
 	}
 }
+
+// recordDoneAndComplete writes the state a PREVIOUS run would have left in
+// job_files: the named articles marked done in articles_done, and the file
+// flagged complete.
+//
+// Every other test in this file deliberately leaves those columns empty, so
+// that a Done bit can only have come from the sweep. This one needs the
+// opposite, because #362 is a question of PRECEDENCE: which of the two writers
+// of per-article state wins when they disagree. With the column empty there is
+// no disagreement to resolve and the defect is invisible — which is why
+// TestResumeAtStartup_MismatchedFileIsNotAdopted, the same truncation, passes
+// against the unfixed code.
+//
+// It goes through the real queue and store rather than an UPDATE, so what
+// lands in the column is what a real run would have written.
+func (f *resumeFixture) recordDoneAndComplete(done ...int) {
+	f.t.Helper()
+	q := loadTestQueue(f.t, f.repo, f.adminDir)
+	bm := durability.NewBitmap(resumeArts)
+	for _, i := range done {
+		bm.Set(i)
+	}
+	if err := q.SeedFromExtents(f.jobID, []durability.FileExtent{{FileIdx: 0, Durable: bm}}); err != nil {
+		f.t.Fatalf("recordDoneAndComplete: SeedFromExtents: %v", err)
+	}
+	if err := q.MarkFileComplete(f.jobID, 0); err != nil {
+		f.t.Fatalf("recordDoneAndComplete: MarkFileComplete: %v", err)
+	}
+	if err := q.Save(filepath.Join(f.adminDir, "queue")); err != nil {
+		f.t.Fatalf("recordDoneAndComplete: Save: %v", err)
+	}
+	// Grounding: read the state back through a fresh load, the same path the
+	// application takes at startup. Without this the test would be asserting
+	// against a precondition it never established, and a sweep that cleared
+	// nothing would look like a sweep that cleared the right things.
+	back := loadTestQueue(f.t, f.repo, f.adminDir).SnapshotJob(f.jobID)
+	if back == nil {
+		f.t.Fatal("recordDoneAndComplete: the job did not survive the reload")
+	}
+	for _, i := range done {
+		if !back.Progress().ArticleDone(i) {
+			f.t.Fatalf("recordDoneAndComplete: article %d did not come back Done from "+
+				"job_files.articles_done; the precedence conflict this test is about "+
+				"was never set up", i)
+		}
+	}
+	if !back.Progress().FileComplete(0) {
+		f.t.Fatal("recordDoneAndComplete: the file did not come back Complete")
+	}
+}
+
+// TestResumeAtStartup_ShortenedPartialIsRefetched is #362 end to end through
+// the sweep: a previous run recorded all three articles done and the file
+// complete, then the file was shortened underneath the daemon.
+//
+// The resume reads the bytes and can prove only article 0. S4 makes that
+// recomputation the authority — "where it disagrees with a recomputation, the
+// recomputation is correct by definition" — so the two articles whose bytes
+// are gone go back to Outstanding and the file stops being Complete. Against
+// the unfixed code the restored bits win, all three stay Done, and the job
+// ships a file with a zero-filled hole and no warning.
+//
+// The fixture claims MORE than the resume verifies (0,1,2 recorded against 0
+// verified) and keeps one article durable in both (0). Both halves matter: a
+// fixture whose two sides agreed would pass against a no-op, and one with
+// nothing verifiable would pass against a clear-everything mutation.
+func TestResumeAtStartup_ShortenedPartialIsRefetched(t *testing.T) {
+	f := newResumeFixture(t)
+	f.writePartial(0, 1, 2)
+	f.appendFacts()
+	f.commitExtent(0, 1, 2)
+	f.recordDoneAndComplete(0, 1, 2)
+	// Shortened to article 0 alone. The size no longer matches the extent's
+	// stamp, so the cache is refused and the file is recomputed from its
+	// bytes; articles 1 and 2 lie past the new end.
+	if err := os.Truncate(f.path, resumePartLen); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	// Nothing else in the process may set a Done bit: the checkpoint bounds
+	// put the barrier out of reach and a stalled article never completes.
+	f.stall(0, 1, 2)
+
+	a := f.start(2)
+
+	snap := a.Queue().SnapshotJob(f.jobID)
+	if snap == nil {
+		t.Fatal("the job left the queue during startup: every article came back Done and " +
+			"the file stayed Complete, so there was nothing left to fetch — the resume's " +
+			"recomputation was discarded and the file ships with a hole (#362)")
+	}
+	p := snap.Progress()
+	if !p.ArticleDone(0) {
+		t.Error("article 0 is Outstanding, although its bytes survived the truncation and " +
+			"the resume read them; re-fetching it is rework the truncation did not cause")
+	}
+	for _, i := range []int{1, 2} {
+		if p.ArticleDone(i) {
+			t.Errorf("article %d is still Done after the truncation destroyed its bytes — "+
+				"job_files.articles_done outlived the recomputation that disproved it, so "+
+				"the file completes with a zero-filled hole (#362)", i)
+		}
+	}
+	if p.FileComplete(0) {
+		t.Error("the file is still marked Complete although the assembler has bytes left " +
+			"to write into it; a file whose bytes no longer support its recorded state " +
+			"does not stay Complete")
+	}
+}

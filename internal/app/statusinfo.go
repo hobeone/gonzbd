@@ -194,11 +194,17 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // goroutine, and safe at any residency.
 //
 // DurableBytes comes from the job's downloaded-byte total rather than from a
-// counter of its own, because on this design they are the same quantity: the
+// counter of its own, because on this design they are the same quantity. The
 // only things that mark an article Done are Queue.AckDurable, which takes a
-// DurableProof no path outside a completed barrier can mint, and
-// SeedFromExtents, which replays a committed Class B cache. A second counter
-// would be a second representation of one fact, free to drift (S5).
+// DurableProof no path outside a completed barrier can mint, and the two
+// seeding entry points — SeedFromExtents, which replays a committed Class B
+// cache, and ReplaceFromResume, which installs what the startup sweep read
+// from the files themselves. A second counter would be a second representation
+// of one fact, free to drift (S5).
+//
+// ReplaceFromResume also UN-marks an article the resume disproved (#362), and
+// this figure follows it down rather than needing a correction of its own —
+// which is the same property, stated for the direction the design added last.
 func (app *Application) JobDurability(jobID string) JobDurability {
 	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
 	if app.queue != nil {
