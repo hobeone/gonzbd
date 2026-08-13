@@ -3797,6 +3797,161 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+## Task 12b: Honour the resumer's recomputation (issue #362)
+
+**Why this task exists.** Task 12's crash harness found a silent-corruption
+defect and its two failing tests are committed **red** against it. `Queue`
+restores `job_files.articles_done` from SQLite unconditionally
+(`RestoreJobProgress`), and `SeedFromExtents` only ever *sets* bits
+(`markDone`) — it never clears them. So when `durability.Resumer` correctly
+recomputes a **smaller** durable set from a truncated or deleted partial, that
+recomputation is discarded: the restored bits win, the file is marked complete,
+and it ships with a zero-filled hole and **no warning**.
+
+That is S3 and S4 running backwards. The whole design rests on stable storage
+being authoritative and absence of evidence being absence; here a persisted
+belief overrides the file's actual bytes.
+
+**USER DECISION (2026-08-12): fix it now, before Tasks 13 and 14.** Rejected:
+deferring to issue #362 and merging with two red tests (the branch would ship a
+durability rewrite that fails its own core invariant on exactly the scenario it
+was written for, and Task 13 would have to document the hole as intended
+behaviour), and a minimal `markNotDone` in `SeedFromExtents` alone (leaves
+already-Complete files unaddressed and `reevaluateStall`'s additive contract
+implicit).
+
+**Files:**
+- Modify: `internal/queue/workset.go` — the seeding entry points
+- Modify: `internal/queue/progress.go` (or wherever `markDone` lives) — add its inverse
+- Modify: `internal/app/resume_startup.go` — call the authoritative entry point
+- Test: `internal/queue/workset_test.go`, `internal/app/resume_startup_test.go`
+- Verify: `test/crash/` — both red tests must go green
+
+**Interfaces:**
+- Consumes: `durability.ResumeResult{Durable Bitmap; Restart bool; …}`, `Queue.SeedFromExtents`.
+- Produces: a second, **authoritative** seeding entry point on `Queue`. Name it
+  for what it does — it replaces a file's per-article state with the resumer's
+  finding rather than unioning into it.
+
+### The three-part shape, and why each part is needed
+
+1. **An inverse of `markDone`.** Clearing a bit must also correct the derived
+   figures `markDone` maintains — read it and mirror it exactly. `JobProgress`
+   derives `failedBytes` and health from these bits (see #300's comment in
+   `internal/queue/sqlite_store.go`), so a half-inverse produces a job that
+   reports impossible numbers.
+
+2. **A rule for files already flagged `Complete`.** `Complete` means "the
+   assembler is finished with this file", *not* "every article arrived" — a
+   permanently failed article is handed to the assembler, which closes the file
+   with a gap. Read that comment in `sqlite_store.go` before deciding. A file
+   whose bytes no longer support its recorded state must not stay Complete
+   merely because it was Complete before the crash. Decide explicitly what
+   happens and write the reason down.
+
+3. **A separate entry point, so `reevaluateStall` stays additive.** Task 11's
+   phase 3 replays durable bits after a resume and MUST remain a union — it is
+   recovering an ack that already landed, not re-deriving truth from disk.
+   Making `SeedFromExtents` authoritative in place would silently convert that
+   replay into a clobber. Two callers, two contracts, two names.
+
+**The startup sweep is the only authoritative caller.** It is the one path that
+has just verified the file's bytes. Anything else that seeds is replaying a
+known-good fact and must stay additive.
+
+### Steps
+
+- [ ] **Step 1: Write the failing tests**
+
+Unit tests first — the crash harness is the end-to-end proof, not the pin.
+
+Every fixture MUST contain a file where the restored `articles_done` claims
+MORE than the resumer verifies, and at least one article that is durable in
+both. A fixture where the two agree passes against a no-op, and one where
+nothing is durable passes against a clear-everything mutation. **Both
+directions must redden.** This branch has produced 21+ inert tests and the
+single most common cause is a fixture that cannot distinguish the outcomes.
+
+1. `TestSeedAuthoritative_ClearsArticlesTheResumerDidNotVerify` — restored state
+   claims articles 0,1,2; the resumer verifies only 0 and 2. Assert 1 is
+   Outstanding afterwards, and that 0 and 2 are still Done.
+2. `TestSeedAuthoritative_CorrectsTheDerivedFigures` — assert the byte and health
+   figures after clearing match a job that never had the bit set. This is the
+   half a naive inverse gets wrong.
+3. `TestSeedAuthoritative_HandlesAFileAlreadyComplete` — pin whatever rule part 2
+   decides, including the `Complete`-with-a-permanently-failed-article case.
+4. `TestSeedFromExtents_StaysAdditive` — the Task 11 replay path must NOT clear.
+   Restored state claims article 1; the extent covers only 0; assert 1 is still
+   Done afterwards. **This is the regression guard for the whole task** — it
+   fails if someone later "simplifies" the two entry points into one.
+5. `TestResumeAtStartup_ShortenedPartialIsRefetched` — end to end through the
+   sweep: truncate the file, restart, assert the lost articles are Outstanding
+   AND that the file is not marked complete.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+```bash
+go test -count=1 -run 'TestSeedAuthoritative|TestSeedFromExtents_StaysAdditive' ./internal/queue/ -v
+go test -count=1 -run 'TestResumeAtStartup_ShortenedPartialIsRefetched' ./internal/app/ -v
+```
+
+`-count=1` is mandatory: Go caches a pass and prints `ok`, which reads as "the
+test does not discriminate" — the inverse of the truth.
+
+- [ ] **Step 3: Implement the three parts**
+
+Add the inverse of `markDone`; add the authoritative entry point; call it from
+`internal/app/resume_startup.go` in place of `SeedFromExtents`. Leave Task 11's
+`reevaluateStall` phase 3 on the additive `SeedFromExtents`.
+
+`ResumeResult.Restart` means the file is gone: every article is Outstanding.
+Make sure the authoritative path expresses that rather than special-casing it —
+an empty verified set already says it.
+
+- [ ] **Step 4: Prove each test is a pin**
+
+Copy files to a scratch dir first; restore from **your own copies**. Never
+`git stash`, never `git checkout -- <path>`, never `git reset`.
+
+| Mutation | Must redden |
+|---|---|
+| Authoritative entry point only sets, never clears (the bug) | 1, 5, and both crash tests |
+| Inverse clears the bit but skips the derived figures | 2 |
+| The already-Complete rule removed | 3 |
+| `reevaluateStall` phase 3 switched to the authoritative path | 4 |
+| Startup sweep left on `SeedFromExtents` | 1, 5, both crash tests |
+
+- [ ] **Step 5: Confirm the crash harness goes green**
+
+```bash
+go test -count=1 -tags=crash ./test/crash/... -v
+```
+
+Both previously-red tests must now pass, **and the other four must still pass**.
+Run it three times — the harness builds and kills a real binary, and a
+run-to-run flake already bit Task 12 once.
+
+- [ ] **Step 6: Gates, sweep, commit**
+
+```bash
+go fix ./... && goimports -w . && go vet ./...
+go test -count=1 -race ./... && golangci-lint run ./...
+go run ./scripts/check_lock_io && go run ./scripts/check_test_alignment && go run ./scripts/check_coverage
+go test -count=1 -tags=integration ./test/integration/...
+```
+
+Then the `AGENTS.md` step-4 sweep, **against `git diff --cached`, not against
+this task's text**: `git grep` from the repo root for the claims this change
+falsifies — the comment in `sqlite_store.go` about `articles_done` being the
+only source of per-article state, `SeedFromExtents`' own doc, `docs/queue-lifecycle.md`,
+and anything asserting a restart only ever *adds* durable bits. Headings are
+claims too.
+
+Close issue #362 in the commit footer only if the crash tests are green.
+
+---
+
+
 ## Task 13: Replace the documentation
 
 **Files:**
