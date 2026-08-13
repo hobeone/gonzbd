@@ -404,6 +404,15 @@ articles or sparse file regions. The coordination model:
    load-bearing for exactly this reason; unrar reading a file that still
    carried pre-allocation's trailing zeros would see a corrupt volume.
 
+   When the finalize **fails**, DirectUnpack is not reached at all and the
+   handle is **not** closed. The job stalls, and
+   `Application.reevaluateStall` retries the finalize on an interval and when
+   the user resumes the job — a retry that needs the same handle to `Drain`,
+   `Sync`, `Truncate` and `Stat`. Nothing reopens a file the assembler has
+   tombstoned, so closing it there would leave the stall unable to clear for
+   the rest of the process. `CancelJob`, `CloseJobHandles` and the worker's
+   own shutdown drain all still release it.
+
 2. **Volume waiting**: `waitForVolume()` blocks on the `volumeReady` channel
    until the requested volume number appears in `completedVols`. If the set is
    marked corrupt (`corruptSets`), it returns an error immediately.
