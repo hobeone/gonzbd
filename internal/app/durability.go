@@ -243,10 +243,18 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	// last_barrier stamp every 30 seconds — the exact inversion of what R26
 	// asks that figure to distinguish.
 	//
-	// The path is ordinary, not defensive: a stalled job is paused, Pause
-	// evicts its manifest, syncTargetFor answers nil for a job it cannot
-	// describe — and the job still holds an open file, so checkpointAll keeps
-	// visiting it.
+	// The path is ordinary, not defensive, and it is worth naming precisely
+	// because the obvious guess is wrong. Eviction does NOT produce a nil
+	// target: syncTargetFor goes through Queue.SnapshotJob, which hydrates one
+	// job's manifest from disk, so a merely paused job still has one. The
+	// reachable cases are a job that left the queue between checkpointAll's
+	// OpenJobIDs and this call — the assembler still holds handles for a job
+	// the queue has dropped, so checkpointAll keeps listing it — and a
+	// manifest that cannot be read at all.
+	//
+	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the first, and
+	// asserts both halves of the fixture: no target, and the assembler still
+	// listing the job.
 	tgt := app.syncTargetFor(jobID)
 	if tgt == nil {
 		mu.Unlock()
@@ -375,13 +383,24 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // already queued on internalFileComplete, when the fault hit — the open-file
 // set plus that channel's 128-entry buffer.
 //
-// It cannot grow past that while the job stays parked, and
-// reevaluateStall is what guarantees it does: the job is not resumed until
-// every interrupted finalize has landed, so no further file of that job can
-// complete and add to the set. An earlier draft resumed first and returned at
-// the first failing file, which let each interval complete more files, retry
-// only one of them, and retain the rest — an unbounded climb toward EMFILE on
-// a mount that stays broken.
+// # The bound holds WHILE THE JOB IS PARKED, and a user Resume is the boundary
+//
+// reevaluateStall does not resume a job until every interrupted finalize has
+// landed, so on the automatic path no further file of that job can complete
+// and add to the set. An earlier draft resumed first and returned at the first
+// failing file, which let each interval complete more files, retry only one of
+// them, and retain the rest — an unbounded climb toward EMFILE on a mount that
+// stays broken.
+//
+// A USER Resume is outside that guarantee, and deliberately so: the API's
+// queue resume handlers unpause the job and THEN ask for a re-evaluation
+// (internal/api/queue.go, queueResumeJobs and queueResumeAll), because a user
+// who has cleared the condition is entitled to have their job run. If the
+// condition has NOT cleared, that job downloads, completes more files, fails
+// each finalize, and retains each handle until the next re-evaluation parks it
+// again. The set therefore grows by at most what one re-evaluation interval's
+// worth of downloading can complete, per user Resume — not without limit, and
+// not silently: each of those files raises its own routed fault.
 //
 // post-processing's unlink cannot become an NFS silly-rename because a parked
 // job does not reach post-processing. CancelJob, CloseJobHandles and the
@@ -404,8 +423,23 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	}
 	tgt := app.syncTargetFor(jobID)
 	if tgt == nil {
-		// The job has left the queue or lost its manifest. Nothing downstream
-		// will act on this file either, so there is nothing to withhold.
+		// A nil target is a third outcome dressed as success, the same shape
+		// checkpointJob's stamp was — so it needs an argument rather than an
+		// assurance.
+		//
+		// It is safe HERE, on the first attempt, because a nil target implies
+		// the completion below is refused anyway. syncTargetFor is the WEAKER
+		// requirement of the two: it is satisfied by any job whose manifest
+		// can be hydrated, including a paused one, while MarkFileComplete
+		// needs the LIVE job resident. So nil means the job has left the
+		// queue or its manifest cannot be read, and MarkFileComplete answers
+		// ErrNotFound or ErrJobNotResident to both. Nothing downstream acts on
+		// the file.
+		//
+		// It is NOT safe on a retry, where the completion is queued behind
+		// this call and can be delivered on a later cycle once the job is
+		// resident again — by then the file would be recorded finalizeDone
+		// without ever having been trimmed. retryFinalize guards it there.
 		return nil
 	}
 	trunc, ok := tgt.(durability.Truncator)

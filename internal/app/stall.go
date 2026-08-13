@@ -208,7 +208,7 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 
 // reevaluateStall tries to get one parked job moving again.
 //
-// # The job is not resumed until every interrupted finalize has landed
+// # The automatic cadence does not resume a job until its finalizes have landed
 //
 // The first draft resumed first, because Barrier.FinalizeFile ends in
 // AckDurable and that needs a resident job, which Stall -> Queue.Pause evicted.
@@ -223,6 +223,14 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // sweep does. So a residency error is treated as the finalize having landed,
 // and everything else keeps the job parked without it ever dispatching.
 //
+// That last claim is about THIS function, not about the whole system. A user
+// Resume is outside it by design: the API's queue resume handlers unpause the
+// job and then ask for a re-evaluation, so between those two the job is
+// running whether or not the condition has cleared. A user who has fixed the
+// mount is entitled to that; one who has not gets their job parked again by
+// the re-evaluation that follows. What this function guarantees is that the
+// AUTOMATIC cadence never unparks a job whose finalize is still failing.
+//
 // # Every file is retried, not just the first
 //
 // Returning at the first failure left the rest of a job's interrupted
@@ -235,6 +243,18 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // recovery set only once the queue has accepted its completion, so a step that
 // could not run this time runs at the next interval instead.
 func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
+	// A job that has left the queue has nothing to recover and nothing to
+	// resume. Checked before phase 1 rather than left to Queue.Resume in phase
+	// 2, because phase 1 returns early while anything is still blocked — so a
+	// departed job with a pending finalize would be retried on every interval
+	// for the life of the process, and its routed fault re-logged each time.
+	if app.queue.SnapshotJob(jobID) == nil {
+		app.log.Info("stall re-evaluation: the job has left the queue; forgetting its parked state",
+			"job", jobID)
+		app.clearStall(jobID)
+		return
+	}
+
 	files := app.recoveryFiles(jobID)
 
 	// Phase 1 — retry, while the job is still paused.
@@ -380,6 +400,21 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 	}
 	if !slices.Contains(open, int32(fileIdx)) { //nolint:gosec // G115: file counts are far below int32
 		return fmt.Errorf("%w: job %s file %d", errFinalizeUnrecoverable, jobID, fileIdx)
+	}
+	// The second success-lookalike, and the reason it is checked here rather
+	// than trusted. finalizeCompletedFile answers nil for a nil sync target,
+	// which is safe on a first attempt because MarkFileComplete then refuses
+	// the completion too. On a retry the completion is queued behind this
+	// call and delivered on a LATER cycle, by which time the job may be
+	// resident again — so the file would be recorded finalizeDone, never
+	// having been trimmed, and shipped with pre-allocation's zeros.
+	//
+	// Retryable rather than terminal: a manifest that cannot be read now may
+	// be readable after the mount comes back, and a job that is merely
+	// unpromoted becomes resident again on its own.
+	if app.syncTargetFor(jobID) == nil {
+		return fmt.Errorf("%w: job %s file %d: the job has no readable manifest, so no barrier "+
+			"can be run over it", ErrNotFinalized, jobID, fileIdx)
 	}
 	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
 	if errors.Is(err, queue.ErrJobNotResident) {

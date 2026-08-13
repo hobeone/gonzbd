@@ -416,9 +416,18 @@ articles or sparse file regions. The coordination model:
    The retained set is **cumulative**, not the concurrently-open set: one fd
    per completed-but-unfinalized file. Its ceiling is the files that had
    already completed, or were already queued on `internalFileComplete`, when
-   the fault hit. It cannot grow past that because `reevaluateStall` does not
-   resume the job until every interrupted finalize has landed, so no further
-   file of that job can complete while it is parked.
+   the fault hit — **while the job stays parked**. `reevaluateStall` does not
+   resume a job until every interrupted finalize has landed, so the automatic
+   cadence cannot grow the set.
+
+   A **user Resume is the boundary**, and is deliberately outside that
+   guarantee: `mode=queue&name=resume` and `name=resume_all` unpause the job
+   and *then* ask for a re-evaluation, because a user who has cleared the
+   condition is entitled to have their job run. If it has not cleared, the job
+   downloads until the next re-evaluation parks it again, completing more
+   files and retaining a handle for each — bounded by one interval's worth of
+   downloading per Resume, and visible, since every one of those files raises
+   its own routed fault.
 
 2. **Volume waiting**: `waitForVolume()` blocks on the `volumeReady` channel
    until the requested volume number appears in `completedVols`. If the set is

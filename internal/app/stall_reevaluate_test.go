@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -219,5 +220,63 @@ func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) 
 		t.Errorf("file 2 state = %v, want finalizeLost — the pass stopped at the first file, so "+
 			"every other interrupted finalize waits another interval and holds its handle "+
 			"until then", got)
+	}
+}
+
+// TestRetryFinalize_RefusesAJobWithNoReadableManifest pins the second
+// success-lookalike, the one retryFinalize's open-handle check does not cover.
+//
+// finalizeCompletedFile answers nil for a nil sync target. On a first attempt
+// that is safe, because MarkFileComplete refuses the completion for the same
+// reason. On a RETRY the completion is queued behind this call and delivered
+// on a LATER cycle, by which time the job can be resident again — so the file
+// would be recorded finalizeDone without ever having been trimmed, and shipped
+// with pre-allocation's trailing zeros for par2 to read as damage.
+//
+// The handle is deliberately still open here, so the earlier guard cannot be
+// what produces the refusal.
+func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	if err := application.queue.Remove(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	open, err := application.assembler.OpenFiles(t.Context(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(open, 0) {
+		t.Fatal("the handle is already gone, so the open-file guard would produce the refusal " +
+			"and this test would assert nothing about the sync target")
+	}
+
+	if err := application.retryFinalize(t.Context(), job.ID, 0); err == nil {
+		t.Fatal("retryFinalize reported success for a job whose manifest cannot be read; the " +
+			"file is recorded finalized and its completion ships an untrimmed file on a " +
+			"later cycle")
+	}
+}
+
+// TestReevaluateStall_ForgetsADepartedJobWithWorkOutstanding pins the guard
+// that keeps a removed job from being re-evaluated forever.
+//
+// Phase 1 returns early while anything is still blocked, so without this check
+// a departed job with a pending finalize never reaches the Queue.Resume that
+// used to notice it was gone — it would be retried on every interval for the
+// life of the process, re-logging its routed fault each time.
+func TestReevaluateStall_ForgetsADepartedJobWithWorkOutstanding(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.Stall(job.ID, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
+	application.notePendingFinalize(job.ID, 0)
+	if err := application.queue.Remove(job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	application.reevaluateStall(t.Context(), job.ID)
+
+	if got := application.stalledJobIDs(); len(got) != 0 {
+		t.Errorf("stalledJobIDs = %v, want empty — a job that has left the queue has nothing "+
+			"to recover, and re-evaluating it every interval is churn that can never succeed", got)
 	}
 }

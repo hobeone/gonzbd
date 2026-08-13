@@ -100,18 +100,46 @@ func TestQueueAPI_ReportsStallReason(t *testing.T) {
 	}
 }
 
-// TestQueueAPI_OmitsStallReasonForAHealthyJob pins the other polarity, which is
-// the one a UI branches on. A reason that is always present makes every row a
-// warning row.
-func TestQueueAPI_OmitsStallReasonForAHealthyJob(t *testing.T) {
+// TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty pins the wire shape the
+// brief specifies: stall_reason is present on every slot, empty when the job
+// is not parked.
+//
+// It replaces a test that was named for omitting the field and asserted the
+// opposite — and could assert nothing either way, because a decoded struct
+// yields "" whether the key was absent or present-and-empty. The distinction
+// is what lets a client tell an unstalled job from a server too old to send
+// the field, so the assertion has to be made against the raw object.
+func TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty(t *testing.T) {
 	t.Parallel()
 	s, q := stallTestServer(t, nil, nil)
 	job := addTestJob(t, q, queue.AddOptions{Name: "healthy"})
 
-	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
-
-	if slot.StallReason != "" {
-		t.Errorf("stall_reason = %q for a job that is not stalled, want empty", slot.StallReason)
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var raw struct {
+		Queue struct {
+			Slots []map[string]any `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw.Queue.Slots) != 1 {
+		t.Fatalf("slots = %d, want 1", len(raw.Queue.Slots))
+	}
+	slot := raw.Queue.Slots[0]
+	if slot["nzo_id"] != job.ID {
+		t.Fatalf("slot nzo_id = %v, want %s", slot["nzo_id"], job.ID)
+	}
+	got, present := slot["stall_reason"]
+	if !present {
+		t.Fatal("stall_reason is absent from a healthy job's slot; a client cannot tell that " +
+			"from a server that does not implement the field at all")
+	}
+	if got != "" {
+		t.Errorf("stall_reason = %v for a job that is not stalled, want empty", got)
 	}
 }
 
