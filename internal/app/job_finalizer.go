@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -87,17 +88,38 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 	if err := app.queue.Remove(job.Queue.ID); err != nil {
 		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
 	}
-	// The download is over and filed. Its Class A facts and Class B extents
-	// describe a queue entry that no longer exists, and nothing else deletes
-	// them — they are keyed by job ID with no foreign key to the queue, so
-	// they would otherwise accumulate one set per job ever downloaded.
+	// The download is over and filed, so its Class A facts and Class B extents
+	// describe a queue entry that no longer exists. They are keyed by job ID
+	// with no foreign key to the queue, so without a deliberate removal they
+	// accumulate one set per job ever downloaded.
 	//
 	// Deliberately here rather than in enqueuePostProc: post-processing can
 	// send a job back for more downloading, and a job that returns to the
 	// queue without its extents re-fetches every byte it already has.
-	delCtx, delCancel := context.WithTimeout(app.ctx, 5*time.Second)
-	app.deleteJobDurability(delCtx, job.Queue.ID)
-	delCancel()
+	//
+	// A FAILED job keeps them, in step with MoveToHistory, which retains that
+	// job's job_files row — filename, articles_done, assembled_crc32 — for the
+	// same reason. Retrying reuses the job ID, resolves the same filename over
+	// the same partial file, and re-fetches only the articles that failed, so
+	// the retained facts are what bound FinalizeFile's truncate to the whole
+	// file rather than to this run's few articles. Without them durableExtent
+	// returns the end offset of the re-fetched articles alone and the rest of
+	// the partial is destroyed, silently: neither #342 guard fires, because
+	// every article the fact log knows about IS durable.
+	//
+	// This is the replacement for the max_written column migration 011 carried
+	// into history_job_files for exactly this case. That column and the
+	// assembler's maxWritten seed are gone, and deriving the bound from the
+	// retained facts keeps Class A the single authority (S5) instead of
+	// reintroducing a summary that can drift from it.
+	//
+	// The retention is bounded the same way the job_files one is: these rows
+	// are removed with the history entry itself, in history.Delete.
+	if entry.Status != string(constants.StatusFailed) {
+		delCtx, delCancel := context.WithTimeout(app.ctx, 5*time.Second)
+		app.deleteJobDurability(delCtx, job.Queue.ID)
+		delCancel()
+	}
 	app.forgetJobBarrierState(job.Queue.ID)
 	select {
 	case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:

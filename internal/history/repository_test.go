@@ -1,6 +1,7 @@
 package history
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -704,5 +705,145 @@ func TestRepository_DB(t *testing.T) {
 	_, repo := openTestDB(t)
 	if repo.DB() == nil {
 		t.Error("expected non-nil sql.DB from repo.DB()")
+	}
+}
+
+// TestDelete_SweepsRetainedDurabilityRows pins the bound on the retention that
+// keeps a retry from truncating away its own partial file.
+//
+// A failed job's article_facts and file_extents survive MoveToHistory on
+// purpose: a retry reuses the job ID and needs them to bound its truncate to
+// the whole partial rather than to the articles it re-fetched. From that point
+// they are owned by the history entry, and like history_job_files they have no
+// foreign key to cascade from, so nothing else would ever remove them. Without
+// this they accumulate one set per failed job for the life of the database.
+func TestDelete_SweepsRetainedDurabilityRows(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openTestDB(t)
+
+	if err := repo.Add(ctx, Entry{NzoID: "job-a", Name: "a", Status: "Failed"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO article_facts (job_id, file_idx, art_idx, offset, length, crc32) VALUES ('job-a',0,0,0,100,7)`,
+		`INSERT INTO file_extents (job_id, file_idx, durable_bitmap, verified_to, prefix_crc, has_prefix_crc, bytes_durable, size, mod_time_ns)
+		   VALUES ('job-a',0,X'01',0,0,0,100,100,1)`,
+	} {
+		if _, err := db.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	count := func(table string) int {
+		t.Helper()
+		var n int
+		if err := db.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM "+table+" WHERE job_id = 'job-a'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// Grounding: the seed must have landed, or the assertions below hold
+	// against an empty table for a reason unrelated to the sweep.
+	if count("article_facts") != 1 || count("file_extents") != 1 {
+		t.Fatalf("fixture seeded %d facts and %d extents, want 1 and 1",
+			count("article_facts"), count("file_extents"))
+	}
+
+	if _, err := repo.Delete(ctx, "job-a"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if n := count("article_facts"); n != 0 {
+		t.Errorf("%d article_facts rows survive their history entry; nothing else "+
+			"removes them, so they accumulate one set per failed job forever", n)
+	}
+	if n := count("file_extents"); n != 0 {
+		t.Errorf("%d file_extents rows survive their history entry", n)
+	}
+}
+
+// fixedScanner assigns values into scanEntry's dest list by POSITION, which is
+// the only way to exercise what that function actually risks getting wrong.
+type fixedScanner struct {
+	at  map[int]any
+	err error
+}
+
+func (f fixedScanner) Scan(dest ...any) error {
+	if f.err != nil {
+		return f.err
+	}
+	for i, d := range dest {
+		v, ok := f.at[i]
+		if !ok {
+			continue // left as the zero value, i.e. a NULL column
+		}
+		switch p := d.(type) {
+		case *sql.NullString:
+			*p = sql.NullString{String: v.(string), Valid: true}
+		case *sql.NullInt64:
+			*p = sql.NullInt64{Int64: v.(int64), Valid: true}
+		case *string:
+			*p = v.(string)
+		case *int64:
+			*p = v.(int64)
+		}
+	}
+	return nil
+}
+
+// TestScanEntry_MapsColumnsByPosition pins scanEntry against the failure it is
+// actually exposed to. TestScanEntry_NullColumnsRoundTrip above already covers
+// NULL collapsing, and does it better — through a real row and the real driver
+// — so this deliberately does not restate it.
+//
+// It scans thirty-one columns into a positional dest list and then copies each
+// local into a named Entry field. Nothing about that is type-checked: swapping
+// two same-typed neighbours — status and nzo_id are both NullString, bytes and
+// archive both NullInt64 — compiles, passes every query test that only checks
+// a row count, and silently serves the wrong value through the history API.
+//
+// The columns asserted here are deliberately same-typed neighbours rather than
+// a representative sample.
+func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
+	got, err := scanEntry(fixedScanner{at: map[int]any{
+		9:  "Failed",           // status
+		10: "SABnzbd_nzo_xyz",  // nzo_id, the NullString next to it
+		20: "par2 repair fail", // fail_message
+		21: "http://info",      // url_info, its NullString neighbour
+		22: int64(4242),        // bytes
+		28: int64(1),           // archive, the NullInt64 next to it
+		29: int64(1700000000),  // time_added
+	}})
+	if err != nil {
+		t.Fatalf("scanEntry: %v", err)
+	}
+	if got.Status != "Failed" || got.NzoID != "SABnzbd_nzo_xyz" {
+		t.Errorf("status/nzo_id = %q/%q, want Failed/SABnzbd_nzo_xyz — adjacent "+
+			"NullString columns are transposed", got.Status, got.NzoID)
+	}
+	if got.FailMessage != "par2 repair fail" || got.URLInfo != "http://info" {
+		t.Errorf("fail_message/url_info = %q/%q, transposed", got.FailMessage, got.URLInfo)
+	}
+	if got.Bytes != 4242 || got.Archive != 1 {
+		t.Errorf("bytes/archive = %d/%d, want 4242/1 — adjacent NullInt64 columns "+
+			"are transposed", got.Bytes, got.Archive)
+	}
+	if got.TimeAdded.Unix() != 1700000000 {
+		t.Errorf("time_added = %v, want the unix value converted via fromUnix", got.TimeAdded)
+	}
+}
+
+// TestScanEntry_PropagatesAScanError pins that a driver error is returned
+// rather than yielding a half-filled Entry the caller would treat as real.
+func TestScanEntry_PropagatesAScanError(t *testing.T) {
+	boom := errors.New("column count mismatch")
+	got, err := scanEntry(fixedScanner{err: boom})
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the scan error", err)
+	}
+	if got != nil {
+		t.Errorf("got a non-nil Entry alongside an error: %+v", got)
 	}
 }

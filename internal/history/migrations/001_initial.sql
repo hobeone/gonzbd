@@ -183,6 +183,15 @@ CREATE TABLE article_facts (
 ) WITHOUT ROWID;
 -- Class A. Append-only and immutable: a row is never updated, because an
 -- article's decoded offset, length, and CRC never change once discovered.
+--
+-- Lifecycle, shared with file_extents: these rows are keyed by job_id with no
+-- foreign key to cascade from, so they are removed deliberately rather than
+-- automatically. A job that leaves the queue drops them, EXCEPT a job that
+-- FAILED — those are retained alongside its history_job_files row, because a
+-- retry reuses the job ID over the same partial file and the retained facts
+-- are what bound the completion truncate to the whole file rather than to the
+-- handful of articles the retry re-fetched. They are dropped with the history
+-- entry itself, in history.Delete.
 -- Idempotency is the primary key's job — Append uses INSERT OR IGNORE.
 -- These rows assert nothing about bytes being present on disk, which is
 -- why they may be committed at any time with no fsync ordering.
@@ -218,10 +227,18 @@ CREATE TABLE file_extents (
 ) WITHOUT ROWID;
 -- Class B: a cache. Never authoritative — where this disagrees with a
 -- recomputation from what it is derived from, the recomputation is correct by
--- definition. Written only by durability.Barrier, only after the fsync that
--- makes its claims true. size and mod_time_ns stamp the file at commit; a
--- mismatch against the file as it exists now invalidates every other column
--- here.
+-- definition.
+--
+-- Two writers, and only two. durability.Barrier writes during a download, only
+-- after the fsync that makes its claims true. durability.Resumer writes at
+-- startup, and only when a recomputation DISPROVED the stored row: reading the
+-- bytes back after a restart and matching their recorded CRC observes the
+-- property an fsync exists to produce, so the correction is written over the
+-- record it disproved rather than left to resurrect. Nothing clears a bit
+-- otherwise, and Barrier.priorExtent ORs this bitmap as its base.
+--
+-- size and mod_time_ns stamp the file at commit; a mismatch against the file
+-- as it exists now invalidates every other column here.
 --
 -- durable_bitmap, verified_to, prefix_crc, has_prefix_crc, and bytes_durable
 -- are derived from article_facts plus the file's actual bytes, and that pair

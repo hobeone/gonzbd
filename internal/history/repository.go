@@ -342,6 +342,26 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 			return 0, fmt.Errorf("history: delete retained job files: %w", err)
 		}
 
+		// A failed job's Class A facts and Class B extents are retained for
+		// the same reason and on the same condition as the rows above: a retry
+		// reuses the job ID and needs them to bound its truncate to the whole
+		// partial file rather than to the articles it re-fetched. They are
+		// owned by the history entry from that point on, and share its lack of
+		// a foreign key to cascade from, so they are removed here for the
+		// reason the comment above gives — every deletion path gets the
+		// cleanup without having to remember it.
+		//
+		// Unconditional rather than failed-only: a completed job's rows are
+		// already gone, so this deletes nothing for it, and making the
+		// condition explicit here would mean this cleanup and the one that
+		// wrote them had to agree about status forever.
+		for _, table := range []string{"article_facts", "file_extents"} {
+			if _, err := tx.ExecContext(ctx,
+				"DELETE FROM "+table+" WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // table is a literal from the slice above; placeholders is only "?,?,?"
+				return 0, fmt.Errorf("history: delete retained durability rows from %s: %w", table, err)
+			}
+		}
+
 		res, err := tx.ExecContext(ctx,
 			"DELETE FROM history WHERE nzo_id IN ("+placeholders+")", args...) //nolint:gosec // placeholders is only "?,?,?" — no user data
 		if err != nil {
