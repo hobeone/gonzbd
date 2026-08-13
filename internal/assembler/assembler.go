@@ -232,6 +232,19 @@ type Assembler struct {
 	// only two places writeCache.used can change.
 	cacheUsedBytes atomic.Int64
 
+	// putBuffer, when non-nil, replaces decoder.PutBuffer as this assembler's
+	// buffer-release path. Same discipline as diskProbe.statfs above:
+	// same-package, set once before the instance is started.
+	//
+	// It exists because releasing a buffer is otherwise UNOBSERVABLE. The
+	// destination is decoder's process-global sync.Pool, and sync.Pool is
+	// emptied at every GC — so "put it, then get it back" is not a test of
+	// whether Put was called, it is a race against the collector. A test built
+	// that way reported a leak on 4 of 12 package runs under -race while the
+	// code was correct. No retry count fixes it: retrying only widens the
+	// window in which a GC can occur.
+	putBuffer func([]byte)
+
 	// mu guards the started/stopped state and the stopCh channel.
 	mu      sync.Mutex
 	started bool
@@ -266,6 +279,7 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		reqs:      make(chan WriteRequest, opts.QueueSize),
 		stopCh:    make(chan struct{}),
 		diskProbe: NewDiskProbe(DefaultDiskProbeTTL),
+		putBuffer: decoder.PutBuffer,
 	}
 	a.minFreeBytes.Store(opts.MinFreeBytes)
 	return a
@@ -277,6 +291,20 @@ func (a *Assembler) SetMinFreeBytes(v int64) { a.minFreeBytes.Store(v) }
 
 // MinFreeBytes returns the current low-disk threshold in bytes. Thread-safe.
 func (a *Assembler) MinFreeBytes() int64 { return a.minFreeBytes.Load() } //nocover: trivial atomic load
+
+// releaseBuffer returns a decoded article's buffer to the decoder pool.
+//
+// Every buffer release in this file goes through here so there is exactly one
+// place a test can observe, and so a direct &Assembler{...} construction (which
+// several tests use) still releases buffers rather than leaking them silently.
+// The nil check is what makes that safe; it is not defensive padding.
+func (a *Assembler) releaseBuffer(buf []byte) {
+	if a.putBuffer != nil {
+		a.putBuffer(buf)
+		return
+	}
+	decoder.PutBuffer(buf)
+}
 
 // CacheUsageBytes returns the current number of bytes buffered in the
 // write-coalescing cache. Safe to call from any goroutine.
@@ -627,7 +655,7 @@ func (a *Assembler) dispatchRequest(
 	// Skip articles for cancelled jobs.
 	if _, cancelled := cancelledJobs[req.JobID]; cancelled {
 		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
+			a.releaseBuffer(req.Data)
 		}
 		return 0
 	}
@@ -703,7 +731,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			return
 		}
 		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
+			a.releaseBuffer(req.Data)
 		}
 	} else if !a.handleSuccessArticle(f, req) {
 		return
@@ -734,7 +762,7 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 	// on from its own record; re-asserting anything about them here would be
 	// this package claiming authority it no longer has.
 	if req.Data != nil {
-		decoder.PutBuffer(req.Data)
+		a.releaseBuffer(req.Data)
 	}
 }
 
@@ -756,7 +784,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
 	if err != nil {
 		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
+			a.releaseBuffer(req.Data)
 		}
 		return nil, storagefault.Classify("resolve", "", err)
 	}
@@ -764,7 +792,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	dir := filepath.Dir(info.Path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
+			a.releaseBuffer(req.Data)
 		}
 		return nil, storagefault.Classify("mkdir", info.Path, err)
 	}
@@ -772,7 +800,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
+			a.releaseBuffer(req.Data)
 		}
 		return nil, storagefault.Classify("open", info.Path, err)
 	}
@@ -851,7 +879,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			// WriteAt for the same range. Nothing is claimed here — the
 			// barrier absorbs duplicate reports itself (R12).
 			if req.Data != nil {
-				decoder.PutBuffer(req.Data)
+				a.releaseBuffer(req.Data)
 			}
 			return false
 		}
@@ -881,7 +909,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) {
 	if !a.offsetInRange(f, req) {
 		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
+			a.releaseBuffer(req.Data)
 		}
 		f.w.fail(id)
 		return
@@ -1056,7 +1084,7 @@ func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) 
 				"jobID", key.jobID, "fileIdx", key.fileIdx, "articles", len(arts))
 			for _, art := range arts {
 				if art.data != nil {
-					decoder.PutBuffer(art.data)
+					a.releaseBuffer(art.data)
 				}
 			}
 			continue

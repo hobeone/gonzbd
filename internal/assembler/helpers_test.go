@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/decoder"
 )
 
 // The helpers exercised here are reached in production only through
@@ -260,60 +258,77 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 // therefore runs only when the pool hands something back, and the second case
 // (FatalErr, nil Data) asserts the complementary thing — that a request with no
 // buffer does not put a nil or foreign slice into the pool.
-// poolProbeCap is deliberately larger than any buffer the rest of this package
-// pools, so decoder.GetBuffer discards a smaller pooled entry and allocates
-// fresh rather than handing back someone else's. poolProbeTries bounds the
-// sweep, since sync.Pool promises no ordering.
-const (
-	poolProbeCap   = 1 << 20
-	poolProbeTries = 64
-)
-
+// TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing pins what is left
+// of the late-duplicate path once the acks are gone: it must release the
+// decoder buffer (or the pool leaks one per late article) and must assert
+// nothing about the article, since the file it belonged to is already closed.
+//
+// # Why this observes the CALL and not the pool
+//
+// Two earlier versions of this test were wrong, in instructive ways.
+//
+// The first had no assertion at all and could only fail by panicking, so
+// deleting the release left it green.
+//
+// The second put a real buffer in and swept decoder's pool for it. That is
+// unobservable, not merely flaky: decoder's pool is a process-global
+// sync.Pool, and sync.Pool is EMPTIED AT EVERY GC. A collection landing between
+// the release and the sweep loses the buffer and the test reports a leak that
+// never happened — measured at 4 failures in 12 package runs under -race, with
+// the production code correct. Raising the retry count makes it worse, since
+// each extra iteration is another window for a GC. A probe confirmed the
+// mechanism directly: runtime.GC() between Put and Get loses the buffer 100% of
+// the time.
+//
+// So the assertion moved to the seam. a.putBuffer records the release, which is
+// exactly the fact under test, and it depends on no global state and no
+// collector timing.
 func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	a := newHelperAssembler()
+	var released [][]byte
+	a.putBuffer = func(b []byte) { released = append(released, b) }
 
-	buf := decoder.GetBuffer(poolProbeCap)
-	buf = append(buf[:0], "xyz"...)
-	want := &buf[:1][0]
-
+	data := []byte("xyz")
 	a.handleLateDuplicate(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: buf,
+		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: data,
 	})
 
-	// GetBuffer always returns buf[:0], so identity has to be taken through
-	// cap rather than len: &got[0] panics, and a `len(got) > 0` guard is never
-	// true. The first version of this assertion had exactly that guard, so it
-	// never ran — a mutation removing decoder.PutBuffer left it green, which is
-	// how it was caught.
-	//
-	// The retry loop is because sync.Pool gives no ordering guarantee and the
-	// rest of this package shares it.
-	var found bool
-	var taken [][]byte
-	for range poolProbeTries {
-		got := decoder.GetBuffer(poolProbeCap)
-		taken = append(taken, got)
-		if cap(got) >= 1 && &got[:1][0] == want {
-			found = true
-			break
-		}
+	if len(released) != 1 {
+		t.Fatalf("released %d buffers, want exactly 1; the late-duplicate path "+
+			"leaks one decoder buffer per late article", len(released))
 	}
-	for _, b := range taken {
-		decoder.PutBuffer(b)
-	}
-	if !found {
-		t.Errorf("the buffer handed to handleLateDuplicate never came back from the "+
-			"pool in %d tries; decoder.PutBuffer was not called and the pool leaks "+
-			"one buffer per late article", poolProbeTries)
+	// Identity, not just count: releasing some other slice would satisfy a
+	// bare count and still leak the article's buffer.
+	if &released[0][:1][0] != &data[:1][0] {
+		t.Errorf("released a different buffer than the request carried")
 	}
 
-	// A late duplicate carrying no data must not put anything into the pool.
-	// Without this the FatalErr arm has no coverage at all.
+	// A late duplicate carrying no data must release nothing — passing a nil
+	// slice to the pool is not the same as not calling it. Without this the
+	// FatalErr arm has no coverage at all.
+	released = nil
 	a.handleLateDuplicate(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
 	})
-	if next := decoder.GetBuffer(poolProbeCap); cap(next) < poolProbeCap {
-		t.Errorf("pool returned a %d-cap buffer after a data-less late duplicate; "+
-			"a nil or short slice was put back", cap(next))
+	if len(released) != 0 {
+		t.Errorf("released %d buffers for a data-less late duplicate, want 0", len(released))
 	}
+}
+
+// TestReleaseBuffer_FallsBackToTheDecoderPool pins the nil-hook path, which is
+// what every production Assembler built outside New() uses. Without it the seam
+// could be left nil-only-safe by accident and silently stop releasing.
+func TestReleaseBuffer_FallsBackToTheDecoderPool(t *testing.T) {
+	a := newHelperAssembler()
+	if a.putBuffer != nil {
+		t.Fatal("newHelperAssembler set putBuffer; this test needs the nil path")
+	}
+	// The observable is that it does not panic and does not divert: with a nil
+	// hook the only correct behaviour is to call decoder.PutBuffer, which
+	// accepts any slice including an empty one.
+	a.releaseBuffer(make([]byte, 0, 64))
+
+	a.putBuffer = func([]byte) { t.Error("releaseBuffer used the hook after it was set to nil") }
+	a.putBuffer = nil
+	a.releaseBuffer(nil)
 }
