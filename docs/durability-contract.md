@@ -578,6 +578,15 @@ so for each file named there an article the resume did not verify goes back to
 Outstanding, and the job's derived figures are recomputed from the bitmaps so its
 reported health matches its per-article state.
 
+**A correction that CLEARS a bit is persisted before it returns**, and that is
+load-bearing rather than tidy. Every re-hydration in the queue re-reads
+`job_files.articles_done` unconditionally, so a cleared bit that lives only in
+memory is undone by the next eviction and re-promotion — which the sweep
+reaches without any concurrency, since it calls `Stall` on a job whose other
+file faulted and `Stall` pauses the job, evicting the manifest. A bit the sweep
+merely *sets* is not persisted here: losing it costs a re-fetch, which is the
+safe direction under S3.
+
 A file **absent** from that slice is not touched at all. Absence is silence, not
 a finding of absence — and three ordinary cases produce it: a file whose filename
 was never resolved (step 1 above), a file the sweep did not reach before a

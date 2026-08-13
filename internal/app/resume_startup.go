@@ -181,6 +181,13 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		// The order is load-bearing the other way too: Stall pauses the job,
 		// which evicts its manifest, and ReplaceFromResume needs a resident one.
 		//
+		// That eviction used to strand the correction. ReplaceFromResume only
+		// mutated the in-memory JobProgress and set a dirty flag, so a Stall
+		// here discarded a cleared bit before any save, and the next promotion
+		// re-read the pre-correction row. ReplaceFromResume now persists a
+		// clearing correction before it returns, which is what makes this
+		// ordering safe rather than merely necessary.
+		//
 		// A fault also bounds what "authoritative" may mean here. exts holds
 		// only the files this sweep actually resumed, and ReplaceFromResume
 		// touches only those — a file the fault stopped it from reaching is
@@ -188,9 +195,22 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		// Clearing on behalf of a file nobody read would turn one unreadable
 		// mount into a full re-download of the job.
 		if err := app.queue.ReplaceFromResume(snap.ID, exts); err != nil {
-			// Not fatal to startup: the job simply re-fetches what it could
-			// not be told it already has.
-			app.log.Warn("resume sweep could not seed a job's work set; it will re-fetch",
+			// Not fatal to startup, but the two failures behind this differ
+			// and the message must not flatten them.
+			//
+			// A seeding failure costs a re-fetch: the job was not told what it
+			// already has, which is the safe direction under S3.
+			//
+			// A PERSIST failure is the other direction. The correction is
+			// applied in memory, so this process behaves correctly, but the
+			// stored row still records the disproven article as done. If the
+			// job is evicted before the next successful save, the next
+			// promotion re-reads that row and the article comes back Done
+			// without its bytes. An earlier version of this comment claimed a
+			// re-fetch either way, which is true only of the first case.
+			app.log.Warn("resume sweep could not fully apply a job's recomputation; "+
+				"if this was the persist, an eviction before the next queue save "+
+				"restores the disproven articles",
 				"job", snap.ID, "err", err)
 		}
 		if fault != nil {

@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -302,6 +303,33 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 	}
 	job.progress.recompute(m)
 	q.dirty.Store(true)
+
+	// A cleared bit must reach the store before this returns.
+	//
+	// Marking the dirty flag is not enough. Every re-hydration in this package
+	// re-reads job_files.articles_done unconditionally — PromoteNext,
+	// hydrateSnapshot, SetStatus — so until the row is rewritten, any eviction
+	// and re-promotion refills the corrected progress from the pre-correction
+	// row and the disproven article is Done again, carrying that file's
+	// Complete flag and AssembledCRC32 back with it. The first periodic save
+	// can be a whole checkpoint interval away.
+	//
+	// The window is reached without any concurrency: resumeAllJobs calls this
+	// and then Stall on the same job whenever another of its files faulted,
+	// and Stall pauses the job, which evicts the manifest with the correction
+	// still in memory only.
+	//
+	// Only when something was CLEARED. A bit this sweep merely SET can be lost
+	// to the same window at the cost of a re-fetch, which is the safe
+	// direction under S3; a bit it cleared is the direction that finalizes a
+	// file over bytes that are not there.
+	//
+	// Queue.Retry carries the same guard against the same re-read, for the
+	// same reason (#260); this generalizes it to the authoritative sweep.
+	var persistErr error
+	if cleared > 0 && q.store != nil {
+		persistErr = q.store.Update(context.Background(), job) //lockio: persists the cleared articles_done before any re-hydration can re-read the stale row
+	}
 	q.mu.Unlock()
 	// --- No lock held below this line ---
 	if cleared > 0 {
@@ -309,6 +337,14 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 		// recorded, and the operator's copy of the file changed underneath it.
 		q.log.Warn("resume disproved articles a previous run recorded as downloaded; they will be re-fetched",
 			"job", jobID, "articles_cleared", cleared)
+	}
+	if persistErr != nil {
+		// Surfaced rather than logged. The caller's own correction is not
+		// durable, so reporting success would let the sweep move on believing
+		// ground it has already lost is safe. resumeAllJobs treats a failure
+		// here as "the job re-fetches what it could not be told it has", which
+		// is the safe direction; silently succeeding is not.
+		return fmt.Errorf("queue: ReplaceFromResume %s: persist cleared articles: %w", jobID, persistErr)
 	}
 	return nil
 }
