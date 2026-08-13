@@ -322,6 +322,26 @@ Three rules follow:
   both directions. If a reported function looks untouched by your change,
   commit and re-run before writing a test for it.
 
+Two further gates are **whole-repository**, not diff-scoped, and exist because
+build, vet, lint and the test suite are structurally blind to what they check —
+comments and Markdown are neither type-checked nor executed:
+
+```bash
+go run ./scripts/check_dup_comments     # duplicated multi-line // blocks
+go run ./scripts/check_review_banner    # docs/reviews/*.md frozen-record banners
+```
+
+| Gate | What it catches | How to satisfy it |
+|------|-----------------|-------------------|
+| `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
+| `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
+
+Neither is diff-scoped, so both can fail on a file you did not touch. Both found
+a real defect on their first run against this repository: a package doc comment
+duplicated across two files of `scripts/nntpfaultproxy`, and a fixture comment
+in `internal/queue/progress_helpers_test.go` that named `resetForReload` above a
+test of `clone`.
+
 ### Mutation Testing (periodic, not a per-commit gate)
 
 `gremlins` is **not** part of the per-commit quality gates above — it's too

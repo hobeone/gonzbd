@@ -115,6 +115,10 @@ func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
 // total (via markFailed's bookkeeping) and remainingBytes. Emitted must also
 // be cleared, matching the not-failed path.
 func TestResetForReload_FailedArticle(t *testing.T) {
+	// dupcomment:ok the two resetForReload fixtures state the same constraint
+	// because they set up the same manifest for the same reason. The third
+	// copy of this block was a real defect and is corrected below.
+	//
 	// Bytes is the sum of the articles' bytes, as internal/nzb's parser
 	// always makes it. RemainingBytes derives from the file's own size, so a
 	// fixture leaving it zero would clamp the figure to zero and make the
@@ -201,7 +205,11 @@ func TestJobProgressClone_DeepCopy(t *testing.T) {
 	// Bytes is the sum of the articles' bytes, as internal/nzb's parser
 	// always makes it. RemainingBytes derives from the file's own size, so a
 	// fixture leaving it zero would clamp the figure to zero and make the
-	// assertions below pass no matter what resetForReload did.
+	// deep-copy assertions below pass against a shallow clone, every field
+	// they compare reading zero on both sides.
+	//
+	// This block was a verbatim copy of the two resetForReload fixtures above
+	// and still named resetForReload, which this test does not call.
 	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
