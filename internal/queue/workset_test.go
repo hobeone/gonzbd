@@ -58,11 +58,18 @@ func (noopStallable) Fail(string, *storagefault.Fault)  {}
 // durability.Barrier over a stub target and capturing what it emits.
 //
 // There is deliberately no shortcut. DurableProof has no exported constructor,
-// and that absence is what makes "ack only after fsync" compiler-enforced
-// rather than a rule six call sites must each remember. A test-only exported
-// constructor would move that guarantee from the compiler to a CI grep, so
-// this helper pays the setup cost instead — and gets a test that exercises the
-// real minting path as a bonus.
+// so no package outside internal/durability can build one that NAMES AN
+// ARTICLE, and that absence is what makes "ack only after fsync" enforced by
+// the compiler on this path rather than by a rule six call sites must each
+// remember. A test-only exported constructor would move that guarantee to a CI
+// grep, so this helper pays the setup cost instead — and gets a test that
+// exercises the real minting path as a bonus.
+//
+// Note the bound, which an earlier version of this comment overstated:
+// durability.DurableProof{} does compile here, it is simply empty and inert
+// (TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing), and
+// AckDurable is not the only door into markDone — SeedFromExtents and
+// ReplaceFromResume need no proof at all.
 func mintProof(t *testing.T, jobID string, arts []int32, artCount int) durability.DurableProof {
 	t.Helper()
 

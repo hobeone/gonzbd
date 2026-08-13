@@ -459,11 +459,23 @@ rebuild bitmap, recompute prefix CRC → WorkSet.
 
 ### Making X3 concrete
 
-`Barrier` is the only unit that can construct the token `ack()` requires as an
-argument. Put the token type in the barrier's package with an unexported field
-and no exported constructor, and every path that can ack today —
-`handleSuccessArticle`, `handleLateDuplicate`, `flush`, `finalizeFile`, and the
-two control messages — physically cannot call `ack()`. Not "must not". Cannot.
+`Barrier` is the only unit that can construct a NON-EMPTY token `ack()`
+requires as an argument. Put the token type in the barrier's package with
+unexported fields and no exported constructor, and every path that can ack
+today — `handleSuccessArticle`, `handleLateDuplicate`, `flush`, `finalizeFile`,
+and the two control messages — cannot supply one. Not "must not". Cannot.
+
+> **Correction, verified against the implementation by compiling it.** The
+> original wording here said such a token "physically cannot" be constructed
+> outside the package. That is false as written: Go permits a field-less
+> composite literal even when every field is unexported, so
+> `durability.DurableProof{}` compiles anywhere. What the compiler bounds is the
+> token's PAYLOAD — there is no exported way to put an article in one — and
+> `AckDurable`'s empty-proof early return is what makes such a token inert. The
+> guarantee is also scoped to this one door: `SeedFromExtents` and
+> `ReplaceFromResume` reach `markDone` with no token, deliberately, because
+> their evidence is stable storage rather than an fsync. See
+> `docs/durability-contract.md` §1.
 
 `FaultClassifier` does not know what an article is, which makes A1 true by
 ignorance rather than by discipline: it has no vocabulary in which to blame an
