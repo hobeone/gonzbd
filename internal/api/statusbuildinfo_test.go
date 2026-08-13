@@ -7,16 +7,94 @@ import (
 	"runtime"
 	"runtime/debug"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
-// TestStatusBuildInfo_ReportsTheBinaryItIsRunningIn pins the handler against
-// the process it is actually running in, rather than against a fixture.
+func TestResolvedDependency(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no replace", func(t *testing.T) {
+		t.Parallel()
+		got := resolvedDependency(&debug.Module{Path: "example.com/a", Version: "v1.0.0"})
+		want := buildDependency{Path: "example.com/a", Version: "v1.0.0"}
+		if got != want {
+			t.Errorf("resolvedDependency() = %+v; want %+v", got, want)
+		}
+	})
+
+	t.Run("replaced", func(t *testing.T) {
+		t.Parallel()
+		got := resolvedDependency(&debug.Module{
+			Path:    "example.com/a",
+			Version: "v1.0.0",
+			Replace: &debug.Module{Path: "example.com/fork-of-a", Version: "v1.0.0-patched"},
+		})
+		want := buildDependency{Path: "example.com/fork-of-a", Version: "v1.0.0-patched"}
+		if got != want {
+			t.Errorf("resolvedDependency() = %+v; want %+v (replace target)", got, want)
+		}
+	})
+}
+
+func TestModeStatus_BuildInfo(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+	s := New(Options{Version: "v1.2.0", Commit: "abc123", Date: "2026-07-14T00:00:00Z", Config: cfg})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=status&name=build_info&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if m["version"] != "v1.2.0" {
+		t.Errorf("version = %v; want v1.2.0", m["version"])
+	}
+	if m["commit"] != "abc123" {
+		t.Errorf("commit = %v; want abc123", m["commit"])
+	}
+	if m["build_date"] != "2026-07-14T00:00:00Z" {
+		t.Errorf("build_date = %v; want 2026-07-14T00:00:00Z", m["build_date"])
+	}
+	if m["go_version"] == nil || m["go_version"] == "" {
+		t.Error("expected non-empty go_version")
+	}
+
+	// Running under `go test`, deps come from the test binary's own build
+	// info rather than gonzbd's, so we only assert the field is present
+	// and well-formed -- not that it's non-empty or contains a specific
+	// module (that's exercised indirectly by every other test binary that
+	// imports this module's dependencies).
+	deps, ok := m["deps"].([]any)
+	if !ok {
+		t.Fatalf("expected deps array, got %v (%T)", m["deps"], m["deps"])
+	}
+	for _, d := range deps {
+		dep, ok := d.(map[string]any)
+		if !ok {
+			t.Fatalf("expected dep object, got %v", d)
+		}
+		if dep["path"] == nil || dep["path"] == "" {
+			t.Errorf("dep missing path: %v", dep)
+		}
+	}
+}
+
+// TestStatusBuildInfo_ReportsTheBinaryItIsRunningIn pins the handler's
+// dependency list against the process it is actually running in.
 //
-// The point of the endpoint is that it reports what was COMPILED IN, not what
-// go.mod says, so a test that fed it a hand-built dependency list would assert
-// the opposite of its purpose. debug.ReadBuildInfo() is available inside a test
-// binary, so the assertion here is that the handler's output agrees with the
-// runtime's own view.
+// TestModeStatus_BuildInfo above covers the route and the scalar fields, and
+// deliberately asserts only that each dep has a non-empty path — its comment
+// explains why it does not go further. This goes further, and can: the point of
+// the endpoint is that it reports what was COMPILED IN rather than what go.mod
+// says, and debug.ReadBuildInfo() is available inside a test binary, so the
+// handler's list can be compared element-for-element against the runtime's own
+// view. A test that fed it a hand-built list would assert the opposite of the
+// endpoint's purpose.
 func TestStatusBuildInfo_ReportsTheBinaryItIsRunningIn(t *testing.T) {
 	t.Parallel()
 	s := &Server{version: "1.2.3", commit: "abc1234", date: "2026-08-12"}
@@ -84,28 +162,5 @@ func TestStatusBuildInfo_DepsIsAnArrayNotNull(t *testing.T) {
 	if string(raw["deps"]) == "null" {
 		t.Error("deps marshalled as null; it must be an array, so the handler has to " +
 			"initialise the slice rather than declare it")
-	}
-}
-
-// TestResolvedDependency_FollowsAReplaceDirective is the unit behind the
-// dependency half above. The replace case cannot be produced from this test
-// binary's own build info — nothing in go.mod is replaced — so it is
-// constructed directly.
-func TestResolvedDependency_FollowsAReplaceDirective(t *testing.T) {
-	t.Parallel()
-	plain := &debug.Module{Path: "example.com/a", Version: "v1.0.0"}
-	if got := resolvedDependency(plain); got != (buildDependency{Path: "example.com/a", Version: "v1.0.0"}) {
-		t.Errorf("unreplaced module: got %+v", got)
-	}
-
-	replaced := &debug.Module{
-		Path:    "example.com/a",
-		Version: "v1.0.0",
-		Replace: &debug.Module{Path: "example.com/fork", Version: "v0.9.9"},
-	}
-	got := resolvedDependency(replaced)
-	if got != (buildDependency{Path: "example.com/fork", Version: "v0.9.9"}) {
-		t.Errorf("replaced module: got %+v, want the replacement's path and version — "+
-			"reporting the original would name a module that is not in the binary", got)
 	}
 }
