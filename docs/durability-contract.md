@@ -715,9 +715,11 @@ including every failure path.
   different yEnc offset, and asking about its own would interrogate a slot the
   first copy never occupied — reading empty as "already written".
 - A write path that **fails** moves its articles out of `seenDone` into
-  `seenFailed`, so a later duplicate is not read as a success. The article is
-  simply absent from the next `Drain`, which leaves it Outstanding — there is no
-  ack in either direction on a failed write (A1).
+  `seenFailed`, so a later duplicate is not read as a success. There is no ack
+  in either direction on a failed write (A1). Absence from the next `Drain` is
+  necessary but **not sufficient** to leave the article Outstanding: its
+  Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
+  The fault's route is what clears it — see the write-error rule below.
 - An article **displaced** from an offset a later one claimed loses its bytes.
   It made no claim, so failing it only corrects the seen-sets.
 - **Cross-state dedup**: a Message-ID previously counted as a success arriving as
@@ -833,8 +835,11 @@ articles or sparse regions.
 ## Failure & degradation rules
 
 - **Write error (`pwrite` failure)** — the article is *not* acked and *not*
-  failed. It is absent from the next `Drain`, so it stays Outstanding, and the
-  classified `*storagefault.Fault` travels separately. A coalesced run fails
+  failed. The classified `*storagefault.Fault` leaves the worker through
+  `Options.OnWriteFault`, carrying the article index; the owner clears that
+  article's Emitted bit, returning it to Outstanding, and then stalls or fails
+  the job on the usual R18 rule. The failed write is **not** counted toward the
+  file's parts, so the file cannot complete over bytes that never landed. A coalesced run fails
   **every** article merged into it, not just the one whose arrival triggered the
   flush: `buildContiguousRun` pooled the originals before the write was
   attempted, so reporting only the trigger would leave the rest believed written

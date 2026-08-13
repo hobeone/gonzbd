@@ -161,6 +161,24 @@ type Options struct {
 	// and should not block for long.
 	OnLowDisk func(dir string, free int64)
 
+	// OnWriteFault, if non-nil, is called on the worker goroutine when a
+	// write for an article fails.
+	//
+	// It exists because a fault raised inside FileWriter.Accept has no other
+	// way out. The barrier only sees what Drain, Sync, Stat or Truncate
+	// returns, and a rejected write leaves nothing behind for a later Drain to
+	// fail on — with the cache disabled there is nothing buffered at all. The
+	// article is not failed by this: a storage fault says nothing about the
+	// article's availability (A1), so the caller stalls the job and returns
+	// the article to Outstanding.
+	//
+	// artIdx is carried because clearing the article's Emitted bit is the
+	// caller's job and it cannot be done without one. Emitted is NOT
+	// Outstanding — ForEachUnfinishedArticle skips a set Emitted bit — so an
+	// article left Emitted here is never re-dispatched for the life of the
+	// process.
+	OnWriteFault func(jobID string, fileIdx int, artIdx int32, f *storagefault.Fault)
+
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
 
@@ -765,10 +783,14 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		var err error
 		f, err = a.openTargetFile(key, req, open, wc)
 		if err != nil {
-			// The article stays Outstanding: it is absent from every Drain, so
-			// nothing claims it reached disk and a later run fetches it again.
-			// The fault reaches the job through the barrier's Stallable rather
-			// than being recorded against the article (A1).
+			// KNOWN GAP: this fault is dropped. The file is never inserted
+			// into open, so opFiles never lists it, Files() never includes it,
+			// and no barrier operation can return it — the fault has no path
+			// to Stallable at all. The article also keeps its Emitted bit, so
+			// it is never re-dispatched, and a persistent EACCES or EROFS on
+			// the download directory leaves the job stuck at N% with no reason
+			// attached. Options.OnWriteFault is the route this needs; the
+			// write path already uses it.
 			a.log.Error("open target file for article",
 				"job", req.JobID, "fileidx", req.FileIdx, "error", err)
 			return
@@ -821,8 +843,13 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 // Every failure returns a classified *storagefault.Fault rather than logging
 // and discarding the article (#357). The distinction matters because of A2: a
 // dropped article is resolved neither way, so no later run re-dispatches it and
-// the job stalls at 99% forever. A returned fault leaves it Outstanding, which
-// costs a re-fetch and nothing else.
+// the job stalls at 99% forever.
+//
+// Returning the fault is necessary but not currently sufficient, and an
+// earlier version of this comment claimed otherwise ("a returned fault leaves
+// it Outstanding, which costs a re-fetch and nothing else"). processRequest
+// drops what this returns, and the article keeps its Emitted bit either way —
+// see the KNOWN GAP note at the call site.
 //
 // A failing FileInfo resolver is classified against the path it could not
 // produce, which is empty — the honest answer, since the resolver failed before
@@ -937,7 +964,9 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			// return keeps partsWritten from counting it twice; the bytes are
 			// still written, because they are still the file's content.
 			w.seenDone[req.MessageID] = req.Offset
-			a.acceptArticle(f, id, req)
+			if err := a.acceptArticle(f, id, req); err != nil {
+				a.noteWriteFault(f, req, err)
+			}
 			return false
 		}
 		// Recorded before the write is attempted, not after, so a write path
@@ -945,26 +974,58 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// putting it straight back.
 		w.seenDone[req.MessageID] = req.Offset
 	}
-	a.acceptArticle(f, id, req)
+	if err := a.acceptArticle(f, id, req); err != nil {
+		// Not counted toward completion. Counting it is what let a file reach
+		// TotalParts and finalize over bytes that never landed, reporting full
+		// health on a job whose volume was full.
+		a.noteWriteFault(f, req, err)
+		return false
+	}
 	return true
 }
 
-// acceptArticle range-checks the write and hands it to the file's writer.
+// acceptArticle range-checks the write and hands it to the file's writer,
+// returning any storage fault the write raised.
 //
-// A storage fault is logged and left to the barrier, which is what surfaces it
-// to the job via Stallable. The article simply does not appear in the next
-// Drain, which leaves it Outstanding (A1): a full disk is never recorded as
-// article damage.
-func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) {
+// An earlier version of this doc claimed the fault was "logged and left to the
+// barrier, which is what surfaces it to the job via Stallable", and that the
+// article "simply does not appear in the next Drain, which leaves it
+// Outstanding". Neither half held. The barrier only sees a fault that Drain,
+// Sync, Stat or Truncate returns, and a write rejected here leaves nothing
+// behind for a later Drain to fail on — with the cache disabled there is
+// nothing buffered at all, so no fault was ever routed. Nor is the article
+// Outstanding: its Emitted bit is still set, and ForEachUnfinishedArticle
+// skips it, so it is never re-dispatched.
+//
+// Returning the fault is what makes A1 true rather than merely asserted: the
+// caller declines to count the part, hands the fault to OnWriteFault, and the
+// job stalls on a storage condition without any article being recorded as
+// damaged.
+func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) error {
 	if !a.offsetInRange(f, req) {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
 		f.w.fail(id)
-		return
+		return nil
 	}
-	if err := f.w.Accept(id, req.Offset, req.Data); err != nil {
-		a.log.Error("write article", "path", f.info.Path, "offset", req.Offset, "error", err)
+	return f.w.Accept(id, req.Offset, req.Data)
+}
+
+// noteWriteFault surfaces a failed write to the owner of the job.
+//
+// Classify is applied only when the writer did not already return a typed
+// fault, so a fault that arrived with its own op and path keeps them rather
+// than being relabelled "write" against this file.
+func (a *Assembler) noteWriteFault(f *openFile, req WriteRequest, err error) {
+	fault, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok {
+		fault = storagefault.Classify("write", f.info.Path, err)
+	}
+	a.log.Error("write article",
+		"job", req.JobID, "path", f.info.Path, "offset", req.Offset, "error", err)
+	if a.opts.OnWriteFault != nil {
+		a.opts.OnWriteFault(req.JobID, req.FileIdx, req.ArtIdx, fault)
 	}
 }
 

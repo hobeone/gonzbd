@@ -494,6 +494,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		MinFreeBytes:    minFreeBytes,
 		WriteCacheBytes: writeCacheBytes,
 		OnLowDisk:       app.handleLowDisk,
+		OnWriteFault:    app.handleWriteFault,
 		OnFileComplete:  onFileComplete,
 	}, log)
 	app.assembler = asm

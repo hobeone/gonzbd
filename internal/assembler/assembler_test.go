@@ -894,11 +894,22 @@ func TestAssembler_HelperMethods(t *testing.T) {
 	})
 
 	t.Run("handleSuccessArticle_writeFail", func(t *testing.T) {
-		// A write failure must not stall the job: handleSuccessArticle still
-		// returns true (partsWritten increments), but the article must not
-		// be reported Written by the writer, and must land in seenFailed
-		// rather than seenDone — the barrier's next Drain simply won't see
-		// it, which leaves it Outstanding for a re-fetch (A1, R19).
+		// A write failure must NOT be counted toward completion, and the
+		// article must not be reported Written, must land in seenFailed
+		// rather than seenDone, and must not be recorded as damaged (A1).
+		//
+		// This subtest previously required the opposite return value, on the
+		// reasoning that "the barrier's next Drain simply won't see it, which
+		// leaves it Outstanding for a re-fetch". Absence from a Drain does not
+		// make an article Outstanding: its Emitted bit is still set from
+		// dispatch, ForEachUnfinishedArticle skips a set Emitted bit, and no
+		// path on this branch clears it. So the article was never re-fetched,
+		// while partsWritten counted a write that did not happen and the file
+		// finalized over pre-allocation zeros at full reported health.
+		//
+		// Stalling is not the harm the old expectation took it for. A storage
+		// fault stalls or fails the job everywhere else in this design, and
+		// the article stays unresolved either way — which is the whole of A1.
 		a := newHelperAssembler()
 		dir := t.TempDir()
 		f := newHelperFile(t, dir, "fail_write.dat", 0)
@@ -912,8 +923,10 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		got := a.handleSuccessArticle(f, req)
-		if !got {
-			t.Error("handleSuccessArticle must return true on write failure (prevents job stall)")
+		if got {
+			t.Error("handleSuccessArticle counted a failed write toward completion; " +
+				"processRequest increments partsWritten on this return, so the file " +
+				"reaches TotalParts and finalizes over bytes that never reached disk")
 		}
 		if got := f.w.writtenSoFar(); len(got) != 0 {
 			t.Errorf("writtenSoFar = %v after a failed write, want empty", got)

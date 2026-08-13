@@ -152,9 +152,14 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // handled and never retry it.
 //
 // There is deliberately no ack here. A failed WRITE is a storage condition,
-// and A1 forbids resolving it against the article: the article simply does not
-// appear in Drain's return, so it stays Outstanding and the fault travels
-// separately as a *storagefault.Fault.
+// and A1 forbids resolving it against the article.
+//
+// Absence from Drain's return is NOT what leaves the article Outstanding, and
+// an earlier version of this comment said it was. The article's Emitted bit is
+// still set from dispatch and ForEachUnfinishedArticle skips a set Emitted
+// bit, so absence alone strands it. What returns it to Outstanding is the
+// fault's route: Assembler.noteWriteFault carries the article index out to
+// Options.OnWriteFault, whose owner clears that bit before stalling the job.
 func (w *FileWriter) fail(id articleID) {
 	if id.msgID != "" {
 		delete(w.seenDone, id.msgID)
@@ -168,8 +173,12 @@ func (w *FileWriter) fail(id articleID) {
 // including failure, so a caller never has to reason about who frees it.
 //
 // A returned error is always a *storagefault.Fault. It reports that STORAGE
-// failed, never that the article did: the article is simply absent from the
-// next Drain, which leaves it Outstanding (A1, R19).
+// failed, never that the article did (A1, R19).
+//
+// The caller must not discard it. Dropping it neither stalls the job nor
+// returns the article to Outstanding — see fail's doc for why absence from a
+// Drain is not enough on its own — and the file goes on to complete over bytes
+// that never landed.
 func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	art := bufferedArticle{offset: off, data: data, id: id}
 	if cached, displaced := w.wc.buffer(w.key, art); cached {

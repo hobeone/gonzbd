@@ -61,6 +61,38 @@ func (a manifestArticleMap) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) 
 	return i - lo, true
 }
 
+// handleWriteFault is the assembler's Options.OnWriteFault, and it does the two
+// things a failed write needs that the assembler cannot do for itself.
+//
+// First it returns the article to Outstanding. The write did not happen, so
+// the article must be fetched again — but its Emitted bit is still set from
+// dispatch, and ForEachUnfinishedArticle skips a set Emitted bit. Nothing else
+// clears it on this path: no Drain reports the article, no AckPermanentFailure
+// names it, and eviction keeps job.progress, so pause and resume do not clear
+// it either. Left alone it is stranded for the life of the process, at any
+// residency, which is why this is not merely tidy.
+//
+// Then it routes the fault, on the same rule the barrier uses (R18/A1): a
+// permanent condition fails the job, anything else stalls it. The article is
+// never marked failed, because a storage fault says nothing about whether the
+// article is available on any server.
+//
+// Runs on the assembler's worker goroutine, so it must not block on it: both
+// calls take the queue lock only.
+func (app *Application) handleWriteFault(jobID string, _ int, artIdx int32, f *storagefault.Fault) {
+	if err := app.queue.ClearArticleEmittedByIdx(jobID, artIdx); err != nil {
+		// A job that has left the queue has nothing to re-dispatch, so this is
+		// ordinary rather than a defect. It is still not silent (A2).
+		app.log.Debug("clear the emitted bit after a failed write",
+			"job", jobID, "artidx", artIdx, "err", err)
+	}
+	if f.Permanent {
+		app.Fail(jobID, f)
+		return
+	}
+	app.Stall(jobID, f)
+}
+
 // Stall parks a job on a retryable storage fault and surfaces why (R19, R27).
 //
 // No article is marked failed, and that is the whole of A1. A full disk is a
