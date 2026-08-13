@@ -16,14 +16,17 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+// updateGolden makes TestMigrations_GoldenSchema rewrite
+// testdata/schema.golden from the migration instead of asserting against it:
+// `go test ./internal/history -run TestMigrations_GoldenSchema -update`.
+var updateGolden = flag.Bool("update", false, "rewrite testdata/schema.golden from the migration")
+
 // openMigratedTestDB opens a scratch SQLite database under t.TempDir() and
 // applies the embedded migrations the same way Open does, returning the raw
 // *sql.DB so a test can interrogate sqlite_master and the pragma functions
 // directly. Open's *DB wrapper keeps its handle unexported and offers no
 // schema accessor, and repository_test.go's openTestDB returns
 // (*DB, *Repository), so neither is usable for schema-shape assertions.
-var updateGolden = flag.Bool("update", false, "rewrite testdata/schema.golden from the migration")
-
 func openMigratedTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 

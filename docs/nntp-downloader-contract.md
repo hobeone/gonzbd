@@ -169,16 +169,29 @@ of their failure ratio.
    clean shutdown — so the window between "written" and "durable" is one
    checkpoint interval rather than one whole file.
 
-   The two crash classes that remain, and which path repairs each:
+   What a crash costs, by what the restart can prove. The deciding question is
+   not "was it acked" but "can the resume sweep verify the bytes against the
+   article's Class A fact", and those are different questions:
 
-   | Lost | Acked? | Recovery |
-   |------|--------|----------|
-   | an article no barrier covered — still buffered, written but not yet fsynced, or never received | no | `Emitted` is lost, the startup resume sweep leaves it Outstanding, and the next run re-dispatches it. This contract. |
+   | State at the crash | Acked? | What the restart does |
+   |---|---|---|
+   | still in the write cache, or never received | no | nothing on disk to verify. Outstanding, re-dispatched. This contract. |
+   | written but not yet fsynced, **and the bytes did not survive** | no | no recorded region verifies. Outstanding, re-dispatched. |
+   | written but not yet fsynced, **and the bytes did survive** | no | **recovered, not re-fetched.** `durability.Resumer` reads the region the Class A fact names and checks it against the CRC recorded at decode time; a match makes the article durable even though no barrier ever covered it. |
+   | covered by a completed fsync | yes | the committed extent's size/mtime stamp still matches, so the cache is adopted without reading a byte. |
    | a fsync the storage layer acknowledged but did not honour (a lying disk, an NFS server that acks early) | yes | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
 
-   The second row is genuinely outside what this program can observe, and it is
-   the *only* remaining case in that column — the "written but not fsynced yet
-   and therefore acked" case that used to sit there is gone.
+   Rows two and three are the same article; only the disk's behaviour differs,
+   and the resume tells them apart by reading. That is why an unacked article is
+   **not** synonymous with a re-fetched one: the ack bounds what may be
+   *claimed*, while the fact log plus the file's bytes bound what can be
+   *recovered*, and the second is the larger set. Writing the unacked case down
+   as always-Outstanding understates the resumer, in the direction of making it
+   sound worse than it is.
+
+   The last row is genuinely outside what this program can observe, and it is
+   the only case where an ack can be wrong — the "written but not fsynced yet and
+   therefore acked" case that used to sit there is gone.
 
    See `docs/durability-contract.md` for the assembler and barrier side of this.
 

@@ -316,7 +316,7 @@ be merged**:
 
 | Entry point | Caller | Contract |
 |---|---|---|
-| `ReplaceFromResume` | `Application.resumeAllJobs` (startup sweep) | **authoritative** — sets *and clears*. The only caller that has just read the files' bytes. |
+| `ReplaceFromResume` | `Application.resumeAllJobs` (startup sweep) | **authoritative over the files it is passed** — sets *and clears* for those, and leaves a file absent from the slice entirely alone. The only caller that has just read the files' bytes. |
 | `SeedFromExtents` | `Application.reevaluateStall` phase 3 | **additive** — only ever sets. Replaying an ack whose fsync already landed; it has verified nothing. |
 
 The union of the two contracts is either #362 (a stale bit outliving the
@@ -512,10 +512,24 @@ For each job it sweeps, per file:
 3. Collect a `FileExtent` carrying only `FileIdx` and `Durable`, because those are
    the only two fields `ReplaceFromResume` reads.
 
-Then `Queue.ReplaceFromResume` installs the finding **authoritatively**: an
-article the resume did not verify goes back to Outstanding, and the job's derived
-figures are recomputed from the bitmaps so its reported health matches its
-per-article state.
+Then `Queue.ReplaceFromResume` installs the finding. It is authoritative
+**over the files it is given, and only those**: it loops over the `exts` slice,
+so for each file named there an article the resume did not verify goes back to
+Outstanding, and the job's derived figures are recomputed from the bitmaps so its
+reported health matches its per-article state.
+
+A file **absent** from that slice is not touched at all. Absence is silence, not
+a finding of absence — and three ordinary cases produce it: a file whose filename
+was never resolved (step 1 above), a file the sweep did not reach before a
+storage fault, and every file of a job the phase or residency bound skipped. The
+distinction is load-bearing in the safe direction: clearing on behalf of a file
+nobody read would turn one unreadable mount into a full re-download of the job.
+
+Two things are never cleared even for a file that *is* named: a permanently
+failed article (its bytes were never on disk, so their absence is the recorded
+outcome rather than new information), and a file's `Complete` flag where no bit
+was actually cleared — `Complete` means "the assembler is finished with this
+file", not "every article arrived", so it cannot be re-derived from the bits.
 
 **Running only at startup is complete.** A job admitted later has no committed
 extents to seed from, and a job's extents cannot change while it is not running —

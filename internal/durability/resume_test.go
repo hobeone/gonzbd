@@ -1032,3 +1032,93 @@ func TestResume_FastPathDoesNotInventAPrefixCRC(t *testing.T) {
 		t.Error("HasPrefixCRC = true for an extent that was committed without one")
 	}
 }
+
+// TestResume_RecoversAnArticleWrittenAfterTheLastBarrier is the pin for the
+// claim docs/nntp-downloader-contract.md §5 makes about what a crash costs.
+//
+// The interesting article here is one the barrier NEVER covered: its bytes
+// reached WriteAt, the process died before the next checkpoint, and the page
+// cache carried them to disk anyway — which is what a SIGKILL does, as opposed
+// to a power loss. It is unacked by construction (article 1 is clear in the
+// committed bitmap) and its bytes are nonetheless recoverable, because Class A
+// was appended at decode time with no ordering against the barrier.
+//
+// The doc used to file every unacked article as always-Outstanding. That is
+// wrong in the direction of understating the resumer: the ack bounds what may
+// be CLAIMED, while the fact log plus the file's bytes bound what can be
+// RECOVERED, and the second is the larger set. This test is what makes the
+// corrected wording checkable.
+//
+// Both halves are asserted, because either alone is satisfiable by a mistake:
+// article 1 must come back durable (the recovery), and article 2 — recorded by
+// a fact but never written, so the file holds pre-allocation zeros there — must
+// NOT, or the test would be passing on a resumer that trusts the fact log
+// rather than the bytes.
+func TestResume_RecoversAnArticleWrittenAfterTheLastBarrier(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "movie.mkv")
+
+	const n = 100
+	a0 := bytes.Repeat([]byte{0xA0}, n) // covered by the last barrier
+	a1 := bytes.Repeat([]byte{0xA1}, n) // written after it, never fsynced
+	a2 := make([]byte, n)               // never written: pre-allocation zeros
+	body := append(append(append([]byte{}, a0...), a1...), a2...)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t)
+	fl := NewSQLiteFactLog(db)
+	// Class A for all three: appended at decode time, with no ordering against
+	// the write or the barrier (R2). Article 2's fact describes bytes that
+	// never landed, which is legal and is exactly what makes it the control.
+	facts := []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: n, CRC32: crc32.ChecksumIEEE(a0)},
+		{FileIdx: 0, ArtIdx: 1, Offset: n, Length: n, CRC32: crc32.ChecksumIEEE(a1)},
+		{FileIdx: 0, ArtIdx: 2, Offset: 2 * n, Length: n, CRC32: crc32.ChecksumIEEE(bytes.Repeat([]byte{0xA2}, n))},
+	}
+	if err := fl.Append(ctx, "job-1", facts); err != nil {
+		t.Fatal(err)
+	}
+
+	// The last barrier covered article 0 only, and stamped the file as it was
+	// at that moment — before article 1's bytes were written.
+	es := NewSQLiteExtentStore(db)
+	bm := NewBitmap(3)
+	bm.Set(0)
+	if err := es.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 0, Durable: bm, VerifiedTo: n,
+		Size: 3 * n, ModTimeNs: 1, // a stale stamp: the write moved the mtime
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewResumer(fl, es, testLogger(t)).Resume(ctx, "job-1", 0, path, 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Recomputed {
+		t.Fatal("Recomputed = false: the stale stamp must force a recomputation, " +
+			"and without one there is nothing to recover from")
+	}
+	if !got.Durable.Get(0) {
+		t.Error("article 0 (barrier-covered) is not durable after the recomputation")
+	}
+	if !got.Durable.Get(1) {
+		t.Error("article 1 is not durable — it was written but never fsynced, and its " +
+			"bytes ARE on disk and DO match the CRC recorded at decode time. Leaving it " +
+			"Outstanding re-downloads bytes the resumer can prove are already there")
+	}
+	if got.Durable.Get(2) {
+		t.Error("article 2 is durable — its fact exists but its bytes never landed, so " +
+			"the resumer is trusting the fact log instead of reading the file")
+	}
+	// The gapless prefix runs 0..2n and stops at article 2, whose region does
+	// not match. Asserting it here keeps the recovery from being confused with
+	// a resumer that simply believes everything.
+	if got.VerifiedTo != 2*n {
+		t.Errorf("VerifiedTo = %d, want %d — the verified prefix should span both "+
+			"recovered articles and stop at the one that did not land", got.VerifiedTo, 2*n)
+	}
+}

@@ -69,19 +69,9 @@ func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc
 	seed.ResumeAll(context.Background())
 }
 
-// TestRecovery_PostProcTrueOnRestart verifies that Application.Start
-// finalises a job whose PostProc flag survived a crash.
-//
-// The crash is simulated by seeding the on-disk queue state directly:
-// a fully-downloaded, all-complete job with PostProc=true. In a real
-// crash this is the state left on disk when a process died after the
-// completion path flipped the flag but before OnJobDone's history.Add
-// + queue.Remove ran. Startup rescan must pick the job up and drive
-// it through post-processing to history.
-//
-// Pre-B.1 this failed because the rescan routed through
-// sendToPostProcessor → SetPostProcStarted, saw PostProc already true,
-// and silently dropped the handoff — stranding the job forever.
+// setupTestDirsAndRepo creates the admin, download and complete directories a
+// recovery scenario needs, plus a history repository over a real SQLite file in
+// the admin directory. Shared by every test in this file.
 func setupTestDirsAndRepo(t *testing.T) (adminDir, downloadDir, completeDir string, repo *history.Repository) {
 	t.Helper()
 	adminDir = t.TempDir()
@@ -122,6 +112,19 @@ func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *ap
 	}
 }
 
+// TestRecovery_PostProcTrueOnRestart verifies that Application.Start
+// finalises a job whose PostProc flag survived a crash.
+//
+// The crash is simulated by seeding the on-disk queue state directly:
+// a fully-downloaded, all-complete job with PostProc=true. In a real
+// crash this is the state left on disk when a process died after the
+// completion path flipped the flag but before OnJobDone's history.Add
+// + queue.Remove ran. Startup rescan must pick the job up and drive
+// it through post-processing to history.
+//
+// Pre-B.1 this failed because the rescan routed through
+// sendToPostProcessor → SetPostProcStarted, saw PostProc already true,
+// and silently dropped the handoff — stranding the job forever.
 func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000001"
