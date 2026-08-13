@@ -236,7 +236,7 @@ func TestResume_RecomputeYieldsAPrefixCRC(t *testing.T) {
 	}
 }
 
-// TestResume_ArticleWithoutACRCIsLeftOutstanding pins S3's conservative
+// TestResume_ArticleWhoseBytesDoNotMatchItsCRCIsLeftOutstanding pins S3's conservative
 // default for an article whose bytes do not match what was recorded about them.
 //
 // Recomputation cannot prove those bytes are the right bytes, and the design's

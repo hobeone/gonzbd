@@ -117,11 +117,19 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 
 			// Regardless of bookkeeping, the file must never balloon to the
 			// hostile offset. Preallocation may size it up to ExpectedSize.
-			if fi, err := os.Stat(path); err == nil {
-				if fi.Size() > expectedSize*2 {
-					t.Errorf("offset %d: file size %d far exceeds ExpectedSize %d — "+
-						"the out-of-range write was applied", tc.offset, fi.Size(), expectedSize)
-				}
+			//
+			// The stat error is fatal rather than a skipped assertion. It used
+			// to be `if err == nil { ... }` with no else, so any stat failure
+			// silently deleted the only check that the hostile offset was not
+			// applied — the assertion would evaporate with no signal, which is
+			// indistinguishable from passing.
+			fi, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("offset %d: stat %s: %v", tc.offset, path, err)
+			}
+			if fi.Size() > expectedSize*2 {
+				t.Errorf("offset %d: file size %d far exceeds ExpectedSize %d — "+
+					"the out-of-range write was applied", tc.offset, fi.Size(), expectedSize)
 			}
 		})
 	}

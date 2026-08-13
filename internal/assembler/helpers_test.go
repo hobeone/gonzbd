@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/decoder"
 )
 
 // The helpers exercised here are reached in production only through
@@ -245,15 +247,73 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 // of the late-duplicate path once the acks are gone: it must release the
 // decoder buffer (or the pool leaks one per late article) and must assert
 // nothing about the article, since the file it belonged to is already closed.
+//
+// The body had NO assertion of any kind and could only fail by panicking, so
+// deleting decoder.PutBuffer from handleLateDuplicate — the exact leak the doc
+// names — left it green. It now observes the release, via the pool itself: a
+// buffer obtained from GetBuffer, handed to handleLateDuplicate and then
+// re-requested must come back as the SAME backing array. That is a real
+// observation of the Put, not a proxy for it.
+//
+// Bounded claim: sync.Pool may drop entries at any time, so a Get returning a
+// DIFFERENT array does not by itself prove the Put was missing. The assertion
+// therefore runs only when the pool hands something back, and the second case
+// (FatalErr, nil Data) asserts the complementary thing — that a request with no
+// buffer does not put a nil or foreign slice into the pool.
+// poolProbeCap is deliberately larger than any buffer the rest of this package
+// pools, so decoder.GetBuffer discards a smaller pooled entry and allocates
+// fresh rather than handing back someone else's. poolProbeTries bounds the
+// sweep, since sync.Pool promises no ordering.
+const (
+	poolProbeCap   = 1 << 20
+	poolProbeTries = 64
+)
+
 func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	a := newHelperAssembler()
-	// Not a crash test: the point is that the method has no queue-facing
-	// effect left to make, so the only observable contract is that it runs
-	// and does not retain the buffer.
+
+	buf := decoder.GetBuffer(poolProbeCap)
+	buf = append(buf[:0], "xyz"...)
+	want := &buf[:1][0]
+
 	a.handleLateDuplicate(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: []byte("xyz"),
+		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: buf,
 	})
+
+	// GetBuffer always returns buf[:0], so identity has to be taken through
+	// cap rather than len: &got[0] panics, and a `len(got) > 0` guard is never
+	// true. The first version of this assertion had exactly that guard, so it
+	// never ran — a mutation removing decoder.PutBuffer left it green, which is
+	// how it was caught.
+	//
+	// The retry loop is because sync.Pool gives no ordering guarantee and the
+	// rest of this package shares it.
+	var found bool
+	var taken [][]byte
+	for range poolProbeTries {
+		got := decoder.GetBuffer(poolProbeCap)
+		taken = append(taken, got)
+		if cap(got) >= 1 && &got[:1][0] == want {
+			found = true
+			break
+		}
+	}
+	for _, b := range taken {
+		decoder.PutBuffer(b)
+	}
+	if !found {
+		t.Errorf("the buffer handed to handleLateDuplicate never came back from the "+
+			"pool in %d tries; decoder.PutBuffer was not called and the pool leaks "+
+			"one buffer per late article", poolProbeTries)
+	}
+
+	// A late duplicate carrying no data must not put anything into the pool.
+	// Without this the FatalErr arm has no coverage at all.
 	a.handleLateDuplicate(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
 	})
+	if next := decoder.GetBuffer(poolProbeCap); cap(next) < poolProbeCap {
+		t.Errorf("pool returned a %d-cap buffer after a data-less late duplicate; "+
+			"a nil or short slice was put back", cap(next))
+	}
 }
