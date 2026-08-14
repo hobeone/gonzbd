@@ -105,7 +105,31 @@ func (app *Application) handleWriteFault(jobID string, _ int, artIdx int32, f *s
 // The job is paused rather than left running because a running job would keep
 // dispatching articles into a device that cannot take them, turning one
 // surfaced fault into a flood of them.
+//
+// # Nothing is parked while the process is stopping
+//
+// A pause taken during shutdown is the one that cannot be undone. Shutdown's
+// final queue.Save PERSISTS it, the stall list that would re-evaluate it is
+// in-memory and dies with the process, and the startup sweep skips the job
+// because its phase is no longer active. The job comes back Paused forever.
+//
+// The trigger is ordinary rather than exotic: the clean-shutdown barrier runs
+// under a fixed deadline, and on a queue with many open files the fsyncs
+// exceed it, so every job it reaches raises a deadline-exceeded fault.
+//
+// The test is the APPLICATION's context, not the error. A wedged mount
+// produces the identical context.DeadlineExceeded through barrierOpTimeout,
+// and that one must still park the job with a reason — otherwise it sits at
+// 99% with nothing surfaced, which A2 forbids. The two are distinguishable
+// only by whether we are stopping, so that is what is asked.
 func (app *Application) Stall(jobID string, f *storagefault.Fault) {
+	if app.ctx != nil && app.ctx.Err() != nil {
+		// Not silent (A2): the condition is real, and the next run's resume
+		// sweep re-derives the job's state from disk regardless.
+		app.log.Warn("storage fault during shutdown; the job is not parked for it",
+			"job", jobID, "fault", f.Error())
+		return
+	}
 	reason := "Stalled: " + f.Error()
 	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
 	// Recorded BEFORE the pause, and kept after it. The queue's own warning is
@@ -876,6 +900,18 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		if !routed.Permanent {
 			app.notePendingFinalize(jobID, fileIdx)
 		}
+		return
+	}
+	//
+	// A non-resident job is a queue-residency condition. retryFinalize already
+	// treats this as landed and says why — the extent is committed, so the
+	// bits are replayed from Class B once the job resumes — and the first
+	// attempt has no reason to answer differently.
+	if errors.Is(err, queue.ErrJobNotResident) {
+		app.log.Debug("finalize committed its extent but could not ack a non-resident job; "+
+			"the bits are replayed from Class B after the resume",
+			"job", jobID, "fileidx", fileIdx)
+		app.notePendingFinalize(jobID, fileIdx)
 		return
 	}
 	f := storagefault.Classify("finalize", path, err)
