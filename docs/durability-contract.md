@@ -414,6 +414,24 @@ job's slow mount must not park every other job's checkpoint. `FinalizeFile` take
 it too — it is a barrier by another name, same `buildExtent`, same
 `ExtentStore.Commit`.
 
+### 9a. A file that leaves the open set is dropped, not surfaced
+
+A `SyncTarget` operation answering `durability.ErrFileNotOpen` means the file
+was closed between the barrier listing it and calling on it. The barrier drops
+that file from the run and reports nothing.
+
+It is never a fault. Files leave the open set for three deliberate reasons — a
+completed finalize closing its handle, a cancelled job, a job entering
+post-processing — and every one of them drains and syncs first, so there is
+nothing left to checkpoint. The race is structural rather than exotic:
+`finalizeCompletedFile` releases the per-job barrier mutex before its deferred
+`CloseFile`, so a checkpoint can hold the lock, take the file from `Files()`,
+and have the close processed before its own `Drain`.
+
+Classifying it as storage parks a healthy job with a reason naming a device
+that did not fail and an operator action that does not exist — the A1
+conflation running in reverse.
+
 ### 10. Every barrier syscall on the critical path is timeout-bounded
 
 B4/R22. `Drain`, `Sync` and `Truncate` take a context and are bounded by the

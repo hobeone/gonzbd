@@ -2,6 +2,7 @@ package durability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -66,13 +67,26 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	drained := make(map[int32][]WrittenArticle, len(files))
 
 	// Phase 1 — drain every file. Still no claim of any kind.
+	//
+	// A file that has left the open set since Files() listed it is dropped
+	// from this run rather than treated as a failure of it: the close was
+	// deliberate and drained and synced first, so there is nothing here to
+	// checkpoint and nothing to surface (see ErrFileNotOpen).
+	open := files[:0:0]
 	for _, idx := range files {
 		w, err := t.Drain(ctx, idx)
+		if errors.Is(err, ErrFileNotOpen) {
+			b.log.Debug("file closed under the barrier; dropped from this run",
+				"job", jobID, "file", idx)
+			continue
+		}
 		if err != nil {
 			return b.routeFault(jobID, storagefault.Classify("write", t.Path(idx), err))
 		}
+		open = append(open, idx)
 		drained[idx] = w
 	}
+	files = open
 
 	// Phase 2 — fsync every file. Only after this may anything be claimed.
 	// Every file is synced before any file's extent is built, so a barrier
@@ -80,6 +94,16 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	// first either.
 	for _, idx := range files {
 		if err := t.Sync(ctx, idx); err != nil {
+			if errors.Is(err, ErrFileNotOpen) {
+				// Raced with a close between phases. The drain report it
+				// produced is still held by the writer and re-reported to
+				// whoever opens the file next, so dropping it here loses
+				// nothing (R12).
+				b.log.Debug("file closed between drain and sync; dropped from this run",
+					"job", jobID, "file", idx)
+				delete(drained, idx)
+				continue
+			}
 			return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
 		}
 	}
@@ -414,6 +438,15 @@ type Truncator interface {
 // content that exists nowhere.
 func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t Truncator) error {
 	written, err := t.Drain(ctx, idx)
+	if errors.Is(err, ErrFileNotOpen) {
+		// Some other path closed it first — a cancel, or CloseJobHandles on a
+		// job entering post-processing — and both drained and synced before
+		// closing. The caller checks the open set before reaching here, so
+		// this is the narrow race rather than the ordinary case, and it is
+		// still not a fault.
+		b.log.Debug("file closed before its finalize could run", "job", jobID, "file", idx)
+		return nil
+	}
 	if err != nil {
 		return b.routeFault(jobID, storagefault.Classify("write", t.Path(idx), err))
 	}

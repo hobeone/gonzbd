@@ -2,6 +2,7 @@ package durability
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -21,6 +22,27 @@ type WrittenArticle struct {
 	// Length is the decoded byte length.
 	Length int32
 }
+
+// ErrFileNotOpen reports that a file the barrier listed is no longer open.
+//
+// It is part of SyncTarget's contract rather than an assembler detail, because
+// the barrier has to be able to tell it apart from a storage failure and the
+// interface is the only thing both sides share.
+//
+// It is never a fault. A file leaves the open set for three deliberate
+// reasons — a completed finalize closing its handle, a cancelled job, a job
+// entering post-processing — and every one of them drains and syncs before
+// closing. So the barrier has nothing left to do for that file, and nothing to
+// surface: classifying it as storage would park a healthy job with a reason
+// naming a device that did not fail and an operator action that does not
+// exist. The worker's own comment calls it "a bookkeeping disagreement, not a
+// storage fault ... the A1 conflation in reverse".
+//
+// The race is structural, not exotic: finalizeCompletedFile releases the
+// per-job barrier mutex before its deferred CloseFile, so a checkpoint can
+// hold the lock, take the file from Files(), and have the close processed
+// before it calls Drain.
+var ErrFileNotOpen = errors.New("durability: file is not open")
 
 // SyncTarget is the barrier's view of a job's open files. It is deliberately
 // narrow: the barrier never sees a file handle, a write cache, or a byte, so

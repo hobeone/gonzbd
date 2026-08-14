@@ -398,7 +398,18 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			// is a bookkeeping disagreement, not a storage fault, so it is
 			// reported as an error rather than routed through Stallable —
 			// blaming storage for it would be the A1 conflation in reverse.
-			r.err = fmt.Errorf("assembler: job %s file %d is not open", op.jobID, op.fileIdx)
+			//
+			// Saying so was not enough on its own: the barrier wrapped every
+			// target error in storagefault.Classify, so this reached Stallable
+			// anyway and paused a healthy job. The sentinel is what makes the
+			// distinction legible on the other side of the interface.
+			// Wrapped in durability.ErrFileNotOpen so the barrier can tell
+			// this apart from a storage failure. Without the sentinel it
+			// classified this as one, and a job whose file had merely been
+			// closed by a completed finalize was paused with a device reason
+			// no operator could act on.
+			r.err = fmt.Errorf("assembler: job %s file %d is not open: %w",
+				op.jobID, op.fileIdx, durability.ErrFileNotOpen)
 			break
 		}
 		switch op.kind {
