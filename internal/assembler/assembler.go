@@ -785,7 +785,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
 
 	if _, done := completed[key]; done {
-		a.handleLateDuplicate(req)
+		a.handleLateDuplicate(open[key], req)
 		return
 	}
 
@@ -843,16 +843,68 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 }
 
-// handleLateDuplicate handles articles arriving for a file that is already marked completed.
-func (a *Assembler) handleLateDuplicate(req WriteRequest) {
+// handleLateDuplicate handles articles arriving for a file that is already
+// marked completed. f is the file's still-open entry, or nil if it has been
+// closed.
+//
+// The article is not written. The tombstone exists because the barrier may be
+// part-way through finalizing this file — draining, syncing, truncating — and
+// a write into it there is the race the tombstone was put down to stop.
+//
+// Ordinarily nothing else is owed either. A file that reached TotalParts is
+// one whose articles are all resolved: accepted and awaiting the barrier's
+// ack, or permanently failed. Re-asserting anything about those here would be
+// this package claiming authority it no longer has.
+//
+// # The article that is owed something
+//
+// partsWritten is incremented when an article is ACCEPTED and is never
+// decremented, while FileWriter.fail clears an article from seenDone when its
+// coalesced run fails to write. An article can therefore be counted toward
+// TotalParts and then un-done, letting other articles carry the file to
+// completion while it holds no state anywhere. The write fault cleared its
+// Emitted bit, the downloader re-dispatched it, and the copy that comes back
+// arrives here.
+//
+// Dropping that one strands it: not written, not acked, not failed, and
+// Emitted again from the re-dispatch — which ForEachUnfinishedArticle skips,
+// so nothing re-dispatches it a second time and the job never finishes.
+//
+// It is reported as rejected, which resolves it as permanently failed. That is
+// the honest disposition rather than a convenient one: the file is finished,
+// its content is whatever the barrier recorded, and this package cannot write
+// the article now or later. Returning it to Outstanding instead would have it
+// re-dispatched into the same tombstone forever. Failing it charges its bytes
+// against the job's par2 recovery budget, which is exactly the decision par2
+// exists to make.
+//
+// The distinction is drawn on seenDone, so it is only ever made when the
+// answer is positively known. An article the writer accepted is dropped
+// silently, as before — failing it would charge good bytes against recovery
+// and degrade the job's reported health. When the writer is gone there is
+// nothing to consult, and dropping is the older, safer behaviour.
+func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
-	// No ack in either direction. A file this assembler has finished with is
-	// one whose articles the barrier has already reported on, or will report
-	// on from its own record; re-asserting anything about them here would be
-	// this package claiming authority it no longer has.
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
+	}
+	if f == nil || req.MessageID == "" {
+		return
+	}
+	if _, accepted := f.w.seenDone[req.MessageID]; accepted {
+		return
+	}
+	if _, failed := f.w.seenFailed[req.MessageID]; failed {
+		// Already resolved in the other direction by the path that failed it.
+		return
+	}
+	a.log.Warn("late article for a completed file was never accepted; recording it as "+
+		"permanently failed so the job is not left waiting on it",
+		"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx, "msgid", req.MessageID)
+	if a.opts.OnArticleRejected != nil {
+		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
+			"redelivered after its file was completed, with no record of it having been written")
 	}
 }
 
