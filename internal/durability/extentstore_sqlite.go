@@ -116,6 +116,37 @@ func (s *SQLiteExtentStore) Load(ctx context.Context, jobID string) ([]FileExten
 	return out, rows.Err()
 }
 
+// LoadFile reads one file's extent by primary key.
+//
+// The same unmasked-bitmap caveat as Load applies, and for the same reason:
+// the bit count is not stored, so the blob comes back at its full byte width
+// and a caller that needs a trustworthy Count must re-derive it with
+// BitmapFromBytes at the real article count.
+func (s *SQLiteExtentStore) LoadFile(ctx context.Context, jobID string, fileIdx int32) (FileExtent, bool, error) {
+	var e FileExtent
+	var raw []byte
+	var hasCRC int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT file_idx, durable_bitmap, verified_to, prefix_crc,
+		       has_prefix_crc, bytes_durable, size, mod_time_ns
+		  FROM file_extents WHERE job_id = ? AND file_idx = ?`, jobID, fileIdx).
+		Scan(&e.FileIdx, &raw, &e.VerifiedTo, &e.PrefixCRC,
+			&hasCRC, &e.BytesDurable, &e.Size, &e.ModTimeNs)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FileExtent{}, false, nil
+	}
+	if err != nil {
+		return FileExtent{}, false, fmt.Errorf("durability: query extent job=%s file=%d: %w", jobID, fileIdx, err)
+	}
+	e.HasPrefixCRC = hasCRC != 0
+	bm, err := BitmapFromBytes(raw, len(raw)*8)
+	if err != nil {
+		return FileExtent{}, false, fmt.Errorf("durability: extent job=%s file=%d bitmap: %w", jobID, fileIdx, err)
+	}
+	e.Durable = bm
+	return e, true, nil
+}
+
 // DeleteJob removes every extent for a job that has left the queue.
 func (s *SQLiteExtentStore) DeleteJob(ctx context.Context, jobID string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM file_extents WHERE job_id = ?`, jobID); err != nil {

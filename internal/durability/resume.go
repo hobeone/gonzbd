@@ -178,36 +178,33 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 // exists at all.
 //
 // The bitmap is re-derived at artCount bits rather than adopted as loaded, for
-// the reason Barrier.priorExtent documents at length: ExtentStore.Load rebuilds
-// each bitmap at its full BYTE width, so Bitmap's tail-word mask never fires
-// and a damaged blob's padding bits would survive into Count() — the over-claim
+// the reason Barrier.priorExtent documents at length: the store rebuilds each
+// bitmap at its full BYTE width, so Bitmap's tail-word mask never fires and a
+// damaged blob's padding bits would survive into Count() — the over-claim
 // direction. Only a caller holding artCount can apply the mask, and rebuilding
-// through BitmapFromBytes is what applies it; narrowing what Load returned
+// through BitmapFromBytes is what applies it; narrowing what the store returned
 // would not. A stored bitmap narrower than artCount is zero-padded, which reads
 // as "those articles are not durable", the safe direction under S3.
 func (r *Resumer) committedExtent(ctx context.Context, jobID string, fileIdx int32, artCount int) (FileExtent, bool, error) {
-	stored, err := r.exts.Load(ctx, jobID)
+	e, ok, err := r.exts.LoadFile(ctx, jobID, fileIdx)
 	if err != nil {
 		return FileExtent{}, false, fmt.Errorf("durability: resume load extent job=%s file=%d: %w", jobID, fileIdx, err)
 	}
-	for _, e := range stored {
-		if e.FileIdx != fileIdx {
-			continue
-		}
-		raw := e.Durable.Bytes()
-		if need := (artCount + 63) / 64 * 8; len(raw) < need {
-			widened := make([]byte, need)
-			copy(widened, raw)
-			raw = widened
-		}
-		bm, err := BitmapFromBytes(raw, artCount)
-		if err != nil {
-			return FileExtent{}, false, fmt.Errorf("durability: resume re-derive bitmap job=%s file=%d: %w", jobID, fileIdx, err)
-		}
-		e.Durable = bm
-		return e, true, nil
+	if !ok {
+		return FileExtent{}, false, nil
 	}
-	return FileExtent{}, false, nil
+	raw := e.Durable.Bytes()
+	if need := (artCount + 63) / 64 * 8; len(raw) < need {
+		widened := make([]byte, need)
+		copy(widened, raw)
+		raw = widened
+	}
+	bm, err := BitmapFromBytes(raw, artCount)
+	if err != nil {
+		return FileExtent{}, false, fmt.Errorf("durability: resume re-derive bitmap job=%s file=%d: %w", jobID, fileIdx, err)
+	}
+	e.Durable = bm
+	return e, true, nil
 }
 
 // writeBack commits a recomputed result as the file's Class B record.

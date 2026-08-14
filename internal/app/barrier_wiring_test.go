@@ -24,10 +24,16 @@ import (
 // the committed cache describes neither run.
 //
 // The wrapper does not merely watch — it makes the overlap deterministic. The
-// first barrier to reach Load is held there until a second arrives, so if
+// first barrier to reach LoadFile is held there until a second arrives, so if
 // concurrency is possible it happens on every run rather than on a lucky
 // scheduling. The wait has a deadline, because with the serialisation in place
 // no second barrier can arrive and the test must proceed rather than hang.
+//
+// LoadFile and not Load: Barrier.priorExtent reads one file by primary key.
+// It filtered a whole-job Load until that turned out to be quadratic in a
+// job's file count, and this wrapper hooked Load. Hooking a method the barrier
+// no longer calls costs nothing visible — the embedded store still answers, so
+// the test stays green while the counter it asserts on never moves.
 //
 // The alternative — asserting only on the final committed bitmap — was tried
 // and rejected: which of two unserialised barriers commits last is a coin
@@ -47,7 +53,7 @@ func newOverlapDetector(inner durability.ExtentStore) *overlapDetector {
 	return &overlapDetector{ExtentStore: inner, second: make(chan struct{})}
 }
 
-func (g *overlapDetector) Load(ctx context.Context, jobID string) ([]durability.FileExtent, error) {
+func (g *overlapDetector) LoadFile(ctx context.Context, jobID string, fileIdx int32) (durability.FileExtent, bool, error) {
 	g.mu.Lock()
 	g.open++
 	open := g.open
@@ -65,7 +71,7 @@ func (g *overlapDetector) Load(ctx context.Context, jobID string) ([]durability.
 		case <-ctx.Done():
 		}
 	}
-	return g.ExtentStore.Load(ctx, jobID)
+	return g.ExtentStore.LoadFile(ctx, jobID, fileIdx)
 }
 
 func (g *overlapDetector) Commit(ctx context.Context, jobID string, exts []durability.FileExtent) error {

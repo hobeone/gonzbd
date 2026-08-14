@@ -145,5 +145,13 @@ type FileExtent struct {
 type ExtentStore interface {
 	Commit(ctx context.Context, jobID string, exts []FileExtent) error
 	Load(ctx context.Context, jobID string) ([]FileExtent, error)
+	// LoadFile reads one file's extent, reporting whether a row exists.
+	//
+	// It is not a convenience wrapper over Load. The barrier and the resumer
+	// both work one file at a time and both used to filter a whole-job Load
+	// per file, which is quadratic in a job's file count against a table
+	// whose primary key (job_id, file_idx) makes this a point lookup. NZBs
+	// with thousands of files are ordinary.
+	LoadFile(ctx context.Context, jobID string, fileIdx int32) (FileExtent, bool, error)
 	DeleteJob(ctx context.Context, jobID string) error
 }

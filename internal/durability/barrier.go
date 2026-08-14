@@ -112,7 +112,11 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	exts := make([]FileExtent, 0, len(files))
 	var acked []int32
 	for _, idx := range files {
-		ext, arts, err := b.buildExtent(ctx, jobID, idx, drained[idx], t)
+		facts, err := b.facts.ForFile(ctx, jobID, idx)
+		if err != nil {
+			return fmt.Errorf("durability: barrier facts job=%s file=%d: %w", jobID, idx, err)
+		}
+		ext, arts, err := b.buildExtent(ctx, jobID, idx, drained[idx], facts, t)
 		if err != nil {
 			return err
 		}
@@ -172,7 +176,7 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 // other call site, so a guard here covers every path that can overwrite a
 // stored extent — which a guard on Files() did not, because FinalizeFile takes
 // an explicit file index and never calls it.
-func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drained []WrittenArticle, t SyncTarget) (FileExtent, []int32, error) {
+func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drained []WrittenArticle, facts []ArticleFact, t SyncTarget) (FileExtent, []int32, error) {
 	// A target that cannot say how many articles the file holds must not have
 	// an extent built for it, and this is a data-loss guard rather than
 	// tidiness.
@@ -240,10 +244,7 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// barrier at all. Writing facts here would make them barrier-ordered and
 	// quietly destroy the property.
 
-	verified, prefixCRC, err := b.gaplessPrefix(ctx, jobID, idx, ext.Durable, t)
-	if err != nil {
-		return FileExtent{}, nil, err
-	}
+	verified, prefixCRC := gaplessPrefix(facts, idx, ext.Durable, t)
 	// Both assigned from the same walk, so the CRC always describes exactly
 	// the prefix beside it. The old code could only CLEAR them — it carried a
 	// loaded PrefixCRC across an unchanged VerifiedTo and zeroed it otherwise,
@@ -315,8 +316,8 @@ func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 //     Bitmap's tail-word mask cannot fire, and any padding bits in a damaged
 //     or externally-written blob survive into Count() — over-reporting how
 //     many articles are durable, which is the over-claim direction the
-//     design forbids. priorExtent has artCount and Load does not, so this is
-//     the only place the mask can be applied. Re-deriving through
+//     design forbids. priorExtent has artCount and the store does not, so
+//     this is the only place the mask can be applied. Re-deriving through
 //     BitmapFromBytes applies it; narrowing what Load returned would not.
 //
 //   - A stored bitmap narrower than artCount is widened by zero-padding,
@@ -328,28 +329,25 @@ func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 // reaches this bitmap's storage. That holds only while Set never reassigns
 // words; see the note on Bitmap.Set.
 func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artCount int) (FileExtent, error) {
-	stored, err := b.exts.Load(ctx, jobID)
+	e, ok, err := b.exts.LoadFile(ctx, jobID, idx)
 	if err != nil {
 		return FileExtent{}, fmt.Errorf("durability: barrier load prior extent job=%s file=%d: %w", jobID, idx, err)
 	}
-	for _, e := range stored {
-		if e.FileIdx != idx {
-			continue
-		}
-		raw := e.Durable.Bytes()
-		if need := (artCount + 63) / 64 * 8; len(raw) < need {
-			widened := make([]byte, need)
-			copy(widened, raw)
-			raw = widened
-		}
-		bm, err := BitmapFromBytes(raw, artCount)
-		if err != nil {
-			return FileExtent{}, fmt.Errorf("durability: barrier re-derive bitmap job=%s file=%d: %w", jobID, idx, err)
-		}
-		e.Durable = bm
-		return e, nil
+	if !ok {
+		return FileExtent{Durable: NewBitmap(artCount)}, nil
 	}
-	return FileExtent{Durable: NewBitmap(artCount)}, nil
+	raw := e.Durable.Bytes()
+	if need := (artCount + 63) / 64 * 8; len(raw) < need {
+		widened := make([]byte, need)
+		copy(widened, raw)
+		raw = widened
+	}
+	bm, err := BitmapFromBytes(raw, artCount)
+	if err != nil {
+		return FileExtent{}, fmt.Errorf("durability: barrier re-derive bitmap job=%s file=%d: %w", jobID, idx, err)
+	}
+	e.Durable = bm
+	return e, nil
 }
 
 // gaplessPrefix returns the length of the durable, contiguous run of bytes
@@ -365,14 +363,12 @@ func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artC
 // FactLog.ForFile already returns facts ordered by Offset — a Task 4 test
 // pins that — so the walk needs no sort of its own.
 //
-// A read failure is returned rather than degraded to 0: an unreadable fact
-// log yields no evidence, and committing VerifiedTo = 0 as if it were
-// derived would be a silent wrong answer, which A2 and R28 forbid.
-func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (verifiedTo int64, prefixCRC uint32, err error) {
-	facts, ferr := b.facts.ForFile(ctx, jobID, idx)
-	if ferr != nil {
-		return 0, 0, fmt.Errorf("durability: barrier gapless prefix job=%s file=%d: %w", jobID, idx, ferr)
-	}
+// It takes the facts rather than loading them. The caller has already read
+// them for the other walks over the same file, and a read failure is that
+// caller's to surface: an unreadable fact log yields no evidence, and
+// committing VerifiedTo = 0 as if it were derived would be a silent wrong
+// answer, which A2 and R28 forbid.
+func gaplessPrefix(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) (verifiedTo int64, prefixCRC uint32) {
 	var prefix int64
 	var crc uint32
 	for _, f := range facts {
@@ -397,7 +393,7 @@ func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, du
 		crc = crc32util.Combine(crc, f.CRC32, int64(f.Length))
 		prefix = f.Offset + int64(f.Length)
 	}
-	return prefix, crc, nil
+	return prefix, crc
 }
 
 // Truncator is a SyncTarget that can also trim a completed file.
@@ -453,15 +449,19 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	if err := t.Sync(ctx, idx); err != nil {
 		return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
 	}
-	ext, acked, err := b.buildExtent(ctx, jobID, idx, written, t)
+	// One read of the file's facts for all three walks below. They ask three
+	// different questions of the same rows — the CRC anchor, the durable
+	// bound, the recorded bound — and each used to load them again.
+	facts, err := b.facts.ForFile(ctx, jobID, idx)
+	if err != nil {
+		return fmt.Errorf("durability: finalize facts job=%s file=%d: %w", jobID, idx, err)
+	}
+	ext, acked, err := b.buildExtent(ctx, jobID, idx, written, facts, t)
 	if err != nil {
 		return err
 	}
 
-	bound, err := b.durableExtent(ctx, jobID, idx, ext.Durable, t)
-	if err != nil {
-		return err
-	}
+	bound := durableExtent(facts, idx, ext.Durable, t)
 	// A completed file whose recorded articles are not ALL durable must not be
 	// trimmed to the durable bound.
 	//
@@ -479,10 +479,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// padding, and Truncate only ever shrinks (S6). Trailing zeros par2 reports
 	// as damage is a visible, repairable cost; downloaded bytes gone is not.
 	if bound > 0 {
-		recorded, missing, unrecorded, err := b.recordedExtent(ctx, jobID, idx, ext.Durable, t)
-		if err != nil {
-			return err
-		}
+		recorded, missing, unrecorded := recordedExtent(facts, idx, ext.Durable, t)
 		if missing > 0 {
 			b.log.Warn("finalizing a file whose recorded articles are not all durable; "+
 				"trimming to the recorded extent rather than the durable one so an "+
@@ -572,11 +569,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 // avoid. The two walks read the same facts and answer deliberately different
 // questions: gaplessPrefix asks "what can I prove about a CRC anchor", this
 // asks "how long is the file".
-func (b *Barrier) durableExtent(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (int64, error) {
-	facts, err := b.facts.ForFile(ctx, jobID, idx)
-	if err != nil {
-		return 0, fmt.Errorf("durability: durable extent job=%s file=%d: %w", jobID, idx, err)
-	}
+func durableExtent(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) int64 {
 	var high int64
 	for _, f := range facts {
 		ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx)
@@ -587,7 +580,7 @@ func (b *Barrier) durableExtent(ctx context.Context, jobID string, idx int32, du
 			high = end
 		}
 	}
-	return high, nil
+	return high
 }
 
 // recordedExtent returns the highest end offset among ALL of the file's
@@ -606,11 +599,7 @@ func (b *Barrier) durableExtent(ctx context.Context, jobID string, idx int32, du
 // recorded-but-not-durable article makes the recorded bound the safe one,
 // while a durable-but-unrecorded article makes EVERY fact-derived bound
 // unsafe, since no walk over facts can see the bytes it holds.
-func (b *Barrier) recordedExtent(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (high int64, missing, unrecorded int, err error) {
-	facts, err := b.facts.ForFile(ctx, jobID, idx)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("durability: recorded extent job=%s file=%d: %w", jobID, idx, err)
-	}
+func recordedExtent(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) (high int64, missing, unrecorded int) {
 	// Distinct rather than a plain counter: Class A is appended at least once
 	// per article (R12), so a replayed append would otherwise cancel out a
 	// genuinely unrecorded article and hide the very case this counts.
@@ -626,5 +615,5 @@ func (b *Barrier) recordedExtent(ctx context.Context, jobID string, idx int32, d
 		}
 		covered[ord] = struct{}{}
 	}
-	return high, missing, durable.Count() - len(covered), nil
+	return high, missing, durable.Count() - len(covered)
 }

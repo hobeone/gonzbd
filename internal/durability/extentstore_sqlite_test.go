@@ -306,3 +306,63 @@ func TestSQLiteExtentStore_CommitEmptyIsNoop(t *testing.T) {
 		t.Fatalf("Commit(nil) on a closed db = %v, want nil (should be a no-op)", err)
 	}
 }
+
+// TestSQLiteExtentStore_LoadFileIsAPointLookup pins the three answers
+// Barrier.priorExtent and Resumer.committedExtent depend on, and each of the
+// three has a distinct consequence if it comes back wrong.
+//
+// The absent case is the one that matters most, and it is why the method
+// reports a boolean rather than a zero value. A missing row is ordinary — no
+// barrier has committed for the file yet — so returning an error would fail
+// every first checkpoint. Reporting it as PRESENT would be worse: priorExtent
+// would build on a zero-width bitmap and the commit would erase whatever
+// durable bits the job had, which is the L3 loss the artCount guard in
+// buildExtent exists to prevent.
+//
+// The wrong-file case is what the primary-key predicate buys. This method
+// replaced a whole-job Load filtered per file, and a lookup that dropped the
+// file_idx half of the key would return an arbitrary sibling's extent — a
+// bitmap for the wrong file, acked against this one.
+func TestSQLiteExtentStore_LoadFileIsAPointLookup(t *testing.T) {
+	ctx := context.Background()
+	es := NewSQLiteExtentStore(openTestDB(t))
+
+	one := NewBitmap(8)
+	one.Set(1)
+	two := NewBitmap(8)
+	two.Set(2)
+	two.Set(5)
+	if err := es.Commit(ctx, "job-1", []FileExtent{
+		{FileIdx: 1, Durable: one, VerifiedTo: 100, BytesDurable: 100, Size: 100, ModTimeNs: 7},
+		{FileIdx: 2, Durable: two, VerifiedTo: 200, PrefixCRC: 0xFEED, HasPrefixCRC: true,
+			BytesDurable: 200, Size: 200, ModTimeNs: 9},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := es.LoadFile(ctx, "job-1", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("LoadFile reported no row for a file that has one")
+	}
+	if got.FileIdx != 2 || got.VerifiedTo != 200 || got.PrefixCRC != 0xFEED || !got.HasPrefixCRC ||
+		got.BytesDurable != 200 || got.Size != 200 || got.ModTimeNs != 9 {
+		t.Errorf("LoadFile returned %+v, want file 2's own row — a lookup missing the "+
+			"file_idx half of the key answers with a sibling's extent", got)
+	}
+	if !got.Durable.Get(2) || !got.Durable.Get(5) || got.Durable.Get(1) {
+		t.Errorf("bitmap is file 1's, not file 2's: count=%d", got.Durable.Count())
+	}
+
+	// Absent: a file that exists in the job but has never been committed.
+	if _, ok, err := es.LoadFile(ctx, "job-1", 3); err != nil || ok {
+		t.Errorf("LoadFile for an uncommitted file = (ok=%v, err=%v), want (false, nil) — "+
+			"an error fails every first checkpoint, and ok=true erases the job's durable bits", ok, err)
+	}
+	// Absent: scoped by job as well as by file.
+	if _, ok, err := es.LoadFile(ctx, "job-2", 2); err != nil || ok {
+		t.Errorf("LoadFile crossed a job boundary: (ok=%v, err=%v)", ok, err)
+	}
+}

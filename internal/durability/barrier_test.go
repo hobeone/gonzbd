@@ -810,6 +810,14 @@ type loadErrStore struct {
 
 func (l *loadErrStore) Load(context.Context, string) ([]FileExtent, error) { return nil, l.err }
 
+// LoadFile fails the same way. priorExtent reads one file by key rather than
+// filtering a whole-job load, so overriding only Load would leave the failure
+// path this fake exists for unreachable — the embedded nil ExtentStore would
+// be called instead and panic.
+func (l *loadErrStore) LoadFile(context.Context, string, int32) (FileExtent, bool, error) {
+	return FileExtent{}, false, l.err
+}
+
 // TestGaplessPrefix pins the walk's stopping conditions individually. The
 // Run-level test covers the two hole shapes; these cover the boundaries a
 // full barrier pass does not produce on its own.
@@ -868,12 +876,16 @@ func TestGaplessPrefix(t *testing.T) {
 			for _, i := range tt.durable {
 				bm.Set(i)
 			}
-			b := NewBarrier(fl, nil, nil, nil, testLogger(t))
-
-			got, _, err := b.gaplessPrefix(ctx, "job-1", 0, bm, &fakeTarget{artCount: 4})
+			// Read back through the real fact log rather than passing
+			// tt.facts straight in: the walk relies on ForFile returning
+			// rows ordered by Offset, and a slice handed over in table
+			// order would satisfy the walk without that guarantee holding.
+			stored, err := fl.ForFile(ctx, "job-1", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
+
+			got, _ := gaplessPrefix(stored, 0, bm, &fakeTarget{artCount: 4})
 			if got != tt.want {
 				t.Errorf("gaplessPrefix = %d, want %d", got, tt.want)
 			}
@@ -896,12 +908,12 @@ func TestGaplessPrefix_UnplaceableFactStopsTheWalk(t *testing.T) {
 	}
 	bm := NewBitmap(4)
 	bm.Set(0)
-	b := NewBarrier(fl, nil, nil, nil, testLogger(t))
-
-	got, _, err := b.gaplessPrefix(ctx, "job-1", 0, bm, &fakeTarget{artCount: 4, noOrd: true})
+	stored, err := fl.ForFile(ctx, "job-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	got, _ := gaplessPrefix(stored, 0, bm, &fakeTarget{artCount: 4, noOrd: true})
 	if got != 0 {
 		t.Errorf("gaplessPrefix = %d, want 0 — an unplaceable fact proves nothing", got)
 	}
@@ -919,7 +931,7 @@ func TestBuildExtent_ReturnsTheArticlesToAckWithoutCommitting(t *testing.T) {
 	ext, acked, err := b.buildExtent(ctx, "job-1", 0, []WrittenArticle{
 		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100},
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-	}, tgt)
+	}, nil, tgt)
 	if err != nil {
 		t.Fatal(err)
 	}

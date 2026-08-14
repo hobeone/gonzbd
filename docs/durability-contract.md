@@ -345,14 +345,14 @@ a whole file, an article then lands beyond a hole so the file grows while
 *changes*. Adopting a stale one would report a partial extent's CRC as the file's
 (#349).
 
-`Bitmap` widths are the other place the cache can over-claim.
-`ExtentStore.Load` rebuilds each bitmap at its full **byte** width, which is
-always a multiple of 64, so `Bitmap`'s tail-word mask never fires and padding
-bits in a damaged blob would survive into `Count()`. Every consumer that knows
-the file's true article count therefore re-derives through `BitmapFromBytes`
-rather than adopting what `Load` returned — `Barrier.priorExtent`,
-`Resumer.committedExtent` and `queue.fileDurableBitmap` each do this, and each
-documents it. A stored bitmap *narrower* than the article count is zero-padded,
+`Bitmap` widths are the other place the cache can over-claim. `ExtentStore`
+rebuilds each bitmap at its full **byte** width — `Load` and `LoadFile` alike,
+since neither stores the bit count — which is always a multiple of 64, so
+`Bitmap`'s tail-word mask never fires and padding bits in a damaged blob would
+survive into `Count()`. Every consumer that knows the file's true article count
+therefore re-derives through `BitmapFromBytes` rather than adopting what the
+store returned — `Barrier.priorExtent`, `Resumer.committedExtent` and
+`queue.fileDurableBitmap` each do this, and each documents it. A stored bitmap *narrower* than the article count is zero-padded,
 which reads as "not durable yet": the safe direction under S3.
 
 ### 7. Absence of evidence is absence

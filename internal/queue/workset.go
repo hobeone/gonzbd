@@ -361,8 +361,8 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 //     it is taken from FileRange(fileIdx) here rather than passed in.
 //   - The bitmap is re-derived at the file's true article count via
 //     BitmapFromBytes rather than read at the width persistence rounded it up
-//     to. ExtentStore.Load rebuilds each bitmap at its full BYTE width, which
-//     is always a multiple of 64, so Bitmap's tail-word mask never fires and
+//     to. ExtentStore rebuilds each bitmap at its full BYTE width, which is
+//     always a multiple of 64, so Bitmap's tail-word mask never fires and
 //     padding bits in a damaged blob would otherwise read as durable articles.
 //     Over-reporting durability is the over-claim direction the design
 //     forbids, and this is the only layer that knows the real count.

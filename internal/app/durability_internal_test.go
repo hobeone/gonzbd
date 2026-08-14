@@ -848,6 +848,9 @@ func (f failingExtentStore) Commit(context.Context, string, []durability.FileExt
 func (f failingExtentStore) Load(context.Context, string) ([]durability.FileExtent, error) {
 	return nil, f.err
 }
+func (f failingExtentStore) LoadFile(context.Context, string, int32) (durability.FileExtent, bool, error) {
+	return durability.FileExtent{}, false, f.err
+}
 func (f failingExtentStore) DeleteJob(context.Context, string) error { return f.err }
 
 // recordingExtentStore notes whether DeleteJob was reached. The alternative —
@@ -861,6 +864,10 @@ func (r *recordingExtentStore) Commit(context.Context, string, []durability.File
 
 func (r *recordingExtentStore) Load(context.Context, string) ([]durability.FileExtent, error) {
 	return nil, nil
+}
+
+func (r *recordingExtentStore) LoadFile(context.Context, string, int32) (durability.FileExtent, bool, error) {
+	return durability.FileExtent{}, false, nil
 }
 
 func (r *recordingExtentStore) DeleteJob(_ context.Context, jobID string) error {

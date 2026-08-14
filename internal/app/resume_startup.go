@@ -19,7 +19,7 @@ import (
 // interruptible BETWEEN FILES, not merely between jobs, and that is a claim
 // about how many files were processed — which is unobservable from outside
 // unless the calls can be counted. A test that asserted only "an error came
-// back" was satisfied by ExtentStore.Load failing on the cancelled context,
+// back" was satisfied by the extent store failing on the cancelled context,
 // and so passed with both checks deleted.
 //
 // durability.Resumer satisfies this and its signature is unchanged.

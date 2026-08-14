@@ -178,19 +178,19 @@ func TestDurableExtent_DoesNotStopAtAHole(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
-		slog.New(slog.DiscardHandler))
-
 	durable := NewBitmap(4)
 	durable.Set(0)
 	durable.Set(3)
 	tgt := &truncTarget{artCount: 4}
 
-	got, err := b.durableExtent(ctx, "job-1", 0, durable, tgt)
+	// Through the real fact log, because the walk depends on ForFile's
+	// Offset ordering rather than establishing it.
+	stored, err := facts.ForFile(ctx, "job-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 400 {
+
+	if got := durableExtent(stored, 0, durable, tgt); got != 400 {
 		t.Errorf("durableExtent = %d, want 400 — a walk that stopped at the hole "+
 			"below article 3 would report 100 and truncate its bytes away", got)
 	}
@@ -210,17 +210,15 @@ func TestDurableExtent_IgnoresFactsThatAreNotDurable(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
-		slog.New(slog.DiscardHandler))
-
 	durable := NewBitmap(2)
 	durable.Set(0) // article 1 decoded but never reached disk
 
-	got, err := b.durableExtent(ctx, "job-1", 0, durable, &truncTarget{artCount: 2})
+	stored, err := facts.ForFile(ctx, "job-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 100 {
+
+	if got := durableExtent(stored, 0, durable, &truncTarget{artCount: 2}); got != 100 {
 		t.Errorf("durableExtent = %d, want 100 — article 1 has a fact but no fsync "+
 			"covered it, so extending the file to 1000 claims bytes nothing wrote", got)
 	}
@@ -495,9 +493,6 @@ func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
-		slog.New(slog.DiscardHandler))
-
 	// Article 1 is the LOW non-durable one: the highest durable end (300) is
 	// already the recorded end, so a count derived from comparing the two
 	// bounds would report nothing wrong.
@@ -505,10 +500,12 @@ func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
 	durable.Set(0)
 	durable.Set(2)
 
-	high, missing, unrecorded, err := b.recordedExtent(ctx, "job-1", 0, durable, &truncTarget{artCount: 3})
+	stored, err := facts.ForFile(ctx, "job-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	high, missing, unrecorded := recordedExtent(stored, 0, durable, &truncTarget{artCount: 3})
 	if unrecorded != 0 {
 		t.Errorf("unrecorded = %d, want 0 — every durable article here has a fact, and a "+
 			"non-zero count would skip the truncate on a file that needs one", unrecorded)
@@ -527,9 +524,7 @@ func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
 	all.Set(0)
 	all.Set(1)
 	all.Set(2)
-	if _, missing, unrecorded, err = b.recordedExtent(ctx, "job-1", 0, all, &truncTarget{artCount: 3}); err != nil {
-		t.Fatal(err)
-	}
+	_, missing, unrecorded = recordedExtent(stored, 0, all, &truncTarget{artCount: 3})
 	if missing != 0 {
 		t.Errorf("missing = %d on a fully durable file, want 0 — the fallback would fire on "+
 			"every healthy finalize and stop trimming pre-allocation's zeros", missing)
