@@ -365,14 +365,14 @@ FROM jobs WHERE id = ?`
 
 	var fileCount int
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM job_files WHERE job_id = ?", id).Scan(&fileCount); err != nil {
-		_ = s.Remove(ctx, id)
+		s.removeCorrupt(ctx, id)
 		return nil, fmt.Errorf("sqlite store count files for %s: %w", id, err)
 	}
 
 	manifestPath := filepath.Join(s.dir, "manifests", id+".json.gz")
 	if fileCount > 0 {
 		if _, err := os.Stat(manifestPath); err != nil {
-			_ = s.Remove(ctx, id)
+			s.removeCorrupt(ctx, id)
 			return nil, fmt.Errorf("sqlite store manifest missing for %s: %w", id, err)
 		}
 	}
@@ -382,7 +382,7 @@ FROM jobs WHERE id = ?`
 			var manifest Manifest
 			if err := readGzJSON(manifestPath, &manifest); err != nil {
 				_ = os.Rename(manifestPath, manifestPath+".corrupt")
-				_ = s.Remove(ctx, id)
+				s.removeCorrupt(ctx, id)
 				return nil, fmt.Errorf("sqlite store read manifest %s: %w", id, err)
 			}
 			job.manifest = &manifest
@@ -790,6 +790,39 @@ func (s *SQLiteStore) UpdateBatch(ctx context.Context, jobs []*Job) error {
 		return fmt.Errorf("sqlite store commit updatebatch: %w", err)
 	}
 	return nil
+}
+
+// removeCorrupt removes a job whose persisted state this store has just found
+// unusable — a missing or unreadable manifest, or a job_files count that could
+// not be read — and takes its durability rows with it.
+//
+// Ordinary removal deliberately does NOT do that. Queue.Remove runs on the
+// queue-to-history transition as well, where a FAILED job's Class A facts are
+// retained on purpose: a retry reuses the job ID and the same partial file,
+// and those facts are what bound FinalizeFile's truncate to the whole file
+// rather than to the few articles the retry re-fetches. Sweeping them in
+// Remove would destroy that.
+//
+// This path is different in the way that matters. It is reached only when the
+// job's own manifest is gone or unreadable, and every Class A fact is keyed by
+// a global article index that only a manifest can interpret. There is nothing
+// left to read them against, and no queue row and no history entry will arrive
+// to collect them, so retaining them is not caution — it is a leak of rows
+// nothing can use.
+func (s *SQLiteStore) removeCorrupt(ctx context.Context, id string) {
+	_ = s.Remove(ctx, id)
+	for _, q := range []string{
+		"DELETE FROM article_facts WHERE job_id = ?",
+		"DELETE FROM file_extents WHERE job_id = ?",
+	} {
+		if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+			// Not fatal: the caller is already returning an error about the
+			// corruption it found, and leaving these rows is a leak rather
+			// than a correctness failure. Not silent either (A2).
+			s.log.Warn("could not drop the durability rows of a job removed for corrupt state",
+				"job", id, "err", err)
+		}
+	}
 }
 
 // Remove deletes an active job and its child files, removing any filesystem manifests.

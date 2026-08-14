@@ -951,19 +951,8 @@ func (app *Application) Start(ctx context.Context) error {
 		if !snap.IsComplete() {
 			continue
 		}
-		if app.historyRepo != nil {
-			dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err := app.historyRepo.Get(dbCtx, snap.ID)
-			dbCancel()
-			if err == nil {
-				app.log.Info("found completed job in history but still in queue, removing", "jobID", snap.ID)
-				if rmErr := app.queue.Remove(snap.ID); rmErr != nil {
-					app.log.Error("failed to remove duplicate job from queue", "jobID", snap.ID, "err", rmErr)
-				}
-				continue
-			} else if !errors.Is(err, history.ErrNotFound) {
-				app.log.Error("failed to check history for job", "jobID", snap.ID, "err", err)
-			}
+		if app.historyRepo != nil && app.dropJobAlreadyInHistory(ctx, snap.ID) {
+			continue
 		}
 
 		failMsg := failMsgForJob(snap)

@@ -1551,3 +1551,73 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 			"the bytes at risk read as none", got.PendingBytes)
 	}
 }
+
+// TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule pins the startup
+// reconcile's half of the durability-row cleanup, in both directions.
+//
+// This path is reached by a job that crashed between MoveToHistory and the
+// queue removal that follows it, so it is the ONE removal that runs without
+// finalizeJob. It fetched the history entry, discarded it, removed the queue
+// row and stopped — leaving article_facts and file_extents behind, keyed by
+// job ID with no foreign key to jobs and with no later path to collect them.
+//
+// Both directions matter and they fail differently. Retaining the rows for a
+// succeeded job leaks one set per crash, forever. Dropping them for a FAILED
+// one is worse than a leak: the retry reuses the job ID over the same partial
+// file, and those facts are what bound FinalizeFile's truncate to the whole
+// file. Without them durableExtent returns the end offset of the re-fetched
+// articles alone and the rest of the partial is destroyed silently, because
+// every article the fact log then knows about IS durable, so neither #342
+// guard fires.
+func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   constants.Status
+		wantKept bool
+	}{
+		{name: "a completed entry takes its rows with it", status: constants.StatusCompleted},
+		{name: "a failed entry keeps them for its retry", status: constants.StatusFailed, wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			application, job := newDurabilityTestApp(t, 1, 2)
+
+			if err := application.factLog.Append(t.Context(), job.ID, []durability.ArticleFact{
+				{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := application.factLog.ForFile(t.Context(), job.ID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("fixture recorded %d facts, want 1; the test would pass vacuously", len(got))
+			}
+
+			if err := application.historyRepo.Add(t.Context(), history.Entry{
+				NzoID: job.ID, Name: "reconciled", Status: string(tc.status),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if !application.dropJobAlreadyInHistory(t.Context(), job.ID) {
+				t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
+			}
+
+			after, err := application.factLog.ForFile(t.Context(), job.ID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept := len(after) > 0; kept != tc.wantKept {
+				if tc.wantKept {
+					t.Error("a FAILED job's Class A facts were dropped; its retry re-fetches a " +
+						"few articles, FinalizeFile trims to their end offset, and the rest of " +
+						"the partial file is destroyed with no guard firing")
+				} else {
+					t.Error("a finished job's Class A facts survived its removal; nothing else " +
+						"collects them, so they accumulate one set per crash of this kind")
+				}
+			}
+		})
+	}
+}

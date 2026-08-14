@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -909,6 +911,47 @@ func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durab
 // Both are keyed by job ID with no foreign key to the queue, so nothing else
 // removes them: a job that finished or was deleted would leave its facts and
 // extents behind forever.
+// dropJobAlreadyInHistory removes a queue job that has already been filed in
+// history, reporting whether it did.
+//
+// Reached at startup by a job that crashed between MoveToHistory and the queue
+// removal that follows it. The queue row is a duplicate of an entry that is
+// already the record.
+//
+// The durability rows go with it, under the same rule the ordinary transition
+// applies in finalizeJob: unless the entry is FAILED, in which case a retry
+// reuses them to bound FinalizeFile's truncate to the whole partial file
+// rather than to the few articles that run re-fetches.
+//
+// This used to remove the queue row and stop. The history entry it fetched was
+// discarded — the call read `_, err := ...Get(...)` — so the rule could not be
+// applied, and article_facts and file_extents stayed behind. They are keyed by
+// job ID with no foreign key to jobs, and no later path collects them: the
+// history entry's own deletion sweeps them, but only if the operator ever
+// deletes it.
+func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
+	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
+	entry, err := app.historyRepo.Get(dbCtx, jobID)
+	dbCancel()
+	if err != nil {
+		if !errors.Is(err, history.ErrNotFound) {
+			app.log.Error("failed to check history for job", "jobID", jobID, "err", err)
+		}
+		return false
+	}
+	app.log.Info("found completed job in history but still in queue, removing", "jobID", jobID)
+	if rmErr := app.queue.Remove(jobID); rmErr != nil {
+		app.log.Error("failed to remove duplicate job from queue", "jobID", jobID, "err", rmErr)
+	}
+	if entry != nil && entry.Status == string(constants.StatusFailed) {
+		return true
+	}
+	delCtx, delCancel := context.WithTimeout(ctx, 5*time.Second)
+	app.deleteJobDurability(delCtx, jobID)
+	delCancel()
+	return true
+}
+
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 	if app.factLog != nil {
 		if err := app.factLog.DeleteJob(ctx, jobID); err != nil {
