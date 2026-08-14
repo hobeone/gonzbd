@@ -494,6 +494,25 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 // extents). Leaving the storage reason in place would tell the operator to fix
 // a mount they have already fixed; dressing this up as a retryable storage
 // fault told them to wait for a condition that cannot clear.
+//
+// # Why a restart, when the same work happens in-process at every startup
+//
+// Resumer.Resume reopens a file, verifies its regions against Class A and
+// rebuilds the extent — exactly what this file needs — and it needs no restart
+// to do it. So the restart is a scope limit, not a necessity, and it should
+// not be read as one.
+//
+// What stands in the way is ownership rather than capability. The assembler's
+// single worker owns every open handle (X1), and this path is reached
+// precisely because that worker has already closed this one; re-resuming in
+// place means reopening a file outside the writer that owns it, while the job
+// may still be dispatching articles to the same file through the writer that
+// would be created next. Startup is the one moment nothing else holds a
+// handle, which is why Resume runs there and only there.
+//
+// Lifting this means giving the assembler a way to re-adopt a closed file
+// under the worker goroutine, and the message must keep saying "restart" until
+// it does.
 func (app *Application) stallLost(jobID string, fileIdx int) {
 	app.setFinalizeState(jobID, fileIdx, finalizeLost)
 	reason := fmt.Sprintf(
