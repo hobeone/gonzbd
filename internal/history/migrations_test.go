@@ -84,12 +84,18 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	db := openMigratedTestDB(t)
 
 	t.Run("job_files carries no derived columns", func(t *testing.T) {
-		// failed_bytes is deliberately NOT forbidden — see the sibling
-		// subtest below. The other three are values maintained in parallel
-		// with the facts they summarise, which is the S5 violation; that one
-		// is a cache of the same row's articles_done bits, with a single
-		// writer.
-		forbidden := []string{"bytes_downloaded", "max_written", "write_cursor"}
+		// failed_bytes and bytes_downloaded are deliberately NOT forbidden —
+		// see the sibling subtest below. The two named here are values
+		// maintained in parallel with the facts they summarise, which is the
+		// S5 violation; those two are caches of the same row's articles_done
+		// bits, with a single writer.
+		//
+		// bytes_downloaded was on this list, because the column of that name
+		// removed in #306 had a second writer. The name is reused; the shape
+		// is not. What makes a column legitimate here is the writer count, not
+		// the identifier, so the list has to shrink when the writer does —
+		// keeping it would forbid the fix rather than the defect.
+		forbidden := []string{"max_written", "write_cursor"}
 		rows, err := db.Query(`SELECT name FROM pragma_table_info('job_files')`)
 		if err != nil {
 			t.Fatal(err)
@@ -131,6 +137,31 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		if n != 1 {
 			t.Error("job_files.failed_bytes is missing — a non-resident job cannot report " +
 				"failed bytes without it, and no recomputation from Class A can supply them")
+		}
+	})
+
+	// job_files.bytes_downloaded is the sibling cache, and it is here for a
+	// different reason than failed_bytes: the figure IS recomputable from
+	// Class A, but only in decoded bytes. This one counts encoded bytes,
+	// because it is subtracted from job_files.bytes to get a job's remaining
+	// figure and that column is the encoded NZB total. Reading
+	// file_extents.bytes_durable instead made every non-resident job overstate
+	// its remaining bytes by the encoding overhead.
+	//
+	// Asserted here rather than only in the queue package because the column's
+	// existence is the decision — a queue-level test would go green again the
+	// moment someone re-derived the figure from the wrong table.
+	t.Run("job_files caches bytes_downloaded in encoded bytes", func(t *testing.T) {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = 'bytes_downloaded'`,
+		).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Error("job_files.bytes_downloaded is missing — a non-resident job has no " +
+				"manifest to sum encoded article bytes from, and file_extents.bytes_durable " +
+				"is the decoded quantity, not this one")
 		}
 	})
 

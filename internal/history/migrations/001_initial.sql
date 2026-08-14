@@ -126,30 +126,49 @@ CREATE INDEX idx_jobs_md5 ON jobs(md5);
 -- +goose StatementBegin
 -- The per-file rows of a queued job's manifest.
 --
--- This table carries almost no derived progress columns. bytes_downloaded,
--- max_written, and write_cursor used to live here, each a value summarising
--- facts stored elsewhere and each maintained independently of them. That is
--- the direct cause of #306 (a stored figure loaded and then overwritten by a
--- recompute), #337 (one member of a set stored while its siblings are
--- derived), and #311 (a cursor serving as cache, authority, and scheduling
--- hint at once). Those facts now live in article_facts and their summaries in
+-- This table carries almost no derived progress columns. max_written and
+-- write_cursor used to live here, each a value summarising facts stored
+-- elsewhere and each maintained independently of them. That is the direct
+-- cause of #337 (one member of a set stored while its siblings are derived)
+-- and #311 (a cursor serving as cache, authority, and scheduling hint at
+-- once). Those facts now live in article_facts and their summaries in
 -- file_extents, which is labelled cache.
 --
--- failed_bytes is the one exception, and it is a cache rather than a second
--- authority. It caches a sum over the failed half of this same row's
--- articles_done, which is the authoritative record of which of the file's
--- articles permanently failed. It cannot live in file_extents with the other
--- summaries: every column there is derived from article_facts plus the file's
--- bytes, and a permanently failed article never decodes, so it never writes an
+-- failed_bytes and bytes_downloaded are the two exceptions, and both are
+-- caches rather than second authorities. Each caches a sum over one half of
+-- this same row's articles_done, which is the authoritative record of which
+-- of the file's articles are resolved and which permanently failed. Both are
+-- written by the single statement that writes articles_done, so the sum and
+-- the bits it sums cannot be persisted out of step; and both are superseded
+-- wholesale on promotion, where JobProgress.recompute ASSIGNS them from the
+-- manifest and the restored bitmaps. They exist for the NON-resident path,
+-- which has no manifest to recompute from and would otherwise report an
+-- inflated remaining figure for every job beyond maxActive.
+--
+-- failed_bytes cannot live in file_extents with the other summaries: every
+-- column there is derived from article_facts plus the file's bytes, and a
+-- permanently failed article never decodes, so it never writes an
 -- article_facts row at all. No recomputation from Class A can produce this
 -- figure, which is why file_extents has no column for it.
 --
--- Restoring it is not a reversal of the removal above. It was removed because
--- RestoreRetryProgress assigned it and recompute then overwrote it — two
--- writers maintaining one fact in parallel, which is the S5 violation behind
--- #306. That path is gone. A single writer caching a sum of the same row's
--- authoritative bits is a cache; two writers maintaining a value in parallel
--- is the defect. This is the first.
+-- bytes_downloaded could be derived from Class A, and was: it was read from
+-- file_extents.bytes_durable until that turned out to be the wrong QUANTITY
+-- rather than an unavailable one. The two count different things. This column
+-- counts ENCODED bytes — the NZB `bytes` attribute summed over resolved
+-- articles — because that is what it is compared against: the queue's
+-- remaining figure is this row's `bytes` minus this column minus failed_bytes,
+-- and `bytes` is the encoded per-file total from the same NZB.
+-- file_extents.bytes_durable counts DECODED payload bytes, the lengths the
+-- assembler actually wrote, which run a few percent lower. Seeding one from
+-- the other made a non-resident job overstate its remaining bytes by that
+-- margin, breaking the residency parity both columns exist to provide.
+--
+-- Restoring these is not a reversal of the removal above. bytes_downloaded was
+-- removed because RestoreRetryProgress assigned it and recompute then
+-- overwrote it — two writers maintaining one fact in parallel, which is the
+-- S5 violation behind #306. That path is gone. A single writer caching a sum
+-- of the same row's authoritative bits is a cache; two writers maintaining a
+-- value in parallel is the defect. These are the first.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -165,6 +184,7 @@ CREATE TABLE job_files (
     article_count    INTEGER NOT NULL DEFAULT 0,
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
     failed_bytes     INTEGER NOT NULL DEFAULT 0,
+    bytes_downloaded INTEGER NOT NULL DEFAULT 0,
     UNIQUE(job_id, file_index)
 );
 
@@ -259,6 +279,14 @@ CREATE TABLE file_extents (
 -- recomputation from Class A can produce that figure — which would make it the
 -- one column the discard rule above could not apply to. It is cached in
 -- job_files.failed_bytes instead, beside the articles_done bits it sums.
+--
+-- bytes_durable is DECODED payload bytes: the summed Length of the article
+-- facts an fsync proved, which is the quantity a recomputation from Class A
+-- reproduces. It is deliberately NOT the figure the queue subtracts to get a
+-- job's remaining bytes — that arithmetic is against job_files.bytes, the
+-- encoded NZB total, and so uses the encoded cache in
+-- job_files.bytes_downloaded. The two are not interchangeable and differ by
+-- the encoding overhead.
 -- +goose StatementEnd
 
 -- +goose StatementBegin

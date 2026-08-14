@@ -9,11 +9,6 @@ import (
 // FileMeta is the per-file shape Load needs to size a non-resident job's
 // progress without a manifest. It carries Bytes, Complete, and Fetch
 // alongside the article count for the bitsets.
-//
-// It no longer carries BytesDownloaded or FailedBytes. Those came from
-// job_files columns that were maintained independently of the article facts
-// they summarised, which is the defect this change removes; a non-resident
-// job now reports both as zero until the durable extents restore them.
 type FileMeta struct {
 	ArticleCount int
 	Bytes        int64
@@ -26,28 +21,33 @@ type FileMeta struct {
 	// column: is_par2_recovery flags only volumes, and the index is exactly
 	// the case that matters here. See FileProgress.IsPar2.
 	IsPar2 bool
-	// BytesDurable and FailedBytes are what let a NON-RESIDENT job report the
-	// same byte figures a resident one does. A resident job derives both from
-	// its manifest and article bitmaps in JobProgress.recompute; a job whose
-	// manifest has been evicted has neither, so without these it reports zero
-	// failed bytes and an inflated remaining figure — the residency parity
-	// TestRemainingBytes_IdenticalResidentAndNonResident exists to forbid.
+	// BytesDownloaded and FailedBytes are what let a NON-RESIDENT job report
+	// the same byte figures a resident one does. A resident job derives both
+	// from its manifest and article bitmaps in JobProgress.recompute; a job
+	// whose manifest has been evicted has neither, so without these it reports
+	// zero failed bytes and an inflated remaining figure — the residency
+	// parity TestRemainingBytes_IdenticalResidentAndNonResident exists to
+	// forbid.
 	//
-	// They come from different tables because they have different authorities,
-	// and that split is deliberate rather than incidental. BytesDurable is
-	// Class B, derived from article_facts plus the file's bytes and committed
-	// only by durability.Barrier after the fsync that makes it true, so it
-	// reads from file_extents — via a LEFT JOIN, because a job whose barrier
-	// has never run has no row there and must report zero rather than vanish
-	// from the queue. FailedBytes has no Class A backing at all (a permanently
-	// failed article never decodes, so it writes no fact), so it is cached in
-	// job_files.failed_bytes beside the articles_done bits it sums.
+	// Both come from job_files, cached beside the articles_done bits they sum
+	// and written by the same statement, so neither can be persisted out of
+	// step with its authority. FailedBytes has no other home available: a
+	// permanently failed article never decodes, so it writes no Class A fact
+	// and no recomputation could produce the figure.
+	//
+	// BytesDownloaded could be recomputed from Class A and once was, read from
+	// file_extents.bytes_durable. That was the wrong quantity rather than an
+	// unavailable one. This field is compared against Bytes, the encoded NZB
+	// per-file total, so it must count ENCODED bytes; bytes_durable counts the
+	// DECODED payload lengths an fsync proved. Seeding one from the other
+	// overstated a non-resident job's remaining bytes by the encoding
+	// overhead.
 	//
 	// Both are caches and neither is authoritative: hydration runs
 	// JobProgress.recompute, which ASSIGNS these figures from the manifest and
 	// the bitmaps and so supersedes whatever was seeded here (S4).
-	BytesDurable int64
-	FailedBytes  int64
+	BytesDownloaded int64
+	FailedBytes     int64
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.

@@ -99,10 +99,10 @@ func (q *Queue) saveStore(_ string) error {
 // figure this used to take from Store.RemainingBytesByJob.
 //
 // BytesDownloaded and FailedBytes are seeded from FileMeta, and that is what
-// makes a non-resident job report the same figures a resident one does. They
-// arrive from two different places because they have two different
-// authorities — file_extents.bytes_durable for the first, job_files.failed_bytes
-// for the second — which FileMeta's own doc explains.
+// makes a non-resident job report the same figures a resident one does. Both
+// arrive from job_files — bytes_downloaded and failed_bytes, each cached
+// beside the articles_done bits it sums — which FileMeta's own doc explains,
+// including why the first is not read from file_extents.bytes_durable.
 //
 // Seeding them here does NOT recreate the two-writer defect that removed the
 // old columns (#306, #337). Nothing maintains these fields in parallel with
@@ -139,7 +139,7 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		p.files[fi].Fetch = f.Fetch
 		p.files[fi].IsPar2 = f.IsPar2
 		p.files[fi].Bytes = f.Bytes
-		p.files[fi].BytesDownloaded = f.BytesDurable
+		p.files[fi].BytesDownloaded = f.BytesDownloaded
 		p.files[fi].FailedBytes = f.FailedBytes
 		// Summed over every file including deferred ones, matching what
 		// recompute does, so the job-level figure agrees with the per-file

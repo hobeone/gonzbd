@@ -115,29 +115,42 @@ non-resident job must reconstruct. `Store.ArticleCountsByJob` returns a whole
 (`FetchPolicy`, exposed as `FileMeta.Fetch`) — because the derivation reads all
 of them.
 
-It no longer carries `bytes_downloaded`. That was a column on `job_files`, and
-it was removed along with `write_cursor` and `max_written`: each summarised
-facts held elsewhere while being maintained independently of them (#306, #337,
-#311). A **resident** job derives downloaded bytes from the `articles_done`
-bitmap the same rows already carry, in `JobProgress.recompute`. A
-**non-resident** one gets them from `file_extents.bytes_durable`, LEFT JOINed
-into `Store.ArticleCountsByJob`'s single grouped query — left, not inner,
-because `file_extents` holds a row only once a barrier has committed for that
-file, and an inner join would drop every job that has not yet checkpointed.
+A **resident** job derives downloaded bytes from the `articles_done` bitmap the
+same rows already carry, in `JobProgress.recompute`. A **non-resident** one has
+no manifest to sum, so it reads `job_files.bytes_downloaded`.
 
-`failed_bytes` **is** still a column, and is the one deliberate exception. It
-cannot be re-derived: a permanently failed article never decodes, so it writes
-no `article_facts` row, and no recomputation from Class A can produce the
-figure. `internal/history/migrations/001_initial.sql` records that reasoning at
-the schema, and `docs/durability-contract.md` § *The two classes of fact*
-records why `durability.FileExtent` has no column for it either.
+`bytes_downloaded` and `failed_bytes` are the two columns on `job_files` that
+summarise something, and both are **caches with a single writer** rather than
+second authorities. Each is written by the same statement that writes
+`articles_done`, so a sum cannot be persisted out of step with the bits it
+sums, and each is superseded wholesale on promotion, where
+`JobProgress.recompute` *assigns* it from the manifest. That is what separates
+them from `write_cursor` and `max_written`, removed for being maintained in
+parallel with facts held elsewhere (#337, #311).
+
+They are there for different reasons. `failed_bytes` cannot be re-derived at
+all: a permanently failed article never decodes, so it writes no
+`article_facts` row, and no recomputation from Class A can produce the figure.
+`bytes_downloaded` *is* derivable from Class A — but only in decoded bytes, and
+this figure is subtracted from `job_files.bytes`, the **encoded** NZB per-file
+total. It was read from `file_extents.bytes_durable` until that turned out to
+be the wrong *quantity* rather than an unavailable one: that column sums the
+decoded payload lengths an fsync proved, which run a few percent below the
+encoded figure, so every non-resident job overstated its remaining bytes by the
+encoding overhead. A column of the same name was also removed in #306, for
+having two writers; the name is reused, the shape is not.
+
+`internal/history/migrations/001_initial.sql` records that reasoning at the
+schema, and `docs/durability-contract.md` § *The two classes of fact* records
+why `durability.FileExtent` has no failed-byte column either.
 
 **Residency parity therefore holds again**: a non-resident job reports its
 downloaded, failed and remaining bytes from `job_files` alone, without a
-manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin, and
-its fixture deliberately needs **both** persistence paths — failed bytes from
-`job_files.failed_bytes`, downloaded bytes from `file_extents.bytes_durable` —
-so either one missing shows up there as a divergence.
+manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin. Its
+fixture commits Class B extents whose `BytesDurable` is seeded in **decoded**
+bytes, matching what `Barrier.buildExtent` charges, so re-routing either figure
+back through `file_extents` shows up there as a divergence rather than passing
+by unit coincidence.
 
 The article-level work set is a separate question, and `job_files.articles_done`
 is not the authority on it. At startup `Application.resumeAllJobs` re-derives

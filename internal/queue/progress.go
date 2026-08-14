@@ -89,7 +89,17 @@ type FileProgress struct {
 	// at any residency. Written from the manifest when resident and from
 	// job_files.bytes when not; the two agree because the column is written
 	// from the manifest.
-	Bytes           int64
+	Bytes int64
+	// BytesDownloaded is the sum of Bytes over this file's resolved,
+	// non-failed articles. It is in the SAME unit as Bytes above — the
+	// encoded NZB `bytes` attribute — because RemainingBytes subtracts the
+	// two, and only figures in one unit can be subtracted.
+	//
+	// That is not the unit durability works in. durability.FileExtent's
+	// BytesDurable sums the DECODED payload lengths an fsync proved, over the
+	// same set of articles, and runs a few percent lower. The two are not
+	// interchangeable; this one caches in job_files.bytes_downloaded rather
+	// than being read back from file_extents.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining

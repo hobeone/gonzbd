@@ -22,6 +22,23 @@ import (
 // reaches a Drain. BytesDurable is the sum over those same articles, so the
 // bitmap and the aggregate cannot disagree here for the same reason they
 // cannot in the barrier.
+//
+// The aggregate is seeded in DECODED bytes, via decodedBytesOf, because that
+// is the unit Barrier.buildExtent charges: it adds WrittenArticle.Length, the
+// length of the payload written to disk. Manifest.ArticleBytes is the NZB
+// `bytes` attribute, which counts the ENCODED article and runs a few percent
+// higher. Seeding the encoded figure here would make this fixture agree with
+// the resident path by construction and hide any consumer that confuses the
+// two — which is exactly what it did until #365.
+// decodedBytesOf models the yEnc overhead that separates an article's encoded
+// size from the payload the assembler writes: escapes and line endings put the
+// encoded form roughly 2% above the decoded one. The exact ratio does not
+// matter — only that it is not 1, so a figure carried in the wrong unit cannot
+// pass for the right one.
+func decodedBytesOf(encoded int) int64 {
+	return int64(encoded) * 100 / 102
+}
+
 func commitBarrierExtents(t *testing.T, db *sql.DB, job *Job) {
 	t.Helper()
 	m, err := job.Manifest()
@@ -37,7 +54,7 @@ func commitBarrierExtents(t *testing.T, db *sql.DB, job *Job) {
 		for i := lo; i < hi; i++ {
 			if p.ArticleDone(i) && !p.ArticleFailed(i) {
 				bm.Set(i - lo)
-				bytesDurable += int64(m.ArticleBytes(i))
+				bytesDurable += decodedBytesOf(m.ArticleBytes(i))
 			}
 		}
 		exts = append(exts, durability.FileExtent{
@@ -75,12 +92,14 @@ func commitBarrierExtents(t *testing.T, db *sql.DB, job *Job) {
 // A test that poked BytesDownloaded/FailedBytes itself would prove nothing
 // about production — this reads back only what the store actually persisted.
 //
-// It now takes TWO persistence paths to reproduce the resident figures, and
-// that is the point of the fixture rather than an accident of it: the failed
-// bytes come from job_files.failed_bytes, written beside the articles_done
-// bits they sum, and the downloaded bytes from file_extents.bytes_durable,
-// written only by the barrier after its fsync. Either one missing shows up
-// here as a divergence.
+// Both byte figures come from job_files, each cached beside the articles_done
+// bits it sums, and the fixture commits Class B extents anyway — seeded in
+// DECODED bytes, the unit the barrier actually charges. That is the point of
+// the fixture rather than an accident of it: a consumer that reached back into
+// file_extents.bytes_durable for the downloaded figure would find a number in
+// the wrong unit, and diverge here. It read exactly that way until #365, and
+// this test could not see it while the fixture seeded encoded bytes into a
+// decoded column.
 func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	store, dir, db := setupResidencyTestStoreWithDB(t)
 	q := New(WithStore(store), WithStateDir(dir))
