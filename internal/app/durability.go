@@ -325,10 +325,39 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 		return
 	}
 
+	// A run over NO files claims nothing, and must not be read as a barrier.
+	//
+	// SyncTarget.Files answers nil when OpenFiles times out on a wedged mount,
+	// deliberately, because the barrier has nothing useful to do with the
+	// error. Run then iterates nothing, Commit returns early on an empty
+	// slice, the ack is skipped for an empty set, and the nil that comes back
+	// is indistinguishable from a barrier that fsynced everything. Stamping it
+	// reported a fresh last_barrier every interval while nothing had reached
+	// disk since the mount went away — the inversion R26 asks that figure to
+	// prevent — and resetting the accumulator beside it reported zero bytes at
+	// risk at the same moment.
+	//
+	// This costs a second Files() call on the healthy path, which is one
+	// control message to a worker that is about to be asked again. On the
+	// wedged path both are bounded by barrierOpTimeout, and by the per-job
+	// deadline checkpointAll now imposes.
+	if len(tgt.Files()) == 0 {
+		mu.Unlock()
+		// --- No lock held below this line ---
+		//
+		// The accumulator is deliberately NOT reset, for the reason the
+		// nil-target branch above gives: two figures agreeing that nothing is
+		// at risk, at the moment when everything written since the last real
+		// barrier is.
+		app.log.Debug("checkpoint skipped, the job has no open files to sync", "job", jobID)
+		return
+	}
+
 	// Reset before the run, not after. An article written while the barrier
 	// is in flight belongs to the NEXT window: it may or may not have made
 	// it into this drain, and charging it to the window that just closed
 	// would let it go uncounted until the following one.
+	pending := app.pendingBytesFor(jobID)
 	app.resetJobBytes(jobID)
 
 	app.barrierRuns.Add(1)
@@ -341,6 +370,10 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	// write is I/O of its own, and a slow handler would hold every other
 	// checkpoint for this job behind a message about one that already failed.
 	if err != nil {
+		// The reset this run did not earn is put back, so the figure keeps
+		// describing the bytes still at risk rather than dropping to zero
+		// beside a last_barrier that did not move.
+		app.restoreJobBytes(jobID, pending)
 		// A failed ack is the one failure that DOES claim something. Run
 		// commits Class B and then acks, so ErrJobNotResident means the bits
 		// are on stable record while the live work set still calls those
@@ -373,6 +406,44 @@ func (app *Application) noteBarrierRun(jobID string) {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
 	app.lastBarrier[jobID] = time.Now()
+}
+
+// hasBarrierStamp reports whether a job has ever had a barrier stamped.
+//
+// Presence rather than the time itself, because that is what R26 needs
+// distinguishable: a zero time and "no barrier has ever succeeded" are the
+// same value, and the whole point of the figure is to separate a job that is
+// checkpointing normally from one whose barriers have been failing since the
+// mount went away.
+func (app *Application) hasBarrierStamp(jobID string) bool {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	_, ok := app.lastBarrier[jobID]
+	return ok
+}
+
+// pendingBytesFor reports how many bytes have been written for a job since its
+// last barrier.
+func (app *Application) pendingBytesFor(jobID string) int64 {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	return app.jobBarrierBytes[jobID]
+}
+
+// restoreJobBytes puts back an accumulator a barrier reset and then did not
+// earn, so the figure keeps describing the bytes still at risk.
+//
+// Added rather than subtracted from: articles written while the barrier was in
+// flight have already been charged to the new window, and dropping them to
+// restore the old total would under-report exactly the bytes most recently
+// written.
+func (app *Application) restoreJobBytes(jobID string, n int64) {
+	if n <= 0 {
+		return
+	}
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	app.jobBarrierBytes[jobID] += n
 }
 
 // checkpointAll runs a barrier for every job holding an open file.
