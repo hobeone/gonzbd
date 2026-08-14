@@ -62,6 +62,15 @@ type stallRecord struct {
 	// indefinite non-progress with a reason the user has already acted on.
 	// Recording the file here is what gives the retry something to retry.
 	files map[int]finalizeState
+	// needsSeed marks a job whose barrier COMMITTED its Class B cache but
+	// could not ack it, because the job was evicted between checkpointAll's
+	// listing and the call.
+	//
+	// It is separate from files, and must stay separate. A file in that map
+	// is one phase 4 will mark COMPLETE; a job that merely needs its committed
+	// bits replayed has no completed file, and recording it as one would mark
+	// files complete that are still being written.
+	needsSeed bool
 }
 
 // stalledJobIDs returns the parked jobs in a stable order.
@@ -113,6 +122,47 @@ func (app *Application) notePendingFinalize(jobID string, fileIdx int) {
 	if _, seen := rec.files[fileIdx]; !seen {
 		rec.files[fileIdx] = finalizePending
 	}
+}
+
+// noteUndeliveredCompletion records a file whose finalize SUCCEEDED but whose
+// completion the queue would not take.
+//
+// Recorded finalizeDone rather than pending, because the barrier has already
+// trimmed the file, acked its articles and released the handle: phase 1 must
+// skip it, and phase 4 is what re-delivers the completion. Without this
+// nothing retries at all — the assembler's tombstone means OnFileComplete
+// never fires again for that file, so the job never learns it is done and
+// stays wedged across restarts.
+func (app *Application) noteUndeliveredCompletion(jobID string, fileIdx int) {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	rec, ok := app.stalls[jobID]
+	if !ok {
+		rec = &stallRecord{files: map[int]finalizeState{}, since: time.Now()}
+		app.stalls[jobID] = rec
+	}
+	rec.files[fileIdx] = finalizeDone
+}
+
+// noteNeedsSeed records a job whose committed durable bits never reached its
+// live work set.
+func (app *Application) noteNeedsSeed(jobID string) {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	rec, ok := app.stalls[jobID]
+	if !ok {
+		rec = &stallRecord{files: map[int]finalizeState{}, since: time.Now()}
+		app.stalls[jobID] = rec
+	}
+	rec.needsSeed = true
+}
+
+// needsSeed reports whether a replay of the job's committed extents is owed.
+func (app *Application) needsSeed(jobID string) bool {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	rec, ok := app.stalls[jobID]
+	return ok && rec.needsSeed
 }
 
 // setFinalizeState advances one file through the recovery states.
@@ -306,8 +356,15 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	app.log.Info("stall re-evaluated; the job has been resumed",
 		"job", jobID, "files_recovered", len(files))
 
-	// Phase 3 — replay what the retries committed but could not ack.
-	if len(files) > 0 {
+	// Phase 3 — replay what a barrier committed but could not ack.
+	//
+	// Gated on needsSeed as well as on files, because the two reach here by
+	// different routes: a retried finalize leaves a file behind, while a
+	// periodic checkpoint whose ack failed leaves nothing but the committed
+	// extent. Without the second the bits sat on stable record while the live
+	// work set still called those articles Outstanding, and they were fetched
+	// again.
+	if len(files) > 0 || app.needsSeed(jobID) {
 		app.seedFromCommittedExtents(ctx, jobID)
 	}
 
@@ -323,6 +380,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 		app.completeFinalizeRecovery(jobID, fileIdx)
 	}
 	if len(files) == 0 {
+		// The seed, if one was owed, has just run.
 		app.clearStall(jobID)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})

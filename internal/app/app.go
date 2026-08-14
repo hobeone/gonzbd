@@ -1202,7 +1202,16 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 		return
 	}
 	if err := app.completeFinalizedFile(ctx, fc); err != nil {
-		app.log.Debug("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		// Recorded, not just logged. The barrier has already trimmed this
+		// file, acked its articles and released the handle, and the
+		// assembler's tombstone means OnFileComplete will never fire for it
+		// again — so nothing else can re-trigger this. Dropping it left the
+		// file's Complete flag false forever with every article Done and
+		// nothing left to dispatch: a wedged job, surviving restarts because
+		// the flag is only ever restored from the persisted column.
+		app.log.Info("completion not delivered; recorded for the stall re-evaluation to retry",
+			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		app.noteUndeliveredCompletion(fc.JobID, fc.FileIdx)
 	}
 }
 

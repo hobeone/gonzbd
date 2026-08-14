@@ -341,9 +341,22 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	// write is I/O of its own, and a slow handler would hold every other
 	// checkpoint for this job behind a message about one that already failed.
 	if err != nil {
-		// The fault has already reached the job through Stallable, and a
-		// failed barrier claims nothing — the prior committed cache is
-		// intact and no article was acked. Logging is all that is left.
+		// A failed ack is the one failure that DOES claim something. Run
+		// commits Class B and then acks, so ErrJobNotResident means the bits
+		// are on stable record while the live work set still calls those
+		// articles Outstanding — and nothing replayed them, because this
+		// failure never went through routeFault and so never put the job on
+		// the stall list. retryFinalize treats the identical error as
+		// recoverable and documents the replay; this path did not.
+		if errors.Is(err, queue.ErrJobNotResident) {
+			app.log.Info("checkpoint committed its extents but could not ack a non-resident job; "+
+				"recorded for replay from Class B", "job", jobID)
+			app.noteNeedsSeed(jobID)
+			return
+		}
+		// Everything else: the fault has already reached the job through
+		// Stallable, and a failed barrier claims nothing — the prior committed
+		// cache is intact and no article was acked.
 		app.log.Warn("checkpoint barrier failed", "job", jobID, "err", err)
 		return
 	}
