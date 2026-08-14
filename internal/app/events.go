@@ -16,10 +16,10 @@ import (
 // describe the whole.
 //
 // The honest whole-file value is durability.FileExtent.PrefixCRC, guarded by
-// HasPrefixCRC, which the resumer derives from the Class A facts over the
-// file's real extent and off the barrier's critical path (R24). Nothing
-// consumes it yet — Queue.SetFileCRC32 is currently without a caller for that
-// reason.
+// HasPrefixCRC and combined from the Class A facts over the file's real extent
+// — arithmetic over rows the barrier has already loaded, with no read of the
+// file (R24). Application.recordAssembledCRC threads it to Queue.SetFileCRC32
+// when the file finalizes, which is what QuickCheck and on-demand par2 read.
 type FileComplete struct {
 	JobID   string
 	FileIdx int

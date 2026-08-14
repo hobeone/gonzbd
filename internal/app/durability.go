@@ -525,7 +525,53 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 		// extending that span.
 		return fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, jobID, fileIdx, err)
 	}
+	app.recordAssembledCRC(ctx, jobID, fileIdx)
 	return nil
+}
+
+// recordAssembledCRC copies the finalized file's whole-file CRC onto the queue,
+// where QuickCheck and on-demand par2 read it.
+//
+// Both compare a par2 set's recorded CRC32 against the one this download
+// produced. With none recorded they read NoCRC and take the conservative
+// branch: par2NeedsRecovery fetches every recovery volume even for a
+// bit-perfect download, and QuickCheck can never bypass the full par2 verify.
+// That is safe but it is not free, and it was the state of every download.
+//
+// The value comes from Class A, combined over the facts that tile the file.
+// That is the source #349's combine lacked: the assembler could only see the
+// articles THIS run fetched, so a resumed file's parts did not tile and the
+// figure described a fragment. Facts persist, so they name every article of
+// the file whichever run fetched it.
+//
+// Best effort by design. A missing CRC costs a full verify, which is exactly
+// today's behaviour, so a failure here must not fail the finalize that has
+// already committed the extent and acked the articles.
+func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fileIdx int) {
+	if app.extents == nil {
+		return
+	}
+	exts, err := app.extents.Load(ctx, jobID)
+	if err != nil {
+		app.log.Debug("load extents to record the assembled CRC", "job", jobID, "err", err)
+		return
+	}
+	for _, e := range exts {
+		if int(e.FileIdx) != fileIdx {
+			continue
+		}
+		// HasPrefixCRC is the R23 distinction between "unavailable" and "zero".
+		// A file with a permanently failed article has a prefix that stops at
+		// the hole, and recording that as the file's CRC would report a
+		// mismatch against par2 for a file that is merely incomplete.
+		if !e.HasPrefixCRC {
+			return
+		}
+		if err := app.queue.SetFileCRC32(jobID, fileIdx, e.PrefixCRC); err != nil {
+			app.log.Debug("record the assembled CRC", "job", jobID, "fileidx", fileIdx, "err", err)
+		}
+		return
+	}
 }
 
 // runCheckpoint is R6's cadence: a barrier per job on the lesser of a time

@@ -1791,15 +1791,21 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 	return nil
 }
 
-// SetFileCRC32 stores the assembled CRC32 on a JobFile. The CRC is computed by
-// the assembler by combining per-article yEnc CRCs in offset order, and is used
-// during QuickCheck to verify file integrity against par2 file hashes without
-// re-reading from disk.
+// SetFileCRC32 stores the assembled CRC32 on a JobFile, where QuickCheck reads
+// it to verify file integrity against par2's file hashes without re-reading
+// from disk.
 //
-// The assembler reports it only when those per-article CRCs cover the whole
-// file; a resumed run is not sent the articles an earlier run completed, so it
-// generally cannot produce one. Zero therefore means unavailable rather than
-// mismatched, and QuickCheck treats it that way (#349).
+// The value is combined from the Class A facts, not from the assembler. The
+// assembler used to combine the per-article CRCs it happened to SEE, and a
+// resumed run is never sent the articles an earlier run completed, so its parts
+// did not tile the file and it generally could not produce one (#349). Facts
+// persist across restarts, so they name every article of the file whichever run
+// fetched it, and a resumed file supplies a CRC as readily as a fresh one.
+//
+// Written by Application.recordAssembledCRC when a file finalizes, and only
+// when the prefix reaches the file's end. A file with a permanently failed
+// article has no whole-file value, so nothing is recorded and zero keeps its
+// documented "unavailable" meaning rather than "mismatched".
 func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

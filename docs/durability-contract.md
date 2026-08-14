@@ -937,17 +937,17 @@ recorded here so the next reader does not mistake them for design.
    figures and a wasted re-fetch, not corruption or a short file. Recorded and
    unfixed.
 
-4. **A resumed file's whole-file CRC is derived but not consumed.**
-   `durability.Resumer` produces `FileExtent.PrefixCRC` guarded by
-   `HasPrefixCRC`, and it is a genuine whole-file CRC when the run consumed every
-   recorded fact and reached the file's end. Nothing threads it to
-   `Queue.SetFileCRC32`, which has no production caller, so
-   `FileProgress.AssembledCRC32` is zero for every freshly downloaded file. Zero
-   is the documented "unavailable" value (#349): QuickCheck reads it as `NoCRC`
-   and `par2NeedsRecovery` conservatively returns true. The cost is that
-   on-demand par2 always fetches the recovery volumes and the repair stage is
-   never bypassed by a CRC match. It never ships an unrepaired download. See
-   *Open gaps*.
+4. **A file with a hole reports no whole-file CRC.** `Barrier.gaplessPrefix`
+   combines the Class A facts into `FileExtent.PrefixCRC` during the walk it
+   already performs, and `HasPrefixCRC` is set when that prefix reaches the
+   file's end; `Application.recordAssembledCRC` threads it to
+   `Queue.SetFileCRC32` when the file finalizes. A permanently failed article
+   leaves a hole, the prefix stops there, and no whole-file value exists to
+   record — `FileProgress.AssembledCRC32` stays zero, which is the documented
+   "unavailable" value (#349), so QuickCheck reads `NoCRC` and
+   `par2NeedsRecovery` conservatively returns true for that file. This is the
+   correct answer rather than a gap: a partial prefix recorded as the file's CRC
+   would report corruption for a file that is merely incomplete.
 
 5. **The crash suite does not test fsync-to-platter.** See below.
 
@@ -1002,10 +1002,6 @@ a green run does and does not bound.
 
 ### Open gaps
 
-- **`PrefixCRC` is not wired to QuickCheck.** See *Accepted limitations* #4. The
-  work is to thread `FileExtent.PrefixCRC`/`HasPrefixCRC` from the resumer (and
-  from a completed file's own extent) to `Queue.SetFileCRC32`, so a healthy
-  download can bypass par2 verification again.
 - **The startup sweep is startup-only and resident-only.** See *Accepted
   limitations* #1.
 - **`ENOSPC` and page-cache loss are untested** (#363).

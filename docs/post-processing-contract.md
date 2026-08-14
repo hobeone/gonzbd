@@ -143,20 +143,23 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    the rest of the assembler's authority (see
    [`docs/durability-contract.md`](durability-contract.md)).
 
-   The honest replacement exists but is not wired up: `durability.Resumer`
-   derives `FileExtent.PrefixCRC` guarded by `HasPrefixCRC`, which is a real
-   whole-file CRC when the verification run consumed every recorded fact and
-   reached the file's end — so a *resumed* file can supply one, which the old
-   design could not. Nothing threads it to `Queue.SetFileCRC32`.
+   The replacement is `FileExtent.PrefixCRC`, guarded by `HasPrefixCRC` and
+   combined from the **Class A facts** rather than from the articles one run
+   happened to see. Facts persist across restarts, so they name every article
+   of the file whichever run fetched it — a *resumed* file supplies a CRC as
+   readily as a fresh one, which the old design could not.
+   `Barrier.gaplessPrefix` combines them during the walk it already performs,
+   with no read of the file, and `Application.recordAssembledCRC` threads the
+   result to `Queue.SetFileCRC32` when the file finalizes.
 
-   Until it is threaded, every par2-tracked file reads as `NoCRC` — zero's
-   documented "unavailable" meaning, not a mismatch — so `unverifiable > 0`
-   and the stage lands on `Damaged`. The consequences are conservative in both
-   places that consume the verdict: `repair` is never bypassed by clause one,
-   and `app.par2NeedsRecovery` returns true, so on-demand par2 always fetches
-   the recovery volumes. That costs bandwidth and a par2 pass on an intact
-   download; it never ships an unrepaired one. Tracked in
-   `docs/durability-contract.md` § *Open gaps*.
+   A file whose gapless prefix stops short of its end — a permanently failed
+   article leaves a hole — still reads as `NoCRC`, which is zero's documented
+   "unavailable" meaning rather than a mismatch, so `unverifiable > 0` and the
+   stage lands on `Damaged`. The consequences stay conservative in both places
+   that consume the verdict: `repair` is not bypassed by clause one, and
+   `app.par2NeedsRecovery` returns true, so on-demand par2 fetches the recovery
+   volumes. That costs bandwidth and a par2 pass on a file with a hole; it never
+   ships an unrepaired one.
 
    `Inconclusive` is also the **default** the quickcheck stage adopts as soon
    as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on

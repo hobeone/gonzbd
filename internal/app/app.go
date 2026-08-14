@@ -1344,16 +1344,18 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // recorded CRC to check against (NoCRC), or could not be matched
 // (Unverified).
 //
-// NOTE: nothing currently records those CRCs. The assembler used to compute a
-// whole-file value by combining the per-article CRCs it happened to see, which
-// was #349 — a resumed run never receives the articles an earlier run
-// completed, so its parts do not tile the file — and that writer is gone. The
-// honest replacement is durability.FileExtent.PrefixCRC, guarded by
-// HasPrefixCRC, which the resumer derives from the Class A facts; it is not yet
-// threaded to Queue.SetFileCRC32. Until it is, every par2-tracked file reads as
-// NoCRC and this function conservatively returns true, so on-demand par2 always
-// fetches the recovery volumes rather than skipping them. That costs bandwidth
-// on an intact download; it never ships an unrepaired one. When no usable par2
+// The CRCs come from Class A. The assembler used to combine the per-article
+// CRCs it happened to see, which was #349 — a resumed run never receives the
+// articles an earlier run completed, so its parts do not tile the file — and
+// that writer is gone. Barrier.gaplessPrefix combines the FACTS instead, which
+// persist across restarts and so name every article whichever run fetched it,
+// and Application.recordAssembledCRC copies the result onto the queue when the
+// file finalizes.
+//
+// A file whose prefix stops short of its end still reads as NoCRC, which is
+// R23's "unavailable" rather than a CRC of zero, and this function then
+// conservatively returns true. That costs bandwidth on a file with a hole; it
+// never ships an unrepaired one. When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
 func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log *slog.Logger, parseOpts par2.ParseOptions) (needsRecovery bool, reason string) {

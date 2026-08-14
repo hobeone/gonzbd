@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -195,28 +196,28 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// barrier at all. Writing facts here would make them barrier-ordered and
 	// quietly destroy the property.
 
-	verified, err := b.gaplessPrefix(ctx, jobID, idx, ext.Durable, t)
+	verified, prefixCRC, err := b.gaplessPrefix(ctx, jobID, idx, ext.Durable, t)
 	if err != nil {
 		return FileExtent{}, nil, err
 	}
-	if verified != ext.VerifiedTo {
-		// PrefixCRC is defined as the CRC32 of [0, VerifiedTo), so carrying
-		// the loaded one across a recomputed VerifiedTo would relabel the
-		// CRC of one prefix as the CRC of a different one — design Shape 1
-		// ("a fact recorded before the thing it asserts becomes true") in
-		// the one file whose job is to prevent it. R23 already blesses
-		// "unavailable" as an honest answer, and HasPrefixCRC is what makes
-		// it distinguishable from a CRC of zero.
-		//
-		// The barrier itself never writes a PrefixCRC. Resumer does, off
-		// this critical path, and it recomputes the CRC from the bytes it
-		// reads rather than expecting the field to have survived a barrier
-		// that moved the anchor — which is why clearing it here costs
-		// nothing but a stale claim.
-		ext.PrefixCRC = 0
-		ext.HasPrefixCRC = false
-	}
+	// Both assigned from the same walk, so the CRC always describes exactly
+	// the prefix beside it. The old code could only CLEAR them — it carried a
+	// loaded PrefixCRC across an unchanged VerifiedTo and zeroed it otherwise,
+	// and nothing on this path ever produced one. That left a file downloaded
+	// without a restart with no CRC at any point in its life, because Resumer
+	// was the only writer and it runs at startup.
+	//
+	// Relabelling one prefix's CRC as another's is still the hazard it was;
+	// recomputing both together is what makes it unreachable, rather than a
+	// rule about when to discard.
 	ext.VerifiedTo = verified
+	ext.PrefixCRC = prefixCRC
+	// A prefix that reaches the file's end IS the whole file. During a
+	// download this is normally false — the stat reads pre-allocation's full
+	// size while the prefix is still growing — and FinalizeFile re-evaluates
+	// it after the truncate, where size is the file's true end. R23 keeps
+	// "unavailable" distinguishable from a CRC of zero.
+	ext.HasPrefixCRC = verified > 0 && verified == size
 	return ext, acked, nil
 }
 
@@ -323,12 +324,13 @@ func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artC
 // A read failure is returned rather than degraded to 0: an unreadable fact
 // log yields no evidence, and committing VerifiedTo = 0 as if it were
 // derived would be a silent wrong answer, which A2 and R28 forbid.
-func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (int64, error) {
-	facts, err := b.facts.ForFile(ctx, jobID, idx)
-	if err != nil {
-		return 0, fmt.Errorf("durability: barrier gapless prefix job=%s file=%d: %w", jobID, idx, err)
+func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, durable Bitmap, t SyncTarget) (verifiedTo int64, prefixCRC uint32, err error) {
+	facts, ferr := b.facts.ForFile(ctx, jobID, idx)
+	if ferr != nil {
+		return 0, 0, fmt.Errorf("durability: barrier gapless prefix job=%s file=%d: %w", jobID, idx, ferr)
 	}
 	var prefix int64
+	var crc uint32
 	for _, f := range facts {
 		// Not exactly abutting the run so far: either a hole, or an overlap
 		// this walk cannot prove tiles the range (R23). Either way the
@@ -340,9 +342,18 @@ func (b *Barrier) gaplessPrefix(ctx context.Context, jobID string, idx int32, du
 		if !ok || !durable.Get(ord) {
 			break
 		}
+		// Combined from the facts rather than read from the file. This is the
+		// source #349's combine lacked: the assembler could only ever see the
+		// articles THIS run fetched, so on a resumed file its parts did not
+		// tile and the value described a fragment. Class A persists, so it
+		// names every article of the file whichever run fetched it.
+		//
+		// Arithmetic over rows already loaded — no read of the file, which is
+		// why this can sit on the barrier's path at all (R24).
+		crc = crc32util.Combine(crc, f.CRC32, int64(f.Length))
 		prefix = f.Offset + int64(f.Length)
 	}
-	return prefix, nil
+	return prefix, crc, nil
 }
 
 // Truncator is a SyncTarget that can also trim a completed file.
@@ -472,6 +483,12 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			return b.routeFault(jobID, storagefault.Classify("stat", t.Path(idx), err))
 		}
 		ext.Size, ext.ModTimeNs = size, modNs
+		// buildExtent judged this against pre-allocation's size, where a
+		// complete file's prefix falls short of the stat and the CRC reads as
+		// unavailable. The truncate has just made Size the file's true end, so
+		// this is the first point at which "the prefix covers the whole file"
+		// can be answered.
+		ext.HasPrefixCRC = ext.VerifiedTo > 0 && ext.VerifiedTo == ext.Size
 	}
 
 	if err := b.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {

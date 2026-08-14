@@ -641,13 +641,21 @@ func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 	}
 }
 
-// TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC pins that the CRC anchor
-// and its CRC move together. PrefixCRC is defined as the CRC32 of
-// [0, VerifiedTo); carrying a loaded CRC across a recomputed VerifiedTo would
-// relabel the CRC of a shorter prefix as the CRC of a longer one. The barrier
-// never writes a PrefixCRC; Resumer recomputes one (R24), and this is the
-// guard that keeps the barrier from handing it a stale one to adopt.
-func TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC(t *testing.T) {
+// TestBarrier_RecomputesThePrefixCRCRatherThanCarryingIt pins that the CRC
+// anchor and its CRC always move together.
+//
+// PrefixCRC is defined as the CRC32 of [0, VerifiedTo), so a CRC that outlives
+// the prefix it was computed over relabels one range's checksum as another's.
+// This test previously pinned a carry-and-clear rule: keep the loaded CRC when
+// VerifiedTo happens not to move, zero it otherwise. That rule was replaced by
+// recomputing both from the same walk over Class A, which makes the
+// relabelling unreachable instead of merely forbidden — and which is also what
+// finally lets a download produce a whole-file CRC at all, since under the old
+// rule the barrier could only ever CLEAR one.
+//
+// The stored CRC here is deliberately a value no combine can produce, so
+// carrying it forward is distinguishable from recomputing it.
+func TestBarrier_RecomputesThePrefixCRCRatherThanCarryingIt(t *testing.T) {
 	tests := []struct {
 		name        string
 		drain       []WrittenArticle
@@ -656,17 +664,14 @@ func TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC(t *testing.T) {
 		wantCRCZero bool
 	}{
 		{
-			name:        "VerifiedTo advances, so the CRC becomes unavailable",
-			drain:       []WrittenArticle{{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}},
-			wantVerTo:   200,
-			wantHasCRC:  false,
-			wantCRCZero: true,
+			name:      "VerifiedTo advances and the CRC follows it",
+			drain:     []WrittenArticle{{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}},
+			wantVerTo: 200,
 		},
 		{
-			name:       "VerifiedTo is unchanged, so the CRC survives",
-			drain:      nil,
-			wantVerTo:  100,
-			wantHasCRC: true,
+			name:      "VerifiedTo is unchanged and the CRC is still recomputed",
+			drain:     nil,
+			wantVerTo: 100,
 		},
 	}
 	for _, tt := range tests {
@@ -704,15 +709,22 @@ func TestBarrier_MovingVerifiedToDropsTheStalePrefixCRC(t *testing.T) {
 			if got[0].VerifiedTo != tt.wantVerTo {
 				t.Fatalf("VerifiedTo = %d, want %d", got[0].VerifiedTo, tt.wantVerTo)
 			}
-			if got[0].HasPrefixCRC != tt.wantHasCRC {
-				t.Errorf("HasPrefixCRC = %v, want %v — a CRC of [0,%d) cannot be relabelled as the CRC of [0,%d)",
-					got[0].HasPrefixCRC, tt.wantHasCRC, 100, tt.wantVerTo)
+			if got[0].PrefixCRC == 0xDEADBEEF {
+				t.Errorf("PrefixCRC = %#x — the stored value was carried across a "+
+					"recomputed prefix instead of being derived from the facts that "+
+					"cover [0,%d)", got[0].PrefixCRC, got[0].VerifiedTo)
 			}
-			if tt.wantCRCZero && got[0].PrefixCRC != 0 {
-				t.Errorf("PrefixCRC = %#x, want 0 alongside HasPrefixCRC=false", got[0].PrefixCRC)
+			// The facts covering the prefix carry a CRC of 0 in this fixture, so
+			// the combine over them is 0. The point is that it is DERIVED: the
+			// assertion above is what fails if the stored value survives.
+			if got[0].PrefixCRC != 0 {
+				t.Errorf("PrefixCRC = %#x, want the combine over this prefix's facts", got[0].PrefixCRC)
 			}
-			if tt.wantHasCRC && got[0].PrefixCRC != 0xDEADBEEF {
-				t.Errorf("PrefixCRC = %#x, want the preserved 0xDEADBEEF", got[0].PrefixCRC)
+			// This target reports a size far above the prefix, so no prefix here
+			// is the whole file and the CRC is correctly unavailable (R23).
+			if got[0].HasPrefixCRC {
+				t.Errorf("HasPrefixCRC = true for a prefix of %d on a much larger file; "+
+					"a partial prefix has no whole-file value to report", got[0].VerifiedTo)
 			}
 		})
 	}
@@ -857,7 +869,7 @@ func TestGaplessPrefix(t *testing.T) {
 			}
 			b := NewBarrier(fl, nil, nil, nil, testLogger(t))
 
-			got, err := b.gaplessPrefix(ctx, "job-1", 0, bm, &fakeTarget{artCount: 4})
+			got, _, err := b.gaplessPrefix(ctx, "job-1", 0, bm, &fakeTarget{artCount: 4})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -885,7 +897,7 @@ func TestGaplessPrefix_UnplaceableFactStopsTheWalk(t *testing.T) {
 	bm.Set(0)
 	b := NewBarrier(fl, nil, nil, nil, testLogger(t))
 
-	got, err := b.gaplessPrefix(ctx, "job-1", 0, bm, &fakeTarget{artCount: 4, noOrd: true})
+	got, _, err := b.gaplessPrefix(ctx, "job-1", 0, bm, &fakeTarget{artCount: 4, noOrd: true})
 	if err != nil {
 		t.Fatal(err)
 	}
