@@ -780,7 +780,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		// Cross-check: already counted as success.
 		f.w.seenFailed = make(map[string]struct{})
-		f.w.seenDone["msg1"] = 0
+		f.w.seenDone["msg1"] = struct{}{}
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false when already counted as success")
 		}
@@ -818,7 +818,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// Cross-check: already counted as failure. The retry still writes —
 		// the bytes are still the file's content — but must not be counted
 		// toward partsWritten a second time.
-		f.w.seenDone = make(map[string]int64)
+		f.w.seenDone = make(map[string]struct{})
 		f.w.seenFailed["msg1"] = struct{}{}
 		req3 := WriteRequest{JobID: "job1", MessageID: "msg1", Offset: 20, Data: []byte("world")}
 		if a.handleSuccessArticle(f, req3) {
@@ -858,9 +858,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		wc := newWriteCache(0)
 		key := fileKey{jobID: "job1", fileIdx: 0}
-		open := map[fileKey]*openFile{key: f}
 		completed := make(map[fileKey]struct{})
 
 		req := WriteRequest{
@@ -868,15 +866,20 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			FileIdx: 0,
 		}
 
-		a.finalizeFile(f, key, req, open, completed, wc)
+		a.finalizeFile(f, key, req, completed)
 
-		// The file stays open. Removing it here would take the handle away
-		// from Barrier.FinalizeFile, which still has to Drain, Sync, Truncate
-		// and Stat it — so the completed file would keep pre-allocation's
-		// trailing zeros and its last articles would never be acked.
-		if _, ok := open[key]; !ok {
-			t.Error("finalizeFile removed the file from the open map; the barrier can no longer finalize it")
-		}
+		// The file stays open, and that is now structural rather than
+		// asserted: finalizeFile is not given the open map at all, so it
+		// cannot remove the file from it. Closing here would take the handle
+		// away from Barrier.FinalizeFile, which still has to Drain, Sync,
+		// Truncate and Stat it — the completed file would keep
+		// pre-allocation's trailing zeros and its last articles would never
+		// be acked.
+		//
+		// The assertion this replaces read the map back after passing it to a
+		// parameter finalizeFile had already blanked to `_`, so it could not
+		// have failed.
+		//
 		// The tombstone goes down immediately even so, or a late duplicate
 		// would be written into a file the barrier is mid-way through
 		// truncating.

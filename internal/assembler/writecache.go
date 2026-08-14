@@ -131,18 +131,6 @@ func (wc *writeCache) enabled() bool {
 	return wc.limit > 0
 }
 
-// cursorFor returns the file's current contiguous write frontier, or 0 if the
-// file has no buffer entry — caching is disabled, or the entry was dropped by
-// forget. A drain is not one of those cases: drainFile retains the entry
-// precisely so its advanced cursor survives, so after a pressure flush this
-// returns the advanced frontier rather than 0.
-func (wc *writeCache) cursorFor(key fileKey) int64 {
-	if fb, ok := wc.perFile[key]; ok {
-		return fb.writeCursor
-	}
-	return 0
-}
-
 // buffer adds an article to the cache. cached reports whether the article was
 // taken; false means caching is disabled and the caller should write
 // immediately.
@@ -197,6 +185,13 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 // buffered reports whether an article is still sitting unwritten at this
 // offset. It distinguishes an article the cache has yet to write from one it
 // has already written and acked, which the two look identical from outside.
+//
+// Used by tests, like FileWriter.writtenSoFar and FileWriter.unconfirmed, and
+// unlike those it once had a production caller in prospect: FileWriter's doc
+// described handleSuccessArticle's duplicate arm consulting it. That arm never
+// did, because the answer does not change what it does. Kept as the package's
+// way to say "buffered, not yet written" — the distinction several tests need
+// and the two-level map lookup obscures — rather than removed with the claim.
 func (wc *writeCache) buffered(key fileKey, offset int64) bool {
 	fb, ok := wc.perFile[key]
 	if !ok {

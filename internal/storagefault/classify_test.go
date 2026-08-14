@@ -46,9 +46,6 @@ func TestClassify_Retryability(t *testing.T) {
 			if f.Permanent != tt.permanent {
 				t.Errorf("Permanent = %v, want %v", f.Permanent, tt.permanent)
 			}
-			if f.Retryable() == tt.permanent {
-				t.Errorf("Retryable() = %v, contradicts Permanent = %v", f.Retryable(), f.Permanent)
-			}
 			if !errors.Is(f, tt.err) {
 				t.Errorf("errors.Is(fault, %v) = false, want true", tt.err)
 			}

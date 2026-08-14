@@ -36,7 +36,6 @@ func newHelperFile(t *testing.T, dir, name string, expectedSize int64) *openFile
 	return &openFile{
 		w:    newFileWriter(fh, path, key, newWriteCache(0)),
 		info: FileInfo{Path: path, ExpectedSize: expectedSize},
-		key:  key,
 	}
 }
 
@@ -109,8 +108,8 @@ func TestCloseAll(t *testing.T) {
 
 	f1 := newHelperFile(t, dir, "close1.dat", 0)
 	f2 := newHelperFile(t, dir, "close2.dat", 0)
-	f2.key = fileKey{jobID: "job", fileIdx: 1}
-	open := map[fileKey]*openFile{f1.key: f1, f2.key: f2}
+	f2.w.key = fileKey{jobID: "job", fileIdx: 1}
+	open := map[fileKey]*openFile{f1.w.key: f1, f2.w.key: f2}
 
 	a.drainAndCloseAll(open)
 
@@ -134,9 +133,9 @@ func TestCloseAll_ContinuesPastAFailedClose(t *testing.T) {
 	bad := newHelperFile(t, dir, "bad.dat", 0)
 	_ = bad.w.handle.Close() // make its Close in closeAll fail
 	good := newHelperFile(t, dir, "good.dat", 0)
-	good.key = fileKey{jobID: "job", fileIdx: 1}
+	good.w.key = fileKey{jobID: "job", fileIdx: 1}
 
-	a.drainAndCloseAll(map[fileKey]*openFile{bad.key: bad, good.key: good})
+	a.drainAndCloseAll(map[fileKey]*openFile{bad.w.key: bad, good.w.key: good})
 
 	if err := good.w.handle.Close(); err == nil {
 		t.Error("the second handle was left open after the first failed to close")
@@ -151,10 +150,10 @@ func TestRelievePressure(t *testing.T) {
 		// pressure() trips above 90% of the limit.
 		wc := newWriteCache(100)
 		f := newHelperFile(t, dir, "press.dat", 0)
-		open := map[fileKey]*openFile{f.key: f}
+		open := map[fileKey]*openFile{f.w.key: f}
 
 		for i := range 5 {
-			wc.buffer(f.key, bufferedArticle{
+			wc.buffer(f.w.key, bufferedArticle{
 				offset: int64(i * 20),
 				data:   []byte("12345678901234567890"),
 				id:     articleID{msgID: "<x@y>", artIdx: int32(i)},
@@ -184,9 +183,9 @@ func TestRelievePressure(t *testing.T) {
 		a := newHelperAssembler()
 		wc := newWriteCache(1 << 20)
 		f := newHelperFile(t, dir, "nopress.dat", 0)
-		wc.buffer(f.key, bufferedArticle{offset: 0, data: []byte("abcd"), id: articleID{msgID: "<a@x>"}})
-		a.relievePressure(wc, map[fileKey]*openFile{f.key: f})
-		if !wc.buffered(f.key, 0) {
+		wc.buffer(f.w.key, bufferedArticle{offset: 0, data: []byte("abcd"), id: articleID{msgID: "<a@x>"}})
+		a.relievePressure(wc, map[fileKey]*openFile{f.w.key: f})
+		if !wc.buffered(f.w.key, 0) {
 			t.Error("relievePressure flushed an article while under the threshold")
 		}
 	})

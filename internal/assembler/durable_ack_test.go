@@ -110,7 +110,6 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 	f := &openFile{
 		w:    w,
 		info: FileInfo{Path: path, ExpectedSize: artCount * artSize},
-		key:  key,
 	}
 
 	failWrites := true

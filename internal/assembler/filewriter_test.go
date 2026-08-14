@@ -94,7 +94,7 @@ func TestFileWriter_FailedWriteIsNotReportedAsWritten(t *testing.T) {
 	if !errors.As(err, &f) {
 		t.Fatalf("Drain error = %T, want *storagefault.Fault", err)
 	}
-	if !f.Retryable() {
+	if f.Permanent {
 		t.Error("ENOSPC classified permanent")
 	}
 	for _, a := range got {
@@ -306,7 +306,7 @@ func TestFileWriter_NoteWrittenCarriesTheArticlesOwnRange(t *testing.T) {
 // leaving it there makes a re-delivery look like a duplicate to skip.
 func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
-	w.seenDone["a9"] = 0
+	w.seenDone["a9"] = struct{}{}
 
 	if err := w.writeOne(bufferedArticle{offset: 0, data: []byte("xy"), id: articleID{msgID: "a9", artIdx: 9}}); err == nil {
 		t.Fatal("writeOne returned nil after EIO")

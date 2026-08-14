@@ -30,7 +30,6 @@ func newSyncOpFixture(t *testing.T) (*Assembler, map[fileKey]*openFile, fileKey)
 	f := &openFile{
 		w:    newFileWriter(fh, path, key, newWriteCache(0)),
 		info: FileInfo{Path: path},
-		key:  key,
 	}
 	return &Assembler{log: slog.Default()}, map[fileKey]*openFile{key: f}, key
 }
@@ -55,7 +54,7 @@ func runSyncOp(t *testing.T, a *Assembler, open map[fileKey]*openFile, op syncOp
 func TestHandleSyncOp_FilesReportsOnlyTheRequestedJob(t *testing.T) {
 	a, open, _ := newSyncOpFixture(t)
 	other := fileKey{jobID: "job2", fileIdx: 7}
-	open[other] = &openFile{info: FileInfo{Path: "other"}, key: other}
+	open[other] = &openFile{info: FileInfo{Path: "other"}}
 
 	r := runSyncOp(t, a, open, syncOp{kind: opFiles, jobID: "job1"})
 	if len(r.files) != 1 || r.files[0] != 0 {

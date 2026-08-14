@@ -80,14 +80,19 @@ type FileWriter struct {
 	// (R19) and stops writing.
 	reported []durability.WrittenArticle
 
-	// seenDone and seenFailed keep duplicate handling idempotent (R12).
-	// They moved here from openFile because the writer is now the only
-	// component that can tell whether a duplicate's first copy has left the
-	// cache — the check #358 added as wc.buffered. seenDone's value is the
-	// offset the article was accepted at, which the duplicate branch needs in
-	// order to ask that question: a duplicate is deduped by Message-ID and may
-	// carry a different offset, so its own is the wrong one to look up.
-	seenDone   map[string]int64
+	// seenDone and seenFailed keep duplicate handling idempotent (R12). They
+	// moved here from openFile because the writer owns the cache the first
+	// copy may still be sitting in.
+	//
+	// Both are membership-only. seenDone used to carry the offset the article
+	// was accepted at, and this comment said the duplicate branch needed it in
+	// order to ask wc.buffered whether the first copy had left the cache. It
+	// never asked: handleSuccessArticle's duplicate arm releases the buffer
+	// and returns, because the answer does not change what it does — either
+	// way the second copy's bytes are redundant and re-writing them would be a
+	// second WriteAt over the same range. The offset was written and never
+	// read.
+	seenDone   map[string]struct{}
 	seenFailed map[string]struct{}
 
 	// writeAt is handle.WriteAt in production. Tests override it before first
@@ -115,7 +120,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 		path:       path,
 		key:        key,
 		wc:         wc,
-		seenDone:   make(map[string]int64),
+		seenDone:   make(map[string]struct{}),
 		seenFailed: make(map[string]struct{}),
 	}
 	w.writeAt = handle.WriteAt

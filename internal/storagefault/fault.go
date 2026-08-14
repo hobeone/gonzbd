@@ -31,8 +31,4 @@ func (f *Fault) Error() string {
 	return fmt.Sprintf("storage %s fault on %s %q: %v", kind, f.Op, f.Path, f.Err)
 }
 
-// Retryable reports whether the condition may clear on its own or after
-// operator action, in which case the job stalls rather than fails.
-func (f *Fault) Retryable() bool { return !f.Permanent }
-
 func (f *Fault) Unwrap() error { return f.Err }

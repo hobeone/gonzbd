@@ -65,8 +65,16 @@ func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 
 	wc.drainFile(key)
 
-	if got, want := wc.cursorFor(key), int64(4*drainTestArt); got != want {
-		t.Errorf("cursorFor = %d, want %d (past the highest drained article, not up to the gap)", got, want)
+	// Read the field rather than an accessor. cursorFor existed only for this
+	// assertion — nothing in the package called it — and a helper that looks
+	// like production API but has only a test caller invites the reading that
+	// the frontier is consulted somewhere it is not.
+	fb, ok := wc.perFile[key]
+	if !ok {
+		t.Fatal("drainFile dropped the file's buffer entry; its advanced cursor is gone")
+	}
+	if got, want := fb.writeCursor, int64(4*drainTestArt); got != want {
+		t.Errorf("writeCursor = %d, want %d (past the highest drained article, not up to the gap)", got, want)
 	}
 }
 

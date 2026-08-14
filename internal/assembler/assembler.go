@@ -77,12 +77,6 @@ type WriteRequest struct {
 	// (per-file seen-set) so partsWritten does not overshoot TotalParts.
 	FatalErr error
 
-	// CRC is the CRC32 of the decoded article data. Used to incrementally
-	// build a per-file CRC via crc32util.Combine for QuickCheck
-	// verification against par2 file hashes. Zero when the article failed
-	// or was UU-encoded.
-	CRC uint32
-
 	// ackCh, when non-nil, is closed by the worker immediately after this
 	// control message (cancel) has been fully processed -- i.e. after the
 	// job's open file handles have been closed and removed. Set only by
@@ -209,11 +203,8 @@ type fileKey struct {
 // component that knows whether an fsync has happened. Keeping a shadow copy
 // here is exactly the second-writer shape S5 forbids.
 type openFile struct {
-	w    *FileWriter
-	info FileInfo
-	// key identifies this file to the worker's maps and to the shared write
-	// cache. It records no resume figures — there are none left to record.
-	key          fileKey
+	w            *FileWriter
+	info         FileInfo
 	partsWritten int
 }
 
@@ -828,7 +819,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		"part", f.partsWritten, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
 	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
-		a.finalizeFile(f, key, req, open, completed, wc)
+		a.finalizeFile(f, key, req, completed)
 	}
 }
 
@@ -917,7 +908,6 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	f := &openFile{
 		w:    newFileWriter(fh, info.Path, key, wc),
 		info: info,
-		key:  key,
 	}
 	open[key] = f
 	return f, nil
@@ -971,7 +961,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			// A retry of an article already counted as failed. The false
 			// return keeps partsWritten from counting it twice; the bytes are
 			// still written, because they are still the file's content.
-			w.seenDone[req.MessageID] = req.Offset
+			w.seenDone[req.MessageID] = struct{}{}
 			if err := a.acceptArticle(f, id, req); err != nil {
 				a.noteWriteFault(f.info.Path, req, err)
 			}
@@ -980,7 +970,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// Recorded before the write is attempted, not after, so a write path
 		// that fails can move the article to seenFailed without this function
 		// putting it straight back.
-		w.seenDone[req.MessageID] = req.Offset
+		w.seenDone[req.MessageID] = struct{}{}
 	}
 	if err := a.acceptArticle(f, id, req); err != nil {
 		// Not counted toward completion. Counting it is what let a file reach
@@ -1081,7 +1071,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 //
 // Every path that can abandon the handoff (CancelJob, CloseJobHandles, worker
 // exit) still closes whatever is left in `open`.
-func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, _ map[fileKey]*openFile, completed map[fileKey]struct{}, _ *writeCache) {
+func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, completed map[fileKey]struct{}) {
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)

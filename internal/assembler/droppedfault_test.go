@@ -43,7 +43,7 @@ func TestRelievePressure_RoutesTheFaultAndStopsWriting(t *testing.T) {
 	}
 	a := New(opts, slog.New(slog.DiscardHandler))
 
-	f := &openFile{w: w, info: FileInfo{Path: path, ExpectedSize: 4096}, key: key}
+	f := &openFile{w: w, info: FileInfo{Path: path, ExpectedSize: 4096}}
 	open := map[fileKey]*openFile{key: f}
 	for i := range 3 {
 		wc.buffer(key, bufferedArticle{

@@ -31,7 +31,7 @@ func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	w := newFileWriter(fh, path, key, newWriteCache(0))
 	w.writeAt = func([]byte, int64) (int, error) { return 0, err }
-	return &openFile{w: w, info: FileInfo{Path: path, ExpectedSize: 4096}, key: key}, path
+	return &openFile{w: w, info: FileInfo{Path: path, ExpectedSize: 4096}}, path
 }
 
 // TestWriteFault_IsNotCountedTowardCompletion pins the half of the defect that
