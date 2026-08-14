@@ -44,8 +44,15 @@ const (
 	opJobs
 )
 
-// barrierOpTimeout bounds the two barrier operations whose interface signature
-// carries no context: Files and Stat.
+// barrierOpTimeout bounds every barrier operation this package submits to the
+// worker: Files, Stat, CloseFile, CloseJobHandles and OpenJobIDs.
+//
+// It once bounded only Files and Stat, on the reasoning that they are "the two
+// whose interface signature carries no context". OpenJobIDs does take one and
+// was left unbounded anyway, and its caller — the periodic checkpoint loop —
+// passes the application's lifetime context, so there was no deadline to
+// inherit. Taking a context is not the same as being given a deadline, and
+// that is the distinction the old wording missed.
 //
 // B4 and R22 require every storage syscall on the critical path to be
 // timeout-bounded, and the bound has to come from here because the interface
@@ -58,7 +65,10 @@ const (
 // fstat, so the worker stays stuck either way — which is the intended
 // division: a wedged mount stalls the job, never the process. Drain, Sync and
 // Truncate need no constant because Barrier passes them a context and the
-// caller's deadline already bounds their wait the same way.
+// caller's deadline bounds their wait the same way — which is only true while
+// every caller actually supplies one. Application.checkpointAll gives each job
+// its own deadline for exactly this reason; it previously passed a context
+// cancelled only at shutdown.
 //
 // Five seconds matches diskCheckTimeout, the other bound this package places
 // on a syscall against a possibly-dead mount.
@@ -325,6 +335,14 @@ func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) 
 // Deriving it from the queue instead would be a second representation of one
 // fact, free to drift (S5).
 func (a *Assembler) OpenJobIDs(ctx context.Context) ([]string, error) {
+	// Bounded like every other helper here, and for a consequence wider than
+	// theirs. This one is called from the periodic checkpoint loop, which is a
+	// single select that also owns the stall re-evaluation tick and the queue
+	// save; an unbounded wait for a worker parked in an fsync stops all three,
+	// for every job. That is the process-wide freeze "a wedged mount stalls the
+	// job, never the process" exists to rule out.
+	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	defer cancel()
 	t := &jobSyncTarget{a: a}
 	r, err := t.submit(ctx, syncOp{kind: opJobs})
 	return r.jobs, err

@@ -420,7 +420,7 @@ func TestCheckpointAll_CoversEveryJobWithAnOpenFile(t *testing.T) {
 	// the job, and must not fail over the file that was never opened.
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
-	application.checkpointAll(ctx)
+	application.checkpointAll(ctx, shutdownCheckpointTimeout)
 	if got := application.BarrierRuns(); got != 1 {
 		t.Fatalf("%d barriers ran, want 1 for the one job holding an open file", got)
 	}
@@ -438,7 +438,7 @@ func TestCheckpointAll_CoversEveryJobWithAnOpenFile(t *testing.T) {
 		t.Fatalf("CloseJobHandles: %v", err)
 	}
 	before := application.BarrierRuns()
-	application.checkpointAll(ctx)
+	application.checkpointAll(ctx, shutdownCheckpointTimeout)
 	if got := application.BarrierRuns(); got != before {
 		t.Errorf("%d barriers ran with no file open, want %d", got, before)
 	}

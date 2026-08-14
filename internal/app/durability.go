@@ -345,7 +345,7 @@ func (app *Application) noteBarrierRun(jobID string) {
 // that set: a barrier fsyncs open files, not every file a job will eventually
 // produce. Deriving the set from job status instead would be a second
 // representation of the same fact, free to drift (S5).
-func (app *Application) checkpointAll(ctx context.Context) {
+func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration) {
 	if app.barrier == nil {
 		return
 	}
@@ -355,7 +355,23 @@ func (app *Application) checkpointAll(ctx context.Context) {
 		return
 	}
 	for _, jobID := range jobs {
-		app.checkpointJob(ctx, jobID)
+		// Each job gets its own deadline, and that is what makes B4/R22 true
+		// on this path rather than merely stated.
+		//
+		// SyncTarget.Drain, Sync and Truncate carry no timeout of their own:
+		// the contract has them "bounded by the caller's deadline", and the
+		// periodic caller had none — runCheckpoint is launched with the
+		// application's lifetime context, cancelled only at shutdown. So a
+		// worker parked in an fsync on a wedged mount blocked the barrier for
+		// as long as the mount stayed down, and with it the single loop that
+		// also owns stall re-evaluation and the queue save.
+		//
+		// PER JOB rather than per sweep, because a bound on the whole sweep
+		// would let one wedged job consume the budget of every job behind it —
+		// turning one bad mount into a queue-wide outage by a different route.
+		jobCtx, cancel := context.WithTimeout(ctx, perJob)
+		app.checkpointJob(jobCtx, jobID)
+		cancel()
 	}
 }
 
@@ -611,7 +627,10 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			app.checkpointAll(ctx)
+			// The cadence is the bound: a job whose checkpoint cannot
+			// finish within one interval is already failing to keep up, so
+			// spending longer on it only delays every job behind it.
+			app.checkpointAll(ctx, interval)
 		case jobID := <-app.barrierKick:
 			app.checkpointJob(ctx, jobID)
 		case <-stallTicker.C:
@@ -652,7 +671,7 @@ func (app *Application) shutdownCheckpoint() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownCheckpointTimeout)
 	defer cancel()
-	app.checkpointAll(ctx)
+	app.checkpointAll(ctx, shutdownCheckpointTimeout)
 	app.saveQueueIfDirty()
 }
 

@@ -410,9 +410,21 @@ it too — it is a barrier by another name, same `buildExtent`, same
 ### 10. Every barrier syscall on the critical path is timeout-bounded
 
 B4/R22. `Drain`, `Sync` and `Truncate` take a context and are bounded by the
-caller's deadline. `Files` and `Stat` have no context in their interface
-signature, so `internal/assembler` imposes `barrierOpTimeout` (5s, matching
-`diskCheckTimeout`) on the *wait* for the worker's reply.
+caller's deadline — which obliges every caller to supply one.
+`Application.checkpointAll` gives each job its own, sized to the checkpoint
+cadence on the periodic path and to `shutdownCheckpointTimeout` on the shutdown
+path. A caller that passes only the application's lifetime context supplies no
+deadline at all, and the periodic loop did exactly that.
+
+Every operation submitted to the worker — `Files`, `Stat`, `CloseFile`,
+`CloseJobHandles` and `OpenJobIDs` — additionally carries `barrierOpTimeout`
+(5s, matching `diskCheckTimeout`) on the *wait* for the worker's reply. That
+one is imposed by `internal/assembler` rather than by the caller, because a
+wedged worker cannot answer whatever deadline it was given.
+
+The bound is **per job**, not per sweep. A sweep-wide budget would let one
+wedged mount consume the time of every job behind it, turning a single bad
+mount into a queue-wide outage by a different route.
 
 What that bounds is the wait, not the syscall: Go cannot interrupt a blocked
 `fstat`, so the worker stays stuck either way. That is the intended division —
