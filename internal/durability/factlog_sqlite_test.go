@@ -160,9 +160,14 @@ func TestSQLiteFactLog_AppendEmptyIsNoop(t *testing.T) {
 	}
 }
 
-// TestSQLiteFactLog_AppendErrorsOnClosedDB covers the BeginTx error path:
-// a non-empty batch against a closed handle must return a wrapped error,
-// not panic or silently drop the facts.
+// TestSQLiteFactLog_AppendErrorsOnClosedDB covers both failure paths: a
+// non-empty batch against a closed handle must return a wrapped error, not
+// panic or silently drop the facts.
+//
+// Both, and not one, because Append branches on len(facts) — a lone statement
+// for one fact, BeginTx for several — and this used to be a single-fact test
+// described as covering BeginTx. It stopped reaching BeginTx when the fast
+// path arrived, and nothing about the test said so.
 func TestSQLiteFactLog_AppendErrorsOnClosedDB(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
@@ -170,9 +175,13 @@ func TestSQLiteFactLog_AppendErrorsOnClosedDB(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
-	fact := ArticleFact{FileIdx: 0, ArtIdx: 1, Offset: 0, Length: 10}
-	if err := fl.Append(ctx, "job-1", []ArticleFact{fact}); err == nil {
-		t.Fatal("Append on a closed db = nil error, want an error")
+	one := ArticleFact{FileIdx: 0, ArtIdx: 1, Offset: 0, Length: 10}
+	two := ArticleFact{FileIdx: 0, ArtIdx: 2, Offset: 10, Length: 10}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{one}); err == nil {
+		t.Error("single-fact Append on a closed db = nil error, want an error")
+	}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{one, two}); err == nil {
+		t.Error("batched Append on a closed db = nil error, want an error")
 	}
 }
 
@@ -186,5 +195,47 @@ func TestSQLiteFactLog_DeleteJobErrorsOnClosedDB(t *testing.T) {
 	}
 	if err := fl.DeleteJob(ctx, "job-1"); err == nil {
 		t.Fatal("DeleteJob on a closed db = nil error, want an error")
+	}
+}
+
+// TestSQLiteFactLog_BothAppendPathsAgree pins that the single-fact fast path
+// and the batched one are the same contract.
+//
+// Append branches on len(facts): one fact goes out as a lone statement in
+// SQLite's implicit transaction, several share an explicit one. Every other
+// test in this file appends one fact at a time, so without this the batch
+// path's INSERT OR IGNORE is exercised by nothing that checks what it ignores
+// — and a batch that silently upgraded to REPLACE would let a re-delivered
+// article redescribe bytes already written at the original offset (R1).
+func TestSQLiteFactLog_BothAppendPathsAgree(t *testing.T) {
+	ctx := context.Background()
+	fl := NewSQLiteFactLog(openTestDB(t))
+
+	orig := ArticleFact{FileIdx: 0, ArtIdx: 1, Offset: 0, Length: 100, CRC32: 1}
+	other := ArticleFact{FileIdx: 0, ArtIdx: 2, Offset: 100, Length: 100, CRC32: 2}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{orig}); err != nil {
+		t.Fatal(err)
+	}
+	// A batch re-delivering article 1 with a different offset, alongside a
+	// genuinely new article 2. The first must be ignored, the second stored.
+	evil := ArticleFact{FileIdx: 0, ArtIdx: 1, Offset: 999999, Length: 100, CRC32: 3}
+	if err := fl.Append(ctx, "job-1", []ArticleFact{evil, other}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := fl.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ForFile returned %d facts, want 2", len(got))
+	}
+	if got[0] != orig {
+		t.Errorf("fact 1 = %+v, want %+v — the batch path overwrote an immutable "+
+			"Class A record, so a resume verifies the file's bytes against the wrong range", got[0], orig)
+	}
+	if got[1] != other {
+		t.Errorf("fact 2 = %+v, want %+v — the batch path dropped a new fact while "+
+			"ignoring the duplicate beside it", got[1], other)
 	}
 }

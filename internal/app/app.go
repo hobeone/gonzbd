@@ -66,14 +66,18 @@ const (
 	// out anyway.
 	//
 	// It does NOT bound the worst case of one Append, so do not read the
-	// figure as "one Append always completes or fails within 5s".
-	// SQLiteFactLog.Append is BeginTx, Prepare, Exec and Commit in sequence
-	// and this ceiling covers the whole sequence, so a wait in the first step
-	// can leave the rest of it without room and cut it short part-way through.
-	// In practice _txlock=immediate takes the write lock at BEGIN, so
-	// contention is one wait at BeginTx rather than one per step — nearer a
-	// single 5s than four — but that is a property of the DSN, not of this
-	// constant. Being cut short is deliberate and safe in the only direction
+	// figure as "one Append always completes or fails within 5s". This
+	// ceiling covers the whole call, and for a BATCH that is BeginTx,
+	// Prepare, Exec and Commit in sequence, so a wait in the first step can
+	// leave the rest without room and cut it short part-way through. (In
+	// practice _txlock=immediate takes the write lock at BEGIN, so contention
+	// is one wait at BeginTx rather than one per step — nearer a single 5s
+	// than four — but that is a property of the DSN, not of this constant.)
+	//
+	// The append this constant actually bounds is the single-fact one, which
+	// SQLiteFactLog issues as a lone statement with no explicit transaction,
+	// so there is one step to wait in. Being cut short is deliberate and safe
+	// in the only direction
 	// that matters: a truncated append rolls back and records nothing, which
 	// leaves the article unprovable rather than wrongly proven (R3). See
 	// pipeline.appendArticleFacts for what that actually costs — it is

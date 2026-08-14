@@ -6,6 +6,11 @@ import (
 	"fmt"
 )
 
+const insertFactSQL = `
+	INSERT OR IGNORE INTO article_facts
+		(job_id, art_idx, file_idx, offset, length, crc32)
+	VALUES (?, ?, ?, ?, ?, ?)`
+
 // SQLiteFactLog is the append-only Class A store.
 type SQLiteFactLog struct{ db *sql.DB }
 
@@ -24,16 +29,36 @@ func (s *SQLiteFactLog) Append(ctx context.Context, jobID string, facts []Articl
 	if len(facts) == 0 {
 		return nil
 	}
+	// One fact is the hot path — pipeline.appendArticleFacts calls this once
+	// per decoded article — and it does not need a transaction of its own.
+	// SQLite wraps a lone statement in an implicit one, so this is the same
+	// atomic unit reached in a single round trip instead of four (BEGIN,
+	// PREPARE, EXEC, COMMIT), and the write lock is held for the statement
+	// rather than across all four.
+	//
+	// The DSN's _txlock=immediate does not apply, and does not need to: it
+	// exists for transactions that READ before they write, where SQLite
+	// answers a contended lock upgrade with an immediate SQLITE_BUSY rather
+	// than invoking the busy handler. A bare INSERT never upgrades, so
+	// contention here is an ordinary wait that busy_timeout covers.
+	//
+	// The statement is identical, so INSERT OR IGNORE's R1 immutability is
+	// too — the batch path below is not a different contract, just a
+	// different number of statements under one commit.
+	if len(facts) == 1 {
+		f := facts[0]
+		if _, err := s.db.ExecContext(ctx, insertFactSQL, jobID, f.ArtIdx, f.FileIdx, f.Offset, f.Length, f.CRC32); err != nil {
+			return fmt.Errorf("durability: append fact job=%s art=%d: %w", jobID, f.ArtIdx, err)
+		}
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("durability: begin fact append: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR IGNORE INTO article_facts
-			(job_id, art_idx, file_idx, offset, length, crc32)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, insertFactSQL)
 	if err != nil {
 		return fmt.Errorf("durability: prepare fact append: %w", err)
 	}
