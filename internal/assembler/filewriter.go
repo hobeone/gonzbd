@@ -1,7 +1,6 @@
 package assembler
 
 import (
-	"context"
 	"os"
 	"slices"
 
@@ -275,10 +274,26 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 // drain stopped. It stops rather than continuing, because a storage fault is
 // a condition of the device and the next write is overwhelmingly likely to hit
 // it too.
-func (w *FileWriter) Drain(ctx context.Context) ([]durability.WrittenArticle, error) {
-	if err := ctx.Err(); err != nil {
-		return w.take(), storagefault.Classify("write", w.path, err)
-	}
+//
+// # Why there is no context here
+//
+// There was one, and it guarded the entry with ctx.Err(). Nothing could reach
+// the guard: every caller is the assembler's worker goroutine, which had no
+// context to pass and supplied context.Background().
+//
+// Wiring the real one through was the other repair and it is the wrong one.
+// The barrier treats EVERY error this returns as a storage condition — it
+// wraps the result in storagefault.Classify and routes it to Stallable — so a
+// cancelled context would park a healthy job on a device fault that does not
+// exist. That is the A1 conflation the rest of this package works to avoid,
+// arriving through a guard that looks like caution.
+//
+// Nothing is left unbounded by removing it. The operation is bounded at the
+// submit side by barrierOpTimeout, which is where a caller that has given up
+// stops waiting; and once the op reaches the worker there is nothing to
+// abandon it for, since the worker owns the handle and a half-finished drain
+// leaves the file's state undescribed.
+func (w *FileWriter) Drain() ([]durability.WrittenArticle, error) {
 	_, arts := w.wc.drainFile(w.key)
 	for i, art := range arts {
 		if err := w.writeOne(art); err != nil {
@@ -320,10 +335,11 @@ func (w *FileWriter) take() []durability.WrittenArticle {
 
 // Sync fsyncs the handle. Until this returns nil, nothing a preceding Drain
 // reported may be claimed (S1).
-func (w *FileWriter) Sync(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return storagefault.Classify("sync", w.path, err)
-	}
+//
+// It takes no context, for the reason Drain documents at length: the guard was
+// unreachable, and reaching it would have turned a cancellation into a storage
+// fault and stalled a healthy job.
+func (w *FileWriter) Sync() error {
 	if err := w.syncFile(); err != nil {
 		return storagefault.Classify("sync", w.path, err)
 	}

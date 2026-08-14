@@ -756,10 +756,10 @@ func (a *Assembler) dispatchRequest(
 // next barrier Drain would pick these up; it will not, and had not since the
 // writer began discarding its report on a successful Sync.
 func (a *Assembler) drainAndClose(f *openFile) {
-	if _, err := f.w.Drain(context.Background()); err != nil {
+	if _, err := f.w.Drain(); err != nil {
 		a.log.Warn("drain file before close", "path", f.info.Path, "error", err)
 	}
-	if err := f.w.Sync(context.Background()); err != nil {
+	if err := f.w.Sync(); err != nil {
 		a.log.Warn("sync file before close", "path", f.info.Path, "error", err)
 	}
 	if err := f.w.Close(); err != nil {

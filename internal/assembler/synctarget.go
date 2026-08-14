@@ -414,9 +414,9 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 		}
 		switch op.kind {
 		case opDrain:
-			r.written, r.err = f.w.Drain(context.Background())
+			r.written, r.err = f.w.Drain()
 		case opSync:
-			r.err = f.w.Sync(context.Background())
+			r.err = f.w.Sync()
 		case opConfirm:
 			f.w.Confirm()
 		case opStat:

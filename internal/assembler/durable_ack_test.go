@@ -1,7 +1,6 @@
 package assembler
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -54,7 +53,7 @@ func TestFailedCoalescedRunFailsEveryArticleInTheRun(t *testing.T) {
 			"article would leave the rest reported Written with no bytes on disk (#355)", got)
 	}
 
-	got, err := w.Drain(context.Background())
+	got, err := w.Drain()
 	if err != nil {
 		t.Fatalf("Drain after the failed run: %v", err)
 	}
@@ -157,7 +156,7 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 	for i := range artCount {
 		send(i)
 	}
-	if _, err := w.Drain(context.Background()); err != nil {
+	if _, err := w.Drain(); err != nil {
 		t.Fatalf("Drain after the retries: %v", err)
 	}
 
@@ -208,7 +207,7 @@ func TestDuplicateSuccessWhileBufferedIsNotReAcked(t *testing.T) {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
-	got, err := f.w.Drain(t.Context())
+	got, err := f.w.Drain()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +239,7 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
-	got, err := f.w.Drain(t.Context())
+	got, err := f.w.Drain()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +266,7 @@ func TestDisplacedArticleIsFailed(t *testing.T) {
 		t.Fatalf("second article: %v", err)
 	}
 
-	got, err := w.Drain(context.Background())
+	got, err := w.Drain()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +310,7 @@ func TestZeroLengthArticleIsNotBuffered(t *testing.T) {
 	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	got, err := w.Drain(context.Background())
+	got, err := w.Drain()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,14 +630,14 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	if _, err := w.Drain(context.Background()); err != nil {
+	if _, err := w.Drain(); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	if len(w.reported) == 0 {
 		t.Fatal("nothing was reported before Sync; the fixture proves nothing")
 	}
 
-	if err := w.Sync(context.Background()); err != nil {
+	if err := w.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if syncs != 1 {
@@ -664,11 +663,11 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	if _, err := w.Drain(context.Background()); err != nil {
+	if _, err := w.Drain(); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	w.syncFile = func() error { return syscall.EIO }
-	if err := w.Sync(context.Background()); err == nil {
+	if err := w.Sync(); err == nil {
 		t.Fatal("Sync returned nil despite a failing fsync")
 	}
 	if len(w.reported) == 0 {

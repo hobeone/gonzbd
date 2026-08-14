@@ -1381,7 +1381,7 @@ func TestFileWriter_DrainWriteErrorCountsPipelineError(t *testing.T) {
 	}
 	_ = tmpFile.Close()
 
-	if _, err := w.Drain(context.Background()); err == nil {
+	if _, err := w.Drain(); err == nil {
 		t.Error("Drain after closing the handle returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {

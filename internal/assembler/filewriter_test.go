@@ -2,7 +2,6 @@ package assembler
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -62,7 +61,7 @@ func TestFileWriter_DrainReportsOnlyWrittenArticles(t *testing.T) {
 		t.Fatalf("writtenSoFar = %v before any drain, want empty", got)
 	}
 
-	got, err := w.Drain(context.Background())
+	got, err := w.Drain()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +85,7 @@ func TestFileWriter_FailedWriteIsNotReportedAsWritten(t *testing.T) {
 	if err := w.Accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := w.Drain(context.Background())
+	got, err := w.Drain()
 	if err == nil {
 		t.Fatal("Drain returned nil error after ENOSPC")
 	}
@@ -260,7 +259,7 @@ func TestFileWriter_TakeReportsUntilTheCycleIsConfirmed(t *testing.T) {
 		t.Errorf("take = %v with no Sync in between, want the same one article — a barrier "+
 			"whose Sync failed would otherwise strand it with no ack able to reach it", second)
 	}
-	if err := w.Sync(t.Context()); err != nil {
+	if err := w.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if got := w.unconfirmed(); len(got) == 0 {
@@ -341,31 +340,18 @@ func TestFileWriter_TruncateIgnoresANegativeBound(t *testing.T) {
 	}
 }
 
-// TestFileWriter_DrainOnACancelledContextClaimsNothing pins B4's shape at the
-// writer: a cancelled context must stop the drain and report a storage fault,
-// never return the buffered articles as though their bytes had landed.
-func TestFileWriter_DrainOnACancelledContextClaimsNothing(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
-	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 4096, []byte("abcd")); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	got, err := w.Drain(ctx)
-	if err == nil {
-		t.Fatal("Drain returned nil error on a cancelled context")
-	}
-	var f *storagefault.Fault
-	if !errors.As(err, &f) {
-		t.Fatalf("Drain error = %T, want *storagefault.Fault", err)
-	}
-	for _, a := range got {
-		if a.ArtIdx == 1 {
-			t.Fatal("article 1 reported written although the drain was cancelled before its write")
-		}
-	}
-}
+// TestFileWriter_DrainOnACancelledContextClaimsNothing was here. It asserted
+// that a cancelled context makes Drain stop and report a *storagefault.Fault,
+// and it went with the guard it tested: FileWriter takes no context now, for
+// the two reasons Drain's own doc gives — the guard was unreachable from the
+// worker goroutine that is its only caller, and reaching it would have turned
+// a cancellation into a storage fault and stalled a healthy job.
+//
+// The property it named in passing — never return a buffered article as though
+// its bytes had landed — is the one worth keeping, and it does not need a
+// cancellation to reach: TestFileWriter_DrainReportsOnlyWrittenArticles above
+// pins it directly, and TestFileWriter_FailedWriteIsNotReportedAsWritten pins
+// the other way an article can be in the cache and not on disk.
 
 // TestFileWriter_StatOnAClosedHandleIsAStorageFault pins Stat's failure branch.
 // The barrier reads this pair as the S7 validity stamp, so a failure must come
@@ -396,7 +382,7 @@ func TestFileWriter_DrainReleasesUnattemptedBuffersOnFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := w.Drain(context.Background())
+	got, err := w.Drain()
 	if err == nil {
 		t.Fatal("Drain returned nil after ENOSPC")
 	}
@@ -516,7 +502,7 @@ func TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported(t *testing.T) {
 	if err := w.Accept(articleID{msgID: "a2", artIdx: 2}, 4, []byte("efgh")); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Sync(t.Context()); err != nil {
+	if err := w.Sync(); err != nil {
 		t.Fatal(err)
 	}
 	// The barrier's commit and ack have landed, so the reported set may go.

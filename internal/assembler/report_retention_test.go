@@ -1,7 +1,6 @@
 package assembler
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,10 +49,9 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 // recordedExtent alike, neither missing nor unrecorded fires, and the truncate
 // destroys its bytes.
 func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
-	ctx := context.Background()
 	w := newWrittenFileWriter(t)
 
-	first, err := w.Drain(ctx)
+	first, err := w.Drain()
 	if err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
@@ -63,14 +61,14 @@ func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
 		t.Fatalf("first Drain returned %d articles, want 1", len(first))
 	}
 
-	if err := w.Sync(ctx); err != nil {
+	if err := w.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
 	// The barrier's commit or ack fails here. Nothing tells the writer, which
 	// is the whole point: the writer cannot know, so it must keep the report
 	// until something confirms the cycle landed.
-	second, err := w.Drain(ctx)
+	second, err := w.Drain()
 	if err != nil {
 		t.Fatalf("second Drain: %v", err)
 	}
@@ -90,18 +88,17 @@ func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
 // report, or every later Drain re-reports every article ever written to the
 // file and buildExtent's work grows without bound.
 func TestDrainReport_IsReleasedOnceTheCycleIsConfirmed(t *testing.T) {
-	ctx := context.Background()
 	w := newWrittenFileWriter(t)
 
-	if _, err := w.Drain(ctx); err != nil {
+	if _, err := w.Drain(); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	if err := w.Sync(ctx); err != nil {
+	if err := w.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	w.Confirm()
 
-	after, err := w.Drain(ctx)
+	after, err := w.Drain()
 	if err != nil {
 		t.Fatalf("Drain after Confirm: %v", err)
 	}
