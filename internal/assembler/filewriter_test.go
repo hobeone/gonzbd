@@ -232,7 +232,7 @@ func repoRoot() (string, error) {
 	}
 }
 
-// TestFileWriter_TakeReportsUntilASyncConfirms pins the two halves of the
+// TestFileWriter_TakeReportsUntilTheCycleIsConfirmed pins the two halves of the
 // hand-off separately, because they fail in opposite directions.
 //
 // take must move the new articles out of w.written, or an article is reported
@@ -243,7 +243,7 @@ func repoRoot() (string, error) {
 //
 // The Sync is the only thing that may discard the set, so it is asserted last
 // and on its own.
-func TestFileWriter_TakeReportsUntilASyncConfirms(t *testing.T) {
+func TestFileWriter_TakeReportsUntilTheCycleIsConfirmed(t *testing.T) {
 	w := newTestFileWriter(t)
 	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, []byte("abcd")); err != nil {
 		t.Fatal(err)
@@ -263,12 +263,18 @@ func TestFileWriter_TakeReportsUntilASyncConfirms(t *testing.T) {
 	if err := w.Sync(t.Context()); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
+	if got := w.unconfirmed(); len(got) == 0 {
+		t.Error("the report was released by the fsync. The barrier's commit and ack " +
+			"follow it and can both fail, and a release here leaves the retry with " +
+			"nothing to re-report")
+	}
+	w.Confirm()
 	if got := w.unconfirmed(); len(got) != 0 {
-		t.Errorf("unconfirmed = %v after a successful Sync, want empty — the fsync covered "+
-			"them, so keeping them grows the report without bound", got)
+		t.Errorf("unconfirmed = %v after Confirm, want empty — the cycle landed, so "+
+			"keeping them grows the report without bound", got)
 	}
 	if third := w.take(); len(third) != 0 {
-		t.Errorf("take = %v after a successful Sync, want empty", third)
+		t.Errorf("take = %v after Confirm, want empty", third)
 	}
 }
 
@@ -486,8 +492,15 @@ func TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange(t *testing.T) {
 // to the barrier, so nothing can ever ack it. It stays Outstanding for a file
 // the assembler has already tombstoned, which no re-fetch can reach.
 //
-// Sequenced deliberately: a1 is reported and confirmed, a2 arrives inside the
-// window, and only the second Drain may mention a2.
+// Sequenced deliberately: a1 is reported and then CONFIRMED, a2 arrives inside
+// the window, and only the second Drain may mention a2.
+//
+// The Confirm is load-bearing rather than ceremony. Sync used to release the
+// report itself, which lost it to any failure between the fsync and the
+// barrier's commit; the release moved to Confirm, which the barrier calls only
+// once the commit and the ack have both landed. a2 is untouched by it because
+// it was never reported — the split between w.written and w.reported is
+// exactly what keeps the two apart.
 func TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported(t *testing.T) {
 	w := newTestFileWriter(t)
 	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, []byte("abcd")); err != nil {
@@ -506,11 +519,13 @@ func TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported(t *testing.T) {
 	if err := w.Sync(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	// The barrier's commit and ack have landed, so the reported set may go.
+	w.Confirm()
 
 	second := w.take()
 	if len(second) != 1 {
-		t.Fatalf("second take = %v, want exactly article 2 — a1 was confirmed by the Sync and "+
-			"a2 was not yet reported", second)
+		t.Fatalf("second take = %v, want exactly article 2 — a1 was released by the "+
+			"Confirm and a2 was never reported", second)
 	}
 	if second[0].ArtIdx != 2 {
 		t.Errorf("second take = %v, want article 2: the Sync discarded an article no Drain had "+

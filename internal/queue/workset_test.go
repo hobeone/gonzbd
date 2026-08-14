@@ -19,9 +19,10 @@ import (
 // one file whose articles are already written, so a barrier run over it does
 // no I/O and reaches the ack.
 type stubSyncTarget struct {
-	files    []int32
-	written  []durability.WrittenArticle
-	artCount int
+	confirmed []int32
+	files     []int32
+	written   []durability.WrittenArticle
+	artCount  int
 }
 
 func (s *stubSyncTarget) Files() []int32    { return s.files }
@@ -724,4 +725,10 @@ func TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing(t *testing.T) {
 		t.Errorf("outstanding changed across an empty-proof ack: %v -> %v; "+
 			"an empty proof must resolve nothing", before, after)
 	}
+}
+
+// Confirm records the release so a test can tell a confirmed cycle from an
+// abandoned one; the real writer drops its drain report here.
+func (s *stubSyncTarget) Confirm(_ context.Context, idx int32) {
+	s.confirmed = append(s.confirmed, idx)
 }

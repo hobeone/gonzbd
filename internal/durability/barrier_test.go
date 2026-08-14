@@ -20,16 +20,17 @@ func testLogger(t *testing.T) *slog.Logger {
 // fakeTarget records the order of Drain/Sync/Stat calls so the ordering
 // invariant S1 can be asserted rather than assumed.
 type fakeTarget struct {
-	calls    []string
-	files    []int32
-	written  map[int32][]WrittenArticle
-	drainErr error
-	syncErr  error
-	statErr  error
-	size     int64
-	modTime  int64
-	artCount int
-	noOrd    bool
+	confirmed []int32
+	calls     []string
+	files     []int32
+	written   map[int32][]WrittenArticle
+	drainErr  error
+	syncErr   error
+	statErr   error
+	size      int64
+	modTime   int64
+	artCount  int
+	noOrd     bool
 }
 
 func (f *fakeTarget) Files() []int32 {
@@ -930,5 +931,84 @@ func TestBuildExtent_ReturnsTheArticlesToAckWithoutCommitting(t *testing.T) {
 	}
 	if got, _ := es.Load(ctx, "job-1"); len(got) != 0 {
 		t.Errorf("buildExtent committed %d extents; only Run's phase 4 may commit", len(got))
+	}
+}
+
+// Confirm records the release so a test can tell a confirmed cycle from an
+// abandoned one; the real writer drops its drain report here.
+func (s *fakeTarget) Confirm(_ context.Context, idx int32) { s.confirmed = append(s.confirmed, idx) }
+
+// TestBarrier_ConfirmsOnlyAfterTheCommitAndAck pins where the drain report is
+// released, which is the difference between a retried barrier that can recover
+// and one that has nothing left to work with.
+//
+// Sync used to release it, so any failure after the fsync — a Stat timeout, a
+// busy ExtentStore.Commit, an AckDurable answering ErrJobNotResident — lost the
+// report while the bytes stayed on disk. Those articles were then never acked
+// and never earned a durable bit, and a redelivery is dropped as a duplicate,
+// so the file could not complete for the life of the handle.
+func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
+	ctx := context.Background()
+	drain := map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}}
+
+	t.Run("a successful cycle confirms", func(t *testing.T) {
+		b, fl := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)),
+			&recordingAcker{}, &recordingStall{})
+		if err := fl.Append(ctx, "job-1", []ArticleFact{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tgt := &fakeTarget{written: drain, artCount: 4}
+		if err := b.Run(ctx, "job-1", tgt); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(tgt.confirmed) == 0 {
+			t.Error("a cycle that committed and acked never confirmed; the report is " +
+				"retained forever and every later checkpoint re-reports the whole file")
+		}
+	})
+
+	t.Run("a failed ack does not confirm", func(t *testing.T) {
+		b, fl := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)),
+			&recordingAcker{err: errors.New("job not resident")}, &recordingStall{})
+		if err := fl.Append(ctx, "job-1", []ArticleFact{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tgt := &fakeTarget{written: drain, artCount: 4}
+		if err := b.Run(ctx, "job-1", tgt); err == nil {
+			t.Fatal("Run reported success while the ack failed")
+		}
+		if len(tgt.confirmed) != 0 {
+			t.Errorf("the report was confirmed for file %v despite the ack failing. "+
+				"The retry drains nothing, so those articles are never acked and the "+
+				"file cannot complete for the life of the handle", tgt.confirmed)
+		}
+	})
+}
+
+// TestConfirmAll_ReleasesEveryFileOfTheJob pins that the release covers the
+// whole job rather than the file that happened to be last.
+//
+// Run drains and syncs every open file before it builds anything, so a cycle
+// that lands has made claims about all of them. Confirming only some would
+// leave the rest re-reporting forever, and buildExtent would redo their whole
+// article set on every later checkpoint.
+func TestConfirmAll_ReleasesEveryFileOfTheJob(t *testing.T) {
+	b, _ := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)),
+		&recordingAcker{}, &recordingStall{})
+	tgt := &fakeTarget{artCount: 4}
+
+	b.confirmAll(context.Background(), []int32{0, 1, 2}, tgt)
+
+	if len(tgt.confirmed) != 3 {
+		t.Fatalf("confirmed %v, want all three files", tgt.confirmed)
+	}
+	for i, idx := range []int32{0, 1, 2} {
+		if tgt.confirmed[i] != idx {
+			t.Errorf("confirmed[%d] = %d, want %d", i, tgt.confirmed[i], idx)
+		}
 	}
 }

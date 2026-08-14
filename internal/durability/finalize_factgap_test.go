@@ -15,9 +15,10 @@ import (
 // pins are about a bound that sits BELOW the file: a stat that overstated the
 // size would let a destructive bound look harmless.
 type factGapTarget struct {
-	drained  []WrittenArticle
-	artCount int
-	size     int64
+	confirmed []int32
+	drained   []WrittenArticle
+	artCount  int
+	size      int64
 
 	bound  int64
 	called bool
@@ -180,3 +181,7 @@ func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
 			"cannot tell which file or mount faulted", f.Path, tgt.Path(0))
 	}
 }
+
+// Confirm records the release so a test can tell a confirmed cycle from an
+// abandoned one; the real writer drops its drain report here.
+func (s *factGapTarget) Confirm(_ context.Context, idx int32) { s.confirmed = append(s.confirmed, idx) }

@@ -16,10 +16,11 @@ import (
 // truncate to, and a real file would let a wrong bound be masked by the
 // writer's own refusal to grow.
 type truncTarget struct {
-	drained  []WrittenArticle
-	artCount int
-	bound    int64
-	called   bool
+	confirmed []int32
+	drained   []WrittenArticle
+	artCount  int
+	bound     int64
+	called    bool
 }
 
 func (s *truncTarget) Files() []int32    { return []int32{0} }
@@ -538,3 +539,7 @@ func TestRecordedExtent_CountsEveryFactAndFlagsTheNonDurableOnes(t *testing.T) {
 			"skip the truncate on every healthy finalize", unrecorded)
 	}
 }
+
+// Confirm records the release so a test can tell a confirmed cycle from an
+// abandoned one; the real writer drops its drain report here.
+func (s *truncTarget) Confirm(_ context.Context, idx int32) { s.confirmed = append(s.confirmed, idx) }

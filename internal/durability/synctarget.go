@@ -55,6 +55,22 @@ type SyncTarget interface {
 	// process crash but not a power loss.
 	Sync(ctx context.Context, fileIdx int32) error
 
+	// Confirm releases the file's drain report, and must be called only once
+	// the cycle that consumed it has fully landed: the extent committed and
+	// the articles acked.
+	//
+	// It exists because a successful fsync is not the end of a barrier. The
+	// commit and the ack follow it and can both fail, and until they have
+	// succeeded the report is the only record that those articles reached
+	// disk. A target that released it on the fsync lost them to any later
+	// failure, and Drain's re-report — the thing that makes a retried barrier
+	// correct — had nothing left to re-report.
+	//
+	// It returns nothing. It records that work already succeeded, so a caller
+	// has no outcome to act on: a Confirm that does not arrive costs one
+	// redundant re-report, which R12 requires the apply to absorb anyway.
+	Confirm(ctx context.Context, fileIdx int32)
+
 	// Stat returns the file's size and modification time as they are now.
 	// The pair is the S7 validity stamp a later resume checks the file
 	// against before adopting any Class B value, so it must be read after

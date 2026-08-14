@@ -365,7 +365,7 @@ func TestBufferedReportsUnknownKey(t *testing.T) {
 	}
 }
 
-// TestSyncTargetDrainReportsUntilASyncConfirms pins WHEN Drain stops
+// TestSyncTargetDrainReportsUntilTheCycleIsConfirmed pins WHEN Drain stops
 // re-reporting an article: on the Sync that covers it, and not before.
 //
 // It replaces a pin that asserted the first Drain was the last — that every
@@ -375,7 +375,7 @@ func TestBufferedReportsUnknownKey(t *testing.T) {
 // file the retry then drains nothing and FinalizeFile trims to a durable
 // extent that sits below bytes genuinely on disk. R12 makes at-least-once the
 // contract precisely so the report can survive that.
-func TestSyncTargetDrainReportsUntilASyncConfirms(t *testing.T) {
+func TestSyncTargetDrainReportsUntilTheCycleIsConfirmed(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
 	const parts = 4
@@ -422,13 +422,27 @@ func TestSyncTargetDrainReportsUntilASyncConfirms(t *testing.T) {
 	if err := target.Sync(t.Context(), 0); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
+	// A successful fsync is NOT the release point. The barrier's commit and
+	// ack still follow it and can still fail, so the report has to survive
+	// until Confirm says the whole cycle landed.
 	third, err := target.Drain(t.Context(), 0)
 	if err != nil {
 		t.Fatalf("third Drain: %v", err)
 	}
-	if len(third) != 0 {
-		t.Errorf("third Drain = %v, want empty — the Sync covered every reported article, "+
-			"so retaining them past it grows the report without bound", third)
+	if len(third) != parts {
+		t.Errorf("third Drain = %v, want the same %d articles — the fsync landed but "+
+			"nothing confirmed the commit or the ack, and a failure between them would "+
+			"leave the retry with nothing to re-report", third, parts)
+	}
+
+	target.Confirm(t.Context(), 0)
+	fourth, err := target.Drain(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("fourth Drain: %v", err)
+	}
+	if len(fourth) != 0 {
+		t.Errorf("fourth Drain = %v, want empty — the cycle was confirmed, so retaining "+
+			"the report past it grows it without bound", fourth)
 	}
 
 	if err := a.Stop(); err != nil {
@@ -582,7 +596,7 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 
 var errFatalProbe = errors.New("permanent article failure (test)")
 
-// TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport is S1's
+// TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport is S1's
 // syscall-level pin, and its scope is deliberately narrow.
 //
 // # What it pins
@@ -602,7 +616,7 @@ var errFatalProbe = errors.New("permanent article failure (test)")
 //
 // So this is "the program calls fsync in the right order", not "the bytes are
 // on the platter". The second claim remains unverified in this repository.
-func TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport(t *testing.T) {
+func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 	w := newTestFileWriter(t)
 
 	var syncs int
@@ -636,8 +650,14 @@ func TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport(t *testing.T) {
 		t.Error("the reported set was already empty when fsync was called; it must be " +
 			"discarded only AFTER a successful fsync, or a failed sync loses the report")
 	}
+	if len(w.reported) == 0 {
+		t.Error("the reported set was released by the fsync. The barrier's commit and " +
+			"ack follow it, so a failure between them would leave the retry with " +
+			"nothing to re-report; Confirm is the release point")
+	}
+	w.Confirm()
 	if len(w.reported) != 0 {
-		t.Errorf("reported set still holds %d after a successful fsync, want 0", len(w.reported))
+		t.Errorf("reported set still holds %d after Confirm, want 0", len(w.reported))
 	}
 
 	// A FAILING fsync must keep the report, or the next Drain has nothing to
@@ -661,7 +681,7 @@ func TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport(t *testing.T) {
 // TestNewFileWriter_BindsSyncFileToTheRealHandle closes the one level of hole
 // the syncFile seam still had.
 //
-// TestSync_ActuallyIssuesTheFsyncAndOnlyThenDiscardsTheReport pins that Sync
+// TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport pins that Sync
 // CALLS w.syncFile in the right order. It says nothing about what syncFile
 // holds, because that test installs its own stub. So rebinding
 // `w.syncFile = handle.Sync` to `func() error { return nil }` in newFileWriter

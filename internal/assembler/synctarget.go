@@ -42,6 +42,7 @@ const (
 	opTruncate
 	opClose
 	opJobs
+	opConfirm
 )
 
 // barrierOpTimeout bounds every barrier operation this package submits to the
@@ -326,6 +327,22 @@ func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) 
 	return err
 }
 
+// Confirm releases the file's drain report on the worker goroutine that owns
+// it, once the barrier's commit and ack have both landed.
+//
+// Failures are swallowed rather than returned, and the interface makes that
+// explicit by declaring no error. A Confirm that does not arrive — a wedged
+// worker, a stopped assembler — leaves the report in place, and the next Drain
+// re-reports it, which R12 requires the apply to absorb. There is nothing for a
+// caller to do about it that the retry does not already do.
+func (t *jobSyncTarget) Confirm(ctx context.Context, fileIdx int32) {
+	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	defer cancel()
+	if _, err := t.submit(ctx, syncOp{kind: opConfirm, fileIdx: fileIdx}); err != nil {
+		t.a.log.Debug("confirm the drain report", "job", t.jobID, "fileidx", fileIdx, "err", err)
+	}
+}
+
 // OpenJobIDs returns every job that currently holds an open file.
 //
 // The checkpoint cadence uses it to pick which jobs to run a barrier for. The
@@ -389,6 +406,8 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			r.written, r.err = f.w.Drain(context.Background())
 		case opSync:
 			r.err = f.w.Sync(context.Background())
+		case opConfirm:
+			f.w.Confirm()
 		case opStat:
 			r.size, r.modTimeNs, r.err = f.w.Stat()
 		case opTruncate:

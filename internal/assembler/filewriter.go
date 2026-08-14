@@ -53,9 +53,15 @@ type FileWriter struct {
 	// from a successful writeAt (S2).
 	written []durability.WrittenArticle
 
-	// reported holds what a Drain has already handed to the barrier but no
-	// Sync has yet confirmed. Drain returns it again, and a successful Sync is
-	// what finally discards it.
+	// reported holds what a Drain has already handed to the barrier but whose
+	// CYCLE has not been confirmed. Drain returns it again, and Confirm — not
+	// Sync — is what finally discards it.
+	//
+	// The distinction is the whole point. A successful fsync makes the bytes
+	// durable, but the barrier still has to build the extent, commit it and
+	// ack the articles, and all three can fail after it. Releasing on the
+	// fsync covered only the first of the failures this retention exists for,
+	// while the doc below claimed all three.
 	//
 	// This is R12's at-least-once delivery, which SyncTarget.Drain explicitly
 	// blesses ("re-reporting an article a previous Drain already returned is
@@ -70,8 +76,8 @@ type FileWriter struct {
 	// An earlier version of this comment argued the opposite — that retaining
 	// the report would "trade a bounded cost for an unbounded slice". The
 	// bound it was worried about is real but small: entries accumulate only
-	// between SUCCESSFUL syncs, and a job whose syncs are failing stalls (R19)
-	// and stops writing.
+	// between CONFIRMED cycles, and a job whose barriers are failing stalls
+	// (R19) and stops writing.
 	reported []durability.WrittenArticle
 
 	// seenDone and seenFailed keep duplicate handling idempotent (R12).
@@ -316,12 +322,27 @@ func (w *FileWriter) Sync(ctx context.Context) error {
 	if err := w.syncFile(); err != nil {
 		return storagefault.Classify("sync", w.path, err)
 	}
-	// The fsync covers every byte a preceding Drain reported, so the barrier
-	// can now build and commit their durable bits from the report it already
-	// holds. Discarding the set here — and nowhere else — is what makes Drain
-	// re-report across a failure without accumulating forever.
-	w.reported = nil
+	// The report is deliberately NOT discarded here. The fsync makes the
+	// bytes durable, but the barrier has not yet built the extent, committed
+	// it, or acked anything, and every one of those can still fail. Clearing
+	// on the fsync covered only the first of the three failures the retention
+	// exists for. Confirm is what releases it.
 	return nil
+}
+
+// Confirm releases the drain report, and is called only once the barrier has
+// committed the extent and acked the articles.
+//
+// It is what bounds the retained set. Drain re-reports across any failure, so
+// without a confirmation the set would grow to every article ever written to
+// this file and every later checkpoint would redo all of it.
+//
+// Deliberately cannot fail. It records that work already succeeded, so there
+// is no outcome for a caller to handle: a missed Confirm costs one redundant
+// re-report, which R12 makes the barrier absorb, while a Confirm that could
+// fail would need its own recovery path for a cycle that has already landed.
+func (w *FileWriter) Confirm() {
+	w.reported = nil
 }
 
 // Stat returns the file's size and modification time as they are now. The pair

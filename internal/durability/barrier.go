@@ -103,6 +103,11 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 		return fmt.Errorf("durability: barrier commit for %s: %w", jobID, err)
 	}
 	if len(acked) == 0 {
+		// Nothing was acked, but the commit landed, so the reports these
+		// extents were built from have done their work and must be released
+		// too — otherwise a job whose files are all already durable re-reports
+		// them on every checkpoint forever.
+		b.confirmAll(ctx, files, t)
 		return nil
 	}
 	slices.Sort(acked)
@@ -112,9 +117,24 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
 		return fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
 	}
+	// Only here, below both the commit and the ack. Releasing on the fsync —
+	// which is what Sync used to do — left every failure between the two
+	// unable to re-report, so a retried barrier had nothing to retry with.
+	b.confirmAll(ctx, files, t)
 	b.log.Debug("durability barrier committed",
 		"job", jobID, "files", len(exts), "articles_acked", len(acked))
 	return nil
+}
+
+// confirmAll releases every file's drain report once the cycle has landed.
+//
+// Confirm cannot fail, so this cannot either: the work it records is already
+// done, and a report that is not released costs one redundant re-report that
+// R12 requires the apply to absorb.
+func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
+	for _, idx := range files {
+		t.Confirm(ctx, idx)
+	}
 }
 
 // buildExtent derives one file's Class B cache from the articles the fsync
@@ -501,6 +521,12 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
 		return fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
 	}
+	// Below both the commit and the ack, as in Run. A finalize that failed
+	// between them used to lose the report as well, and it is the retry of
+	// THIS path that the #342/#350 recovery guard exists to serve — with the
+	// report gone, the retry drains nothing and the durable bound sits below
+	// bytes that are genuinely on disk.
+	t.Confirm(ctx, idx)
 	return nil
 }
 

@@ -224,9 +224,16 @@ idempotent and `BytesDurable` is charged only on a 0→1 transition.
 
 `FileWriter` keeps two slices to make that true: `written` (reported by no
 `Drain` yet) and `reported` (handed to a `Drain`, not yet confirmed by a
-`Sync`). **Only a successful `Sync` discards `reported`.** A barrier that drains
-and then fails — at the sync, the extent commit, or the truncate — re-reports on
-the next attempt.
+`Sync`). **Only `Confirm` discards `reported`**, and the barrier calls it solely
+once the extent is committed and the articles are acked. A barrier that drains
+and then fails — at the sync, the extent commit, the ack, or the truncate —
+re-reports on the next attempt.
+
+Releasing on the `Sync` would cover only the first of those. The fsync makes the
+bytes durable, but the commit and the ack still follow it, and a failure between
+them left the retry with nothing to re-report while the bytes sat on disk
+unacked — the file could then never complete for the life of the handle, because
+a redelivery is dropped as a duplicate.
 
 This is load-bearing rather than tidy. For a file still being written, losing a
 report costs a re-fetch. For a **completed** file it costs bytes: the retry
