@@ -173,6 +173,26 @@ type Options struct {
 	// process.
 	OnWriteFault func(jobID string, fileIdx int, artIdx int32, f *storagefault.Fault)
 
+	// OnArticleRejected reports an article this package refused to write
+	// because the article itself is not usable — currently only an
+	// out-of-range yEnc offset (see offsetInRange).
+	//
+	// It is deliberately NOT OnWriteFault. A1 draws the line this pair sits
+	// on: a storage fault says nothing about the article and resolves against
+	// storage, while this says nothing about storage and resolves against the
+	// article. Routing a rejection through OnWriteFault would stall the job on
+	// a healthy disk; routing a disk fault through here would record a
+	// perfectly good article as damaged.
+	//
+	// The article is permanently failed from this package's point of view —
+	// the offset comes from the server and a re-fetch yields the same one —
+	// so the caller records it with Queue.AckPermanentFailure. That is what
+	// charges its bytes against the job's par2 recovery budget and releases
+	// on-demand recovery volumes. Without it the article stays Emitted, which
+	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
+	// the job waits forever on an article nothing will re-dispatch.
+	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string)
+
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
 
@@ -969,7 +989,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			// still written, because they are still the file's content.
 			w.seenDone[req.MessageID] = struct{}{}
 			if err := a.acceptArticle(f, id, req); err != nil {
-				a.noteWriteFault(f.info.Path, req, err)
+				a.routeAcceptFailure(f, req, err)
 			}
 			return false
 		}
@@ -981,8 +1001,10 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 	if err := a.acceptArticle(f, id, req); err != nil {
 		// Not counted toward completion. Counting it is what let a file reach
 		// TotalParts and finalize over bytes that never landed, reporting full
-		// health on a job whose volume was full.
-		a.noteWriteFault(f.info.Path, req, err)
+		// health on a job whose volume was full — and, for a rejected offset,
+		// what let a hostile server finalize a file with articles it knew
+		// would not be written.
+		a.routeAcceptFailure(f, req, err)
 		return false
 	}
 	return true
@@ -1006,14 +1028,42 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 // job stalls on a storage condition without any article being recorded as
 // damaged.
 func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) error {
-	if !a.offsetInRange(f, req) {
+	if reason, ok := a.offsetOutOfRange(f, req); ok {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
 		f.w.fail(id)
-		return nil
+		return &rejectedArticleError{reason: reason}
 	}
 	return f.w.Accept(id, req.Offset, req.Data)
+}
+
+// rejectedArticleError marks a refusal that is about the ARTICLE, so the
+// caller can tell it apart from a storage fault and route it to
+// OnArticleRejected instead of OnWriteFault (A1).
+//
+// It returns an error rather than a bool because acceptArticle's other failure
+// is already an error, and a rejection that returned nil was counted as a
+// successful part — see handleSuccessArticle.
+type rejectedArticleError struct{ reason string }
+
+func (e *rejectedArticleError) Error() string {
+	return "assembler: article rejected: " + e.reason
+}
+
+// routeAcceptFailure sends one acceptArticle failure to the callback that
+// matches what actually failed, which is the A1 split in one place.
+func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error) {
+	if rej, ok := errors.AsType[*rejectedArticleError](err); ok {
+		a.log.Warn("article rejected; it will be recorded as permanently failed",
+			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
+			"path", f.info.Path, "reason", rej.reason)
+		if a.opts.OnArticleRejected != nil {
+			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason)
+		}
+		return
+	}
+	a.noteWriteFault(f.info.Path, req, err)
 }
 
 // noteWriteFault surfaces a failed write to the owner of the job.
@@ -1129,8 +1179,8 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 // of slack rather than treating it as an exact bound.
 const offsetSlackDivisor = 8
 
-// offsetInRange reports whether a write request's target range is plausible
-// for the file it claims to belong to.
+// offsetOutOfRange reports whether a write request's target range is
+// implausible for the file it claims to belong to, and why.
 //
 // req.Offset originates from the yEnc `=ypart begin=` header, which is parsed
 // as an unbounded int64 from the article body returned by the NNTP server. It
@@ -1139,8 +1189,13 @@ const offsetSlackDivisor = 8
 // produce a file of arbitrary apparent size. The completion truncate no longer
 // commits that size — it is bounded by the durable facts — but the sparse file
 // itself is still the attack, so the offset is rejected before the write.
-func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
-	reject := func(reason string) bool {
+//
+// It returns the reason rather than a bare bool because the rejection has to
+// reach the queue: the article is refused here, and nothing else in the system
+// will refuse it again, so a caller that only knew "not written" could neither
+// record it failed nor say why.
+func (a *Assembler) offsetOutOfRange(f *openFile, req WriteRequest) (string, bool) {
+	reject := func(reason string) (string, bool) {
 		a.log.Warn("rejecting out-of-range article write offset",
 			"path", f.info.Path,
 			"offset", req.Offset,
@@ -1149,7 +1204,7 @@ func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
 			"reason", reason,
 		)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		return false
+		return reason, true
 	}
 
 	if req.Offset < 0 {
@@ -1164,16 +1219,16 @@ func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
 	// ExpectedSize == 0 means the NZB did not declare a size; the overflow
 	// and negative checks above are all we can enforce.
 	if f.info.ExpectedSize <= 0 {
-		return true
+		return "", false
 	}
 	// Guard the slack arithmetic itself against a degenerate ExpectedSize.
 	if f.info.ExpectedSize > math.MaxInt64-(f.info.ExpectedSize/offsetSlackDivisor) {
-		return true
+		return "", false
 	}
 	if limit := f.info.ExpectedSize + f.info.ExpectedSize/offsetSlackDivisor; end > limit {
 		return reject("write extends past declared file size")
 	}
-	return true
+	return "", false
 }
 
 // relievePressure force-flushes the largest cached files until memory usage

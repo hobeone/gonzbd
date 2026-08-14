@@ -45,7 +45,7 @@ func TestOffsetInRange(t *testing.T) {
 
 	t.Run("rejects a negative offset", func(t *testing.T) {
 		f := newHelperFile(t, dir, "neg.dat", 100)
-		if a.offsetInRange(f, WriteRequest{Offset: -1, Data: []byte("x")}) {
+		if offsetOK(a, f, WriteRequest{Offset: -1, Data: []byte("x")}) {
 			t.Error("accepted a negative offset")
 		}
 	})
@@ -53,7 +53,7 @@ func TestOffsetInRange(t *testing.T) {
 	t.Run("rejects an offset+length that overflows int64", func(t *testing.T) {
 		f := newHelperFile(t, dir, "ovf.dat", 100)
 		const maxInt64 = int64(^uint64(0) >> 1)
-		if a.offsetInRange(f, WriteRequest{Offset: maxInt64 - 1, Data: []byte("xxxx")}) {
+		if offsetOK(a, f, WriteRequest{Offset: maxInt64 - 1, Data: []byte("xxxx")}) {
 			t.Error("accepted an offset whose end wraps negative")
 		}
 	})
@@ -62,7 +62,7 @@ func TestOffsetInRange(t *testing.T) {
 		// ExpectedSize == 0 means the NZB declared no size, so the bound
 		// cannot be enforced and only the two checks above apply.
 		f := newHelperFile(t, dir, "nosize.dat", 0)
-		if !a.offsetInRange(f, WriteRequest{Offset: 1 << 40, Data: []byte("xxxx")}) {
+		if !offsetOK(a, f, WriteRequest{Offset: 1 << 40, Data: []byte("xxxx")}) {
 			t.Error("rejected a write against a file with no declared size")
 		}
 	})
@@ -74,14 +74,14 @@ func TestOffsetInRange(t *testing.T) {
 		// a test that only probed past ExpectedSize would pass against a
 		// version with no bound at all up to the slack.
 		f := newHelperFile(t, dir, "exact.dat", 800)
-		if !a.offsetInRange(f, WriteRequest{Offset: 896, Data: []byte("abcd")}) {
+		if !offsetOK(a, f, WriteRequest{Offset: 896, Data: []byte("abcd")}) {
 			t.Error("rejected a write ending exactly at the slack limit")
 		}
 	})
 
 	t.Run("rejects a write ending one byte past the slack limit", func(t *testing.T) {
 		f := newHelperFile(t, dir, "over.dat", 800)
-		if a.offsetInRange(f, WriteRequest{Offset: 897, Data: []byte("abcd")}) {
+		if offsetOK(a, f, WriteRequest{Offset: 897, Data: []byte("abcd")}) {
 			t.Error("accepted a write ending past the slack limit")
 		}
 	})
@@ -91,7 +91,7 @@ func TestOffsetInRange(t *testing.T) {
 		// helper gives up on the bound rather than rejecting a real write.
 		const maxInt64 = int64(^uint64(0) >> 1)
 		f := newHelperFile(t, dir, "slackovf.dat", maxInt64-8)
-		if !a.offsetInRange(f, WriteRequest{Offset: 0, Data: []byte("abcd")}) {
+		if !offsetOK(a, f, WriteRequest{Offset: 0, Data: []byte("abcd")}) {
 			t.Error("rejected a write because the slack limit overflowed")
 		}
 	})
@@ -221,7 +221,7 @@ func TestDrainAndClose_FlushesBeforeClosing(t *testing.T) {
 }
 
 // TestAcceptArticle_OutOfRangeOffsetIsNotReported pins the security check's
-// effect on the barrier's evidence. offsetInRange rejects an attacker-supplied
+// effect on the barrier's evidence. offsetOutOfRange rejects an attacker-supplied
 // yEnc offset; the article must then be absent from what Drain reports, or the
 // barrier acks an article whose bytes were deliberately never written.
 func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
@@ -387,4 +387,13 @@ func TestControlOps_CancelledContextBeatsEveryOtherOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+// offsetOK inverts offsetOutOfRange for TestOffsetInRange's assertions, which
+// read as "this offset is acceptable" rather than "this offset is not out of
+// range". The reason string the real signature also returns is exercised where
+// it is consumed, in TestRejectedOffsetIsNotCountedAndIsReported.
+func offsetOK(a *Assembler, f *openFile, req WriteRequest) bool {
+	_, bad := a.offsetOutOfRange(f, req)
+	return !bad
 }

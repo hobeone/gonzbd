@@ -90,3 +90,63 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleArticleRejected_AcksThePermanentFailure pins the app half of the
+// rejection path: the assembler refuses the article, and this is what turns
+// that refusal into a resolved article.
+//
+// Both consequences are asserted because they are separate defects. Without
+// the ack the article keeps its Emitted bit, which is NOT Outstanding —
+// ForEachUnfinishedArticle skips a set Emitted bit — so nothing re-dispatches
+// it and the job never reaches completion. And its bytes are never charged as
+// failed, so the "beyond repair" gate compares a healthy-looking failed-byte
+// count against par2's recovery budget and lets a job proceed to a repair that
+// cannot succeed.
+func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+
+	if err := application.queue.MarkArticleEmittedByIdx(job.ID, 1); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	}
+	snap, err := application.queue.Get(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Progress().ArticleEmitted(1) {
+		t.Fatal("fixture never emitted article 1, so it cannot observe the article being resolved")
+	}
+	before := snap.Progress().FailedBytes()
+
+	application.handleArticleRejected(job.ID, 0, 1, "negative offset")
+
+	snap, err = application.queue.Get(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Progress().ArticleFailed(1) {
+		t.Error("the rejected article is not marked failed; its Emitted bit is still set, " +
+			"so ForEachUnfinishedArticle skips it and nothing ever re-dispatches it")
+	}
+	if got := snap.Progress().FailedBytes(); got <= before {
+		t.Errorf("FailedBytes = %d, was %d — a rejected article's bytes must be charged, "+
+			"or the beyond-repair gate weighs them against par2's budget as if they had arrived",
+			got, before)
+	}
+}
+
+// TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue covers the branch
+// where the ack fails.
+//
+// It is ordinary rather than exceptional: the assembler's worker is a separate
+// goroutine, so a rejection can be routed after the job it belongs to has been
+// cancelled or moved to history. There is nothing left to record against and
+// nothing to recover, so the handler must not panic or propagate — but it must
+// not be silent either (A2), which is why the branch exists rather than the
+// error being discarded at the call.
+func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	application, _ := newDurabilityTestApp(t, 1, 2)
+
+	// No job with this ID was ever added, which is the same state the queue
+	// presents after one is removed.
+	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset")
+}

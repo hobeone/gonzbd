@@ -93,6 +93,31 @@ func (app *Application) handleWriteFault(jobID string, _ int, artIdx int32, f *s
 	app.Stall(jobID, f)
 }
 
+// handleArticleRejected records an article the assembler refused as
+// permanently failed.
+//
+// Permanently, and not returned to Outstanding, because the reason is a
+// property of what the server sent: the offset comes from the article's own
+// yEnc header, so a re-fetch of the same article yields the same rejection.
+// Ack is what charges its bytes against the job's par2 recovery budget and
+// releases on-demand recovery volumes, and Queue.AckPermanentFailure clears
+// the Emitted bit as part of resolving the article — without it the job waits
+// forever on something nothing will re-dispatch.
+//
+// This is the other side of the A1 split from handleWriteFault: that one
+// stalls the job and touches no article, this one fails the article and
+// touches no job state.
+func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string) {
+	app.log.Warn("article rejected by the assembler; recording it as permanently failed",
+		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason)
+	if err := app.queue.AckPermanentFailure(jobID, []int32{artIdx}); err != nil {
+		// A job that has left the queue has nothing left to record against,
+		// which is ordinary rather than a defect — but not silent (A2).
+		app.log.Debug("ack a rejected article as permanently failed",
+			"job", jobID, "artidx", artIdx, "err", err)
+	}
+}
+
 // Stall parks a job on a retryable storage fault and surfaces why (R19, R27).
 //
 // No article is marked failed, and that is the whole of A1. A full disk is a

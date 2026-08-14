@@ -482,11 +482,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			"no article will be acked and every restart re-downloads the whole queue")
 	}
 
-	// The assembler is given no ack callbacks at all. It has no authority to
-	// resolve an article in either direction any more: successes are acked by
+	// The assembler is given no SUCCESS ack callback. It has no authority to
+	// resolve an article as downloaded any more: successes are acked by
 	// durability.Barrier, which is the only component that runs the fsync
-	// (X2), and permanent failures go to Queue.AckPermanentFailure from the
-	// pipeline. The barrier's cadence lives in runCheckpoint.
+	// (X2). The barrier's cadence lives in runCheckpoint.
+	//
+	// OnArticleRejected is the one exception in the other direction, and it is
+	// not the assembler resolving anything: it reports an article it refused,
+	// and handleArticleRejected does the acking. The refusal has no other
+	// witness — a bad yEnc offset is caught here and nowhere else — so without
+	// this the article is silently dropped and its job never finishes. Ordinary
+	// permanent failures still go to Queue.AckPermanentFailure from the
+	// pipeline.
 	//
 	// Options carries no FactLog either. Class A is appended by the pipeline
 	// at the point it hands the article over, with no ordering against the
@@ -494,12 +501,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// write-ordered and destroy exactly the independence that lets Class A
 	// commit without a barrier.
 	asm := assembler.New(assembler.Options{
-		FileInfo:        p.resolveFileInfo,
-		MinFreeBytes:    minFreeBytes,
-		WriteCacheBytes: writeCacheBytes,
-		OnLowDisk:       app.handleLowDisk,
-		OnWriteFault:    app.handleWriteFault,
-		OnFileComplete:  onFileComplete,
+		FileInfo:          p.resolveFileInfo,
+		MinFreeBytes:      minFreeBytes,
+		WriteCacheBytes:   writeCacheBytes,
+		OnLowDisk:         app.handleLowDisk,
+		OnWriteFault:      app.handleWriteFault,
+		OnArticleRejected: app.handleArticleRejected,
+		OnFileComplete:    onFileComplete,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
