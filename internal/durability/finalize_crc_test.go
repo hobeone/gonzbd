@@ -118,3 +118,34 @@ func TestFinalizeFile_NoWholeFileCRCWhenAnArticleIsMissing(t *testing.T) {
 			"and QuickCheck would compare it against par2's real one", stored[0].PrefixCRC)
 	}
 }
+
+// TestGaplessPrefixCRC_EmptyFileClaimsNoWholeFileCRC pins the one input on
+// which both of the walk's clauses are satisfied by there being nothing to
+// check: a zero-length file with no recorded facts.
+//
+// The run consumes every fact (there are none) and reaches the file's end (it
+// is 0), so the flag came back true with a CRC of 0. CRC32 of zero bytes is
+// genuinely 0, which is what makes this the wrong kind of wrong — the value is
+// not fabricated, the CLAIM is. HasPrefixCRC means "this is a verified
+// whole-file CRC", and a file with no facts has been verified against nothing.
+//
+// It matters because a target file exists before its first article lands: the
+// assembler creates it, and with pre-allocation off it is zero-length until a
+// write. A resume in that window would commit a whole-file CRC for it, and
+// QuickCheck compares exactly this flag's value against par2's hash — turning
+// a job that has merely not started into one reported as damaged.
+//
+// Barrier.buildExtent has always required verified > 0 for the same flag. This
+// is the resume path being brought level with it, not a new rule.
+func TestGaplessPrefixCRC_EmptyFileClaimsNoWholeFileCRC(t *testing.T) {
+	verifiedTo, crc, whole := gaplessPrefixCRC(nil, nil, 0)
+	if whole {
+		t.Error("gaplessPrefixCRC reported a verified whole-file CRC for a zero-length " +
+			"file with no facts; QuickCheck would compare 0 against par2's real hash " +
+			"and report an untouched job as damaged")
+	}
+	if verifiedTo != 0 || crc != 0 {
+		t.Errorf("verifiedTo/crc = %d/%d, want 0/0 — the prefix itself is unchanged, "+
+			"only the claim about it", verifiedTo, crc)
+	}
+}

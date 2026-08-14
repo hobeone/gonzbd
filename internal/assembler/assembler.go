@@ -902,9 +902,15 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	//
 	// The cursor starts at 0 for the same reason it is safe to: it is a
 	// coalescing hint, not an authority (#311, #353). A resumed file whose
-	// early articles are not re-delivered simply never forms a contiguous run
-	// from 0, and its articles are written individually instead. That costs
-	// syscalls, never correctness.
+	// early articles are not re-delivered never forms a contiguous run from 0.
+	//
+	// What that costs is NOT "its articles are written individually", which is
+	// what this comment used to say. flushContiguous forms no run at all, so
+	// nothing is written on the arrival path: the articles stay buffered in
+	// the write cache until a barrier's Drain or a memory-pressure flush
+	// pushes them out. So the cost is a fuller cache and writes deferred to
+	// the checkpoint, not extra syscalls — and it is still never correctness,
+	// because both of those paths write every buffered article.
 	f := &openFile{
 		w:    newFileWriter(fh, info.Path, key, wc),
 		info: info,

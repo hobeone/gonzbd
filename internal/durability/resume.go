@@ -343,11 +343,23 @@ func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []Article
 // makes crc32util.Combine valid here: each step appends a range that starts
 // where the previous one ended.
 //
-// The third result is true only when the run consumed every recorded fact AND
-// reached the file's current end. Either clause failing means something known
-// about this file lies outside the CRC's range — a fact beyond a truncated
-// end, or bytes no fact accounts for — so the CRC of that shorter prefix is
-// not the file's CRC, and R23 wants unavailable rather than a relabelling.
+// The third result is true only when the run is non-empty, consumed every
+// recorded fact, AND reached the file's current end. The last two clauses are
+// the relabelling guard: either failing means something known about this file
+// lies outside the CRC's range — a fact beyond a truncated end, or bytes no
+// fact accounts for — so the CRC of that shorter prefix is not the file's CRC,
+// and R23 wants unavailable rather than a relabelling.
+//
+// The first clause is about a different case, and it is not redundant with
+// them. A zero-length file with no facts satisfies both: the run consumes
+// every fact because there are none, and reaches the end because the end is 0.
+// The CRC it would report is 0, which is genuinely the CRC32 of zero bytes —
+// so the value is right and the CLAIM is wrong, since nothing was verified.
+// A target file is zero-length from the moment the assembler creates it until
+// its first write lands (with pre-allocation off), and a resume in that window
+// would hand QuickCheck a whole-file CRC to compare against par2's hash for
+// the real file. Barrier.buildExtent has always required verified > 0 here.
+//
 // PrefixCRC still covers exactly [0, VerifiedTo) in every case.
 func gaplessPrefixCRC(facts []ArticleFact, verified []bool, size int64) (verifiedTo int64, prefixCRC uint32, wholeFile bool) {
 	var prefix int64
@@ -366,5 +378,5 @@ func gaplessPrefixCRC(facts []ArticleFact, verified []bool, size int64) (verifie
 		prefix = fact.Offset + int64(fact.Length)
 		consumed++
 	}
-	return prefix, crc, consumed == len(facts) && prefix == size
+	return prefix, crc, prefix > 0 && consumed == len(facts) && prefix == size
 }

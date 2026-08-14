@@ -659,8 +659,14 @@ func TestGaplessPrefixCRC(t *testing.T) {
 		wantWhole bool
 	}{
 		{
-			name: "no facts and no bytes is a vacuously whole empty file",
-			size: 0, wantWhole: true,
+			// "Vacuously whole" was the reading this case used to encode, and
+			// it is the one thing the flag must not mean. HasPrefixCRC says
+			// "this is a verified whole-file CRC"; a file with no facts has
+			// been verified against nothing, and the 0 it would report — a
+			// correct CRC32 of zero bytes — is indistinguishable from a real
+			// answer to the QuickCheck comparison downstream.
+			name: "no facts and no bytes verifies nothing, so claims nothing",
+			size: 0,
 		},
 		{
 			name: "no facts but bytes on disk is not whole",
