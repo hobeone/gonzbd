@@ -128,7 +128,7 @@ func TestNoteWriteFault_KeepsAnAlreadyClassifiedFault(t *testing.T) {
 
 	// A fault that arrived from elsewhere, naming a different op and path.
 	original := storagefault.Classify("sync", "/mnt/other/vol.rar", syscall.EIO)
-	a.noteWriteFault(f, WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 3}, original)
+	a.noteWriteFault(f.info.Path, WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 3}, original)
 
 	if got == nil {
 		t.Fatal("noteWriteFault did not surface the fault")
@@ -141,7 +141,7 @@ func TestNoteWriteFault_KeepsAnAlreadyClassifiedFault(t *testing.T) {
 
 	// An unclassified error is the case Classify is actually for.
 	got = nil
-	a.noteWriteFault(f, WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 3}, errors.New("bare"))
+	a.noteWriteFault(f.info.Path, WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 3}, errors.New("bare"))
 	if got == nil {
 		t.Fatal("a bare error was not classified and surfaced")
 	}

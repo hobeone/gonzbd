@@ -783,16 +783,24 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		var err error
 		f, err = a.openTargetFile(key, req, open, wc)
 		if err != nil {
-			// KNOWN GAP: this fault is dropped. The file is never inserted
-			// into open, so opFiles never lists it, Files() never includes it,
-			// and no barrier operation can return it — the fault has no path
-			// to Stallable at all. The article also keeps its Emitted bit, so
-			// it is never re-dispatched, and a persistent EACCES or EROFS on
-			// the download directory leaves the job stuck at N% with no reason
-			// attached. Options.OnWriteFault is the route this needs; the
-			// write path already uses it.
-			a.log.Error("open target file for article",
-				"job", req.JobID, "fileidx", req.FileIdx, "error", err)
+			// Routed through OnWriteFault, because nothing else can reach
+			// it: the file is never inserted into open, so opFiles never
+			// lists it, Files() never includes it, and no barrier operation
+			// can return it. Dropped, a persistent EACCES or EROFS on the
+			// download directory left the job at N% with no reason attached
+			// and the article Emitted forever — the outcome openTargetFile's
+			// own doc says returning a fault prevents.
+			//
+			// No path is passed, and none is needed: openTargetFile returns an
+			// ALREADY-classified fault carrying the path its own failing
+			// syscall targeted, and noteWriteFault keeps that rather than
+			// relabelling it. Re-resolving here would call the FileInfo
+			// resolver a second time on a path where the resolver is itself
+			// the thing that may have failed.
+			a.noteWriteFault("", req, err)
+			if req.Data != nil {
+				a.releaseBuffer(req.Data)
+			}
 			return
 		}
 	}
@@ -965,7 +973,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			// still written, because they are still the file's content.
 			w.seenDone[req.MessageID] = req.Offset
 			if err := a.acceptArticle(f, id, req); err != nil {
-				a.noteWriteFault(f, req, err)
+				a.noteWriteFault(f.info.Path, req, err)
 			}
 			return false
 		}
@@ -978,7 +986,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// Not counted toward completion. Counting it is what let a file reach
 		// TotalParts and finalize over bytes that never landed, reporting full
 		// health on a job whose volume was full.
-		a.noteWriteFault(f, req, err)
+		a.noteWriteFault(f.info.Path, req, err)
 		return false
 	}
 	return true
@@ -1017,13 +1025,13 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 // Classify is applied only when the writer did not already return a typed
 // fault, so a fault that arrived with its own op and path keeps them rather
 // than being relabelled "write" against this file.
-func (a *Assembler) noteWriteFault(f *openFile, req WriteRequest, err error) {
+func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 	fault, ok := errors.AsType[*storagefault.Fault](err)
 	if !ok {
-		fault = storagefault.Classify("write", f.info.Path, err)
+		fault = storagefault.Classify("write", path, err)
 	}
-	a.log.Error("write article",
-		"job", req.JobID, "path", f.info.Path, "offset", req.Offset, "error", err)
+	a.log.Error("article could not be written",
+		"job", req.JobID, "path", path, "offset", req.Offset, "error", err)
 	if a.opts.OnWriteFault != nil {
 		a.opts.OnWriteFault(req.JobID, req.FileIdx, req.ArtIdx, fault)
 	}
@@ -1199,10 +1207,28 @@ func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) 
 			}
 			continue
 		}
-		for _, art := range arts {
+		for i, art := range arts {
 			if err := f.w.writeOne(art); err != nil {
-				a.log.Error("pressure flush write",
-					"path", f.info.Path, "offset", art.offset, "error", err)
+				// Routed, and the flush stops. Logging each failure and
+				// carrying on wrote every remaining article into the same
+				// full device, and nothing ever reached Stallable: the job
+				// was not paused on ENOSPC, no reason was surfaced, and a
+				// permanent condition never reached Fail.
+				a.noteWriteFault(f.info.Path, WriteRequest{
+					JobID: key.jobID, FileIdx: key.fileIdx, ArtIdx: art.id.artIdx,
+					Offset: art.offset,
+				}, err)
+				// writeOne pooled the article it just handled. Everything
+				// after it was never attempted and still holds a pooled
+				// buffer, so release those or the decoder's pool leaks one
+				// per article — the same rule Drain's failure path follows.
+				for _, rest := range arts[i+1:] {
+					if rest.data != nil {
+						a.releaseBuffer(rest.data)
+					}
+					f.w.fail(rest.id)
+				}
+				return
 			}
 		}
 	}
