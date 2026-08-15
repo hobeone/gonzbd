@@ -290,3 +290,65 @@ func TestTakeJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
 		}
 	}
 }
+
+// TestFail_TheStoppingGuardCoversAPermanentFaultAtShutdown is the Fail half of
+// the guard above, which Stall had and Fail did not.
+//
+// The asymmetry mattered more than Stall's, because Fail does more: it sets a
+// warning and calls maybeFinalize, which closes the job's handles, saves the
+// queue and enqueues post-processing. Run during Shutdown, the CloseJobHandles
+// inside it enqueues a control message on a worker that is on its way out and
+// waits for the full closeHandlesTimeout before giving up, and the job is moved
+// toward history by a process that is in the middle of tearing down the
+// machinery that would carry it there.
+//
+// The reason the guard is right is the same one Stall's doc gives: a permanent
+// fault does not heal across a restart. EROFS is still EROFS on the next start,
+// where the barrier raises it again with everything alive to handle it — so the
+// condition is not lost by declining to act on it here, only deferred to a
+// moment when acting on it works.
+//
+// Reachable independently of any one caller, and newly reachable from worker
+// exit now that Assembler.drainAndClose routes its faults instead of logging
+// them.
+func TestFail_TheStoppingGuardCoversAPermanentFaultAtShutdown(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+
+	application.stopping.Store(true)
+
+	application.Fail(job.ID, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
+
+	snap, err := application.queue.Get(job.ID)
+	if err != nil {
+		t.Fatalf("the job left the queue during shutdown: %v — maybeFinalize ran while "+
+			"Shutdown was tearing down the machinery that completes it", err)
+	}
+	if snap.Warning != "" {
+		t.Errorf("warning = %q, want none — a permanent fault at shutdown recurs on the "+
+			"next start, where it is raised again with everything alive to handle it",
+			snap.Warning)
+	}
+}
+
+// TestFail_StillFailsWhenTheProcessIsNotStopping keeps the guard above honest:
+// without it, "never fail" satisfies the test.
+func TestFail_StillFailsWhenTheProcessIsNotStopping(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+
+	if application.stopping.Load() {
+		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
+	}
+
+	application.Fail(job.ID, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
+
+	snap, err := application.queue.Get(job.ID)
+	if err != nil {
+		// Fail's whole point is that the job leaves the queue for history, so
+		// this is the success shape for the running case too.
+		return
+	}
+	if snap.Warning == "" {
+		t.Error("a read-only filesystem left the job in the queue with no reason " +
+			"attached, which is the unactionable halt R20/R27 forbid")
+	}
+}

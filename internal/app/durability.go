@@ -239,6 +239,27 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 // job carries its reason into history rather than sitting in the queue in a
 // state nothing will move it out of.
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
+	// The same guard Stall carries, and for a sharper reason: this path does
+	// more than park the job. maybeFinalize below closes the job's handles,
+	// saves the queue and enqueues post-processing, and running that while
+	// Shutdown is tearing those collaborators down means the CloseJobHandles
+	// inside it waits out closeHandlesTimeout against a worker that is
+	// already leaving.
+	//
+	// Nothing is lost by declining. A permanent fault does not heal across a
+	// restart — EROFS is still EROFS on the next start — so the condition is
+	// raised again by the first barrier that touches the file, with the whole
+	// machinery alive to act on it.
+	//
+	// Stall had this guard and Fail did not, which was an asymmetry rather
+	// than a decision: the two are the R18/A1 pair and every caller picks
+	// between them on f.Permanent alone.
+	if app.stopping.Load() || (app.ctx != nil && app.ctx.Err() != nil) {
+		// Not silent (A2).
+		app.log.Error("permanent storage fault during shutdown; the job is not failed for it",
+			"job", jobID, "fault", f.Error())
+		return
+	}
 	reason := "Failed: " + f.Error()
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
 	// A permanent fault is not re-evaluated (R20): the job leaves the queue
