@@ -493,13 +493,17 @@ func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration)
 		// Each job gets its own deadline, and that is what makes B4/R22 true
 		// on this path rather than merely stated.
 		//
-		// SyncTarget.Drain, Sync and Truncate carry no timeout of their own:
-		// the contract has them "bounded by the caller's deadline", and the
-		// periodic caller had none — runCheckpoint is launched with the
-		// application's lifetime context, cancelled only at shutdown. So a
-		// worker parked in an fsync on a wedged mount blocked the barrier for
-		// as long as the mount stayed down, and with it the single loop that
-		// also owns stall re-evaluation and the queue save.
+		// The assembler's submit now applies barrierOpTimeout underneath
+		// whatever the caller supplies, so no single operation is unbounded
+		// either way. This deadline bounds the JOB — a barrier is a few dozen
+		// operations, and a mount that is merely slow rather than wedged can
+		// take longer than the whole cadence without any one of them expiring.
+		//
+		// The periodic caller used to have no deadline at all: runCheckpoint
+		// is launched with the application's lifetime context, cancelled only
+		// at shutdown. A worker parked in an fsync then blocked the barrier
+		// for as long as the mount stayed down, and with it the single loop
+		// that also owns stall re-evaluation and the queue save.
 		//
 		// PER JOB rather than per sweep, because a bound on the whole sweep
 		// would let one wedged job consume the budget of every job behind it —
@@ -1046,10 +1050,16 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		"shipping a file whose bytes are not known to be correct",
 		"job", jobID, "fileidx", fileIdx, "err", err)
 
-	if routed, ok := errors.AsType[*storagefault.Fault](err); ok {
+	// Asked of the MARKER, not of the error's shape. The test used to be "the
+	// chain contains a *storagefault.Fault", which read every fault as routed
+	// — including the one the SyncTarget boundary mints when the worker does
+	// not answer, which nothing has routed. That one was then swallowed, and
+	// the job carried on with a file that was never trimmed.
+	if errors.Is(err, durability.ErrFaultRouted) {
+		routed, _ := errors.AsType[*storagefault.Fault](err)
 		app.log.Debug("the fault was already routed by the barrier; not routing it again",
-			"job", jobID, "permanent", routed.Permanent)
-		if !routed.Permanent {
+			"job", jobID, "permanent", routed != nil && routed.Permanent)
+		if routed == nil || !routed.Permanent {
 			app.notePendingFinalize(jobID, fileIdx)
 		}
 		return
@@ -1066,7 +1076,28 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		app.notePendingFinalize(jobID, fileIdx)
 		return
 	}
-	f := storagefault.Classify("finalize", path, err)
+	// Not a storage condition, so the job is not parked for it: a deliberate
+	// close, a stopped assembler, or a caller that stopped waiting. Parking a
+	// job here named a disk that did not fail and offered an operator action
+	// that does not exist (A1). The finalize is still owed, so it is recorded
+	// for the retry that the next re-evaluation runs.
+	if errors.Is(err, durability.ErrTargetUnavailable) {
+		app.log.Info("completed file was not finalized, for a reason that is not a storage "+
+			"condition; the job is not parked and the finalize is retried",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+		app.notePendingFinalize(jobID, fileIdx)
+		return
+	}
+	// A fault the target classified keeps its own op and path. Relabelling it
+	// "finalize" against this file discarded which syscall actually failed,
+	// which is the whole of what makes the reason actionable (R27).
+	f, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok {
+		f = storagefault.Classify("finalize", path, err)
+	}
+	if f.Path == "" {
+		f.Path = path
+	}
 	app.Stall(jobID, f)
 	if !f.Permanent {
 		app.notePendingFinalize(jobID, fileIdx)

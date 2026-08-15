@@ -44,6 +44,48 @@ type WrittenArticle struct {
 // before it calls Drain.
 var ErrFileNotOpen = errors.New("durability: file is not open")
 
+// ErrTargetUnavailable reports an operation that never ran, for a reason that
+// is not about storage.
+//
+// It is the general form of the rule ErrFileNotOpen states for one case, and
+// it exists because storagefault.Classify defaults everything it does not
+// recognise to RETRYABLE. Any non-storage condition that reaches it therefore
+// comes back as a storage fault, and Stallable parks a healthy job naming a
+// disk that did not fail — with a reason no operator action can clear. The
+// conditions that actually arrived here were an ordinary shutdown's cancelled
+// context and a deliberate close; neither is evidence about a device.
+//
+// The rule the implementation owes the barrier is: return either a
+// *storagefault.Fault, or an error wrapping one of these sentinels. Never a
+// bare error whose meaning has to be guessed by errno matching. That is a
+// BOUNDARY rule rather than a per-call-site fix, because the same conflation
+// was found at six sites and patching them one at a time leaves the seventh.
+//
+// A timeout is the case the rule is easiest to get wrong on, and it splits.
+// The implementation's OWN bound expiring — the worker did not answer within
+// barrierOpTimeout — IS evidence about storage: the worker is parked in a
+// syscall against a mount that is not answering, which is precisely the
+// condition R19 asks to be surfaced. The CALLER's deadline expiring is not:
+// the caller chose to stop waiting, and on the shutdown path it always does.
+// So the implementation converts the first into a fault and wraps the second
+// in this sentinel.
+var ErrTargetUnavailable = errors.New("durability: sync target unavailable")
+
+// ErrFaultRouted marks a storage fault the barrier has ALREADY dispatched to
+// Stallable, so a caller does not park the job a second time for it.
+//
+// It exists because the inference it replaces stopped being sound. The
+// application layer used to read "the error chain contains a *storagefault.Fault"
+// as "the barrier routed it", which held only while routeFault was the one
+// thing that let a fault escape this package. It no longer is: the SyncTarget
+// boundary now mints a fault of its own when the worker does not answer, and
+// that one is NOT routed — so the old inference silently swallowed it, and the
+// job carried on with a file that was never trimmed.
+//
+// A marker rather than a wrapper type, so errors.As still finds the fault
+// underneath and callers can keep reading its Permanent flag.
+var ErrFaultRouted = errors.New("durability: storage fault already routed")
+
 // SyncTarget is the barrier's view of a job's open files. It is deliberately
 // narrow: the barrier never sees a file handle, a write cache, or a byte, so
 // it cannot write, cannot ack early, and cannot be tempted to derive

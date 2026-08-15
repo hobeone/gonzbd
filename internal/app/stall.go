@@ -157,6 +157,18 @@ func (app *Application) noteNeedsSeed(jobID string) {
 	rec.needsSeed = true
 }
 
+// hasPendingFinalize reports whether a job still owes a retry for one file.
+func (app *Application) hasPendingFinalize(jobID string, fileIdx int) bool {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	rec, ok := app.stalls[jobID]
+	if !ok {
+		return false
+	}
+	st, ok := rec.files[fileIdx]
+	return ok && st == finalizePending
+}
+
 // needsSeed reports whether a replay of the job's committed extents is owed.
 func (app *Application) needsSeed(jobID string) bool {
 	app.stallMu.Lock()

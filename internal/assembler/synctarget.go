@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // fileIdxSyncOp is the control-message FileIdx that carries a barrier request.
@@ -45,15 +46,43 @@ const (
 	opConfirm
 )
 
+// String names the operation for a storage fault's Op field, which is what an
+// operator reads in a stall reason. Kept beside the constants so a new kind
+// cannot be added without a name.
+func (k syncOpKind) String() string {
+	switch k {
+	case opFiles:
+		return "list"
+	case opDrain:
+		return "write"
+	case opSync:
+		return "sync"
+	case opStat:
+		return "stat"
+	case opTruncate:
+		return "truncate"
+	case opClose:
+		return "close"
+	case opJobs:
+		return "list"
+	case opConfirm:
+		return "confirm"
+	default:
+		return "unknown"
+	}
+}
+
 // barrierOpTimeout bounds every barrier operation this package submits to the
-// worker: Files, Stat, CloseFile, CloseJobHandles and OpenJobIDs.
+// worker, without exception: submit applies it, so no caller can opt out and a
+// new method cannot be added unbounded.
 //
 // It once bounded only Files and Stat, on the reasoning that they are "the two
 // whose interface signature carries no context". OpenJobIDs does take one and
 // was left unbounded anyway, and its caller — the periodic checkpoint loop —
 // passes the application's lifetime context, so there was no deadline to
 // inherit. Taking a context is not the same as being given a deadline, and
-// that is the distinction the old wording missed.
+// that is the distinction the old wording missed. Per-caller wrapping is what
+// let that happen, so the wrapping moved into submit.
 //
 // B4 and R22 require every storage syscall on the critical path to be
 // timeout-bounded, and the bound has to come from here because the interface
@@ -64,12 +93,14 @@ const (
 //
 // What this bounds is the WAIT, not the syscall. Go cannot interrupt a blocked
 // fstat, so the worker stays stuck either way — which is the intended
-// division: a wedged mount stalls the job, never the process. Drain, Sync and
-// Truncate need no constant because Barrier passes them a context and the
-// caller's deadline bounds their wait the same way — which is only true while
-// every caller actually supplies one. Application.checkpointAll gives each job
-// its own deadline for exactly this reason; it previously passed a context
-// cancelled only at shutdown.
+// division: a wedged mount stalls the job, never the process.
+//
+// It also decides what a timeout MEANS. Drain, Sync and Truncate used to rely
+// solely on "the caller's deadline bounds their wait", which made an expiry
+// ambiguous: a wedged mount and a shutdown budget produced the identical
+// context.DeadlineExceeded, and the barrier classified both as storage. With
+// this bound applied underneath the caller's, the two are separable — see
+// submit and waitEnded.
 //
 // Five seconds matches diskCheckTimeout, the other bound this package places
 // on a syscall against a possibly-dead mount.
@@ -144,7 +175,43 @@ type jobSyncTarget struct {
 
 var _ durability.SyncTarget = (*jobSyncTarget)(nil)
 
+// errWorkerUnresponsive is what a barrierOpTimeout expiry means: the worker
+// did not answer, which on the paths that reach here means it is parked in a
+// syscall against a mount that is not responding.
+//
+// A named error rather than context.DeadlineExceeded so the reason survives
+// into the stall text an operator reads, where "context deadline exceeded"
+// says nothing about what to fix.
+var errWorkerUnresponsive = errors.New("the assembler worker did not answer within " + barrierOpTimeout.String())
+
 // submit sends one operation to the worker and waits for its answer.
+//
+// # Every wait is bounded here, and every failure is named
+//
+// The timeout is applied in this one place rather than by each caller. Callers
+// that wrapped their own context and callers that did not were the same
+// function to the worker, and OpenJobIDs — reached from the single loop that
+// also owns stall re-evaluation and the queue save — was one of the ones that
+// did not. Owning it here means a new method cannot be added unbounded.
+//
+// The reply select carries a stopCh case for the same reason the send select
+// always did. Without it a caller whose context has no deadline waits forever
+// on a worker parked in an fsync, and the deferred wg.Done never runs, so
+// Stop's wg.Wait blocks behind it and the process cannot exit.
+//
+// # What the error MEANS is decided here, not by errno matching downstream
+//
+// durability.ErrTargetUnavailable states the boundary rule: return a
+// *storagefault.Fault or a wrapped sentinel, never a bare error. Handing the
+// barrier a raw ctx.Err() broke it — storagefault.Classify matches no errno for
+// a context error, defaults to retryable, and Stallable parked a healthy job
+// on a disk that did not fail. The commonest trigger was not exotic: an
+// ordinary shutdown, whose checkpoint budget expires on a queue with many open
+// files.
+//
+// So the two timeouts are distinguished rather than conflated. OUR bound
+// expiring is evidence about storage and becomes a fault; the CALLER's context
+// ending is evidence about the caller and becomes the sentinel.
 func (t *jobSyncTarget) submit(ctx context.Context, op syncOp) (syncReply, error) {
 	op.jobID = t.jobID
 	op.reply = make(chan syncReply, 1)
@@ -152,27 +219,58 @@ func (t *jobSyncTarget) submit(ctx context.Context, op syncOp) (syncReply, error
 	t.a.mu.Lock()
 	if !t.a.started || t.a.stopped {
 		t.a.mu.Unlock()
-		return syncReply{}, ErrAssemblerStopped
+		return syncReply{}, t.unavailable(ErrAssemblerStopped)
 	}
 	t.a.wg.Add(1)
 	t.a.mu.Unlock()
 	defer t.a.wg.Done()
 
+	opCtx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	defer cancel()
+
 	req := WriteRequest{JobID: "", FileIdx: fileIdxSyncOp, syncOp: &op}
 	select {
 	case t.a.reqs <- req:
 	case <-t.a.stopCh:
-		return syncReply{}, ErrAssemblerStopped
-	case <-ctx.Done():
-		return syncReply{}, ctx.Err()
+		return syncReply{}, t.unavailable(ErrAssemblerStopped)
+	case <-opCtx.Done():
+		return syncReply{}, t.waitEnded(ctx, op)
 	}
 
 	select {
 	case r := <-op.reply:
 		return r, r.err
-	case <-ctx.Done():
-		return syncReply{}, ctx.Err()
+	case <-t.a.stopCh:
+		return syncReply{}, t.unavailable(ErrAssemblerStopped)
+	case <-opCtx.Done():
+		return syncReply{}, t.waitEnded(ctx, op)
 	}
+}
+
+// unavailable wraps a condition that is not about storage, so the barrier's
+// boundary check recognises it. See durability.ErrTargetUnavailable.
+func (t *jobSyncTarget) unavailable(err error) error {
+	return fmt.Errorf("%w: %w", durability.ErrTargetUnavailable, err)
+}
+
+// waitEnded names why an operation's wait ended without an answer.
+//
+// The caller's context ending is the caller's decision — a shutdown budget, a
+// per-job checkpoint budget — and says nothing about the device. Our own bound
+// expiring with the caller's context still live is the wedged-mount case, and
+// that one has to reach Stallable or the job sits at 99% with nothing
+// surfaced, which A2 forbids.
+func (t *jobSyncTarget) waitEnded(caller context.Context, op syncOp) error {
+	if err := caller.Err(); err != nil {
+		return t.unavailable(err)
+	}
+	// No path. Resolving one means calling Options.FileInfo, and this is the
+	// path taken precisely when something is not answering — the resolver
+	// reaches the queue, which can hydrate a manifest from disk. Blocking the
+	// timeout handler on the condition it is reporting is how a bound stops
+	// being a bound. Barrier.raise fills the path in; it already has it, and
+	// it is not the thing that is stuck.
+	return storagefault.Classify(op.kind.String(), "", errWorkerUnresponsive)
 }
 
 // Files returns the job's currently open files. R8 bounds barrier cost by this
@@ -227,8 +325,6 @@ func (t *jobSyncTarget) Files() []int32 {
 // worker, and the worker can be blocked in someone else's fsync on a dead
 // mount.
 func (a *Assembler) OpenFiles(ctx context.Context, jobID string) ([]int32, error) {
-	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
-	defer cancel()
 	t := &jobSyncTarget{a: a, jobID: jobID}
 	r, err := t.submit(ctx, syncOp{kind: opFiles})
 	if err != nil {
@@ -266,9 +362,7 @@ func (t *jobSyncTarget) Sync(ctx context.Context, fileIdx int32) error {
 // Stat reads the file's size and mtime, bounded by barrierOpTimeout because
 // the interface hands it no context to bound it with. See that constant.
 func (t *jobSyncTarget) Stat(fileIdx int32) (size, modTimeNs int64, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), barrierOpTimeout)
-	defer cancel()
-	r, e := t.submit(ctx, syncOp{kind: opStat, fileIdx: fileIdx})
+	r, e := t.submit(context.Background(), syncOp{kind: opStat, fileIdx: fileIdx})
 	return r.size, r.modTimeNs, e
 }
 
@@ -320,8 +414,6 @@ func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
 // handle then leaks, which is the lesser of the two costs and the one the
 // worker's own shutdown drain still cleans up.
 func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) error {
-	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
-	defer cancel()
 	t := &jobSyncTarget{a: a, jobID: jobID}
 	_, err := t.submit(ctx, syncOp{kind: opClose, fileIdx: fileIdx})
 	return err
@@ -336,8 +428,6 @@ func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) 
 // re-reports it, which R12 requires the apply to absorb. There is nothing for a
 // caller to do about it that the retry does not already do.
 func (t *jobSyncTarget) Confirm(ctx context.Context, fileIdx int32) {
-	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
-	defer cancel()
 	if _, err := t.submit(ctx, syncOp{kind: opConfirm, fileIdx: fileIdx}); err != nil {
 		t.a.log.Debug("confirm the drain report", "job", t.jobID, "fileidx", fileIdx, "err", err)
 	}
@@ -357,9 +447,9 @@ func (a *Assembler) OpenJobIDs(ctx context.Context) ([]string, error) {
 	// single select that also owns the stall re-evaluation tick and the queue
 	// save; an unbounded wait for a worker parked in an fsync stops all three,
 	// for every job. That is the process-wide freeze "a wedged mount stalls the
-	// job, never the process" exists to rule out.
-	ctx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
-	defer cancel()
+	// job, never the process" exists to rule out. submit owns the bound now;
+	// this comment stays because the consequence of losing it is the widest
+	// here.
 	t := &jobSyncTarget{a: a}
 	r, err := t.submit(ctx, syncOp{kind: opJobs})
 	return r.jobs, err

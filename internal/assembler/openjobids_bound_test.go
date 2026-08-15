@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked pins the bound that keeps one
@@ -74,8 +77,25 @@ func TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked(t *testing.T) {
 		if got.err == nil {
 			t.Fatal("OpenJobIDs succeeded while the worker was blocked; it cannot have asked it anything")
 		}
-		if !errors.Is(got.err, context.DeadlineExceeded) {
-			t.Errorf("err = %v, want context.DeadlineExceeded from barrierOpTimeout", got.err)
+		// A bare context error is what this used to return, and it is what
+		// made the barrier park a healthy job: storagefault.Classify matches
+		// no errno for one and defaults to retryable, so an ordinary shutdown
+		// looked identical to a dying disk. OUR bound expiring IS a storage
+		// condition — the worker is parked in a syscall — so it is named as
+		// one here rather than left to be guessed downstream.
+		if errors.Is(got.err, durability.ErrTargetUnavailable) {
+			t.Errorf("err = %v, want a storage fault: our own bound expiring is evidence "+
+				"about the device, not about the caller", got.err)
+		}
+		f, ok := errors.AsType[*storagefault.Fault](got.err)
+		if !ok {
+			t.Fatalf("err = %v (%T), want a *storagefault.Fault", got.err, got.err)
+		}
+		if f.Permanent {
+			t.Errorf("fault = %v, want retryable: a mount that stops answering usually comes back", f)
+		}
+		if !errors.Is(got.err, errWorkerUnresponsive) {
+			t.Errorf("err = %v, want it to name the unresponsive worker", got.err)
 		}
 		if got.dur > 3*barrierOpTimeout {
 			t.Errorf("returned after %v, want roughly barrierOpTimeout (%v)", got.dur, barrierOpTimeout)

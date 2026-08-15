@@ -81,7 +81,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 			continue
 		}
 		if err != nil {
-			return b.routeFault(jobID, storagefault.Classify("write", t.Path(idx), err))
+			return b.raise(jobID, "write", t.Path(idx), err)
 		}
 		open = append(open, idx)
 		drained[idx] = w
@@ -92,6 +92,22 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	// Every file is synced before any file's extent is built, so a barrier
 	// that fails on the second file's sync has claimed nothing about the
 	// first either.
+	//
+	// A file dropped here leaves BOTH collections. Dropping it from drained
+	// alone left it in files, so phase 3 went on to Stat it, got the same
+	// ErrFileNotOpen back one phase later, and — because nothing there
+	// recognised the sentinel — classified it as a storage fault. A healthy
+	// job was parked, and the entire checkpoint was discarded including the
+	// files that had already drained and fsynced successfully.
+	//
+	// Phase 3 now recognises the sentinel itself, so THIS line is defence in
+	// depth rather than the fix, and no test reddens when it alone is removed
+	// — verified by mutation, not assumed. It stays because carrying a file
+	// the phase deliberately dropped is a latent inconsistency, and because
+	// falling through to phase 3 relies on the target answering Stat with the
+	// sentinel too, which is a property of one implementation rather than of
+	// the interface.
+	synced := files[:0:0]
 	for _, idx := range files {
 		if err := t.Sync(ctx, idx); err != nil {
 			if errors.Is(err, ErrFileNotOpen) {
@@ -104,12 +120,22 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 				delete(drained, idx)
 				continue
 			}
-			return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
+			return b.raise(jobID, "sync", t.Path(idx), err)
 		}
+		synced = append(synced, idx)
 	}
+	files = synced
 
 	// Phase 3 — build the Class B cache from what the fsync just made true.
+	//
+	// A file dropped by any phase leaves `files` there and then, and that is
+	// what makes the drop complete rather than partial. The slice is also what
+	// confirmAll releases reports over, so a file left in it after its report
+	// was discarded has that report CONFIRMED — released from the writer with
+	// nothing committed and nothing acked, destroying the re-report R12 relies
+	// on to make the next drain whole.
 	exts := make([]FileExtent, 0, len(files))
+	built := files[:0:0]
 	var acked []int32
 	for _, idx := range files {
 		facts, err := b.facts.ForFile(ctx, jobID, idx)
@@ -117,12 +143,25 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 			return fmt.Errorf("durability: barrier facts job=%s file=%d: %w", jobID, idx, err)
 		}
 		ext, arts, err := b.buildExtent(ctx, jobID, idx, drained[idx], facts, t)
+		if errors.Is(err, ErrFileNotOpen) {
+			// Closed between the fsync and the stat — the same race phases 1
+			// and 2 each handle, arriving at the third place a closed handle
+			// can be noticed. Its bytes are on disk and its report is held by
+			// the writer, so the file is dropped from this run rather than
+			// failing it.
+			b.log.Debug("file closed before its extent could be built; dropped from this run",
+				"job", jobID, "file", idx)
+			delete(drained, idx)
+			continue
+		}
 		if err != nil {
 			return err
 		}
 		exts = append(exts, ext)
 		acked = append(acked, arts...)
+		built = append(built, idx)
 	}
+	files = built
 
 	// Phase 4 — commit Class B atomically, then and only then ack. Nothing
 	// between these two statements may fail, and nothing may be inserted
@@ -205,7 +244,7 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	}
 	size, modNs, err := t.Stat(idx)
 	if err != nil {
-		return FileExtent{}, nil, b.routeFault(jobID, storagefault.Classify("stat", t.Path(idx), err))
+		return FileExtent{}, nil, b.raise(jobID, "stat", t.Path(idx), err)
 	}
 	ext, err := b.priorExtent(ctx, jobID, idx, artCount)
 	if err != nil {
@@ -277,32 +316,75 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 //
 // # A coupling any new fault site must honour
 //
-// Returning the fault is how the application layer knows it has been handled.
-// Application.routeFinalizeFailure treats a *storagefault.Fault anywhere in an
-// error chain as proof that this function already dispatched it, and so leaves
-// it alone — which is what stops a permanent fault from being relabelled a
-// stall on its way out.
+// The returned error carries ErrFaultRouted, which is how the application
+// layer knows this function already dispatched the fault and must not park the
+// job a second time for it.
 //
-// That inference is only sound while THIS function is the only thing that lets
-// a *Fault escape the barrier. It is not the only thing that mints one:
-// filewriter.go and assembler.go both build faults with storagefault.Classify,
-// and any of those reaching the application layer without having been routed
-// would be silently swallowed — the job halting with a Debug line and no reason
-// the operator can see.
+// It used to carry nothing, and the caller inferred the same thing from the
+// mere PRESENCE of a *storagefault.Fault in the chain. That inference held
+// only while this function was the one thing that let a fault escape the
+// barrier, and it is not: the SyncTarget boundary mints its own fault when the
+// worker does not answer, filewriter.go and assembler.go both build faults
+// with storagefault.Classify, and any of those reaching the application layer
+// was read as "already handled" and silently swallowed — the job carrying on
+// with a file that was never trimmed.
 //
-// So a new fault site inside this package must either route through here, or
-// not surface a *Fault to its caller at all. Wrapping one in a plain error is
-// enough to make it invisible to the check and is the wrong direction; convert
-// it, or route it.
+// So the marker states the fact rather than leaving it to be deduced. A new
+// fault site inside this package still routes through here; one that does not
+// is now visibly unrouted rather than indistinguishable from a routed one.
+// raise turns one SyncTarget error into the right kind of failure, and it is
+// the single boundary every fault site in this file goes through.
+//
+// Three outcomes, and the middle one is the one that kept being missed:
+//
+//   - The target already classified it. Route the fault it built, keeping its
+//     own op and path rather than relabelling them after the fact.
+//   - It is not about storage at all — a deliberate close, an ordinary
+//     shutdown's cancelled context, a stopped assembler. Return it unchanged
+//     and route NOTHING. storagefault.Classify defaults everything it does not
+//     recognise to retryable, so classifying one of these parks a healthy job
+//     naming a disk that did not fail, with a reason no operator action clears.
+//   - Anything else is a storage error the target reported raw. Classify and
+//     route it, which is what this function used to do unconditionally.
+//
+// The sentinel set lives in SyncTarget's contract (ErrFileNotOpen,
+// ErrTargetUnavailable) rather than here, because it is what an implementation
+// promises the barrier — see ErrTargetUnavailable for why the promise is a
+// boundary rule and not a list of call sites to patch.
+func (b *Barrier) raise(jobID, op, path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if f, ok := errors.AsType[*storagefault.Fault](err); ok {
+		// The target names the operation; only the path may be missing. A
+		// target that raises a fault from its own timeout cannot resolve the
+		// path itself — resolving it means calling back into the very
+		// component that just failed to answer — so the barrier, which
+		// already has it, fills it in. R27: a stall reason without a path is
+		// one the operator cannot act on.
+		if f.Path == "" {
+			f.Path = path
+		}
+		return b.routeFault(jobID, f)
+	}
+	if errors.Is(err, ErrFileNotOpen) || errors.Is(err, ErrTargetUnavailable) {
+		b.log.Info("barrier operation did not run, for a reason that is not a storage condition; "+
+			"the job is not parked for it",
+			"job", jobID, "op", op, "path", path, "err", err)
+		return fmt.Errorf("durability: barrier %s job=%s: %w", op, jobID, err)
+	}
+	return b.routeFault(jobID, storagefault.Classify(op, path, err))
+}
+
 func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 	if f.Permanent {
 		b.log.Error("durability barrier hit a permanent storage fault", "job", jobID, "fault", f)
 		b.stall.Fail(jobID, f)
-		return f
+		return fmt.Errorf("%w: %w", ErrFaultRouted, f)
 	}
 	b.log.Warn("durability barrier hit a retryable storage fault", "job", jobID, "fault", f)
 	b.stall.Stall(jobID, f)
-	return f
+	return fmt.Errorf("%w: %w", ErrFaultRouted, f)
 }
 
 // priorExtent loads the committed extent for one file, or returns a zero
@@ -444,10 +526,21 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		return nil
 	}
 	if err != nil {
-		return b.routeFault(jobID, storagefault.Classify("write", t.Path(idx), err))
+		return b.raise(jobID, "write", t.Path(idx), err)
 	}
 	if err := t.Sync(ctx, idx); err != nil {
-		return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
+		if errors.Is(err, ErrFileNotOpen) {
+			// Closed between this function's own Drain and its Sync. The
+			// Drain above already treats that close as "nothing left to do
+			// here"; a close one statement later means the same thing, and
+			// classifying it instead parked the job on a healthy disk, kept
+			// an fd for a file the assembler had closed, and left the retry
+			// re-running against a handle that cannot come back.
+			b.log.Debug("file closed between its finalize drain and sync",
+				"job", jobID, "file", idx)
+			return nil
+		}
+		return b.raise(jobID, "sync", t.Path(idx), err)
 	}
 	// One read of the file's facts for all three walks below. They ask three
 	// different questions of the same rows — the CRC anchor, the durable
@@ -457,6 +550,10 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		return fmt.Errorf("durability: finalize facts job=%s file=%d: %w", jobID, idx, err)
 	}
 	ext, acked, err := b.buildExtent(ctx, jobID, idx, written, facts, t)
+	if errors.Is(err, ErrFileNotOpen) {
+		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -519,18 +616,23 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	}
 	if bound > 0 {
 		if err := t.Truncate(ctx, idx, bound); err != nil {
-			return b.routeFault(jobID, storagefault.Classify("truncate", t.Path(idx), err))
+			if errors.Is(err, ErrFileNotOpen) {
+				b.log.Debug("file closed before its finalize could truncate",
+					"job", jobID, "file", idx)
+				return nil
+			}
+			return b.raise(jobID, "truncate", t.Path(idx), err)
 		}
 		// The truncate changed the file, so the size/mtime stamp taken inside
 		// buildExtent describes a file that no longer exists. Re-stat and
 		// re-sync: a stamp that does not match the file on disk fails S7's
 		// validity check on the next resume and throws away a valid cache.
 		if err := t.Sync(ctx, idx); err != nil {
-			return b.routeFault(jobID, storagefault.Classify("sync", t.Path(idx), err))
+			return b.raise(jobID, "sync", t.Path(idx), err)
 		}
 		size, modNs, err := t.Stat(idx)
 		if err != nil {
-			return b.routeFault(jobID, storagefault.Classify("stat", t.Path(idx), err))
+			return b.raise(jobID, "stat", t.Path(idx), err)
 		}
 		ext.Size, ext.ModTimeNs = size, modNs
 		// buildExtent judged this against pre-allocation's size, where a

@@ -282,11 +282,13 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 // context to pass and supplied context.Background().
 //
 // Wiring the real one through was the other repair and it is the wrong one.
-// The barrier treats EVERY error this returns as a storage condition — it
-// wraps the result in storagefault.Classify and routes it to Stallable — so a
-// cancelled context would park a healthy job on a device fault that does not
-// exist. That is the A1 conflation the rest of this package works to avoid,
-// arriving through a guard that looks like caution.
+// The barrier treats an error this returns as a storage condition unless it
+// names itself otherwise — a *storagefault.Fault, ErrFileNotOpen or
+// ErrTargetUnavailable — and anything else is classified and routed to
+// Stallable. A cancelled context is none of those, so it would park a healthy
+// job on a device fault that does not exist. That is the A1 conflation the rest
+// of this package works to avoid, arriving through a guard that looks like
+// caution. See durability.ErrTargetUnavailable for the boundary rule.
 //
 // Nothing is left unbounded by removing it. The operation is bounded at the
 // submit side by barrierOpTimeout, which is where a caller that has given up

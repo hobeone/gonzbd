@@ -311,14 +311,19 @@ touched, or the job's reported health degraded (R21). Attributing a full disk to
 the article would burn its retry budget over something a user often fixes in ten
 seconds.
 
-`routeFault` also **returns** the fault as its error, and
-`Application.routeFinalizeFailure` treats a `*storagefault.Fault` anywhere in an
-error chain as proof that it was already dispatched. That inference is sound only
-while `routeFault` is the only thing that lets a `*Fault` escape the barrier.
-`filewriter.go` and `assembler.go` both *mint* faults via `Classify`; a new fault
-site inside `internal/durability` must either route through `routeFault` or not
-surface a `*Fault` to its caller at all. Wrapping one in a plain error hides it
-from the check and is the wrong direction.
+`routeFault` also **returns** the fault as its error, marked with
+`durability.ErrFaultRouted`, and `Application.routeFinalizeFailure` reads that
+marker as proof it was already dispatched.
+
+The marker replaced an inference from the error's *shape* — "the chain contains
+a `*storagefault.Fault`" — which held only while `routeFault` was the one thing
+that let a fault escape the barrier. It is not: the `SyncTarget` boundary mints
+its own fault when the worker does not answer, and `filewriter.go` and
+`assembler.go` both mint faults via `Classify`. One of those read as
+"already handled" was silently swallowed, and the job carried on with a
+completed file that was never trimmed. A new fault site inside
+`internal/durability` still routes through `routeFault`; one that does not is
+now visibly unrouted rather than indistinguishable from a routed one.
 
 The one thing that must **not** go through `Stallable` is a bookkeeping defect —
 an article with no file-local ordinal, a target reporting zero articles. Those
@@ -414,11 +419,38 @@ job's slow mount must not park every other job's checkpoint. `FinalizeFile` take
 it too — it is a barrier by another name, same `buildExtent`, same
 `ExtentStore.Commit`.
 
-### 9a. A file that leaves the open set is dropped, not surfaced
+### 9a. Only storage conditions reach `Stallable` — the `SyncTarget` boundary rule
 
-A `SyncTarget` operation answering `durability.ErrFileNotOpen` means the file
-was closed between the barrier listing it and calling on it. The barrier drops
-that file from the run and reports nothing.
+`storagefault.Classify` defaults everything it does not recognise to
+*retryable*, so any non-storage error reaching it comes back as a storage fault
+and parks a healthy job naming a disk that did not fail. The rule that prevents
+it is a **boundary** rule, not a list of call sites: a `SyncTarget`
+implementation returns either a `*storagefault.Fault`, or an error wrapping one
+of two sentinels.
+
+| Sentinel | Meaning | Barrier's response |
+|---|---|---|
+| `durability.ErrFileNotOpen` | the file was closed between the barrier listing it and calling on it | drop that file from the run, surface nothing |
+| `durability.ErrTargetUnavailable` | the operation never ran, for a reason that is not about storage — a stopped assembler, a caller that stopped waiting | abandon the run, surface nothing |
+
+`Barrier.raise` is the single place that applies it, and every fault site in
+`barrier.go` goes through it. Six sites were getting this wrong independently,
+which is why the rule sits on the interface rather than at each of them.
+
+**A timeout splits, and getting the split wrong is what parked healthy jobs.**
+The implementation's *own* bound expiring — the worker did not answer within
+`barrierOpTimeout` — *is* evidence about storage: the worker is parked in a
+syscall against a mount that is not answering, and R19 requires that to be
+surfaced. The *caller's* deadline expiring is not: the caller chose to stop
+waiting, and the clean-shutdown checkpoint always does. `jobSyncTarget.submit`
+converts the first into a fault and wraps the second in
+`ErrTargetUnavailable`.
+
+Dropping a file drops it from **every** collection the run holds, not only from
+its drain reports. `Barrier.Run` releases each surviving file's report with
+`Confirm` at the end, so a file left in the set after its report was discarded
+has that report released — with nothing committed and nothing acked, destroying
+the re-report R12 relies on.
 
 It is never a fault. Files leave the open set for three deliberate reasons — a
 completed finalize closing its handle, a cancelled job, a job entering
@@ -434,18 +466,17 @@ conflation running in reverse.
 
 ### 10. Every barrier syscall on the critical path is timeout-bounded
 
-B4/R22. `Drain`, `Sync` and `Truncate` take a context and are bounded by the
-caller's deadline — which obliges every caller to supply one.
-`Application.checkpointAll` gives each job its own, sized to the checkpoint
-cadence on the periodic path and to `shutdownCheckpointTimeout` on the shutdown
-path. A caller that passes only the application's lifetime context supplies no
-deadline at all, and the periodic loop did exactly that.
+B4/R22. **Every** operation submitted to the worker carries `barrierOpTimeout`
+(5s, matching `diskCheckTimeout`) on the *wait* for the worker's reply, applied
+by `jobSyncTarget.submit` itself. It is imposed by `internal/assembler` rather
+than by the caller, because a wedged worker cannot answer whatever deadline it
+was given — and it sits in `submit` rather than in each method because
+per-caller wrapping is how `OpenJobIDs` came to have none at all.
 
-Every operation submitted to the worker — `Files`, `Stat`, `CloseFile`,
-`CloseJobHandles` and `OpenJobIDs` — additionally carries `barrierOpTimeout`
-(5s, matching `diskCheckTimeout`) on the *wait* for the worker's reply. That
-one is imposed by `internal/assembler` rather than by the caller, because a
-wedged worker cannot answer whatever deadline it was given.
+`Drain`, `Sync` and `Truncate` also take the caller's context, which bounds
+them further where it is shorter. `Application.checkpointAll` gives each job its
+own, sized to the checkpoint cadence on the periodic path and to a share of
+`shutdownCheckpointTimeout` on the shutdown path.
 
 The bound is **per job**, not per sweep. A sweep-wide budget would let one
 wedged mount consume the time of every job behind it, turning a single bad
@@ -458,9 +489,15 @@ What that bounds is the wait, not the syscall: Go cannot interrupt a blocked
 `SyncTarget.Path` deliberately does **not** go through the worker. It is called
 from the fault-routing path, and a wedged worker is precisely the condition that
 gets it called, so asking the worker would be asking the thing that is stuck.
-It reads `Options.FileInfo`, a pure lookup with no I/O, and returns `""` rather
-than an error when it cannot resolve. Nothing may branch on its value; it is
-diagnostic only.
+It reads `Options.FileInfo` and returns `""` rather than an error when it cannot
+resolve. Nothing may branch on its value; it is diagnostic only.
+
+The timeout handler does not call it either, for the same reason one step
+further out: `Options.FileInfo` reaches the queue, which can hydrate a manifest
+from disk, so resolving a path there would block the bound on the condition it
+is reporting. A fault minted by `submit` therefore carries an empty path, and
+`Barrier.raise` fills it in — the barrier already has it, and it is not the
+thing that is stuck.
 
 ## The checkpoint cadence
 

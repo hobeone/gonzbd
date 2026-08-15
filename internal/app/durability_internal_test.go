@@ -1209,9 +1209,19 @@ func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T
 	// only thing that can observe it is the test binary's own timeout. An
 	// assertion on it could run only in a world where the test had already
 	// died, which is what the version before that one was.
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want it to wrap the bound's own deadline — the finalize "+
-			"never reached the assembler, so it would refuse healthy completions too", err)
+	//
+	// The bound now reports itself as a storage fault rather than as a bare
+	// context error, and that IS the assertion: our own timeout expiring means
+	// the worker is parked in a syscall, and a bare context error was
+	// indistinguishable from an ordinary shutdown — which is what let a
+	// healthy job be parked on a disk that did not fail.
+	f, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok {
+		t.Fatalf("err = %v (%T), want the bound's own storage fault — the finalize "+
+			"never reached the assembler, so it would refuse healthy completions too", err, err)
+	}
+	if f.Permanent {
+		t.Errorf("fault = %v, want retryable", f)
 	}
 }
 
@@ -1343,8 +1353,12 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 			t.Fatalf("Fail set warning %q; the fixture is not in the state this test is about", before.Warning)
 		}
 
-		// ...and then returns the fault as its error, wrapped on the way out.
-		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0, fault)
+		// ...and then returns the fault as its error, MARKED as routed and
+		// wrapped on the way out. The marker is what the caller reads: a bare
+		// fault means unrouted, and one of those now genuinely reaches here
+		// from the SyncTarget boundary.
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0,
+			fmt.Errorf("%w: %w", durability.ErrFaultRouted, fault))
 		application.routeFinalizeFailure(job.ID, 0, path, err)
 
 		after := application.queue.SnapshotJob(job.ID)
@@ -1395,7 +1409,8 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 				"name to tell a re-route from an untouched reason, so it needs one", before.Warning)
 		}
 
-		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0, fault)
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0,
+			fmt.Errorf("%w: %w", durability.ErrFaultRouted, fault))
 		application.routeFinalizeFailure(job.ID, 0, path, err)
 
 		after := application.queue.SnapshotJob(job.ID)
@@ -1438,6 +1453,66 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		if !strings.Contains(snap.Warning, path) {
 			t.Errorf("warning = %q does not name the file; the job halts with no reason "+
 				"the user can act on (R27)", snap.Warning)
+		}
+	})
+
+	// The input class the old "is it a *Fault" test could not distinguish from
+	// an already-routed one, and the reason the marker exists.
+	//
+	// The SyncTarget boundary mints a genuine *storagefault.Fault when the
+	// worker does not answer, and nothing routes it — OpenFiles is not the
+	// barrier. Under the shape test that fault read as "already handled": the
+	// job was left running, its completed file was never trimmed, and it
+	// shipped pre-allocation's trailing zeros to par2 as damage.
+	t.Run("an unrouted fault from the target boundary", func(t *testing.T) {
+		application, job := newDurabilityTestApp(t, 1, 1)
+
+		fault := storagefault.Classify("list", "", errors.New("the assembler worker did not answer"))
+		err := fmt.Errorf("%w: job %s file %d: cannot tell whether it is still open: %w",
+			ErrNotFinalized, job.ID, 0, fault)
+		application.routeFinalizeFailure(job.ID, 0, path, err)
+
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("job left the queue")
+		}
+		if snap.Status != constants.StatusPaused {
+			t.Errorf("status = %v, want Paused — a fault nothing had routed was read as "+
+				"already handled, so the job carried on with a file that was never trimmed",
+				snap.Status)
+		}
+		// The fault carried no path of its own, because resolving one means
+		// calling back into the component that just failed to answer. The
+		// caller has it and fills it in; without that the operator is told a
+		// download halted and not which file.
+		if !strings.Contains(snap.Warning, path) {
+			t.Errorf("warning = %q does not name the file (R27)", snap.Warning)
+		}
+	})
+
+	// The other half of the boundary rule: a condition that is NOT about
+	// storage must not park the job at all. A deliberate close, a stopped
+	// assembler, a caller that stopped waiting — parking on one of these named
+	// a disk that did not fail and offered an action that does not exist.
+	t.Run("not a storage condition", func(t *testing.T) {
+		application, job := newDurabilityTestApp(t, 1, 1)
+
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0,
+			fmt.Errorf("%w: %w", durability.ErrTargetUnavailable, context.Canceled))
+		application.routeFinalizeFailure(job.ID, 0, path, err)
+
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("job left the queue")
+		}
+		if snap.Status == constants.StatusPaused {
+			t.Errorf("the job was parked for a condition that is not about storage: warning=%q",
+				snap.Warning)
+		}
+		// Still owed, so the next re-evaluation retries it rather than the
+		// file being silently left untrimmed.
+		if !application.hasPendingFinalize(job.ID, 0) {
+			t.Error("the finalize was neither performed nor recorded for retry")
 		}
 	})
 }
