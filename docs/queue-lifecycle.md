@@ -159,7 +159,9 @@ result through `Queue.ReplaceFromResume`, which **clears** a bit the
 recomputation could not prove as well as setting the ones it could. That column
 is a belief a previous process wrote; the recomputation is correct by definition
 (#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —
-it covers only resident jobs in `PhaseActive`, and only at startup.
+it covers Downloading, Fetching and Paused jobs, and only at startup. A swept
+job that is not resident is hydrated for the duration of the correction and
+evicted again, so this costs no residency.
 
 ## Memory budget
 

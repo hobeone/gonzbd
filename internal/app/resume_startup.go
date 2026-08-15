@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -78,13 +79,15 @@ type fileResumer interface {
 // An ADOPTED result still writes nothing, because it came from the stored row
 // in the first place.
 //
-// A non-resident job is skipped rather than hydrated: ReplaceFromResume
-// installs bits into the LIVE job's JobProgress, which requires a resident
-// manifest, and hydrating the whole queue at startup would blow the residency
-// budget docs/queue-lifecycle.md exists to bound. See the note on residency in
-// resumeJobFiles for what that leaves uncovered.
+// A non-resident job in a SWEPT phase is hydrated for the duration and evicted
+// again, so the residency budget docs/queue-lifecycle.md exists to bound is
+// unchanged from outside. It matters because a Paused job is the case that
+// needs this most and is never resident: Application.Stall leaves the job
+// Paused, and the sweep skipping it is what let #362 survive in that branch.
+// Startup is the moment the hydration is cheapest and safest — nothing else
+// holds a manifest and no article is being dispatched.
 //
-// # Only PhaseActive, because only there is the assembler the sole writer
+// # Active and Paused, because only there is the assembler the sole writer
 //
 // Residency is NOT the right bound now that the seed is authoritative.
 // JobPhase.IsResident is true for PhaseProcessing as well — Verifying,
@@ -134,13 +137,21 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("app: resume sweep aborted: %w", err)
 		}
-		if phase := snap.Phase(); phase != queue.PhaseActive {
+		if !sweptStatus(snap.Status) {
 			// Not a residency check — see the phase note above. A job past
 			// downloading has files the assembler no longer owns, and there
 			// is no re-fetch to prevent for it either way.
 			app.log.Debug("resume sweep skipped a job that is not downloading",
-				"job", snap.ID, "status", snap.Status, "phase", phase)
+				"job", snap.ID, "status", snap.Status, "phase", snap.Phase())
 			continue
+		}
+		// A Paused job is not resident, so its clone carries no manifest.
+		// SnapshotJob hydrates one onto a clone, which is read-only and does
+		// not change the live job's residency; the write-back below goes
+		// through Queue.ReplaceFromResume, which hydrates the live job itself
+		// for the duration.
+		if hydrated := app.queue.SnapshotJob(snap.ID); hydrated != nil {
+			snap = hydrated
 		}
 		m, err := snap.Manifest()
 		if err != nil {
@@ -329,4 +340,34 @@ func (p *pipeline) jobFilePath(jobName, filename string) string {
 	p.mu.RUnlock()
 	// --- No lock held below this line ---
 	return fsutil.JoinSafe(jobDir, "", filename, sanitize)
+}
+
+// sweptStatus reports whether the startup resume sweep may re-derive a job's
+// progress from its bytes.
+//
+// Downloading and Fetching are PhaseActive: the assembler is the only writer,
+// so the file on disk is exactly what Class A described and a recomputation is
+// authoritative over it.
+//
+// PAUSED is here for the same reason and was missing. A paused job is
+// mid-download — nothing else owns its files, and the assembler wrote every
+// byte in them — but it is not PhaseActive, so the sweep skipped it and #362
+// survived in that branch: its disproven Done bits were never corrected, the
+// next checkpoint re-committed them from the stored bitmap priorExtent ORs
+// into, and the file finalized over a hole. It is also the branch
+// Application.Stall leaves jobs in, which is what made stallLost's own
+// "restart gonzbd to resume this job from its committed extents" instruction
+// unable to work.
+//
+// Everything else is excluded, and the phase note on resumeAllJobs says why at
+// length: in PhaseProcessing something other than the assembler owns the files
+// — par2 repairs one IN PLACE, unpack reads it, the move relocates it — so a
+// recomputation over those bytes proves nothing and would clear real progress.
+func sweptStatus(s constants.Status) bool {
+	switch s {
+	case constants.StatusDownloading, constants.StatusFetching, constants.StatusPaused:
+		return true
+	default:
+		return false
+	}
 }

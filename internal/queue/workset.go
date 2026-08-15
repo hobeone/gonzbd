@@ -271,10 +271,35 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 		return nil
 	}
 	q.mu.Lock()
+	// A PAUSED job is not resident, and it is exactly the job that needs this.
+	//
+	// The startup sweep used to skip it, so #362 survived in that branch: its
+	// disproven Done bits were never corrected, the next checkpoint re-committed
+	// them from the stored bitmap priorExtent ORs into, and the file finalized
+	// over a hole. It also defeated stallLost's own "restart gonzbd to resume
+	// this job" instruction, since Stall leaves the job Paused.
+	//
+	// Hydrated here for the duration and evicted again before returning, so
+	// the job's residency is unchanged from outside. Startup is the moment
+	// this is cheapest and safest: nothing else holds a manifest and no
+	// article is being dispatched.
 	job, err := q.residentJob(jobID)
+	var evictAfter *Job
 	if err != nil {
-		q.mu.Unlock()
-		return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, err)
+		j, ok := q.byID[jobID]
+		if !ok {
+			q.mu.Unlock()
+			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, err)
+		}
+		if hErr := q.hydrateJobLocked(j, jobID); hErr != nil { //lockio: reads the manifest for a non-resident job; startup only, see the comment above
+			q.mu.Unlock()
+			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, hErr)
+		}
+		if j.manifest == nil {
+			q.mu.Unlock()
+			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, err)
+		}
+		job, evictAfter = j, j
 	}
 	m := job.manifest
 	var cleared int
@@ -329,6 +354,12 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 	var persistErr error
 	if cleared > 0 && q.store != nil {
 		persistErr = q.store.Update(context.Background(), job) //lockio: persists the cleared articles_done before any re-hydration can re-read the stale row
+	}
+	// Put the job back the way it was found. Done AFTER the persist, so the
+	// corrected row is written from the hydrated job rather than from one this
+	// call has already torn down.
+	if evictAfter != nil {
+		q.evictJobLocked(evictAfter)
 	}
 	q.mu.Unlock()
 	// --- No lock held below this line ---

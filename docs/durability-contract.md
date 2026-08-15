@@ -765,16 +765,29 @@ finished coming up at boot.
 
 ### Which jobs the sweep covers
 
-Two bounds, and both are **accepted limitations rather than design**; see that
-section below.
+The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
+**Downloading, Fetching and Paused**.
 
-- **`PhaseActive` only.** Not residency — `JobPhase.IsResident` is also true for
+- Not phase, because `PhaseActive` excludes **Paused**, and a paused job is the
+  case that needs the sweep most: it is mid-download, nothing but the assembler
+  has ever written its files, and `Application.Stall` is what puts jobs there.
+  Skipping it let #362 survive in that branch — the disproven Done bits were
+  never corrected, `priorExtent` ORs the stored bitmap as its base, so the next
+  checkpoint re-committed them with a fresh matching stamp and the file
+  finalized over a hole. It also made `stallLost`'s own "restart gonzbd to
+  resume this job from its committed extents" unable to work.
+- Not residency either — `JobPhase.IsResident` is also true for
   `PhaseProcessing`, and in those phases something other than the assembler owns
   the job's files: par2 repairs a file **in place**, unpack reads it, the move
   relocates it out of the download directory entirely. The property the sweep
   needs is *the assembler is the only writer of these files*.
-- **Resident jobs only.** `ReplaceFromResume` installs bits into the live job's
-  `JobProgress`, which requires a resident manifest.
+
+A swept job that is **not resident** — every paused one — is hydrated for the
+duration and evicted again, so residency is unchanged from outside.
+`Application.resumeAllJobs` takes a hydrated clone through `SnapshotJob` to read
+the manifest, and `Queue.ReplaceFromResume` hydrates the live job itself to
+apply the correction. Startup is when this is cheapest and safest: nothing else
+holds a manifest and no article is being dispatched.
 
 ## Pre-allocation
 
@@ -1052,25 +1065,23 @@ These are known, deliberate, and **not** claims about correctness. They are
 recorded here so the next reader does not mistake them for design.
 
 1. **The startup sweep skips non-resident jobs.** `ReplaceFromResume` needs a
-   resident manifest, and hydrating the whole queue at startup would blow the
-   residency budget `docs/queue-lifecycle.md` exists to bound. Note that the
-   durability subsystem's own fault response can manufacture that state:
-   `Application.Stall` → `Queue.Pause` → eviction. A job stalled at startup is
-   therefore not re-swept by a later run of the sweep — there is no later run,
-   since the sweep is startup-only.
+   resident manifest. **Resolved:** a swept job is hydrated for the duration of
+   the correction and evicted again, so the durability subsystem's own fault
+   response manufacturing that state — `Application.Stall` → `Queue.Pause` →
+   eviction — no longer takes the job out of the sweep's reach. What remains
+   true is that the sweep is startup-only: a job stalled after startup is not
+   re-swept until the next one.
 
-2. **The sweep is bounded to `PhaseActive`, and `PhaseActive` is not
-   download-only.** It comprises `StatusDownloading` **and** `StatusFetching`,
-   and `constants.StatusFetching` means "downloading extra par2 files for
-   repair" — a repair-time status. The guard is sound today only because
-   **nothing assigns `StatusFetching`**: it exists in the transition table, the
-   phase mapping and the API's vocabulary, and no code path sets it. That is a
-   fact about the writers, not an invariant the type enforces. The first code
-   that starts setting it puts a repair-time job inside the window this guard
-   trusts, and must either move it out of `PhaseActive` or bound the sweep on
-   status rather than phase. The other way in is any non-assembler writer
-   arriving inside `PhaseActive` — a DirectUnpack that wrote back into its
-   source rather than reading it, or a repair moved earlier than
+2. **`StatusFetching` is swept and is not download-only.**
+   `constants.StatusFetching` means "downloading extra par2 files for repair" —
+   a repair-time status. The bound is sound today only because **nothing
+   assigns it**: it exists in the transition table, the phase mapping and the
+   API's vocabulary, and no code path sets it. That is a fact about the writers,
+   not an invariant the type enforces. The first code that starts setting it
+   puts a repair-time job inside the window `sweptStatus` trusts, and must
+   remove it from that list. The other way in is any non-assembler writer
+   arriving while a job is Downloading or Paused — a DirectUnpack that wrote
+   back into its source rather than reading it, or a repair moved earlier than
    download-complete.
 
 3. **The SPLIT case in stall recovery.** `reevaluateStall` phase 3

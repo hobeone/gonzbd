@@ -123,6 +123,23 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	return f
 }
 
+// saveQueue persists the fixture's queue to the store the way a running
+// process does.
+//
+// It exists because a non-resident job's progress is re-read from the store on
+// hydration, so a filename that only ever lived in memory is gone by the time
+// the sweep looks — and the sweep then skips the file for having no resolved
+// name, which makes a paused-job assertion pass for a reason that has nothing
+// to do with the phase bound. A real process has already run both the periodic
+// save and the shutdown save.
+func (f *resumeUnitFixture) saveQueue(t *testing.T) {
+	t.Helper()
+	adminDir := f.app.config.GetGeneral().AdminDir
+	if err := f.app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+}
+
 // nameSecondFile gives file 1 a resolved on-disk name and a file to match, so
 // the sweep has two files to walk rather than one. Without it the per-file
 // context check has nothing to stop at.
@@ -599,6 +616,21 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 		wantSwept:  true,
 		wantReason: "the sweep must still be authoritative over a job it is downloading",
 	}, {
+		// A paused job is mid-download: nothing but the assembler has ever
+		// written its files. Skipping it let #362 survive in that branch —
+		// the disproven Done bits were never corrected, and priorExtent ORs
+		// the stored bitmap, so the next checkpoint re-committed them with a
+		// fresh matching stamp and the file finalized over a hole. It is also
+		// the branch Application.Stall leaves jobs in, which is what made
+		// stallLost's "restart gonzbd to resume this job" unable to work.
+		//
+		// It is NOT resident, so this case also covers the hydration
+		// ReplaceFromResume does for the duration of the correction.
+		name:       "paused is swept",
+		walk:       []constants.Status{constants.StatusPaused},
+		wantSwept:  true,
+		wantReason: "a paused job is mid-download and the assembler wrote every byte in its files",
+	}, {
 		name:       "verifying is skipped",
 		walk:       []constants.Status{constants.StatusVerifying},
 		wantSwept:  false,
@@ -614,6 +646,14 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newResumeUnitFixture(t)
 			f.repairedInPlace(t)
+			// Persisted before the status walk. A non-resident job's progress
+			// is re-read from the store on hydration, so a filename that only
+			// ever lived in memory is gone by the time the sweep looks — and
+			// then the sweep skips the file for having no resolved name,
+			// which would make the paused case pass for a reason that has
+			// nothing to do with the phase bound. In a real process the
+			// periodic save and the shutdown save have both already run.
+			f.saveQueue(t)
 			want := constants.StatusDownloading
 			for _, st := range tt.walk {
 				if err := f.app.queue.SetStatus(f.job.ID, st); err != nil {
@@ -643,5 +683,37 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 				t.Errorf("assembled CRC = %#x, want 0xC0FFEE — %s", got, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestSweptStatus enumerates the bound directly, so a status added to
+// constants without a decision here shows up as a failing case rather than as
+// silent coverage or silent exclusion.
+//
+// The two directions cost different things. Sweeping a status the assembler no
+// longer owns clears real progress — par2 repairs a file in place, and a
+// recomputation over the repaired bytes proves nothing. NOT sweeping one it
+// does own leaves a disproven Done bit to be re-committed by the next
+// checkpoint, and the file finalizes over a hole (#362).
+func TestSweptStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status constants.Status
+		want   bool
+		why    string
+	}{
+		{constants.StatusDownloading, true, "the assembler is the only writer"},
+		{constants.StatusFetching, true, "PhaseActive, and nothing assigns it — see the note on resumeAllJobs"},
+		{constants.StatusPaused, true, "mid-download, and where Application.Stall leaves a job"},
+		{constants.StatusQueued, false, "nothing has been written for it yet"},
+		{constants.StatusVerifying, false, "par2 repairs the file in place"},
+		{constants.StatusRepairing, false, "par2 repairs the file in place"},
+		{constants.StatusExtracting, false, "unpack reads it and writes elsewhere"},
+		{constants.StatusMoving, false, "the file is being relocated out of the download directory"},
+		{constants.StatusCompleted, false, "the job has left the download stage entirely"},
+		{constants.StatusFailed, false, "the job has left the download stage entirely"},
+	} {
+		if got := sweptStatus(tc.status); got != tc.want {
+			t.Errorf("sweptStatus(%v) = %v, want %v — %s", tc.status, got, tc.want, tc.why)
+		}
 	}
 }
