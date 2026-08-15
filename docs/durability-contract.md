@@ -687,6 +687,18 @@ A **recomputed** result is committed back over the Class B record it disproved,
 from inside `Resumer.Resume`. An **adopted** result is not: it came from the
 stored row, so rewriting it would restate its own contents.
 
+A **missing file** is committed back too, as the empty result it produces.
+Absence is the strongest disproof a resume can hold — not one article's bytes
+are on disk — and the resurrection chain below does not care how the row was
+disproved. Left standing, the row survives the file: the assembler recreates
+it, `priorExtent` ORs the stale bitmap as its base, `buildExtent` stamps a
+fresh `Size`/`ModTimeNs`, and the next start's fast path adopts articles this
+process never wrote. The row is cleared only when one exists; a file that never
+had a record does not get a zeroed one minted for it, because "a resume
+examined this file and disproved every bit" is a claim about evidence that was
+never gathered. The stamp written is `(0, 0)`, which cannot match any real
+file, so the next resume that finds one recomputes (S4).
+
 This makes the `Resumer` a second writer of Class B, and the design originally
 forbade it: *"a committed extent claims a completed fsync stands behind it, and
 a resume does not perform that fsync."* Two things are wrong with that.
@@ -710,10 +722,13 @@ Safe as a second writer because of **when** it runs: the startup sweep
 completes before the downloader can dispatch, so no barrier is running for any
 job and there is exactly one writer at that moment.
 
-Every field of the written-back extent comes from the recomputation, including
-`BytesDurable` — merging any part of the stored row forward would preserve the
-claim being corrected, and committing without `BytesDurable` would zero the
-figure the API reports for the file.
+Every field of the written-back extent comes from the resume's own answer,
+including `BytesDurable` — merging any part of the stored row forward would
+preserve the claim being corrected, and committing without `BytesDurable` would
+zero the figure the API reports for the file after a recomputation and leave it
+overstated after a restart. The no-merge rule is what makes the missing-file
+case work at all: every field of that result is a zero value, so a merge would
+be indistinguishable from not clearing the row.
 
 **A correction that CLEARS a bit is persisted before it returns**, and that is
 load-bearing rather than tidy. Every re-hydration in the queue re-reads

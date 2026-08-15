@@ -105,6 +105,13 @@ type fileResumer interface {
 // harmless while seeding was additive and stopped being harmless the moment it
 // was not.
 //
+// It has since stopped being merely in-memory, too. Resumer.Resume now clears
+// the file's Class B row on the missing-file branch, so widening this bound to
+// cover a Moving job would not just return its articles to Outstanding for the
+// life of the process — it would erase the committed extent that says those
+// bytes were ever proved, and the erasure survives the restart the seed exists
+// to survive.
+//
 // Skipping those phases costs nothing this exists to buy. The seed prevents a
 // re-fetch, and a job in post-processing dispatches no articles; if par2 sends
 // it back to the queue, the bits Store.RestoreJobProgress restored are still

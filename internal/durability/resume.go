@@ -41,7 +41,9 @@ type ResumeResult struct {
 	// both paths return an equally usable result.
 	Recomputed bool
 	// Restart reports that the file is gone, so nothing can be resumed
-	// against it and every article is Outstanding.
+	// against it and every article is Outstanding. Resume also clears the
+	// file's committed extent before returning it, so the absence is
+	// recorded rather than only reported — see clearCommitted.
 	Restart bool
 	// BytesDurable is the summed Length of the facts this result proved
 	// durable. It is carried rather than re-derived because committing an
@@ -104,7 +106,20 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 			// which is S3's safe default rather than a failure.
 			r.log.Info("durability resume found no partial file",
 				"job", jobID, "file", fileIdx, "path", path)
-			return ResumeResult{Durable: NewBitmap(artCount), Restart: true}, nil
+			res := ResumeResult{Durable: NewBitmap(artCount), Restart: true}
+			// The empty result has to reach the STORE, not only the caller.
+			// A missing file is the strongest possible disproof of every bit
+			// the stored row claims, and the resurrection chain the write-back
+			// below documents does not care how the row was disproved: the
+			// assembler recreates the file, priorExtent ORs the stale bitmap
+			// as its base, buildExtent stamps a fresh Size/ModTimeNs from its
+			// own Stat, and the next start's fast path adopts articles that
+			// this process never wrote. Returning Restart alone leaves that
+			// chain fully armed.
+			if err := r.clearCommitted(ctx, jobID, fileIdx, res); err != nil {
+				return ResumeResult{}, err
+			}
+			return res, nil
 		}
 		// Any other stat failure is surfaced. Reading it as absence would
 		// restart a file whose bytes are still there (A2).
@@ -166,8 +181,9 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 	// completes before the downloader can dispatch, so no barrier is running
 	// for any job and there is exactly one writer at this moment.
 	//
-	// Only after a recomputation. The fast path adopted what is already
-	// stored, so committing it would rewrite a row with its own contents.
+	// Only after a recomputation, and after the missing-file branch above.
+	// The fast path adopted what is already stored, so committing it would
+	// rewrite a row with its own contents.
 	if err := r.writeBack(ctx, jobID, fileIdx, res); err != nil {
 		return ResumeResult{}, err
 	}
@@ -207,13 +223,43 @@ func (r *Resumer) committedExtent(ctx context.Context, jobID string, fileIdx int
 	return e, true, nil
 }
 
-// writeBack commits a recomputed result as the file's Class B record.
+// clearCommitted overwrites a file's Class B record with the empty result a
+// missing file produces, and does nothing when there is no record to clear.
+//
+// The existence check is not an optimisation. Committing unconditionally would
+// mint a zeroed row for every file of every job that has not started
+// downloading yet — the ordinary case on any restart — and those rows are
+// indistinguishable from a real record whose bits were all disproved.
+//
+// The stamp it writes is (0, 0), which is not a claim about the file: it is a
+// stamp that cannot match one. A file recreated at length zero still has a
+// mtime far from the epoch, so S7's fast path never adopts this row; the next
+// resume that finds a real file falls through to a recomputation, which is
+// correct by definition (S4).
+func (r *Resumer) clearCommitted(ctx context.Context, jobID string, fileIdx int32, res ResumeResult) error {
+	_, ok, err := r.exts.LoadFile(ctx, jobID, fileIdx)
+	if err != nil {
+		return fmt.Errorf("durability: resume load extent job=%s file=%d: %w", jobID, fileIdx, err)
+	}
+	if !ok {
+		return nil
+	}
+	return r.writeBack(ctx, jobID, fileIdx, res)
+}
+
+// writeBack commits a resume's own answer as the file's Class B record —
+// a recomputation, or the empty result a missing file produces.
 //
 // Every field is filled from the result rather than merged into the stored
-// row, because the stored row is exactly what the recomputation disproved:
-// carrying any part of it forward would preserve the claim being corrected.
-// BytesDurable in particular has to come from the recomputation — committing
-// without it would zero the figure the API reports for this file.
+// row, because the stored row is exactly what the resume disproved: carrying
+// any part of it forward would preserve the claim being corrected. That is
+// load-bearing in the missing-file case, where every field of the result is a
+// zero value and a merge would therefore be indistinguishable from not
+// clearing the row at all.
+//
+// BytesDurable in particular has to come from the result — committing without
+// it would zero the figure the API reports for this file after a
+// recomputation, and leave it overstated after a restart.
 func (r *Resumer) writeBack(ctx context.Context, jobID string, fileIdx int32, res ResumeResult) error {
 	ext := FileExtent{
 		FileIdx:      fileIdx,
