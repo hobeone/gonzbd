@@ -13,7 +13,7 @@ require (
 	github.com/pressly/goose/v3 v3.27.3
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.40.0
+	golang.org/x/text v0.41.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
