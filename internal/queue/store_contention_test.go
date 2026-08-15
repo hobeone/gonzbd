@@ -30,10 +30,18 @@ import (
 //
 // The fix is _txlock=immediate in internal/history/db.go: taking the write
 // lock at BEGIN removes the upgrade, so contention is an ordinary wait that
-// busy_timeout covers. SQLiteStore.withWriteTx retries on top of that, which
-// bounds the remaining case where the wait itself times out. Retrying alone
-// was measurably not enough — this test still failed 4 of 48 adds with ten
-// attempts before the DSN change.
+// busy_timeout(5000) covers. That wait is the WHOLE retry policy — there is
+// no second layer. SQLiteStore.withWriteTx makes exactly one attempt, and
+// deliberately so: an earlier retry loop was removed after it was measured
+// to buy nothing (a single attempt succeeded as reliably as ten) and to cost
+// a great deal (contention surfaces at BeginTx, which blocks for the full
+// busy_timeout, so ten attempts took 48.8s to fail). See the withWriteTx doc
+// in sqlite_store.go for the measurements.
+//
+// Retrying WITHOUT the DSN change was measurably not enough either — this
+// test failed 4 of 48 adds with ten attempts before _txlock=immediate landed.
+// That is the reason the DSN is the fix and the retry loop is not; it is not
+// evidence that both are in place.
 func TestSQLiteStore_AddSurvivesConcurrentCommits(t *testing.T) {
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()

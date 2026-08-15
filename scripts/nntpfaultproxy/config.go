@@ -1,8 +1,3 @@
-// Command nntpfaultproxy is a validation-only tool: a transparent NNTP
-// relay that sits between gonzbd and a real Usenet provider and injects
-// configurable faults (missing article, corrupted body, hung connection)
-// into BODY/STAT responses for chosen message-IDs. It is never built into
-// the production gonzbd binary — see scripts/nntpfaultproxy/README.md.
 package main
 
 import (

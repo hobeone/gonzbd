@@ -36,12 +36,8 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 	okID := articleID(0, 0)
 	failID := articleID(0, 1)
 
-	if err := q.MarkArticlesDone(job.ID, []string{okID}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{failID}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackDone(t, q, job.ID, okID)
+	ackFailed(t, q, job.ID, failID)
 
 	// Flush to SQLite -- this is the step the previous, ineffective fix
 	// attempt's test skipped. Without it job_files.articles_done never
@@ -239,12 +235,8 @@ func TestRetry_RestartRoundTrip_PreservesFailedSet(t *testing.T) {
 	}
 	okID := articleID(0, 0)
 	failID := articleID(0, 1)
-	if err := q.MarkArticlesDone(job.ID, []string{okID}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{failID}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackDone(t, q, job.ID, okID)
+	ackFailed(t, q, job.ID, failID)
 	// Flush while still resident, matching production: a live daemon
 	// periodically persists progress while a job downloads, so by the time
 	// SetStatus(Failed) evicts manifest/progress the SQLite row already

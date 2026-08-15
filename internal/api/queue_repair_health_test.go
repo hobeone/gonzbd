@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -36,9 +37,7 @@ func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int
 		t.Fatalf("Add: %v", err)
 	}
 	for _, i := range failIdx {
-		if _, err := q.MarkArticleFailed(job.ID, fmt.Sprintf("a%d@t", i)); err != nil {
-			t.Fatalf("MarkArticleFailed(%d): %v", i, err)
-		}
+		ackFailed(t, q, job.ID, fmt.Sprintf("a%d@t", i))
 	}
 	return job
 }
@@ -126,7 +125,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			job := buildRepairHealthJob(t, tc.files, tc.failIdx...)
-			slot := buildSlot(job, false, 0, 0, nil)
+			slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
 
 			if slot.RepairState != tc.want {
 				t.Errorf("RepairState = %q, want %q", slot.RepairState, tc.want)
@@ -152,7 +151,7 @@ func TestBuildSlot_FailedBytesStaysTheTotal(t *testing.T) {
 		{subject: "movie.par2", bytes: 50},
 	}, 1)
 
-	slot := buildSlot(job, false, 0, 0, nil)
+	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
 	if slot.FailedBytes != 50 {
 		t.Errorf("FailedBytes = %d, want 50 — the par2 index's failure is still a failure to report",
 			slot.FailedBytes)

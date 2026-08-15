@@ -56,9 +56,7 @@ func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc
 	startTime := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
 	finishTime := time.Now().Truncate(time.Second)
 	_ = seed.MarkJobStarted(job.ID, startTime)
-	if err := seed.MarkArticlesDone(job.ID, []string{"a@t"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, seed, job.ID, "a@t")
 	if err := seed.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
@@ -71,19 +69,9 @@ func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc
 	seed.ResumeAll(context.Background())
 }
 
-// TestRecovery_PostProcTrueOnRestart verifies that Application.Start
-// finalises a job whose PostProc flag survived a crash.
-//
-// The crash is simulated by seeding the on-disk queue state directly:
-// a fully-downloaded, all-complete job with PostProc=true. In a real
-// crash this is the state left on disk when a process died after the
-// completion path flipped the flag but before OnJobDone's history.Add
-// + queue.Remove ran. Startup rescan must pick the job up and drive
-// it through post-processing to history.
-//
-// Pre-B.1 this failed because the rescan routed through
-// sendToPostProcessor → SetPostProcStarted, saw PostProc already true,
-// and silently dropped the handoff — stranding the job forever.
+// setupTestDirsAndRepo creates the admin, download and complete directories a
+// recovery scenario needs, plus a history repository over a real SQLite file in
+// the admin directory. Shared by every test in this file.
 func setupTestDirsAndRepo(t *testing.T) (adminDir, downloadDir, completeDir string, repo *history.Repository) {
 	t.Helper()
 	adminDir = t.TempDir()
@@ -108,15 +96,39 @@ func startAppAndDrain(t *testing.T, a *app.Application) (context.Context, contex
 	return ctx, cancel
 }
 
+// recoveryLiveness bounds how long a recovery scenario waits for the
+// application to finish a transition. It is a LIVENESS bound, not a
+// performance assertion: these tests assert that a job reaches history, never
+// that it gets there quickly, so the only job of this number is to fail
+// instead of hanging when something is genuinely stuck.
+//
+// That makes over-provisioning free and under-provisioning expensive, and the
+// old values were under-provisioned. TestCheckpoint_SurvivesCrashMidDownload
+// failed on CI at 10.23s against a 10s bound, having passed 23 consecutive
+// local runs including the whole package pinned to two cores and fifteen
+// iterations pinned to one. The runner is simply slower than anything
+// reproducible here — its internal/app run took 108s against 69s for the
+// two-core pinned run — and a scenario that restarts the entire application
+// twice and re-downloads an article had no headroom for that.
+//
+// A passing run pays nothing for the larger number, because waitUntil returns
+// as soon as the condition holds.
+//
+// Other scenario waits in this package still use ad-hoc 2s/5s/10s literals.
+// They are the same kind of bound and could adopt this constant; they are left
+// alone here rather than swept, so that a future CI failure attributes to the
+// wait it actually exceeded.
+const recoveryLiveness = 30 * time.Second
+
 func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *app.Application, jobID string) {
 	t.Helper()
-	if !waitUntil(10*time.Second, func() bool {
+	if !waitUntil(recoveryLiveness, func() bool {
 		_, err := repo.Get(t.Context(), jobID)
 		return err == nil
 	}) {
 		t.Fatalf("timeout waiting for job %s to reach history after recovery", jobID)
 	}
-	if !waitUntil(2*time.Second, func() bool {
+	if !waitUntil(recoveryLiveness, func() bool {
 		return a.Queue().SnapshotJob(jobID) == nil
 	}) {
 		snap := a.Queue().SnapshotJob(jobID)
@@ -124,6 +136,19 @@ func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *ap
 	}
 }
 
+// TestRecovery_PostProcTrueOnRestart verifies that Application.Start
+// finalises a job whose PostProc flag survived a crash.
+//
+// The crash is simulated by seeding the on-disk queue state directly:
+// a fully-downloaded, all-complete job with PostProc=true. In a real
+// crash this is the state left on disk when a process died after the
+// completion path flipped the flag but before OnJobDone's history.Add
+// + queue.Remove ran. Startup rescan must pick the job up and drive
+// it through post-processing to history.
+//
+// Pre-B.1 this failed because the rescan routed through
+// sendToPostProcessor → SetPostProcStarted, saw PostProc already true,
+// and silently dropped the handoff — stranding the job forever.
 func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000001"

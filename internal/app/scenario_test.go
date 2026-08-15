@@ -298,6 +298,35 @@ func (noOpStage) Run(_ context.Context, _ *postproc.Job) error { return nil }
 func yencSinglePart(name string, raw []byte) []byte {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "=ybegin line=128 size=%d name=%s\r\n", len(raw), name)
+	buf.Write(yencBody(raw))
+	checksum := crc32.ChecksumIEEE(raw)
+	fmt.Fprintf(&buf, "=yend size=%d crc32=%08x\r\n", len(raw), checksum)
+	return buf.Bytes()
+}
+
+// yencMultiPart encodes raw as one part of a multi-part yEnc article body.
+//
+// The =ypart header is what makes it multi-part, and it is the reason the
+// durability design needs a persisted article -> byte-range map at all: the
+// NZB carries only an encoded byte count, while the decoded begin/end offsets
+// live here, inside the article body, and are therefore downloaded data.
+//
+// begin and end are 1-based and inclusive, matching the yEnc spec.
+func yencMultiPart(name string, raw []byte, part, total int, totalSize int64) []byte {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "=ybegin part=%d total=%d line=128 size=%d name=%s\r\n",
+		part, total, totalSize, name)
+	begin := int64(part-1)*int64(len(raw)) + 1
+	fmt.Fprintf(&buf, "=ypart begin=%d end=%d\r\n", begin, begin+int64(len(raw))-1)
+	buf.Write(yencBody(raw))
+	fmt.Fprintf(&buf, "=yend size=%d part=%d pcrc32=%08x\r\n",
+		len(raw), part, crc32.ChecksumIEEE(raw))
+	return buf.Bytes()
+}
+
+// yencBody encodes raw into wrapped yEnc lines, shared by the single-part and
+// multi-part helpers so the two cannot drift in their escaping.
+func yencBody(raw []byte) []byte {
 	encoded := make([]byte, 0, len(raw)+len(raw)/32)
 	for _, b := range raw {
 		enc := byte((int(b) + 42) % 256)
@@ -307,15 +336,14 @@ func yencSinglePart(name string, raw []byte) []byte {
 		}
 		encoded = append(encoded, enc)
 	}
+	var out bytes.Buffer
 	const lineLen = 128
 	for i := 0; i < len(encoded); i += lineLen {
 		end := min(i+lineLen, len(encoded))
-		buf.Write(encoded[i:end])
-		buf.WriteString("\r\n")
+		out.Write(encoded[i:end])
+		out.WriteString("\r\n")
 	}
-	checksum := crc32.ChecksumIEEE(raw)
-	fmt.Fprintf(&buf, "=yend size=%d crc32=%08x\r\n", len(raw), checksum)
-	return buf.Bytes()
+	return out.Bytes()
 }
 
 func randomMsgID(t testing.TB) string {

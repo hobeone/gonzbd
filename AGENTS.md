@@ -12,12 +12,12 @@ the automated Usenet binary newsreader. It targets fresh installations and is
 implementation lives at `../sabnzbd/`.
 
 - **Module path:** `github.com/hobeone/gonzbd`
-- **Go version:** 1.26.4 (toolchain 1.26.4)
+- **Go version:** 1.26.6 (toolchain 1.26.6)
 - **Status:** Core backend download pipeline and legacy mode-dispatch API
   (`/api?mode=...`) are functional. The Glitter web UI port (Phase 12) is the
   current active focus.
 - **Main technologies:**
-    - **Language:** Go 1.26.4+
+    - **Language:** Go 1.26.6+
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
     - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for both history
       and queue state; gzip-JSON only for per-job manifests
@@ -68,7 +68,7 @@ design-level change.
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
 | [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the `ActiveSet`, the promotion loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
 | [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
-| [`docs/assembler-storage-contract.md`](docs/assembler-storage-contract.md) | Touching `internal/assembler` or `internal/directunpack` | Disk write caching, OS pre-allocation, sparse file writing, CRC combination, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
+| [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | Class A/B facts, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
 | [`docs/post-processing-contract.md`](docs/post-processing-contract.md) | Touching `internal/postproc`, `internal/par2`, or `internal/unpack` | Stage execution loop, self-gating matrix, Fast/Slow queue priority, QuickCheck bypass guarantees, NeedRequeue rules, and script isolation |
 | [`docs/mutation-testing-playbook.md`](docs/mutation-testing-playbook.md) | Running `gremlins` | The `run_gremlins.sh` wrapper, tuning, triaging `LIVED`/`NOT COVERED` mutants, the `--diff` known-bug workaround |
 
@@ -93,6 +93,7 @@ go test -bench=. ./internal/decoder/                        # Run benchmarks
 go test -v -tags=integration ./test/integration/...         # Integration (requires par2, rar, unrar, 7z)
 go test -v -tags=uitest ./test/uitest/...                   # UI/Playwright (requires pre-built UI + Playwright Chromium)
 go test -tags=e2e -timeout=10m ./test/e2e/                  # E2E (requires live Usenet server)
+go test -tags=crash -timeout=20m ./test/crash/              # Crash consistency (Linux; kills a real child process)
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
@@ -149,9 +150,18 @@ the test never creates.
 SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
 cp internal/pkg/target.go "$SCRATCH/target.bak.go"
 # ... revert the fix in place, or neuter its condition ...
-go test ./internal/pkg/ -run TestTheNewPin        # MUST fail, for the right reason
+go test -count=1 ./internal/pkg/ -run TestTheNewPin   # MUST fail, for the right reason
 cp "$SCRATCH/target.bak.go" internal/pkg/target.go
 ```
+
+**`-count=1` is not optional.** Go caches a successful test result keyed on the
+test binary and its inputs, and prints `(cached)` where it would have printed a
+duration. A mutation run without it can replay the *pre-mutation* pass and
+report `ok` — which reads as "the test does not discriminate" and is the exact
+opposite of the truth. This has already happened once in practice: a mutation
+check returned a cached `ok` and would have been recorded as evidence that a
+pin was inert, had the second run not been questioned. A cached `ok` is not an
+observation.
 
 **Never `git stash`** — the stash stack is shared with any other session in this
 repo and a pop can take their work. Restore from your own copy rather than
@@ -197,11 +207,28 @@ changed, the grep finds the ones you didn't.
 Do this **once, on the last round** of a review-fix loop, not on every round:
 each round's own fix creates fresh drift, so an early sweep goes stale.
 
+**Sweep against the diff the commit will land as, not the diff that motivated
+the edit.** The failure is subtler than "comments drift", and it has now
+happened three times on this branch — twice shipping the drift in the *same*
+commit as the change that caused it. Each time the sweep ran against the state
+that *prompted* the correction: a reviewer names a stale sentence, the sentence
+is rewritten to describe the fix, and a clause the same fix also invalidated is
+carried forward untouched. The correction is real and the comment is still
+wrong. Re-read each comment you touched against `git diff --cached` at the end,
+as a reader who has not seen the finding that prompted it.
+
 **Migrations are the case that cannot be fixed later.** A wrong claim in an
 applied `goose` migration is frozen — the file must not be edited afterwards.
 Sweep any migration this change adds *before* it merges; if a stale claim is
 found in one already applied, correct it in a new migration's comment block and
-say which statement it supersedes (010 does this for 005).
+name the statement it supersedes, rather than editing the original.
+
+The schema is currently a single `001_initial.sql`, so there is no second
+migration to hold a correction: a wrong claim there can only be superseded by
+the next migration anyone adds. Sweep it especially carefully. Its
+`jobs.recovery_bytes` block is the worked example of a superseding comment —
+it states the corrected definition and why the derivation argument that
+preceded it was wrong.
 
 ### Code Review Reception Protocol
 
@@ -294,6 +321,31 @@ Three rules follow:
   different files, so committed hunks can land on the wrong function — in
   both directions. If a reported function looks untouched by your change,
   commit and re-run before writing a test for it.
+
+Two further gates are **whole-repository**, not diff-scoped, and exist because
+build, vet, lint and the test suite are structurally blind to what they check —
+comments and Markdown are neither type-checked nor executed:
+
+```bash
+go run ./scripts/check_dup_comments     # duplicated multi-line // blocks
+go run ./scripts/check_review_banner    # docs/reviews/*.md frozen-record banners
+```
+
+| Gate | What it catches | How to satisfy it |
+|------|-----------------|-------------------|
+| `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory, the marker must start the comment line, and a reason that wraps onto a second line must be closed by a blank `//` unless the marker is the block's last line — an unclosed wrapped reason is a hard exit-2 error, because guessing where it ends silently suppresses the finding on the *other* copy. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
+| `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
+
+Both run in CI as of this change. They were absent from `.github/workflows/ci.yml`
+while the three diff-scoped gates above were present, which is how a defect in
+`check_dup_comments`' own marker handling survived in the tree: nothing on the
+server ever ran the tool that would have caught it.
+
+Neither is diff-scoped, so both can fail on a file you did not touch. Both found
+a real defect on their first run against this repository: a package doc comment
+duplicated across two files of `scripts/nntpfaultproxy`, and a fixture comment
+in `internal/queue/progress_helpers_test.go` that named `resetForReload` above a
+test of `clone`.
 
 ### Mutation Testing (periodic, not a per-commit gate)
 

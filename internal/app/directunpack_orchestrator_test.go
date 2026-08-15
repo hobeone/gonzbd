@@ -131,9 +131,7 @@ func TestMaybeStart_RefusesWhenConcurrencyLimitReached(t *testing.T) {
 func TestMaybeStart_MarksSetCorruptWhenTheVolumeHasFailedArticles(t *testing.T) {
 	o, q, job, logBuf := duFixtureLogged(t, 0)
 
-	if _, err := q.MarkArticleFailed(job.ID, "v2a1@t"); err != nil {
-		t.Fatalf("MarkArticleFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "v2a1@t")
 
 	o.maybeStart(FileComplete{JobID: job.ID, FileIdx: 0})
 

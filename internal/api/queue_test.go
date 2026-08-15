@@ -16,8 +16,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/app"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -573,9 +575,7 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 		t.Fatalf("expected 1 file, got %d", m.NumFiles())
 	}
 	doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
-	if err := q.MarkArticlesDone(job.ID, doneIDs); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, doneIDs...)
 
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&nzo_id="+job.ID+"&files=1&apikey="+testAPIKey)
@@ -672,25 +672,17 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 	}{
 		{"queued", func(*testing.T, *queue.Queue, string) {}, "queued"},
 		{"downloading", func(t *testing.T, q *queue.Queue, jobID string) {
-			if err := q.MarkArticlesDone(jobID, []string{"a0@t"}); err != nil {
-				t.Fatalf("MarkArticlesDone: %v", err)
-			}
+			ackDone(t, q, jobID, "a0@t")
 		}, "downloading"},
 		{"done", func(t *testing.T, q *queue.Queue, jobID string) {
-			if err := q.MarkArticlesDone(jobID, []string{"a0@t", "a1@t"}); err != nil {
-				t.Fatalf("MarkArticlesDone: %v", err)
-			}
+			ackDone(t, q, jobID, "a0@t", "a1@t")
 			if err := q.MarkFileComplete(jobID, 0); err != nil {
 				t.Fatalf("MarkFileComplete: %v", err)
 			}
 		}, "done"},
 		{"failed", func(t *testing.T, q *queue.Queue, jobID string) {
-			if err := q.MarkArticlesDone(jobID, []string{"a0@t"}); err != nil {
-				t.Fatalf("MarkArticlesDone: %v", err)
-			}
-			if _, err := q.MarkArticlesFailed(jobID, []string{"a1@t"}); err != nil {
-				t.Fatalf("MarkArticlesFailed: %v", err)
-			}
+			ackDone(t, q, jobID, "a0@t")
+			ackFailed(t, q, jobID, "a1@t")
 			if err := q.MarkFileComplete(jobID, 0); err != nil {
 				t.Fatalf("MarkFileComplete: %v", err)
 			}
@@ -2615,7 +2607,7 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("no filters returns everything", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses)
+		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses, nil)
 		if len(slots) != 3 {
 			t.Fatalf("len(slots) = %d, want 3", len(slots))
 		}
@@ -2623,31 +2615,31 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("category filter", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "movies", "", "", false, 0, duStatuses)
+		slots := filterQueueSlots(jobs, "movies", "", "", false, 0, duStatuses, nil)
 		if len(slots) != 1 || slots[0].NzoID != "job3" {
-			t.Fatalf("filterQueueSlots(category=movies) = %+v, want only job3", slots)
+			t.Fatalf("filterQueueSlots(category=movies, nil) = %+v, want only job3", slots)
 		}
 	})
 
 	t.Run("status filter", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", string(constants.StatusPaused), "", false, 0, duStatuses)
+		slots := filterQueueSlots(jobs, "", string(constants.StatusPaused), "", false, 0, duStatuses, nil)
 		if len(slots) != 1 || slots[0].NzoID != "job2" {
-			t.Fatalf("filterQueueSlots(status=Paused) = %+v, want only job2", slots)
+			t.Fatalf("filterQueueSlots(status=Paused, nil) = %+v, want only job2", slots)
 		}
 	})
 
 	t.Run("search filter matches name or filename, case-insensitively", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", "", "debian", false, 0, duStatuses)
+		slots := filterQueueSlots(jobs, "", "", "debian", false, 0, duStatuses, nil)
 		if len(slots) != 1 || slots[0].NzoID != "job2" {
-			t.Fatalf("filterQueueSlots(search=debian) = %+v, want only job2", slots)
+			t.Fatalf("filterQueueSlots(search=debian, nil) = %+v, want only job2", slots)
 		}
 	})
 
 	t.Run("duStatuses populates DirectUnpack for matching job only", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses)
+		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses, nil)
 		for _, s := range slots {
 			switch s.NzoID {
 			case "job1":
@@ -2664,9 +2656,9 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("combined filters narrow to nothing", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "movies", string(constants.StatusPaused), "", false, 0, duStatuses)
+		slots := filterQueueSlots(jobs, "movies", string(constants.StatusPaused), "", false, 0, duStatuses, nil)
 		if len(slots) != 0 {
-			t.Fatalf("filterQueueSlots(category=movies, status=Paused) = %+v, want empty", slots)
+			t.Fatalf("filterQueueSlots(category=movies, status=Paused, nil) = %+v, want empty", slots)
 		}
 	})
 }
@@ -2688,9 +2680,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 		t.Fatalf("SetStatusIf: %v", err)
 	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"big-article-001@example.com"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "big-article-001@example.com")
 
 	live, err := q.Get(job.ID)
 	if err != nil {
@@ -2700,7 +2690,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	const speed = 1024.0 * 1024.0 // 1 MiB/s; well above the noise floor
 	duStatus := &directunpack.Status{CurrentSet: "vol01"}
 
-	slot := buildSlot(live, true /* queue-wide paused */, speed, 2, duStatus)
+	slot := buildSlot(live, true /* queue-wide paused */, speed, 2, duStatus, app.JobCheckpointState{})
 
 	if slot.NzoID != job.ID {
 		t.Errorf("NzoID = %q, want %q", slot.NzoID, job.ID)
@@ -2727,7 +2717,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 		t.Errorf("Warning = %q, want %q", slot.Warning, "low disk space")
 	}
 	if slot.FailedBytes == 0 {
-		t.Error("FailedBytes = 0, want > 0 after MarkArticlesFailed")
+		t.Error("FailedBytes = 0, want > 0 after ackFailed")
 	}
 	if slot.Bytes != 10*1024*1024 {
 		t.Errorf("Bytes = %d, want %d", slot.Bytes, 10*1024*1024)
@@ -2849,4 +2839,18 @@ func TestModeAddLocalFile_Direct(t *testing.T) {
 			t.Errorf("expected 'absolute' in error body; got: %s", rr.Body.String())
 		}
 	})
+}
+
+// TestUnixOrZero_RendersNeverAsZero pins the encoding of an absent timestamp.
+// time.Time's zero value goes through Unix() as -6795364578871, which a client
+// renders as a date in 1754 rather than as "this job has never checkpointed".
+func TestUnixOrZero_RendersNeverAsZero(t *testing.T) {
+	t.Parallel()
+	if got := unixOrZero(time.Time{}); got != 0 {
+		t.Errorf("unixOrZero(zero) = %d, want 0", got)
+	}
+	at := time.Now().Truncate(time.Second)
+	if got := unixOrZero(at); got != at.Unix() {
+		t.Errorf("unixOrZero(%v) = %d, want %d", at, got, at.Unix())
+	}
 }

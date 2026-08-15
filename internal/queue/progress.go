@@ -89,7 +89,17 @@ type FileProgress struct {
 	// at any residency. Written from the manifest when resident and from
 	// job_files.bytes when not; the two agree because the column is written
 	// from the manifest.
-	Bytes           int64
+	Bytes int64
+	// BytesDownloaded is the sum of Bytes over this file's resolved,
+	// non-failed articles. It is in the SAME unit as Bytes above — the
+	// encoded NZB `bytes` attribute — because RemainingBytes subtracts the
+	// two, and only figures in one unit can be subtracted.
+	//
+	// That is not the unit durability works in. durability.FileExtent's
+	// BytesDurable sums the DECODED payload lengths an fsync proved, over the
+	// same set of articles, and runs a few percent lower. The two are not
+	// interchangeable; this one caches in job_files.bytes_downloaded rather
+	// than being read back from file_extents.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
@@ -97,7 +107,13 @@ type FileProgress struct {
 	// never downloaded, so BytesDownloaded does not account for it, and
 	// without this the derivation would report its bytes as still to fetch
 	// forever. Recomputable from the article bitmaps when a manifest is
-	// resident; persisted in job_files.failed_bytes for when it is not.
+	// resident, and read from job_files.failed_bytes when not — which is why
+	// that column exists at all. It is the one per-file byte figure that
+	// cannot be re-derived from durability's Class A facts: a permanently
+	// failed article never decodes, so it writes no article_facts row, so
+	// durability.FileExtent has no field for it either. See
+	// internal/history/migrations/001_initial.sql and
+	// docs/durability-contract.md.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so
@@ -109,19 +125,22 @@ type FileProgress struct {
 	// Both construction paths classify by subject rather than reading a
 	// column, which is why no schema change is needed — job_files already
 	// stores the subject.
-	IsPar2      bool
-	WriteCursor int64
-	// MaxWritten is the highest byte position the assembler has written for
-	// this file — its decoded high-water mark. Persisted so a resumed run
-	// starts from the file's real extent instead of zero; without it the
-	// completion truncate cuts away whatever an earlier run wrote above the
-	// articles this run happens to receive (#342).
+	IsPar2 bool
+	// There is deliberately no WriteCursor or MaxWritten here.
 	//
-	// Distinct from WriteCursor, which is the *contiguous* frontier and so
-	// normally lags this figure whenever articles arrive out of order. Only
-	// this one is a statement about bytes on disk; see the assembler's
-	// FileInfo.InitialWriteCursor for why the cursor is not.
-	MaxWritten     int64
+	// Both used to be persisted and fed back to the assembler on resume, so
+	// the completion truncate would not cut below what earlier runs wrote
+	// (#342). The truncate no longer derives its bound from anything the
+	// queue knows: durability.Barrier computes it as the highest end offset
+	// among the file's DURABLE facts, which describes the FILE rather than
+	// the session, and needs no seed. The write cursor was only ever a
+	// coalescing hint and is now local to the assembler's cache, starting at
+	// zero each run (#311, #353).
+	//
+	// They are gone rather than retained-at-zero because a field that is
+	// always zero and documented as a resume seed is worse than no field: a
+	// reader chasing #342 would find it, read that the truncate depends on
+	// it, see it return 0, and conclude the bug is back.
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32
 }
@@ -231,24 +250,6 @@ func (p *JobProgress) FileFailedBytes(fi int) int64 {
 		return 0
 	}
 	return p.files[fi].FailedBytes
-}
-
-// FileWriteCursor returns the assembler's contiguous write frontier for file fileIdx.
-func (p *JobProgress) FileWriteCursor(fi int) int64 {
-	if p == nil || fi < 0 || fi >= len(p.files) {
-		return 0
-	}
-	return p.files[fi].WriteCursor
-}
-
-// FileMaxWritten returns the highest byte position written for file fileIdx —
-// the file's decoded high-water mark, used to seed a resumed run so the
-// completion truncate does not cut below what earlier runs already wrote.
-func (p *JobProgress) FileMaxWritten(fi int) int64 {
-	if p == nil || fi < 0 || fi >= len(p.files) {
-		return 0
-	}
-	return p.files[fi].MaxWritten
 }
 
 // FileFilename returns the resolved on-disk filename for file fileIdx, or empty if unresolved.
@@ -697,6 +698,41 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 	return true
 }
 
+// markNotDone returns article i to Outstanding. It is the inverse of markDone,
+// and it exists for exactly one caller: Queue.ReplaceFromResume, which holds
+// evidence about the file's bytes and is entitled to contradict a bit that was
+// merely restored from job_files.articles_done (#362). Nothing on the download
+// path may call it — an ack is a one-way transition (R9).
+//
+// It clears the bit and nothing else. The figures markDone maintains are
+// deliberately NOT unwound here article by article: JobProgress.recompute
+// already derives every one of them from the bitmaps, and it applies rules a
+// per-article inverse would have to reproduce by hand — Pending counts only
+// files whose Fetch is FetchAlways, and only articles that are neither done
+// nor emitted. A copy of those rules that drifts is a half-inverse, and a
+// half-inverse of markDone is how #300 arose from the other direction: bits
+// and derived figures disagreeing, so the job reports a health its per-article
+// state does not support. ReplaceFromResume recomputes once for the whole job
+// instead.
+//
+// A permanently failed article is never cleared, and that is a rule about what
+// the caller's evidence covers rather than an optimisation. failed implies
+// done, but a failed article's bytes were never written, so their absence from
+// the file is not new information — it is the recorded outcome. Clearing it
+// would re-fetch the article on every restart, return its bytes to the
+// job's health figures as if they might still arrive, and burn its retry
+// budget over a fact already established (R10, R21).
+//
+// Returns false when it changed nothing: the article was already Outstanding,
+// or it is permanently failed.
+func (p *JobProgress) markNotDone(i int) bool {
+	if !p.done.Get(i) || p.failed.Get(i) {
+		return false
+	}
+	p.done.Clear(i)
+	return true
+}
+
 // markFailed flips Done+Failed on article i and updates counters. Returns
 // false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
@@ -745,8 +781,6 @@ func (p *JobProgress) resetForReload(m *Manifest, i int) {
 type fileProgressJSON struct {
 	Complete       bool        `json:"complete,omitempty"`
 	Fetch          FetchPolicy `json:"fetch_policy,omitempty"`
-	WriteCursor    int64       `json:"write_cursor,omitempty"`
-	MaxWritten     int64       `json:"max_written,omitempty"`
 	Filename       string      `json:"filename,omitempty"`
 	AssembledCRC32 uint32      `json:"assembled_crc32,omitempty"`
 }
@@ -779,8 +813,6 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 		files[fi] = fileProgressJSON{
 			Complete:       f.Complete,
 			Fetch:          f.Fetch,
-			WriteCursor:    f.WriteCursor,
-			MaxWritten:     f.MaxWritten,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
 		}
@@ -816,8 +848,6 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 		p.files[fi] = FileProgress{
 			Complete:       f.Complete,
 			Fetch:          f.Fetch,
-			WriteCursor:    f.WriteCursor,
-			MaxWritten:     f.MaxWritten,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
 		}

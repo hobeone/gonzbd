@@ -469,13 +469,7 @@ func TestMarkArticleFailed(t *testing.T) {
 	msgID := mustManifest(t, j).ArticleID(0)
 	initialRemaining := j.Progress().RemainingBytes()
 
-	first, err := q.MarkArticleFailed(j.ID, msgID)
-	if err != nil {
-		t.Fatalf("MarkArticleFailed: %v", err)
-	}
-	if !first {
-		t.Error("expected first=true")
-	}
+	ackFailed(t, q, j.ID, msgID)
 
 	got, _ := q.Get(j.ID)
 	if !got.Progress().ArticleDone(0) {
@@ -486,71 +480,11 @@ func TestMarkArticleFailed(t *testing.T) {
 		t.Errorf("RemainingBytes mismatch: got %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 	}
 
-	// Repeat failure should return false
-	first, _ = q.MarkArticleFailed(j.ID, msgID)
-	if first {
-		t.Error("expected first=false on repeat")
-	}
-}
-
-// TestMarkArticleFailed_ParityWithBatched verifies that the singular
-// MarkArticleFailed produces identical queue state to MarkArticlesFailed with
-// a one-element slice. This guards against the two implementations drifting
-// apart — historically they have diverged (see CLAUDE.md lessons learned).
-func TestMarkArticleFailed_ParityWithBatched(t *testing.T) {
-	// Build two identical queues and apply singular vs batched form to each.
-	buildQ := func(t *testing.T) (*Queue, string, string) {
-		t.Helper()
-		q := New()
-		j := makeJob(t, "j", constants.NormalPriority)
-		_ = q.Add(j)
-		msgID := mustManifest(t, j).ArticleID(0)
-		return q, j.ID, msgID
-	}
-
-	q1, jid1, mid1 := buildQ(t)
-	q2, jid2, mid2 := buildQ(t)
-
-	// Apply singular form to q1.
-	first1, err1 := q1.MarkArticleFailed(jid1, mid1)
-
-	// Apply batched form to q2 (one element).
-	ft, err2 := q2.MarkArticlesFailed(jid2, []string{mid2})
-	first2 := len(ft) > 0
-
-	if err1 != nil || err2 != nil {
-		t.Errorf("expected both forms to succeed: singular=%v batched=%v", err1, err2)
-	}
-	if first1 != first2 {
-		t.Errorf("first-time flag mismatch: singular=%v batched=%v", first1, first2)
-	}
-
-	got1, _ := q1.Get(jid1)
-	got2, _ := q2.Get(jid2)
-
-	if got1.Progress().PendingArticles() != got2.Progress().PendingArticles() {
-		t.Errorf("PendingArticles: singular=%d batched=%d", got1.Progress().PendingArticles(), got2.Progress().PendingArticles())
-	}
-	if got1.Progress().FailedBytes() != got2.Progress().FailedBytes() {
-		t.Errorf("FailedBytes: singular=%d batched=%d", got1.Progress().FailedBytes(), got2.Progress().FailedBytes())
-	}
-	if got1.Progress().RemainingBytes() != got2.Progress().RemainingBytes() {
-		t.Errorf("RemainingBytes: singular=%d batched=%d", got1.Progress().RemainingBytes(), got2.Progress().RemainingBytes())
-	}
-	if got1.Progress().ArticlesResolved() != got2.Progress().ArticlesResolved() {
-		t.Errorf("ArticlesResolved: singular=%d batched=%d", got1.Progress().ArticlesResolved(), got2.Progress().ArticlesResolved())
-	}
-	if got1.Progress().ArticlesFailed() != got2.Progress().ArticlesFailed() {
-		t.Errorf("ArticlesFailed: singular=%d batched=%d", got1.Progress().ArticlesFailed(), got2.Progress().ArticlesFailed())
-	}
-	done1, failed1 := got1.Progress().ArticleDone(0), got1.Progress().ArticleFailed(0)
-	done2, failed2 := got2.Progress().ArticleDone(0), got2.Progress().ArticleFailed(0)
-	if done1 != done2 || failed1 != failed2 {
-		t.Errorf("article state: singular Done=%v Failed=%v, batched Done=%v Failed=%v",
-			done1, failed1, done2, failed2)
-	}
-	if got1.Progress().FilePending(0) != got2.Progress().FilePending(0) {
-		t.Errorf("Files[0].Pending: singular=%d batched=%d", got1.Progress().FilePending(0), got2.Progress().FilePending(0))
+	// Repeat failure is idempotent: RemainingBytes must not move again.
+	ackFailed(t, q, j.ID, msgID)
+	got, _ = q.Get(j.ID)
+	if got.Progress().RemainingBytes() != wantRemaining {
+		t.Errorf("RemainingBytes changed on repeat failure: got %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 	}
 }
 
@@ -714,13 +648,11 @@ func TestIsDirty(t *testing.T) {
 	_ = q.Add(j)
 	_ = q.Save(dir)
 
-	// MarkArticleDone sets dirty.
+	// ackDone (SeedFromExtents) sets dirty.
 	msgID := mustManifest(t, j).ArticleID(0)
-	if err := q.MarkArticleDone(j.ID, msgID); err != nil {
-		t.Fatalf("MarkArticleDone: %v", err)
-	}
+	ackDone(t, q, j.ID, msgID)
 	if !q.IsDirty() {
-		t.Error("MarkArticleDone should set dirty")
+		t.Error("ackDone should set dirty")
 	}
 
 	// Save clears dirty.
@@ -731,17 +663,11 @@ func TestIsDirty(t *testing.T) {
 		t.Error("Save should clear dirty")
 	}
 
-	// MarkArticleFailed sets dirty.
+	// ackFailed (AckPermanentFailure) sets dirty.
 	msgID2 := mustManifest(t, j).ArticleID(1)
-	first, err := q.MarkArticleFailed(j.ID, msgID2)
-	if err != nil {
-		t.Fatalf("MarkArticleFailed: %v", err)
-	}
-	if !first {
-		t.Fatal("expected first=true")
-	}
+	ackFailed(t, q, j.ID, msgID2)
 	if !q.IsDirty() {
-		t.Error("MarkArticleFailed should set dirty")
+		t.Error("ackFailed should set dirty")
 	}
 	_ = q.Save(dir)
 
@@ -754,29 +680,23 @@ func TestIsDirty(t *testing.T) {
 	}
 	_ = q.Save(dir)
 
-	// MarkArticlesDone sets dirty.
+	// ackDone (SeedFromExtents), batched, sets dirty.
 	j2 := makeJob(t, "batch-done", constants.NormalPriority)
 	_ = q.Add(j2)
 	gotJ2, _ := q.Get(j2.ID)
-	ids2 := []string{mustManifest(t, gotJ2).ArticleID(0), mustManifest(t, gotJ2).ArticleID(1)}
-	if err := q.MarkArticlesDone(j2.ID, ids2); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, j2.ID, mustManifest(t, gotJ2).ArticleID(0), mustManifest(t, gotJ2).ArticleID(1))
 	if !q.IsDirty() {
-		t.Error("MarkArticlesDone should set dirty")
+		t.Error("ackDone (batched) should set dirty")
 	}
 	_ = q.Save(dir)
 
-	// MarkArticlesFailed sets dirty.
+	// ackFailed (AckPermanentFailure), batched, sets dirty.
 	j3 := makeJob(t, "batch-fail", constants.NormalPriority)
 	_ = q.Add(j3)
 	gotJ3, _ := q.Get(j3.ID)
-	ids3 := []string{mustManifest(t, gotJ3).ArticleID(0)}
-	if _, err := q.MarkArticlesFailed(j3.ID, ids3); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, j3.ID, mustManifest(t, gotJ3).ArticleID(0))
 	if !q.IsDirty() {
-		t.Error("MarkArticlesFailed should set dirty")
+		t.Error("ackFailed (batched) should set dirty")
 	}
 }
 
@@ -1456,7 +1376,7 @@ func TestRemove_NoIOUnderLock(t *testing.T) {
 	<-removeDone
 }
 
-func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {
+func TestAckPermanentFailure_EmptyBatch(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "fail-batch", 1, 3)
@@ -1464,12 +1384,8 @@ func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {
 
 	t.Run("empty_batch_failed_is_no-op", func(t *testing.T) {
 		q.dirty.Store(false)
-		firstTime, err := q.MarkArticlesFailed(j.ID, nil)
-		if err != nil {
+		if err := q.AckPermanentFailure(j.ID, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(firstTime) != 0 {
-			t.Errorf("len(firstTime) = %d, want 0", len(firstTime))
 		}
 		if q.IsDirty() {
 			t.Error("IsDirty should be false")
@@ -1477,29 +1393,22 @@ func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {
 	})
 
 	t.Run("duplicate_failed_is_no-op", func(t *testing.T) {
-		firstTime, err := q.MarkArticlesFailed(j.ID, []string{"f0a0@test"})
-		if err != nil {
+		idx := artIdxFor(t, q, j.ID, "f0a0@test")
+		if err := q.AckPermanentFailure(j.ID, []int32{idx}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(firstTime) != 1 || firstTime[0] != "f0a0@test" {
-			t.Errorf("unexpected firstTime: %v", firstTime)
 		}
 
 		q.dirty.Store(false)
-		firstTime2, err := q.MarkArticlesFailed(j.ID, []string{"f0a0@test"})
-		if err != nil {
+		if err := q.AckPermanentFailure(j.ID, []int32{idx}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(firstTime2) != 0 {
-			t.Errorf("len(firstTime2) = %d, want 0", len(firstTime2))
-		}
 		if q.IsDirty() {
-			t.Error("IsDirty should be false")
+			t.Error("IsDirty should be false: a duplicate failure report must not set dirty again")
 		}
 	})
 }
 
-func TestMarkArticlesFailed_SignalsNotify(t *testing.T) {
+func TestAckPermanentFailure_SignalsNotify(t *testing.T) {
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
@@ -1517,27 +1426,21 @@ drained:
 	msgID := mustManifest(t, j).ArticleID(0)
 
 	// 1. First-time failure: should signal notify.
-	_, err := q.MarkArticlesFailed(j.ID, []string{msgID})
-	if err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, j.ID, msgID)
 
 	select {
 	case <-q.Notify():
 		// Success
 	case <-time.After(500 * time.Millisecond):
-		t.Error("MarkArticlesFailed did not signal notify channel on first failure")
+		t.Error("AckPermanentFailure did not signal notify channel on first failure")
 	}
 
 	// 2. Repeat failure: should NOT signal notify.
-	_, err = q.MarkArticlesFailed(j.ID, []string{msgID})
-	if err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, j.ID, msgID)
 
 	select {
 	case <-q.Notify():
-		t.Error("MarkArticlesFailed signaled notify channel on repeat failure")
+		t.Error("AckPermanentFailure signaled notify channel on repeat failure")
 	default:
 		// Success
 	}
@@ -1574,48 +1477,6 @@ func TestQueue_PauseErrors(t *testing.T) {
 	err = q.Pause(j.ID)
 	if !errors.Is(err, ErrIllegalStatusTransition) {
 		t.Errorf("Pause Completed job: got %v, want %v", err, ErrIllegalStatusTransition)
-	}
-}
-
-func TestSetFileWriteCursor(t *testing.T) {
-	q := New()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
-			{ID: "a1@x", Bytes: 100, Number: 1},
-			{ID: "a2@x", Bytes: 100, Number: 2},
-		}},
-	}}
-	job, err := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := q.Add(job); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.SetFileExtents(job.ID, 0, 4096, 4096); err != nil {
-		t.Fatalf("SetFileExtents: %v", err)
-	}
-	snap := q.SnapshotJob(job.ID)
-	if snap.Progress().FileWriteCursor(0) != 4096 {
-		t.Errorf("WriteCursor = %d, want 4096", snap.Progress().FileWriteCursor(0))
-	}
-	if !q.IsDirty() {
-		t.Error("queue should be marked dirty after SetFileExtents")
-	}
-}
-
-func TestSetFileWriteCursor_Errors(t *testing.T) {
-	q := New()
-	if err := q.SetFileExtents("nope", 0, 1, 1); err == nil {
-		t.Error("expected error for unknown job")
-	}
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "f", Bytes: 100, Articles: []nzb.Article{{ID: "a@x", Bytes: 100, Number: 1}}},
-	}}
-	job, _ := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	_ = q.Add(job)
-	if err := q.SetFileExtents(job.ID, 5, 1, 1); err == nil {
-		t.Error("expected error for out-of-range fileIdx")
 	}
 }
 

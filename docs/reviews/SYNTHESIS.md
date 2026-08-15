@@ -3,6 +3,19 @@
 Repo `main` @ `9be19e24`, working tree clean throughout. 93 raw findings across 5 lanes,
 deduped and ranked here. Detail lives in `lane1..lane5-*.md` alongside this file.
 
+> **Frozen record.** This is a dated audit snapshot of `main` @ `9be19e24`, not
+> a living contract, and it is kept unedited as a record of what the code was and
+> what the audit found. Where it disagrees with the code today, the code wins.
+> Several identifiers, columns and orderings it describes were removed or moved
+> by the download-durability work: `MarkArticlesDone`, `MarkArticlesDoneByIdx`,
+> `MarkArticlesFailed`, `SetFileExtents`, `maxWritten`, `crcParts`/`crcValid`,
+> the `job_files.write_cursor` / `bytes_downloaded` / `max_written` columns, the
+> five-step shutdown order (a clean-shutdown barrier now sits between stopping
+> the downloader and stopping the assembler), and `FileAssembledCRC32`, which no
+> longer has a production writer. For the current contract see
+> [`../durability-contract.md`](../durability-contract.md).
+
+
 ## Integration findings (synthesis-only — no single lane could see these)
 
 ### INT-1 — The 30s queue checkpoint durably records Done for bytes still in RAM

@@ -182,3 +182,59 @@ func TestFailReason_String(t *testing.T) {
 		}
 	}
 }
+
+// TestIsUnrarPasswordError pins the password predicate directly, not only
+// through ClassifyUnrarOutput.
+//
+// It is worth its own test because the predicate is where the *variants* live,
+// and ClassifyUnrarOutput checks it first — so a false positive here does not
+// produce a wrong-looking password verdict, it produces a wrong verdict for
+// every other failure mode that happens to contain one of these substrings. The
+// negative cases below are therefore the load-bearing half.
+func TestIsUnrarPasswordError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		lower string
+		want  bool
+	}{
+		{"incorrect password", "extracting foo.rar     incorrect password for foo.rar", true},
+		{"specified password is incorrect", "the specified password is incorrect.\n", true},
+		{"checksum error in the encrypted file", "foo.rar : checksum error in the encrypted file\n", true},
+		{"encrypted file with CRC failed, wide spacing", "foo.rar : encrypted file:  crc failed in bar.mkv\n", true},
+		{"encrypted file and CRC failed on separate lines still matches", "encrypted file: bar.mkv\nsome other line\ncrc failed\n", true},
+
+		// The negatives. Each holds one half of the two-part clause, or a
+		// near-miss of a whole one; none may be read as a password failure.
+		{"plain CRC failure is corruption, not a password", "foo.rar : crc failed in bar.mkv\n", false},
+		{"an encrypted file that extracted fine", "encrypted file: bar.mkv\nall ok\n", false},
+		{"a correct password mentioned in passing", "password accepted\n", false},
+		{"empty output", "", false},
+		{"unrelated failure", "cannot open foo.rar: no such file or directory\n", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isUnrarPasswordError(tc.lower); got != tc.want {
+				t.Errorf("isUnrarPasswordError(%q) = %v, want %v", tc.lower, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsUnrarPasswordError_RequiresAlreadyLowercasedInput records the caller
+// contract in an executable form. The function does no folding of its own —
+// ClassifyUnrarOutput lowercases once for every predicate it consults — so a
+// future caller passing raw output would silently get false for real password
+// failures, which routes a bad-password extraction to FailUnknown.
+func TestIsUnrarPasswordError_RequiresAlreadyLowercasedInput(t *testing.T) {
+	t.Parallel()
+	const raw = "The specified password is incorrect.\n"
+	if isUnrarPasswordError(raw) {
+		t.Fatal("isUnrarPasswordError matched mixed-case input; it is documented as taking " +
+			"already-lowercased text, and a match here would mean the contract had changed silently")
+	}
+	if !isUnrarPasswordError("the specified password is incorrect.\n") {
+		t.Fatal("the lowercased form must match")
+	}
+}

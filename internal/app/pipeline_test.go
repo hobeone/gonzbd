@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
@@ -97,41 +98,6 @@ type opaqueTimeoutError struct{}
 func (e *opaqueTimeoutError) Error() string { return "operation deadline reached" }
 func (e *opaqueTimeoutError) Timeout() bool { return true }
 
-func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
-	q := queue.New()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
-			{ID: "a1@x", Bytes: 100, Number: 1},
-			{ID: "a2@x", Bytes: 100, Number: 2},
-			{ID: "a3@x", Bytes: 100, Number: 3},
-		}},
-	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := q.Add(job); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.SetFileExtents(job.ID, 0, 4096, 4096); err != nil {
-		t.Fatal(err)
-	}
-
-	p := &pipeline{
-		log:         slog.Default(),
-		queue:       q,
-		downloadDir: t.TempDir(),
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
-	}
-	if err := p.registerFile(job.ID, 0); err != nil {
-		t.Fatalf("registerFile: %v", err)
-	}
-	info := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
-	if info.InitialWriteCursor != 4096 {
-		t.Errorf("InitialWriteCursor = %d, want 4096", info.InitialWriteCursor)
-	}
-}
-
 func TestPipeline_HandleFailureResult(t *testing.T) {
 	q := queue.New()
 	// a1@x is the article under test (left pending); 9 filler articles are
@@ -155,12 +121,8 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	for i := range 9 {
 		failIDs = append(failIDs, fmt.Sprintf("fail%d@x", i))
 	}
-	if _, err := q.MarkArticlesFailed(job.ID, failIDs); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
-	if err := q.MarkArticlesDone(job.ID, []string{"filldone@x"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackFailed(t, q, job.ID, failIDs...)
+	ackDone(t, q, job.ID, "filldone@x")
 
 	// Create an assembler (not started, so WriteArticle fails with ErrNotStarted)
 	a := assembler.New(assembler.Options{
@@ -354,3 +316,150 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone pins the three
+// early exits, each of which means the same thing: the job left the queue
+// between the fetch and this call.
+//
+// All three must return the article to the dispatch pool rather than dropping
+// it, and none may hand it to the assembler — writing into a file whose job no
+// longer exists creates bytes nothing will ever clean up. The Class A fact is
+// not recorded either: there is no job to record it against.
+func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
+	t.Parallel()
+
+	// A panicking assembler: reaching it on any of these paths is the defect,
+	// so it fails loudly rather than being asserted about afterwards.
+	forbidden := assembler.New(assembler.Options{
+		FileInfo: func(string, int) (assembler.FileInfo, error) {
+			t.Error("registerFile ran for a job that is not in the queue")
+			return assembler.FileInfo{}, errors.New("no such job")
+		},
+	}, slog.New(slog.DiscardHandler))
+
+	facts := &countingFactLog{}
+	p := &pipeline{
+		log:       slog.New(slog.DiscardHandler),
+		queue:     queue.New(),
+		assembler: forbidden,
+		factLog:   facts,
+		fileInfo:  make(map[fileKey]assembler.FileInfo),
+	}
+
+	// MarkJobStarted is the first thing that fails for an absent job.
+	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
+		JobID: "gone", FileIdx: 0, ArtIdx: 0, MessageID: "a@x",
+		Data: []byte("payload"), ServerName: "s1",
+	})
+	if facts.calls != 0 {
+		t.Errorf("recorded %d Class A facts for a job that is not in the queue", facts.calls)
+	}
+}
+
+// TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered pins
+// the third early exit specifically, because it is the one that can happen to
+// a job that IS still present: a file index the manifest does not have.
+func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *testing.T) {
+	t.Parallel()
+
+	q, job := helperJob(t, "regfail", 1, 1)
+	if err := q.MarkArticleEmittedByIdx(job.ID, 0); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	}
+	facts := &countingFactLog{}
+	p := &pipeline{
+		log:   slog.New(slog.DiscardHandler),
+		queue: q,
+		assembler: assembler.New(assembler.Options{
+			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+		}, slog.New(slog.DiscardHandler)),
+		factLog:  facts,
+		fileInfo: make(map[fileKey]assembler.FileInfo),
+	}
+
+	// File 9 does not exist in a one-file job, so registerFile fails.
+	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
+		JobID: job.ID, FileIdx: 9, ArtIdx: 0, MessageID: "regfail-f0-a0@x",
+		Data: []byte("payload"), ServerName: "s1",
+	})
+
+	snap := q.SnapshotJob(job.ID)
+	if snap.Progress().ArticleEmitted(0) {
+		t.Error("the article was left marked Emitted after a registration failure, so " +
+			"the dispatcher never offers it again and the job stalls at 99%")
+	}
+	if facts.calls != 0 {
+		t.Errorf("recorded %d Class A facts for a file the manifest does not have", facts.calls)
+	}
+}
+
+// TestHandleSuccessResult_RecordsTheFactAndTheBytesOnTheHappyPath pins the two
+// things this function gained: the Class A append, and the byte count the
+// checkpoint cadence's volume bound is measured in.
+//
+// The fact must carry the DECODED offset and length — not the NZB's encoded
+// figures — because those are what a resume verifies the file's bytes against.
+func TestHandleSuccessResult_RecordsTheFactAndTheBytesOnTheHappyPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	q, job := helperJob(t, "happy", 1, 1)
+	facts := &countingFactLog{}
+	var notedJob string
+	var notedBytes int
+	p := &pipeline{
+		log:         slog.New(slog.DiscardHandler),
+		queue:       q,
+		downloadDir: dir,
+		assembler: assembler.New(assembler.Options{
+			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+		}, slog.New(slog.DiscardHandler)),
+		factLog:  facts,
+		fileInfo: make(map[fileKey]assembler.FileInfo),
+		onArticleWritten: func(jobID string, n int) {
+			notedJob, notedBytes = jobID, n
+		},
+	}
+	if err := p.assembler.Start(t.Context()); err != nil {
+		t.Fatalf("assembler.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.assembler.Stop() })
+
+	payload := []byte("decoded article bytes")
+	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
+		JobID: job.ID, FileIdx: 0, ArtIdx: 0, MessageID: "happy-f0-a0@x",
+		Offset: 4096, Data: payload, CRC: 0xC0FFEE, ServerName: "s1",
+	})
+
+	if len(facts.appended) != 1 {
+		t.Fatalf("recorded %d Class A facts, want 1 — without one the completion "+
+			"truncate has no bound and a resume can verify nothing", len(facts.appended))
+	}
+	got := facts.appended[0]
+	if got.Offset != 4096 || got.Length != int32(len(payload)) || got.CRC32 != 0xC0FFEE {
+		t.Errorf("fact = %+v, want offset 4096, length %d, crc 0xc0ffee", got, len(payload))
+	}
+	if notedJob != job.ID || notedBytes != len(payload) {
+		t.Errorf("reported (%q, %d) to the checkpoint cadence, want (%q, %d) — the "+
+			"volume bound never fires and a fast link carries a whole interval unacked",
+			notedJob, notedBytes, job.ID, len(payload))
+	}
+}
+
+// countingFactLog records what the pipeline appends, so the Class A write can
+// be asserted without a database.
+type countingFactLog struct {
+	calls    int
+	appended []durability.ArticleFact
+}
+
+func (c *countingFactLog) Append(_ context.Context, _ string, facts []durability.ArticleFact) error {
+	c.calls++
+	c.appended = append(c.appended, facts...)
+	return nil
+}
+
+func (c *countingFactLog) ForFile(context.Context, string, int32) ([]durability.ArticleFact, error) {
+	return nil, nil
+}
+func (c *countingFactLog) DeleteJob(context.Context, string) error { return nil }

@@ -780,3 +780,91 @@ func TestPostProcConfigValidate_StrictSandbox(t *testing.T) {
 		})
 	}
 }
+
+// ---------- validateCleanupList ----------
+
+func TestValidateCleanupList(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid patterns pass", func(t *testing.T) {
+		t.Parallel()
+		if err := validateCleanupList([]string{`^\[.*\]-?`, `(?i)-? ?\(Scenzbd\)$`}); err != nil {
+			t.Errorf("validateCleanupList(valid) = %v, want nil", err)
+		}
+	})
+
+	t.Run("empty list passes", func(t *testing.T) {
+		t.Parallel()
+		if err := validateCleanupList(nil); err != nil {
+			t.Errorf("validateCleanupList(nil) = %v, want nil", err)
+		}
+	})
+
+	t.Run("invalid regex is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateCleanupList([]string{`(unclosed`})
+		if err == nil {
+			t.Fatal("validateCleanupList(invalid regex) = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "cleanup_list[0]") {
+			t.Errorf("error = %v, want it to reference cleanup_list[0]", err)
+		}
+	})
+
+	t.Run("reports every bad pattern by index", func(t *testing.T) {
+		t.Parallel()
+		err := validateCleanupList([]string{`^ok$`, `(bad`, `also(bad`})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "cleanup_list[1]") || !strings.Contains(err.Error(), "cleanup_list[2]") {
+			t.Errorf("error = %v, want it to reference cleanup_list[1] and cleanup_list[2]", err)
+		}
+	})
+}
+
+// ---------- validateEvents ----------
+
+func TestValidateEvents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("known events pass", func(t *testing.T) {
+		t.Parallel()
+		err := validateEvents([]string{"DownloadComplete", "QueueDone", "Error"})
+		if err != nil {
+			t.Errorf("validateEvents(known) = %v, want nil", err)
+		}
+	})
+
+	t.Run("empty list passes", func(t *testing.T) {
+		t.Parallel()
+		if err := validateEvents(nil); err != nil {
+			t.Errorf("validateEvents(nil) = %v, want nil", err)
+		}
+	})
+
+	t.Run("unknown event is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateEvents([]string{"NotARealEvent"})
+		if err == nil {
+			t.Fatal("validateEvents(unknown) = nil, want error")
+		}
+		if !strings.Contains(err.Error(), `"NotARealEvent"`) {
+			t.Errorf("error = %v, want it to mention the bad event name", err)
+		}
+	})
+
+	t.Run("mixed list reports only the unknown ones", func(t *testing.T) {
+		t.Parallel()
+		err := validateEvents([]string{"DownloadComplete", "Bogus"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if strings.Contains(err.Error(), "DownloadComplete") {
+			t.Errorf("error = %v, should not flag the valid event DownloadComplete", err)
+		}
+		if !strings.Contains(err.Error(), "Bogus") {
+			t.Errorf("error = %v, want it to mention Bogus", err)
+		}
+	})
+}

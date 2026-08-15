@@ -3,7 +3,6 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"os"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -44,18 +43,15 @@ func runningInDockerImage() bool {
 // returned config should Save it immediately so the same secrets appear
 // on subsequent loads.
 //
-// Default returns an error only when the OS cannot supply random bytes,
-// which is treated as fatal — without an api_key the daemon cannot
-// authenticate API requests and there is no safe fallback.
+// The error result is retained for callers and for future failure modes, but
+// nothing in this function can currently produce one. It used to carry a
+// failure to draw random bytes; since Go 1.24, crypto/rand.Read never returns
+// an error to its caller — it calls runtime fatal instead (go.dev/issue/66821)
+// — so those two branches were unreachable code that no test could ever
+// exercise, and they were removed rather than annotated as exempt.
 func Default() (*Config, error) {
-	apiKey, err := newAPIKey()
-	if err != nil {
-		return nil, fmt.Errorf("default config: generate api_key: %w", err)
-	}
-	nzbKey, err := newAPIKey()
-	if err != nil {
-		return nil, fmt.Errorf("default config: generate nzb_key: %w", err)
-	}
+	apiKey := newAPIKey()
+	nzbKey := newAPIKey()
 
 	return &Config{
 		General: GeneralConfig{
@@ -76,6 +72,8 @@ func Default() (*Config, error) {
 			BandwidthPerc:      100,
 			MinFreeSpace:       ByteSize(1024 * constants.MiB),
 			WriteCacheSize:     ByteSize(constants.DefaultWriteCacheBytes),
+			CheckpointInterval: int(constants.DefaultCheckpointInterval.Seconds()),
+			CheckpointBytes:    ByteSize(constants.DefaultCheckpointBytes),
 			MaxArtTries:        3,
 			MaxArtOpt:          1,
 			MaxActiveJobs:      4,
@@ -126,7 +124,14 @@ func Default() (*Config, error) {
 }
 
 // newAPIKey returns a 16-character lowercase hex string drawn from
-// crypto/rand. Caller-facing errors are wrapped with context.
+// crypto/rand.
+//
+// It cannot fail, and so returns no error. crypto/rand.Read has not returned
+// one to its caller since Go 1.24: on a failure to gather entropy it calls
+// runtime fatal and aborts the process, because a program that silently
+// continued with predictable "random" bytes is worse than one that stops
+// (go.dev/issue/66821). An error result here would be a branch nothing can
+// reach and no test can cover.
 //
 // 8 bytes (64 bits) is deliberate, not an oversight: SABnzbd's own
 // api_key/nzb_key are 16 lowercase hex chars, enforced here by
@@ -140,10 +145,10 @@ func Default() (*Config, error) {
 // UI is a separate, larger 32-byte value (see server.go). Revisit only
 // if the SABnzbd-compat requirement is ever dropped. Accepted risk,
 // tracked as issue #112 (S7).
-func newAPIKey() (string, error) {
+func newAPIKey() string {
 	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return hex.EncodeToString(buf[:]), nil
+	// The error is discarded rather than checked: see the doc above. Read
+	// either fills buf or takes the process down.
+	_, _ = rand.Read(buf[:])
+	return hex.EncodeToString(buf[:])
 }

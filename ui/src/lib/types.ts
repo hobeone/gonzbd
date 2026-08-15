@@ -37,6 +37,20 @@ export interface QueueSlot {
 	percentage: string;
 	pp: string;
 	warning?: string;
+	/** Why the job is parked on a storage fault — a full disk, a wedged
+	 *  mount — or absent when it is not. Render it; the backend has already
+	 *  decided that the condition is one the user can act on, and it is
+	 *  re-evaluated on an interval and when the job is resumed. */
+	stall_reason?: string;
+	/** Bytes a completed fsync covers, and bytes written since the current
+	 *  checkpoint window opened. NEVER sum them: the first survives a power
+	 *  loss and the second does not, so a total asserts the stronger claim
+	 *  about all of it. */
+	bytes_durable: number;
+	bytes_pending: number;
+	/** Unix seconds of the last SUCCESSFUL checkpoint, or 0 when this process
+	 *  has not completed one for the job. */
+	last_barrier_unix: number;
 	failed_bytes: number;
 	recovery_bytes: number;
 	recovery_files: number;

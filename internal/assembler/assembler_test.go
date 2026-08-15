@@ -95,7 +95,7 @@ func TestOutOfOrderAssembly(t *testing.T) {
 
 	var completions []string
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int, _ uint32) {
+	opts.OnFileComplete = func(jobID string, fileIdx int) {
 		completions = append(completions, fmt.Sprintf("%s:%d", jobID, fileIdx))
 	}
 
@@ -130,7 +130,7 @@ func TestFileCompleteCallbackFiresExactlyOnce(t *testing.T) {
 
 	var count atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { count.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int) { count.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -159,7 +159,7 @@ func TestMultipleFilesInterleaved(t *testing.T) {
 	completed := make(map[string]bool)
 	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int, _ uint32) {
+	opts.OnFileComplete = func(jobID string, fileIdx int) {
 		mu.Lock()
 		completed[fmt.Sprintf("%s:%d", jobID, fileIdx)] = true
 		mu.Unlock()
@@ -204,7 +204,7 @@ func TestFileInfoError(t *testing.T) {
 		FileInfo: func(_ string, _ int) (FileInfo, error) {
 			return FileInfo{}, fmt.Errorf("no such file")
 		},
-		OnFileComplete: func(_ string, _ int, _ uint32) { completions.Add(1) },
+		OnFileComplete: func(_ string, _ int) { completions.Add(1) },
 	}
 
 	a := startAssembler(t, opts)
@@ -484,7 +484,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -675,59 +675,6 @@ func TestTelemetryDiskWriteCountersCachedDrain(t *testing.T) {
 	}
 }
 
-func TestResumedFileCoalescesAndReportsCursor(t *testing.T) {
-	telemetry.Reset()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "resumed.dat")
-
-	const cursor = int64(4096)
-	var gotJob string
-	var gotIdx int
-	var gotCursor int64
-	// TotalParts is 4 but we only write 3: the file stays INCOMPLETE, which
-	// is the resume scenario the cursor hint serves. A file that completes
-	// in-session never needs a resume cursor, so finalizeFile deliberately
-	// drops the pending cursor on completion; asserting a completion-time
-	// report would contradict that design.
-	files := map[string]FileInfo{
-		"job1:0": {Path: path, TotalParts: 4, InitialWriteCursor: cursor},
-	}
-	opts := makeOpts(dir, files)
-	opts.WriteCacheBytes = 1 << 20
-	opts.SetFileExtents = func(jobID string, fileIdx int, c, _ int64) error {
-		gotJob, gotIdx, gotCursor = jobID, fileIdx, c
-		return nil
-	}
-	a := startAssembler(t, opts)
-
-	artSize := 200 * 1024 // 3 * 200KB = 600KB > 512KB contiguous threshold
-	for i := range 3 {
-		req := WriteRequest{
-			JobID: "job1", FileIdx: 0,
-			Offset: cursor + int64(i*artSize),
-			Data:   make([]byte, artSize),
-		}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
-			t.Fatalf("WriteArticle: %v", err)
-		}
-	}
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	// Coalesced into a single disk write starting from the resumed cursor.
-	if got := telemetry.DiskWrites.Value(); got != 1 {
-		t.Errorf("DiskWrites = %d, want 1 (coalesced run from resumed cursor)", got)
-	}
-	// The advanced cursor was reported through the batched callback.
-	if gotJob != "job1" || gotIdx != 0 {
-		t.Errorf("SetWriteCursor got (%q,%d), want (job1,0)", gotJob, gotIdx)
-	}
-	if gotCursor != cursor+int64(3*artSize) {
-		t.Errorf("reported cursor = %d, want %d", gotCursor, cursor+int64(3*artSize))
-	}
-}
-
 func TestTelemetryFileCompleted(t *testing.T) {
 	telemetry.Reset()
 
@@ -800,20 +747,18 @@ func TestTelemetryPreallocCalls(t *testing.T) {
 func TestAssembler_HelperMethods(t *testing.T) {
 	t.Parallel()
 
+	// handleFatalArticle and handleSuccessArticle no longer take a writeCache,
+	// open map or key — the FileWriter each openFile now owns is self-
+	// contained — and neither records an ack: pendingDone/pendingFailed and
+	// the MarkArticles* callbacks are gone with the assembler's ack authority
+	// (X2). What is left to pin is the local bookkeeping: seenDone/seenFailed
+	// dedup, now living on the FileWriter, and the true/false return that
+	// tells processRequest whether to count the article toward partsWritten.
+
 	t.Run("handleFatalArticle", func(t *testing.T) {
-		a := &Assembler{
-			log:           slog.Default(),
-			pendingFailed: make(map[string][]string),
-			pendingDone:   make(map[string][]string),
-			opts: Options{
-				MarkArticlesFailed: func(jobID string, messageIDs []string) ([]string, error) { return nil, nil },
-			},
-		}
-		f := &openFile{
-			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]int64),
-			crcValid:   true,
-		}
+		a := newHelperAssembler()
+		dir := t.TempDir()
+		f := newHelperFile(t, dir, "fatal.dat", 0)
 		req := WriteRequest{
 			JobID:     "job1",
 			MessageID: "msg1",
@@ -824,180 +769,96 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if !a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return true for first-time failure")
 		}
-		if f.crcValid {
-			t.Error("expected crcValid to be false after fatal error")
-		}
-		if _, ok := f.seenFailed["msg1"]; !ok {
+		if _, ok := f.w.seenFailed["msg1"]; !ok {
 			t.Error("expected seenFailed to contain msg1")
-		}
-		if len(a.pendingFailed["job1"]) != 1 || a.pendingFailed["job1"][0] != "msg1" {
-			t.Errorf("expected pendingFailed to contain msg1, got %v", a.pendingFailed["job1"])
 		}
 
 		// Duplicate failure.
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false for duplicate failure")
 		}
-		if len(a.pendingFailed["job1"]) != 2 {
-			t.Errorf("expected pendingFailed to contain 2 entries, got %d", len(a.pendingFailed["job1"]))
-		}
 
 		// Cross-check: already counted as success.
-		f.seenFailed = make(map[string]struct{})
-		a.pendingFailed = make(map[string][]string)
-		f.seenDone["msg1"] = 0
+		f.w.seenFailed = make(map[string]struct{})
+		f.w.seenDone["msg1"] = struct{}{}
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false when already counted as success")
 		}
 	})
 
 	t.Run("handleSuccessArticle", func(t *testing.T) {
-		a := &Assembler{
-			log:           slog.Default(),
-			pendingFailed: make(map[string][]string),
-			pendingDone:   make(map[string][]string),
-			opts: Options{
-				MarkArticlesDone: func(jobID string, messageIDs []string) error { return nil },
-			},
-		}
-
-		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_success")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tmpFile.Close()
-
-		f := &openFile{
-			handle:     tmpFile,
-			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]int64),
-			crcValid:   true,
-		}
-
-		wc := newWriteCache(0) // Caching disabled - write directly.
-		open := make(map[fileKey]*openFile)
-		key := fileKey{jobID: "job1", fileIdx: 0}
+		a := newHelperAssembler()
+		dir := t.TempDir()
+		f := newHelperFile(t, dir, "success.dat", 0)
 
 		req := WriteRequest{
 			JobID:     "job1",
 			MessageID: "msg1",
 			Offset:    0,
 			Data:      []byte("hello success"),
-			CRC:       12345,
 		}
 
 		// First-time success.
-		if !a.handleSuccessArticle(f, req, wc, open, key) {
+		if !a.handleSuccessArticle(f, req) {
 			t.Error("expected handleSuccessArticle to return true")
 		}
-		if _, ok := f.seenDone["msg1"]; !ok {
+		if _, ok := f.w.seenDone["msg1"]; !ok {
 			t.Error("expected seenDone to contain msg1")
 		}
-		if len(a.pendingDone["job1"]) != 1 || a.pendingDone["job1"][0] != "msg1" {
-			t.Errorf("expected pendingDone to contain msg1, got %v", a.pendingDone["job1"])
-		}
-		if len(f.crcParts) != 1 || f.crcParts[0].crc != 12345 {
-			t.Errorf("expected crcParts to contain 12345, got %v", f.crcParts)
+		if got := f.w.writtenSoFar(); len(got) != 1 {
+			t.Fatalf("writtenSoFar = %v, want 1 entry — the bytes reached WriteAt", got)
 		}
 
 		// Duplicate success.
-		if a.handleSuccessArticle(f, req, wc, open, key) {
+		req2 := WriteRequest{JobID: "job1", MessageID: "msg1", Offset: 0, Data: []byte("hello success")}
+		if a.handleSuccessArticle(f, req2) {
 			t.Error("expected handleSuccessArticle to return false for duplicate success")
 		}
-		if len(a.pendingDone["job1"]) != 2 {
-			t.Errorf("expected pendingDone to contain 2 entries, got %d", len(a.pendingDone["job1"]))
-		}
 
-		// Cross-check: already counted as failure.
-		f.seenDone = make(map[string]int64)
-		a.pendingDone = make(map[string][]string)
-		f.seenFailed["msg1"] = struct{}{}
-		if a.handleSuccessArticle(f, req, wc, open, key) {
+		// Cross-check: already counted as failure. The retry still writes —
+		// the bytes are still the file's content — but must not be counted
+		// toward partsWritten a second time.
+		f.w.seenDone = make(map[string]struct{})
+		f.w.seenFailed["msg1"] = struct{}{}
+		req3 := WriteRequest{JobID: "job1", MessageID: "msg1", Offset: 20, Data: []byte("world")}
+		if a.handleSuccessArticle(f, req3) {
 			t.Error("expected handleSuccessArticle to return false when already counted as failure")
 		}
-		if _, ok := f.seenDone["msg1"]; !ok {
-			t.Error("expected seenDone to contain msg1")
-		}
-
-		// CRC-less success invalidates CRC tracking.
-		req2 := WriteRequest{
-			JobID:     "job1",
-			MessageID: "msg2",
-			Offset:    13,
-			Data:      []byte("world"),
-			CRC:       0, // CRC-less
-		}
-		if !a.handleSuccessArticle(f, req2, wc, open, key) {
-			t.Error("expected handleSuccessArticle to return true for req2")
-		}
-		if f.crcValid {
-			t.Error("expected crcValid to be false after CRC-less article")
-		}
-
-		// Empty data success with CRC=0 does not invalidate CRC tracking.
-		req3 := WriteRequest{
-			JobID:     "job1",
-			MessageID: "msg3",
-			Offset:    18,
-			Data:      nil, // 0-length
-			CRC:       0,
-		}
-		f.crcValid = true
-		if !a.handleSuccessArticle(f, req3, wc, open, key) {
-			t.Error("expected handleSuccessArticle to return true for req3")
-		}
-		if !f.crcValid {
-			t.Error("expected crcValid to remain true after empty article")
+		if _, ok := f.w.seenDone["msg1"]; !ok {
+			t.Error("expected seenDone to contain msg1 after the retry")
 		}
 	})
 
 	t.Run("finalizeFile", func(t *testing.T) {
-		// Mock callback tracking.
+		// finalizeFile no longer truncates, no longer computes a CRC, and no
+		// longer closes the handle — all three moved to durability.Barrier,
+		// which is the only component that knows an fsync has happened (see
+		// finalizeFile's doc comment). What is left to pin here is: the
+		// tombstone goes down, the handle stays OPEN for the barrier to
+		// finalize through, and OnFileComplete fires with (jobID, fileIdx).
 		var callbackJobID string
 		var callbackFileIdx int
-		var callbackCRC uint32
 		var callbackFired int
 
 		opts := Options{
 			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
 				return FileInfo{Path: "test"}, nil
 			},
-			OnFileComplete: func(jobID string, fileIdx int, fileCRC uint32) {
+			OnFileComplete: func(jobID string, fileIdx int) {
 				callbackJobID = jobID
 				callbackFileIdx = fileIdx
-				callbackCRC = fileCRC
 				callbackFired++
 			},
 		}
-
 		a := New(opts, slog.Default())
-		a.pendingDone = make(map[string][]string)
-		a.pendingFailed = make(map[string][]string)
 
-		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_finalize")
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Write some initial data so truncation works.
-		if _, err := tmpFile.Write([]byte("hello world final truncate")); err != nil {
+		dir := t.TempDir()
+		f := newHelperFile(t, dir, "finalize.dat", 0)
+		if _, err := f.w.handle.Write([]byte("hello world final truncate")); err != nil {
 			t.Fatal(err)
 		}
 
-		f := &openFile{
-			handle:     tmpFile,
-			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]int64),
-			maxWritten: 11, // "hello world" length is 11
-			crcValid:   true,
-			crcParts: []crcPart{
-				{offset: 0, crc: 1, len: 5},
-				{offset: 5, crc: 2, len: 6},
-			},
-		}
-
-		wc := newWriteCache(0)
 		key := fileKey{jobID: "job1", fileIdx: 0}
-		open := map[fileKey]*openFile{key: f}
 		completed := make(map[fileKey]struct{})
 
 		req := WriteRequest{
@@ -1005,12 +866,23 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			FileIdx: 0,
 		}
 
-		a.finalizeFile(f, key, req, open, completed, wc)
+		a.finalizeFile(f, key, req, completed)
 
-		// Check maps updated.
-		if _, ok := open[key]; ok {
-			t.Error("expected file to be removed from open map")
-		}
+		// The file stays open, and that is now structural rather than
+		// asserted: finalizeFile is not given the open map at all, so it
+		// cannot remove the file from it. Closing here would take the handle
+		// away from Barrier.FinalizeFile, which still has to Drain, Sync,
+		// Truncate and Stat it — the completed file would keep
+		// pre-allocation's trailing zeros and its last articles would never
+		// be acked.
+		//
+		// The assertion this replaces read the map back after passing it to a
+		// parameter finalizeFile had already blanked to `_`, so it could not
+		// have failed.
+		//
+		// The tombstone goes down immediately even so, or a late duplicate
+		// would be written into a file the barrier is mid-way through
+		// truncating.
 		if _, ok := completed[key]; !ok {
 			t.Error("expected file to be added to completed map")
 		}
@@ -1022,175 +894,54 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if callbackJobID != "job1" || callbackFileIdx != 0 {
 			t.Errorf("callback parameters mismatch: job=%s, idx=%d", callbackJobID, callbackFileIdx)
 		}
-		_ = callbackCRC
-
-		// Verify file size is truncated to maxWritten (11).
-		fi, err := os.Stat(tmpFile.Name())
-		if err != nil {
-			t.Fatalf("failed to stat file: %v", err)
-		}
-		if fi.Size() != 11 {
-			t.Errorf("expected file size to be 11, got %d", fi.Size())
-		}
-	})
-
-	t.Run("finalizeFile_zeroLength", func(t *testing.T) {
-		// A file where no articles were successfully written (all failed or
-		// the job had 0-byte content) leaves maxWritten=0. finalizeFile must
-		// not call Truncate(0) — that would silently wipe any pre-allocated
-		// content — and must still fire OnFileComplete.
-		var callbackFired int
-		opts := Options{
-			FileInfo:       func(string, int) (FileInfo, error) { return FileInfo{Path: "test"}, nil },
-			OnFileComplete: func(_ string, _ int, _ uint32) { callbackFired++ },
-		}
-		a := New(opts, slog.Default())
-		a.pendingDone = make(map[string][]string)
-		a.pendingFailed = make(map[string][]string)
-
-		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_zero_")
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Write 10 bytes first. If Truncate(0) is wrongly called, size becomes 0.
-		if _, err := tmpFile.Write(make([]byte, 10)); err != nil {
-			t.Fatal(err)
-		}
-
-		f := &openFile{
-			handle:     tmpFile,
-			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]int64),
-			maxWritten: 0, // no bytes written
-			crcValid:   false,
-		}
-
-		wc := newWriteCache(0)
-		key := fileKey{jobID: "job1", fileIdx: 0}
-		open := map[fileKey]*openFile{key: f}
-		completed := make(map[fileKey]struct{})
-		req := WriteRequest{JobID: "job1", FileIdx: 0}
-
-		a.finalizeFile(f, key, req, open, completed, wc)
-
-		if callbackFired != 1 {
-			t.Errorf("OnFileComplete fired %d times for zero-length file, want 1", callbackFired)
-		}
-		if _, ok := open[key]; ok {
-			t.Error("file should be removed from open map")
-		}
-		if _, ok := completed[key]; !ok {
-			t.Error("file should be added to completed map")
-		}
-		// File size stays at 10 (Truncate skipped when maxWritten==0).
-		fi, err := os.Stat(tmpFile.Name())
-		if err != nil {
-			t.Fatalf("stat: %v", err)
-		}
-		if fi.Size() != 10 {
-			t.Errorf("zero-length file size = %d, want 10", fi.Size())
-		}
-	})
-
-	t.Run("finalizeFile_emptyCRCParts", func(t *testing.T) {
-		// A file with crcValid=true but empty/nil crcParts should finalize
-		// successfully without panicking (kills boundary mutant on len(crcParts) > 0).
-		opts := Options{
-			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
-				return FileInfo{Path: "test"}, nil
-			},
-		}
-		a := New(opts, slog.Default())
-		a.pendingDone = make(map[string][]string)
-		a.pendingFailed = make(map[string][]string)
-
-		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_crc_empty")
-		if err != nil {
-			t.Fatal(err)
-		}
-		f := &openFile{
-			handle:     tmpFile,
-			seenFailed: make(map[string]struct{}),
-			seenDone:   make(map[string]int64),
-			maxWritten: 11,
-			crcValid:   true,
-			crcParts:   nil, // empty
-		}
-		wc := newWriteCache(0)
-		key := fileKey{jobID: "job1", fileIdx: 0}
-		open := map[fileKey]*openFile{key: f}
-		completed := make(map[fileKey]struct{})
-		req := WriteRequest{JobID: "job1", FileIdx: 0}
-
-		a.finalizeFile(f, key, req, open, completed, wc)
 	})
 
 	t.Run("handleSuccessArticle_writeFail", func(t *testing.T) {
-		// When writeArticleOrBuffer fails (file closed), handleSuccessArticle
-		// must still return true (partsWritten increments — job must not stall)
-		// and the article must land in pendingFailed, not pendingDone.
-		// We leave seenFailed as nil to verify map initialization works and prevent panic (kills nil seenFailed mutant).
-		a := &Assembler{
-			log:           slog.Default(),
-			pendingFailed: make(map[string][]string),
-			pendingDone:   make(map[string][]string),
-			opts: Options{
-				MarkArticlesFailed: func(jobID string, messageIDs []string) ([]string, error) { return nil, nil },
-				MarkArticlesDone:   func(jobID string, messageIDs []string) error { return nil },
-			},
-		}
-
-		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_fail_")
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Close the file so WriteAt will return an error.
-		tmpFile.Close()
-
-		wc := newWriteCache(0)
-		open := make(map[fileKey]*openFile)
-		key := fileKey{jobID: "job1", fileIdx: 0}
-
-		f := &openFile{
-			handle:     tmpFile, // closed — writes will fail
-			key:        key,     // set on every file openTargetFile creates
-			seenFailed: nil,     // nil — test map initialization
-			seenDone:   make(map[string]int64),
-			crcValid:   true,
-		}
+		// A write failure must NOT be counted toward completion, and the
+		// article must not be reported Written, must land in seenFailed
+		// rather than seenDone, and must not be recorded as damaged (A1).
+		//
+		// This subtest previously required the opposite return value, on the
+		// reasoning that "the barrier's next Drain simply won't see it, which
+		// leaves it Outstanding for a re-fetch". Absence from a Drain does not
+		// make an article Outstanding: its Emitted bit is still set from
+		// dispatch, ForEachUnfinishedArticle skips a set Emitted bit, and no
+		// path on this branch clears it. So the article was never re-fetched,
+		// while partsWritten counted a write that did not happen and the file
+		// finalized over pre-allocation zeros at full reported health.
+		//
+		// Stalling is not the harm the old expectation took it for. A storage
+		// fault stalls or fails the job everywhere else in this design, and
+		// the article stays unresolved either way — which is the whole of A1.
+		a := newHelperAssembler()
+		dir := t.TempDir()
+		f := newHelperFile(t, dir, "fail_write.dat", 0)
+		_ = f.w.handle.Close() // force WriteAt to fail
 
 		req := WriteRequest{
 			JobID:     "job1",
 			MessageID: "msgFail",
 			Offset:    0,
 			Data:      []byte("data that will not be written"),
-			CRC:       99999,
 		}
 
-		got := a.handleSuccessArticle(f, req, wc, open, key)
-		if !got {
-			t.Error("handleSuccessArticle must return true on write failure (prevents job stall)")
+		got := a.handleSuccessArticle(f, req)
+		if got {
+			t.Error("handleSuccessArticle counted a failed write toward completion; " +
+				"processRequest increments partsWritten on this return, so the file " +
+				"reaches TotalParts and finalizes over bytes that never reached disk")
 		}
-		// Write failed → article should be in pendingFailed, not pendingDone.
-		if len(a.pendingFailed["job1"]) == 0 {
-			t.Error("failed write should add msgid to pendingFailed")
+		if got := f.w.writtenSoFar(); len(got) != 0 {
+			t.Errorf("writtenSoFar = %v after a failed write, want empty", got)
 		}
-		if len(a.pendingDone["job1"]) != 0 {
-			t.Error("failed write should NOT add msgid to pendingDone")
+		if _, ok := f.w.seenFailed["msgFail"]; ok {
+			t.Error("msgFail was recorded as FAILED by a storage fault, which A1 forbids: " +
+				"a full disk is not evidence about the article's availability")
 		}
-		if _, ok := f.seenFailed["msgFail"]; !ok {
-			t.Error("msgFail should be in seenFailed after write failure")
+		if _, ok := f.w.seenDone["msgFail"]; ok {
+			t.Error("msgFail should not remain in seenDone after write failure")
 		}
 	})
-}
-
-func TestDefaultDoneFlushInterval(t *testing.T) {
-	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
-	}, nil)
-	if a.flushInterval != defaultDoneFlushInterval {
-		t.Errorf("flushInterval = %v, want %v", a.flushInterval, defaultDoneFlushInterval)
-	}
 }
 
 func TestNew_QueueSizeDefault(t *testing.T) {
@@ -1278,82 +1029,6 @@ func TestDiskCheckInterval(t *testing.T) {
 	}
 }
 
-func TestFlush_OnlyFailedArticles(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 1)
-
-	var failedIDs []string
-	var mu sync.Mutex
-	opts := makeOpts(dir, files)
-	opts.DoneFlushInterval = -1
-	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
-		mu.Lock()
-		failedIDs = append(failedIDs, msgIDs...)
-		mu.Unlock()
-		return msgIDs, nil
-	}
-
-	a := startAssembler(t, opts)
-
-	req := WriteRequest{
-		JobID: "job1", FileIdx: 0, MessageID: "fail-only",
-		FatalErr: fmt.Errorf("fail"),
-	}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
-		t.Fatalf("WriteArticle: %v", err)
-	}
-
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(failedIDs) != 1 || failedIDs[0] != "fail-only" {
-		t.Errorf("failedIDs = %v, want [fail-only]", failedIDs)
-	}
-}
-
-func TestLateDuplicate_FatalErr(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 1)
-
-	var failedIDs []string
-	var mu sync.Mutex
-	opts := makeOpts(dir, files)
-	opts.DoneFlushInterval = -1
-	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
-		mu.Lock()
-		failedIDs = append(failedIDs, msgIDs...)
-		mu.Unlock()
-		return msgIDs, nil
-	}
-
-	a := startAssembler(t, opts)
-
-	// Complete the file.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
-		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AA"),
-		MessageID: "msg1",
-	})
-
-	// Send late duplicate with FatalErr.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
-		JobID: "job1", FileIdx: 0, MessageID: "msg1-late-fail",
-		FatalErr: fmt.Errorf("late fail"),
-	})
-
-	_ = a.Stop()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(failedIDs) != 1 || failedIDs[0] != "msg1-late-fail" {
-		t.Errorf("failedIDs = %v, want [msg1-late-fail]", failedIDs)
-	}
-}
-
 func TestPreallocCallsNotIncrementedWhenSizeZero(t *testing.T) {
 	telemetry.Reset()
 
@@ -1389,7 +1064,7 @@ func TestTotalPartsZero_DoesNotComplete(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int) { completed = true }
 
 	a := startAssembler(t, opts)
 
@@ -1512,7 +1187,7 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 	opts.QueueSize = 2
 
 	var completions atomic.Int32
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) {
+	opts.OnFileComplete = func(_ string, _ int) {
 		completions.Add(1)
 	}
 
@@ -1630,99 +1305,86 @@ func TestAssembler_CacheUsageBytes_TracksBufferedBytes(t *testing.T) {
 var (
 	_ = (*Assembler).worker
 	_ = (*Assembler).processRequest
-	_ = (*Assembler).flush
 	_ = (*Assembler).dispatchRequest
 	_ = (*Assembler).openTargetFile
-	_ = (*Assembler).writeArticleOrBuffer
 )
 
-func TestAssembler_FlushRunError(t *testing.T) {
+// TestFileWriter_FlushRunErrorCountsPipelineError translates
+// TestAssembler_FlushRunError: flushRun moved from the assembler onto
+// FileWriter and now returns an error instead of a bool (the caller has no
+// ack to withhold any more), but the telemetry contract — a failed coalesced
+// write counts a disk_write_error — is unchanged.
+func TestFileWriter_FlushRunErrorCountsPipelineError(t *testing.T) {
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
 
-	tmpFile, err := os.CreateTemp("", "assembler-flush-run-err")
+	tmpFile, err := os.CreateTemp(t.TempDir(), "filewriter-flush-run-err")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	_ = tmpFile.Close() // closed handle — WriteAt will fail
 
+	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
+	run := &flushRun{data: []byte("test"), offset: 0}
+
+	if err := w.flushRun(run); err == nil {
+		t.Error("flushRun on a closed file returned nil error, want a storage fault")
+	}
+	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
+		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
+	}
+}
+
+// TestFileWriter_DirectWriteErrorCountsPipelineError translates
+// TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError: the
+// caching-disabled direct-write branch moved from writeArticleOrBuffer onto
+// FileWriter.Accept, but the telemetry contract is unchanged. Not a
+// t.Parallel() test — PipelineErrors is process-global state.
+func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "filewriter_write_or_buffer_err_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close() // WriteAt will fail
+
+	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
+
+	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
+		t.Error("Accept on a closed file returned nil error, want a storage fault")
+	}
+	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
+		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
+	}
+}
+
+// TestFileWriter_DrainWriteErrorCountsPipelineError translates
+// TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError: the
+// cache-drain WriteAt path moved from writeCachedArticles onto
+// FileWriter.Drain, but the telemetry contract is unchanged. Not a
+// t.Parallel() test — PipelineErrors is process-global state.
+func TestFileWriter_DrainWriteErrorCountsPipelineError(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "filewriter_write_cached_err_")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(1<<20))
+	// Buffer an article without triggering a contiguous flush, then close
+	// the handle so the drain's WriteAt fails.
+	if err := w.Accept(articleID{msgID: "m1"}, 4096, []byte("data")); err != nil {
+		t.Fatalf("Accept (buffered): %v", err)
+	}
 	_ = tmpFile.Close()
 
-	log := slog.Default()
-	a := &Assembler{
-		log: log,
+	if _, err := w.Drain(); err == nil {
+		t.Error("Drain after closing the handle returned nil error, want a storage fault")
 	}
-
-	f := &openFile{
-		handle: tmpFile,
-		info: FileInfo{
-			Path: tmpFile.Name(),
-		},
-	}
-
-	run := &flushRun{
-		data:   []byte("test"),
-		offset: 0,
-	}
-
-	success := a.flushRun(f, run)
-	if success {
-		t.Errorf("flushRun on closed file: got true, want false")
-	}
-	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
-		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
-	}
-}
-
-// TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError exercises the
-// direct-write (caching-disabled) branch of writeArticleOrBuffer, asserting
-// telemetry.PipelineErrors classification. Not a t.Parallel() test —
-// PipelineErrors is process-global state.
-func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T) {
-	telemetry.Reset()
-	t.Cleanup(telemetry.Reset)
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_write_or_buffer_err_")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close() // WriteAt will fail
-
-	a := &Assembler{log: slog.Default()}
-	f := &openFile{handle: tmpFile, info: FileInfo{Path: tmpFile.Name()}}
-	wc := newWriteCache(0) // caching disabled — forces the direct WriteAt branch
-	open := make(map[fileKey]*openFile)
-	key := fileKey{jobID: "job1", fileIdx: 0}
-	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data")}
-
-	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got != outcomeFailed {
-		t.Errorf("writeArticleOrBuffer on closed file: got %v, want outcomeFailed", got)
-	}
-	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
-		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
-	}
-}
-
-// TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError exercises the
-// cache-drain WriteAt path in writeCachedArticles, asserting
-// telemetry.PipelineErrors classification. Not a t.Parallel() test —
-// PipelineErrors is process-global state.
-func TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError(t *testing.T) {
-	telemetry.Reset()
-	t.Cleanup(telemetry.Reset)
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_write_cached_err_")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpFile.Close() // WriteAt will fail
-
-	a := &Assembler{log: slog.Default()}
-	f := &openFile{handle: tmpFile, info: FileInfo{Path: tmpFile.Name()}}
-	arts := []bufferedArticle{{offset: 0, data: []byte("data")}}
-
-	a.writeCachedArticles(f, arts, "drain")
-
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
 	}

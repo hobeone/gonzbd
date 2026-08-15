@@ -458,12 +458,8 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	m := mustManifest(t, j)
 	// File 0 occupies global article indices [0,3); file 1 is left pristine.
 
-	if err := q.MarkArticlesDone(id, []string{m.ArticleID(0)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	if _, err := q.MarkArticlesFailed(id, []string{m.ArticleID(1)}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackDone(t, q, id, m.ArticleID(0))
+	ackFailed(t, q, id, m.ArticleID(1))
 	if err := q.MarkArticleEmitted(id, m.ArticleID(2)); err != nil {
 		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
@@ -565,18 +561,14 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 	// still-deferred recovery volumes when Par2Recovered is false, so the
 	// explicit undefer+discard must run first (setting Par2Recovered=true)
 	// to keep the discard path exercised rather than pre-empted.
-	if err := q.MarkArticlesDone(job.ID, []string{"c1a@x"}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, "c1a@x")
 	if err := q.UndeferRecoveryVolumes(job.ID, []int{3}); err != nil { // set.vol000+01.par2
 		t.Fatalf("UndeferRecoveryVolumes: %v", err)
 	}
 	if err := q.DiscardDeferredPar2(job.ID); err != nil { // discards set.vol001+02.par2
 		t.Fatalf("DiscardDeferredPar2: %v", err)
 	}
-	if _, err := q.MarkArticlesFailed(job.ID, []string{"c1b@x"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
+	ackFailed(t, q, job.ID, "c1b@x")
 
 	data, err := json.Marshal(job)
 	if err != nil {
@@ -783,9 +775,7 @@ func TestLoad_RehydratesResidentJob(t *testing.T) {
 	if err := seed.SetStatus(job.ID, constants.StatusDownloading); err != nil {
 		t.Fatalf("SetStatus(Downloading): %v", err)
 	}
-	if err := seed.MarkArticlesDone(job.ID, []string{articleID(0, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, seed, job.ID, articleID(0, 0))
 	// Save while resident: SQLiteStore.Update's per-file flush is guarded on
 	// the manifest being readable, so a save after eviction never writes
 	// articles_done.

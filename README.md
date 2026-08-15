@@ -253,7 +253,7 @@ servers:
 downloads:
   bandwidth_max: 0          # 0 = unlimited; or e.g. "50M" for 50 MB/s
   bandwidth_perc: 100
-  write_cache_size: 500M
+  write_cache_size: 64M       # write-coalescing budget; 0 disables
   max_art_tries: 3
 
 postproc:

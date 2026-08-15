@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -729,8 +730,12 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Mutate progress (mark article index 1 as done)
-	q.MarkArticlesDone(job.ID, []string{"art2"})
+	// Mutate progress (mark article index 1, "art2", as done).
+	bm := durability.NewBitmap(2)
+	bm.Set(1)
+	if err := q.SeedFromExtents(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: bm}}); err != nil {
+		t.Fatalf("SeedFromExtents: %v", err)
+	}
 
 	// Update store (simulating checkpoint)
 	if err := store.Update(ctx, job); err != nil {
@@ -986,7 +991,7 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 // is_par2_recovery themselves, so the aggregate would in fact be exactly right.
 //
 // They still travel through dedicated jobs.recovery_bytes/recovery_files
-// columns (migration 010) for a different reason. The job_files aggregate in
+// columns for a different reason. The job_files aggregate in
 // Get fails soft, leaving its scalars at zero on error, and a zero recovery
 // figure is not a missing reading — it is a definite claim of no repair
 // capacity that two abort gates act on. The jobs row is read unconditionally.
@@ -1112,5 +1117,60 @@ func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing
 	logged := logBuf.String()
 	if !strings.Contains(logged, "aggregate scalars") || !strings.Contains(logged, job.ID) {
 		t.Errorf("expected the aggregate query error to be logged (mentioning the job id), got log output: %q", logged)
+	}
+}
+
+// TestRestoreJobProgress_RestoresTheResolvedFilename pins that the on-disk
+// name a run resolved for a file survives a restart.
+//
+// It is persisted by SetFileFilename and was written to job_files.filename all
+// along, but the ordinary restore path never selected the column back — so
+// every job came out of a restart with an empty name for every file, and only
+// the retry overlay (RestoreRetryProgress) carried one over.
+//
+// Two things break on an empty name, and neither is visible from inside this
+// package: pipeline.registerFile reads it as "not resolved yet" and calls
+// GetUniqueFilename, which by construction returns a path that does NOT exist
+// — so a restart writes to <name>.1 and orphans the partial file the previous
+// run left; and the startup resume sweep locates a job's file by this name, so
+// with it empty there is nothing on disk to resume against.
+//
+// File 1 is deliberately left unnamed. Restoring a constant, or copying file
+// 0's name across every row, would satisfy an assertion about file 0 alone.
+func TestRestoreJobProgress_RestoresTheResolvedFilename(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
+
+	job := newTestJobWithManifest(t, "filename00000001", "filename-job", 2, 1)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	const resolved = "resolved-name.bin"
+	if err := q.SetFileFilename(job.ID, 0, resolved); err != nil {
+		t.Fatalf("SetFileFilename: %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// A resident-status job comes back through SQLiteStore.Get, which is what
+	// calls RestoreJobProgress.
+	reloaded, err := queue.Load(dir, queue.WithStore(store))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := reloaded.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get after reload: %v", err)
+	}
+	if _, mErr := got.Manifest(); mErr != nil {
+		t.Fatalf("fixture guard: the reloaded job is not resident (%v), so RestoreJobProgress never ran", mErr)
+	}
+	if name := got.Progress().FileFilename(0); name != resolved {
+		t.Errorf("FileFilename(0) after restart = %q, want %q — the partial file this "+
+			"name points at is orphaned without it", name, resolved)
+	}
+	if name := got.Progress().FileFilename(1); name != "" {
+		t.Errorf("FileFilename(1) after restart = %q, want empty — file 1 was never registered", name)
 	}
 }

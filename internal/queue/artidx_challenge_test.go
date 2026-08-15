@@ -1,8 +1,6 @@
 package queue
 
 import (
-	"fmt"
-	"math"
 	"math/rand/v2"
 	"sync"
 	"testing"
@@ -10,8 +8,15 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 )
 
-// TestArtIdx_EdgeCases stress-tests MarkArticlesDoneByIdx and MarkArticlesFailedByIdx
-// with negative, zero, out-of-bounds, and valid ArtIdx values.
+// TestArtIdx_EdgeCases stress-tests AckPermanentFailure and the ByIdx emitted
+// markers with negative, zero, out-of-bounds, and valid ArtIdx values.
+//
+// The done-path equivalent (formerly MarkArticlesDoneByIdx) is not exercised
+// here: its replacement, AckDurable, only accepts a durability.DurableProof,
+// which has no exported constructor outside internal/durability (see
+// ackhelpers_test.go). That is deliberate compiler-enforced scoping, not an
+// oversight, so the "out-of-bounds indices are silently ignored" coverage for
+// the done path no longer exists in this package.
 func TestArtIdx_EdgeCases(t *testing.T) {
 	q := New()
 	q.PauseAll()
@@ -30,40 +35,16 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 		t.Fatalf("Expected at least 2 articles in test manifest, got %d", nArt)
 	}
 
-	t.Run("negative and out-of-bounds indices are safely ignored", func(t *testing.T) {
-		invalidIdxs := []int32{-1, -100, int32(nArt), int32(nArt + 50), math.MaxInt32, math.MinInt32}
-		err := q.MarkArticlesDoneByIdx(job.ID, invalidIdxs)
-		if err != nil {
-			t.Errorf("MarkArticlesDoneByIdx returned unexpected error for out-of-bounds: %v", err)
-		}
-
-		// Verify no article was marked done
-		snap, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get job: %v", err)
-		}
-		if snap.Progress().ArticlesResolved() != 0 {
-			t.Errorf("Expected 0 resolved articles, got %d", snap.Progress().ArticlesResolved())
-		}
-	})
-
-	t.Run("MarkArticlesFailedByIdx out-of-bounds safe handling", func(t *testing.T) {
+	t.Run("AckPermanentFailure out-of-bounds safe handling", func(t *testing.T) {
 		invalidIdxs := []int32{-1, int32(nArt + 10)}
-		firstTime, err := q.MarkArticlesFailedByIdx(job.ID, invalidIdxs)
+		err := q.AckPermanentFailure(job.ID, invalidIdxs)
 		if err != nil {
-			t.Errorf("MarkArticlesFailedByIdx returned unexpected error: %v", err)
-		}
-		if len(firstTime) != 0 {
-			t.Errorf("Expected len(firstTime) == 0 for invalid indices, got %v", firstTime)
+			t.Errorf("AckPermanentFailure returned unexpected error: %v", err)
 		}
 	})
 
 	t.Run("valid indices update progress correctly", func(t *testing.T) {
-		validIdxs := []int32{0}
-		err := q.MarkArticlesDoneByIdx(job.ID, validIdxs)
-		if err != nil {
-			t.Fatalf("MarkArticlesDoneByIdx: %v", err)
-		}
+		ackDoneIdx(t, q, job.ID, 0)
 
 		snap, err := q.Get(job.ID)
 		if err != nil {
@@ -133,14 +114,12 @@ func TestArtIdx_ConcurrentStress(t *testing.T) {
 			defer wg.Done()
 			for i := range opsPerWorker {
 				idx := int32(rand.IntN(nArt+5) - 2) // includes -2, -1, 0..nArt-1, nArt, nArt+1, etc.
-				switch i % 4 {
+				switch i % 3 {
 				case 0:
-					_ = q.MarkArticlesDoneByIdx(job.ID, []int32{idx})
+					_ = q.AckPermanentFailure(job.ID, []int32{idx})
 				case 1:
-					_, _ = q.MarkArticlesFailedByIdx(job.ID, []int32{idx})
-				case 2:
 					_ = q.MarkArticleEmittedByIdx(job.ID, idx)
-				case 3:
+				case 2:
 					_ = q.ClearArticleEmittedByIdx(job.ID, idx)
 				}
 			}
@@ -148,69 +127,4 @@ func TestArtIdx_ConcurrentStress(t *testing.T) {
 	}
 
 	wg.Wait()
-}
-
-// BenchmarkMarkArticlesDone_Comparison benchmarks string-based vs O(1) index-based article completion.
-func BenchmarkMarkArticlesDone_Comparison(b *testing.B) {
-	const totalArticles = 10000
-
-	files := []JobFile{
-		{
-			Subject: "test.file.rar",
-			Bytes:   totalArticles * 100,
-			Articles: func() []JobArticle {
-				arts := make([]JobArticle, totalArticles)
-				for i := range totalArticles {
-					arts[i] = JobArticle{
-						ID:     fmt.Sprintf("msg-%d@test", i),
-						Bytes:  100,
-						Number: i + 1,
-					}
-				}
-				return arts
-			}(),
-		},
-	}
-
-	manifest := newManifest(files)
-
-	b.Run("StringMap_MarkArticlesDone", func(b *testing.B) {
-		for i := range b.N {
-			b.StopTimer()
-			q := New()
-			q.PauseAll()
-			job := &Job{
-				ID:       fmt.Sprintf("job-str-%d", i),
-				manifest: manifest,
-				progress: newJobProgress(manifest),
-				Status:   constants.StatusDownloading,
-			}
-			q.byID[job.ID] = job
-			q.jobs = []*Job{job}
-			msgIDs := []string{fmt.Sprintf("msg-%d@test", i%totalArticles)}
-			b.StartTimer()
-
-			_ = q.MarkArticlesDone(job.ID, msgIDs)
-		}
-	})
-
-	b.Run("O1Index_MarkArticlesDoneByIdx", func(b *testing.B) {
-		for i := range b.N {
-			b.StopTimer()
-			q := New()
-			q.PauseAll()
-			job := &Job{
-				ID:       fmt.Sprintf("job-idx-%d", i),
-				manifest: manifest,
-				progress: newJobProgress(manifest),
-				Status:   constants.StatusDownloading,
-			}
-			q.byID[job.ID] = job
-			q.jobs = []*Job{job}
-			artIdxs := []int32{int32(i % totalArticles)}
-			b.StartTimer()
-
-			_ = q.MarkArticlesDoneByIdx(job.ID, artIdxs)
-		}
-	})
 }

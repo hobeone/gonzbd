@@ -13,6 +13,7 @@ running or modifying tests.**
 | Integration | `go test -v -tags=integration ./test/integration/...` | `integration` | par2, rar, unrar, 7z | ~35s |
 | UI (Playwright) | `go test -v -tags=uitest ./test/uitest/...` | `uitest` | Chromium (Playwright), pre-built UI | ~30s |
 | E2E | `go test -timeout=10m ./test/e2e/` | none (runtime env-var gates) | live Usenet server | ~5min |
+| Crash consistency | `go test -tags=crash -timeout=20m ./test/crash/` | `crash` | Linux; builds `./cmd/gonzbd` itself | ~10s |
 | Config contract | `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` | none | none | <1s |
 
 ### Convenience Scripts
@@ -156,6 +157,127 @@ E2E_POST=1 E2E_DEBUG=1 go test -timeout=10m -v ./test/e2e/
 # Download a specific NZB
 E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/
 ```
+
+## 3a. Crash-Consistency Tests (`-tags=crash`)
+
+**When to run:** After any change to `internal/durability`, `internal/assembler`,
+the checkpoint cadence in `internal/app/durability.go`, the startup resume sweep
+in `internal/app/resume_startup.go`, or the queue's per-article persistence.
+Not run in CI and **not** part of `scripts/run_tests.sh` — see the status note
+at the end of this section.
+
+**Location:** `test/crash/`
+
+**Build tag:** `crash` — excluded from `go test ./...` and from every other
+suite. `TestMain` builds `./cmd/gonzbd` into a temp directory itself, so the
+suite needs no pre-built binary, but it does need `ui/dist` to exist (the
+usual worktree caveat).
+
+**Linux only, and it fails rather than skips on another platform.** Every claim
+it makes rests on SIGKILL semantics and on `posix_fadvise`.
+
+### What it does
+
+Each test runs the real daemon as a **child process** against an in-test mock
+NNTP server, drives it through the HTTP API, and then kills or perturbs it. The
+daemon must be a separate process for the kill to mean anything: an in-process
+test cannot lose the memory the design's central claim is about.
+
+| Test | Pins |
+|------|------|
+| `TestSIGKILL_NoArticleIsResolvedWithoutItsBytes` | S1/S2 — nothing is resolved on the strength of having entered a buffer |
+| `TestSIGKILL_ReworkStaysWithinTheCheckpointBound` | B1/L3 — unacked rework is bounded, acked rework is zero; and #361, that the resume continues the same file |
+| `TestExternalModification_TruncatedPartialIsRecomputed` | S4 — a recomputation supersedes a falsified cache |
+| `TestExternalModification_DeletedPartialRestartsTheFile` | S3 — absence of evidence is absence |
+| `TestExternalModification_AppendedGarbageIsTrimmed` | S6 — metadata may shrink a file, never grow it |
+| `TestExternalModification_MtimeTouchCostsNoRefetch` | R13 — an invalidated stamp costs a recomputation, not a re-download |
+
+The last four together discharge R33's four external modifications: truncate,
+delete, append, mtime-only touch.
+
+### What a pass does and does not bound
+
+This is the part that decides how much a green run is worth, so it is stated
+plainly.
+
+**A pass DOES bound**, on the filesystem the tests ran on:
+
+- That no article is resolved before its bytes have left the process. A
+  SIGKILL destroys the assembler's write cache for real, with no flush, so an
+  article acked early has no bytes in the file afterwards and the CRC
+  read-back sees it.
+- That the work a crash costs stays inside the checkpoint bound, measured at
+  the wire from the mock server's per-article delivery counts rather than from
+  any status the daemon reports about itself.
+- That an article a completed fsync covered is never fetched again.
+
+**A pass does NOT bound:**
+
+- **That an fsync'd byte reached the platter.** No unprivileged userspace call
+  can discard dirty page-cache data: `POSIX_FADV_DONTNEED` invalidates clean
+  pages and skips dirty ones, and `/proc/sys/vm/drop_caches` skips them too.
+  `O_DIRECT` does not help either: it flushes before it bypasses. The suite
+  calls `fadvise(DONTNEED)` after each kill, which forces already-written-back
+  ranges to be re-read from the block device — a real strengthening of the
+  read-back, and not a power-loss simulation. Testing the page-cache half needs
+  a device the test can cut underneath the filesystem (a device-mapper
+  `log-writes` or `flakey` target), which needs root.
+
+  This is measured, not inferred: **removing the `Sync()` syscall from the
+  write path entirely left the suite byte-identical to baseline** — six passes,
+  same assertions, no diagnostic difference. Read that as the bound on what a
+  green run means, not as evidence that the fsync is unnecessary.
+- **NFS or SMB fsync behaviour.** The bound is measured on the test's own
+  filesystem only. A server that acknowledges an fsync it has not honoured is
+  outside what any of this can see.
+- **A full disk.** There is no unprivileged way to inject `ENOSPC` into a real
+  child process: a small filesystem needs `mount`, `EISDIR` is dodged by
+  unique-filename resolution, and `EACCES`/`EROFS`/`EFBIG` classify permanent
+  rather than retryable. The stall path is covered in-process instead, by
+  `internal/app/scenario_durability_test.go` and `internal/api/stall_test.go`.
+  Tracked as issue #363, which also records the one route that would close both
+  this gap and the page-cache gap above: a FUSE filesystem the harness controls.
+
+```bash
+go test -tags=crash -timeout=20m ./test/crash/ -v
+```
+
+### Status: all six pass, and two of them were red until #362 was fixed
+
+`TestExternalModification_TruncatedPartialIsRecomputed` and
+`TestExternalModification_DeletedPartialRestartsTheFile` were committed red on
+purpose, against a real defect. Both produced a **completed file with a hole in
+it**: the daemon declared the job finished and moved a file to the complete
+directory whose destroyed region read back as zeros.
+
+The cause was that the recomputation was discarded rather than wrong.
+`durability.Resumer` got the right answer — the daemon logs
+`articles_durable=16 facts=33` for a file truncated in half — but the startup
+sweep installed it through `Queue.SeedFromExtents`, which only *sets* durable
+bits and never clears one, while `Store.RestoreJobProgress` had already
+restored `job_files.articles_done` with every article the last barrier acked.
+So the queue's own cache of the same fact outranked the recomputation that
+disproved it, which is exactly the precedence S4 inverts.
+
+The fix (#362) is `Queue.ReplaceFromResume`: a second, **authoritative**
+seeding entry point that the startup sweep uses in place of `SeedFromExtents`,
+because it is the one caller that has just read the files' bytes. Every other
+seeding path — `Application.reevaluateStall`'s phase 3 — is replaying an ack
+that already landed and stays additive. `TestSeedFromExtents_StaysAdditive` and
+`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade` are the guards
+on that split; they are the only tests in the repository that redden when the
+two entry points are merged.
+
+Making the sweep authoritative also turned two of the other four tests into
+real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the
+no-refetch half of `TestExternalModification_AppendedGarbageIsTrimmed` used to
+pass with `durability.Resumer.Resume` neutered to return an empty bitmap,
+because `articles_done` alone kept those articles off the wire. With the sweep
+authoritative, that neutering reddens both — observed, not reasoned.
+
+**Do not silence a failing test here by weakening it.** The assertions are
+about WHICH articles came back over the wire, and a test that only checked the
+final file would pass against an implementation that threw the whole file away.
 
 ## 4. Config ↔ UI Contract Tests
 
@@ -306,4 +428,5 @@ To maintain green CI and ensure testing reliability, follow these anti-pattern a
 | Svelte UI components, layout | Add: `go test -v -tags=uitest ./test/uitest/...` |
 | NZB parsing, file naming | Add: `go test -v -tags=integration -run TestNaming ./test/integration/...` |
 | Download pipeline | Add: `go test -v -tags=integration -run TestDownload ./test/integration/...` |
+| Durability, checkpoints, assembler writes, resume | Add: `go test -count=1 -tags=crash -timeout=20m ./test/crash/` (all six must pass; see §3a for what a pass does and does not bound) |
 | Pre-release validation | All: unit + integration + uitest + contract |

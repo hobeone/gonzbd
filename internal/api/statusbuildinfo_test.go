@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"runtime"
 	"runtime/debug"
 	"testing"
 
@@ -78,5 +81,86 @@ func TestModeStatus_BuildInfo(t *testing.T) {
 		if dep["path"] == nil || dep["path"] == "" {
 			t.Errorf("dep missing path: %v", dep)
 		}
+	}
+}
+
+// TestStatusBuildInfo_ReportsTheBinaryItIsRunningIn pins the handler's
+// dependency list against the process it is actually running in.
+//
+// TestModeStatus_BuildInfo above covers the route and the scalar fields, and
+// deliberately asserts only that each dep has a non-empty path — its comment
+// explains why it does not go further. This goes further, and can: the point of
+// the endpoint is that it reports what was COMPILED IN rather than what go.mod
+// says, and debug.ReadBuildInfo() is available inside a test binary, so the
+// handler's list can be compared element-for-element against the runtime's own
+// view. A test that fed it a hand-built list would assert the opposite of the
+// endpoint's purpose.
+func TestStatusBuildInfo_ReportsTheBinaryItIsRunningIn(t *testing.T) {
+	t.Parallel()
+	s := &Server{version: "1.2.3", commit: "abc1234", date: "2026-08-12"}
+
+	rec := httptest.NewRecorder()
+	s.statusBuildInfo(rec, httptest.NewRequest(http.MethodGet, "/api/status/buildinfo", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got struct {
+		Status    bool              `json:"status"`
+		Version   string            `json:"version"`
+		Commit    string            `json:"commit"`
+		BuildDate string            `json:"build_date"`
+		GoVersion string            `json:"go_version"`
+		Deps      []buildDependency `json:"deps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+
+	if !got.Status {
+		t.Error("status = false, want true")
+	}
+	if got.Version != "1.2.3" || got.Commit != "abc1234" || got.BuildDate != "2026-08-12" {
+		t.Errorf("version/commit/build_date = %q/%q/%q, want the Server's own fields",
+			got.Version, got.Commit, got.BuildDate)
+	}
+	if got.GoVersion != runtime.Version() {
+		t.Errorf("go_version = %q, want %q", got.GoVersion, runtime.Version())
+	}
+
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		t.Skip("no build info in this test binary; the dependency half cannot be checked")
+	}
+	if len(got.Deps) != len(bi.Deps) {
+		t.Fatalf("deps: got %d, want %d — one entry per compiled-in module",
+			len(got.Deps), len(bi.Deps))
+	}
+	for i, m := range bi.Deps {
+		want := resolvedDependency(m)
+		if got.Deps[i] != want {
+			t.Errorf("deps[%d] = %+v, want %+v (replace directives must be resolved)", i, got.Deps[i], want)
+		}
+	}
+}
+
+// TestStatusBuildInfo_DepsIsAnArrayNotNull pins the empty-slice initialisation.
+//
+// `deps := []buildDependency{}` rather than a nil slice is what makes the field
+// marshal as `[]`. A nil slice marshals as `null`, which a JS client indexing
+// the response would throw on rather than render as an empty list — a real
+// difference in the wire contract, and one no other assertion here would catch
+// because this process always has dependencies.
+func TestStatusBuildInfo_DepsIsAnArrayNotNull(t *testing.T) {
+	t.Parallel()
+	var raw map[string]json.RawMessage
+	rec := httptest.NewRecorder()
+	(&Server{}).statusBuildInfo(rec, httptest.NewRequest(http.MethodGet, "/api/status/buildinfo", nil))
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(raw["deps"]) == "null" {
+		t.Error("deps marshalled as null; it must be an array, so the handler has to " +
+			"initialise the slice rather than declare it")
 	}
 }

@@ -77,17 +77,14 @@ func TestSQLiteStore_UpdateTx(t *testing.T) {
 	}
 
 	job.Name = "updatetx-job-renamed"
-	// Resolve the article, not just the file. A file cannot be complete
-	// with none of its articles resolved, and asserting BytesDownloaded
-	// below only means anything against a coherent state: recompute derives
-	// that counter from the done/failed bitmaps on load and discards
-	// whatever the column held, so before #300 this assertion was really
-	// testing the complete-flag override that used to mark every article
-	// done regardless of the bitmap.
+	// Resolve the article, not just the file. A file cannot be complete with
+	// none of its articles resolved, and the assertions below only mean
+	// anything against a coherent state: recompute derives the byte counters
+	// from the done/failed bitmaps on load, so before #300 the completion
+	// assertion was really testing the complete-flag override that used to
+	// mark every article done regardless of the bitmap.
 	job.progress.markDone(job.manifest, 0)
 	job.progress.files[0].Complete = true
-	job.progress.files[0].BytesDownloaded = 100
-	job.progress.files[0].WriteCursor = 100
 	job.progress.files[0].Filename = "file0.bin"
 	job.progress.files[0].AssembledCRC32 = 0xdeadbeef
 
@@ -105,9 +102,12 @@ func TestSQLiteStore_UpdateTx(t *testing.T) {
 	if !got.Progress().FileComplete(0) {
 		t.Error("file completion not persisted by updateTx")
 	}
-	if got.Progress().FileBytesDownloaded(0) != 100 || got.Progress().FileWriteCursor(0) != 100 {
-		t.Errorf("file byte counters not persisted by updateTx: bytesDownloaded=%d writeCursor=%d",
-			got.Progress().FileBytesDownloaded(0), got.Progress().FileWriteCursor(0))
+	// Not asserted here: the resolved filename. updateTx writes it, but
+	// RestoreJobProgress does not read it back — only RestoreRetryProgress
+	// does — so a round trip through Get cannot observe it. That gap predates
+	// this change.
+	if got.Progress().FileAssembledCRC32(0) != 0xdeadbeef {
+		t.Errorf("assembled CRC not persisted by updateTx: got %#x", got.Progress().FileAssembledCRC32(0))
 	}
 
 	// updateTx on a job that was never Add()ed affects zero rows in the jobs

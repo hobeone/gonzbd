@@ -25,12 +25,12 @@ func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
 // partially downloaded, one file deferred), persists it, then reconstructs
 // progress the non-resident way via ArticleCountsByJob and
 // newJobProgressSized. It asserts the reconstruction's per-file
-// BytesDownloaded/Complete/Deferred match what MarkArticlesDone/
+// BytesDownloaded/Complete/Deferred match what the durable extents/
 // MarkFileComplete/the direct Deferred write actually stored, and that
 // TotalRemainingBytes still agrees with the residency-parity guarantee
 // TestTotalRemainingBytes_RestartReconstructsNonResident pins.
 func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
-	store, dir := setupResidencyTestStore(t)
+	store, dir, db := setupResidencyTestStoreWithDB(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "sized-roundtrip", 3, 2)
 	if err := q.Add(job); err != nil {
@@ -38,17 +38,13 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	}
 
 	// File 0: fully downloaded and marked complete.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0), articleID(0, 1)}); err != nil {
-		t.Fatalf("MarkArticlesDone file 0: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(0, 0), articleID(0, 1))
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete file 0: %v", err)
 	}
 
 	// File 1: partially downloaded, not complete.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(1, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone file 1: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(1, 0))
 
 	// File 2: deferred, untouched otherwise.
 	job.progress.files[2].Fetch = FetchIfNeeded
@@ -56,6 +52,7 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	if err := store.Update(t.Context(), job); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
+	commitBarrierExtents(t, db, job)
 
 	metas, err := store.ArticleCountsByJob(t.Context())
 	if err != nil {
@@ -66,86 +63,27 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	if got, want := sized.files[0].Complete, true; got != want {
 		t.Errorf("file 0 Complete = %v, want %v", got, want)
 	}
-	if got, want := sized.files[0].BytesDownloaded, job.progress.files[0].BytesDownloaded; got != want {
-		t.Errorf("file 0 BytesDownloaded = %d, want %d", got, want)
-	}
 	if got, want := sized.files[1].Complete, false; got != want {
 		t.Errorf("file 1 Complete = %v, want %v", got, want)
-	}
-	if got, want := sized.files[1].BytesDownloaded, job.progress.files[1].BytesDownloaded; got != want {
-		t.Errorf("file 1 BytesDownloaded = %d, want %d", got, want)
 	}
 	if got, want := sized.files[2].Fetch, FetchIfNeeded; got != want {
 		t.Errorf("file 2 Fetch = %v, want %v", got, want)
 	}
-	if got, want := sized.files[2].BytesDownloaded, int64(0); got != want {
-		t.Errorf("file 2 BytesDownloaded = %d, want %d", got, want)
+	// The per-file downloaded bytes must survive the round trip, which is the
+	// half of this test that the durable extents restore. File 1's first
+	// article is on disk, so its BytesDownloaded is that article's size and
+	// not zero.
+	if got, want := sized.files[1].BytesDownloaded, int64(100_000); got != want {
+		t.Errorf("file 1 BytesDownloaded = %d, want %d", got, want)
 	}
-
 	// sized.RemainingBytes() runs the same derivation as the resident job's
 	// RemainingBytes(): sum(Bytes-BytesDownloaded-FailedBytes) over files
-	// that are neither Complete nor Deferred — file 0 (complete) and file 2
-	// (deferred) contribute nothing, file 1 contributes its undownloaded
-	// half. This test does not also assert against
-	// job.progress.RemainingBytes() here; that residency-parity property —
-	// resident and non-resident agreeing on the same fixture, including a
-	// deferred file — is pinned separately by
-	// TestRemainingBytes_IdenticalResidentAndNonResident, which is where a
-	// regression in either derivation would be caught.
+	// that are neither Complete nor Deferred. File 0 (complete) and file 2
+	// (deferred) contribute nothing, so only file 1 does — and it contributes
+	// only the half still outstanding, because the non-resident job now
+	// carries its downloaded bytes again.
 	if got, want := sized.RemainingBytes(), int64(100_000); got != want {
-		t.Errorf("sized.RemainingBytes() = %d, want %d (file1's undownloaded half only)", got, want)
-	}
-}
-
-// TestNewJobProgressSized_ClampsRemainingPerFileNotPerJob pins that an
-// over-downloaded file's clamp is applied per file, not netted against the
-// rest of the job's files.
-//
-// The deleted Store.RemainingBytesByJob computed SUM(bytes-bytes_downloaded)
-// per job and clamped the job-wide total at 0 — TestSQLiteStore_RemainingBytesByJob
-// (now also deleted) pinned exactly that for a single over-downloaded file.
-// newJobProgressSized clamps per file instead: a file whose
-// bytes_downloaded exceeds its bytes contributes zero, independent of any
-// other file's shortfall. This is a deliberate semantics change, not an
-// accidental coverage drop — it is exactly what the FileProgress-derived
-// RemainingBytes computes for the same state, and aligning the seed with
-// it is the point of this refactor. For a job with one
-// file over-downloaded by 50 and another under-downloaded by 30, the old
-// job-total clamp would have reported 0 (50-30=20 short of the total, but
-// the negative from file 0 ate into file 1's real remainder); the per-file
-// clamp reports 30, because file 0 independently contributes 0 rather than
-// -50.
-func TestNewJobProgressSized_ClampsRemainingPerFileNotPerJob(t *testing.T) {
-	store, dir, db := setupResidencyTestStoreWithDB(t)
-	q := New(WithStore(store), WithStateDir(dir))
-	job := makeMultiFileJob(t, "clamp-per-file", 2, 1)
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	// file 0 (100_000 bytes): over-downloaded by 50 — must contribute 0,
-	// never a negative "remaining".
-	if _, err := db.ExecContext(t.Context(),
-		"UPDATE job_files SET bytes_downloaded = ? WHERE job_id = ? AND file_index = 0",
-		100_050, job.ID); err != nil {
-		t.Fatalf("UPDATE file 0 bytes_downloaded: %v", err)
-	}
-	// file 1 (100_000 bytes): genuinely under-downloaded by 30.
-	if _, err := db.ExecContext(t.Context(),
-		"UPDATE job_files SET bytes_downloaded = ? WHERE job_id = ? AND file_index = 1",
-		99_970, job.ID); err != nil {
-		t.Fatalf("UPDATE file 1 bytes_downloaded: %v", err)
-	}
-
-	metas, err := store.ArticleCountsByJob(t.Context())
-	if err != nil {
-		t.Fatalf("ArticleCountsByJob: %v", err)
-	}
-	sized := newJobProgressSized(metas[job.ID])
-
-	if got, want := sized.RemainingBytes(), int64(30); got != want {
-		t.Errorf("RemainingBytes() = %d, want %d (file 0's over-download must clamp to 0 per file, "+
-			"not net against file 1's real 30-byte shortfall)", got, want)
+		t.Errorf("sized.RemainingBytes() = %d, want %d (file 1's outstanding half)", got, want)
 	}
 }
 
@@ -249,10 +187,19 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 }
 
 // TestFailedBytes_NotDoubledByHydration pins a hydration defect a review
-// caught: newJobProgressSized seeds job-level failedBytes from job_files
-// while a job is non-resident, and RestoreJobProgress then replays per-article
-// state through markFailed on top of that seed rather than onto a fresh
-// JobProgress, so the two stack.
+// caught: newJobProgressSized used to seed job-level failedBytes from
+// job_files while a job was non-resident, and RestoreJobProgress then replays
+// per-article state through markFailed on top of that seed rather than onto a
+// fresh JobProgress, so the two stacked.
+//
+// job_files.failed_bytes is back, so the seed is back, and this is the test
+// that says the defect did not come back with it. What makes the restored seed
+// safe is that RestoreJobProgress ends in JobProgress.recompute, which ASSIGNS
+// BytesDownloaded, FailedBytes and the job-level failedBytes from the manifest
+// and the article bitmaps rather than adding to them — so the replay
+// supersedes the seed wholesale (S4) instead of stacking on it. Both halves
+// are asserted below: the seed must be visible while non-resident, and the
+// total must land on the fixture's figure exactly once after hydration.
 //
 // Driven through Queue.SnapshotJob rather than an unexported-field write:
 // the reloaded job comes back non-resident (StatusQueued, per
@@ -282,13 +229,15 @@ func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	// Seeded from job_files while non-resident.
+	// Seeded from job_files.failed_bytes: residency parity requires the
+	// non-resident figure to match, not to read zero.
 	if got := reloaded.byID[job.ID].Progress().FailedBytes(); got != want {
-		t.Fatalf("non-resident FailedBytes = %d, want %d", got, want)
+		t.Fatalf("non-resident FailedBytes = %d, want %d (seeded from job_files.failed_bytes)", got, want)
 	}
 
-	// Hydrating replays per-article state on top of that seed. The total
-	// must not move: it is the same job, only more of it is in memory.
+	// Hydrating replays per-article state. The total must land on the
+	// fixture's figure exactly once — neither doubled nor left at the
+	// unseeded zero.
 	snap := reloaded.SnapshotJob(job.ID)
 	if snap == nil {
 		t.Fatal("SnapshotJob returned nil")
@@ -343,7 +292,8 @@ func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
 	// Pin the projection itself, not only newJobProgress's downstream use of
 	// it: fileMetaFromManifest must carry the right ArticleCount/Bytes per
 	// file, and everything else must read zero for a fresh manifest — no
-	// articles are downloaded, failed, complete, or deferred yet.
+	// file is complete or deferred yet. It no longer carries downloaded or
+	// failed byte counts at all; those left job_files with #306/#337.
 	metas := fileMetaFromManifest(m)
 	if got, want := len(metas), m.NumFiles(); got != want {
 		t.Fatalf("fileMetaFromManifest returned %d entries, want %d", got, want)
@@ -356,49 +306,12 @@ func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
 		if got, want := fm.Bytes, m.FileBytes(fi); got != want {
 			t.Errorf("fileMetaFromManifest[%d].Bytes = %d, want %d", fi, got, want)
 		}
-		if fm.BytesDownloaded != 0 {
-			t.Errorf("fileMetaFromManifest[%d].BytesDownloaded = %d, want 0", fi, fm.BytesDownloaded)
-		}
-		if fm.FailedBytes != 0 {
-			t.Errorf("fileMetaFromManifest[%d].FailedBytes = %d, want 0", fi, fm.FailedBytes)
-		}
 		if fm.Complete {
 			t.Errorf("fileMetaFromManifest[%d].Complete = true, want false", fi)
 		}
 		if fm.Fetch != FetchAlways {
 			t.Errorf("fileMetaFromManifest[%d].Fetch = %v, want FetchAlways", fi, fm.Fetch)
 		}
-	}
-}
-
-func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
-	store, dir := setupResidencyTestStore(t)
-	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)
-	m, err := job.Manifest()
-	if err != nil {
-		t.Fatalf("manifest: %v", err)
-	}
-	job.Progress().markFailed(m, 0)
-	job.Progress().markDone(m, 1)
-	wantFailed := job.Progress().FailedBytes()
-	wantRemaining := job.Progress().RemainingBytes()
-	if wantFailed == 0 {
-		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
-	}
-	if err := store.Add(context.Background(), job); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-
-	reloaded, err := Load(dir, WithStore(store))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	got := reloaded.byID[job.ID].Progress()
-	if got.FailedBytes() != wantFailed {
-		t.Errorf("FailedBytes across restart: got %d, want %d", got.FailedBytes(), wantFailed)
-	}
-	if got.RemainingBytes() != wantRemaining {
-		t.Errorf("RemainingBytes across restart: got %d, want %d", got.RemainingBytes(), wantRemaining)
 	}
 }
 
@@ -509,105 +422,6 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 	}
 	if p.ExpectedBytes() != p.RemainingBytes() {
 		t.Errorf("after un-defer, expected (%d) != remaining (%d)", p.ExpectedBytes(), p.RemainingBytes())
-	}
-}
-
-// TestRemainingBytes_IdenticalResidentAndNonResident is the acceptance
-// property this refactor exists to establish: RemainingBytes, ExpectedBytes,
-// and FailedBytes must report the same figure for the same job whether or
-// not its manifest is resident. Every earlier attempt at deriving remaining
-// bytes failed exactly this check.
-//
-// The fixture mixes all four kinds of file state that could make the two
-// construction paths diverge: file 0 is partially downloaded (exercises
-// BytesDownloaded), file 1 has a permanently failed article (exercises
-// FailedBytes), file 2 is deferred (exercises the Deferred exclusion shared
-// by all three figures), and file 3 is fully downloaded and marked Complete
-// (exercises the Complete exclusion RemainingBytes applies but ExpectedBytes
-// does not — derivedRemainingBytes reads five FileProgress fields in total,
-// and a fixture missing any one of them would let a construction path that
-// dropped that field's copy pass unnoticed). A job that stayed fully fresh,
-// or that never exercised one of the four, would let the two paths agree by
-// accident; this fixture does not let that happen.
-//
-// The non-resident side is built exactly the way Load reconstructs a job
-// that restarts beyond maxActive: newJobProgressSized fed directly from
-// Store.ArticleCountsByJob, with no hand-adjustment of any field afterward.
-// A test that poked BytesDownloaded/FailedBytes itself would prove nothing
-// about production — this reads back only what the store actually persisted.
-func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
-	store, dir := setupResidencyTestStore(t)
-	q := New(WithStore(store), WithStateDir(dir))
-	job := makeMultiFileJob(t, "residency-parity", 4, 2)
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	// File 0: partially downloaded so the figure is not simply the total.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
-	// File 1: one article permanently failed.
-	if _, err := q.MarkArticlesFailed(job.ID, []string{articleID(1, 0)}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
-	// File 2: deferred, untouched otherwise.
-	job.progress.files[2].Fetch = FetchIfNeeded
-	// File 3: only partially downloaded, then marked complete directly (the
-	// production path MarkFileComplete allows — assembly can finish, e.g. via
-	// repair, without every article having gone through the download path).
-	// Marking it complete while bytes are still outstanding is deliberate: if
-	// the two sides disagreed about Complete, file 3's leftover bytes would
-	// show up as nonzero remaining on whichever side dropped the flag. A file
-	// that was fully downloaded before being marked complete would already
-	// read zero remaining bytes either way, and the Complete copy could be
-	// silently dropped without this test noticing.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(3, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone file 3: %v", err)
-	}
-	if err := q.MarkFileComplete(job.ID, 3); err != nil {
-		t.Fatalf("MarkFileComplete: %v", err)
-	}
-
-	if err := store.Update(t.Context(), job); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	resident := job.Progress()
-
-	// Guard the fixture: if any of these four effects is missing, the
-	// equivalence checked below would pass vacuously.
-	if resident.FileBytesDownloaded(0) == 0 {
-		t.Fatal("fixture produced no downloaded bytes; the test would pass vacuously")
-	}
-	if resident.FailedBytes() == 0 {
-		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
-	}
-	if resident.FileFetchPolicy(2) != FetchIfNeeded {
-		t.Fatal("fixture not exercising a deferred file")
-	}
-	if !resident.FileComplete(3) {
-		t.Fatal("fixture not exercising a complete file")
-	}
-
-	residentRemaining := resident.RemainingBytes()
-	residentExpected := resident.ExpectedBytes()
-	residentFailed := resident.FailedBytes()
-
-	metas, err := store.ArticleCountsByJob(t.Context())
-	if err != nil {
-		t.Fatalf("ArticleCountsByJob: %v", err)
-	}
-	nonResident := newJobProgressSized(metas[job.ID])
-
-	if got, want := nonResident.RemainingBytes(), residentRemaining; got != want {
-		t.Errorf("non-resident RemainingBytes = %d, resident = %d", got, want)
-	}
-	if got, want := nonResident.ExpectedBytes(), residentExpected; got != want {
-		t.Errorf("non-resident ExpectedBytes = %d, resident = %d", got, want)
-	}
-	if got, want := nonResident.FailedBytes(), residentFailed; got != want {
-		t.Errorf("non-resident FailedBytes = %d, resident = %d", got, want)
 	}
 }
 

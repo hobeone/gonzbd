@@ -99,9 +99,9 @@ func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 }
 
 // TriggerOnFileComplete invokes the OnFileComplete callback directly for testing.
-func (a *Application) TriggerOnFileComplete(jobID string, fileIdx int, fileCRC uint32) {
+func (a *Application) TriggerOnFileComplete(jobID string, fileIdx int) {
 	if a.onFileComplete != nil {
-		a.onFileComplete(jobID, fileIdx, fileCRC)
+		a.onFileComplete(jobID, fileIdx)
 	}
 }
 
@@ -177,9 +177,21 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 // or cancelling the application context. Used in scenario tests to simulate an
 // abrupt process termination (hard crash) without calling queue.Save() or
 // creating shutdown ordering hazards.
+//
+// noBarrierOnStop is what makes it a hard crash rather than a quiet Shutdown:
+// a SIGKILLed process does not get to run a final checkpoint, so neither does
+// this. A test that ran one here would be asserting against a clean stop while
+// claiming to test a crash.
 func (a *Application) ForceStopWorkers() {
-	a.stopWorkers(15*time.Second, nil)
+	a.stopWorkers(15*time.Second, nil, noBarrierOnStop)
 }
+
+// BarrierRuns reports how many checkpoint barriers have been started.
+//
+// The cadence tests need to tell "the barrier fired" from "the barrier had
+// nothing to do", and every externally visible effect of a barrier — an ack, a
+// committed extent — is absent in both cases.
+func (a *Application) BarrierRuns() int64 { return a.barrierRuns.Load() }
 
 // Assembler returns the internal assembler for testing.
 func (a *Application) Assembler() *assembler.Assembler {

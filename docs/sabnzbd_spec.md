@@ -285,7 +285,7 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 ### 4.4 Queue Persistence
 
 - **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`history.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
-- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `jobs`, `job_files` and `queue_meta` tables) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
+- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `jobs`, `job_files` and `queue_meta` tables, plus per-article download durability in `article_facts` and `file_extents`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
 - **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
@@ -293,6 +293,25 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
   - Mode 2: Discard queue, reconstruct from `incomplete/` directory scan
 
 **Go recommendation**: Persistence uses SQLite (`history.db`) for transaction-safe queue state and indexing, and immutable gzipped JSON files (`queue/manifests/<id>.json.gz`) for job article specifications.
+
+**Download durability** is a separate concern from queue state and has its own
+two tables, both keyed by job ID:
+
+- `article_facts` — immutable Class A facts, one row per decoded article:
+  `{file_idx, offset, length, crc32}`. Appended at decode time with no ordering
+  against the write, because the fact asserts nothing about presence on disk.
+- `file_extents` — the Class B derivation cache, one row per file: a per-article
+  durable bitmap, the gapless-prefix length and its CRC, the durable byte count,
+  and a size/mtime stamp. Written **only** by `durability.Barrier`, strictly
+  after the `fsync` that makes its claims true, and never authoritative — a
+  recomputation from `article_facts` plus the file's bytes supersedes it.
+
+On restart, every downloading job's work set is re-derived from those two plus
+the files themselves; the derived answer replaces `job_files.articles_done`
+rather than merging with it. GoNZBD has no equivalent of SABnzbd's repair
+modes 1 and 2 (rescan/reconstruct from the incomplete directory); the resume
+sweep covers the same ground from recorded facts instead of a directory scan.
+See [`docs/durability-contract.md`](durability-contract.md).
 
 ### 4.5 Duplicate Detection
 
@@ -650,6 +669,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
 | `min_free_space` | int | `1024` | Min free disk space in MB before pause |
 | `write_cache_size` | string | `64M` | Write coalescing buffer size (e.g., `64M`, `0`=disabled) |
+| `checkpoint_interval` | int | `30` | Seconds between durability checkpoints per job (`0`=default) |
+| `checkpoint_bytes` | string | `64M` | Bytes downloaded per job between durability checkpoints (`0`=default) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |
@@ -1277,7 +1298,7 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 | File (GoNZBD) | Contents | Format | SABnzbd original |
 |------|----------|--------|------------------|
-| `history.db` + `queue/manifests/<id>.json.gz` | Download queue state + immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
+| `history.db` + `queue/manifests/<id>.json.gz` | Download queue state, per-article durability facts, and immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
 | _(none — in-memory only)_ | Post-processing queue | not persisted | `postproc2.sab` |
 | `dirscan.json` | Dir scanner state | JSON | `watched_data2.sab` (pickle+gzip) |
 | `bpsmeter.json` | Bandwidth statistics | JSON | `bpsmeter.sab` (pickle+gzip) |

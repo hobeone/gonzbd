@@ -198,6 +198,12 @@ func (d *DownloadConfig) validate() error {
 	if err := positive("max_active_jobs", d.MaxActiveJobs); err != nil {
 		errs = append(errs, err)
 	}
+	if err := nonNegative("checkpoint_interval", d.CheckpointInterval); err != nil {
+		errs = append(errs, err)
+	}
+	if d.CheckpointBytes < 0 {
+		errs = append(errs, fmt.Errorf("checkpoint_bytes: %d is negative", d.CheckpointBytes))
+	}
 	if err := nonNegative("propagation_delay", d.PropagationDelay); err != nil {
 		errs = append(errs, err)
 	}

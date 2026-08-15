@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -139,7 +140,8 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		// triggered by another worker's signalDispatch doesn't re-see
 		// the article as dispatchable (all try-list entries would still
 		// be present, so it would keep re-emitting ErrNoServersLeft in
-		// a tight loop until the assembler finally marked it Failed).
+		// a tight loop until the pipeline finally recorded it Failed
+		// through Queue.AckPermanentFailure).
 		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
@@ -527,11 +529,6 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-// handleRequest is the per-article workhorse. It owns the
-// bookkeeping for try-lists, penalty application, and success/error
-// emission. The *nntp.Conn pointer is passed by reference so the
-// function can replace it with nil on connection-level failure
-// (forcing a re-dial on the next call).
 func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
@@ -696,18 +693,20 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		return
 	}
 
-	// Durability (B.6): the article is not marked Done here. The assembler
-	// calls MarkArticleDone once the bytes have reached WriteAt.
+	// The article is not marked Done here, and this package cannot mark it
+	// Done at all: Queue.AckDurable takes a durability.DurableProof, which has
+	// no exported constructor outside internal/durability. Only a barrier that
+	// has drained and fsynced the file can mint one.
 	//
-	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher
-	// from re-picking this article between now and the assembler's Done
-	// write. If the process crashes before that, Emitted is lost on restart
-	// and the article is re-dispatched.
+	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher from
+	// re-picking this article between now and that barrier. If the process
+	// crashes first, Emitted is lost on restart, the startup resume sweep
+	// cannot prove the bytes, and the article is re-dispatched — which is S3,
+	// absence of evidence read as absence.
 	//
-	// Done means the bytes reached WriteAt, not that they were fsynced: the
-	// assembler syncs per file completion, not per article. Page-cache loss
-	// on an already-acked article is par2's to repair, not this path's. See
-	// nntp-downloader-contract.md §5.
+	// So Done means a completed fsync covered the bytes, not merely that they
+	// reached WriteAt. See nntp-downloader-contract.md §5 and
+	// docs/durability-contract.md.
 	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
@@ -885,7 +884,21 @@ func decodePayload(body []byte) (decoded []byte, offset int64, crc uint32, err e
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
-			return data, 0, 0, nil // UU encoding usually doesn't have offset info or CRC
+			// UU carries no offset and no checksum of its own, so the
+			// offset is genuinely 0 (single-part by construction) and the
+			// CRC is computed here rather than read from the article.
+			//
+			// That is not a weaker guarantee than yEnc's. The yEnc trailer's
+			// crc32 is a transfer check the decoder has already enforced
+			// (ErrCRCMismatch) before the bytes reach this point, and the
+			// value returned above is likewise the decoder's own checksum
+			// over the decoded output. The fact log uses it to verify OUR
+			// bytes on disk after a restart, not to validate the sender, so
+			// the format's silence about checksums does not matter — what
+			// matters is that every decoded article carries one. Returning 0
+			// here made UU articles unverifiable on resume and therefore
+			// re-fetched forever.
+			return data, 0, crc32.ChecksumIEEE(data), nil
 		}
 		if data != nil {
 			decoder.PutBuffer(data)

@@ -12,8 +12,16 @@ import (
 // worker goroutine, so it requires no locking.
 //
 // Every key the cache holds is believed to be a key of the assembler's
-// open-file map too: each removal from that map is paired with a forget or a
-// drain in the same call, with no yield to the request channel in between.
+// open-file map too: each removal from that map is paired with a forget in the
+// same call, with no yield to the request channel in between. A DRAIN is not
+// enough on its own — drainFile deliberately retains the per-file entry to
+// preserve its write cursor — so opClose, cancel and close-handles each call
+// forget as well.
+//
+// Worker exit (drainAndCloseAll) is the one path that does not, and does not
+// need to: the whole cache goes out of scope with the worker, and there is no
+// subsequent request that could observe the difference.
+//
 // Nothing enforces the pairing, which is why the assembler's two "unknown
 // file" branches still exist and still log.
 //
@@ -44,24 +52,34 @@ type fileBuf struct {
 	// articles maps byte offset → the buffered article at that offset.
 	articles map[int64]bufferedArticle
 	// writeCursor tracks the next expected contiguous offset for this file.
-	// Initially 0 (or the resume point seeded by initCursor). It advances as
-	// contiguous runs are flushed, and also on a drain — drainFile moves it
-	// past everything it hands back, which can jump an offset that was never
-	// buffered. See drainFile.
+	//
+	// It always starts at 0, including on a resumed download, and there is no
+	// longer any way to seed it. That is deliberate: it is a coalescing hint,
+	// not an authority (#311, #353). A resumed file whose early articles are
+	// not re-delivered simply never forms a run from 0 and its articles are
+	// written individually, which costs syscalls and never correctness. The
+	// completion truncate, which used to depend on a resume seed, now derives
+	// its bound from the durable facts instead.
+	//
+	// It advances as contiguous runs are flushed, and also on a drain —
+	// drainFile moves it past everything it hands back, which can jump an
+	// offset that was never buffered. See drainFile.
 	writeCursor int64
 	// totalBytes is the sum of len(data) for all buffered articles.
 	totalBytes int64
 }
 
-// articleID names an article to the queue. It travels with the article's bytes
-// through the cache so that the write which makes those bytes durable can say
-// which articles it settled — the cache is the only place that knows an
-// article's bytes are still in memory, and an ack sent before then is a claim
-// no later run can check (#355).
+// articleID identifies an article as it travels with its bytes through the
+// cache, so the write that finally moves those bytes can say which articles it
+// carried. The cache is the only place that knows an article's bytes are still
+// in memory, and a claim made before then is one no later run can check (#355).
 //
-// Both fields are carried because the assembler supports two queue callback
-// shapes: the index-based one, and the Message-ID one it falls back to when
-// the index form is not wired. recordPendingDone picks between them.
+// Both fields are carried because they answer different questions. msgID drives
+// this package's own duplicate handling (FileWriter.seenDone / seenFailed),
+// which is keyed on Message-ID. artIdx is what FileWriter.noteWritten puts on a
+// durability.WrittenArticle, and is therefore what the barrier places a durable
+// bit for — so it must match the queue's numbering. Neither reaches the queue
+// from here: this package has no ack path in either direction.
 type articleID struct {
 	msgID  string
 	artIdx int32
@@ -78,12 +96,25 @@ type bufferedArticle struct {
 type flushRun struct {
 	offset int64  // starting byte offset
 	data   []byte // coalesced data
-	// ids names every article coalesced into data, so the write can settle
-	// them all rather than only the one whose arrival triggered the flush.
+	// parts names every article coalesced into data, with the byte range each
+	// one contributed, so the write can report them all rather than only the
+	// one whose arrival triggered the flush.
+	//
+	// The ranges are carried rather than recomputed because the coalesced
+	// buffer is flat: once the articles are merged and their originals pooled,
+	// nothing else can say which bytes belonged to which article, and a
+	// durability.WrittenArticle needs exactly that to be a checkable claim.
 	//
 	// Allocated per run, unlike data, which is a view into the cache's reused
 	// scratch buffer and is valid only until the next run is built.
-	ids []articleID
+	parts []runPart
+}
+
+// runPart is one article's contribution to a coalesced run.
+type runPart struct {
+	id     articleID
+	offset int64
+	length int
 }
 
 // newWriteCache creates a write cache with the given memory limit.
@@ -98,34 +129,6 @@ func newWriteCache(limit int64) *writeCache {
 // enabled reports whether write coalescing is active.
 func (wc *writeCache) enabled() bool {
 	return wc.limit > 0
-}
-
-// initCursor pre-creates the file's buffer entry with the given starting
-// write cursor if one doesn't already exist. Called once when a file is first
-// registered so a resumed download (whose [0,cursor) range was already written
-// and won't be re-delivered) doesn't wait forever for an offset-0 article that
-// never arrives. No-op when caching is disabled or the entry already exists (a
-// fresh download's first buffer() call legitimately starts the cursor at 0).
-func (wc *writeCache) initCursor(key fileKey, cursor int64) {
-	if !wc.enabled() {
-		return
-	}
-	if _, ok := wc.perFile[key]; ok {
-		return
-	}
-	wc.perFile[key] = &fileBuf{articles: make(map[int64]bufferedArticle), writeCursor: cursor}
-}
-
-// cursorFor returns the file's current contiguous write frontier, or 0 if the
-// file has no buffer entry — caching is disabled, or the entry was dropped by
-// forget. A drain is not one of those cases: drainFile retains the entry
-// precisely so its advanced cursor survives, so after a pressure flush this
-// returns the advanced frontier rather than 0.
-func (wc *writeCache) cursorFor(key fileKey) int64 {
-	if fb, ok := wc.perFile[key]; ok {
-		return fb.writeCursor
-	}
-	return 0
 }
 
 // buffer adds an article to the cache. cached reports whether the article was
@@ -182,6 +185,13 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 // buffered reports whether an article is still sitting unwritten at this
 // offset. It distinguishes an article the cache has yet to write from one it
 // has already written and acked, which the two look identical from outside.
+//
+// Used by tests, like FileWriter.writtenSoFar and FileWriter.unconfirmed, and
+// unlike those it once had a production caller in prospect: FileWriter's doc
+// described handleSuccessArticle's duplicate arm consulting it. That arm never
+// did, because the answer does not change what it does. Kept as the package's
+// way to say "buffered, not yet written" — the distinction several tests need
+// and the two-level map lookup obscures — rather than removed with the claim.
 func (wc *writeCache) buffered(key fileKey, offset int64) bool {
 	fb, ok := wc.perFile[key]
 	if !ok {
@@ -246,13 +256,13 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	// Coalesce into wc.scratchBuf to eliminate heap allocations during write coalescing.
 	wc.scratchBuf = wc.scratchBuf[:0]
 	startOffset := fb.writeCursor
-	ids := make([]articleID, 0, len(runArticles))
+	parts := make([]runPart, 0, len(runArticles))
 	for _, art := range runArticles {
 		wc.scratchBuf = append(wc.scratchBuf, art.data...)
 		// Copied out of art rather than read back from the map: the entry is
-		// gone by the time the run reaches disk, and the identity is what the
-		// write needs in order to ack.
-		ids = append(ids, art.id)
+		// gone by the time the run reaches disk, and the identity and extent
+		// are what the write needs in order to report the article Written.
+		parts = append(parts, runPart{id: art.id, offset: art.offset, length: len(art.data)})
 		delete(fb.articles, art.offset)
 		fb.totalBytes -= int64(len(art.data))
 		wc.used -= int64(len(art.data))
@@ -262,7 +272,7 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 	}
 	fb.writeCursor = cursor
 
-	return &flushRun{offset: startOffset, data: wc.scratchBuf, ids: ids}
+	return &flushRun{offset: startOffset, data: wc.scratchBuf, parts: parts}
 }
 
 // pressure reports whether memory usage exceeds 90% of the limit.

@@ -300,7 +300,7 @@ func TestAssemblerWithWriteCache_BasicCoalescing(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int) { completed = true }
 	opts.WriteCacheBytes = 1 << 20 // 1 MiB cache
 
 	a := startAssembler(t, opts)
@@ -338,7 +338,7 @@ func TestAssemblerWithWriteCache_OutOfOrder(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int) { completed = true }
 	opts.WriteCacheBytes = 1 << 20 // 1 MiB
 
 	a := startAssembler(t, opts)
@@ -384,7 +384,7 @@ func TestAssemblerWithWriteCache_PressureFlush(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int) { completed = true }
 	opts.WriteCacheBytes = 100 // only 100 bytes — triggers pressure quickly
 
 	a := startAssembler(t, opts)
@@ -429,7 +429,7 @@ func TestAssemblerWithWriteCache_MultipleFiles(t *testing.T) {
 
 	completionCount := 0
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completionCount++ }
+	opts.OnFileComplete = func(_ string, _ int) { completionCount++ }
 	opts.WriteCacheBytes = 1 << 20
 
 	a := startAssembler(t, opts)
@@ -547,53 +547,6 @@ func TestBuildContiguousRun_Direct(t *testing.T) {
 	}
 	if len(fb.articles) != 0 {
 		t.Errorf("expected articles to be cleared, got %v", fb.articles)
-	}
-}
-
-func TestWriteCacheInitCursorResumesFromOffset(t *testing.T) {
-	wc := newWriteCache(1 << 20)
-	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 4096)
-	if wc.cursorFor(key) != 4096 {
-		t.Fatalf("cursorFor = %d, want 4096", wc.cursorFor(key))
-	}
-	artSize := 200 * 1024
-	bufferAt(wc, key, 4096, make([]byte, artSize))
-	if run := wc.flushContiguous(key); run != nil {
-		t.Fatalf("expected no flush below threshold, got offset %d", run.offset)
-	}
-	bufferAt(wc, key, 4096+int64(artSize), make([]byte, artSize))
-	bufferAt(wc, key, 4096+int64(2*artSize), make([]byte, artSize))
-	run := wc.flushContiguous(key)
-	if run == nil {
-		t.Fatal("expected a contiguous run from the initialized cursor")
-	} else if run.offset != 4096 {
-		t.Errorf("run.offset = %d, want 4096 (the initialized cursor, not 0)", run.offset)
-	}
-	if wc.cursorFor(key) != 4096+int64(3*artSize) {
-		t.Errorf("cursorFor after flush = %d, want %d", wc.cursorFor(key), 4096+int64(3*artSize))
-	}
-}
-
-func TestWriteCacheInitCursorNoopWhenDisabled(t *testing.T) {
-	wc := newWriteCache(0)
-	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 4096)
-	if len(wc.perFile) != 0 {
-		t.Errorf("perFile should stay empty when disabled, got %d", len(wc.perFile))
-	}
-	if wc.cursorFor(key) != 0 {
-		t.Errorf("cursorFor on absent key = %d, want 0", wc.cursorFor(key))
-	}
-}
-
-func TestWriteCacheInitCursorDoesNotClobberExisting(t *testing.T) {
-	wc := newWriteCache(1 << 20)
-	key := fileKey{jobID: "j", fileIdx: 0}
-	bufferAt(wc, key, 0, []byte("data"))
-	wc.initCursor(key, 9999)
-	if wc.cursorFor(key) != 0 {
-		t.Errorf("cursorFor = %d, want 0 (initCursor must not clobber an existing buffer)", wc.cursorFor(key))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"strings"
@@ -77,6 +78,15 @@ type Server struct {
 	done      chan struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+
+	// servedMu guards served. It is separate from mu, which guards the
+	// article map: a reader asking what has been delivered must not
+	// contend with the read lock every BODY takes.
+	servedMu sync.Mutex
+	// served counts fully delivered article bodies per Message-ID. A count
+	// above one means the same article was fetched more than once, which is
+	// what a crash-consistency test measures rework with.
+	served map[string]int
 }
 
 // NewServer builds an unstarted Server. Register articles with AddArticle
@@ -90,6 +100,7 @@ func NewServer(cfg Config) *Server {
 		cfg:      cfg,
 		log:      log,
 		articles: make(map[string][]byte),
+		served:   make(map[string]int),
 		done:     make(chan struct{}),
 	}
 }
@@ -337,7 +348,33 @@ func (s *Server) handleBody(bw *bufio.Writer, cs *connState, messageID string) {
 	}
 
 	_ = s.send(bw, fmt.Sprintf("222 0 <%s> body follows", messageID)) //nolint:errcheck // best-effort
-	_ = s.sendDotStuffed(bw, body)                                    //nolint:errcheck // best-effort
+	if err := s.sendDotStuffed(bw, body); err != nil {
+		// Not counted. A body the client never received is not work the
+		// client got to keep, and counting it would inflate the rework a
+		// crash test attributes to the download rather than to the
+		// disconnect.
+		return
+	}
+	s.noteServed(messageID)
+}
+
+// noteServed records one fully written article body.
+func (s *Server) noteServed(messageID string) {
+	s.servedMu.Lock()
+	defer s.servedMu.Unlock()
+	s.served[messageID]++
+}
+
+// ArticlesServed returns a copy of the per-Message-ID delivery counts. A
+// count above one means the same article was delivered more than once.
+//
+// Only bodies written to the client in full are counted: a BODY that 430ed,
+// was refused for auth, or died mid-write is not delivery. Safe to call while
+// the server is running.
+func (s *Server) ArticlesServed() map[string]int {
+	s.servedMu.Lock()
+	defer s.servedMu.Unlock()
+	return maps.Clone(s.served)
 }
 
 // handleStat processes a STAT <message-id> command.

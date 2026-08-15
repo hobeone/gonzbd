@@ -1,19 +1,12 @@
 # Download Durability & Article Cache — Design
 
-**Status:** design, not yet implemented.
+**Status:** implemented. `docs/durability-contract.md` is the contract the
+code is held to; this document records the design and its reasoning.
 **Scope:** the article → disk → ack loop, and restart reconstruction.
 **Deliberately implementation-independent.** This document describes the
 problem to be solved and the rules any solution must obey. It does not
 describe `internal/assembler` as it stands, and it is not a refactoring plan
 for it.
-
-**Relationship to the existing contracts.** `docs/assembler-storage-contract.md`
-and `docs/queue-lifecycle.md` remain authoritative: they are the contract the
-current code is held to, and a disagreement between them and the code is still a
-bug in the code. This document is a *design proposal* and carries no authority
-over the implementation until it is accepted and implemented. On acceptance,
-those two contracts must be revised to match — and until that revision lands,
-they win. Nothing here should be cited as a reason the current code is wrong.
 
 ## Why this document exists
 
@@ -338,8 +331,17 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
 - **R14** On validation failure it MUST recompute the done-set by reading the
   file and verifying each Class A region against its CRC. Where Class A is
   insufficient to cover the file, it MUST restart the file rather than guess.
-- **R15** Recomputation MUST be interruptible, resumable, and MUST NOT block
-  unrelated jobs.
+- **R15** Recomputation MUST be interruptible and MUST NOT block unrelated
+  jobs.
+
+  **"Resumable" was dropped from this requirement.** Recomputation fires only
+  when the stat fast path fails, which is the rare case; it is O(bytes) against
+  local disk rather than the network; and a discarded partial costs a re-read,
+  never a wrong answer. Making it resumable needs a persisted verified-through
+  offset — a new Class B field, committed per chunk during the recompute, that
+  can disagree with the file. That is the exact class of independently
+  maintained state this design exists to remove, spent to avoid re-reading a
+  file. The requirement was over-specified.
 - **R16** Restart MUST reconstruct the outstanding work set without
   decompressing manifests — fast path O(incomplete files).
 - **R17** Any article not provably Durable after resume MUST be Outstanding.
@@ -347,9 +349,20 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
 ### Storage faults
 
 - **R18** Write and sync failures MUST be classified by subject and
-  retryability: *retryable-storage* (`ENOSPC`, `EDQUOT`, `ETIMEDOUT`, wedged
-  mount) and *permanent-storage* (`EROFS`, `EIO`, target directory gone).
+  retryability: *retryable-storage* (`ENOSPC`, `EDQUOT`, `ETIMEDOUT`, `EIO`,
+  `ESTALE`, a missing target directory, a wedged mount) and
+  *permanent-storage* (`EROFS`, `EACCES`/`EPERM`, and anything that cannot
+  clear without a configuration change). Anything unrecognised is retryable.
   Storage never produces an article-subject fault.
+
+  **`EIO` and a missing target directory are retryable, reversing this
+  requirement's first draft.** That draft contradicted A1, which listed `EIO`
+  among the faults that stall; A1 governs. Retryable does not mean retry
+  forever — it means the job stalls with a surfaced reason (R19) — and both
+  conditions are routinely transient on network-backed and removable volumes.
+  Failing the job instead discards every byte already downloaded, for a
+  condition a user often fixes in seconds. A dying disk still reaches the
+  operator, as a stall rather than a job failure.
 - **R19** Retryable-storage → the job stalls, the reason is surfaced, articles
   stay Outstanding, and the condition is re-evaluated on an interval and on user
   action.
@@ -370,6 +383,15 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
   CRC, derived from Class A over the verified extent, so QuickCheck can
   short-circuit a resumed job. This work MUST be off the barrier's critical
   path.
+
+  **`HasPrefixCRC` means "this is a verified whole-file CRC", not "the CRC over
+  `[0, VerifiedTo)` is valid for that range".** It is set only when the
+  verification run consumed every recorded fact *and* reached the file's end.
+  The looser reading preserves more information but has no consumer — R24's
+  only stated use is QuickCheck short-circuiting, which needs a whole-file
+  value — and it reintroduces the misuse that #349 was: a partial-extent CRC
+  mistaken for a whole-file one. Where the strict condition does not hold, the
+  honest answer is unavailable, which R23 already blesses.
 - **R25** Truncation to final size MUST only shrink, and MUST be based on the
   verified extent, never on the run's high-water mark.
 
@@ -392,8 +414,22 @@ only on resumed jobs, so it is R24 — a requirement with a stated cost — inst
   and asserts the re-fetch set falls within the bound — not by reasoning.
 - **R32** Crash-consistency tests MUST cover all four failure modes, including a
   page-cache-dropping harness for simulated power loss.
+
+  **Superseded in part — a page-cache drop does not simulate power loss.**
+  `POSIX_FADV_DONTNEED` invalidates clean pages and skips dirty ones, and
+  `/proc/sys/vm/drop_caches` skips them too, so no unprivileged call discards
+  unfsynced data; the harness that this obligation asks for cannot exist without
+  root. What `test/crash` does instead is stated in `docs/TESTING.md` §3a: the
+  SIGKILL is real and destroys the assembler's in-process write cache, which is
+  the process-boundary half of S1/S2, and the `fadvise(DONTNEED)` forces
+  already-written-back ranges to be re-read from the block device rather than
+  from cache. The page-cache half — that an fsync'd byte reached the platter —
+  needs a device-mapper `log-writes` or `flakey` target under root and is
+  **untested** (#363).
 - **R33** External modification MUST be tested: truncate, delete, append, and
-  mtime-only touch.
+  mtime-only touch. All four are covered in `test/crash/external_test.go`;
+  truncate and delete were committed red against a real defect and are green as
+  of #362's fix, `Queue.ReplaceFromResume` (see `docs/TESTING.md` §3a).
 - **R34** Per `AGENTS.md`, every invariant MUST have a test **observed** to fail
   against a mutation that violates it, with the failure message recorded.
 
@@ -423,11 +459,23 @@ rebuild bitmap, recompute prefix CRC → WorkSet.
 
 ### Making X3 concrete
 
-`Barrier` is the only unit that can construct the token `ack()` requires as an
-argument. Put the token type in the barrier's package with an unexported field
-and no exported constructor, and every path that can ack today —
-`handleSuccessArticle`, `handleLateDuplicate`, `flush`, `finalizeFile`, and the
-two control messages — physically cannot call `ack()`. Not "must not". Cannot.
+`Barrier` is the only unit that can construct a NON-EMPTY token `ack()`
+requires as an argument. Put the token type in the barrier's package with
+unexported fields and no exported constructor, and every path that can ack
+today — `handleSuccessArticle`, `handleLateDuplicate`, `flush`, `finalizeFile`,
+and the two control messages — cannot supply one. Not "must not". Cannot.
+
+> **Correction, verified against the implementation by compiling it.** The
+> original wording here said such a token "physically cannot" be constructed
+> outside the package. That is false as written: Go permits a field-less
+> composite literal even when every field is unexported, so
+> `durability.DurableProof{}` compiles anywhere. What the compiler bounds is the
+> token's PAYLOAD — there is no exported way to put an article in one — and
+> `AckDurable`'s empty-proof early return is what makes such a token inert. The
+> guarantee is also scoped to this one door: `SeedFromExtents` and
+> `ReplaceFromResume` reach `markDone` with no token, deliberately, because
+> their evidence is stable storage rather than an fsync. See
+> `docs/durability-contract.md` §1.
 
 `FaultClassifier` does not know what an article is, which makes A1 true by
 ignorance rather than by discipline: it has no vocabulary in which to blame an

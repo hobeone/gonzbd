@@ -1,9 +1,6 @@
 package assembler
 
 import (
-	"log/slog"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -20,7 +17,6 @@ const drainTestArt = 100 << 10 // 100 KiB, so runs cross contiguousRunSize predi
 func TestWriteCacheDrainKeepsCoalescingAlive(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	// Three articles is 300 KiB, below contiguousRunSize, so nothing flushes
 	// through the contiguous path and all three are still buffered.
@@ -61,7 +57,6 @@ func TestWriteCacheDrainKeepsCoalescingAlive(t *testing.T) {
 func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	// Articles 0 and 1, then a gap at 2, then article 3.
 	bufferAt(wc, key, 0, make([]byte, drainTestArt))
@@ -70,8 +65,16 @@ func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 
 	wc.drainFile(key)
 
-	if got, want := wc.cursorFor(key), int64(4*drainTestArt); got != want {
-		t.Errorf("cursorFor = %d, want %d (past the highest drained article, not up to the gap)", got, want)
+	// Read the field rather than an accessor. cursorFor existed only for this
+	// assertion — nothing in the package called it — and a helper that looks
+	// like production API but has only a test caller invites the reading that
+	// the frontier is consulted somewhere it is not.
+	fb, ok := wc.perFile[key]
+	if !ok {
+		t.Fatal("drainFile dropped the file's buffer entry; its advanced cursor is gone")
+	}
+	if got, want := fb.writeCursor, int64(4*drainTestArt); got != want {
+		t.Errorf("writeCursor = %d, want %d (past the highest drained article, not up to the gap)", got, want)
 	}
 }
 
@@ -82,7 +85,6 @@ func TestWriteCacheDrainAdvancesCursorPastAHole(t *testing.T) {
 func TestWriteCacheDrainClearsAccounting(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	for i := range 3 {
 		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
@@ -113,7 +115,6 @@ func TestWriteCacheDrainClearsAccounting(t *testing.T) {
 func TestWriteCacheDrainEmptiesArticlesMap(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
 
 	for i := range 3 {
 		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
@@ -134,42 +135,5 @@ func TestWriteCacheDrainEmptiesArticlesMap(t *testing.T) {
 	wc.forget(key)
 	if wc.used != 0 {
 		t.Errorf("wc.used = %d after forget on a drained entry, want 0", wc.used)
-	}
-}
-
-// TestDrainCacheForFileDropsTheEntry pins the forget() that the completion path
-// must pair with drainFile now that drainFile retains entries.
-//
-// Without it the assembler leaks one entry per completed file until shutdown,
-// and no other test catches that: removing the call leaves the whole
-// internal/assembler suite green. Its sibling in drainAll is already pinned by
-// TestWriteCacheDrainAll's perFile-empty assertion, so this closes the
-// asymmetry between the two halves of the same fix.
-func TestDrainCacheForFileDropsTheEntry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "drain_target")
-	handle, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-	defer handle.Close()
-
-	a := &Assembler{log: slog.Default()}
-	f := &openFile{handle: handle, info: FileInfo{Path: path}}
-
-	wc := newWriteCache(1 << 20)
-	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.initCursor(key, 0)
-	for i := range 3 {
-		bufferAt(wc, key, int64(i)*drainTestArt, make([]byte, drainTestArt))
-	}
-
-	a.drainCacheForFile(wc, f, key)
-
-	if _, ok := wc.perFile[key]; ok {
-		t.Error("drainCacheForFile left a cache entry behind; the completion path " +
-			"must forget the entry drainFile deliberately retains")
-	}
-	if wc.used != 0 {
-		t.Errorf("wc.used = %d after the completion drain, want 0", wc.used)
 	}
 }

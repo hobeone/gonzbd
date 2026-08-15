@@ -60,9 +60,7 @@ func TestFirstIncompleteFile(t *testing.T) {
 		t.Parallel()
 		_, q := testQueueServer(t)
 		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
-		if err := q.MarkArticlesDone(job.ID, []string{"test-article-id-001@example.com"}); err != nil {
-			t.Fatalf("MarkArticlesDone: %v", err)
-		}
+		ackDone(t, q, job.ID, "test-article-id-001@example.com")
 		if err := q.MarkFileComplete(job.ID, 0); err != nil {
 			t.Fatalf("MarkFileComplete: %v", err)
 		}
@@ -86,9 +84,7 @@ func TestFirstIncompleteFile(t *testing.T) {
 		if err := q.Add(job); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		if err := q.MarkArticlesDone(job.ID, []string{"a0@t"}); err != nil {
-			t.Fatalf("MarkArticlesDone: %v", err)
-		}
+		ackDone(t, q, job.ID, "a0@t")
 		if err := q.MarkFileComplete(job.ID, 0); err != nil {
 			t.Fatalf("MarkFileComplete: %v", err)
 		}
@@ -122,9 +118,7 @@ func TestBuildQueueFiles(t *testing.T) {
 		}
 		m := mustManifest(t, jobInternal)
 		doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
-		if err := q.MarkArticlesDone(job.ID, doneIDs); err != nil {
-			t.Fatalf("MarkArticlesDone: %v", err)
-		}
+		ackDone(t, q, job.ID, doneIDs...)
 		snap := q.SnapshotJob(job.ID)
 
 		files := buildQueueFiles(snap)

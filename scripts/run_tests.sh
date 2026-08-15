@@ -63,8 +63,21 @@ go vet ./...
 echo "Running golangci-lint..."
 golangci-lint run ./...
 
+# govulncheck's status is captured rather than left to `set -e`, and reported
+# at the very end.
+#
+# It exits non-zero for any finding, including one in the Go standard library
+# that is fixed only by upgrading the toolchain. Under `set -e` that aborted
+# the script at this line, so steps 2-5 — every Go test, every UI test — never
+# ran, and the run still looked like "the suite failed on vulnerabilities". A
+# finding must not be able to hide the test results; the script still fails, it
+# just fails after reporting everything.
 echo "Running govulncheck..."
-govulncheck ./...
+VULN_STATUS=0
+govulncheck ./... || VULN_STATUS=$?
+if [ "$VULN_STATUS" -ne 0 ]; then
+    echo -e "${RED}✗ govulncheck reported findings (status $VULN_STATUS) - continuing so the tests still run${NC}"
+fi
 echo -e "${GREEN}✓ Static Analysis & Linters Passed${NC}"
 
 # 2. Go Unit Tests (with Race Detector)
@@ -92,6 +105,20 @@ echo -e "\nRunning Mutex-held-during-I/O Check..."
 go run scripts/check_lock_io/main.go
 echo -e "${GREEN}✓ Mutex-held-during-I/O Check Passed${NC}"
 
+# The two whole-repository checks. Unlike the three above they are NOT scoped
+# to the diff, because what they examine is invisible to every other gate here:
+# comments and Markdown are neither compiled nor executed, so a duplicated
+# comment block that authoritatively describes the wrong declaration, or an
+# audit snapshot that does not admit it is frozen, passes vet, lint and the
+# whole test suite. Both found a real defect on their first run.
+echo -e "\nRunning Duplicated-Comment Check..."
+go run ./scripts/check_dup_comments
+echo -e "${GREEN}✓ Duplicated-Comment Check Passed${NC}"
+
+echo -e "\nRunning Review-Banner Check..."
+go run ./scripts/check_review_banner
+echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
+
 # 3. Go Integration Tests
 echo -e "\n[3/6] Running Go Integration Tests..."
 go test -v -tags=integration ./test/integration/...
@@ -109,6 +136,24 @@ echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
 echo -e "\n[5/6] Running UI E2E Tests..."
 go test -tags=uitest -v ./test/uitest/...
 echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
+
+# The crash-consistency suite (`-tags=crash`, test/crash/) is deliberately NOT
+# run here. It builds and SIGKILLs a real child process, so it needs a working
+# `go build` of ./cmd/gonzbd and is Linux-only, and its cost is dominated by
+# process startup rather than by anything this script already does. Keeping it
+# out means this script stays runnable on a machine where the child cannot be
+# built or killed. All six of its tests pass (docs/TESTING.md §3a). Run it
+# directly:
+#
+#   go test -tags=crash -timeout=20m ./test/crash/
+
+if [ "$VULN_STATUS" -ne 0 ]; then
+    echo -e "\n${RED}===================================================="
+    echo "TESTS PASSED, BUT govulncheck REPORTED FINDINGS"
+    echo "Re-run 'govulncheck ./...' for the details."
+    echo -e "====================================================${NC}"
+    exit "$VULN_STATUS"
+fi
 
 echo -e "\n${GREEN}===================================================="
 echo "ALL TESTS PASSED SUCCESSFULLY"

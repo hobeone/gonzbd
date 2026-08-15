@@ -91,9 +91,7 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 	q.PromoteNext(t.Context())
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0), articleID(0, 1)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(0, 0), articleID(0, 1))
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}

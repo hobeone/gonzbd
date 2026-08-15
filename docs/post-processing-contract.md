@@ -133,6 +133,34 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
    nameable and the switch in `stage_repair.go` exhaustive.
 
+   **Where QuickCheck's CRCs come from, and why there currently are none.**
+   The stage compares the par2 index's per-file checksums against
+   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32`.
+   That method **has no production caller**. The assembler used to compute a
+   whole-file value by folding the per-article CRCs it happened to see, which
+   was #349 — a resumed run is never sent the articles an earlier run
+   completed, so its parts do not tile the file — and that writer is gone with
+   the rest of the assembler's authority (see
+   [`docs/durability-contract.md`](durability-contract.md)).
+
+   The replacement is `FileExtent.PrefixCRC`, guarded by `HasPrefixCRC` and
+   combined from the **Class A facts** rather than from the articles one run
+   happened to see. Facts persist across restarts, so they name every article
+   of the file whichever run fetched it — a *resumed* file supplies a CRC as
+   readily as a fresh one, which the old design could not.
+   `Barrier.gaplessPrefix` combines them during the walk it already performs,
+   with no read of the file, and `Application.recordAssembledCRC` threads the
+   result to `Queue.SetFileCRC32` when the file finalizes.
+
+   A file whose gapless prefix stops short of its end — a permanently failed
+   article leaves a hole — still reads as `NoCRC`, which is zero's documented
+   "unavailable" meaning rather than a mismatch, so `unverifiable > 0` and the
+   stage lands on `Damaged`. The consequences stay conservative in both places
+   that consume the verdict: `repair` is not bypassed by clause one, and
+   `app.par2NeedsRecovery` returns true, so on-demand par2 fetches the recovery
+   volumes. That costs bandwidth and a par2 pass on a file with a hole; it never
+   ships an unrepaired one.
+
    `Inconclusive` is also the **default** the quickcheck stage adopts as soon
    as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on
    paths that actually verified something (#314). This inverts which state is

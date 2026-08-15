@@ -3,6 +3,7 @@ package apitest
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -22,6 +23,11 @@ type NopApp struct {
 	History            *history.Repository
 	SpeedVal           float64
 	ServerSnapshotsVal []downloader.ServerSnapshot
+	// CheckpointStatesVal is what CheckpointStates reports, keyed by job ID.
+	CheckpointStatesVal map[string]app.JobCheckpointState
+	// ReevaluatedVal counts ReevaluateStalls calls when non-nil, so a test can
+	// assert the API asked for one rather than only that it did not crash.
+	ReevaluatedVal *atomic.Int64
 }
 
 // ReloadDownloader is a stub.
@@ -66,6 +72,14 @@ func (n NopApp) ReloadGeneralOptions(config.GeneralConfig) {}
 // UnblockServer is a stub.
 func (n NopApp) UnblockServer(string) bool { return true }
 
+// ReevaluateStalls records that the API asked for a stall re-evaluation, which
+// is R19's "on user action" half.
+func (n NopApp) ReevaluateStalls() {
+	if n.ReevaluatedVal != nil {
+		n.ReevaluatedVal.Add(1)
+	}
+}
+
 // ServerStatus returns the configured mock server snapshots.
 func (n NopApp) ServerStatus() []downloader.ServerSnapshot { return n.ServerSnapshotsVal }
 
@@ -109,6 +123,18 @@ func (n NopApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
 // DirectUnpackStatuses is a stub.
 func (n NopApp) DirectUnpackStatuses() map[string]directunpack.Status { //nocover: no-op interface stub
 	return nil
+}
+
+// CheckpointStates returns the configured per-job durability figures, so a
+// test can drive the queue listing's stall_reason / bytes_pending /
+// last_barrier_unix fields without standing up a real barrier.
+func (n NopApp) CheckpointStates() map[string]app.JobCheckpointState {
+	return n.CheckpointStatesVal
+}
+
+// CheckpointState returns one job's configured figures, or the zero value.
+func (n NopApp) CheckpointState(jobID string) app.JobCheckpointState {
+	return n.CheckpointStatesVal[jobID]
 }
 
 // BinaryVersionsInfo is a stub.

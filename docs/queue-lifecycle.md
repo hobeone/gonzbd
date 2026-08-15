@@ -110,15 +110,71 @@ startup stays O(1) in manifest size rather than decompressing every manifest at
 boot.
 
 Deriving remaining bytes rather than maintaining them widened what a
-non-resident job must reconstruct. `Store.ArticleCountsByJob` now returns a
-whole `FileMeta` per file — article count, `bytes`, `bytes_downloaded`,
-`failed_bytes`, `complete`, `fetch_policy` (`FetchPolicy`, exposed as
-`FileMeta.Fetch`) — because the derivation reads all of
-them and must produce the same figure at either residency. `failed_bytes` is
-the second schema change this design has needed: a permanently failed article
-resolves without ever being downloaded, so it leaves no trace in
-`bytes_downloaded`, and without its own column a restarted job would report its
-bytes as still outstanding.
+non-resident job must reconstruct. `Store.ArticleCountsByJob` returns a whole
+`FileMeta` per file — article count, `bytes`, `complete`, `fetch_policy`
+(`FetchPolicy`, exposed as `FileMeta.Fetch`) — because the derivation reads all
+of them.
+
+A **resident** job derives downloaded bytes from the `articles_done` bitmap the
+same rows already carry, in `JobProgress.recompute`. A **non-resident** one has
+no manifest to sum, so it reads `job_files.bytes_downloaded`.
+
+The **article** figures come from that same `articles_done` bitmap at both
+residencies. A non-resident job cannot ask a manifest how wide each file's half
+of the blob is, so it takes the width from `job_files.article_count` — the same
+number, written by the same statement — and places each file's bits at a global
+index derived from a running sum of the counts, which is what
+`Manifest.fileArticleOffsets` accumulates. Without this every article read as
+still to fetch, so after a restart a half-downloaded Queued or Paused job showed
+its FULL article count in `articles_remaining` until it was promoted; once the
+byte figures were cached the two even disagreed in kind, bytes right and article
+count wrong. `Emitted` is deliberately not restored: it is transient
+per-process state about what a downloader has in flight, and nothing that
+survived a restart is.
+
+`bytes_downloaded` and `failed_bytes` are the two columns on `job_files` that
+summarise something, and both are **caches with a single writer** rather than
+second authorities. Each is written by the same statement that writes
+`articles_done`, so a sum cannot be persisted out of step with the bits it
+sums, and each is superseded wholesale on promotion, where
+`JobProgress.recompute` *assigns* it from the manifest. That is what separates
+them from `write_cursor` and `max_written`, removed for being maintained in
+parallel with facts held elsewhere (#337, #311).
+
+They are there for different reasons. `failed_bytes` cannot be re-derived at
+all: a permanently failed article never decodes, so it writes no
+`article_facts` row, and no recomputation from Class A can produce the figure.
+`bytes_downloaded` *is* derivable from Class A — but only in decoded bytes, and
+this figure is subtracted from `job_files.bytes`, the **encoded** NZB per-file
+total. It was read from `file_extents.bytes_durable` until that turned out to
+be the wrong *quantity* rather than an unavailable one: that column sums the
+decoded payload lengths an fsync proved, which run a few percent below the
+encoded figure, so every non-resident job overstated its remaining bytes by the
+encoding overhead. A column of the same name was also removed in #306, for
+having two writers; the name is reused, the shape is not.
+
+`internal/history/migrations/001_initial.sql` records that reasoning at the
+schema, and `docs/durability-contract.md` § *The two classes of fact* records
+why `durability.FileExtent` has no failed-byte column either.
+
+**Residency parity therefore holds again**: a non-resident job reports its
+downloaded, failed and remaining bytes — and its resolved, failed and pending
+article counts — from `job_files` alone, without a manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin. Its
+fixture commits Class B extents whose `BytesDurable` is seeded in **decoded**
+bytes, matching what `Barrier.buildExtent` charges, so re-routing either figure
+back through `file_extents` shows up there as a divergence rather than passing
+by unit coincidence.
+
+The article-level work set is a separate question, and `job_files.articles_done`
+is not the authority on it. At startup `Application.resumeAllJobs` re-derives
+every downloading job's work set from the files' actual bytes and installs the
+result through `Queue.ReplaceFromResume`, which **clears** a bit the
+recomputation could not prove as well as setting the ones it could. That column
+is a belief a previous process wrote; the recomputation is correct by definition
+(#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —
+it covers Downloading, Fetching and Paused jobs, and only at startup. A swept
+job that is not resident is hydrated for the duration of the correction and
+evicted again, so this costs no residency.
 
 ## Memory budget
 
@@ -347,7 +403,9 @@ Recorded so these are not re-investigated as open questions:
   would change an exported signature for an unreachable branch.
 
   Four of the ten were nearly missed. `MarkArticlesDone`, `MarkArticleDone`,
-  `MarkArticlesFailed` and `MarkArticleFailed` write the guard inverted —
+  `MarkArticlesFailed` and `MarkArticleFailed` — all four since deleted by the
+  durability work, which replaced the assembler's six ack sites with
+  `Queue.AckDurable`/`AckPermanentFailure` — wrote the guard inverted —
   `if job.manifest != nil && job.progress != nil { ...whole body... }` — so a
   search for `== nil` does not find them, and `MarkDownloadFinished` and
   `MarkJobStarted` hide their dead progress guard the same way. This is the

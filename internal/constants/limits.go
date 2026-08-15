@@ -23,6 +23,22 @@ const (
 	DefaultWriteCacheBytes int64 = 64 * MiB
 )
 
+// Checkpoint barrier bounds. A barrier drains a job's buffered writes, fsyncs
+// its open files, and only then commits what the process may claim about them,
+// so these two together are the stated bound on how much downloaded work a
+// power loss can cost (design invariant B1). The barrier fires on whichever
+// arrives first.
+const (
+	// DefaultCheckpointInterval is the default time bound between barriers
+	// for one job. Thirty seconds of re-fetched articles is the worst case a
+	// power loss can cost on a slow link.
+	DefaultCheckpointInterval = 30 * time.Second
+
+	// DefaultCheckpointBytes is the default volume bound between barriers
+	// for one job, for links fast enough that 30 seconds is a lot of data.
+	DefaultCheckpointBytes int64 = 64 * MiB
+)
+
 // Assembler / decoder limits.
 const (
 	// MaxAssemblerQueue is the in-flight backpressure threshold for the

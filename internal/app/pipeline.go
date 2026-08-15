@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -30,11 +31,15 @@ import (
 //   - ErrClosed: connection was torn down (server disconnect, timeout)
 //   - io.ErrUnexpectedEOF: premature server disconnect mid-transfer
 //   - ErrCRCMismatch: article data CRC doesn't match — try another server
+//   - context.Canceled / context.DeadlineExceeded: a shutdown or a deadline cut
+//     this attempt short, which says nothing about the article
 //   - Dial errors / connection resets / I/O timeouts
 //
-// Terminal errors (other decode failures, ErrAuthRejected, etc.) return false
-// and should be routed through the assembler's FatalErr path for failure
-// accounting.
+// Terminal errors (other decode failures, ErrAuthRejected, etc.) return false.
+// The caller records those with Queue.AckPermanentFailure and then still hands
+// the article to the assembler with FatalErr set, so the file's part count
+// reaches its total and the file can complete with a hole in it. The failure
+// accounting is the pipeline's; the assembler only counts parts.
 func isRetryableDownloaderError(err error) bool {
 	// Sentinel-based checks (preferred — no string fragility).
 	sentinels := [...]error{
@@ -94,6 +99,15 @@ type pipeline struct {
 
 	// onHeartbeat is called when an article result is processed.
 	onHeartbeat func()
+
+	// factLog receives the Class A fact for every article decoded. Nil in a
+	// process with no history database, which disables Class A along with
+	// the barrier that reads it.
+	factLog durability.FactLog
+
+	// onArticleWritten reports an article's decoded byte count to the
+	// checkpoint cadence, which uses it for B1's volume bound.
+	onArticleWritten func(jobID string, n int)
 
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
@@ -220,10 +234,9 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 	}
 	if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
 		!isRetryableDownloaderError(res.Err) {
-		// Terminal failure (all servers exhausted or unrecoverable
-		// decode error). Hand to the assembler so it can mark the
-		// article Failed in the queue.
-		p.log.Warn("article permanently failed, handing to assembler",
+		// Terminal failure: all servers exhausted, or an unrecoverable
+		// decode error.
+		p.log.Warn("article permanently failed",
 			"job", res.JobID, "msgid", res.MessageID, "file", res.Subject, "err", res.Err)
 
 		if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
@@ -231,9 +244,28 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 				"job", res.JobID, "fileidx", res.FileIdx, "err", err)
 		}
 
-		// The assembler marks the article Failed in the queue (with dup
-		// suppression) so failure and completion accounting stay ordered
-		// with file writes on the single worker goroutine.
+		// Record the permanent failure directly. R10 puts this outside the
+		// barrier deliberately: a permanent failure asserts nothing about
+		// disk, so there is no fsync for it to be ordered after, and losing
+		// one in a crash costs a re-attempt that fails again. Only the
+		// success direction needs the barrier's proof.
+		//
+		// The assembler used to do this, on the argument that failure and
+		// completion accounting should be ordered with file writes on its
+		// single worker goroutine. That argument died with the assembler's
+		// ack authority: a Done now comes only from the barrier, and
+		// markDone/markFailed are both first-writer-wins on the same bit, so
+		// there is no ordering left for the two to get wrong. Without this
+		// call nothing records the failure at all, and a job whose every
+		// article failed finishes as Completed with an empty fail message.
+		if err := p.queue.AckPermanentFailure(res.JobID, []int32{res.ArtIdx}); err != nil {
+			p.log.Warn("record permanent article failure",
+				"job", res.JobID, "msgid", res.MessageID, "err", err)
+		}
+
+		// The article still goes to the assembler, which counts it toward the
+		// file's part total so the file can complete with a hole in it. It
+		// writes nothing and acks nothing.
 		writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 			JobID:     res.JobID,
 			FileIdx:   res.FileIdx,
@@ -308,6 +340,37 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		return
 	}
 
+	// Class A, recorded here because this is the one place that holds every
+	// field of it: the decoded offset and length are not knowable from the
+	// NZB — they come from the yEnc =ypart header inside the article body —
+	// so the article -> byte-range map is itself downloaded data.
+	//
+	// Deliberately NOT ordered against the write below, and the order of
+	// these two statements carries no meaning. A Class A fact asserts nothing
+	// about presence: it says only "if the bytes at [Offset, Offset+Length)
+	// are present, they hash to CRC32", which is true the instant the article
+	// is decoded and stays true whether the write succeeds, fails, or is
+	// never attempted. That independence is precisely what lets Class A
+	// commit with no barrier (R2), and imposing an order here would destroy
+	// it while looking like caution.
+	//
+	// appendArticleFacts drops ctx's cancellation, and that is not an
+	// ordering: it is there because a shutdown can cancel ctx while the write
+	// below still lands, leaving an article durable that Class A cannot prove.
+	// See its doc.
+	//
+	// nBytes is read before the write, because a successful WriteArticle
+	// hands res.Data to the assembler and the slice must not be touched
+	// afterwards.
+	nBytes := len(res.Data)
+	p.appendArticleFacts(ctx, res.JobID, durability.ArticleFact{
+		FileIdx: int32(res.FileIdx), //nolint:gosec // G115: file counts are far below int32
+		ArtIdx:  res.ArtIdx,
+		Offset:  res.Offset,
+		Length:  int32(nBytes), //nolint:gosec // G115: a decoded article is far below int32 bytes
+		CRC32:   res.CRC,
+	})
+
 	writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 		JobID:     res.JobID,
 		FileIdx:   res.FileIdx,
@@ -315,7 +378,6 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		MessageID: res.MessageID,
 		Offset:    res.Offset,
 		Data:      res.Data,
-		CRC:       res.CRC,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",
@@ -324,6 +386,12 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	} else if writeErr == nil {
 		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)
+		// B1's volume bound counts accepted bytes, not durable ones: it is
+		// measuring how much work is at risk between barriers, and an article
+		// the assembler took but has not fsynced is exactly that work.
+		if p.onArticleWritten != nil {
+			p.onArticleWritten(res.JobID, nBytes)
+		}
 	}
 }
 
@@ -403,12 +471,17 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return fmt.Errorf("count unfinished articles: %w", err)
 	}
 
+	// The assembler is no longer told whether this file is resumed, nor
+	// seeded with an earlier run's write cursor or high-water mark. It has no
+	// use for any of them: it does not truncate, so it needs no extent, and
+	// the coalescing cursor is a hint that costs syscalls rather than
+	// correctness when it starts at zero. The completion truncate now derives
+	// its bound from the durable facts, which describe the file rather than
+	// the session.
 	info := assembler.FileInfo{
-		Path:               path,
-		TotalParts:         totalParts,
-		ExpectedSize:       m.FileBytes(fileIdx),
-		InitialWriteCursor: snap.Progress().FileWriteCursor(fileIdx),
-		InitialMaxWritten:  snap.Progress().FileMaxWritten(fileIdx),
+		Path:         path,
+		TotalParts:   totalParts,
+		ExpectedSize: m.FileBytes(fileIdx),
 	}
 
 	p.mu.Lock()

@@ -7,21 +7,12 @@ import (
 )
 
 // FileMeta is the per-file shape Load needs to size a non-resident job's
-// progress without a manifest. It carries everything RemainingBytes reads
-// — Bytes, BytesDownloaded, FailedBytes, Complete, and Fetch — alongside
-// the article count for the bitsets, so a job reports the same remaining
-// figure whether it is reconstructed resident (via the manifest) or
-// non-resident (via this type).
+// progress without a manifest. It carries Bytes, Complete, and Fetch
+// alongside the article count for the bitsets.
 type FileMeta struct {
-	ArticleCount    int
-	Bytes           int64
-	BytesDownloaded int64
-	// FailedBytes is the sum of bytes belonging to this file's permanently
-	// failed articles, restored from job_files.failed_bytes — see
-	// FileProgress.FailedBytes for why a non-resident job needs this
-	// carried explicitly rather than recomputed from article bitmaps.
-	FailedBytes int64
-	Complete    bool
+	ArticleCount int
+	Bytes        int64
+	Complete     bool
 	// Fetch is the file's download intent, restored from
 	// job_files.fetch_policy. See FetchPolicy.
 	Fetch FetchPolicy
@@ -30,6 +21,51 @@ type FileMeta struct {
 	// column: is_par2_recovery flags only volumes, and the index is exactly
 	// the case that matters here. See FileProgress.IsPar2.
 	IsPar2 bool
+	// BytesDownloaded and FailedBytes are what let a NON-RESIDENT job report
+	// the same byte figures a resident one does. A resident job derives both
+	// from its manifest and article bitmaps in JobProgress.recompute; a job
+	// whose manifest has been evicted has neither, so without these it reports
+	// zero failed bytes and an inflated remaining figure — the residency
+	// parity TestRemainingBytes_IdenticalResidentAndNonResident exists to
+	// forbid.
+	//
+	// Both come from job_files, cached beside the articles_done bits they sum
+	// and written by the same statement, so neither can be persisted out of
+	// step with its authority. FailedBytes has no other home available: a
+	// permanently failed article never decodes, so it writes no Class A fact
+	// and no recomputation could produce the figure.
+	//
+	// BytesDownloaded could be recomputed from Class A and once was, read from
+	// file_extents.bytes_durable. That was the wrong quantity rather than an
+	// unavailable one. This field is compared against Bytes, the encoded NZB
+	// per-file total, so it must count ENCODED bytes; bytes_durable counts the
+	// DECODED payload lengths an fsync proved. Seeding one from the other
+	// overstated a non-resident job's remaining bytes by the encoding
+	// overhead.
+	//
+	// Both are caches and neither is authoritative: hydration runs
+	// JobProgress.recompute, which ASSIGNS these figures from the manifest and
+	// the bitmaps and so supersedes whatever was seeded here (S4).
+	BytesDownloaded int64
+	FailedBytes     int64
+	// Done and Failed are the file's per-article resolved state, decoded from
+	// the same job_files.articles_done bitmap the byte figures above sum.
+	//
+	// They exist for the same reason those do, one level down. Without them a
+	// non-resident job's JobProgress had every article Pending, so a restart
+	// showed a half-downloaded Queued or Paused job with EVERY article
+	// remaining until it was promoted — and after the byte figures were
+	// cached, the two disagreed in kind: bytes right, article count wrong.
+	//
+	// Indexed file-locally, length ArticleCount. Nil means the column was
+	// empty or malformed, which reads as "nothing resolved" — the safe
+	// direction under S3, and the same one an absent column already produced.
+	//
+	// Caches, not authorities, on the same terms as the byte figures:
+	// hydration runs JobProgress.recompute, which re-derives everything from
+	// the manifest and the live bitmaps (S4).
+	Done   []bool
+	Failed []bool
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.

@@ -112,9 +112,7 @@ func TestSnapshotJob_RestoreFailureIsNotSilent(t *testing.T) {
 	// Give the job real progress while it is still resident — MarkArticlesDone
 	// resolves message IDs through the manifest — so that an all-zero
 	// replacement is detectable as something other than its genuine state.
-	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0)}); err != nil {
-		t.Fatalf("MarkArticlesDone: %v", err)
-	}
+	ackDone(t, q, job.ID, articleID(0, 0))
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

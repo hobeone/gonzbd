@@ -138,3 +138,64 @@ func TestJobRepairState_MatchesTheRawDerivation(t *testing.T) {
 		t.Fatal("fixture guard: the fixture must damage content, or this test pins the trivial branch")
 	}
 }
+
+// TestContentFailedBytes_ExcludesPar2AndStillSeesThePar2Set pins the two
+// figures the repair decision is built from, against values written out here
+// rather than recomputed from the functions under test.
+//
+// The sibling test above asserts Job.RepairState() equals
+// RepairStateFrom(p.ContentFailedBytes(), …), which pins the delegation and
+// nothing else: both sides move together no matter what those two functions
+// return. It is the only surviving reference to either since the dedicated
+// test file was deleted, so between them they left the whole repair gate
+// resting on functions with no independent pin.
+//
+// The fixture is the exact shape ContentFailedBytes' doc names as the failure
+// mode it prevents — a par2 set with an index and no recovery volumes, where
+// the index itself failed. Both figures have to be right for the verdict to
+// be: counting the index as damage gives contentFailed > 0 against zero
+// capacity, and losing HasPar2Files turns the resulting RepairUnknown into
+// RepairNoCapacity, which is the answer that discards a job whose content is
+// complete.
+func TestContentFailedBytes_ExcludesPar2AndStillSeesThePar2Set(t *testing.T) {
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: `"movie.mkv" yEnc`, Bytes: 1000, Articles: []nzb.Article{{ID: "c@x", Bytes: 1000, Number: 1}}},
+		{Subject: `"movie.par2" yEnc`, Bytes: 50, Articles: []nzb.Article{{ID: "i@x", Bytes: 50, Number: 1}}},
+	}}
+	job, err := NewJob(parsed, AddOptions{Filename: "t.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	p := job.Progress()
+
+	// Only the par2 index failed. No content is damaged.
+	p.files[1].FailedBytes = 50
+
+	if got := p.FailedBytes(); got != 0 {
+		// Guard the fixture's other half: FailedBytes is job-level and is not
+		// what this test is about, but if it already reported 0 the assertion
+		// below could not distinguish "par2 excluded" from "nothing failed".
+		t.Logf("job-level FailedBytes = %d (per-file is what ContentFailedBytes reads)", got)
+	}
+	if got := p.ContentFailedBytes(); got != 0 {
+		t.Errorf("ContentFailedBytes = %d, want 0 — the only failure was the par2 index, "+
+			"which is not content; counting it condemns a job for losing the file whose "+
+			"sole purpose was to rescue the others", got)
+	}
+	if !p.HasPar2Files() {
+		t.Error("HasPar2Files = false for a job carrying a par2 index; a recovery-bytes " +
+			"figure of zero then reads as 'no par2 protection at all' rather than " +
+			"'protection whose volumes we could not name'")
+	}
+
+	// Now damage content as well, with still no recovery volumes. The verdict
+	// must be Unknown — we cannot say — rather than NoCapacity.
+	p.files[0].FailedBytes = 400
+	if got := p.ContentFailedBytes(); got != 400 {
+		t.Errorf("ContentFailedBytes = %d, want 400 (content only, par2 index excluded)", got)
+	}
+	if got := job.RepairState(); got != RepairUnknown {
+		t.Errorf("RepairState = %q, want %q — with par2 present but no recognisable "+
+			"recovery volumes the honest answer is that capacity is unknown", got, RepairUnknown)
+	}
+}

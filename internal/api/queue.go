@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -81,6 +82,7 @@ func (s *Server) queueResumeAll(w http.ResponseWriter, r *http.Request) {
 	s.queue.ResumeAll(r.Context())
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
+		s.downloads.ReevaluateStalls()
 	}
 	s.log.Info("downloads resumed")
 	respondStatus(w)
@@ -151,6 +153,11 @@ type queueSlot struct {
 	// ArticlesRemaining is the count of articles not yet completed.
 	// Reflects job.PendingArticles, which is updated on every state
 	// mutation (downloaded, failed, retried).
+	//
+	// This is also R26's "articles outstanding": an article is resolved only
+	// by a barrier's ack or a permanent failure, so what is left here is
+	// exactly what a crash would re-fetch, alongside the two byte figures
+	// below.
 	ArticlesRemaining int `json:"articles_remaining"`
 
 	// ETASeconds is RemainingBytes divided by current aggregate speed.
@@ -162,6 +169,57 @@ type queueSlot struct {
 	// assembled. Empty when the job has no incomplete files (e.g. in
 	// post-processing) or when the subject is unparseable.
 	CurrentFile string `json:"current_file"`
+
+	// StallReason is why the job is parked on a storage fault, or "" when it
+	// is not (R27). Always present rather than omitempty, so a client can
+	// tell an unstalled job from an older server that does not send the
+	// field at all. It is the difference between a recoverable full disk and
+	// a job that appears to have silently stopped.
+	//
+	// Sourced from the application rather than from Warning, which the queue
+	// wipes on the Resume each re-evaluation performs — a user polling during
+	// one would watch the reason blink out and come back.
+	StallReason string `json:"stall_reason"`
+
+	// BytesDurable is what a completed fsync covers. BytesPending is what has
+	// been written since the job's current checkpoint window opened: accepted
+	// by the OS, not yet fsynced, and lost on a power failure — the rework
+	// window made visible rather than inferred (R26).
+	//
+	// They are reported separately and MUST NOT be summed by a client, for
+	// two independent reasons. They make different claims, and a total would
+	// assert the stronger of the two about all of it. And they are not in the
+	// same unit.
+	//
+	// bytes_durable is derived from the job's progress, which counts the
+	// NZB-DECLARED size of each resolved article -- yEnc-ENCODED bytes,
+	// which run a few percent above what lands on disk. bytes_pending
+	// accumulates len(data) per accepted article -- DECODED bytes, the ones
+	// actually written. So bytes_durable - bytes_pending is not a quantity,
+	// and neither is their sum.
+	//
+	// Neither figure can be moved to the other's unit without breaking what
+	// it exists for. bytes_durable pairs with size/sizeleft/mb, which are the
+	// encoded NZB figures a client renders beside it, and reading it from
+	// file_extents.bytes_durable instead -- a decoded figure, and confusingly
+	// the same name -- is the exact substitution docs/queue-lifecycle.md
+	// records as having overstated every non-resident job's remaining bytes.
+	// bytes_pending feeds B1's volume bound, which measures rework at risk
+	// and is therefore about bytes on disk by definition.
+	//
+	// The two are an order of magnitude apart in practice -- a checkpoint
+	// window holds megabytes where a job holds gigabytes -- so the encoding
+	// overhead is not the dominant term in any comparison a reader would
+	// make. It is documented rather than corrected because there is nothing
+	// to correct it to.
+	BytesDurable int64 `json:"bytes_durable"`
+	BytesPending int64 `json:"bytes_pending"`
+
+	// LastBarrierUnix is when this job's last barrier completed without
+	// error, or 0 when none has in this process. Only a SUCCESSFUL barrier
+	// stamps it, which is what tells a job that is checkpointing normally
+	// from one whose barriers have been failing since a mount went away.
+	LastBarrierUnix int64 `json:"last_barrier_unix"`
 
 	// Files is the per-file breakdown for the row's expansion drawer.
 	// Only populated when the caller requests it via files=1; otherwise
@@ -339,8 +397,9 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // buildSlot renders one Job into the API queueSlot shape. paused is the
 // queue-wide pause flag; speed is the snapshot aggregate BPS used for
 // ETA. index is the slot's display index in the listing (0 for the
-// detail endpoint).
-func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status) queueSlot {
+// detail endpoint). cp carries the durability figures that live in the
+// application rather than in the queue, snapshotted once per request.
+func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
 	// No manifest access: every value below comes from the job's promoted
 	// scalars or from JobProgress, both of which are resident for the life
 	// of the job. A queue listing is polled continuously and includes every
@@ -405,13 +464,32 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		Par2Held:          j.UsesOnDemandPar2(),
 		Par2ReleaseReason: p.Par2ReleaseReason(),
 		DirectUnpack:      duStatus,
+		StallReason:       cp.StallReason,
+		// From the job's own progress rather than a second snapshot: on this
+		// design a downloaded byte IS a durable byte, because the only things
+		// that mark an article Done are the barrier's ack and a replay of a
+		// committed extent cache. That also fixes its unit as the encoded one
+		// -- see the field doc for why it is not the same unit as
+		// BytesPending below, and why neither can move.
+		BytesDurable:    app.DurableBytesOf(p),
+		BytesPending:    cp.PendingBytes,
+		LastBarrierUnix: unixOrZero(cp.LastBarrier),
 	}
+}
+
+// unixOrZero renders a timestamp for JSON, mapping "never" to 0 rather than to
+// time.Time's zero unix value of -6795364578871.
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 // filterQueueSlots applies the category/status/search filters to jobs and
 // builds the resulting queueSlot list. Split out of queueList to isolate
 // per-job filtering from pagination and response assembly (OPT-9).
-func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status) []queueSlot {
+func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
 	slots := make([]queueSlot, 0, len(jobs))
 	for _, j := range jobs {
 		// Post-processing jobs remain in the queue with their current
@@ -432,7 +510,7 @@ func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower st
 		if status, ok := duStatuses[j.ID]; ok {
 			duStatus = &status
 		}
-		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus))
+		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus, cpStates[j.ID]))
 	}
 	return slots
 }
@@ -478,12 +556,14 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Snapshot all direct-unpack statuses once per request (OPT-12) instead
 	// of re-locking app.mu (application-wide) once per job in the loop below.
 	var duStatuses map[string]directunpack.Status
+	var cpStates map[string]app.JobCheckpointState
 	if s.status != nil {
 		duStatuses = s.status.DirectUnpackStatuses()
+		cpStates = s.status.CheckpointStates()
 	}
 
 	// Build slots applying filters.
-	slots := filterQueueSlots(jobs, catFilter, statusFilter, searchLower, paused, speed, duStatuses)
+	slots := filterQueueSlots(jobs, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
 
 	total := len(slots)
 
@@ -567,12 +647,14 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 	}
 
 	var duStatus *directunpack.Status
+	var cp app.JobCheckpointState
 	if s.status != nil {
 		if status, ok := s.status.DirectUnpackStatus(job.ID); ok {
 			duStatus = &status
 		}
+		cp = s.status.CheckpointState(job.ID)
 	}
-	slot := buildSlot(job, paused, speed, 0, duStatus)
+	slot := buildSlot(job, paused, speed, 0, duStatus, cp)
 	slot.Files = buildQueueFiles(job)
 
 	respondJSON(w, http.StatusOK, queueResponse{
@@ -643,6 +725,13 @@ func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
 // queueResumeJobs resumes specific jobs by ID (CSV in value=).
 func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 	s.queueSetPaused(w, r, s.queue.Resume, "resumed")
+	// R19's "on user action". A user who has just cleared a full disk and
+	// pressed resume should not also wait out the re-evaluation interval —
+	// and for a job parked by a failed file finalize, Queue.Resume alone does
+	// not finish the completion the stall interrupted.
+	if s.downloads != nil {
+		s.downloads.ReevaluateStalls()
+	}
 }
 
 // queueSetPaused applies action (Pause or Resume) to each job ID in the

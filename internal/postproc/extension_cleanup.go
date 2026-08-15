@@ -117,6 +117,9 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 		if _, consumed := job.ConsumedFiles[absPath]; consumed {
 			return nil
 		}
+		// dupcomment:ok the extension and sample cleanups apply one shared
+		// ownership restriction; the rationale must stay identical in both.
+		//
 		// Restrict deletion to files this job actually owns (upstream
 		// SABnzbd #3462). A nil OwnedFiles means "not tracked" and disables
 		// the restriction (see Job.OwnedFiles doc comment).

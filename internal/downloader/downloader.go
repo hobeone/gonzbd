@@ -62,10 +62,14 @@ type ArticleResult struct {
 	// be written. Derived from yEnc/UU headers during decoding.
 	Offset int64
 
-	// CRC is the CRC32 of the decoded article data, computed by the yEnc
-	// decoder. Used by the assembler to incrementally build a whole-file
-	// CRC for QuickCheck verification. Zero when the article failed or
-	// was UU-encoded (UU does not carry CRC information).
+	// CRC is the CRC32 of the decoded article data. It is recorded as the
+	// article's Class A fact, which a resume verifies the bytes on disk
+	// against, so every successful decode carries one: the yEnc path takes
+	// the decoder's own checksum over the decoded output, and the UU path
+	// computes one in decodePayload because the format supplies none.
+	//
+	// Zero only when the article failed. A zero on a successful article
+	// means the bytes genuinely hash to zero.
 	CRC uint32
 
 	// Err is the dispatch outcome. nil = success. errors.Is against

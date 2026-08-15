@@ -25,6 +25,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp"
@@ -40,10 +41,58 @@ import (
 // Application.
 var ErrAlreadyStarted = errors.New("app: already started")
 
-const defaultCheckpointInterval = 30 * time.Second
+const (
+	defaultCheckpointInterval = constants.DefaultCheckpointInterval
+	defaultCheckpointBytes    = constants.DefaultCheckpointBytes
 
-// Downloader defines the interface for the Usenet article downloader.
-// Downloader defines the lifecycle and control interface for the Usenet article downloader.
+	// closeHandlesTimeout bounds the pre-post-processing handle close. It
+	// matches assembler.barrierOpTimeout, the bound on every other control
+	// message that has to reach the single worker goroutine.
+	closeHandlesTimeout = 5 * time.Second
+
+	// shutdownCheckpointTimeout bounds R6's clean-shutdown barrier. It sits
+	// inside the 15s per-step budget Shutdown gives the assembler stop that
+	// follows it, so a wedged mount delays shutdown rather than preventing it.
+	shutdownCheckpointTimeout = 10 * time.Second
+
+	// factAppendTimeout bounds one Class A insert. It exists because the
+	// append drops the caller's cancellation (see pipeline.appendArticleFacts)
+	// and something must still stop a contended database from holding the
+	// pipeline — or a shutdown — open indefinitely.
+	//
+	// Sized to the busy_timeout(5000) the history connection carries
+	// (internal/history/db.go), which with _txlock=immediate is what covers
+	// contention: a lock this waits out is one the driver would have waited
+	// out anyway.
+	//
+	// It does NOT bound the worst case of one Append, so do not read the
+	// figure as "one Append always completes or fails within 5s". This
+	// ceiling covers the whole call, and for a BATCH that is BeginTx,
+	// Prepare, Exec and Commit in sequence, so a wait in the first step can
+	// leave the rest without room and cut it short part-way through. (In
+	// practice _txlock=immediate takes the write lock at BEGIN, so contention
+	// is one wait at BeginTx rather than one per step — nearer a single 5s
+	// than four — but that is a property of the DSN, not of this constant.)
+	//
+	// The append this constant actually bounds is the single-fact one, which
+	// SQLiteFactLog issues as a lone statement with no explicit transaction,
+	// so there is one step to wait in. Being cut short is deliberate and safe
+	// in the only direction
+	// that matters: a truncated append rolls back and records nothing, which
+	// leaves the article unprovable rather than wrongly proven (R3). See
+	// pipeline.appendArticleFacts for what that actually costs — it is
+	// bounded, but it is not "a re-fetch and nothing else".
+	//
+	// The cost it buys is a shutdown that can now block here for up to this
+	// long per in-flight article, where a cancelled context previously
+	// returned immediately. In-flight means the handful of articles being
+	// applied when the cancel lands, not the queue; the alternative is losing
+	// their facts and re-fetching bytes that are on disk.
+	factAppendTimeout = 5 * time.Second
+)
+
+// Downloader defines the lifecycle and control interface for the Usenet
+// article downloader.
 type Downloader interface {
 	Start(ctx context.Context) error
 	Stop() error
@@ -108,8 +157,62 @@ type Application struct {
 	notifyDispatcher *notifier.Dispatcher
 
 	internalFileComplete chan FileComplete
-	onFileComplete       func(jobID string, fileIdx int, fileCRC uint32)
-	markArticlesDoneHook func(jobID string, messageIDs []string) error
+	onFileComplete       func(jobID string, fileIdx int)
+
+	// barrier is the single place the Written -> Durable -> Resolved
+	// transition happens (X2). It is the only thing that can mint a
+	// DurableProof, and Queue.AckDurable takes one, so no other path in the
+	// program can ack an article as downloaded. nil when the process has no
+	// history database, in which case nothing acks and every restart
+	// re-downloads — see New.
+	barrier *durability.Barrier
+	factLog durability.FactLog
+	extents durability.ExtentStore
+	resumer fileResumer
+
+	// checkpointBytes is B1's volume bound. checkpointInterval above is its
+	// time bound; the barrier fires on whichever arrives first.
+	checkpointBytes int64
+
+	// barrierKick carries an out-of-band checkpoint request from the write
+	// path to the checkpoint loop, for a job that has crossed the byte bound.
+	// Buffered and sent to non-blockingly: the write path must never wait on
+	// the checkpoint loop.
+	barrierKick chan string
+
+	// barrierRuns counts completed Barrier.Run attempts. Observability, and
+	// the only way a test can tell "the cadence fired" from "the cadence
+	// happened to have nothing to do".
+	barrierRuns atomic.Int64
+
+	// barrierMu guards the two per-job maps below. It is NOT the barrier's
+	// own lock: jobBarrierMu holds those, one per job, and they are held
+	// across the barrier's I/O while this one never is.
+	barrierMu       sync.Mutex
+	jobBarrierMu    map[string]*barrierLock
+	jobBarrierBytes map[string]int64
+	// lastBarrier is when each job's last barrier completed without error.
+	// R26 asks a job to be able to report it, and it is the figure that tells
+	// "this job is checkpointing normally" from "this job has not had a
+	// successful barrier since the mount went away".
+	lastBarrier map[string]time.Time
+
+	// stallMu guards stalls. It is never held across I/O: every walk copies
+	// what it needs and releases first, because a re-evaluation runs barrier
+	// operations against a mount that is suspected of being wedged.
+	stallMu sync.Mutex
+	stalls  map[string]*stallRecord
+
+	// stallKick carries R19's "on user action" re-evaluation request from an
+	// HTTP handler to the checkpoint loop. Buffered and sent to
+	// non-blockingly, for the same reason barrierKick is.
+	stallKick chan struct{}
+
+	// stallRecheckInterval is R19's interval cadence. A field rather than the
+	// constant directly so a test can drive the ticker arm of runCheckpoint's
+	// select without waiting 30 seconds — the seam between the loop and
+	// reevaluateStalls is otherwise unpinnable, and was.
+	stallRecheckInterval time.Duration
 
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
@@ -117,6 +220,34 @@ type Application struct {
 
 	started atomic.Bool
 	stopped atomic.Bool
+
+	// stopping is set at the top of Shutdown, BEFORE any of its steps run.
+	//
+	// It exists because the guard it feeds — Application.Stall's refusal to
+	// park a job while the process is stopping — tested app.ctx.Err(), and
+	// app.cancel() runs at step 4, AFTER the clean-shutdown checkpoint at step
+	// 2. So the guard was inert on exactly the path it was written for: the
+	// shutdown barrier exceeds its budget on a queue with many open files,
+	// every job it reaches raises a fault, ctx.Err() is still nil, the pause
+	// runs, and the queue.Save at the end of Shutdown persists it. The stall
+	// list that would re-evaluate it is in-memory and dies with the process,
+	// so the job comes back Paused forever.
+	//
+	// Reordering cancel() before the checkpoint is not the fix: it would
+	// cancel the checkpoint's own context and stop it doing the work it exists
+	// to do. Only a SIGTERM-cancelled parent context took the guarded path,
+	// which is why this is a separate flag rather than a second look at ctx.
+	stopping atomic.Bool
+
+	// checkpointHook, when non-nil, runs at the top of shutdownCheckpoint.
+	// Same discipline as the other same-package test seams: set once, before
+	// the application is started. See shutdownCheckpoint for why the ordering
+	// needs a seam at all.
+	checkpointHook func()
+
+	// jobCheckpointHook, when non-nil, runs with each job's checkpoint context
+	// just before its barrier. Same discipline as checkpointHook.
+	jobCheckpointHook func(context.Context)
 
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
@@ -181,9 +312,30 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.duOrch = newDirectUnpackOrchestrator(app)
 	app.finalizer = newJobFinalizer(app)
+	app.jobBarrierMu = make(map[string]*barrierLock)
+	app.jobBarrierBytes = make(map[string]int64)
+	app.lastBarrier = make(map[string]time.Time)
+	app.stalls = make(map[string]*stallRecord)
+	app.barrierKick = make(chan string, 64)
+	app.stallKick = make(chan struct{}, 1)
+	app.stallRecheckInterval = stallRecheckInterval
+	app.checkpointInterval = time.Duration(dl.CheckpointInterval) * time.Second
+	app.checkpointBytes = int64(dl.CheckpointBytes)
 	for _, o := range opts {
 		o(app)
 	}
+	// Resolve both checkpoint bounds HERE, not in Start.
+	//
+	// They are read by noteJobBytes on the pipeline's worker goroutines and by
+	// runCheckpoint on its own, and New is the last point at which nothing is
+	// running yet — the options loop above is the final writer either way.
+	// Resolving in Start would write the field after Start has already
+	// launched pipeline.run, which is a data race with a concrete cost rather
+	// than a theoretical one: this is where the DEFAULT is substituted, so a
+	// stale read of the configured 0 (the documented "use the default") makes
+	// `bytes >= checkpointBytes` true for every article and runs a full
+	// barrier per article.
+	app.checkpointInterval, app.checkpointBytes = checkpointSettings(app.checkpointInterval, app.checkpointBytes)
 	if app.log == nil {
 		app.log = slog.Default().With("component", "app")
 	}
@@ -265,8 +417,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			}
 			app.maybeFinalize(jobID, msg)
 		},
-		updateCh: make(chan completionSwap, 1),
-		fileInfo: make(map[fileKey]assembler.FileInfo),
+		onArticleWritten: app.noteJobBytes,
+		updateCh:         make(chan completionSwap, 1),
+		fileInfo:         make(map[fileKey]assembler.FileInfo),
 	}
 	app.pipeline = p
 
@@ -307,14 +460,28 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	})
 	app.postProcessor = pp
 
-	onFileComplete := func(jobID string, fileIdx int, fileCRC uint32) {
-		fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
+	onFileComplete := func(jobID string, fileIdx int) {
+		// No CRC32 is reported. The assembler cannot compute a whole-file
+		// one honestly — a resumed run is never sent the articles an earlier
+		// run completed, so its parts never tile the file (#349) — and the
+		// honest figure is durability.FileExtent.PrefixCRC guarded by
+		// HasPrefixCRC, which the resumer derives off the barrier's critical
+		// path. Nothing consumes it yet; see the note on FileComplete.
+		fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
 		select {
 		case app.internalFileComplete <- fc:
 		default:
 			// Channel full — spawn goroutine on app.wg to ensure delivery.
 			// Ordering constraint: this is safe w.r.t. wg.Add-during-Wait only because OnFileComplete
 			// runs on the assembler worker, which Shutdown joins at step 2 — before app.wg.Wait() at step 4.
+			//
+			// This arm is why the channel's capacity is NOT a bound on
+			// anything. A completed file now keeps its assembler handle open
+			// until the consumer finalizes it (see assembler.finalizeFile), so
+			// an unbounded backlog here is an unbounded set of open handles.
+			// The arm is still required: blocking the worker on a consumer
+			// whose finalize path submits control messages back to that same
+			// worker deadlocks both.
 			app.wg.Go(func() {
 				app.internalFileComplete <- fc
 			})
@@ -322,24 +489,54 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
-	markDone := q.MarkArticlesDone
-	markDoneByIdx := q.MarkArticlesDoneByIdx
-	if app.markArticlesDoneHook != nil {
-		markDone = app.markArticlesDoneHook
-		markDoneByIdx = nil
+	// Class A and Class B live in the history database, which is also where
+	// the queue's own state lives. One database, one set of transactions, no
+	// second file to keep consistent with it.
+	//
+	// A process with no history database gets no barrier, and that is a
+	// degraded mode rather than a supported one: the barrier is the only
+	// thing that can mint a DurableProof, so nothing acks, and every restart
+	// re-downloads everything. It is logged loudly for that reason. Only
+	// tests that never download reach it.
+	if repo != nil && repo.DB() != nil {
+		db := repo.DB()
+		app.factLog = durability.NewSQLiteFactLog(db)
+		app.extents = durability.NewSQLiteExtentStore(db)
+		app.resumer = durability.NewResumer(app.factLog, app.extents, log)
+		app.barrier = durability.NewBarrier(app.factLog, app.extents, q, app, log)
+		p.factLog = app.factLog
+	} else {
+		log.Warn("no history database: durability barrier disabled, " +
+			"no article will be acked and every restart re-downloads the whole queue")
 	}
 
+	// The assembler is given no SUCCESS ack callback. It has no authority to
+	// resolve an article as downloaded any more: successes are acked by
+	// durability.Barrier, which is the only component that runs the fsync
+	// (X2). The barrier's cadence lives in runCheckpoint.
+	//
+	// OnArticleRejected is the one exception in the other direction, and it is
+	// not the assembler resolving anything: it reports an article it refused,
+	// and handleArticleRejected does the acking. The refusal has no other
+	// witness — a bad yEnc offset is caught here and nowhere else — so without
+	// this the article is silently dropped and its job never finishes. Ordinary
+	// permanent failures still go to Queue.AckPermanentFailure from the
+	// pipeline.
+	//
+	// Options carries no FactLog either. Class A is appended by the pipeline
+	// at the point it hands the article over, with no ordering against the
+	// write (R2) — routing it through the assembler would make it
+	// write-ordered and destroy exactly the independence that lets Class A
+	// commit without a barrier.
 	asm := assembler.New(assembler.Options{
-		FileInfo:                p.resolveFileInfo,
-		MarkArticlesDoneByIdx:   markDoneByIdx,
-		MarkArticlesFailedByIdx: q.MarkArticlesFailedByIdx,
-		MarkArticlesDone:        markDone,
-		MarkArticlesFailed:      q.MarkArticlesFailed,
-		SetFileExtents:          q.SetFileExtents,
-		MinFreeBytes:            minFreeBytes,
-		WriteCacheBytes:         writeCacheBytes,
-		OnLowDisk:               app.handleLowDisk,
-		OnFileComplete:          onFileComplete,
+		FileInfo:            p.resolveFileInfo,
+		MinFreeBytes:        minFreeBytes,
+		WriteCacheBytes:     writeCacheBytes,
+		OnLowDisk:           app.handleLowDisk,
+		OnWriteFault:        app.handleWriteFault,
+		OnArticlesUnwritten: app.handleArticlesUnwritten,
+		OnArticleRejected:   app.handleArticleRejected,
+		OnFileComplete:      onFileComplete,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
@@ -349,16 +546,33 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	return app, nil
 }
 
-// WithCheckpointInterval returns an option that sets the queue persistence interval.
+// WithCheckpointInterval overrides the checkpoint cadence, for tests that
+// cannot wait 30 seconds for one.
+//
+// It is one interval, not two, because there is only one thing to schedule:
+// each tick runs a durability barrier per active job and then saves the queue.
+// The save follows the barrier because the barrier is what produces something
+// worth saving — an ack marks articles Done in memory, and until the queue is
+// written a crash re-fetches them anyway.
 func WithCheckpointInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.checkpointInterval = d }
 }
 
-// WithMarkArticlesDoneHook returns an option that overrides the assembler's
-// batched MarkArticlesDone callback. The provided hook is responsible for
-// persisting the article completion status to the queue.
-func WithMarkArticlesDoneHook(hook func(jobID string, messageIDs []string) error) func(*Application) {
-	return func(a *Application) { a.markArticlesDoneHook = hook }
+// WithStallRecheckInterval overrides R19's re-evaluation cadence.
+//
+// Separate from the checkpoint interval because they measure different things:
+// one bounds rework on a healthy job, the other bounds how long a user waits
+// after clearing a full disk. A test that drove the re-evaluation off the
+// checkpoint interval would be asserting against a coupling production does
+// not have.
+func WithStallRecheckInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.stallRecheckInterval = d }
+}
+
+// WithCheckpointBytes overrides B1's volume bound, for tests that cannot
+// download 64 MiB to see one barrier.
+func WithCheckpointBytes(n int64) func(*Application) {
+	return func(a *Application) { a.checkpointBytes = n }
 }
 
 // Queue returns the application's download queue.
@@ -512,6 +726,13 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		return err
 	}
 	app.pipeline.forgetJob(id)
+	app.forgetJobBarrierState(id)
+	// The job is gone from the queue, so nothing will ever read its Class A
+	// facts or Class B extents again. Both are keyed by job ID with no
+	// foreign key to anything, so this is the only thing that removes them —
+	// without it every deleted job leaves its rows behind for the life of
+	// the database.
+	app.deleteJobDurability(ctx, id)
 	if deleteFiles {
 		downloadDir := app.config.GetGeneral().DownloadDir
 		path := filepath.Join(downloadDir, snap.Name)
@@ -700,10 +921,32 @@ func (app *Application) Start(ctx context.Context) error {
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
 	}
-	// Reset transient download state: Downloading → Queued, Emitted → false.
-	// On a cold restart these flags are stale — the old downloader's
-	// in-flight articles are long gone.
+	// Clear the Emitted flags and un-fail the articles the old downloader's
+	// teardown marked, so both are re-dispatchable. It changes no job's
+	// STATUS — the comment here used to say "Downloading → Queued", which it
+	// has never done, and that is worth being exact about directly above the
+	// sweep below, because a job's status is what decides whether the sweep
+	// touches it at all.
 	app.queue.ClearAllEmitted()
+	// L3: re-derive each DOWNLOADING job's work set from what is actually on
+	// stable storage, BEFORE the downloader below can dispatch a single
+	// article. Placed after ClearAllEmitted so the reset cannot undo it, and
+	// before dl.Start so a durable article is never requested at all — a seed
+	// that lands after dispatch begins still marks the right bits, but the
+	// re-fetch it exists to prevent has already gone out on the wire.
+	//
+	// "Downloading", not "resident", and the distinction is load-bearing
+	// rather than pedantic. The sweep is AUTHORITATIVE: it clears a bit whose
+	// bytes it cannot find (#362). JobPhase.IsResident is also true for the
+	// post-processing statuses, where par2 repairs a file in place and the
+	// move relocates it, so a recomputation there would clear correct state.
+	// Do not widen this to residency on the strength of "it can only seed a
+	// resident job" — that was the bound before #362 and it is the bug.
+	// resumeAllJobs' own doc has the full argument.
+	if err := app.resumeAllJobs(app.ctx); err != nil {
+		_ = app.assembler.Stop()
+		return err
+	}
 	// Snapshot app.downloader under app.mu once and reuse it below. started
 	// flips true (via CompareAndSwap) before this point, so a concurrent
 	// ReloadDownloader call could otherwise race an unguarded read of
@@ -725,10 +968,9 @@ func (app *Application) Start(ctx context.Context) error {
 	app.pipeline.ctx = app.ctx // must be set before goroutine launch (setCompletions reads it)
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
 	app.wg.Go(func() { app.watchCompletions(app.ctx) })
+	// Read only. Both bounds were resolved in New, before anything was
+	// running; writing either here would race every goroutine launched above.
 	interval := app.checkpointInterval
-	if interval <= 0 {
-		interval = defaultCheckpointInterval
-	}
 	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
 
@@ -738,19 +980,8 @@ func (app *Application) Start(ctx context.Context) error {
 		if !snap.IsComplete() {
 			continue
 		}
-		if app.historyRepo != nil {
-			dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err := app.historyRepo.Get(dbCtx, snap.ID)
-			dbCancel()
-			if err == nil {
-				app.log.Info("found completed job in history but still in queue, removing", "jobID", snap.ID)
-				if rmErr := app.queue.Remove(snap.ID); rmErr != nil {
-					app.log.Error("failed to remove duplicate job from queue", "jobID", snap.ID, "err", rmErr)
-				}
-				continue
-			} else if !errors.Is(err, history.ErrNotFound) {
-				app.log.Error("failed to check history for job", "jobID", snap.ID, "err", err)
-			}
+		if app.historyRepo != nil && app.dropJobAlreadyInHistory(ctx, snap.ID) {
+			continue
 		}
 
 		failMsg := failMsgForJob(snap)
@@ -819,21 +1050,29 @@ func waitBounded(name string, d time.Duration, wait func() error, log *slog.Logg
 	}
 }
 
-// Shutdown stops the downloader, post-processor, and assembler, flushes the
-// cache, and persists the queue to disk. Safe to call multiple times.
+// finalBarrier tells stopWorkers whether to run R6's clean-shutdown checkpoint
+// between stopping the downloader and stopping the assembler.
 //
-// Ordering matters:
-//  1. Stop the downloader — no new articles are dispatched.
-//  2. Stop the assembler — drains in-flight writes and delivers any remaining
-//     OnFileComplete events to watchCompletions, which is still running.
-//  3. Cancel the context — watchCompletions exits.
-//  4. Wait for background goroutines to finish.
-//  5. Stop the post-processor, save queue.
+// Shutdown passes barrierOnStop. ForceStopWorkers passes noBarrierOnStop
+// because its whole purpose is to reproduce a hard kill, and a process that
+// was SIGKILLed did not get to flush anything.
+type finalBarrier bool
+
+const (
+	barrierOnStop   finalBarrier = true
+	noBarrierOnStop finalBarrier = false
+)
+
+// stopWorkers stops the downloader, optionally runs the clean-shutdown barrier,
+// aborts active DirectUnpackers, and stops the assembler, in exactly that order.
+// Shared between Shutdown and ForceStopWorkers (in export_test.go) so the
+// teardown ordering cannot drift between them.
 //
-// stopWorkers stops the downloader, aborts active DirectUnpackers, and stops
-// the assembler in exact documented order. Shared between Shutdown and
-// ForceStopWorkers (in export_test.go) to guarantee consistent teardown ordering.
-func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
+// The barrier sits between the downloader stopping and the assembler stopping
+// because that is the only window where both halves hold: no new article can
+// arrive, and the file handles the barrier needs still exist. See
+// Application.shutdownCheckpoint.
+func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, barrier finalBarrier) {
 	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
 	// that arrives after this point sees it and returns immediately without
 	// doing any work. But a reload already past that check when we set
@@ -855,6 +1094,15 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 		}
 	}
 
+	// R6's clean-shutdown barrier, in the only window where both halves
+	// hold: the downloader has stopped so no new article can arrive, and the
+	// assembler has not, so the file handles the barrier needs still exist.
+	// Without it every byte since the last checkpoint is re-fetched on the
+	// next start — a full window thrown away on a deliberate restart.
+	if barrier {
+		app.shutdownCheckpoint()
+	}
+
 	// Abort all active DirectUnpackers before stopping the assembler.
 	// This kills unrar subprocesses and cleans up partial extracts.
 	app.duOrch.abortAll()
@@ -871,19 +1119,27 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 //
 // Ordering matters:
 //  1. Stop the downloader — no new articles are dispatched.
-//  2. Stop the assembler — drains in-flight writes and delivers any remaining
+//  2. Run R6's clean-shutdown barrier, so work since the last checkpoint is not
+//     re-fetched on the next start, and abort active DirectUnpackers.
+//  3. Stop the assembler — drains in-flight writes and delivers any remaining
 //     OnFileComplete events to watchCompletions, which is still running.
-//  3. Cancel the context — watchCompletions exits.
-//  4. Wait for background goroutines to finish.
-//  5. Stop the post-processor, save queue.
+//  4. Cancel the context — watchCompletions exits.
+//  5. Wait for background goroutines to finish.
+//  6. Stop the post-processor, save queue.
+//
+// Steps 1-3 are stopWorkers; see its doc for why the barrier sits between them.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Before any step, so the stall guard covers the clean-shutdown barrier
+	// below. See the field's doc.
+	app.stopping.Store(true)
+
 	var errs []error
 	const stepTimeout = 15 * time.Second
 
-	app.stopWorkers(stepTimeout, &errs)
+	app.stopWorkers(stepTimeout, &errs, barrierOnStop)
 
 	app.cancel()
 
@@ -903,23 +1159,6 @@ func (app *Application) Shutdown() error {
 		errs = append(errs, fmt.Errorf("queue save: %w", err))
 	}
 	return errors.Join(errs...)
-}
-
-func (app *Application) runCheckpoint(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !app.queue.IsDirty() {
-				continue
-			}
-			adminDir := app.config.GetGeneral().AdminDir
-			_ = app.queue.Save(filepath.Join(adminDir, "queue"))
-		}
-	}
 }
 
 func (app *Application) watchCompletions(ctx context.Context) {
@@ -950,7 +1189,6 @@ func (app *Application) watchCompletions(ctx context.Context) {
 	}
 }
 
-// handleFileComplete processes a single file completion event.
 // logQueueWriteFailure reports a failed per-file queue write at a level that
 // matches what the failure means.
 //
@@ -969,23 +1207,70 @@ func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err 
 	app.log.Warn(op+" failed", "job", jobID, "fileidx", fileIdx, "err", err)
 }
 
+// handleFileComplete processes a single file completion event.
 func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete) {
-	// Store the assembled CRC32 on the queue's JobFile so it survives
-	// serialization and is available during post-processing QuickCheck.
-	if fc.CRC32 != 0 {
-		if err := app.queue.SetFileCRC32(fc.JobID, fc.FileIdx, fc.CRC32); err != nil {
-			// A job removed or evicted between assembly and here is ordinary
-			// and not worth a warning; anything else means the CRC is lost
-			// and QuickCheck will have less to verify against.
-			app.logQueueWriteFailure("set file CRC32", fc.JobID, fc.FileIdx, err)
-		}
+	// FIRST, before anything downstream can act on the file. finalizeCompletedFile
+	// runs the barrier over it, trims it to its real extent and hands the
+	// handle back to the assembler. Everything below — MarkFileComplete,
+	// DirectUnpack, job finalization and the post-processing that follows —
+	// reads or consumes those bytes, and a file that still carries
+	// pre-allocation's trailing zeros is one par2 reports as damaged.
+	//
+	// A failure here therefore STOPS the completion rather than being logged
+	// past. The file is not marked complete, DirectUnpack is not fed it, and
+	// the job does not finalize — because none of those can be undone once
+	// done, while a stalled job can be resumed by an operator who has fixed
+	// the mount. The job pauses with the reason attached (A1, R19, R27): a
+	// failure to trim is a condition of storage, so no article is marked
+	// failed, the failed-byte count and the health percentage are untouched,
+	// and every article stays exactly as durable as it already was.
+	//
+	// The path is resolved BEFORE the finalize, not after. Application.Fail
+	// carries a permanently faulted job into maybeFinalize, which drops the
+	// pipeline's cached FileInfo for it — so a path asked for afterwards comes
+	// back empty and the reason the operator is shown names no file at all.
+	// That is a bug on its own, independent of the double-routing below.
+	path := app.filePathFor(fc.JobID, fc.FileIdx)
+	if err := app.finalizeCompletedFile(ctx, fc.JobID, fc.FileIdx); err != nil {
+		app.routeFinalizeFailure(fc.JobID, fc.FileIdx, path, err)
+		return
 	}
+	if err := app.completeFinalizedFile(ctx, fc); err != nil {
+		// Recorded, not just logged. The barrier has already trimmed this
+		// file, acked its articles and released the handle, and the
+		// assembler's tombstone means OnFileComplete will never fire for it
+		// again — so nothing else can re-trigger this. Dropping it left the
+		// file's Complete flag false forever with every article Done and
+		// nothing left to dispatch: a wedged job, surviving restarts because
+		// the flag is only ever restored from the persisted column.
+		app.log.Info("completion not delivered; recorded for the stall re-evaluation to retry",
+			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		app.noteUndeliveredCompletion(fc.JobID, fc.FileIdx)
+	}
+}
+
+// completeFinalizedFile is everything the completion path does AFTER the
+// file's bytes on disk are known to be correct.
+//
+// Split out of handleFileComplete because a stall raised by a failed finalize
+// interrupts the completion between the two halves, and
+// Application.reevaluateStall has to resume it from exactly there — the
+// finalize retried on its own, then this. Inlining it would have meant a
+// second copy of the mark-complete/DirectUnpack/finalize sequence, free to
+// drift from this one (S5).
+//
+// It returns an error only so the retry can tell whether the queue accepted
+// the completion: MarkFileComplete needs the job resident, and a job the
+// active set had no room to re-promote must be tried again rather than have
+// its completion silently dropped. handleFileComplete's own call has already
+// logged everything a live pipeline can act on.
+func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComplete) error {
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		// Returning bare here was itself the shape #261 describes: the file
 		// never gets marked complete, no event is emitted, and nothing says
 		// why.
 		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-		return
+		return err
 	}
 	app.emit(Event{Type: "queue_updated"})
 
@@ -1001,10 +1286,11 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 	snap := app.queue.SnapshotJob(fc.JobID)
 	if snap != nil && snap.IsComplete() {
 		if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
-			return // downloader will fetch recovery volumes
+			return nil // downloader will fetch recovery volumes
 		}
 		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
 	}
+	return nil
 }
 
 // maybeReleaseRecoveryVolumes checks whether a completed job with deferred par2
@@ -1096,11 +1382,23 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // par2NeedsRecovery reports whether a completed job needs its deferred par2
 // recovery volumes downloaded for repair. It mirrors the post-processing
 // QuickCheck stage: it parses the par2 index files already on disk in dir and
-// compares them against the assembled CRC32s captured during download. Repair
+// compares them against the per-file CRC32s recorded on the queue. Repair
 // is needed when any par2-tracked file is corrupt (Mismatched), has no
-// assembled CRC to check against (NoCRC — a failed download, or a resumed
-// file whose CRC could not be computed), or could not be matched
-// (Unverified). When no usable par2
+// recorded CRC to check against (NoCRC), or could not be matched
+// (Unverified).
+//
+// The CRCs come from Class A. The assembler used to combine the per-article
+// CRCs it happened to see, which was #349 — a resumed run never receives the
+// articles an earlier run completed, so its parts do not tile the file — and
+// that writer is gone. Barrier.gaplessPrefix combines the FACTS instead, which
+// persist across restarts and so name every article whichever run fetched it,
+// and Application.recordAssembledCRC copies the result onto the queue when the
+// file finalizes.
+//
+// A file whose prefix stops short of its end still reads as NoCRC, which is
+// R23's "unavailable" rather than a CRC of zero, and this function then
+// conservatively returns true. That costs bandwidth on a file with a hole; it
+// never ships an unrepaired one. When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
 func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log *slog.Logger, parseOpts par2.ParseOptions) (needsRecovery bool, reason string) {
@@ -1221,7 +1519,18 @@ func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defens
 		// Close any open assembler file handles for this job so post-processing
 		// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
 		// (.nfsXXXX) artifacts on open files.
-		if err := app.assembler.CloseJobHandles(context.Background(), jobID); err != nil {
+		//
+		// Bounded, because this is now reachable from the storage-fault path:
+		// Application.Fail routes a permanent fault here, and the whole reason
+		// the job is failing may be a mount that answers nothing. An unbounded
+		// wait would park whichever goroutine is finalizing — the completion
+		// consumer, or the checkpoint loop inside a barrier — for as long as
+		// the mount stays down. Handles that outlive the timeout are closed by
+		// the worker's shutdown drain instead.
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), closeHandlesTimeout)
+		err := app.assembler.CloseJobHandles(closeCtx, jobID)
+		closeCancel()
+		if err != nil {
 			app.log.Warn("maybeFinalize: failed to close assembler job handles", "job", jobID, "err", err)
 		}
 		// Force an immediate queue save so the PostProc=true flag survives
@@ -1283,6 +1592,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)
+	app.forgetJobBarrierState(job.ID)
 
 	snap := app.config.Snapshot()
 	gen := &snap.General
@@ -1333,7 +1643,6 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// P6: Category dir trailing '*' suppresses the per-job subfolder.
 	// Files go directly into the category directory ("flat layout").
 	// e.g. catDir="movies*" → complete_dir/movies/file.mkv
-	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
 	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
 	flatLayout := strings.HasSuffix(catDir, "*")
 	if flatLayout {

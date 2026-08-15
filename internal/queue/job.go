@@ -967,9 +967,6 @@ func (j *Job) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// deriveName strips directory components and the extension from path.
-// For "/watch/My.Show.S01E02.nzb" returns "My.Show.S01E02". A ".nzb.gz"
-// or ".nzb.bz2" double extension is collapsed to the bare stem too.
 // stripNZBExt removes .nzb, .nzb.gz, and .nzb.bz2 extensions from name.
 // Used for both explicit names and derived names to prevent download
 // directories like "movie.nzb/".
@@ -983,6 +980,9 @@ func stripNZBExt(name string) string {
 	return name
 }
 
+// deriveName strips directory components and the extension from path.
+// For "/watch/My.Show.S01E02.nzb" returns "My.Show.S01E02". A ".nzb.gz"
+// or ".nzb.bz2" double extension is collapsed to the bare stem too.
 func deriveName(path string) string {
 	base := filepath.Base(path)
 	if stripped := stripNZBExt(base); stripped != base {

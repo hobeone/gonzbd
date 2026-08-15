@@ -1084,6 +1084,9 @@ func TestExtractSevenZipFile_TempFileUnlinkedMidWrite(t *testing.T) {
 		OverwriteFiles:   true,
 		IgnoreUnrarDates: false,
 	}, 0, totalRead, logger)
+	// dupcomment:ok the go_sevenzip and go_unrar backends are asserted
+	// against the same publish contract; the two copies must stay in step.
+	//
 	// The temp file backing this write is unlinked mid-copy (see
 	// unlinkingContext.Err), so Chmod/Chtimes on it fail (soft, logged at
 	// debug — checked below) but the final publish rename now also fails

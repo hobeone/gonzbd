@@ -139,6 +139,46 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 	return hex.EncodeToString(buf)
 }
 
+// decodeArticleFlags unpacks one file's articles_done bitmap into per-article
+// done and failed flags, WITHOUT a manifest.
+//
+// decodeArticlesDone does the same unpacking against a live job, taking the
+// file's width from the manifest's FileRange. This one is for the non-resident
+// path, where there is no manifest and the width comes from
+// job_files.article_count — the same number, written by the same statement.
+// The two share the format and nothing else; folding them together would mean
+// giving the resident path a width it does not need and the boot path a
+// manifest it does not have.
+//
+// Returns nil, nil for an empty or malformed value, which reads as "nothing
+// resolved". That is the safe direction under S3 and matches what an absent
+// column already produced: the articles come back Outstanding and are
+// re-derived on hydration.
+func decodeArticleFlags(encoded string, articleCount int) (done, failed []bool) {
+	if encoded == "" || articleCount <= 0 {
+		return nil, nil
+	}
+	buf, err := hex.DecodeString(encoded)
+	if err != nil {
+		return nil, nil
+	}
+	numBytes := (articleCount + 7) / 8
+	if len(buf) != numBytes*2 {
+		// Not written by encodeArticlesDone for THIS file. Guessing which
+		// prefix is the done bitmap would resolve the wrong articles rather
+		// than none, which is the reason decodeArticlesDone refuses too.
+		return nil, nil
+	}
+	doneBuf, failedBuf := buf[:numBytes], buf[numBytes:]
+	done = make([]bool, articleCount)
+	failed = make([]bool, articleCount)
+	for i := range articleCount {
+		done[i] = doneBuf[i/8]&(1<<(i%8)) != 0
+		failed[i] = failedBuf[i/8]&(1<<(i%8)) != 0
+	}
+	return done, failed
+}
+
 // decodeArticlesDone restores file fileIdx's per-article done/failed state
 // from a hex bitmap written by encodeArticlesDone: [done bits][failed bits],
 // each ceil(N/8) bytes. An article with its failed bit set is restored via
@@ -282,8 +322,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
 	const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, write_cursor, max_written, bytes_downloaded, failed_bytes, filename, assembled_crc32, articles_done, article_count)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count, failed_bytes, bytes_downloaded)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	p := job.Progress()
 	for i := range m.NumFiles() {
 		isPar2 := 0
@@ -305,8 +345,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		_, err := tx.ExecContext(ctx, qFiles,
 			job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2,
 			complete, fetch,
-			p.FileWriteCursor(i), p.FileMaxWritten(i), p.FileBytesDownloaded(i), p.FileFailedBytes(i), p.FileFilename(i), p.FileAssembledCRC32(i),
+			p.FileFilename(i), p.FileAssembledCRC32(i),
 			artDoneStr, hi-lo,
+			// Both written in the same statement as articles_done, whose
+			// failed and resolved halves they sum. One writer, one
+			// transaction: neither column can drift from the bits it caches,
+			// which is the property that distinguishes them from the derived
+			// columns removed in #306.
+			p.FileFailedBytes(i), p.FileBytesDownloaded(i),
 		)
 		if err != nil {
 			return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
@@ -359,14 +405,14 @@ FROM jobs WHERE id = ?`
 
 	var fileCount int
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM job_files WHERE job_id = ?", id).Scan(&fileCount); err != nil {
-		_ = s.Remove(ctx, id)
+		s.removeCorrupt(ctx, id)
 		return nil, fmt.Errorf("sqlite store count files for %s: %w", id, err)
 	}
 
 	manifestPath := filepath.Join(s.dir, "manifests", id+".json.gz")
 	if fileCount > 0 {
 		if _, err := os.Stat(manifestPath); err != nil {
-			_ = s.Remove(ctx, id)
+			s.removeCorrupt(ctx, id)
 			return nil, fmt.Errorf("sqlite store manifest missing for %s: %w", id, err)
 		}
 	}
@@ -376,7 +422,7 @@ FROM jobs WHERE id = ?`
 			var manifest Manifest
 			if err := readGzJSON(manifestPath, &manifest); err != nil {
 				_ = os.Rename(manifestPath, manifestPath+".corrupt")
-				_ = s.Remove(ctx, id)
+				s.removeCorrupt(ctx, id)
 				return nil, fmt.Errorf("sqlite store read manifest %s: %w", id, err)
 			}
 			job.manifest = &manifest
@@ -444,15 +490,18 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	if job == nil || job.manifest == nil || job.progress == nil {
 		return nil
 	}
-	// The per-file byte columns are deliberately absent: recompute at the end
-	// of this function derives Bytes, BytesDownloaded and FailedBytes from the
-	// manifest and the article bitmaps, and it runs unconditionally, so
-	// reading them here only to overwrite them would make a query that runs on
-	// every promotion wider for no effect. They are still written by
-	// insertJobFilesTx and read by ArticleCountsByJob, which sizes a
-	// non-resident job that has no manifest to derive from.
+	// No byte or cursor figure is READ here. The recompute at the end of this
+	// function derives Bytes, BytesDownloaded and FailedBytes from the manifest
+	// and the article bitmaps, which is why this query selects neither
+	// job_files.failed_bytes nor job_files.bytes_downloaded even though both
+	// columns exist — they are for the NON-resident path (ArticleCountsByJob),
+	// where there is no manifest to recompute from;
+	// The write cursor and high-water mark are gone entirely: the completion
+	// truncate derives its bound from the durable facts rather than from a
+	// seed, and the coalescing cursor is local to the assembler's cache.
 	const qFiles = `
-SELECT file_index, complete, fetch_policy, write_cursor, max_written, assembled_crc32, COALESCE(articles_done, '')
+SELECT file_index, complete, fetch_policy, assembled_crc32, COALESCE(articles_done, ''),
+       COALESCE(filename, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
 	if err != nil {
@@ -461,19 +510,67 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var idx, complete, fetch int
-		var writeCursor, maxWritten int64
 		var crc32Val uint32
-		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &fetch, &writeCursor, &maxWritten, &crc32Val, &artDoneStr); err != nil {
+		var artDoneStr, filename string
+		if err := rows.Scan(&idx, &complete, &fetch, &crc32Val, &artDoneStr, &filename); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
 			fp := &job.progress.files[idx]
-			fp.WriteCursor = writeCursor
-			fp.MaxWritten = maxWritten
 			fp.AssembledCRC32 = crc32Val
-			// articles_done is the only source of per-article state;
-			// Complete is just a flag alongside it.
+			// The resolved on-disk name, which this path used to drop while
+			// still persisting it — RestoreRetryProgress's "unlike
+			// RestoreJobProgress" note described a real asymmetry, and it was
+			// not a deliberate one.
+			//
+			// Two things depend on it and both were silently broken across a
+			// restart. pipeline.registerFile treats an empty name as "first
+			// time resolving this file" and calls GetUniqueFilename, which
+			// only returns a path that does not already exist — so a restart
+			// resumed into <name>.1.<ext> (the counter goes before the
+			// extension) and orphaned every byte the previous run
+			// had written, which is the opposite of what registerFile's own
+			// comment about "preventing duplicate renaming across daemon
+			// restarts" claims. And the startup resume sweep locates a job's
+			// file by this name, so with it empty there was nothing to resume
+			// against and L3 could not hold.
+			//
+			// Restoring it is not a second writer of anything: job_files.filename
+			// is written by SetFileFilename and read here, and a file that was
+			// never registered still restores as empty.
+			fp.Filename = filename
+			// articles_done is the only source of per-article state THIS
+			// FUNCTION reads; Complete is just a flag alongside it.
+			//
+			// It is not the last word in the process, and must not be read as
+			// one. The startup resume sweep (internal/app/resume_startup.go)
+			// verifies each file's bytes against the Class A fact log and
+			// installs its result through Queue.ReplaceFromResume, which
+			// OVERWRITES the per-article bits restored here for every file it
+			// resumed — including clearing one. The design's S4 is why: "where
+			// it disagrees with a recomputation, the recomputation is correct
+			// by definition". What this function restores is a belief a
+			// previous process wrote; what the sweep installs is what the
+			// bytes on disk support.
+			//
+			// The precedence used to run the other way, and that was #362: the
+			// sweep seeded through the additive Queue.SeedFromExtents, which
+			// never clears a bit, so an article this restore marked done stayed
+			// done even after the recomputation proved its bytes were gone, and
+			// the job completed a file with a zero-filled hole in it.
+			//
+			// The sweep's authority is bounded to the files it actually read.
+			// A file it never resumed — a job that is not downloading or not
+			// resident, a file whose name was never resolved, a file a storage
+			// fault stopped it reaching — keeps exactly what this function
+			// restored, because an omission is silence rather than a finding of
+			// absence. The phase bound is the load-bearing one: past
+			// downloading, par2 and the move rewrite these files, so the
+			// download-time fact log no longer describes them and a
+			// recomputation over them would clear correct state. A permanently failed
+			// article keeps its bits for the same reason: its bytes were never
+			// on disk, so their absence is the outcome recorded below and not
+			// new evidence.
 			//
 			// Complete used to short-circuit the decode and mark every
 			// article of the file done. That is wrong because Complete means
@@ -524,7 +621,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 }
 
 // ArticleCountsByJob returns every job's per-file FileMeta — article count,
-// byte size, bytes already downloaded, failed bytes, and complete/fetch
+// byte size, failed bytes, downloaded bytes, and complete/fetch
 // state — in a single grouped query, indexed by file_index within each job.
 // Used to size JobProgress at restart without loading each job's manifest individually,
 // and to give newJobProgressSized everything it needs to reconstruct a
@@ -536,7 +633,28 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // delete) still gets each entry attributed to the right file instead of
 // shifted by position.
 func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
-	const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, failed_bytes, complete, fetch_policy, subject FROM job_files ORDER BY job_id ASC, file_index ASC`
+	// Every column comes from job_files, including both byte figures. It used
+	// to LEFT JOIN file_extents for bytes_durable, which was the wrong
+	// quantity: that column counts DECODED payload bytes, while the remaining
+	// figure this feeds subtracts from jf.bytes, an ENCODED NZB total. The
+	// skew is the encoding overhead, a few percent, and it made a non-resident
+	// job report more bytes outstanding than the same job resident — the exact
+	// divergence TestRemainingBytes_IdenticalResidentAndNonResident forbids.
+	// jf.bytes_downloaded sums the same articles in the same unit as jf.bytes.
+	//
+	// One grouped query for the whole queue, which is what keeps restart at
+	// B3's O(incomplete files) bound. Reading per job instead would be N
+	// queries at startup.
+	// articles_done comes along too, and needs no schema change: it has always
+	// been on this table, and article_count gives the width the blob is keyed
+	// by, so it decodes here without a manifest. Without it a non-resident
+	// job's every article read as Pending.
+	const q = `
+SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
+       jf.fetch_policy, jf.subject, jf.failed_bytes, jf.bytes_downloaded,
+       COALESCE(jf.articles_done, '')
+  FROM job_files jf
+ ORDER BY jf.job_id ASC, jf.file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
@@ -545,11 +663,12 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 
 	result := make(map[string][]FileMeta)
 	for rows.Next() {
-		var jobID, subject string
+		var jobID, subject, artDone string
 		var idx, count int
-		var fileBytes, bytesDownloaded, failedBytes int64
+		var fileBytes, failedBytes, bytesDownloaded int64
 		var complete, fetch int
-		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &bytesDownloaded, &failedBytes, &complete, &fetch, &subject); err != nil {
+		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &complete, &fetch, &subject,
+			&failedBytes, &bytesDownloaded, &artDone); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -566,17 +685,18 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 			counts = grown
 		}
 		counts[idx] = FileMeta{
-			ArticleCount:    count,
-			Bytes:           fileBytes,
-			BytesDownloaded: bytesDownloaded,
-			FailedBytes:     failedBytes,
-			Complete:        complete != 0,
-			Fetch:           FetchPolicy(fetch), //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+			ArticleCount: count,
+			Bytes:        fileBytes,
+			Complete:     complete != 0,
+			Fetch:        FetchPolicy(fetch), //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
 			// Classified from the stored subject rather than from
 			// is_par2_recovery, which flags recovery volumes only. The par2
 			// index is the case this exists for, and it is not a volume.
-			IsPar2: isPar2File(subject),
+			IsPar2:          isPar2File(subject),
+			BytesDownloaded: bytesDownloaded,
+			FailedBytes:     failedBytes,
 		}
+		counts[idx].Done, counts[idx].Failed = decodeArticleFlags(artDone, count)
 		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {
@@ -662,7 +782,11 @@ WHERE id = ?`
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and
 		// its manifest is available, rather than staying 0 forever.
-		const qF = `UPDATE job_files SET complete = ?, fetch_policy = ?, write_cursor = ?, max_written = ?, bytes_downloaded = ?, failed_bytes = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
+		// failed_bytes and bytes_downloaded travel with articles_done for the
+		// same reason they do in insertJobFilesTx: each is a cache of one half
+		// of that column, and a sum is only guaranteed to agree with the bits
+		// it sums if one statement writes both.
+		const qF = `UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ?, failed_bytes = ?, bytes_downloaded = ? WHERE job_id = ? AND file_index = ?`
 		for i := range m.NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -672,7 +796,8 @@ WHERE id = ?`
 			artDoneStr := encodeArticlesDone(job, i)
 			lo, hi := m.FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
-				complete, fetch, job.Progress().FileWriteCursor(i), job.Progress().FileMaxWritten(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFailedBytes(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
+				complete, fetch, job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
+				job.Progress().FileFailedBytes(i), job.Progress().FileBytesDownloaded(i),
 				job.ID, i,
 			); err != nil {
 				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)
@@ -711,6 +836,39 @@ func (s *SQLiteStore) UpdateBatch(ctx context.Context, jobs []*Job) error {
 		return fmt.Errorf("sqlite store commit updatebatch: %w", err)
 	}
 	return nil
+}
+
+// removeCorrupt removes a job whose persisted state this store has just found
+// unusable — a missing or unreadable manifest, or a job_files count that could
+// not be read — and takes its durability rows with it.
+//
+// Ordinary removal deliberately does NOT do that. Queue.Remove runs on the
+// queue-to-history transition as well, where a FAILED job's Class A facts are
+// retained on purpose: a retry reuses the job ID and the same partial file,
+// and those facts are what bound FinalizeFile's truncate to the whole file
+// rather than to the few articles the retry re-fetches. Sweeping them in
+// Remove would destroy that.
+//
+// This path is different in the way that matters. It is reached only when the
+// job's own manifest is gone or unreadable, and every Class A fact is keyed by
+// a global article index that only a manifest can interpret. There is nothing
+// left to read them against, and no queue row and no history entry will arrive
+// to collect them, so retaining them is not caution — it is a leak of rows
+// nothing can use.
+func (s *SQLiteStore) removeCorrupt(ctx context.Context, id string) {
+	_ = s.Remove(ctx, id)
+	for _, q := range []string{
+		"DELETE FROM article_facts WHERE job_id = ?",
+		"DELETE FROM file_extents WHERE job_id = ?",
+	} {
+		if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+			// Not fatal: the caller is already returning an error about the
+			// corruption it found, and leaving these rows is a leak rather
+			// than a correctness failure. Not silent either (A2).
+			s.log.Warn("could not drop the durability rows of a job removed for corrupt state",
+				"job", id, "err", err)
+		}
+	}
 }
 
 // Remove deletes an active job and its child files, removing any filesystem manifests.
@@ -772,8 +930,8 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 	if entry.Status == string(constants.StatusFailed) {
 		const qRetain = `
 INSERT INTO history_job_files
-  (job_id, file_index, complete, fetch_policy, write_cursor, max_written, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
-SELECT job_id, file_index, complete, fetch_policy, write_cursor, max_written, bytes_downloaded, filename, assembled_crc32, articles_done, article_count
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count)
+SELECT job_id, file_index, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count
 FROM job_files WHERE job_id = ?`
 		if _, err := tx.ExecContext(ctx, qRetain, job.ID); err != nil {
 			return fmt.Errorf("sqlite store retain job_files %s: %w", job.ID, err)
@@ -810,16 +968,13 @@ FROM job_files WHERE job_id = ?`
 // silently skip real downloads, so the counts must match before the overlay
 // is used.
 type RetainedFile struct {
-	FileIndex       int
-	Complete        bool
-	Fetch           FetchPolicy
-	WriteCursor     int64
-	MaxWritten      int64
-	BytesDownloaded int64
-	Filename        string
-	AssembledCRC32  uint32
-	ArticlesDone    string
-	ArticleCount    int
+	FileIndex      int
+	Complete       bool
+	Fetch          FetchPolicy
+	Filename       string
+	AssembledCRC32 uint32
+	ArticlesDone   string
+	ArticleCount   int
 }
 
 // HistoryFileProgress returns the per-file progress retained for a failed
@@ -828,7 +983,7 @@ type RetainedFile struct {
 // were already deleted — and is not an error.
 func (s *SQLiteStore) HistoryFileProgress(ctx context.Context, jobID string) ([]RetainedFile, error) {
 	const q = `
-SELECT file_index, complete, fetch_policy, write_cursor, max_written, bytes_downloaded,
+SELECT file_index, complete, fetch_policy,
        COALESCE(filename, ''), COALESCE(assembled_crc32, 0), COALESCE(articles_done, ''), article_count
 FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q, jobID)
@@ -841,8 +996,8 @@ FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	for rows.Next() {
 		var f RetainedFile
 		var complete, fetch int
-		if err := rows.Scan(&f.FileIndex, &complete, &fetch, &f.WriteCursor, &f.MaxWritten,
-			&f.BytesDownloaded, &f.Filename, &f.AssembledCRC32, &f.ArticlesDone, &f.ArticleCount); err != nil {
+		if err := rows.Scan(&f.FileIndex, &complete, &fetch,
+			&f.Filename, &f.AssembledCRC32, &f.ArticlesDone, &f.ArticleCount); err != nil {
 			return nil, fmt.Errorf("sqlite store scan history_job_file %s: %w", jobID, err)
 		}
 		f.Complete = complete != 0
@@ -891,12 +1046,11 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 
 	for _, f := range retained {
 		fp := &job.progress.files[f.FileIndex]
-		fp.BytesDownloaded = f.BytesDownloaded
-		fp.WriteCursor = f.WriteCursor
-		fp.MaxWritten = f.MaxWritten
 		fp.AssembledCRC32 = f.AssembledCRC32
-		// Unlike RestoreJobProgress, the resolved on-disk filename is
-		// carried over. A retry can go straight back into post-processing
+		// The resolved on-disk filename is carried over, the same as
+		// RestoreJobProgress now does — that used to be an asymmetry this
+		// comment pointed at, and it was a defect there rather than a design
+		// choice here. A retry can go straight back into post-processing
 		// without a download pass (every article already resolved), and
 		// postproc's file list and QuickCheck read this name.
 		fp.Filename = f.Filename
@@ -1060,7 +1214,9 @@ func (s *SQLiteStore) shiftSortKeyTx(ctx context.Context, tx *sql.Tx, id string,
 	return nil
 }
 
-// Prune removes orphaned filesystem files not present in SQLite.
+// Prune removes orphaned filesystem files not present in SQLite, and the
+// durability rows of jobs that are in neither the queue nor history-as-FAILED
+// (see pruneDurabilityRows).
 func (s *SQLiteStore) Prune(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, "SELECT id FROM jobs")
 	if err != nil {
@@ -1096,6 +1252,65 @@ func (s *SQLiteStore) Prune(ctx context.Context) error {
 	cleanDir("manifests")
 	cleanDir("jobs")
 	_ = os.Remove(filepath.Join(s.dir, "queue.json.gz"))
+	return s.pruneDurabilityRows(ctx)
+}
+
+// pruneDurabilityRows is the backstop for Class A facts and Class B extents a
+// departed job left behind. Neither table has a foreign key to jobs, so
+// nothing collects them implicitly.
+//
+// The ordinary paths already cover this — Application.deleteJobDurability on
+// the queue-to-history transition, removeCorrupt on the self-healing removals
+// in Get, Application.dropJobAlreadyInHistory on the startup reconcile, and the
+// history entry's own deletion. What is left is the crash window between a job
+// leaving jobs and its rows being deleted, after which nothing looks for them
+// again for the life of the installation.
+//
+// # Why the obvious predicate is wrong
+//
+// "job_id not in jobs" would sweep a job that moved to history as FAILED, and
+// those rows are kept DELIBERATELY: a retry uses them to bound
+// Barrier.FinalizeFile's truncate to the whole partial file rather than to the
+// few articles the retry re-fetches. dropJobAlreadyInHistory encodes the same
+// rule by returning early on StatusFailed. A sweep that ignores it destroys
+// exactly the ground the retry path exists to preserve, and does so silently.
+//
+// # Why NOT EXISTS rather than NOT IN
+//
+// SQLite permits NULL in a TEXT PRIMARY KEY, so jobs.id and history.nzo_id can
+// both hold one. A single NULL anywhere in a NOT IN subquery makes the
+// predicate NULL for EVERY row, and the delete then matches nothing — a sweep
+// that silently stops sweeping, with no error and no way to notice from
+// outside. NOT EXISTS compares row by row and is unaffected.
+//
+// The failure direction of that trap is retention rather than loss, which is
+// why it is worth naming: it would not have shown up as a bug, only as this
+// function quietly never working.
+//
+// The two statements are written out rather than generated over a table-name
+// list. The predicate has to name its own table three times, so a templated
+// form needs SQL string concatenation for a value that is a compile-time
+// constant either way -- all cost, no reuse.
+func (s *SQLiteStore) pruneDurabilityRows(ctx context.Context) error {
+	const facts = `
+		DELETE FROM article_facts
+		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = article_facts.job_id)
+		   AND NOT EXISTS (SELECT 1 FROM history h
+		                    WHERE h.nzo_id = article_facts.job_id AND h.status = ?)`
+	const extents = `
+		DELETE FROM file_extents
+		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = file_extents.job_id)
+		   AND NOT EXISTS (SELECT 1 FROM history h
+		                    WHERE h.nzo_id = file_extents.job_id AND h.status = ?)`
+	// Errors are RETURNED, unlike the cleanDir calls above, which ignore
+	// theirs. A missing file is one orphan; a failing DELETE is the sweep not
+	// running at all, and Queue.persist propagates it so the next save retries
+	// rather than reporting a prune that did not happen.
+	for _, q := range []string{facts, extents} {
+		if _, err := s.db.ExecContext(ctx, q, string(constants.StatusFailed)); err != nil {
+			return fmt.Errorf("sqlite store prune durability rows: %w", err)
+		}
+	}
 	return nil
 }
 
