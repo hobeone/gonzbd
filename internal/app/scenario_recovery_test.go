@@ -96,15 +96,39 @@ func startAppAndDrain(t *testing.T, a *app.Application) (context.Context, contex
 	return ctx, cancel
 }
 
+// recoveryLiveness bounds how long a recovery scenario waits for the
+// application to finish a transition. It is a LIVENESS bound, not a
+// performance assertion: these tests assert that a job reaches history, never
+// that it gets there quickly, so the only job of this number is to fail
+// instead of hanging when something is genuinely stuck.
+//
+// That makes over-provisioning free and under-provisioning expensive, and the
+// old values were under-provisioned. TestCheckpoint_SurvivesCrashMidDownload
+// failed on CI at 10.23s against a 10s bound, having passed 23 consecutive
+// local runs including the whole package pinned to two cores and fifteen
+// iterations pinned to one. The runner is simply slower than anything
+// reproducible here — its internal/app run took 108s against 69s for the
+// two-core pinned run — and a scenario that restarts the entire application
+// twice and re-downloads an article had no headroom for that.
+//
+// A passing run pays nothing for the larger number, because waitUntil returns
+// as soon as the condition holds.
+//
+// Other scenario waits in this package still use ad-hoc 2s/5s/10s literals.
+// They are the same kind of bound and could adopt this constant; they are left
+// alone here rather than swept, so that a future CI failure attributes to the
+// wait it actually exceeded.
+const recoveryLiveness = 30 * time.Second
+
 func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *app.Application, jobID string) {
 	t.Helper()
-	if !waitUntil(10*time.Second, func() bool {
+	if !waitUntil(recoveryLiveness, func() bool {
 		_, err := repo.Get(t.Context(), jobID)
 		return err == nil
 	}) {
 		t.Fatalf("timeout waiting for job %s to reach history after recovery", jobID)
 	}
-	if !waitUntil(2*time.Second, func() bool {
+	if !waitUntil(recoveryLiveness, func() bool {
 		return a.Queue().SnapshotJob(jobID) == nil
 	}) {
 		snap := a.Queue().SnapshotJob(jobID)

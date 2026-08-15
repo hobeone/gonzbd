@@ -336,6 +336,11 @@ go run ./scripts/check_review_banner    # docs/reviews/*.md frozen-record banner
 | `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory, the marker must start the comment line, and a reason that wraps onto a second line must be closed by a blank `//` unless the marker is the block's last line — an unclosed wrapped reason is a hard exit-2 error, because guessing where it ends silently suppresses the finding on the *other* copy. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
 | `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
 
+Both run in CI as of this change. They were absent from `.github/workflows/ci.yml`
+while the three diff-scoped gates above were present, which is how a defect in
+`check_dup_comments`' own marker handling survived in the tree: nothing on the
+server ever ran the tool that would have caught it.
+
 Neither is diff-scoped, so both can fail on a file you did not touch. Both found
 a real defect on their first run against this repository: a package doc comment
 duplicated across two files of `scripts/nntpfaultproxy`, and a fixture comment

@@ -74,6 +74,18 @@ jobs:
           # load the config at all (a startup error, not a lint finding).
           version: v2.12.2
 
+      # Whole-repository, not diff-scoped, and both catch classes that build,
+      # vet, lint and the test suite are structurally blind to: comments and
+      # Markdown are neither type-checked nor executed. AGENTS.md has listed
+      # them as required gates since they were written; their absence here is
+      # why a defect in check_dup_comments' own marker handling sat in the tree
+      # until someone ran it by hand.
+      - name: Duplicated comment block check
+        run: go run ./scripts/check_dup_comments
+
+      - name: Review banner check
+        run: go run ./scripts/check_review_banner
+
       - name: Mutex-held-during-I/O check
         run: go run scripts/check_lock_io/main.go
 
