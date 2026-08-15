@@ -41,6 +41,11 @@ func benchFacts(n int, hole int) ([]ArticleFact, Bitmap) {
 // that costs a millisecond of arithmetic beside a syncing device is not a
 // finding, and the incremental form is not free: the prefix must restart from
 // zero whenever a durable bit is cleared, which Resumer does.
+//
+// Read crc32util.Combine's doc before optimising anything here. ~89% of the
+// figure below is that one call, so the loop is not the lever — and the lever
+// that looks obvious there was rejected for depending on article lengths this
+// process does not control.
 func BenchmarkGaplessPrefix_WholeFile(b *testing.B) {
 	for _, n := range []int{100, 1_000, 10_000, 20_000} {
 		facts, bm := benchFacts(n, -1)

@@ -14,7 +14,27 @@ const poly = uint32(0xEDB88320)
 // multiplication with repeated squaring. The CRC32 IEEE polynomial
 // (0xEDB88320) is used, matching Go's hash/crc32.IEEE.
 //
-// Time complexity: O(log(len2)) matrix multiplications.
+// Time complexity: O(log(len2)) matrix multiplications — measured at 7.47 us
+// for len2 = 1e6 on a Ryzen 9 9950X3D, which makes this the dominant cost of
+// durability.gaplessPrefix (~89% of it at 20 000 articles).
+//
+// # Do not hoist the shift matrix out across calls
+//
+// The obvious optimisation is to derive the shift-by-len2 matrix once and
+// reuse it, since a caller folding over one file's articles passes nearly the
+// same len2 every time. Prototyped and verified against this function: 10.7 ns
+// per apply against 7473 ns per Combine, with a 10.2 us build. It was rejected.
+//
+// The win exists only while the lengths are uniform, and they are not ours to
+// assume. ArticleFact.Length is len(res.Data) — the DECODED size of whatever
+// the news server actually returned, not even the NZB's declared segment size.
+// A file whose articles all differ in length rebuilds the matrix per article,
+// which is 36% SLOWER than calling this function, and a cache keyed on length
+// is an unbounded allocation driven by the same input. Uniform article sizes
+// are a convention of how people post, not a property of the format, so the
+// optimisation is fastest on ordinary input and worst on hostile input.
+//
+// See issue #371 for the measurements this replaced.
 func Combine(crc1, crc2 uint32, len2 int64) uint32 {
 	if len2 <= 0 {
 		return crc1
