@@ -62,6 +62,20 @@ type stallRecord struct {
 	// indefinite non-progress with a reason the user has already acted on.
 	// Recording the file here is what gives the retry something to retry.
 	files map[int]finalizeState
+	// parked records that THIS application paused the job, rather than the
+	// user.
+	//
+	// Phase 2 of a re-evaluation resumes unconditionally, and a stall record
+	// exists for reasons that do not involve a pause at all: a user pause
+	// evicts the job, the next checkpoint's ack fails with ErrJobNotResident,
+	// and noteNeedsSeed creates one. The user's pause was then undone within
+	// one interval, with no log saying so — and recreated as fast as it was
+	// cleared, because handles stay open through a pause (CloseJobHandles runs
+	// only from maybeFinalize), so the next checkpoint fails the same way.
+	//
+	// Only a record this application parked may be resumed by it.
+	parked bool
+
 	// needsSeed marks a job whose barrier COMMITTED its Class B cache but
 	// could not ack it, because the job was evicted between checkpointAll's
 	// listing and the call.
@@ -107,6 +121,20 @@ func (app *Application) setStallReasonLocked(jobID, reason string) {
 		app.stalls[jobID] = rec
 	}
 	rec.reason = reason
+	// Every caller of this is a path that pauses the job itself — Stall, and
+	// the reasons stallLost surfaces for a job Stall already parked. A record
+	// created any other way (noteNeedsSeed, notePendingFinalize) leaves it
+	// false, which is what stops a re-evaluation resuming a user's pause.
+	rec.parked = true
+}
+
+// weParked reports whether this application paused the job, and so may resume
+// it.
+func (app *Application) weParked(jobID string) bool {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	rec, ok := app.stalls[jobID]
+	return ok && rec.parked
 }
 
 // notePendingFinalize records a completed file whose finalize must be retried
@@ -360,13 +388,28 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 
 	// Phase 2 — resume, which is what re-promotes the job and makes it
 	// resident again.
-	if err := app.queue.Resume(jobID); err != nil {
-		app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
-		app.clearStall(jobID)
-		return
+	//
+	// Only a job THIS application parked. A stall record exists for reasons
+	// that involve no pause of ours: a USER pause evicts the job, the next
+	// checkpoint's ack fails with ErrJobNotResident, and noteNeedsSeed creates
+	// a record. Resuming on that undid the user's pause within one interval,
+	// with no log saying so — and the record was recreated as fast as it was
+	// cleared, because handles stay open through a pause, so the next
+	// checkpoint failed the same way.
+	if app.weParked(jobID) {
+		if err := app.queue.Resume(jobID); err != nil {
+			app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
+			app.clearStall(jobID)
+			return
+		}
+		app.log.Info("stall re-evaluated; the job has been resumed",
+			"job", jobID, "files_recovered", len(files))
+	} else {
+		// The seed below still runs: those bits are on stable record and the
+		// live work set does not have them, whoever paused the job.
+		app.log.Debug("stall re-evaluation: the job was not parked by a storage fault, "+
+			"so it is left as it is", "job", jobID)
 	}
-	app.log.Info("stall re-evaluated; the job has been resumed",
-		"job", jobID, "files_recovered", len(files))
 
 	// Phase 3 — replay what a barrier committed but could not ack.
 	//

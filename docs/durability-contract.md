@@ -634,6 +634,16 @@ failing, hold while the job is parked.** `reevaluateStall` does not resume a job
 until every interrupted finalize has landed, so the automatic cadence cannot grow
 the set.
 
+**A re-evaluation only resumes a job THIS application parked.** A stall record
+exists for reasons that involve no pause of ours: a *user* pause evicts the job,
+the next checkpoint's `AckDurable` fails with `ErrJobNotResident`, and
+`noteNeedsSeed` creates one. Resuming on that undid the user's pause within one
+interval with no log saying so — and it could not settle, because handles stay
+open through a pause (`CloseJobHandles` runs only from `maybeFinalize`), so the
+next checkpoint failed the same way and recreated the record as fast as it was
+cleared. `stallRecord.parked` is set only by the paths that pause the job
+themselves.
+
 **A user Resume is the boundary, and is deliberately outside the guarantee.**
 `mode=queue&name=resume` and `name=resume_all` (`internal/api/queue.go`) unpause
 the job and *then* ask for a re-evaluation, because a user who has cleared the
