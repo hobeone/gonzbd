@@ -77,11 +77,14 @@ func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {
 
 	var gotJob string
 	var gotFile int
-	var gotArt int32
+	var gotArts []int32
 	var gotFault *storagefault.Fault
 	opts := makeOpts(t.TempDir(), map[string]FileInfo{})
-	opts.OnWriteFault = func(jobID string, fileIdx int, artIdx int32, flt *storagefault.Fault) {
-		gotJob, gotFile, gotArt, gotFault = jobID, fileIdx, artIdx, flt
+	opts.OnWriteFault = func(jobID string, fileIdx int, flt *storagefault.Fault) {
+		gotJob, gotFile, gotFault = jobID, fileIdx, flt
+	}
+	opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+		gotArts = append(gotArts, artIdxs...)
 	}
 	a := New(opts, slog.New(slog.DiscardHandler))
 
@@ -97,10 +100,10 @@ func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {
 	if gotJob != "job1" || gotFile != 0 {
 		t.Errorf("fault routed for job %q file %d, want job1/0", gotJob, gotFile)
 	}
-	if gotArt != 7 {
-		t.Errorf("routed article index %d, want 7 — without it the caller cannot "+
-			"clear the Emitted bit, and Emitted is not Outstanding: "+
-			"ForEachUnfinishedArticle skips it, so the article is never re-dispatched", gotArt)
+	if len(gotArts) != 1 || gotArts[0] != 7 {
+		t.Errorf("rolled-back articles = %v, want [7] — without them the caller cannot "+
+			"clear the Emitted bits, and Emitted is not Outstanding: "+
+			"ForEachUnfinishedArticle skips them, so they are never re-dispatched", gotArts)
 	}
 	if gotFault.Path != path {
 		t.Errorf("fault path = %q, want %q (R27)", gotFault.Path, path)
@@ -123,7 +126,7 @@ func TestNoteWriteFault_KeepsAnAlreadyClassifiedFault(t *testing.T) {
 
 	var got *storagefault.Fault
 	opts := makeOpts(t.TempDir(), map[string]FileInfo{})
-	opts.OnWriteFault = func(_ string, _ int, _ int32, flt *storagefault.Fault) { got = flt }
+	opts.OnWriteFault = func(_ string, _ int, flt *storagefault.Fault) { got = flt }
 	a := New(opts, slog.New(slog.DiscardHandler))
 
 	// A fault that arrived from elsewhere, naming a different op and path.

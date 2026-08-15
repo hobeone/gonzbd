@@ -82,7 +82,7 @@ func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		var rejReason string
 		var faults int
 		a.opts.OnArticleRejected = func(_ string, _ int, _ int32, reason string) { rejReason = reason }
-		a.opts.OnWriteFault = func(string, int, int32, *storagefault.Fault) { faults++ }
+		a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
 		f := newHelperFile(t, dir, "reject.dat", 100)
 
 		a.routeAcceptFailure(f, req, &rejectedArticleError{reason: "negative offset"})
@@ -100,7 +100,7 @@ func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		var rejected int
 		var gotFault *storagefault.Fault
 		a.opts.OnArticleRejected = func(string, int, int32, string) { rejected++ }
-		a.opts.OnWriteFault = func(_ string, _ int, _ int32, f *storagefault.Fault) { gotFault = f }
+		a.opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) { gotFault = f }
 		f := newHelperFile(t, dir, "fault.dat", 100)
 
 		a.routeAcceptFailure(f, req, syscall.ENOSPC)

@@ -138,6 +138,11 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 		})
 	}
 
+	var rolledBack []int32
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+		rolledBack = append(rolledBack, artIdxs...)
+	}
+
 	// Phase 1 — the whole coalesced run hits ENOSPC.
 	for i := range artCount {
 		send(i)
@@ -147,8 +152,19 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 			"would be discarded as a duplicate over bytes that are not on disk",
 			len(w.seenDone))
 	}
-	if len(w.seenFailed) != artCount {
-		t.Errorf("seenFailed holds %d articles, want %d", len(w.seenFailed), artCount)
+	// Rolled back, NOT recorded failed. A failed write is a storage condition
+	// and says nothing about the article's availability (A1), so it comes back
+	// — and recording it failed made its redelivery take the
+	// "already counted as failed" branch, which writes the bytes without
+	// counting them and leaves the file's part total permanently short.
+	if len(w.seenFailed) != 0 {
+		t.Errorf("seenFailed holds %d articles; a storage fault must not resolve "+
+			"against the article", len(w.seenFailed))
+	}
+	if len(rolledBack) != artCount {
+		t.Errorf("rolled-back articles = %v, want all %d — the ones not reported are "+
+			"stranded with their Emitted bits set, neither Done nor Failed nor "+
+			"Outstanding, and only a restart recovers them", rolledBack, artCount)
 	}
 
 	// Phase 2 — the device recovers and every article is re-delivered.
@@ -279,11 +295,20 @@ func TestDisplacedArticleIsFailed(t *testing.T) {
 	if len(got) != 1 || got[0].ArtIdx != 8 {
 		t.Errorf("Drain = %v, want exactly the surviving article (8)", got)
 	}
-	if _, failed := w.seenFailed["msg7"]; !failed {
-		t.Error("the displaced article was not recorded in seenFailed")
-	}
 	if _, still := w.seenDone["msg7"]; still {
 		t.Error("the displaced article is still in seenDone")
+	}
+	// It has to be reported to the caller, or its Emitted bit is never cleared
+	// and nothing re-dispatches it — the article is then neither Done, nor
+	// Failed, nor Outstanding for the life of the process.
+	var reported bool
+	for _, r := range w.takeFaulted() {
+		if r.id.msgID == "msg7" {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Error("the displaced article was not reported as rolled back")
 	}
 }
 
@@ -473,14 +498,21 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 		t.Error("the failed article is still in seenDone; its retry would take " +
 			"the discard branch and never be written")
 	}
-	if _, failed := f.w.seenFailed["msg0"]; !failed {
-		t.Error("the failed article was not recorded in seenFailed")
+	if _, failed := f.w.seenFailed["msg0"]; failed {
+		t.Error("a storage fault resolved against the article (A1). It also makes the " +
+			"retry take the \"already counted as failed\" branch, which writes the bytes " +
+			"without counting them and leaves the part total permanently short")
 	}
 
 	// The consequence the move exists for: the retry's bytes reach the file.
+	//
+	// It IS counted again, because the roll-back gave the count back — see
+	// Assembler.releaseFaulted. Counting an article whose bytes are not on
+	// disk is what let a file reach TotalParts and finalize over them.
 	retry := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
-	if a.handleSuccessArticle(f, retry) {
-		t.Error("the retry was counted toward TotalParts a second time")
+	if !a.handleSuccessArticle(f, retry) {
+		t.Error("the retry was not counted toward TotalParts, so the file can never " +
+			"reach it: its count was given back when the first attempt was rolled back")
 	}
 	got, err := os.ReadFile(f.info.Path)
 	if err != nil {

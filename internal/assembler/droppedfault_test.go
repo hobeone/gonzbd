@@ -38,8 +38,12 @@ func TestRelievePressure_RoutesTheFaultAndStopsWriting(t *testing.T) {
 
 	var faults []*storagefault.Fault
 	opts := makeOpts(dir, map[string]FileInfo{})
-	opts.OnWriteFault = func(_ string, _ int, _ int32, f *storagefault.Fault) {
+	var rolledBack []int32
+	opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) {
 		faults = append(faults, f)
+	}
+	opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+		rolledBack = append(rolledBack, artIdxs...)
 	}
 	a := New(opts, slog.New(slog.DiscardHandler))
 
@@ -68,6 +72,15 @@ func TestRelievePressure_RoutesTheFaultAndStopsWriting(t *testing.T) {
 	if faults[0].Op != "write" || faults[0].Path != path {
 		t.Errorf("fault = %s %q, want write %q (R27)", faults[0].Op, faults[0].Path, path)
 	}
+	// Every article the flush rolled back, not only the one the write failed
+	// on. The rest were never attempted and their buffers are gone, so they
+	// are just as un-written — and reporting only the trigger left them
+	// neither Done, nor Failed, nor Outstanding.
+	if len(rolledBack) < 2 {
+		t.Errorf("rolled-back articles = %v, want every article the flush handled; "+
+			"the ones after the failing write are stranded with their Emitted bits "+
+			"set, and only a restart recovers them", rolledBack)
+	}
 }
 
 // TestProcessRequest_RoutesAFailedOpen pins finding 11.
@@ -87,9 +100,13 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 	opts := makeOpts(dir, map[string]FileInfo{})
 	var faults []*storagefault.Fault
 	var gotArt int32 = -1
-	opts.OnWriteFault = func(_ string, _ int, artIdx int32, f *storagefault.Fault) {
+	opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) {
 		faults = append(faults, f)
-		gotArt = artIdx
+	}
+	opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+		if len(artIdxs) > 0 {
+			gotArt = artIdxs[0]
+		}
 	}
 
 	a := startAssembler(t, opts)

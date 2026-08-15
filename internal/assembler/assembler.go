@@ -166,12 +166,34 @@ type Options struct {
 	// article's availability (A1), so the caller stalls the job and returns
 	// the article to Outstanding.
 	//
-	// artIdx is carried because clearing the article's Emitted bit is the
-	// caller's job and it cannot be done without one. Emitted is NOT
-	// Outstanding — ForEachUnfinishedArticle skips a set Emitted bit — so an
-	// article left Emitted here is never re-dispatched for the life of the
-	// process.
-	OnWriteFault func(jobID string, fileIdx int, artIdx int32, f *storagefault.Fault)
+	// It carries NO article index, and that separation is the fix for a whole
+	// class of stranding. The signature used to name one article, so a batch
+	// failure — a coalesced run, a drain, a cache displacement — could report
+	// only whichever article triggered it, and the rest were rolled back
+	// silently. Returning articles to Outstanding is now OnArticlesUnwritten's
+	// job, which takes the whole set.
+	OnWriteFault func(jobID string, fileIdx int, f *storagefault.Fault)
+
+	// OnArticlesUnwritten, if non-nil, is called on the worker goroutine with
+	// every article a failed write rolled back. The caller returns them to
+	// Outstanding by clearing their Emitted bits.
+	//
+	// It is separate from OnWriteFault because the two are needed in different
+	// combinations, not because the split is tidier. A fault this package
+	// routes itself needs both; a Drain or Sync failure reaches the barrier,
+	// which routes the fault — but the article set never leaves this package,
+	// so it still needs this one. Folding them together meant either
+	// double-routing the fault or losing the articles, and losing the
+	// articles is what happened.
+	//
+	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
+	// bit, so an article reported by neither is stranded for the life of the
+	// process — not Done, not Failed, not Outstanding — and only a restart's
+	// ClearAllEmitted recovers it.
+	//
+	// No fault is passed, deliberately. This says nothing about why the write
+	// failed and must not be read as evidence about any article (A1).
+	OnArticlesUnwritten func(jobID string, fileIdx int, artIdxs []int32)
 
 	// OnArticleRejected reports an article this package refused to write
 	// because the article itself is not usable — currently only an
@@ -808,6 +830,11 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			// relabelling it. Re-resolving here would call the FileInfo
 			// resolver a second time on a path where the resolver is itself
 			// the thing that may have failed.
+			// Reported alongside the fault rather than left to
+			// releaseFaulted: there is no FileWriter to have rolled it back,
+			// because the file was never opened. The article is nevertheless
+			// un-written and still Emitted, which is not Outstanding.
+			a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
 			a.noteWriteFault("", req, err)
 			if req.Data != nil {
 				a.releaseBuffer(req.Data)
@@ -1092,15 +1119,15 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 // skips it, so it is never re-dispatched.
 //
 // Returning the fault is what makes A1 true rather than merely asserted: the
-// caller declines to count the part, hands the fault to OnWriteFault, and the
-// job stalls on a storage condition without any article being recorded as
-// damaged.
+// caller declines to count the part, returns the rolled-back articles through
+// OnArticlesUnwritten, hands the fault to OnWriteFault, and the job stalls on a
+// storage condition without any article being recorded as damaged.
 func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) error {
 	if reason, ok := a.offsetOutOfRange(f, req); ok {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.fail(id)
+		f.w.failPermanent(id)
 		return &rejectedArticleError{reason: reason}
 	}
 	return f.w.Accept(id, req.Offset, req.Data)
@@ -1137,8 +1164,49 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		}
 		return true
 	}
+	a.releaseFaulted(f, req.JobID, req.FileIdx)
 	a.noteWriteFault(f.info.Path, req, err)
 	return false
+}
+
+// releaseFaulted returns every article a failed writer operation rolled back
+// to Outstanding, and gives the file back the parts they had been counted for.
+//
+// Called after EVERY operation a FileWriter can fail, including the ones whose
+// fault the barrier routes rather than this package. The two are separate
+// concerns: the barrier can park the job, but it never learns which articles
+// lost their bytes, because that set does not cross the SyncTarget interface.
+//
+// Un-counting matters as much as the routing. partsWritten is incremented when
+// an article is ACCEPTED, so a rolled-back article leaves the file one part
+// closer to TotalParts with nothing on disk behind it — and a later article
+// can then take it to completion, firing OnFileComplete over bytes that never
+// reached WriteAt while the job's reported health stays at 100%.
+func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
+	rolled := f.w.takeFaulted()
+	if len(rolled) == 0 {
+		return
+	}
+	arts := make([]int32, 0, len(rolled))
+	for _, r := range rolled {
+		if r.uncount && f.partsWritten > 0 {
+			f.partsWritten--
+		}
+		arts = append(arts, r.id.artIdx)
+	}
+	a.noteArticlesUnwritten(jobID, fileIdx, arts)
+}
+
+// noteArticlesUnwritten hands one set of un-written articles to their owner.
+func (a *Assembler) noteArticlesUnwritten(jobID string, fileIdx int, arts []int32) {
+	if len(arts) == 0 {
+		return
+	}
+	a.log.Warn("articles did not reach disk; they return to Outstanding",
+		"job", jobID, "fileidx", fileIdx, "articles", len(arts))
+	if a.opts.OnArticlesUnwritten != nil {
+		a.opts.OnArticlesUnwritten(jobID, fileIdx, arts)
+	}
 }
 
 // noteWriteFault surfaces a failed write to the owner of the job.
@@ -1154,7 +1222,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 	a.log.Error("article could not be written",
 		"job", req.JobID, "path", path, "offset", req.Offset, "error", err)
 	if a.opts.OnWriteFault != nil {
-		a.opts.OnWriteFault(req.JobID, req.FileIdx, req.ArtIdx, fault)
+		a.opts.OnWriteFault(req.JobID, req.FileIdx, fault)
 	}
 }
 
@@ -1335,15 +1403,6 @@ func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) 
 		}
 		for i, art := range arts {
 			if err := f.w.writeOne(art); err != nil {
-				// Routed, and the flush stops. Logging each failure and
-				// carrying on wrote every remaining article into the same
-				// full device, and nothing ever reached Stallable: the job
-				// was not paused on ENOSPC, no reason was surfaced, and a
-				// permanent condition never reached Fail.
-				a.noteWriteFault(f.info.Path, WriteRequest{
-					JobID: key.jobID, FileIdx: key.fileIdx, ArtIdx: art.id.artIdx,
-					Offset: art.offset,
-				}, err)
 				// writeOne pooled the article it just handled. Everything
 				// after it was never attempted and still holds a pooled
 				// buffer, so release those or the decoder's pool leaks one
@@ -1354,6 +1413,19 @@ func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) 
 					}
 					f.w.fail(rest.id)
 				}
+				// Every article this flush rolled back, not just the one the
+				// write failed on. The rest were never attempted and their
+				// buffers are gone, so they are just as un-written.
+				a.releaseFaulted(f, key.jobID, key.fileIdx)
+				// Routed, and the flush stops. Logging each failure and
+				// carrying on wrote every remaining article into the same
+				// full device, and nothing ever reached Stallable: the job
+				// was not paused on ENOSPC, no reason was surfaced, and a
+				// permanent condition never reached Fail.
+				a.noteWriteFault(f.info.Path, WriteRequest{
+					JobID: key.jobID, FileIdx: key.fileIdx, ArtIdx: art.id.artIdx,
+					Offset: art.offset,
+				}, err)
 				return
 			}
 		}

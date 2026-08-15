@@ -934,8 +934,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if got := f.w.writtenSoFar(); len(got) != 0 {
 			t.Errorf("writtenSoFar = %v after a failed write, want empty", got)
 		}
-		if _, ok := f.w.seenFailed["msgFail"]; !ok {
-			t.Error("msgFail should be in seenFailed after write failure")
+		if _, ok := f.w.seenFailed["msgFail"]; ok {
+			t.Error("msgFail was recorded as FAILED by a storage fault, which A1 forbids: " +
+				"a full disk is not evidence about the article's availability")
 		}
 		if _, ok := f.w.seenDone["msgFail"]; ok {
 			t.Error("msgFail should not remain in seenDone after write failure")

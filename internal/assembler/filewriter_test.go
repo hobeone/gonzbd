@@ -301,8 +301,13 @@ func TestFileWriter_NoteWrittenCarriesTheArticlesOwnRange(t *testing.T) {
 
 // TestFileWriter_WriteOneFailureClearsSeenDone pins the seen-set correction on
 // a failed write. seenDone means "accepted and counted"; after the write is
-// lost the article is still counted but is no longer on its way to disk, and
-// leaving it there makes a re-delivery look like a duplicate to skip.
+// lost the article is not on its way to disk, and leaving it there makes a
+// re-delivery look like a duplicate to skip.
+//
+// It must NOT move to seenFailed. A failed write is a storage condition and
+// says nothing about the article's availability (A1), and recording it failed
+// made the redelivery take the "already counted as failed" branch — written
+// but not counted, leaving the file's part total permanently short.
 func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
 	w.seenDone["a9"] = struct{}{}
@@ -313,8 +318,21 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	if _, still := w.seenDone["a9"]; still {
 		t.Error("a9 is still in seenDone after its write failed; a re-delivery would be skipped as a duplicate")
 	}
-	if _, failed := w.seenFailed["a9"]; !failed {
-		t.Error("a9 was not moved to seenFailed")
+	if _, failed := w.seenFailed["a9"]; failed {
+		t.Error("a9 was recorded as FAILED by a storage fault, which A1 forbids")
+	}
+	rolled := w.takeFaulted()
+	if len(rolled) != 1 || rolled[0].id.msgID != "a9" {
+		t.Fatalf("takeFaulted() = %v, want a9 — an article nobody is told about keeps "+
+			"its Emitted bit and is never re-dispatched", rolled)
+	}
+	if !rolled[0].uncount {
+		t.Error("a9 was accepted and counted, so the roll-back must give its count " +
+			"back; otherwise the file reaches TotalParts over bytes that are not there")
+	}
+	if got := w.takeFaulted(); len(got) != 0 {
+		t.Errorf("takeFaulted() returned %v a second time; routing an article twice "+
+			"clears an Emitted bit a later dispatch legitimately set", got)
 	}
 }
 

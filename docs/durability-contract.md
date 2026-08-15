@@ -966,23 +966,50 @@ articles or sparse regions.
 ## Failure & degradation rules
 
 - **Write error (`pwrite` failure)** — the article is *not* acked and *not*
-  failed. The classified `*storagefault.Fault` leaves the worker through
-  `Options.OnWriteFault`, carrying the article index; the owner clears that
-  article's Emitted bit, returning it to Outstanding, and then stalls or fails
-  the job on the usual R18 rule. The failed write is **not** counted toward the
-  file's parts, so the file cannot complete over bytes that never landed. A coalesced run fails
-  **every** article merged into it, not just the one whose arrival triggered the
-  flush: `buildContiguousRun` pooled the originals before the write was
-  attempted, so reporting only the trigger would leave the rest believed written
-  with their bytes freed.
+  failed. Two things then have to happen, and they travel on **separate**
+  callbacks:
+
+  | Callback | Carries | Does |
+  |---|---|---|
+  | `Options.OnArticlesUnwritten` | every article the failure rolled back | clears their Emitted bits, returning them to Outstanding |
+  | `Options.OnWriteFault` | the classified `*storagefault.Fault`, no article | stalls or fails the job on the usual R18 rule |
+
+  They are separate because they are needed in different combinations. A fault
+  raised inside `Accept` needs both. A `Drain` or `Sync` failure reaches the
+  **barrier**, which routes the fault — but the rolled-back article set never
+  crosses the `SyncTarget` interface, so the assembler still owes the first.
+  `OnWriteFault` used to carry a single article index and do both, so every
+  batch failure reported one article and rolled the rest back silently: they
+  were left neither Done, nor Failed, nor Outstanding, and only a restart's
+  `ClearAllEmitted` recovered them.
+
+  A rolled-back article also **gives back its part**. `partsWritten` is
+  incremented when an article is *accepted*, so leaving the count in place put
+  the file one part closer to `TotalParts` with nothing behind it — and a later
+  article could take it to completion, firing `OnFileComplete` over bytes that
+  never reached `WriteAt` with `failedBytes` unchanged, so the job reported
+  100% health.
+
+  A coalesced run rolls back **every** article merged into it, not just the one
+  whose arrival triggered the flush: `buildContiguousRun` pooled the originals
+  before the write was attempted, so reporting only the trigger would leave the
+  rest believed written with their bytes freed. The same holds for a cache
+  displacement and for everything after a failed write in a drain.
+
+  A rolled-back article is **not** put in `seenFailed`. A storage fault says
+  nothing about the article's availability (A1), and recording it failed made
+  its redelivery take the "already counted as failed" branch — written but not
+  counted — leaving the file's part total permanently short.
 - **Drain stops at the first write failure**, returning the articles that *did*
   land plus the fault, so the barrier sees both what it may claim and why the
   drain stopped. Continuing would be optimistic: a storage fault is a condition
-  of the device. Articles after the failure are released to the pool and cleared
-  from the seen-sets so a re-delivery is not mistaken for a duplicate.
+  of the device. Articles after the failure are released to the pool and rolled
+  back, so a re-delivery is not mistaken for a duplicate.
 - **`FileInfo` resolution, `MkdirAll`, or `OpenFile` failure** — the article's
-  data is returned to the pool and the request is discarded. The file is never
-  opened and never appears in `open`.
+  data is returned to the pool, its Emitted bit is cleared through
+  `OnArticlesUnwritten`, and the fault is routed. The file is never opened and
+  never appears in `open`, so no barrier operation can ever surface it — which
+  is why this path routes for itself rather than leaving it to the barrier.
 - **CancelJob** — closes and deletes open files, tombstones the job so subsequent
   articles are discarded. The `ackCh` synchronisation lets the caller delete the
   job directory the moment `CancelJob` returns.

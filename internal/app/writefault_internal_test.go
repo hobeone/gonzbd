@@ -8,8 +8,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// TestHandleWriteFault_ReturnsTheArticleToOutstanding pins the half of the
-// handler the fault routing does not cover.
+// TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding pins the half of
+// the handling the fault routing does not cover.
 //
 // A dispatched article carries a set Emitted bit. When its write fails the
 // bytes are not on disk and the article has to be fetched again, but
@@ -18,37 +18,63 @@ import (
 // it, and eviction keeps job.progress, so pausing and resuming does not clear
 // it either. Without this the article is stranded for the life of the process
 // while the job reports it as work in flight.
-func TestHandleWriteFault_ReturnsTheArticleToOutstanding(t *testing.T) {
+//
+// It takes a SET, and that is the finding it exists for: a batch failure rolls
+// back every article in a coalesced run, or everything after the write that
+// failed in a drain, and the old single-index signature could report only one
+// of them. The rest were left neither Done, nor Failed, nor Outstanding.
+func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	if err := application.queue.MarkArticleEmittedByIdx(job.ID, 1); err != nil {
-		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	for _, idx := range []int32{0, 1} {
+		if err := application.queue.MarkArticleEmittedByIdx(job.ID, idx); err != nil {
+			t.Fatalf("MarkArticleEmittedByIdx(%d): %v", idx, err)
+		}
 	}
-	// Grounding: without this the assertion below passes on a fixture that
+	// Grounding: without this the assertions below pass on a fixture that
 	// never reached the state under test.
 	snap, err := application.queue.Get(job.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snap.Progress().ArticleEmitted(1) {
-		t.Fatal("fixture never emitted article 1, so it cannot observe the bit being cleared")
+	if !snap.Progress().ArticleEmitted(0) || !snap.Progress().ArticleEmitted(1) {
+		t.Fatal("fixture never emitted both articles, so it cannot observe the bits being cleared")
 	}
 
-	application.handleWriteFault(job.ID, 0, 1, storagefault.Classify("write", "/d/a.bin", syscall.ENOSPC))
+	application.handleArticlesUnwritten(job.ID, 0, []int32{0, 1})
 
 	snap, err = application.queue.Get(job.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Progress().ArticleEmitted(1) {
-		t.Error("article 1 is still Emitted after its write failed. " +
-			"ForEachUnfinishedArticle skips a set Emitted bit, so it is never " +
-			"re-dispatched and the job cannot finish")
+	for _, idx := range []int32{0, 1} {
+		if snap.Progress().ArticleEmitted(int(idx)) {
+			t.Errorf("article %d is still Emitted after its write failed. "+
+				"ForEachUnfinishedArticle skips a set Emitted bit, so it is never "+
+				"re-dispatched and the job cannot finish", idx)
+		}
+		if snap.Progress().ArticleFailed(int(idx)) {
+			t.Errorf("article %d was marked failed by a STORAGE fault, which A1 forbids: "+
+				"a full disk is not evidence about the article's availability", idx)
+		}
 	}
-	if snap.Progress().ArticleFailed(1) {
-		t.Error("article 1 was marked failed by a STORAGE fault, which A1 forbids: " +
-			"a full disk is not evidence about the article's availability")
-	}
+}
+
+// TestHandleArticlesUnwritten_SurvivesAJobThatHasLeftTheQueue covers the
+// branch where the clear fails.
+//
+// Ordinary rather than exceptional: the assembler's worker is a separate
+// goroutine, so a roll-back can be routed after the job it belongs to has been
+// cancelled or moved to history. There is nothing left to re-dispatch and
+// nothing to recover, so the handler must not panic or propagate — but it must
+// not be silent either (A2), which is why the branch exists rather than the
+// error being discarded at the call.
+func TestHandleArticlesUnwritten_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	application, _ := newDurabilityTestApp(t, 1, 2)
+
+	// No job with this ID was ever added, which is the same state the queue
+	// presents after one is removed.
+	application.handleArticlesUnwritten("job-that-never-existed", 0, []int32{0, 1})
 }
 
 // TestHandleWriteFault_RoutesOnPermanence pins the branch that decides whether
@@ -61,7 +87,7 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 			t.Fatalf("fixture error is permanent, so this subtest cannot observe the retryable branch")
 		}
 
-		application.handleWriteFault(job.ID, 0, 0, f)
+		application.handleWriteFault(job.ID, 0, f)
 
 		snap, err := application.queue.Get(job.ID)
 		if err != nil {
@@ -81,7 +107,7 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 			t.Fatalf("fixture error is retryable, so this subtest cannot observe the permanent branch")
 		}
 
-		application.handleWriteFault(job.ID, 0, 0, f)
+		application.handleWriteFault(job.ID, 0, f)
 
 		snap, err := application.queue.Get(job.ID)
 		if err == nil && snap.Status == constants.StatusPaused {

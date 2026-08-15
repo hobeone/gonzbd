@@ -501,13 +501,14 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// write-ordered and destroy exactly the independence that lets Class A
 	// commit without a barrier.
 	asm := assembler.New(assembler.Options{
-		FileInfo:          p.resolveFileInfo,
-		MinFreeBytes:      minFreeBytes,
-		WriteCacheBytes:   writeCacheBytes,
-		OnLowDisk:         app.handleLowDisk,
-		OnWriteFault:      app.handleWriteFault,
-		OnArticleRejected: app.handleArticleRejected,
-		OnFileComplete:    onFileComplete,
+		FileInfo:            p.resolveFileInfo,
+		MinFreeBytes:        minFreeBytes,
+		WriteCacheBytes:     writeCacheBytes,
+		OnLowDisk:           app.handleLowDisk,
+		OnWriteFault:        app.handleWriteFault,
+		OnArticlesUnwritten: app.handleArticlesUnwritten,
+		OnArticleRejected:   app.handleArticleRejected,
+		OnFileComplete:      onFileComplete,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm

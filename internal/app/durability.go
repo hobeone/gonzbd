@@ -63,31 +63,49 @@ func (a manifestArticleMap) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) 
 	return i - lo, true
 }
 
-// handleWriteFault is the assembler's Options.OnWriteFault, and it does the two
-// things a failed write needs that the assembler cannot do for itself.
+// handleArticlesUnwritten returns every article a failed write rolled back to
+// Outstanding.
 //
-// First it returns the article to Outstanding. The write did not happen, so
-// the article must be fetched again — but its Emitted bit is still set from
-// dispatch, and ForEachUnfinishedArticle skips a set Emitted bit. Nothing else
-// clears it on this path: no Drain reports the article, no AckPermanentFailure
-// names it, and eviction keeps job.progress, so pause and resume do not clear
-// it either. Left alone it is stranded for the life of the process, at any
-// residency, which is why this is not merely tidy.
+// The write did not happen, so the articles must be fetched again — but their
+// Emitted bits are still set from dispatch, and ForEachUnfinishedArticle skips
+// a set Emitted bit. Nothing else clears them on this path: no Drain reports
+// them, no AckPermanentFailure names them, and eviction keeps job.progress, so
+// pause and resume do not clear them either. Left alone they are stranded for
+// the life of the process, at any residency, and only a restart's
+// ClearAllEmitted recovers them.
 //
-// Then it routes the fault, on the same rule the barrier uses (R18/A1): a
-// permanent condition fails the job, anything else stalls it. The article is
-// never marked failed, because a storage fault says nothing about whether the
-// article is available on any server.
+// It takes a SET rather than one article, and that is the point. The assembler
+// used to carry a single index alongside the fault, so a batch failure — a
+// coalesced run, a drain, a cache displacement — reported only whichever
+// article triggered it and rolled the rest back silently.
 //
-// Runs on the assembler's worker goroutine, so it must not block on it: both
-// calls take the queue lock only.
-func (app *Application) handleWriteFault(jobID string, _ int, artIdx int32, f *storagefault.Fault) {
-	if err := app.queue.ClearArticleEmittedByIdx(jobID, artIdx); err != nil {
-		// A job that has left the queue has nothing to re-dispatch, so this is
-		// ordinary rather than a defect. It is still not silent (A2).
-		app.log.Debug("clear the emitted bit after a failed write",
-			"job", jobID, "artidx", artIdx, "err", err)
+// No article is marked failed here. A storage fault says nothing about whether
+// an article is available on any server (A1); this is bookkeeping about what
+// reached disk, and it is deliberately separate from the fault's route.
+//
+// Runs on the assembler's worker goroutine, so it must not block on it: it
+// takes the queue lock only.
+func (app *Application) handleArticlesUnwritten(jobID string, _ int, artIdxs []int32) {
+	for _, artIdx := range artIdxs {
+		if err := app.queue.ClearArticleEmittedByIdx(jobID, artIdx); err != nil {
+			// A job that has left the queue has nothing to re-dispatch, so
+			// this is ordinary rather than a defect. It is still not silent
+			// (A2).
+			app.log.Debug("clear the emitted bit after a failed write",
+				"job", jobID, "artidx", artIdx, "err", err)
+		}
 	}
+}
+
+// handleWriteFault is the assembler's Options.OnWriteFault, and it routes the
+// fault on the same rule the barrier uses (R18/A1): a permanent condition
+// fails the job, anything else stalls it.
+//
+// No article is named or marked failed. Returning the rolled-back articles to
+// Outstanding is handleArticlesUnwritten's job, which the assembler calls with
+// the whole set — including on the paths where the BARRIER routes the fault
+// and this function never runs at all.
+func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
 	if f.Permanent {
 		app.Fail(jobID, f)
 		return

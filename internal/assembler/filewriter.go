@@ -94,6 +94,10 @@ type FileWriter struct {
 	seenDone   map[string]struct{}
 	seenFailed map[string]struct{}
 
+	// faulted accumulates the articles a failed write rolled back, for the
+	// caller to route to Outstanding. See fail.
+	faulted []faultedArticle
+
 	// writeAt is handle.WriteAt in production. Tests override it before first
 	// use to inject storage faults, mirroring how diskProbe.statfs is
 	// overridden. Never reassigned after the writer is in service, so the
@@ -110,6 +114,15 @@ type FileWriter struct {
 	// fsync-to-platter and cannot; it pins that the syscall is on the path at
 	// all, which is the part that was silently deletable.
 	syncFile func() error
+}
+
+// faultedArticle is one article a failed write rolled back, and whether it
+// still counts toward its file's part total.
+type faultedArticle struct {
+	id articleID
+	// uncount reports that this article's count must be given back. See fail
+	// for the case where it must not.
+	uncount bool
 }
 
 // newFileWriter wraps an already-open handle.
@@ -152,29 +165,73 @@ func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.writt
 // confirmed. Used by tests to assert the report survives a failed Sync.
 func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
 
-// fail marks an article as not-on-disk so a later run fetches it again.
+// fail rolls one article back to never-having-arrived, and records it so the
+// caller can return it to Outstanding.
 //
-// It moves the article out of seenDone as well, because the two answer
-// different questions this file's dedup logic would otherwise conflate:
-// seenDone means "accepted, counted toward the file's parts", and after a
-// failed write the article is still counted but is no longer on its way to
-// disk. Leaving it there would let the duplicate branch treat it as already
-// handled and never retry it.
+// # Rolled back, not marked failed
 //
-// There is deliberately no ack here. A failed WRITE is a storage condition,
-// and A1 forbids resolving it against the article.
+// It clears seenDone and — unlike the version this replaces — does NOT set
+// seenFailed. A failed WRITE is a storage condition, and A1 forbids resolving
+// it against the article: the bytes are still available on the server and the
+// article is still wanted. Recording it as failed made a redelivery take the
+// "retry of an article already counted as failed" branch, which writes the
+// bytes but does not count them, so the file's part total was permanently one
+// short of the truth for every rolled-back article.
 //
-// Absence from Drain's return is NOT what leaves the article Outstanding, and
-// an earlier version of this comment said it was. The article's Emitted bit is
-// still set from dispatch and ForEachUnfinishedArticle skips a set Emitted
-// bit, so absence alone strands it. What returns it to Outstanding is the
-// fault's route: Assembler.noteWriteFault carries the article index out to
-// Options.OnWriteFault, whose owner clears that bit before stalling the job.
+// # Recording it is the whole point
+//
+// Absence from Drain's return does NOT leave the article Outstanding. Its
+// Emitted bit is still set from dispatch and ForEachUnfinishedArticle skips a
+// set Emitted bit, so an article that is merely dropped here is stranded for
+// the life of the process: neither Done, nor Failed, nor Outstanding, and only
+// a restart's ClearAllEmitted recovers it.
+//
+// Every batch failure rolls back MORE articles than the one that triggered it
+// — a coalesced run loses every part, a drain loses everything after the
+// write that failed, a cache displacement loses whatever it evicted — and the
+// caller was given only one article index to route. So the set is accumulated
+// here and taken by the caller, rather than inferred from an error.
 func (w *FileWriter) fail(id articleID) {
-	if id.msgID != "" {
-		delete(w.seenDone, id.msgID)
-		w.seenFailed[id.msgID] = struct{}{}
+	if id.msgID == "" {
+		return
 	}
+	_, wasDone := w.seenDone[id.msgID]
+	_, wasFailed := w.seenFailed[id.msgID]
+	delete(w.seenDone, id.msgID)
+	w.faulted = append(w.faulted, faultedArticle{
+		id: id,
+		// An article already counted as permanently FAILED keeps its count:
+		// handleFatalArticle counted it, and a later retry whose write fails
+		// must not decrement what a different code path added. Only an
+		// article counted as WRITTEN loses its count here.
+		uncount: wasDone && !wasFailed,
+	})
+}
+
+// failPermanent records an article this package will never write, keeping its
+// count toward the file's part total.
+//
+// The article is resolved elsewhere — Options.OnArticleRejected carries it to
+// the queue — so it will not arrive again, and a file that stopped counting it
+// could never reach TotalParts. That is the opposite of fail's case, where the
+// article is coming back.
+func (w *FileWriter) failPermanent(id articleID) {
+	if id.msgID == "" {
+		return
+	}
+	delete(w.seenDone, id.msgID)
+	w.seenFailed[id.msgID] = struct{}{}
+}
+
+// takeFaulted returns and clears the articles rolled back since the last call.
+//
+// Taken rather than read, because each set must be routed exactly once: the
+// caller returns them to Outstanding, and reporting one twice would clear an
+// Emitted bit a later dispatch had legitimately set.
+func (w *FileWriter) takeFaulted() []faultedArticle {
+	out := w.faulted
+	w.faulted = nil
+	return out
 }
 
 // Accept buffers or writes one article's bytes.
