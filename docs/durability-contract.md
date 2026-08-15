@@ -979,7 +979,7 @@ articles or sparse regions.
 | `internalFileComplete` | cap 128. **Not** a bound on retained fds — see the handoff section. |
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
-| Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. |
+| Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
 | Durability rows | `article_facts` and `file_extents`, deleted per job by `deleteJobDurability`. Neither table has a foreign key to the queue, so nothing else removes them. |
 
 ## Failure & degradation rules

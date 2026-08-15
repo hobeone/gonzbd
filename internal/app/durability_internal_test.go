@@ -361,6 +361,11 @@ func TestForgetJobBarrierState_DropsBothMaps(t *testing.T) {
 
 	application.jobBarrierLock("job-a")
 	application.jobBarrierLock("job-b")
+	// Released, or the deletion below is DEFERRED rather than applied — see
+	// releaseJobBarrierLock. That deferral is the fix for a different defect
+	// and is pinned by its own test.
+	application.releaseJobBarrierLock("job-a")
+	application.releaseJobBarrierLock("job-b")
 	application.noteJobBytes("job-a", 10)
 	application.noteJobBytes("job-b", 10)
 

@@ -197,3 +197,50 @@ func TestCheckpointAllWithBudget_ImposesThePolicysDeadline(t *testing.T) {
 		t.Errorf("checkpointAllShare gave deadlines %v, want one within its budget", got)
 	}
 }
+
+// TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn pins the
+// identity guarantee the deletion used to break.
+//
+// forgetJobBarrierState deleted the map entry unconditionally, so the next
+// jobBarrierLock minted a SECOND mutex for the same job — which is the same as
+// having no mutex at all. Two barriers then interleave one job's
+// priorExtent → Set → Commit read-modify-write, and Commit is an
+// INSERT OR REPLACE with no transaction spanning the load, so the second
+// overwrites the first and every article the loser acked is durable with no bit
+// to say so.
+//
+// The delete is reachable from INSIDE a live barrier, which is what makes this
+// reachable rather than theoretical: routeFault → stall.Fail →
+// Application.Fail → maybeFinalize → enqueuePostProc → forgetJobBarrierState,
+// all beneath the checkpointJob call that holds the mutex.
+func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+
+	held := application.jobBarrierLock("job-a")
+	held.Lock()
+
+	// What Fail → maybeFinalize → enqueuePostProc reaches, from inside the
+	// critical section above.
+	application.forgetJobBarrierState("job-a")
+
+	again := application.jobBarrierLock("job-a")
+	if again != held {
+		t.Fatal("a second mutex was minted for a job whose first one is still held. " +
+			"Two barriers can now run concurrently over one job's extents, and the " +
+			"second commit overwrites the first: the articles the loser acked are " +
+			"durable with no bit to say so")
+	}
+	held.Unlock()
+	application.releaseJobBarrierLock("job-a")
+
+	// The deletion is deferred, not cancelled — otherwise the map grows by one
+	// entry per job ever downloaded, which is what forgetJobBarrierState is
+	// for.
+	application.releaseJobBarrierLock("job-a")
+	application.barrierMu.Lock()
+	defer application.barrierMu.Unlock()
+	if _, ok := application.jobBarrierMu["job-a"]; ok {
+		t.Error("the entry survived after its last holder released it; the deferral " +
+			"became a leak, one entry per job ever downloaded")
+	}
+}

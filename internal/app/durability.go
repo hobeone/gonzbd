@@ -105,12 +105,38 @@ func (app *Application) handleArticlesUnwritten(jobID string, _ int, artIdxs []i
 // Outstanding is handleArticlesUnwritten's job, which the assembler calls with
 // the whole set — including on the paths where the BARRIER routes the fault
 // and this function never runs at all.
+//
+// # Why the routing does not happen here
+//
+// This runs on the ASSEMBLER'S WORKER GOROUTINE, and both branches block on
+// that same goroutine if run inline:
+//
+//   - Permanent → Application.Fail → maybeFinalize → CloseJobHandles, which
+//     enqueues a control message on a.reqs and waits for the worker that is
+//     calling it. A guaranteed self-deadlock, resolved only by the 5s
+//     closeHandlesTimeout expiring — after which the handles are still open,
+//     so the NFS silly-rename that call exists to prevent is not prevented
+//     either. maybeFinalize then also does a queue.Save and enqueues
+//     post-processing, both on the worker.
+//   - Retryable → Application.Stall → Queue.Pause → PromoteNext, which reads a
+//     manifest from disk and calls into SQLite. On the worker, that is the
+//     single goroutine every write for every job passes through.
+//
+// The assembler's own OnFileComplete comment documents this hazard, and
+// app.go's onFileComplete guards against it by handing the work to another
+// goroutine. This callback did not.
+//
+// wg.Add during Wait is safe for the same reason it is safe there: this runs
+// on the assembler worker, which Shutdown joins at step 3 — before
+// app.wg.Wait() at step 4.
 func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
-	if f.Permanent {
-		app.Fail(jobID, f)
-		return
-	}
-	app.Stall(jobID, f)
+	app.wg.Go(func() {
+		if f.Permanent {
+			app.Fail(jobID, f)
+			return
+		}
+		app.Stall(jobID, f)
+	})
 }
 
 // handleArticleRejected records an article the assembler refused as
@@ -225,6 +251,23 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	app.maybeFinalize(jobID, reason)
 }
 
+// barrierLock is one job's barrier mutex, plus what is needed to drop it
+// safely.
+//
+// The counters exist because the map entry's lifetime and the mutex's lifetime
+// are not the same: a job can leave the assembler's business while a barrier
+// for it is still running, and deleting the entry then was not merely untidy —
+// it let a SECOND mutex be minted for the same job, which is the same as having
+// no mutex at all.
+type barrierLock struct {
+	mu sync.Mutex
+	// holders counts callers between jobBarrierLock and
+	// releaseJobBarrierLock, guarded by Application.barrierMu.
+	holders int
+	// forgotten records a deletion deferred until the last holder is done.
+	forgotten bool
+}
+
 // jobBarrierLock returns the mutex serialising barrier work for one job.
 //
 // Barrier.Run holds no lock of its own — it does I/O throughout, and this
@@ -244,12 +287,48 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
-	mu, ok := app.jobBarrierMu[jobID]
+	e, ok := app.jobBarrierMu[jobID]
 	if !ok {
-		mu = &sync.Mutex{}
-		app.jobBarrierMu[jobID] = mu
+		e = &barrierLock{}
+		app.jobBarrierMu[jobID] = e
 	}
-	return mu
+	// Counted while the caller holds it, so forgetJobBarrierState cannot
+	// delete an entry a live barrier is using. See releaseJobBarrierLock.
+	e.holders++
+	return &e.mu
+}
+
+// releaseJobBarrierLock records that one holder is finished with a job's
+// barrier mutex, and completes a deletion that was deferred while it held it.
+//
+// It exists because forgetJobBarrierState could delete a mutex a barrier was
+// standing on. The next jobBarrierLock then minted a SECOND mutex for the same
+// job, and two barriers ran concurrently over one job's extents — interleaving
+// the unprotected priorExtent → Set → Commit read-modify-write, where Commit is
+// an INSERT OR REPLACE with no transaction spanning the load, so the second
+// overwrites the first and the articles the loser acked are durable with no bit
+// to say so.
+//
+// The delete is reachable from INSIDE a live barrier, which is what makes this
+// more than hygiene: routeFault → stall.Fail → Application.Fail →
+// maybeFinalize → enqueuePostProc → forgetJobBarrierState, all beneath the very
+// checkpointJob call that holds the mutex.
+//
+// Called after Unlock rather than before, so the entry is not resurrected by a
+// caller still inside its critical section.
+func (app *Application) releaseJobBarrierLock(jobID string) {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	e, ok := app.jobBarrierMu[jobID]
+	if !ok {
+		return
+	}
+	if e.holders > 0 {
+		e.holders--
+	}
+	if e.holders == 0 && e.forgotten {
+		delete(app.jobBarrierMu, jobID)
+	}
 }
 
 // forgetJobBarrierState drops a departed job's lock, byte accumulator and
@@ -262,9 +341,22 @@ func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
 func (app *Application) forgetJobBarrierState(jobID string) {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
-	delete(app.jobBarrierMu, jobID)
 	delete(app.jobBarrierBytes, jobID)
 	delete(app.lastBarrier, jobID)
+	// The mutex is NOT dropped while anyone holds it. Dropping it let the next
+	// caller mint a second mutex for the same job, so two barriers could
+	// interleave one job's extent read-modify-write — and the delete is
+	// reachable from inside a live barrier, through
+	// routeFault → Fail → maybeFinalize → enqueuePostProc. Marked instead, and
+	// the last holder completes it. See releaseJobBarrierLock.
+	e, ok := app.jobBarrierMu[jobID]
+	if !ok {
+		return
+	}
+	e.forgotten = true
+	if e.holders == 0 {
+		delete(app.jobBarrierMu, jobID)
+	}
 }
 
 // noteJobBytes accumulates a job's freshly written bytes and asks for a
@@ -343,6 +435,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 		return
 	}
 	mu := app.jobBarrierLock(jobID)
+	defer app.releaseJobBarrierLock(jobID)
 	mu.Lock()
 	// --- Barrier serialised per job below this line ---
 
@@ -735,6 +828,7 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	}
 
 	mu := app.jobBarrierLock(jobID)
+	defer app.releaseJobBarrierLock(jobID)
 	mu.Lock()
 	// --- Barrier serialised per job below this line ---
 	err = app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32

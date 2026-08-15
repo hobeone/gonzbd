@@ -189,7 +189,7 @@ type Application struct {
 	// own lock: jobBarrierMu holds those, one per job, and they are held
 	// across the barrier's I/O while this one never is.
 	barrierMu       sync.Mutex
-	jobBarrierMu    map[string]*sync.Mutex
+	jobBarrierMu    map[string]*barrierLock
 	jobBarrierBytes map[string]int64
 	// lastBarrier is when each job's last barrier completed without error.
 	// R26 asks a job to be able to report it, and it is the figure that tells
@@ -312,7 +312,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.duOrch = newDirectUnpackOrchestrator(app)
 	app.finalizer = newJobFinalizer(app)
-	app.jobBarrierMu = make(map[string]*sync.Mutex)
+	app.jobBarrierMu = make(map[string]*barrierLock)
 	app.jobBarrierBytes = make(map[string]int64)
 	app.lastBarrier = make(map[string]time.Time)
 	app.stalls = make(map[string]*stallRecord)

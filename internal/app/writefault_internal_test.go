@@ -3,6 +3,7 @@ package app
 import (
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/storagefault"
@@ -88,6 +89,9 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 		}
 
 		application.handleWriteFault(job.ID, 0, f)
+		// The routing runs on its own goroutine — see the handler's doc for
+		// why it must not run on the assembler's worker.
+		application.wg.Wait()
 
 		snap, err := application.queue.Get(job.ID)
 		if err != nil {
@@ -108,6 +112,9 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 		}
 
 		application.handleWriteFault(job.ID, 0, f)
+		// The routing runs on its own goroutine — see the handler's doc for
+		// why it must not run on the assembler's worker.
+		application.wg.Wait()
 
 		snap, err := application.queue.Get(job.ID)
 		if err == nil && snap.Status == constants.StatusPaused {
@@ -175,4 +182,40 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 	// No job with this ID was ever added, which is the same state the queue
 	// presents after one is removed.
 	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset")
+}
+
+// TestHandleWriteFault_DoesNotBlockTheAssemblerWorker pins the hand-off.
+//
+// This callback runs on the assembler's single worker goroutine, and both of
+// its branches block on that same goroutine if run inline. The permanent one is
+// a guaranteed self-deadlock: Fail → maybeFinalize → CloseJobHandles enqueues a
+// control message on a.reqs and waits for the worker that is calling it,
+// resolved only by closeHandlesTimeout expiring five seconds later — after
+// which the handles are still open, so the NFS silly-rename that call exists to
+// prevent is not prevented either.
+//
+// The fixture's worker is already parked, so an inline route would wait out
+// that whole timeout. The margin under test is five seconds against
+// microseconds, which is why a wall-clock assertion is sound here.
+func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
+	application, job, release := newWedgedApp(t)
+	defer release()
+
+	start := time.Now()
+	application.handleWriteFault(job.ID, 0, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Errorf("the callback took %v to return. It runs on the assembler's worker, and "+
+			"Fail → maybeFinalize → CloseJobHandles enqueues a control message on that "+
+			"same worker and waits for it: every write for every job is stopped until "+
+			"the 5s timeout expires, and the handles are still open afterwards", elapsed)
+	}
+	// The work still has to happen, or "does not block" is satisfied by doing
+	// nothing at all.
+	application.wg.Wait()
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap != nil && snap.Warning == "" {
+		t.Error("the fault was never surfaced; the job halts with no reason (A2, R27)")
+	}
 }
