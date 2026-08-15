@@ -151,3 +151,76 @@ func TestResume_SurfacesAClearFailureWhenTheFileIsGone(t *testing.T) {
 		t.Errorf("err = %q, want it to name the failing step", err)
 	}
 }
+
+// loadFailingExtentStore fails LoadFile while behaving normally otherwise.
+type loadFailingExtentStore struct {
+	ExtentStore
+	err error
+}
+
+func (l loadFailingExtentStore) LoadFile(context.Context, string, int32) (FileExtent, bool, error) {
+	return FileExtent{}, false, l.err
+}
+
+// TestClearCommitted_SurfacesALoadFailureRatherThanReadingItAsNoRow pins the
+// branch Resume cannot reach on its own.
+//
+// clearCommitted only writes where a row exists, so a failed load has an
+// inviting wrong answer: treat it as "no row" and skip the clear. That turns a
+// transient database error into a silently retained record of a file that is
+// not there, which is exactly the state the clear exists to prevent — and the
+// sweep would report a clean restart over it.
+func TestClearCommitted_SurfacesALoadFailureRatherThanReadingItAsNoRow(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("database is locked")
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)),
+		loadFailingExtentStore{ExtentStore: NewSQLiteExtentStore(openTestDB(t)), err: boom},
+		testLogger(t))
+
+	err := r.clearCommitted(ctx, "job-1", 0, ResumeResult{Durable: NewBitmap(2)})
+	if err == nil {
+		t.Fatal("clearCommitted reported success while it could not tell whether a row exists")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want one wrapping the load failure", err)
+	}
+}
+
+// TestClearCommitted_CommitsTheResultVerbatim pins that the caller's result is
+// what lands, with nothing carried over from the row being replaced.
+//
+// The stored row here claims a verified 200-byte prefix with a whole-file CRC.
+// Every field of the empty result is a zero value, so any "preserve what we
+// already know" merge is indistinguishable from not clearing at all — and the
+// surviving VerifiedTo/PrefixCRC would let FinalizeFile hand QuickCheck a CRC
+// for bytes this process did not write.
+func TestClearCommitted_CommitsTheResultVerbatim(t *testing.T) {
+	ctx := context.Background()
+	exts := NewSQLiteExtentStore(openTestDB(t))
+	prior := NewBitmap(2)
+	prior.Set(0)
+	prior.Set(1)
+	if err := exts.Commit(ctx, "job-1", []FileExtent{{
+		FileIdx: 3, Durable: prior, VerifiedTo: 200, PrefixCRC: 0xABCD, HasPrefixCRC: true,
+		BytesDurable: 200, Size: 200, ModTimeNs: 424242,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewResumer(NewSQLiteFactLog(openTestDB(t)), exts, testLogger(t))
+	if err := r.clearCommitted(ctx, "job-1", 3, ResumeResult{Durable: NewBitmap(2)}); err != nil {
+		t.Fatalf("clearCommitted: %v", err)
+	}
+
+	got, ok, err := exts.LoadFile(ctx, "job-1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("the row disappeared; clearCommitted replaces a record, it does not delete one")
+	}
+	if got.Durable.Count() != 0 || got.VerifiedTo != 0 || got.PrefixCRC != 0 ||
+		got.HasPrefixCRC || got.BytesDurable != 0 || got.Size != 0 || got.ModTimeNs != 0 {
+		t.Errorf("cleared extent carried a field forward from the row it replaced: %+v", got)
+	}
+}
