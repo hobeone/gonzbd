@@ -721,9 +721,11 @@ func TestAppendArticleFacts_IsInertWithoutAFactLog(t *testing.T) {
 
 // ---------- job departure ----------
 
-// TestDeleteJobDurability_RemovesBothClasses pins the only thing that cleans
-// up. Both tables are keyed by job ID with no foreign key to the queue, so
-// without this a database accumulates one set of rows per job ever downloaded.
+// TestDeleteJobDurability_RemovesBothClasses pins the removal that runs on a
+// job's way out. Both tables are keyed by job ID with no foreign key to the
+// queue, so without this a database accumulates one set of rows per job ever
+// downloaded until SQLiteStore.Prune's backstop happens to run -- and that
+// backstop deliberately spares history-as-FAILED, so it is not equivalent.
 func TestDeleteJobDurability_RemovesBothClasses(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
@@ -1642,7 +1644,9 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 // queue removal that follows it, so it is the ONE removal that runs without
 // finalizeJob. It fetched the history entry, discarded it, removed the queue
 // row and stopped — leaving article_facts and file_extents behind, keyed by
-// job ID with no foreign key to jobs and with no later path to collect them.
+// job ID with no foreign key to jobs. SQLiteStore.Prune now collects what
+// escapes this path, but only for a job that is not in history as FAILED,
+// which is exactly the case the retention rule below is about.
 //
 // Both directions matter and they fail differently. Retaining the rows for a
 // succeeded job leaks one set per crash, forever. Dropping them for a FAILED

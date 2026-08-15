@@ -1214,7 +1214,9 @@ func (s *SQLiteStore) shiftSortKeyTx(ctx context.Context, tx *sql.Tx, id string,
 	return nil
 }
 
-// Prune removes orphaned filesystem files not present in SQLite.
+// Prune removes orphaned filesystem files not present in SQLite, and the
+// durability rows of jobs that are in neither the queue nor history-as-FAILED
+// (see pruneDurabilityRows).
 func (s *SQLiteStore) Prune(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, "SELECT id FROM jobs")
 	if err != nil {
@@ -1250,6 +1252,65 @@ func (s *SQLiteStore) Prune(ctx context.Context) error {
 	cleanDir("manifests")
 	cleanDir("jobs")
 	_ = os.Remove(filepath.Join(s.dir, "queue.json.gz"))
+	return s.pruneDurabilityRows(ctx)
+}
+
+// pruneDurabilityRows is the backstop for Class A facts and Class B extents a
+// departed job left behind. Neither table has a foreign key to jobs, so
+// nothing collects them implicitly.
+//
+// The ordinary paths already cover this — Application.deleteJobDurability on
+// the queue-to-history transition, removeCorrupt on the self-healing removals
+// in Get, Application.dropJobAlreadyInHistory on the startup reconcile, and the
+// history entry's own deletion. What is left is the crash window between a job
+// leaving jobs and its rows being deleted, after which nothing looks for them
+// again for the life of the installation.
+//
+// # Why the obvious predicate is wrong
+//
+// "job_id not in jobs" would sweep a job that moved to history as FAILED, and
+// those rows are kept DELIBERATELY: a retry uses them to bound
+// Barrier.FinalizeFile's truncate to the whole partial file rather than to the
+// few articles the retry re-fetches. dropJobAlreadyInHistory encodes the same
+// rule by returning early on StatusFailed. A sweep that ignores it destroys
+// exactly the ground the retry path exists to preserve, and does so silently.
+//
+// # Why NOT EXISTS rather than NOT IN
+//
+// SQLite permits NULL in a TEXT PRIMARY KEY, so jobs.id and history.nzo_id can
+// both hold one. A single NULL anywhere in a NOT IN subquery makes the
+// predicate NULL for EVERY row, and the delete then matches nothing — a sweep
+// that silently stops sweeping, with no error and no way to notice from
+// outside. NOT EXISTS compares row by row and is unaffected.
+//
+// The failure direction of that trap is retention rather than loss, which is
+// why it is worth naming: it would not have shown up as a bug, only as this
+// function quietly never working.
+//
+// The two statements are written out rather than generated over a table-name
+// list. The predicate has to name its own table three times, so a templated
+// form needs SQL string concatenation for a value that is a compile-time
+// constant either way -- all cost, no reuse.
+func (s *SQLiteStore) pruneDurabilityRows(ctx context.Context) error {
+	const facts = `
+		DELETE FROM article_facts
+		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = article_facts.job_id)
+		   AND NOT EXISTS (SELECT 1 FROM history h
+		                    WHERE h.nzo_id = article_facts.job_id AND h.status = ?)`
+	const extents = `
+		DELETE FROM file_extents
+		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = file_extents.job_id)
+		   AND NOT EXISTS (SELECT 1 FROM history h
+		                    WHERE h.nzo_id = file_extents.job_id AND h.status = ?)`
+	// Errors are RETURNED, unlike the cleanDir calls above, which ignore
+	// theirs. A missing file is one orphan; a failing DELETE is the sweep not
+	// running at all, and Queue.persist propagates it so the next save retries
+	// rather than reporting a prune that did not happen.
+	for _, q := range []string{facts, extents} {
+		if _, err := s.db.ExecContext(ctx, q, string(constants.StatusFailed)); err != nil {
+			return fmt.Errorf("sqlite store prune durability rows: %w", err)
+		}
+	}
 	return nil
 }
 

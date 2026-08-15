@@ -1112,9 +1112,10 @@ func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durab
 // This used to remove the queue row and stop. The history entry it fetched was
 // discarded — the call read `_, err := ...Get(...)` — so the rule could not be
 // applied, and article_facts and file_extents stayed behind. They are keyed by
-// job ID with no foreign key to jobs, and no later path collects them: the
-// history entry's own deletion sweeps them, but only if the operator ever
-// deletes it.
+// job ID with no foreign key to jobs. SQLiteStore.Prune now sweeps rows whose
+// job is in neither the queue nor history-as-FAILED, so they no longer survive
+// for the life of the installation -- but Prune is a backstop that runs on a
+// queue save, not a substitute for removing them on the way out.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
@@ -1140,9 +1141,11 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 
 // deleteJobDurability drops a departed job's Class A and Class B rows.
 //
-// Both are keyed by job ID with no foreign key to the queue, so nothing else
-// removes them: a job that finished or was deleted would leave its facts and
-// extents behind forever.
+// Both are keyed by job ID with no foreign key to the queue, so nothing
+// removes them implicitly. SQLiteStore.Prune sweeps what escapes this call --
+// the crash window between a job leaving `jobs` and this running -- but it is
+// a backstop on a queue save, and a job that finished or was deleted must not
+// wait for one.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 	if app.factLog != nil {
 		if err := app.factLog.DeleteJob(ctx, jobID); err != nil {

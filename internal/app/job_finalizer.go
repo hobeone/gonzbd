@@ -91,7 +91,9 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 	// The download is over and filed, so its Class A facts and Class B extents
 	// describe a queue entry that no longer exists. They are keyed by job ID
 	// with no foreign key to the queue, so without a deliberate removal they
-	// accumulate one set per job ever downloaded.
+	// accumulate one set per job ever downloaded. SQLiteStore.Prune is the
+	// backstop for a crash between the Remove above and this call; it is not a
+	// reason to skip this one.
 	//
 	// Deliberately here rather than in enqueuePostProc: post-processing can
 	// send a job back for more downloading, and a job that returns to the
