@@ -1018,8 +1018,10 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 // handleSuccessArticle hands one article's bytes to the file's writer.
 //
 // Returns false when the article must not be counted toward the file's part
-// total — either it is a duplicate, or it is a retry of an article already
-// counted as failed.
+// total: a duplicate, a retry of an article already counted as failed, or a
+// write the storage layer refused. A REJECTED article does count — it is
+// resolved permanently failed, so a file waiting for it waits forever. See the
+// accept-failure branch below for both halves.
 func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 	w := f.w
 	id := articleID{msgID: req.MessageID, artIdx: req.ArtIdx}
@@ -1051,13 +1053,27 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		w.seenDone[req.MessageID] = struct{}{}
 	}
 	if err := a.acceptArticle(f, id, req); err != nil {
-		// Not counted toward completion. Counting it is what let a file reach
+		// Whether it still counts depends on WHICH failure it was, and that is
+		// the A1 split reaching the part total.
+		//
+		// A storage fault must not count. Counting it is what let a file reach
 		// TotalParts and finalize over bytes that never landed, reporting full
-		// health on a job whose volume was full — and, for a rejected offset,
-		// what let a hostile server finalize a file with articles it knew
-		// would not be written.
-		a.routeAcceptFailure(f, req, err)
-		return false
+		// health on a job whose volume was full. Its article stays Outstanding
+		// and arrives again, so the part total is not lost — it is deferred.
+		//
+		// A REJECTED article must count, and for the mirror reason: it is
+		// resolved permanently failed and will never arrive again. Declining
+		// to count it means partsWritten can never reach TotalParts, so
+		// OnFileComplete never fires, MarkFileComplete never runs, and the job
+		// sits at 100% with zero outstanding articles across restarts. This is
+		// what handleFatalArticle already does for a permanent failure, which
+		// is the same fact arriving from the other side of the pipeline.
+		//
+		// Counting it claims nothing about its bytes: it decoded no Class A
+		// fact and earns no durable bit, so no fact-derived truncate bound
+		// reaches past it, and its bytes are charged to failedBytes for par2
+		// to repair from.
+		return a.routeAcceptFailure(f, req, err)
 	}
 	return true
 }
@@ -1105,7 +1121,13 @@ func (e *rejectedArticleError) Error() string {
 
 // routeAcceptFailure sends one acceptArticle failure to the callback that
 // matches what actually failed, which is the A1 split in one place.
-func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error) {
+//
+// It reports whether the article still counts toward the file's part total.
+// True for a rejection — the article is resolved and will never arrive again,
+// so a file waiting for it waits forever — and false for a storage fault,
+// whose article stays Outstanding and arrives again. See handleSuccessArticle,
+// which is where the consequence of each is written out.
+func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error) bool {
 	if rej, ok := errors.AsType[*rejectedArticleError](err); ok {
 		a.log.Warn("article rejected; it will be recorded as permanently failed",
 			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
@@ -1113,9 +1135,10 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		if a.opts.OnArticleRejected != nil {
 			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason)
 		}
-		return
+		return true
 	}
 	a.noteWriteFault(f.info.Path, req, err)
+	return false
 }
 
 // noteWriteFault surfaces a failed write to the owner of the job.

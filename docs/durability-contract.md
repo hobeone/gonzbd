@@ -890,11 +890,25 @@ continues processing requests in the channel.
 
 ## Offset bounds checking
 
-`offsetInRange` rejects a `WriteRequest` whose offset is negative, whose
+`offsetOutOfRange` rejects a `WriteRequest` whose offset is negative, whose
 `offset+length` overflows `int64`, or whose write extends past
 `ExpectedSize + ExpectedSize/8` (12.5% slack). This prevents a hostile NNTP server
 from inflating a file's apparent size with a crafted yEnc `=ypart begin=` header.
-A rejected write returns its buffer to the pool and makes no claim.
+A rejected write returns its buffer to the pool and makes no claim about its
+bytes.
+
+It is an ARTICLE fault, not a storage fault, so it resolves against the article
+(A1): `OnArticleRejected` carries it to `Queue.AckPermanentFailure`, which
+charges its bytes to the job's failed-byte count, releases on-demand par2, and
+clears its `Emitted` bit so nothing waits on a re-dispatch that will never come.
+
+The rejected article still **counts toward its file's part total**. That looks
+like the wrong direction and is not: it will never arrive again, so a file that
+declines to count it can never reach `TotalParts`, `OnFileComplete` never fires,
+and the job sits at 100% with zero outstanding articles across restarts.
+Counting it claims nothing — no Class A fact was decoded, so no durable bit is
+earned and no fact-derived truncate bound reaches past it. This is what a
+permanently failed article already does through `handleFatalArticle`.
 
 ## DirectUnpack streaming contract
 
