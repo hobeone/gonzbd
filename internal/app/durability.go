@@ -867,26 +867,24 @@ func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fi
 	if app.extents == nil {
 		return
 	}
-	exts, err := app.extents.Load(ctx, jobID)
+	// One row, by primary key. This ran once per completed file over the
+	// WHOLE job's extents and discarded all but one, which is the O(files²)
+	// shape LoadFile was added to remove — and it runs on the completion path,
+	// where every file of every job passes through it.
+	e, ok, err := app.extents.LoadFile(ctx, jobID, int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
 	if err != nil {
-		app.log.Debug("load extents to record the assembled CRC", "job", jobID, "err", err)
+		app.log.Debug("load the extent to record the assembled CRC", "job", jobID, "err", err)
 		return
 	}
-	for _, e := range exts {
-		if int(e.FileIdx) != fileIdx {
-			continue
-		}
-		// HasPrefixCRC is the R23 distinction between "unavailable" and "zero".
-		// A file with a permanently failed article has a prefix that stops at
-		// the hole, and recording that as the file's CRC would report a
-		// mismatch against par2 for a file that is merely incomplete.
-		if !e.HasPrefixCRC {
-			return
-		}
-		if err := app.queue.SetFileCRC32(jobID, fileIdx, e.PrefixCRC); err != nil {
-			app.log.Debug("record the assembled CRC", "job", jobID, "fileidx", fileIdx, "err", err)
-		}
+	// HasPrefixCRC is the R23 distinction between "unavailable" and "zero". A
+	// file with a permanently failed article has a prefix that stops at the
+	// hole, and recording that as the file's CRC would report a mismatch
+	// against par2 for a file that is merely incomplete.
+	if !ok || !e.HasPrefixCRC {
 		return
+	}
+	if err := app.queue.SetFileCRC32(jobID, fileIdx, e.PrefixCRC); err != nil {
+		app.log.Debug("record the assembled CRC", "job", jobID, "fileidx", fileIdx, "err", err)
 	}
 }
 
@@ -1084,11 +1082,6 @@ func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durab
 	}
 }
 
-// deleteJobDurability drops a departed job's Class A and Class B rows.
-//
-// Both are keyed by job ID with no foreign key to the queue, so nothing else
-// removes them: a job that finished or was deleted would leave its facts and
-// extents behind forever.
 // dropJobAlreadyInHistory removes a queue job that has already been filed in
 // history, reporting whether it did.
 //
@@ -1130,6 +1123,11 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	return true
 }
 
+// deleteJobDurability drops a departed job's Class A and Class B rows.
+//
+// Both are keyed by job ID with no foreign key to the queue, so nothing else
+// removes them: a job that finished or was deleted would leave its facts and
+// extents behind forever.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 	if app.factLog != nil {
 		if err := app.factLog.DeleteJob(ctx, jobID); err != nil {
