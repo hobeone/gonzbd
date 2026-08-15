@@ -244,3 +244,49 @@ func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T
 			"became a leak, one entry per job ever downloaded")
 	}
 }
+
+// TestTakeJobBytes_LosesNothingToAConcurrentWrite pins the single acquisition.
+//
+// The read and the reset were two separate calls on barrierMu, and an article
+// written in the gap was added to the accumulator and then deleted with it —
+// counted toward neither window. On the failing path restoreJobBytes then put
+// back less than had been reset, so the "bytes still at risk" figure drifted
+// DOWN over a run of failed barriers. That is the direction R26 most needs it
+// not to drift, because the figure is read as reassurance: it says nothing is
+// at risk at the moment when everything written since the last real barrier is.
+//
+// A writer runs concurrently for the whole take, so the accumulator is being
+// added to across it. Whatever the interleaving, the invariant holds: every
+// byte is either returned by the take or still in the accumulator afterwards,
+// and never both, and never neither.
+func TestTakeJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	// High enough that noteJobBytes never crosses it and blocks on the kick
+	// channel; the accumulator arithmetic is what is under test.
+	application.checkpointBytes = 1 << 40
+
+	const writes = 200
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range writes {
+			application.noteJobBytes("job-a", 1)
+		}
+	}()
+
+	var taken int64
+	for {
+		taken += application.takeJobBytes("job-a")
+		select {
+		case <-done:
+			taken += application.takeJobBytes("job-a")
+			left := application.pendingBytesFor("job-a")
+			if taken != writes || left != 0 {
+				t.Fatalf("took %d and left %d, want %d and 0 — a byte added between the "+
+					"read and the reset was counted toward neither window", taken, left, writes)
+			}
+			return
+		default:
+		}
+	}
+}

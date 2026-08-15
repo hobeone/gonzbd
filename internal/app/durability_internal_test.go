@@ -267,18 +267,21 @@ func TestNoteJobBytes_KicksOnlyOnceTheBoundIsCrossed(t *testing.T) {
 	}
 }
 
-// TestResetJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers pins why the
+// TestTakeJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers pins why the
 // reset lives in the barrier rather than in the kick: without it the
 // accumulator keeps its pre-barrier total and every subsequent article
 // re-crosses the bound.
-func TestResetJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers(t *testing.T) {
+func TestTakeJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	application.checkpointBytes = 100
 
 	application.noteJobBytes("job-a", 150)
 	<-application.barrierKick
 
-	application.resetJobBytes("job-a")
+	if got := application.takeJobBytes("job-a"); got != 150 {
+		t.Errorf("takeJobBytes = %d, want 150 — the window's bytes are RETURNED as well "+
+			"as cleared, and the caller puts them back if its barrier fails", got)
+	}
 	application.noteJobBytes("job-a", 10)
 	if n := len(application.barrierKick); n != 0 {
 		t.Fatalf("%d kicks from 10 bytes after a reset; the accumulator still carries "+
@@ -1584,7 +1587,7 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 //
 // checkpointJob had two outcomes where the world has three. A job with no sync
 // target ran no barrier at all, but `err` stayed nil, so control fell through
-// to the success stamp — and resetJobBytes had already zeroed the window. The
+// to the success stamp — and takeJobBytes had already zeroed the window. The
 // operator then sees a fresh barrier timestamp beside zero pending bytes: two
 // figures agreeing that nothing is at risk, at the moment when everything
 // written since the last real barrier is.

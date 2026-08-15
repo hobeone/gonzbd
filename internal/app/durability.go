@@ -391,15 +391,6 @@ func (app *Application) noteJobBytes(jobID string, n int) {
 	}
 }
 
-// resetJobBytes zeroes a job's accumulator. Called by the barrier itself, so
-// the byte bound measures the window between barriers rather than the window
-// between kicks.
-func (app *Application) resetJobBytes(jobID string) {
-	app.barrierMu.Lock()
-	defer app.barrierMu.Unlock()
-	delete(app.jobBarrierBytes, jobID)
-}
-
 // syncTargetFor builds the barrier's view of one job's open files, or nil when
 // the job has no resident manifest.
 //
@@ -499,12 +490,12 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 		return
 	}
 
-	// Reset before the run, not after. An article written while the barrier
-	// is in flight belongs to the NEXT window: it may or may not have made
-	// it into this drain, and charging it to the window that just closed
-	// would let it go uncounted until the following one.
-	pending := app.pendingBytesFor(jobID)
-	app.resetJobBytes(jobID)
+	// Read and reset together, under one acquisition. As two calls, an article
+	// written in the gap was added to the accumulator and then deleted with
+	// it — counted toward neither window, and absent from the figure
+	// restoreJobBytes puts back if this run fails. See takeJobBytes for why
+	// the reset happens before the run at all.
+	pending := app.takeJobBytes(jobID)
 
 	app.barrierRuns.Add(1)
 	err := app.barrier.Run(ctx, jobID, tgt)
@@ -568,8 +559,32 @@ func (app *Application) hasBarrierStamp(jobID string) bool {
 	return ok
 }
 
+// takeJobBytes reads a job's accumulator and zeroes it, in ONE acquisition.
+//
+// The two were separate calls, and the gap between them lost bytes. An article
+// written after the read and before the reset was added to the accumulator and
+// then deleted with it — counted toward neither window. On the failing path
+// restoreJobBytes then put back less than had been reset, so the "bytes still
+// at risk" figure drifted DOWN over a run of failed barriers, which is the
+// direction R26 most needs it not to drift: it is read as reassurance.
+//
+// Called by the barrier itself, so the byte bound measures the window between
+// barriers rather than the window between kicks.
+//
+// The reset belongs before the run, not after. An article written while the
+// barrier is in flight belongs to the NEXT window — it may or may not have made
+// it into this drain, and charging it to the window that just closed would
+// leave it uncounted until the following one.
+func (app *Application) takeJobBytes(jobID string) int64 {
+	app.barrierMu.Lock()
+	defer app.barrierMu.Unlock()
+	n := app.jobBarrierBytes[jobID]
+	delete(app.jobBarrierBytes, jobID)
+	return n
+}
+
 // pendingBytesFor reports how many bytes have been written for a job since its
-// last barrier.
+// last barrier, without disturbing the accumulator.
 func (app *Application) pendingBytesFor(jobID string) int64 {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
