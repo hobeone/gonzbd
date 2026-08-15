@@ -9,6 +9,17 @@
 -- reinstall was explicitly authorised. There is no backfill anywhere below and
 -- none is possible.
 --
+-- "Cannot be read by this version" is ENFORCED, and was not when this comment
+-- was first written. goose keys on version numbers alone, so a database from
+-- any earlier build records versions 2..11 that no longer exist while version
+-- 1 reads as already applied: Up() applied nothing and returned nil, and the
+-- daemon came up clean with no article_facts and no file_extents. Every
+-- barrier then failed with a plain error that does not stall, nothing was ever
+-- acked, and no job ever completed. history.Open now refuses a database whose
+-- recorded version exceeds the highest migration the build ships
+-- (refuseUnknownSchema). If a later migration is added, that bound moves with
+-- it automatically — it is read from these filenames, not hard-coded.
+--
 -- Rationale that survived the collapse is restated inline against the table it
 -- describes, because these comment blocks are now the only place those claims
 -- live.
