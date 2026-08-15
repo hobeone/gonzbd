@@ -176,6 +176,46 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	if got, want := nonResident.FailedBytes(), residentFailed; got != want {
 		t.Errorf("non-resident FailedBytes = %d, resident = %d", got, want)
 	}
+
+	// The ARTICLE counts, on the same terms as the bytes above.
+	//
+	// These lagged the byte figures: caching bytes_downloaded and failed_bytes
+	// made the byte side agree at both residencies while the article side
+	// still reported every article as still to fetch, so the two disagreed in
+	// kind. The queue listing reads PendingArticles as ArticlesRemaining
+	// without hydrating, so after a restart a half-downloaded Queued or Paused
+	// job showed its full article count until it was promoted.
+	if got, want := nonResident.PendingArticles(), resident.PendingArticles(); got != want {
+		t.Errorf("non-resident PendingArticles = %d, resident = %d — the queue listing "+
+			"serves this as articles_remaining without hydrating, so the figure jumps "+
+			"the moment the job is promoted", got, want)
+	}
+	if got, want := nonResident.ArticlesResolved(), resident.ArticlesResolved(); got != want {
+		t.Errorf("non-resident ArticlesResolved = %d, resident = %d", got, want)
+	}
+	if got, want := nonResident.ArticlesFailed(), resident.ArticlesFailed(); got != want {
+		t.Errorf("non-resident ArticlesFailed = %d, resident = %d", got, want)
+	}
+	// Per file as well as per job, because the job total can agree while the
+	// bits sit against the wrong files: the global index each file's bits are
+	// placed at is derived here from a running sum rather than read from a
+	// manifest, and an off-by-one file would cancel out in the total.
+	for fi := range 4 {
+		if got, want := nonResident.FilePending(fi), resident.FilePending(fi); got != want {
+			t.Errorf("file %d: non-resident Pending = %d, resident = %d — the file's "+
+				"articles were placed at the wrong global index", fi, got, want)
+		}
+	}
+	// And the bits themselves, which is what makes the placement assertion
+	// above more than an arithmetic coincidence.
+	for i := range m.NumArticles() {
+		if got, want := nonResident.ArticleDone(i), resident.ArticleDone(i); got != want {
+			t.Errorf("article %d: non-resident done = %v, resident = %v", i, got, want)
+		}
+		if got, want := nonResident.ArticleFailed(i), resident.ArticleFailed(i); got != want {
+			t.Errorf("article %d: non-resident failed = %v, resident = %v", i, got, want)
+		}
+	}
 }
 
 // TestFailedBytes_SurvivesRestartNonResident is the end-to-end half of the

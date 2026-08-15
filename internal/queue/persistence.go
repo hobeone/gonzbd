@@ -88,10 +88,17 @@ func (q *Queue) saveStore(_ string) error {
 // Used by Load to give a non-resident job (StatusQueued/StatusPaused at
 // restart) a real JobProgress instead of leaving it nil.
 //
-// Every article starts undone/unfailed/unemitted: this sizes progress for
-// reporting, it does not restore true per-article state, which needs the
-// manifest. That restoration already happens whenever the job is promoted
-// back to resident.
+// The done and failed bits ARE restored, from the same
+// job_files.articles_done bitmap the byte figures below sum — article_count
+// gives its width, so it decodes without a manifest. Without them every
+// article read as still to fetch, and a restart showed a half-downloaded
+// Queued or Paused job with EVERY article remaining until it was promoted.
+// Once the byte figures were cached the two even disagreed in kind: bytes
+// right, article count wrong.
+//
+// EMITTED genuinely does start clear, and must: it is transient per-process
+// state about what a downloader has in flight, and nothing that survived a
+// restart is in flight.
 //
 // Per-file Bytes/Complete/Fetch are carried so RemainingBytes (see
 // derivedRemainingBytes) has the file sizes it needs at any residency,
@@ -115,11 +122,11 @@ func (q *Queue) saveStore(_ string) error {
 // is also what keeps TestFailedBytes_NotDoubledByHydration true: a seed and a
 // replay cannot stack.
 //
-// The per-article bitmaps genuinely do start clear here — every article
-// starts undone/unfailed/unemitted, since restoring true per-article state
-// needs the manifest and only happens once the job is promoted back to
-// resident. That is why the byte figures have to be seeded at all: with no
-// bits set there is nothing for a derivation to read.
+// The byte figures still have to be seeded even now that the bits are
+// restored, and the reason is worth being exact about: a bit says WHICH
+// articles resolved, not how many bytes they were. Per-article sizes live in
+// the manifest, which is precisely what a non-resident job does not have, so
+// no derivation over these bitmaps can produce a byte figure here.
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
 	for _, f := range files {
@@ -133,6 +140,11 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		pendingArticles: total,
 	}
 	var failedTotal int64
+	// base is the file's first GLOBAL article index. The manifest derives the
+	// same number by accumulating each file's article count in order
+	// (fileArticleOffsets), and files arrive here ordered by file_index — so
+	// the running sum reproduces it without a manifest to ask.
+	base := 0
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
 		p.files[fi].Complete = f.Complete
@@ -141,6 +153,25 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		p.files[fi].Bytes = f.Bytes
 		p.files[fi].BytesDownloaded = f.BytesDownloaded
 		p.files[fi].FailedBytes = f.FailedBytes
+		// The per-article state, so a non-resident job does not report every
+		// article as still to fetch. Set as BITS rather than through markDone
+		// and markFailed: those need a manifest for the byte arithmetic, and
+		// the byte figures are already seeded from their own columns above —
+		// running them here would double-count failedBytes.
+		for i := range f.ArticleCount {
+			if i >= len(f.Done) || !f.Done[i] {
+				continue
+			}
+			p.done.Set(base + i)
+			p.files[fi].Pending--
+			p.pendingArticles--
+			p.articlesResolved++
+			if i < len(f.Failed) && f.Failed[i] {
+				p.failed.Set(base + i)
+				p.articlesFailed++
+			}
+		}
+		base += f.ArticleCount
 		// Summed over every file including deferred ones, matching what
 		// recompute does, so the job-level figure agrees with the per-file
 		// ones at both residencies. ExpectedBytes' identity

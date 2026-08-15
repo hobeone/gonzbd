@@ -119,6 +119,19 @@ A **resident** job derives downloaded bytes from the `articles_done` bitmap the
 same rows already carry, in `JobProgress.recompute`. A **non-resident** one has
 no manifest to sum, so it reads `job_files.bytes_downloaded`.
 
+The **article** figures come from that same `articles_done` bitmap at both
+residencies. A non-resident job cannot ask a manifest how wide each file's half
+of the blob is, so it takes the width from `job_files.article_count` — the same
+number, written by the same statement — and places each file's bits at a global
+index derived from a running sum of the counts, which is what
+`Manifest.fileArticleOffsets` accumulates. Without this every article read as
+still to fetch, so after a restart a half-downloaded Queued or Paused job showed
+its FULL article count in `articles_remaining` until it was promoted; once the
+byte figures were cached the two even disagreed in kind, bytes right and article
+count wrong. `Emitted` is deliberately not restored: it is transient
+per-process state about what a downloader has in flight, and nothing that
+survived a restart is.
+
 `bytes_downloaded` and `failed_bytes` are the two columns on `job_files` that
 summarise something, and both are **caches with a single writer** rather than
 second authorities. Each is written by the same statement that writes
@@ -145,8 +158,8 @@ schema, and `docs/durability-contract.md` § *The two classes of fact* records
 why `durability.FileExtent` has no failed-byte column either.
 
 **Residency parity therefore holds again**: a non-resident job reports its
-downloaded, failed and remaining bytes from `job_files` alone, without a
-manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin. Its
+downloaded, failed and remaining bytes — and its resolved, failed and pending
+article counts — from `job_files` alone, without a manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin. Its
 fixture commits Class B extents whose `BytesDurable` is seeded in **decoded**
 bytes, matching what `Barrier.buildExtent` charges, so re-routing either figure
 back through `file_extents` shows up there as a divergence rather than passing

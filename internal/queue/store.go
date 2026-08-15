@@ -48,6 +48,24 @@ type FileMeta struct {
 	// the bitmaps and so supersedes whatever was seeded here (S4).
 	BytesDownloaded int64
 	FailedBytes     int64
+	// Done and Failed are the file's per-article resolved state, decoded from
+	// the same job_files.articles_done bitmap the byte figures above sum.
+	//
+	// They exist for the same reason those do, one level down. Without them a
+	// non-resident job's JobProgress had every article Pending, so a restart
+	// showed a half-downloaded Queued or Paused job with EVERY article
+	// remaining until it was promoted — and after the byte figures were
+	// cached, the two disagreed in kind: bytes right, article count wrong.
+	//
+	// Indexed file-locally, length ArticleCount. Nil means the column was
+	// empty or malformed, which reads as "nothing resolved" — the safe
+	// direction under S3, and the same one an absent column already produced.
+	//
+	// Caches, not authorities, on the same terms as the byte figures:
+	// hydration runs JobProgress.recompute, which re-derives everything from
+	// the manifest and the live bitmaps (S4).
+	Done   []bool
+	Failed []bool
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.

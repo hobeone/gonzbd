@@ -139,6 +139,46 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 	return hex.EncodeToString(buf)
 }
 
+// decodeArticleFlags unpacks one file's articles_done bitmap into per-article
+// done and failed flags, WITHOUT a manifest.
+//
+// decodeArticlesDone does the same unpacking against a live job, taking the
+// file's width from the manifest's FileRange. This one is for the non-resident
+// path, where there is no manifest and the width comes from
+// job_files.article_count — the same number, written by the same statement.
+// The two share the format and nothing else; folding them together would mean
+// giving the resident path a width it does not need and the boot path a
+// manifest it does not have.
+//
+// Returns nil, nil for an empty or malformed value, which reads as "nothing
+// resolved". That is the safe direction under S3 and matches what an absent
+// column already produced: the articles come back Outstanding and are
+// re-derived on hydration.
+func decodeArticleFlags(encoded string, articleCount int) (done, failed []bool) {
+	if encoded == "" || articleCount <= 0 {
+		return nil, nil
+	}
+	buf, err := hex.DecodeString(encoded)
+	if err != nil {
+		return nil, nil
+	}
+	numBytes := (articleCount + 7) / 8
+	if len(buf) != numBytes*2 {
+		// Not written by encodeArticlesDone for THIS file. Guessing which
+		// prefix is the done bitmap would resolve the wrong articles rather
+		// than none, which is the reason decodeArticlesDone refuses too.
+		return nil, nil
+	}
+	doneBuf, failedBuf := buf[:numBytes], buf[numBytes:]
+	done = make([]bool, articleCount)
+	failed = make([]bool, articleCount)
+	for i := range articleCount {
+		done[i] = doneBuf[i/8]&(1<<(i%8)) != 0
+		failed[i] = failedBuf[i/8]&(1<<(i%8)) != 0
+	}
+	return done, failed
+}
+
 // decodeArticlesDone restores file fileIdx's per-article done/failed state
 // from a hex bitmap written by encodeArticlesDone: [done bits][failed bits],
 // each ceil(N/8) bytes. An article with its failed bit set is restored via
@@ -605,9 +645,14 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 	// One grouped query for the whole queue, which is what keeps restart at
 	// B3's O(incomplete files) bound. Reading per job instead would be N
 	// queries at startup.
+	// articles_done comes along too, and needs no schema change: it has always
+	// been on this table, and article_count gives the width the blob is keyed
+	// by, so it decodes here without a manifest. Without it a non-resident
+	// job's every article read as Pending.
 	const q = `
 SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
-       jf.fetch_policy, jf.subject, jf.failed_bytes, jf.bytes_downloaded
+       jf.fetch_policy, jf.subject, jf.failed_bytes, jf.bytes_downloaded,
+       COALESCE(jf.articles_done, '')
   FROM job_files jf
  ORDER BY jf.job_id ASC, jf.file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -618,12 +663,12 @@ SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
 
 	result := make(map[string][]FileMeta)
 	for rows.Next() {
-		var jobID, subject string
+		var jobID, subject, artDone string
 		var idx, count int
 		var fileBytes, failedBytes, bytesDownloaded int64
 		var complete, fetch int
 		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &complete, &fetch, &subject,
-			&failedBytes, &bytesDownloaded); err != nil {
+			&failedBytes, &bytesDownloaded, &artDone); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -651,6 +696,7 @@ SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
 			BytesDownloaded: bytesDownloaded,
 			FailedBytes:     failedBytes,
 		}
+		counts[idx].Done, counts[idx].Failed = decodeArticleFlags(artDone, count)
 		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {
