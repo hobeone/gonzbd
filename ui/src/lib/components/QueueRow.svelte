@@ -141,6 +141,12 @@
 	// not yet covered by an fsync — and adding it to bytes_durable would claim
 	// the whole total survives a crash. The two are always shown as two
 	// numbers for that reason.
+	//
+	// They are also not in the same unit: bytes_durable is in yEnc-encoded
+	// NZB bytes (it pairs with size/sizeleft), bytes_pending in the decoded
+	// bytes actually written. So a percentage or a difference of the two is
+	// meaningless as well as misleading. See the field doc on queueSlot in
+	// internal/api/queue.go.
 	let durabilityTooltip = $derived.by(() => {
 		const parts = [
 			`${formatBytes(slot.bytes_durable ?? 0)} durable (fsynced)`,

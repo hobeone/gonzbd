@@ -550,6 +550,21 @@ Three details that have each been got wrong once:
   zeroing it would report zero pending bytes beside a stale timestamp, two
   figures agreeing that nothing is at risk at the moment when everything is.
 
+**`bytes_durable` and `bytes_pending` are not in the same unit**, and R26 asks
+only that the rework window be *visible*, not that it be commensurable with the
+durable total. `bytes_durable` comes from the job's progress —
+`expected - failed - remaining` over NZB-declared, yEnc-**encoded** sizes, the
+same unit as `size`/`sizeleft` beside it. `bytes_pending` accumulates
+`len(data)` per accepted article: **decoded** bytes, the ones on disk, because
+B1's volume bound measures rework at risk. Neither can move to the other's
+unit. Reading `bytes_durable` from `file_extents.bytes_durable` — a decoded
+figure carrying the same name — is the substitution `docs/queue-lifecycle.md`
+records as having overstated every non-resident job's remaining bytes; and
+re-basing the accumulator on declared sizes would corrupt the cadence trigger
+it exists to drive. The API contract already forbids summing them; the unit
+difference is a second, independent reason, and it also rules out a ratio or a
+difference.
+
 The queue save follows the barrier rather than running on its own timer, because
 the barrier is what produces something worth saving: an ack marks articles done
 in memory, and until the queue is written a crash re-fetches them anyway.

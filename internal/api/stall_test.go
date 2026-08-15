@@ -149,6 +149,9 @@ func TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty(t *testing.T) {
 // rework window made visible. It must be reported separately from
 // bytes_durable and never summed into it: one figure survives a power loss and
 // the other does not, so a total asserts the stronger claim about all of it.
+// They are not even in the same unit — bytes_durable is encoded NZB bytes,
+// bytes_pending the decoded bytes written — so this test's fixture values are
+// chosen independently rather than derived from one another.
 func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 	t.Parallel()
 	s, q := stallTestServer(t, nil, nil)

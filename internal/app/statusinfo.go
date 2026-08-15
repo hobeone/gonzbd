@@ -120,6 +120,12 @@ type JobCheckpointState struct {
 	// PendingBytes is what has been written since this job's current
 	// checkpoint window opened: accepted by the OS, not yet fsynced, and lost
 	// on a power failure.
+	//
+	// DECODED bytes -- the accumulator is fed len(data) per accepted article,
+	// because B1's volume bound measures rework at risk and rework is
+	// measured in bytes on disk. DurableBytesOf is in ENCODED bytes. The two
+	// are not comparable; see the bytes_durable/bytes_pending field doc in
+	// internal/api/queue.go for why neither can move to the other's unit.
 	PendingBytes int64
 	// LastBarrier is when this job's last barrier completed without error, or
 	// the zero time when none has.
@@ -222,6 +228,12 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 // JobProgress.ExpectedBytes for why the three legs close. It is exported so
 // the queue listing can apply it to the job clone it already holds instead of
 // taking a second snapshot per poll.
+//
+// All three legs are NZB-declared, yEnc-ENCODED bytes, so this figure is too.
+// It is deliberately not durability.FileExtent.BytesDurable, which carries the
+// same name and sums the DECODED payload lengths an fsync proved --
+// docs/queue-lifecycle.md records that substitution overstating every
+// non-resident job's remaining bytes by the encoding overhead.
 func DurableBytesOf(p *queue.JobProgress) int64 {
 	if p == nil {
 		return 0

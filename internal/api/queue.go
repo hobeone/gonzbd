@@ -186,9 +186,32 @@ type queueSlot struct {
 	// by the OS, not yet fsynced, and lost on a power failure — the rework
 	// window made visible rather than inferred (R26).
 	//
-	// They are reported separately and MUST NOT be summed by a client. They
-	// make different claims, and a total would assert the stronger of the two
-	// about all of it.
+	// They are reported separately and MUST NOT be summed by a client, for
+	// two independent reasons. They make different claims, and a total would
+	// assert the stronger of the two about all of it. And they are not in the
+	// same unit.
+	//
+	// bytes_durable is derived from the job's progress, which counts the
+	// NZB-DECLARED size of each resolved article -- yEnc-ENCODED bytes,
+	// which run a few percent above what lands on disk. bytes_pending
+	// accumulates len(data) per accepted article -- DECODED bytes, the ones
+	// actually written. So bytes_durable - bytes_pending is not a quantity,
+	// and neither is their sum.
+	//
+	// Neither figure can be moved to the other's unit without breaking what
+	// it exists for. bytes_durable pairs with size/sizeleft/mb, which are the
+	// encoded NZB figures a client renders beside it, and reading it from
+	// file_extents.bytes_durable instead -- a decoded figure, and confusingly
+	// the same name -- is the exact substitution docs/queue-lifecycle.md
+	// records as having overstated every non-resident job's remaining bytes.
+	// bytes_pending feeds B1's volume bound, which measures rework at risk
+	// and is therefore about bytes on disk by definition.
+	//
+	// The two are an order of magnitude apart in practice -- a checkpoint
+	// window holds megabytes where a job holds gigabytes -- so the encoding
+	// overhead is not the dominant term in any comparison a reader would
+	// make. It is documented rather than corrected because there is nothing
+	// to correct it to.
 	BytesDurable int64 `json:"bytes_durable"`
 	BytesPending int64 `json:"bytes_pending"`
 
@@ -445,7 +468,9 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		// From the job's own progress rather than a second snapshot: on this
 		// design a downloaded byte IS a durable byte, because the only things
 		// that mark an article Done are the barrier's ack and a replay of a
-		// committed extent cache.
+		// committed extent cache. That also fixes its unit as the encoded one
+		// -- see the field doc for why it is not the same unit as
+		// BytesPending below, and why neither can move.
 		BytesDurable:    app.DurableBytesOf(p),
 		BytesPending:    cp.PendingBytes,
 		LastBarrierUnix: unixOrZero(cp.LastBarrier),
