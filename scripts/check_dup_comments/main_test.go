@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,14 +35,19 @@ func writeGo(t *testing.T, files map[string]string) []string {
 }
 
 // scanAll runs the same collection main does, and returns the groups that
-// would be reported.
+// would be reported. It FAILS on a marker error rather than ignoring one:
+// main exits 2 on those before reporting anything, so a test that swallowed
+// them would assert about a report main would never print.
 func scanAll(t *testing.T, paths []string) map[string][]occurrence {
 	t.Helper()
 	groups := map[string][]occurrence{}
 	for _, p := range paths {
-		b, err := scan(p, defaultMinLines, defaultMinChars)
+		b, mErrs, err := scan(p, defaultMinLines, defaultMinChars)
 		if err != nil {
 			t.Fatalf("scan %s: %v", p, err)
+		}
+		if len(mErrs) > 0 {
+			t.Fatalf("scan %s: %v", p, mErrs[0])
 		}
 		for k, v := range b {
 			groups[k] = append(groups[k], v...)
@@ -120,7 +126,7 @@ func TestScan_DifferentBasenamesAreNotExempt(t *testing.T) {
 // behaviour f7071c6a deliberately REMOVED. A stale doc asserting the opposite
 // of the code, sitting inside the gate built to catch exactly that class.
 func TestScan_MarkerOnEveryCopyExemptsTheGroup(t *testing.T) {
-	marked := "// dupcomment:ok the two backends assert one shared contract\n" + block
+	marked := "// dupcomment:ok the two backends assert one shared contract\n//\n" + block
 	got := scanAll(t, writeGo(t, map[string]string{
 		"a/a.go": "package a\n\n" + marked + "func A() {}\n",
 		"b/b.go": "package b\n\n" + marked + "func B() {}\n",
@@ -136,7 +142,7 @@ func TestScan_MarkerOnEveryCopyExemptsTheGroup(t *testing.T) {
 // text EVERYWHERE — including a copy pasted by accident later. The marker would
 // then hide exactly what it exists to surface.
 func TestScan_MarkerOnOneCopyDoesNotExemptTheGroup(t *testing.T) {
-	marked := "// dupcomment:ok the two backends assert one shared contract\n" + block
+	marked := "// dupcomment:ok the two backends assert one shared contract\n//\n" + block
 	got := scanAll(t, writeGo(t, map[string]string{
 		"a/a.go": "package a\n\n" + marked + "func A() {}\n",
 		"b/b.go": "package b\n\n" + block + "func B() {}\n",
@@ -148,9 +154,14 @@ func TestScan_MarkerOnOneCopyDoesNotExemptTheGroup(t *testing.T) {
 
 // TestScan_BareMarkerDoesNotExempt pins that the reason is mandatory. An
 // unexplained exemption is the thing the tool exists to surface.
+//
+// The bare marker is deliberately left UNTERMINATED while its partner is
+// closed with a blank `//`. A bare marker cannot have a wrapped reason, so it
+// is exempt from the termination rule, and this is what pins that exemption:
+// terminating it here would make the test pass without exercising it.
 func TestScan_BareMarkerDoesNotExempt(t *testing.T) {
 	bare := "// dupcomment:ok\n" + block
-	good := "// dupcomment:ok a real reason\n" + block
+	good := "// dupcomment:ok a real reason\n//\n" + block
 	got := scanAll(t, writeGo(t, map[string]string{
 		"a/a.go": "package a\n\n" + bare + "func A() {}\n",
 		"b/b.go": "package b\n\n" + good + "func B() {}\n",
@@ -231,5 +242,107 @@ func TestScan_MultiLineReasonDoesNotAffectGrouping(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("reported %d groups, want 1; a multi-line reason must not stop "+
 			"the marked copy grouping with its unmarked twin", len(got))
+	}
+}
+
+// scanMarkerErrs runs scan over paths and returns only the marker errors, for
+// the cases where those ARE the subject rather than an obstacle.
+func scanMarkerErrs(t *testing.T, paths []string) []error {
+	t.Helper()
+	var out []error
+	for _, p := range paths {
+		_, mErrs, err := scan(p, defaultMinLines, defaultMinChars)
+		if err != nil {
+			t.Fatalf("scan %s: %v", p, err)
+		}
+		out = append(out, mErrs...)
+	}
+	return out
+}
+
+// TestScan_UnterminatedReasonIsRefused pins the fix for a silent suppression
+// that reproduced against this tool.
+//
+// A marker whose reason wraps onto a second line with no closing `//` leaves
+// that second line in the block's identity. The marked copy then hashes
+// differently from its unmarked twin, the group falls below two occurrences,
+// and NEITHER is reported — so adding a marker to one copy silences the other,
+// the exact inversion of what the marker means.
+//
+// It cannot be fixed by a rule, only refused: nothing in the text says whether
+// the line after the marker continues the reason or resumes the comment.
+// Consuming to the end of the block erases the text being identified;
+// consuming only the marker's line leaves the wrapped reason in the key.
+//
+// The assertion is on the ERROR, not on the report. Before the fix this
+// fixture produced an empty report and exit 0 — a passing run — which is why
+// asserting "no group is reported" would pin the bug rather than the fix.
+func TestScan_UnterminatedReasonIsRefused(t *testing.T) {
+	unterminated := "// dupcomment:ok deliberate, because the two subsystems\n" +
+		"// document one protocol and must not drift apart.\n" + block
+	paths := writeGo(t, map[string]string{
+		"a/a.go": "package a\n\n" + unterminated + "func A() {}\n",
+		"b/b.go": "package b\n\n" + block + "func B() {}\n",
+	})
+
+	errs := scanMarkerErrs(t, paths)
+	if len(errs) != 1 {
+		t.Fatalf("got %d marker errors, want 1 — an unterminated reason is being accepted, "+
+			"which makes the marked copy hash differently and silences its unmarked twin", len(errs))
+	}
+	if !errors.Is(errs[0], errUnterminatedMarker) {
+		t.Errorf("err = %v, want one wrapping errUnterminatedMarker", errs[0])
+	}
+}
+
+// TestScan_MarkerAsTheLastLineNeedsNoTermination pins the other side of the
+// same rule.
+//
+// A marker on the block's final line has nothing after it, so no line is
+// ambiguous and requiring a trailing blank `//` would be noise. This is also
+// where markers most often sit, so getting it wrong would make the rule
+// unusable rather than strict.
+func TestScan_MarkerAsTheLastLineNeedsNoTermination(t *testing.T) {
+	trailing := block + "// dupcomment:ok the two backends assert one shared contract\n"
+	paths := writeGo(t, map[string]string{
+		"a/a.go": "package a\n\n" + trailing + "func A() {}\n",
+		"b/b.go": "package b\n\n" + trailing + "func B() {}\n",
+	})
+	if errs := scanMarkerErrs(t, paths); len(errs) != 0 {
+		t.Fatalf("got %d marker errors, want 0: %v", len(errs), errs)
+	}
+	if got := scanAll(t, paths); len(got) != 0 {
+		t.Errorf("reported %d groups, want 0 — a trailing marker on every copy must still exempt", len(got))
+	}
+}
+
+// TestScan_ProseNamingTheMarkerIsNotAMarker pins the anchor on markerRe.
+//
+// An unanchored match turns any sentence that NAMES the marker into one. Real
+// examples were live in the tree: several in this tool's own file, and one in
+// internal/postproc, each of the form "a //dupcomment:ok marker was added
+// to...". Every block containing such a sentence was silently exempt, with the
+// rest of the sentence captured as its reason.
+//
+// The fixture puts the sentence in BOTH copies, which is what makes the
+// assertion discriminate. Read as prose, the lines are part of the identity
+// and the pair is reported. Read as a marker, they are stripped, both copies
+// carry a reason, allMarked exempts the group, and nothing is reported —
+// which is precisely the silent exemption this anchor removes.
+func TestScan_ProseNamingTheMarkerIsNotAMarker(t *testing.T) {
+	// The mention must carry TEXT AFTER it on the same line, and be closed by
+	// a blank `//`. Both details are what make the fixture discriminate: an
+	// unanchored match needs following text to capture a non-empty reason, and
+	// the blank line is what lets the (mis)read marker be a valid terminated
+	// one rather than failing as an unterminated one for a different reason.
+	prose := "// The gate fires here because a //dupcomment:ok marker with a reason\n" +
+		"// was added to both copies of the helper below.\n//\n" + block
+	got := scanAll(t, writeGo(t, map[string]string{
+		"a/a.go": "package a\n\n" + prose + "func A() {}\n",
+		"b/b.go": "package b\n\n" + prose + "func B() {}\n",
+	}))
+	if len(got) != 1 {
+		t.Fatalf("reported %d groups, want 1 — prose that merely names the marker is being "+
+			"treated as one, so any block mentioning it is silently exempt", len(got))
 	}
 }
