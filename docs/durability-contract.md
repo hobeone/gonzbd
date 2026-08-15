@@ -512,7 +512,7 @@ absence is visible rather than assumed:
 | Time | `runCheckpoint`'s ticker → `checkpointAll` | `downloads.checkpoint_interval`, default **30s** (`constants.DefaultCheckpointInterval`) |
 | Volume | `noteJobBytes` → `barrierKick` → `checkpointJob` | `downloads.checkpoint_bytes`, default **64 MiB** (`constants.DefaultCheckpointBytes`) |
 | File completion | `Application.handleFileComplete` → `finalizeCompletedFile` → `Barrier.FinalizeFile` | per file |
-| Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAll` | `shutdownCheckpointTimeout` (10s) |
+| Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAllShare` | `shutdownCheckpointTimeout` (10s) for the **whole sweep**, divided evenly among the jobs it visits |
 | Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its buffered bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
 
 The two bounds answer different failure shapes and neither subsumes the other.
@@ -560,6 +560,25 @@ handles the barrier needs still exist. Without it, everything downloaded since
 the last barrier is re-fetched on the next start: up to a full checkpoint window
 thrown away on every deliberate restart, which is the cost B1 bounds for a crash
 and nobody should pay for a clean stop.
+
+Its budget is **divided**, not repeated. Passing `shutdownCheckpointTimeout` as
+both the sweep's context and each job's budget looks per-job and is not:
+`context.WithTimeout` cannot exceed its parent, so a first job consuming most of
+the 10s leaves every job behind it with an already-expired context and an
+immediate failure — paying exactly the re-fetch cost the paragraph above says
+nobody should. The periodic sweep keeps a *fixed* per-job budget instead,
+because it has no overall deadline to divide and one job's slow mount must not
+shrink every other job's budget on every tick.
+
+**No job is parked by this checkpoint.** `Application.stopping` is set at the
+top of `Shutdown`, before any of its steps, and `Application.Stall` refuses to
+pause a job while it is set. The pause would be the one that cannot be undone:
+Shutdown's final `queue.Save` persists it, the stall list that would re-evaluate
+it is in-memory and dies with the process, and the startup sweep skips the job
+because its phase is no longer active — so a healthy job comes back Paused
+forever after a slow but perfectly normal stop. The guard used to test
+`app.ctx.Err()`, which `app.cancel()` sets two steps *later*, so it was inert on
+exactly this path.
 
 ## File completion and the handoff
 

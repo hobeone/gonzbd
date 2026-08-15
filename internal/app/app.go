@@ -221,6 +221,34 @@ type Application struct {
 	started atomic.Bool
 	stopped atomic.Bool
 
+	// stopping is set at the top of Shutdown, BEFORE any of its steps run.
+	//
+	// It exists because the guard it feeds — Application.Stall's refusal to
+	// park a job while the process is stopping — tested app.ctx.Err(), and
+	// app.cancel() runs at step 4, AFTER the clean-shutdown checkpoint at step
+	// 2. So the guard was inert on exactly the path it was written for: the
+	// shutdown barrier exceeds its budget on a queue with many open files,
+	// every job it reaches raises a fault, ctx.Err() is still nil, the pause
+	// runs, and the queue.Save at the end of Shutdown persists it. The stall
+	// list that would re-evaluate it is in-memory and dies with the process,
+	// so the job comes back Paused forever.
+	//
+	// Reordering cancel() before the checkpoint is not the fix: it would
+	// cancel the checkpoint's own context and stop it doing the work it exists
+	// to do. Only a SIGTERM-cancelled parent context took the guarded path,
+	// which is why this is a separate flag rather than a second look at ctx.
+	stopping atomic.Bool
+
+	// checkpointHook, when non-nil, runs at the top of shutdownCheckpoint.
+	// Same discipline as the other same-package test seams: set once, before
+	// the application is started. See shutdownCheckpoint for why the ordering
+	// needs a seam at all.
+	checkpointHook func()
+
+	// jobCheckpointHook, when non-nil, runs with each job's checkpoint context
+	// just before its barrier. Same discipline as checkpointHook.
+	jobCheckpointHook func(context.Context)
+
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
@@ -1104,6 +1132,10 @@ func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Before any step, so the stall guard covers the clean-shutdown barrier
+	// below. See the field's doc.
+	app.stopping.Store(true)
+
 	var errs []error
 	const stepTimeout = 15 * time.Second
 

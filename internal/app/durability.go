@@ -162,13 +162,21 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 // under a fixed deadline, and on a queue with many open files the fsyncs
 // exceed it, so every job it reaches raises a deadline-exceeded fault.
 //
-// The test is the APPLICATION's context, not the error. A wedged mount
-// produces the identical context.DeadlineExceeded through barrierOpTimeout,
-// and that one must still park the job with a reason — otherwise it sits at
-// 99% with nothing surfaced, which A2 forbids. The two are distinguishable
-// only by whether we are stopping, so that is what is asked.
+// The test is whether the PROCESS is stopping, not what the error was. A
+// wedged mount produces a deadline of its own through barrierOpTimeout, and
+// that one must still park the job with a reason — otherwise it sits at 99%
+// with nothing surfaced, which A2 forbids. The two are distinguishable only by
+// whether we are stopping, so that is what is asked.
+//
+// Both an explicit flag and the context are consulted, and the flag is the one
+// that does the work. Shutdown runs the clean-shutdown checkpoint at step 2 and
+// app.cancel() at step 4, so on the ordinary path ctx.Err() is still nil while
+// the barrier that raises these faults is running — the guard was inert on the
+// exact path it was written for. Only a SIGTERM-cancelled parent context
+// reached it. The context test stays because that case is real and arrives
+// without Shutdown having been entered.
 func (app *Application) Stall(jobID string, f *storagefault.Fault) {
-	if app.ctx != nil && app.ctx.Err() != nil {
+	if app.stopping.Load() || (app.ctx != nil && app.ctx.Err() != nil) {
 		// Not silent (A2): the condition is real, and the next run's resume
 		// sweep re-derives the job's state from disk regardless.
 		app.log.Warn("storage fault during shutdown; the job is not parked for it",
@@ -499,6 +507,40 @@ func (app *Application) restoreJobBytes(jobID string, n int64) {
 // produce. Deriving the set from job status instead would be a second
 // representation of the same fact, free to drift (S5).
 func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration) {
+	app.checkpointAllWithBudget(ctx, func(int) time.Duration { return perJob })
+}
+
+// checkpointAllShare runs a barrier for every job holding an open file, giving
+// each an EQUAL SHARE of one overall budget.
+//
+// This is the shutdown shape, and it exists because passing the same duration
+// as both the sweep's context and each job's budget does not do what it looks
+// like. context.WithTimeout cannot exceed its parent, so with a 10s sweep and a
+// 10s per-job budget, a first job taking 9s leaves every job behind it with an
+// already-expired context and an immediate failure — everything they had
+// downloaded since their last barrier is re-fetched on the next start, which is
+// the entire cost this checkpoint exists to avoid.
+//
+// The periodic sweep keeps a fixed per-job budget instead, deliberately: it has
+// no overall deadline to divide, and one job's slow mount must not shrink
+// every other job's budget on every tick.
+func (app *Application) checkpointAllShare(ctx context.Context, total time.Duration) {
+	app.checkpointAllWithBudget(ctx, func(jobs int) time.Duration {
+		return perJobShare(total, jobs)
+	})
+}
+
+// perJobShare divides one overall budget among the jobs a sweep will visit.
+func perJobShare(total time.Duration, jobs int) time.Duration {
+	if jobs <= 1 {
+		return total
+	}
+	return total / time.Duration(jobs)
+}
+
+// checkpointAllWithBudget is the shared loop. budget is asked once, after the
+// job list is known, so a policy can divide by it.
+func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func(jobs int) time.Duration) {
 	if app.barrier == nil {
 		return
 	}
@@ -507,6 +549,7 @@ func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration)
 		app.log.Warn("checkpoint skipped, could not list jobs with open files", "err", err)
 		return
 	}
+	perJob := budget(len(jobs))
 	for _, jobID := range jobs {
 		// Each job gets its own deadline, and that is what makes B4/R22 true
 		// on this path rather than merely stated.
@@ -527,6 +570,12 @@ func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration)
 		// would let one wedged job consume the budget of every job behind it —
 		// turning one bad mount into a queue-wide outage by a different route.
 		jobCtx, cancel := context.WithTimeout(ctx, perJob)
+		if app.jobCheckpointHook != nil {
+			// Test seam: the budget a job is actually given is otherwise
+			// unobservable, and it is the quantity the shutdown path got
+			// wrong.
+			app.jobCheckpointHook(jobCtx)
+		}
 		app.checkpointJob(jobCtx, jobID)
 		cancel()
 	}
@@ -823,12 +872,25 @@ func (app *Application) saveQueueIfDirty() {
 // deliberate restart, which is the cost B1 bounds for a crash and nobody
 // should pay for a clean stop.
 func (app *Application) shutdownCheckpoint() {
+	// Test seam. It exists because the ORDERING this function sits in is what
+	// several rules depend on — the process must already be marked stopping
+	// when the faults this raises are routed — and "true after Shutdown
+	// returns" holds under a store placed anywhere, including after the
+	// barrier it is meant to cover.
+	if app.checkpointHook != nil {
+		app.checkpointHook()
+	}
 	if app.barrier == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownCheckpointTimeout)
 	defer cancel()
-	app.checkpointAll(ctx, shutdownCheckpointTimeout)
+	// A SHARE of the budget each, not the whole of it. See checkpointAllShare:
+	// passing the same duration for both collapses the per-job isolation this
+	// function's own doc promises, and the jobs behind the first slow one pay
+	// exactly the re-fetch cost the paragraph above says nobody should pay for
+	// a clean stop.
+	app.checkpointAllShare(ctx, shutdownCheckpointTimeout)
 	app.saveQueueIfDirty()
 }
 

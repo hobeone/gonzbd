@@ -21,8 +21,10 @@ import (
 // deadline, and on a queue with many open files the fsyncs exceed it, so every
 // job it reaches raises a deadline-exceeded fault.
 //
-// The discriminator is the APPLICATION's context, not the error — see the
-// sibling test for why the error cannot serve.
+// The discriminator is whether the PROCESS is stopping, not the error — see
+// the sibling test for why the error cannot serve. This test drives the
+// context half; TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier drives
+// the flag, which is the half that covers Shutdown's own barrier.
 func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
