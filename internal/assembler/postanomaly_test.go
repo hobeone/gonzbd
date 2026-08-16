@@ -144,7 +144,11 @@ func TestArticleLabel(t *testing.T) {
 // routeFaulted trusts the flag, so a writer that set it on every record would
 // reinstate the repeated-overwrite behaviour with no test above noticing.
 func TestFileWriter_FirstCollisionMarksOnlyTheFirst(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(0))
+	// A cache large enough that no contiguous run forms, so each incumbent is
+	// still buffered and unwritten when the next arrives — the only shape that
+	// reaches failDisplaced at all. A written incumbent settles its offset and
+	// acceptArticle refuses the arrival instead.
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
 
 	for _, id := range []articleID{
 		{msgID: "a", artIdx: 1}, {msgID: "b", artIdx: 2}, {msgID: "c", artIdx: 3},

@@ -113,6 +113,14 @@ type FileWriter struct {
 	// owned by THIS article is a re-accept, not a collision. That is what
 	// makes the index safe without any removal.
 	//
+	// The index answers TWO questions, and they resolve opposite ways. Whether
+	// the owner has been reported Written decides which article loses:
+	// offsetSettledBy refuses the ARRIVAL when it has, because the incumbent's
+	// bytes already back a durable claim; Accept displaces the INCUMBENT when
+	// it has not, because a buffered article contradicts nothing. Only the
+	// second reaches failDisplaced, and acceptArticle has already refused
+	// everything the first covers before Accept is called.
+	//
 	// The occupancy form would have needed it. An article whose write faults
 	// is rolled back and re-dispatched, and comes back at the same offset —
 	// req.ArtIdx is the manifest index, so the redelivered articleID is
@@ -130,7 +138,7 @@ type FileWriter struct {
 	// one. Residency is the writer's, so this is per-open-episode — a
 	// collision spanning a close-handles cycle or a restart is invisible,
 	// exactly as seenDone's duplicate handling is.
-	acceptedAt map[int64]articleID
+	acceptedAt map[int64]offsetOwner
 
 	// postAnomalyReported latches once this file has raised a job-level
 	// warning about a collision. See faultedArticle.firstCollision.
@@ -221,6 +229,23 @@ type faultedArticle struct {
 	firstCollision bool
 }
 
+// offsetOwner is the article that owns one offset, and whether its bytes have
+// been reported Written.
+//
+// written is latched by noteWritten and is NEVER cleared, which is the whole
+// reason it lives here rather than being derived from w.written/w.reported.
+// Those two slices are the barrier's pending evidence: Confirm empties them
+// once the articles have been acked durable. An article that has been acked is
+// the strongest possible claim on its offset, and a claim derived from the
+// pending slices would read it as no claim at all — so a collision arriving
+// after a checkpoint would displace an article the queue has already recorded
+// as durably written. That is the same double-disposition defect one
+// checkpoint later, and the derived form cannot see it.
+type offsetOwner struct {
+	id      articleID
+	written bool
+}
+
 // newFileWriter wraps an already-open handle.
 func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *FileWriter {
 	w := &FileWriter{
@@ -230,7 +255,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 		wc:         wc,
 		seenDone:   make(map[string]struct{}),
 		seenFailed: make(map[string]struct{}),
-		acceptedAt: make(map[int64]articleID),
+		acceptedAt: make(map[int64]offsetOwner),
 	}
 	w.writeAt = handle.WriteAt
 	w.syncFile = handle.Sync
@@ -245,7 +270,17 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 // from below a successful writeAt. That is the structural half of S2: the
 // claim cannot be made from an accept path because no accept path can call
 // this.
+//
+// It also latches the offset's owner as written, which is what makes the
+// offset settled against a later article claiming it. Latched HERE for the
+// same reason the append is here: both assert "these bytes are the file's
+// content at this offset", and applying one without the other is the
+// derived-state split #375 was about.
 func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
+	if owner, taken := w.acceptedAt[off]; taken && owner.id == id {
+		owner.written = true
+		w.acceptedAt[off] = owner
+	}
 	w.written = append(w.written, durability.WrittenArticle{
 		FileIdx: int32(w.key.fileIdx), //nolint:gosec // G115: file counts are far below int32
 		ArtIdx:  id.artIdx,
@@ -276,6 +311,20 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // So it is resolved permanently failed instead, which is the same disposition
 // handleLateDuplicate reaches for an article that can never be written now or
 // later. See releaseFaulted.
+//
+// # Precondition: the incumbent must not have been reported Written
+//
+// This is only correct for an article that made no durability claim. One that
+// reached noteWritten is in w.written, or in w.reported after a Drain, or
+// already acked and gone from both after a Confirm — and in every one of those
+// the barrier will assert it durable. Rolling it back here as well gives one
+// article two terminal dispositions, and lets the displacer overwrite bytes
+// whose Class A fact names the incumbent's CRC at that offset, so a restart
+// verifies the range and cannot match it.
+//
+// acceptArticle enforces the precondition by refusing the ARRIVAL when the
+// offset is settled, so this is reached only from the cache-eviction case it
+// was written for. Do not add a caller without checking offsetSettledBy first.
 // It does NOT delegate to fail. It used to, and then reached back to
 // specialize the record fail had appended:
 //
@@ -303,9 +352,8 @@ func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 		displaced:      true,
 		offset:         off,
 		displacedBy:    by,
-		firstCollision: !w.postAnomalyReported,
+		firstCollision: w.notePostAnomaly(),
 	})
-	w.postAnomalyReported = true
 }
 
 // rollbackPart undoes the part and seen-set state an admitted article holds,
@@ -382,6 +430,48 @@ func (w *FileWriter) fail(id articleID) {
 // parts reports how many of the file's parts have been accounted for. The
 // caller compares it to FileInfo.TotalParts to decide the file is complete.
 func (w *FileWriter) parts() int { return w.partsWritten }
+
+// offsetSettledBy reports the article that owns off when that owner has
+// already made a durability claim, so the ARRIVING article must be refused
+// rather than allowed to displace it.
+//
+// This is the half of collision handling that failDisplaced cannot do. That
+// function was written when the only caller was the write cache's eviction,
+// where the incumbent was still buffered and had made no claim — its own doc
+// said so. Detecting the FLUSHED case (#383) falsified that precondition: the
+// incumbent may already be in w.written, or in w.reported after a Drain handed
+// it to the barrier.
+//
+// Failing it there gives one article two terminal dispositions at once —
+// routeFaulted resolves it permanently failed while the barrier still holds it
+// as evidence and acks it durable. And the ack would be a lie: the pipeline
+// appended a Class A fact naming this article's CRC at this offset when it
+// decoded, independent of any write, so letting the arrival overwrite the
+// range leaves a durable fact that a restart cannot verify.
+//
+// So an offset whose owner has been reported Written is SETTLED, and the later
+// article loses. That is the opposite of the cache-resident case, deliberately:
+// there the incumbent has no claim to protect, so the arrival wins and the
+// incumbent is rolled back.
+func (w *FileWriter) offsetSettledBy(off int64, arriving articleID) (articleID, bool) {
+	owner, taken := w.acceptedAt[off]
+	if !taken || owner.id == arriving || !owner.written {
+		return articleID{}, false
+	}
+	return owner.id, true
+}
+
+// notePostAnomaly reports whether this file has yet raised a job-level warning
+// about a collision, latching so it raises exactly one. See
+// faultedArticle.firstCollision, which is the same latch on the other
+// disposition.
+func (w *FileWriter) notePostAnomaly() bool {
+	if w.postAnomalyReported {
+		return false
+	}
+	w.postAnomalyReported = true
+	return true
+}
 
 // admitAccepted takes an article on as a part of this file, before its bytes
 // are handed to Accept.
@@ -521,11 +611,14 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	// cannot mean "nothing was failed" without silently skipping it below.
 	var alreadyFailed articleID
 	var didFail bool
-	if owner, taken := w.acceptedAt[off]; taken && owner != id {
-		w.failDisplaced(owner, off, id)
-		alreadyFailed, didFail = owner, true
+	// A settled offset never reaches here — acceptArticle refuses the arrival
+	// before calling Accept — so any incumbent found here has made no
+	// durability claim, and displacing it contradicts nothing.
+	if owner, taken := w.acceptedAt[off]; taken && owner.id != id {
+		w.failDisplaced(owner.id, off, id)
+		alreadyFailed, didFail = owner.id, true
 	}
-	w.acceptedAt[off] = id
+	w.acceptedAt[off] = offsetOwner{id: id}
 
 	art := bufferedArticle{offset: off, data: data, id: id}
 	if cached, displaced := w.wc.buffer(w.key, art); cached {
@@ -533,6 +626,14 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 		// An article displaced from this offset loses its bytes; nothing else
 		// will write them now. It has made no claim — it was never reported
 		// Written — so failing it here only corrects the seen-sets.
+		//
+		// That last clause is a PRECONDITION, not an observation, and it holds
+		// because acceptArticle refuses any arrival whose incumbent was
+		// written. It was silently false for one commit on this branch, when
+		// detection started covering the flushed case while this disposition
+		// still assumed the cache-eviction one: the incumbent was already in
+		// w.written, so rolling it back left one article both permanently
+		// failed and acked durable. See offsetSettledBy.
 		//
 		// The check above has already failed the incumbent in every case the
 		// cache can also see, so this loop is now a backstop rather than the

@@ -3,98 +3,336 @@ package assembler
 import (
 	"bytes"
 	"errors"
+	"os"
 	"testing"
 )
 
-// TestFileWriter_DuplicateOffsetAfterFlushIsDetected pins the case the write
-// cache's collision detection could not see (#383).
+// Offset collisions (#383, #379).
 //
-// writeCache.buffer used to be the only thing that noticed two articles
-// claiming one offset, and it noticed by finding the first still resident in
-// fb.articles. buildContiguousRun deletes each article it flushes and advances
-// fb.writeCursor past it, so for an IN-ORDER download — the ordinary case — the
-// first article is gone from the map long before a duplicate arrives.
+// Two articles claiming one byte offset resolve one of two ways, and WHICH
+// depends on whether the incumbent has been reported Written:
 //
-// The duplicate was then buffered, never picked up by a run (the cursor is
-// already past its offset), and written over the first at drain time. Nothing
-// was displaced, nothing rolled back, and BOTH articles stayed counted.
+//   - Incumbent written → the offset is SETTLED and the ARRIVAL is rejected.
+//     Its bytes are on disk, the pipeline has recorded a Class A fact naming
+//     its CRC at that offset, and the barrier will ack it durable. Letting a
+//     later article overwrite the range makes that fact unverifiable, and
+//     failing the incumbent as well would give one article two terminal
+//     dispositions. Checked in acceptArticle, refused like any other
+//     article-level rejection.
+//   - Incumbent still cached, unwritten → the INCUMBENT is displaced, which is
+//     what the write cache always did. It has made no claim, so nothing is
+//     contradicted.
 //
-// The bytes-on-disk outcome is NOT the defect: the arriving article winning the
-// offset is the deliberate disposition, here and on the cached path that always
-// worked, and whether it is the right one is #382's question. The defect is the
-// accounting — a file that reaches TotalParts while one part's bytes were
-// silently overwritten by another's, reporting a clean completion.
+// The tests below are split on that line, because the layer differs too: a
+// rejection is the assembler's to make and a displacement is the writer's.
+
+// --- Settled offsets: the arrival is rejected ------------------------------
+
+// collisionFixture drives two articles at one offset through the real accept
+// path and reports what came out.
+type collisionFixture struct {
+	a         *Assembler
+	f         *openFile
+	rejected  []int32
+	anomalies []string
+}
+
+func newCollisionFixture(t *testing.T, cacheBytes int64) *collisionFixture {
+	t.Helper()
+	c := &collisionFixture{a: newHelperAssembler()}
+	c.a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		c.rejected = append(c.rejected, artIdx)
+	}
+	c.a.opts.OnPostAnomaly = func(_ string, _ int, reason string) {
+		c.anomalies = append(c.anomalies, reason)
+	}
+	c.f = newHelperFile(t, t.TempDir(), "collide.dat", 1<<20)
+	c.f.info.TotalParts = 2
+	c.f.w.wc = newWriteCache(cacheBytes)
+	return c
+}
+
+func (c *collisionFixture) accept(artIdx int32, msgID string, off int64, data []byte) bool {
+	return c.a.handleSuccessArticle(c.f, WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+		Offset: off, Data: data,
+	})
+}
+
+// TestCollision_ArrivalRejectedOnceIncumbentIsWritten is the #383 pin, in the
+// case that made it: an IN-ORDER download, where the incumbent was flushed and
+// evicted from the write cache long before the duplicate arrived.
 //
-// So this drives admitAccepted, as handleSuccessArticle does, and asserts the
-// loser gives its part back.
-func TestFileWriter_DuplicateOffsetAfterFlushIsDetected(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(4<<20))
+// The old detector keyed on cache residency, so it saw nothing here: the
+// duplicate was buffered, never picked up by a run, and written over the first
+// at drain time. No detection, no roll-back, both counted, file completes.
+func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
+	c := newCollisionFixture(t, 4<<20)
 
-	first := articleID{msgID: "first", artIdx: 1}
-	second := articleID{msgID: "second", artIdx: 2}
-
-	// First article, large enough to form a contiguous run from the cursor and
-	// flush immediately. contiguousRunSize is 512 KiB.
-	w.admitAccepted(first.msgID)
-	payload := bytes.Repeat([]byte{'A'}, contiguousRunSize+1)
-	if err := w.Accept(first, 0, append([]byte(nil), payload...)); err != nil {
-		t.Fatalf("accept first: %v", err)
+	// Large enough to form a contiguous run from the cursor and flush at once.
+	big := bytes.Repeat([]byte{'A'}, contiguousRunSize+1)
+	if !c.accept(1, "<first@x>", 0, big) {
+		t.Fatal("precondition: the incumbent was not counted")
 	}
-
-	// Precondition: it really did flush and leave the cache, which is what made
-	// the duplicate below invisible to the old cache-membership check.
-	if w.wc.buffered(w.key, 0) {
-		t.Fatal("precondition: the first article is still cached, so this test " +
-			"would exercise the detected path instead of the undetected one")
+	if c.f.w.wc.buffered(c.f.w.key, 0) {
+		t.Fatal("precondition: the incumbent is still cached, so this exercises the " +
+			"displacement path instead of the settled one")
 	}
-	if got := w.parts(); got != 1 {
-		t.Fatalf("precondition: parts after first accept = %d, want 1", got)
+	if len(c.f.w.writtenSoFar()) == 0 {
+		t.Fatal("precondition: the incumbent was not reported Written")
 	}
 
-	// A second article claiming the same offset. In an in-order download this
-	// is exactly when a duplicate arrives: after its neighbour has been
-	// written.
-	w.admitAccepted(second.msgID)
-	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
-		t.Fatalf("accept second: %v", err)
+	counted := c.accept(2, "<second@x>", 0, []byte("BBBB"))
+
+	if !counted {
+		t.Error("the rejected arrival was not counted toward the file's part total; it " +
+			"is resolved permanently failed and never arrives again, so the file could " +
+			"never reach TotalParts")
+	}
+	if len(c.rejected) != 1 || c.rejected[0] != 2 {
+		t.Errorf("OnArticleRejected = %v, want [2] — the ARRIVAL loses a settled offset",
+			c.rejected)
+	}
+	if got := c.f.w.takeFaulted(); len(got) != 0 {
+		t.Errorf("the written incumbent was rolled back as well as remaining in the "+
+			"barrier's evidence: %+v — one article, two terminal dispositions", got)
+	}
+	if len(c.anomalies) != 1 {
+		t.Errorf("OnPostAnomaly fired %d times, want 1 — the collision is still the "+
+			"thing the user has to be told about", len(c.anomalies))
 	}
 
-	rolled := w.takeFaulted()
-	if len(rolled) != 1 {
-		t.Fatalf("the duplicate offset was not detected: got %d rolled-back articles, want 1 — "+
-			"neither article is resolved and the file completes with one part's bytes "+
-			"overwritten by the other", len(rolled))
+	// The incumbent's bytes are still the truth at that offset, which is what
+	// keeps its Class A fact verifiable after a restart.
+	if _, err := c.f.w.Drain(); err != nil {
+		t.Fatalf("drain: %v", err)
 	}
-	if rolled[0].id != first {
-		t.Errorf("rolled back %+v, want the displaced incumbent %+v", rolled[0].id, first)
+	onDisk, err := os.ReadFile(c.f.w.path)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
 	}
-	if !rolled[0].displaced {
-		t.Error("the rolled-back article is not marked displaced, so routeFaulted will " +
-			"return it to Outstanding and the re-fetched copy will displace its displacer")
-	}
-
-	// The accounting consequence, which is what makes the silent case corrupt:
-	// two articles admitted, one displaced, so exactly one part is held.
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d, want 1: both articles are still counted, so the file "+
-			"can reach TotalParts with only one part's bytes on disk", got)
+	if len(onDisk) == 0 || onDisk[0] != 'A' {
+		t.Error("the rejected article's bytes were written anyway, so the fact log's " +
+			"CRC for the incumbent no longer describes the range it names")
 	}
 }
 
-// TestFileWriter_DuplicateOffsetDetectedWithCachingDisabled covers the second
-// path the cache-membership check could not see: write_cache_size has no
-// validation floor and accepts zero, and Accept then routes every article to
-// writeOne without the cache being consulted at all.
-func TestFileWriter_DuplicateOffsetDetectedWithCachingDisabled(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(0))
+// TestCollision_ArrivalRejectedWithCachingDisabled covers the second path the
+// old cache-membership check could not see. writeCache.enabled() is limit > 0
+// and downloads.write_cache_size has no validation floor, so zero disables the
+// cache and every article goes straight to writeOne.
+func TestCollision_ArrivalRejectedWithCachingDisabled(t *testing.T) {
+	c := newCollisionFixture(t, 0)
+
+	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
+		t.Fatal("precondition: the incumbent was not counted")
+	}
+	c.accept(2, "<second@x>", 0, []byte("BBBB"))
+
+	if len(c.rejected) != 1 || c.rejected[0] != 2 {
+		t.Errorf("OnArticleRejected = %v, want [2] — with caching disabled the old "+
+			"detector was never consulted at all", c.rejected)
+	}
+	if got := c.f.w.takeFaulted(); len(got) != 0 {
+		t.Errorf("the written incumbent was rolled back: %+v", got)
+	}
+}
+
+// TestCollision_ArrivalRejectedForZeroLengthIncumbent covers the third path.
+// writeCache.buffer refuses a zero-length article and returns (false, nil), so
+// it took writeOne with no collision considered — even with caching enabled.
+func TestCollision_ArrivalRejectedForZeroLengthIncumbent(t *testing.T) {
+	c := newCollisionFixture(t, 4<<20)
+
+	if !c.accept(1, "<empty@x>", 0, nil) {
+		t.Fatal("precondition: the zero-length incumbent was not counted")
+	}
+	c.accept(2, "<second@x>", 0, []byte("BBBB"))
+
+	if len(c.rejected) != 1 || c.rejected[0] != 2 {
+		t.Errorf("OnArticleRejected = %v, want [2] — a zero-length incumbent still "+
+			"reached WriteAt and still owns its offset", c.rejected)
+	}
+}
+
+// TestCollision_OffsetStaysSettledAfterConfirm is the reason the written flag
+// is latched on the offset rather than derived from the barrier's pending
+// evidence.
+//
+// w.written and w.reported are what the barrier has NOT yet finished with;
+// Confirm empties both once the articles are acked durable. An article that
+// has been acked holds the strongest possible claim on its offset, but a check
+// that scanned those slices would see an empty set and read it as no claim —
+// so a collision arriving one checkpoint later would displace an article the
+// queue has already recorded as durably written.
+func TestCollision_OffsetStaysSettledAfterConfirm(t *testing.T) {
+	c := newCollisionFixture(t, 0)
+
+	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
+		t.Fatal("precondition: the incumbent was not counted")
+	}
+	// Complete a full barrier cycle, which is what empties the evidence.
+	if _, err := c.f.w.Drain(); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	c.f.w.Confirm()
+	if len(c.f.w.writtenSoFar()) != 0 || len(c.f.w.unconfirmed()) != 0 {
+		t.Fatalf("precondition: the barrier's evidence is not empty (written=%d "+
+			"reported=%d), so this test cannot distinguish a latched claim from a "+
+			"derived one", len(c.f.w.writtenSoFar()), len(c.f.w.unconfirmed()))
+	}
+
+	c.accept(2, "<second@x>", 0, []byte("BBBB"))
+
+	if len(c.rejected) != 1 || c.rejected[0] != 2 {
+		t.Errorf("OnArticleRejected = %v, want [2] — after Confirm the incumbent has "+
+			"been ACKED durable, and displacing it now contradicts a fact the queue "+
+			"has already recorded", c.rejected)
+	}
+	if got := c.f.w.takeFaulted(); len(got) != 0 {
+		t.Errorf("an already-acked article was rolled back: %+v", got)
+	}
+}
+
+// TestCollision_CachedIncumbentIsDisplacedNotRejected pins the OTHER side of
+// the settled test, through the same path, which is what makes either of them
+// mean anything.
+//
+// The two dispositions are chosen by one condition, and a check that ignored
+// it would still satisfy every settled-offset assertion above by rejecting
+// everything. This is the test that fails when it does: an incumbent still
+// buffered has made no claim, so the arrival must WIN and the incumbent must
+// be rolled back.
+func TestCollision_CachedIncumbentIsDisplacedNotRejected(t *testing.T) {
+	c := newCollisionFixture(t, 1<<20)
+
+	// Small enough that no contiguous run forms, so it stays buffered.
+	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
+		t.Fatal("precondition: the incumbent was not counted")
+	}
+	if len(c.f.w.writtenSoFar()) != 0 {
+		t.Fatal("precondition: the incumbent was reported Written, so this exercises " +
+			"the settled path and cannot discriminate the condition")
+	}
+
+	if !c.accept(2, "<second@x>", 0, []byte("BBBB")) {
+		t.Error("the arriving article was not counted")
+	}
+
+	// The incumbent loses, and it loses by DISPLACEMENT — a faulted record —
+	// not by the arrival being refused.
+	if len(c.rejected) != 0 {
+		t.Errorf("OnArticleRejected = %v, want none at accept time: an unwritten "+
+			"incumbent contradicts nothing, so refusing the arrival here would fail "+
+			"a healthy article and leave stale bytes owning the offset", c.rejected)
+	}
+	rolled := c.f.w.takeFaulted()
+	if len(rolled) != 1 || rolled[0].id.artIdx != 1 || !rolled[0].displaced {
+		t.Fatalf("faulted = %+v, want the incumbent (artIdx 1) marked displaced", rolled)
+	}
+}
+
+// TestFileWriter_OffsetSettledBy covers the predicate that chooses between the
+// two dispositions, directly, including the two ways it must answer "no".
+func TestFileWriter_OffsetSettledBy(t *testing.T) {
+	owner := articleID{msgID: "owner", artIdx: 1}
+	arriving := articleID{msgID: "arriving", artIdx: 2}
+
+	tests := []struct {
+		name        string
+		seed        func(w *FileWriter)
+		arriving    articleID
+		wantSettled bool
+	}{
+		{
+			name:        "an unclaimed offset is not settled",
+			seed:        func(*FileWriter) {},
+			arriving:    arriving,
+			wantSettled: false,
+		},
+		{
+			name: "an offset whose owner is only buffered is not settled",
+			seed: func(w *FileWriter) {
+				w.acceptedAt[0] = offsetOwner{id: owner}
+			},
+			arriving:    arriving,
+			wantSettled: false,
+		},
+		{
+			name: "an offset whose owner was written is settled",
+			seed: func(w *FileWriter) {
+				w.acceptedAt[0] = offsetOwner{id: owner, written: true}
+			},
+			arriving:    arriving,
+			wantSettled: true,
+		},
+		{
+			name: "the owner does not settle the offset against ITSELF",
+			seed: func(w *FileWriter) {
+				w.acceptedAt[0] = offsetOwner{id: owner, written: true}
+			},
+			// A redelivery of the same article must not be refused as if it
+			// were a stranger; handleSuccessArticle's dedup normally catches
+			// it first, but an article with no Message-ID cannot be deduped.
+			arriving:    owner,
+			wantSettled: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newTestFileWriter(t)
+			tc.seed(w)
+
+			got, settled := w.offsetSettledBy(0, tc.arriving)
+
+			if settled != tc.wantSettled {
+				t.Fatalf("settled = %v, want %v", settled, tc.wantSettled)
+			}
+			if settled && got != owner {
+				t.Errorf("owner = %+v, want %+v — the caller names it in the warning",
+					got, owner)
+			}
+		})
+	}
+}
+
+// TestFileWriter_NotePostAnomalyLatches pins the latch both dispositions share,
+// so a file raises one job-level warning however its collisions resolve.
+func TestFileWriter_NotePostAnomalyLatches(t *testing.T) {
+	w := newTestFileWriter(t)
+
+	if !w.notePostAnomaly() {
+		t.Fatal("the first collision on a file did not claim the warning, so none is raised")
+	}
+	if w.notePostAnomaly() {
+		t.Error("a second collision claimed the warning again, which is what overwrites " +
+			"job.Warning once per colliding segment")
+	}
+}
+
+// --- Unsettled offsets: the cached incumbent is displaced ------------------
+
+// TestFileWriter_CachedIncumbentIsDisplaced pins the other half. An incumbent
+// still sitting in the write cache has made no claim — it was never reported
+// Written — so the arrival wins and the incumbent is rolled back, which is
+// what the cache's own eviction always did.
+func TestFileWriter_CachedIncumbentIsDisplaced(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
 
 	first := articleID{msgID: "first", artIdx: 1}
 	second := articleID{msgID: "second", artIdx: 2}
 
+	// Small enough that no contiguous run forms, so it stays buffered.
 	w.admitAccepted(first.msgID)
 	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("accept first: %v", err)
 	}
+	if len(w.writtenSoFar()) != 0 {
+		t.Fatal("precondition: the incumbent was reported Written, so this exercises " +
+			"the settled path instead of the displacement one")
+	}
+
 	w.admitAccepted(second.msgID)
 	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
 		t.Fatalf("accept second: %v", err)
@@ -102,11 +340,15 @@ func TestFileWriter_DuplicateOffsetDetectedWithCachingDisabled(t *testing.T) {
 
 	rolled := w.takeFaulted()
 	if len(rolled) != 1 || rolled[0].id != first {
-		t.Fatalf("collision undetected with caching disabled: rolled back %+v, want just %+v",
-			rolled, first)
+		t.Fatalf("rolled back %+v, want just the displaced incumbent %+v", rolled, first)
+	}
+	if !rolled[0].displaced {
+		t.Error("the entry is not marked displaced, so routeFaulted returns it to " +
+			"Outstanding and the re-fetched copy displaces its displacer — observed " +
+			"as a ping-pong that never settles")
 	}
 	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d, want 1", got)
+		t.Errorf("parts = %d, want 1: two articles admitted, one displaced", got)
 	}
 }
 
@@ -122,7 +364,6 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	w := newTestFileWriter(t, withCacheBytes(0))
 	id := articleID{msgID: "retried", artIdx: 7}
 
-	// First attempt: the write fails, so the article is rolled back.
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admitAccepted(id.msgID)
 	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
@@ -144,51 +385,19 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	}
 }
 
-// TestFileWriter_DuplicateOffsetDetectedForZeroLengthArticle covers the third
-// path the cache-membership check could not see. writeCache.buffer refuses a
-// zero-length article and returns (false, nil), so it took the writeOne path
-// with no collision ever considered — even with caching fully enabled.
-func TestFileWriter_DuplicateOffsetDetectedForZeroLengthArticle(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(4<<20))
-
-	first := articleID{msgID: "empty-payload", artIdx: 1}
-	second := articleID{msgID: "real-payload", artIdx: 2}
-
-	w.admitAccepted(first.msgID)
-	if err := w.Accept(first, 0, nil); err != nil {
-		t.Fatalf("accept zero-length: %v", err)
-	}
-	w.admitAccepted(second.msgID)
-	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
-		t.Fatalf("accept second: %v", err)
-	}
-
-	rolled := w.takeFaulted()
-	if len(rolled) != 1 || rolled[0].id != first {
-		t.Fatalf("collision undetected for a zero-length incumbent: rolled back %+v, want just %+v",
-			rolled, first)
-	}
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d, want 1", got)
-	}
-}
-
 // TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected pins that detection
 // survives its own disposition.
 //
 // This is the ordering hazard an occupancy-plus-removal design would have hit:
-// record the arrival as the new owner, then call failDisplaced on the
-// incumbent, and the incumbent's rollback deletes the entry just written — so
-// the THIRD article at that offset finds it free and goes undetected, which is
-// the original bug reintroduced one article later. Identity comparison never
-// removes, so each arrival displaces exactly the previous owner.
+// record the arrival as the new owner, then roll the incumbent back, and the
+// rollback deletes the entry just written — so the THIRD article at that
+// offset finds it free and goes undetected, which is the original bug
+// reintroduced one article later. Identity comparison never removes.
 func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(0))
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
 
 	ids := []articleID{
-		{msgID: "a", artIdx: 1},
-		{msgID: "b", artIdx: 2},
-		{msgID: "c", artIdx: 3},
+		{msgID: "a", artIdx: 1}, {msgID: "b", artIdx: 2}, {msgID: "c", artIdx: 3},
 	}
 	for _, id := range ids {
 		w.admitAccepted(id.msgID)
@@ -216,7 +425,7 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 }
 
 // TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack pins the accounting
-// hole in failDisplaced's post-hoc patch-up.
+// hole in failDisplaced's former post-hoc patch-up.
 //
 // An article with no Message-ID is admitted and counted like any other —
 // admitAccepted counts unconditionally, because no map can hold it — but fail
@@ -228,10 +437,9 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 //
 // giveBackUntrackedPart is the only path that can un-admit an untracked
 // article, and it is reachable only from routeAcceptFailure — not from
-// displacement. Unit 1 is what makes this reachable: it turns collisions from
-// timing-dependent into reliably detected.
+// displacement.
 func TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(0))
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
 
 	// Two DISTINCT articles, neither carrying a Message-ID. They differ by
 	// artIdx, which is what lets identity comparison tell them apart at all.

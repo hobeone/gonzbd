@@ -1375,6 +1375,28 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		f.w.failPermanent(id)
 		return &rejectedArticleError{reason: reason}
 	}
+	// An offset whose owner has already been reported Written is settled, and
+	// the ARRIVING article is the one refused. See FileWriter.offsetSettledBy
+	// for why the loser is chosen this way round rather than by arrival order.
+	//
+	// Checked here rather than inside Accept so the refusal travels the same
+	// route as the out-of-range one above — Accept's contract is that its error
+	// always reports STORAGE failing, and this reports the article.
+	if owner, settled := f.w.offsetSettledBy(req.Offset, id); settled {
+		if req.Data != nil {
+			a.releaseBuffer(req.Data)
+		}
+		f.w.failPermanent(id)
+		rej := &rejectedArticleError{
+			reason: "claims a byte offset already written by another article",
+		}
+		if f.w.notePostAnomaly() {
+			rej.anomaly = postAnomalyReason(f.info.Path, faultedArticle{
+				id: id, offset: req.Offset, displacedBy: owner,
+			})
+		}
+		return rej
+	}
 	return f.w.Accept(id, req.Offset, req.Data)
 }
 
@@ -1385,7 +1407,18 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 // It returns an error rather than a bool because acceptArticle's other failure
 // is already an error, and a rejection that returned nil was counted as a
 // successful part — see handleSuccessArticle.
-type rejectedArticleError struct{ reason string }
+type rejectedArticleError struct {
+	reason string
+
+	// anomaly, when non-empty, is a job-level description of a structural
+	// fault in what the servers served — currently only an offset collision.
+	//
+	// It rides on the rejection because the two are one event seen at two
+	// scales: reason resolves THIS article, anomaly explains the shape of the
+	// fault once per file. Empty for an out-of-range offset, which is a
+	// property of one article rather than of the post.
+	anomaly string
+}
 
 func (e *rejectedArticleError) Error() string {
 	return "assembler: article rejected: " + e.reason
@@ -1406,6 +1439,10 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 			"path", f.info.Path, "reason", rej.reason)
 		if a.opts.OnArticleRejected != nil {
 			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason)
+		}
+		// Paired with the per-article report above, not an alternative to it.
+		if rej.anomaly != "" && a.opts.OnPostAnomaly != nil {
+			a.opts.OnPostAnomaly(req.JobID, req.FileIdx, rej.anomaly)
 		}
 		return true
 	}

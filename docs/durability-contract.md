@@ -941,27 +941,45 @@ including every failure path.
   necessary but **not sufficient** to leave the article Outstanding: its
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
-- An article **displaced** from an offset a later one claimed loses its bytes.
-  It made no claim — it was never reported Written — so failing it corrects the
-  writer's own accounting and nothing durable. It gives its part back, is
-  resolved *permanently failed* rather than returned to Outstanding (re-fetching
-  it reproduces the collision), and its bytes are charged to the job's par2
-  recovery budget.
+- **Two articles claiming one offset** resolve one of two ways, and which one
+  depends on whether the incumbent has been reported Written. Detection lives in
+  `FileWriter.acceptedAt`, an offset→owner index recorded in `Accept`, and a
+  collision is decided by **identity**: an offset already owned by the same
+  article is a re-accept after a rollback, not a collision.
 
-  Detection lives in `FileWriter.acceptedAt`, an offset→owner index consulted in
-  `Accept`, and a collision is decided by **identity**: an offset already owned
-  by the same article is a re-accept after a rollback, not a collision. It used
-  to live in `writeCache.buffer` and keyed on cache residency, which missed the
-  ordinary in-order case entirely — the first article was flushed and evicted
-  before its duplicate arrived, so both were counted and the file completed with
-  one part's bytes overwritten (#383). Detection is per-open-episode, the same
-  residency as `seenDone`.
+  Detection used to live in `writeCache.buffer` and keyed on cache residency,
+  which missed the ordinary in-order case entirely — the first article was
+  flushed and evicted before its duplicate arrived, so both were counted and the
+  file completed with one part's bytes overwritten (#383). Detection is
+  per-open-episode, the same residency as `seenDone`.
 
-  The first collision on a file also raises `Options.OnPostAnomaly`, which the
-  app routes to `job.Warning`. That is diagnosis, not accounting: it states that
-  two segments claim one byte range without asserting the post is malformed,
-  because a redundant posting and a server-mangled `=ypart begin=` produce the
-  same observation and yEnc checksums the payload, never the header.
+  - **Incumbent written → the offset is SETTLED and the ARRIVAL is rejected**
+    (`offsetSettledBy`, checked in `acceptArticle`). Its bytes back a durable
+    claim: the pipeline recorded a Class A fact naming its CRC at that offset,
+    and the barrier will ack it. Letting a later article overwrite the range
+    makes that fact unverifiable on restart, and failing the incumbent as well
+    would give one article two terminal dispositions — permanently failed *and*
+    acked durable. The arrival is resolved permanently failed, keeps its part
+    (it will never arrive again), and its bytes are charged to par2.
+
+    The `written` flag is **latched on the offset**, not derived from
+    `w.written`/`w.reported`. `Confirm` empties both once the articles are
+    acked, and an acked article holds the strongest claim there is — a derived
+    check would read the empty set as *no* claim and displace it one checkpoint
+    later.
+
+  - **Incumbent still buffered → the INCUMBENT is displaced**, which is what the
+    write cache always did. It made no claim, so failing it corrects the
+    writer's own accounting and nothing durable. It gives its part back and is
+    resolved *permanently failed* rather than returned to Outstanding —
+    re-fetching it reproduces the collision, observed as a ping-pong that never
+    settles.
+
+  Either way the first collision on a file raises `Options.OnPostAnomaly`, which
+  the app routes to `job.Warning`. That is diagnosis, not accounting: it states
+  that two segments claim one byte range without asserting the post is
+  malformed, because a redundant posting and a server-mangled `=ypart begin=`
+  produce the same observation and yEnc checksums the payload, never the header.
 - **Cross-state dedup**: a Message-ID previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
