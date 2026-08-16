@@ -311,6 +311,57 @@ func TestFileWriter_NotePostAnomalyLatches(t *testing.T) {
 	}
 }
 
+// TestCollision_ReacceptDoesNotUnsettleAWrittenOffset pins that the written
+// latch survives a re-accept by its own owner.
+//
+// Accept records the arrival as the offset's owner unconditionally. For an
+// article that has already been written, re-recording it as a fresh owner
+// resets `written` to false and UNSETTLES the offset — after which the next
+// article to claim it is no longer refused, and displaces an article whose
+// bytes the barrier has already acked. That is the double-disposition defect
+// again, reached through the one article kind that can re-enter Accept at all.
+//
+// Only an article with no Message-ID can: handleSuccessArticle's dedup arms
+// key on seenDone/seenFailed, and admitAccepted records nothing for an empty
+// key, so a second delivery runs the whole accept path.
+func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
+	c := newCollisionFixture(t, 4<<20)
+
+	// An untracked article, large enough to flush at once, so it is written.
+	if !c.accept(1, "", 0, bytes.Repeat([]byte{'A'}, contiguousRunSize+1)) {
+		t.Fatal("precondition: the incumbent was not counted")
+	}
+	if owner := c.f.w.acceptedAt[0]; !owner.written {
+		t.Fatal("precondition: the incumbent was not latched as written")
+	}
+
+	// The SAME article delivered again, small enough to sit in the cache
+	// rather than write through. Nothing should change about who owns the
+	// offset or whether their bytes have landed.
+	//
+	// A re-accept that writes immediately re-latches the flag in noteWritten
+	// and hides the defect, which is why this half has to stay buffered.
+	c.accept(1, "", 0, []byte("AAAA"))
+
+	if owner := c.f.w.acceptedAt[0]; !owner.written {
+		t.Error("a re-accept by the offset's own owner cleared the written latch, " +
+			"unsettling an offset whose bytes are already durable")
+	}
+
+	// The consequence: a genuinely different article must still be refused.
+	c.accept(2, "", 0, []byte("BBBB"))
+
+	if len(c.rejected) != 1 || c.rejected[0] != 2 {
+		t.Errorf("OnArticleRejected = %v, want [2] — the offset was unsettled by the "+
+			"re-accept, so the arrival displaced an article the barrier has acked",
+			c.rejected)
+	}
+	if got := c.f.w.takeFaulted(); len(got) != 0 {
+		t.Errorf("an already-written article was rolled back: %+v — permanently "+
+			"failed and acked durable at once", got)
+	}
+}
+
 // --- Unsettled offsets: the cached incumbent is displaced ------------------
 
 // TestFileWriter_CachedIncumbentIsDisplaced pins the other half. An incumbent

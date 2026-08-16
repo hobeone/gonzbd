@@ -232,8 +232,15 @@ type faultedArticle struct {
 // offsetOwner is the article that owns one offset, and whether its bytes have
 // been reported Written.
 //
-// written is latched by noteWritten and is NEVER cleared, which is the whole
-// reason it lives here rather than being derived from w.written/w.reported.
+// written is latched by noteWritten and is never cleared while the entry
+// survives, which is the whole reason it lives here rather than being derived
+// from w.written/w.reported.
+//
+// "While the entry survives" is the load-bearing qualifier, and it was missing
+// when this comment was first written: Accept re-recorded the arrival as owner
+// unconditionally, so a re-accept by the owner ITSELF replaced the entry with a
+// fresh one and dropped the latch. Accept now rewrites the entry only when the
+// owner actually changes.
 // Those two slices are the barrier's pending evidence: Confirm empties them
 // once the articles have been acked durable. An article that has been acked is
 // the strongest possible claim on its offset, and a claim derived from the
@@ -614,11 +621,25 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	// A settled offset never reaches here — acceptArticle refuses the arrival
 	// before calling Accept — so any incumbent found here has made no
 	// durability claim, and displacing it contradicts nothing.
-	if owner, taken := w.acceptedAt[off]; taken && owner.id != id {
+	owner, taken := w.acceptedAt[off]
+	if taken && owner.id != id {
 		w.failDisplaced(owner.id, off, id)
 		alreadyFailed, didFail = owner.id, true
 	}
-	w.acceptedAt[off] = offsetOwner{id: id}
+	// A re-accept by the offset's OWN owner keeps the entry it already has,
+	// written latch included. Rewriting it unconditionally reset written to
+	// false and unsettled an offset whose bytes were already durable, after
+	// which the next article to claim it was no longer refused and displaced
+	// an article the barrier had acked — the double disposition again.
+	//
+	// Only an untracked article reaches this: handleSuccessArticle's dedup
+	// arms key on seenDone/seenFailed, and admitAccepted records nothing for
+	// an empty Message-ID, so a second delivery runs the whole accept path.
+	// A re-accept that writes through immediately hid the defect by
+	// re-latching in noteWritten; one that lands in the cache did not.
+	if !taken || owner.id != id {
+		w.acceptedAt[off] = offsetOwner{id: id}
+	}
 
 	art := bufferedArticle{offset: off, data: data, id: id}
 	if cached, displaced := w.wc.buffer(w.key, art); cached {
