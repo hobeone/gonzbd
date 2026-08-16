@@ -1,10 +1,11 @@
 name: CI
 
+# Manual-dispatch only. This workflow does NOT run automatically on push or
+# pull_request. Every gate below is run locally before each push, where it is
+# substantially faster than a runner; see the "Continuous Integration" section
+# of AGENTS.md for the rationale and for how to trigger a run deliberately.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: read

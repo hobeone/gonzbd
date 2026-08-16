@@ -336,10 +336,13 @@ go run ./scripts/check_review_banner    # docs/reviews/*.md frozen-record banner
 | `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory, the marker must start the comment line, and a reason that wraps onto a second line must be closed by a blank `//` unless the marker is the block's last line — an unclosed wrapped reason is a hard exit-2 error, because guessing where it ends silently suppresses the finding on the *other* copy. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
 | `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
 
-Both run in CI as of this change. They were absent from `.github/workflows/ci.yml`
-while the three diff-scoped gates above were present, which is how a defect in
-`check_dup_comments`' own marker handling survived in the tree: nothing on the
-server ever ran the tool that would have caught it.
+Both are part of `ci.yml`, but `ci.yml` no longer runs automatically (see
+"Continuous Integration" below) — so in practice both run only when you run
+them locally, which is exactly what the block above is for. They were once
+absent from `ci.yml` entirely while the three diff-scoped gates were present,
+which is how a defect in `check_dup_comments`' own marker handling survived in
+the tree: nothing ever ran the tool that would have caught it. That failure
+mode now depends on the local block being run, not on a server.
 
 Neither is diff-scoped, so both can fail on a file you did not touch. Both found
 a real defect on their first run against this repository: a package doc comment
@@ -419,7 +422,7 @@ test) moved to [`docs/config-contract.md`](docs/config-contract.md).
 
 ## Git Conventions
 
-- **Branch**: **never commit directly to `main`. All work lands via pull request**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and both `.github/workflows/ci.yml` and `.github/workflows/security.yml` already trigger on `pull_request` — pushing straight to `main` skips review entirely and runs CI only after the fact, when it is too late to be a gate.
+- **Branch**: **work lands via pull request by default**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and `.github/workflows/security.yml` triggers on `pull_request` — pushing straight to `main` skips review entirely and runs the security scan only after the fact, when it is too late to be a gate. (`ci.yml` no longer triggers on `pull_request`; see "Continuous Integration" below.) A direct push to `main` requires the user to say so for that specific change — their standing preference is still the PR route.
 - **This is a convention, not an enforced gate.** There is no GitHub branch protection configured for this repository, so nothing on the server will reject a direct push to `main`. It holds because we follow it. Do not read "the push succeeded" as "the push was allowed."
 - **Worktrees**: for multi-step efforts, work in an isolated **git worktree** off `main`, then open a PR from that branch. Note a fresh worktree cannot build until you supply the UI bundle — `ui/dist/*` is gitignored, so `//go:embed all:dist` in `ui/embed.go` fails and `internal/web` reports `[setup failed]`. This is a worktree artifact, not a broken change:
   ```bash
@@ -445,6 +448,43 @@ These rules exist because a batch of refactor commits violated them — the cost
 - **One logical change per commit — verify, don't assume.** When several edits accumulate in the working tree, do not `git add -A` and split by timing. Stage per logical unit (`git add <paths>`) and confirm each commit contains only that unit. Two unrelated extractions (e.g. an assembler refactor and an api/config helper) must be two commits.
 - **Quantitative claims in commit bodies MUST be measured, not estimated.** If you write "drops cyclomatic complexity from 24 to <5," you must have run the tool (`gocyclo`/`gocognit`) on the result. An extraction reduces the *parent's* complexity by construction, but the magnitude is not guessable — a real case dropped 24→12, not the claimed <5. State the measured number or omit the claim.
 - **Re-run `golangci-lint` on the final diff, not a mental model of it.** Refactors that convert control flow (e.g. fall-through `return` into boolean returns) can introduce *new* lint findings (`S1008`, `ifElseChain`) that did not exist in the original. The gate must be run against the code you are about to commit.
+
+## Continuous Integration
+
+**`ci.yml` is intentionally disabled and this is not a misconfiguration.** It
+triggers on `workflow_dispatch` only — nothing runs automatically on push or on
+pull request. Every gate it contains is run locally before each push (see
+"Quality Gates" above), where the full suite completes in a fraction of the
+runner's wall-clock time.
+
+What this means in practice, for agents and humans alike:
+
+- **Do not wait for CI, poll for checks, or run `/watch-ci` on this repo.** A
+  PR whose only check is Security Scan is in the expected state.
+- **A PR with no CI run is not broken, not stuck, and not missing a step.** Do
+  not investigate it, do not re-push to "trigger" it, and do not ask whether it
+  is safe to proceed — it is.
+- **The gates did not go away, only the server did.** The local block under
+  "Quality Gates" is now the *only* thing standing between a defect and `main`,
+  which raises rather than lowers the cost of skipping it. `go test -race ./...`
+  and the whole-repo checks (`check_dup_comments`, `check_review_banner`) have
+  no other enforcement point.
+- **`security.yml` still triggers on `push` and `pull_request`**, plus a weekly
+  cron. It is unaffected by any of the above, and a failure there is real.
+
+To run CI deliberately — worth doing before a release, or when a change touches
+build tags, the workflow files, or anything whose local and runner behaviour
+could plausibly differ:
+
+```bash
+gh workflow run ci.yml --ref <branch>   # dispatch a manual run
+gh run list --workflow=ci.yml --limit 5 # find it
+gh run watch <run-id>                   # follow it
+```
+
+To restore automatic runs, replace the `on:` block in
+`.github/workflows/ci.yml` with the `push`/`pull_request` triggers recorded in
+this file's git history, and delete this section.
 
 ## Reading Python for Reference
 
