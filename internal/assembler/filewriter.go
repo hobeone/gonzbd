@@ -610,10 +610,38 @@ func (w *FileWriter) Truncate(n int64) error {
 	return nil
 }
 
-// Close releases the handle.
-func (w *FileWriter) Close() error {
+// Close releases the handle, and hands back any articles that were rolled back
+// and never routed.
+//
+// # Why the set is a return value
+//
+// Close is the writer's last act: everything it holds is unreachable
+// afterwards, w.faulted included. An article left in that set is neither Done,
+// nor Failed, nor Outstanding — its Emitted bit is still set from dispatch and
+// ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
+// life of the process and only a restart's ClearAllEmitted recovers it.
+//
+// The set is empty at both call sites today, and provably so: every producer
+// of w.faulted is drained before the worker returns to its select loop. This
+// return value does not fix a leak. It converts that emptiness from a property
+// that has to be re-argued across the whole file into one the compiler
+// restates at each call site — the same reason takeFaulted is a take and not a
+// read. A caller that adds a new path into Close now has to say what happens
+// to the articles, instead of silently dropping them.
+//
+// Taken rather than read, on takeFaulted's terms: each set must be routed
+// exactly once, and reporting one twice would clear an Emitted bit a later
+// dispatch had legitimately set.
+//
+// The error is unchanged and still reports STORAGE. A non-empty set is a
+// defect in this package, not a condition of the volume, so it is deliberately
+// not folded into the error: drainAndClose classifies that error into the
+// barrier's fault handling, and a bug reported as a storage fault would stall
+// a job over a healthy disk.
+func (w *FileWriter) Close() ([]faultedArticle, error) {
+	leaked := w.takeFaulted()
 	if err := w.closeFile(); err != nil {
-		return storagefault.Classify("close", w.path, err)
+		return leaked, storagefault.Classify("close", w.path, err)
 	}
-	return nil
+	return leaked, nil
 }

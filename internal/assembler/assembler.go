@@ -736,7 +736,25 @@ func (a *Assembler) dispatchRequest(
 			if k.jobID != cancelID {
 				continue
 			}
-			_ = f.w.Close() //nolint:errcheck // best-effort; file is immediately removed
+			// The close error is genuinely best-effort here — the file is
+			// removed on the next line — but the faulted set is not the same
+			// kind of thing, so it is reported rather than discarded silently.
+			//
+			// Dropped, not routed. The job is being torn down: its files are
+			// deleted below, its cache forgotten, and RemoveJob removes it
+			// from the queue next. Returning these articles to Outstanding
+			// would re-dispatch work for a job that is going away.
+			//
+			// The set is empty on every reachable path — see FileWriter.Close
+			// — so this branch is a tripwire, not a handler. If it ever fires,
+			// a producer has been added that the worker does not drain.
+			leaked, _ := f.w.Close() //nolint:errcheck // best-effort; file is immediately removed
+			if len(leaked) > 0 {
+				a.log.Error("articles were rolled back and never routed before a "+
+					"cancelled job's file was closed; they keep their Emitted bit and "+
+					"will not be re-dispatched until a restart",
+					"job", k.jobID, "fileidx", k.fileIdx, "articles", len(leaked))
+			}
 			if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
 				a.log.Warn("failed to remove cancelled file",
 					"path", f.info.Path, "error", err)
@@ -904,7 +922,22 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 	// A failing Close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
-	note("close file", f.w.Close())
+	//
+	// The faulted set it returns is separate from that error and is expected
+	// to be empty: the releaseFaulted above drained it, and neither Sync nor
+	// Close can add to it. Routed anyway rather than dropped — unlike the
+	// cancel path, this file is being closed normally and its articles are
+	// still wanted — and reported at Error, because a non-empty set here means
+	// a producer has appeared that nothing drains.
+	leaked, cerr := f.w.Close()
+	note("close file", cerr)
+	if len(leaked) > 0 {
+		a.log.Error("articles were rolled back and never routed before the file was "+
+			"closed; routing them now, but a producer of the faulted set is not being "+
+			"drained",
+			"path", f.info.Path, "articles", len(leaked))
+		a.routeFaulted(leaked, key.jobID, key.fileIdx)
+	}
 
 	if permanent != nil {
 		return permanent
@@ -1380,7 +1413,16 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 // by code that did not, which is the arrangement every count defect in this
 // area came out of.
 func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
-	rolled := f.w.takeFaulted()
+	a.routeFaulted(f.w.takeFaulted(), jobID, fileIdx)
+}
+
+// routeFaulted disposes of one already-taken set of rolled-back articles.
+//
+// Split from releaseFaulted so Close's return value has somewhere to go. It
+// takes no *openFile deliberately: there is nothing left for it to do to the
+// file, because the parts were given back when the articles were rolled back.
+// Anything it could reach for would be state it does not own.
+func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx int) {
 	if len(rolled) == 0 {
 		return
 	}
