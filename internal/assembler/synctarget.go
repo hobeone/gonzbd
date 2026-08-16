@@ -520,7 +520,20 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 		case opTruncate:
 			r.err = f.w.Truncate(op.bound)
 		case opClose:
-			a.drainAndClose(f)
+			// Answered, not swallowed. This arm used to leave r.err nil, so
+			// CloseFile reported success for a close whose Drain, Sync or
+			// Close had failed and both callers carried on — the file marked
+			// complete and fed to DirectUnpack and post-processing while its
+			// bytes were not all on disk. opDrain, opSync and opTruncate all
+			// answer their caller; this one now does too.
+			//
+			// The callers still only LOG it, deliberately. By the time the
+			// barrier closes a file it has drained, synced, truncated,
+			// committed the extent and acked the articles, so a fault from
+			// this redundant second fsync is post-hoc: acting on it would race
+			// the completion it is part of. Reporting it is what makes it
+			// visible; deciding what it means belongs to the caller.
+			r.err = a.drainAndClose(f)
 			delete(open, key)
 			wc.forget(key)
 		case opFiles, opJobs:

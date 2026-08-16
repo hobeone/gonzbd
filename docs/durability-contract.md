@@ -622,6 +622,24 @@ The sequence is:
                           └─ DirectUnpack handoff
 ```
 
+**`CloseFile` now answers, and the answer is logged rather than acted on.** Its
+`opClose` arm used to leave the reply error `nil`, so a close whose `Drain`,
+`Sync` or `Close` had failed reported success and the file was marked complete
+and fed to DirectUnpack and post-processing with bytes that were not all on
+disk. It reports the failure now — preferring a permanent errno over the first
+one, so an `ENOSPC` drain followed by an `EROFS` close is not described as a
+condition that waiting can clear.
+
+Both callers still only log it, deliberately. By the time this runs the barrier
+has drained, synced, truncated, committed the extent and acked the articles, so
+a fault from the redundant second fsync is post-hoc: acting on it would race the
+completion it is part of, and on a permanent errno would carry a
+100%-complete, fully acked job into history as failed. The close-time fault is
+also **not** routed to `Stallable` from inside the assembler — it carries no
+`ErrFaultRouted` marker, so routing it would park the job a second time for a
+condition the barrier had already routed, and on the `CloseJobHandles` path it
+would arrive at `StatusVerifying`, which neither `Stall` nor `Fail` can act on.
+
 **A failed finalize stops the completion.** The file is not marked complete,
 DirectUnpack is not fed it, and the job does not finalize — because none of those
 can be undone once done, while a stalled job can be resumed by an operator who
