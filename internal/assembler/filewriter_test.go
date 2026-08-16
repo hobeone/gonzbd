@@ -310,7 +310,12 @@ func TestFileWriter_NoteWrittenCarriesTheArticlesOwnRange(t *testing.T) {
 // but not counted, leaving the file's part total permanently short.
 func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
-	w.seenDone["a9"] = struct{}{}
+	// Admitted rather than inserted into seenDone by hand, so the article
+	// actually holds the part the roll-back below has to give back.
+	w.admitAccepted("a9")
+	if w.parts() != 1 {
+		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
+	}
 
 	if err := w.writeOne(bufferedArticle{offset: 0, data: []byte("xy"), id: articleID{msgID: "a9", artIdx: 9}}); err == nil {
 		t.Fatal("writeOne returned nil after EIO")
@@ -326,9 +331,14 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 		t.Fatalf("takeFaulted() = %v, want a9 — an article nobody is told about keeps "+
 			"its Emitted bit and is never re-dispatched", rolled)
 	}
-	if !rolled[0].uncount {
-		t.Error("a9 was accepted and counted, so the roll-back must give its count " +
-			"back; otherwise the file reaches TotalParts over bytes that are not there")
+	// Asserted on the counter rather than on a flag describing what someone
+	// else ought to do to it. The roll-back applies the give-back itself, and
+	// this is the observation that pins it: nothing has drained w.faulted, and
+	// the part is already gone.
+	if got := w.parts(); got != 0 {
+		t.Errorf("parts() = %d after the roll-back, want 0 — a9 was accepted and "+
+			"counted, so the roll-back must give its count back; otherwise the file "+
+			"reaches TotalParts over bytes that are not there", got)
 	}
 	if got := w.takeFaulted(); len(got) != 0 {
 		t.Errorf("takeFaulted() returned %v a second time; routing an article twice "+

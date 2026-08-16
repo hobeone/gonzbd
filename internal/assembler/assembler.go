@@ -240,18 +240,23 @@ type fileKey struct {
 //
 // It is now bookkeeping only: the file's handle, its cache and every byte that
 // moves belong to its FileWriter. What is left here is what the WORKER needs
-// to route a request — where the file's writer is, how many of its parts have
-// arrived, and what it was told about the file.
+// to route a request — where the file's writer is, and what it was told about
+// the file.
 //
 // maxWritten, crcParts and crcValid are gone. Each was a fact the assembler
 // maintained about bytes on disk in order to truncate or to report a CRC, and
 // both of those decisions moved to durability.Barrier, which is the only
 // component that knows whether an fsync has happened. Keeping a shadow copy
 // here is exactly the second-writer shape S5 forbids.
+//
+// partsWritten went the same way, for the same reason at a smaller scale. It
+// is derived from the writer's seenDone and seenFailed sets, and holding it
+// here made every mutation a synchronisation obligation between two structs
+// that nothing enforced. It now lives on FileWriter and is read through
+// parts().
 type openFile struct {
-	w            *FileWriter
-	info         FileInfo
-	partsWritten int
+	w    *FileWriter
+	info FileInfo
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -731,7 +736,37 @@ func (a *Assembler) dispatchRequest(
 			if k.jobID != cancelID {
 				continue
 			}
-			_ = f.w.Close() //nolint:errcheck // best-effort; file is immediately removed
+			// The close error is genuinely best-effort here — the file is
+			// removed on the next line — but the faulted set is not the same
+			// kind of thing, so it is reported rather than discarded silently.
+			//
+			// Dropped, not routed. The job is being torn down: its files are
+			// deleted below, its cache forgotten, and RemoveJob ordinarily
+			// removes it from the queue next. Returning these articles to
+			// Outstanding would re-dispatch work for a job that is going away.
+			//
+			// "Ordinarily" is exact rather than hedging. RemoveJob can return
+			// early when the queue's store delete fails, leaving the job
+			// resident with its files already gone (#376), so the teardown
+			// this drop assumes is not unconditional. It holds anyway only
+			// because the set is empty — see below — which is why this is a
+			// tripwire and not a disposition anyone should rely on.
+			//
+			// The set is empty on every reachable path — see FileWriter.Close
+			// — so this branch is a tripwire, not a handler. If it ever fires,
+			// a producer has been added that the worker does not drain.
+			leaked, _ := f.w.Close()
+			if len(leaked) > 0 {
+				// The indices, not just a count. This arm DROPS the set, so
+				// this line is the only record left of which articles were
+				// stranded — a count names nothing an operator or a bug report
+				// could act on.
+				a.log.Error("articles were rolled back and never routed before a "+
+					"cancelled job's file was closed; they keep their Emitted bit and "+
+					"will not be re-dispatched until a restart",
+					"job", k.jobID, "fileidx", k.fileIdx,
+					"articles", len(leaked), "artidxs", faultedIndices(leaked))
+			}
 			if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
 				a.log.Warn("failed to remove cancelled file",
 					"path", f.info.Path, "error", err)
@@ -839,9 +874,13 @@ func (a *Assembler) dispatchRequest(
 //
 // A failed Drain rolls back everything after the failing write into w.faulted,
 // and takeFaulted is its only consumer. Without the releaseFaulted below that
-// set died with the writer: those articles kept their Emitted bits AND their
-// place in partsWritten, so the file sat closer to TotalParts with nothing
-// behind them. Not Done, not Failed, not Outstanding.
+// set died with the writer, and those articles kept their Emitted bits: not
+// Done, not Failed, not Outstanding.
+//
+// They no longer keep their place in partsWritten as well — FileWriter.fail
+// gives the part back as it rolls the article back — so what is lost by
+// skipping the release is the routing alone. That is still the half that
+// strands an article for the life of the process.
 //
 // # Why the fault is REPORTED and not ROUTED
 //
@@ -895,7 +934,22 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 	// A failing Close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
-	note("close file", f.w.Close())
+	//
+	// The faulted set it returns is separate from that error and is expected
+	// to be empty: the releaseFaulted above drained it, and neither Sync nor
+	// Close can add to it. Routed anyway rather than dropped — unlike the
+	// cancel path, this file is being closed normally and its articles are
+	// still wanted — and reported at Error, because a non-empty set here means
+	// a producer has appeared that nothing drains.
+	leaked, cerr := f.w.Close()
+	note("close file", cerr)
+	if len(leaked) > 0 {
+		a.log.Error("articles were rolled back and never routed before the file was "+
+			"closed; routing them now, but a producer of the faulted set is not being "+
+			"drained",
+			"path", f.info.Path, "articles", len(leaked), "artidxs", faultedIndices(leaked))
+		a.routeFaulted(leaked, key.jobID, key.fileIdx)
+	}
 
 	if permanent != nil {
 		return permanent
@@ -970,13 +1024,14 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 
 	// admitted reports whether the article was taken on as a part of this
-	// file. The COUNT is no longer applied here — see handleSuccessArticle —
-	// because a count applied after the write could be rolled back by that
-	// write's own failure, and w.fail derives its uncount flag from seenDone.
-	// The two were set at different moments, so uncount reversed a count that
-	// had not been applied yet: every transient accept-time write fault
-	// undercounted the file by one, permanently, and partsWritten >=
-	// TotalParts became unreachable.
+	// file. The COUNT is not applied here — it belongs to FileWriter, applied
+	// by admitAccepted and admitPermanentFailure in the same breath as the
+	// seen-set record it is derived from. A count applied here, after the
+	// write, could be rolled back by that write's own failure: w.fail decides
+	// the give-back from seenDone membership, so the two were set at different
+	// moments and the rollback reversed a count that had not been applied yet.
+	// Every transient accept-time write fault undercounted the file by one,
+	// permanently, and partsWritten >= TotalParts became unreachable.
 	var admitted bool
 	if req.FatalErr != nil {
 		if admitted = a.handleFatalArticle(f, req); admitted && req.Data != nil {
@@ -997,8 +1052,8 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	// THE drain, and the reason it is one call on every path rather than one
 	// per producer.
 	//
-	// The invariant is "w.faulted is empty when partsWritten is compared to
-	// TotalParts", and a release scattered across each producer does not
+	// The invariant is "w.faulted is empty when the file's ROUTING is
+	// complete", and a release scattered across each producer does not
 	// establish it — it only establishes that each producer eventually gets
 	// drained by somebody. Three defects lived in that gap: the seenFailed
 	// retry arm returned without draining, so a displaced article's rollback
@@ -1010,17 +1065,24 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	// whose bytes were pooled and never written, firing OnFileComplete at
 	// 100% reported health over a hole.
 	//
-	// It runs before the comparison and after relievePressure, which is the
-	// only ordering that holds for all of them.
+	// Two of those three were about the COUNT, and the count no longer depends
+	// on this call: FileWriter.fail gives the part back as it rolls the
+	// article back, so the comparison below is correct whether or not anything
+	// has been drained. What still depends on it is the ROUTING — an article
+	// left in w.faulted is neither Done, nor Failed, nor Outstanding — which
+	// is why the call stays unconditional rather than becoming best-effort.
 	a.releaseFaulted(f, req.JobID, req.FileIdx)
 	if !admitted {
 		return
 	}
+	// Read once, so the count the log reports is provably the count the
+	// comparison below decided on.
+	parts := f.w.parts()
 	a.log.Debug("processed part",
 		"job", req.JobID, "fileidx", req.FileIdx,
-		"part", f.partsWritten, "total", f.info.TotalParts,
+		"part", parts, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
-	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
+	if f.info.TotalParts > 0 && parts >= f.info.TotalParts {
 		a.finalizeFile(f, key, req, completed)
 	}
 }
@@ -1040,13 +1102,21 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 //
 // # The article that is owed something
 //
-// partsWritten is incremented when an article is ACCEPTED and is never
-// decremented, while FileWriter.fail clears an article from seenDone when its
-// coalesced run fails to write. An article can therefore be counted toward
-// TotalParts and then un-done, letting other articles carry the file to
-// completion while it holds no state anywhere. The write fault cleared its
-// Emitted bit, the downloader re-dispatched it, and the copy that comes back
-// arrives here.
+// An article can reach here holding no state at all: absent from seenDone,
+// absent from seenFailed, and holding no part. FileWriter.fail puts it in
+// exactly that condition — it clears the seenDone entry and gives the part
+// back together — for every article a coalesced run, a drain or a cache
+// displacement rolled back. The rollback returned it to Outstanding, the
+// downloader re-dispatched it, and the copy that comes back arrives after its
+// file was tombstoned.
+//
+// An earlier version of this paragraph derived the same conclusion from
+// "partsWritten is incremented when an article is ACCEPTED and is never
+// decremented". That premise was already false when it was written — the
+// give-back existed, in releaseFaulted — and it is comprehensively false now.
+// The conclusion survives the correction because it never depended on the
+// count: what strands the article is the absence of a RECORD, not the presence
+// of a part.
 //
 // Dropping that one strands it: not written, not acked, not failed, and
 // Emitted again from the re-dispatch — which ForEachUnfinishedArticle skips,
@@ -1178,30 +1248,15 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 //
 // It records no ack. A permanent failure is the queue's to record via
 // AckPermanentFailure (R10), and this package no longer has an ack path in
-// either direction. What is left here is the dedup that keeps partsWritten
-// from overshooting TotalParts, which is purely local bookkeeping.
+// either direction. The dedup that keeps partsWritten from overshooting
+// TotalParts is purely local bookkeeping, and it lives on the writer with the
+// seen-sets it reads and the counter it moves — see admitPermanentFailure.
 //
 // Returns false when the article must not be counted again.
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
 		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-	w := f.w
-	if _, dup := w.seenFailed[req.MessageID]; dup {
-		return false
-	}
-	_, alreadyCounted := w.seenDone[req.MessageID]
-	w.seenFailed[req.MessageID] = struct{}{}
-	// An article already counted as a success must not increment the part
-	// total a second time. The ack asymmetry that used to make this branch
-	// delicate is gone with the acks themselves.
-	if alreadyCounted {
-		return false
-	}
-	// Counted here rather than by the caller, for the reason
-	// handleSuccessArticle gives: the count and the record it is derived from
-	// have to move together.
-	f.partsWritten++
-	return true
+	return f.w.admitPermanentFailure(req.MessageID)
 }
 
 // handleSuccessArticle hands one article's bytes to the file's writer.
@@ -1230,30 +1285,20 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			// A retry of an article already counted as failed. The false
 			// return keeps partsWritten from counting it twice; the bytes are
 			// still written, because they are still the file's content.
-			w.seenDone[req.MessageID] = struct{}{}
+			w.admitRetryOfFailed(req.MessageID)
 			if err := a.acceptArticle(f, id, req); err != nil {
 				a.routeAcceptFailure(f, req, err)
 			}
 			return false
 		}
-		// Recorded before the write is attempted, not after, so a write path
-		// that fails can move the article to seenFailed without this function
-		// putting it straight back.
-		w.seenDone[req.MessageID] = struct{}{}
 	}
-	// Counted in the same breath as the seenDone record above, and that
-	// pairing is the whole fix. w.fail sets uncount from seenDone membership,
-	// so seenDone is the de facto record of "this article holds a part".
-	// While the increment lived in processRequest — after the accept —
-	// uncount reversed a count that had not been applied, so every transient
-	// accept-time write fault undercounted the file by one, permanently, and
-	// partsWritten >= TotalParts became unreachable.
-	//
-	// Outside the block, because an article with no message ID is admitted
-	// too. The writer does not track those — w.fail and noteWritten both
-	// return early on an empty ID — so they are counted here and given back
-	// by routeAcceptFailure, which is the only path that can un-admit one.
-	f.partsWritten++
+	// Recorded before the write is attempted, not after, so a write path that
+	// fails can move the article to seenFailed without this function putting
+	// it straight back — and recorded in the same breath as the count, which
+	// is what admitAccepted exists to make inseparable. Its doc carries the
+	// reasoning, including why an article with no Message-ID is counted
+	// without being recorded.
+	w.admitAccepted(req.MessageID)
 	if err := a.acceptArticle(f, id, req); err != nil {
 		// Whether it still counts depends on WHICH failure it was, and that is
 		// the A1 split reaching the part total.
@@ -1347,8 +1392,8 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 	// Only on THIS branch. A rejected article keeps its part deliberately —
 	// it is resolved permanently failed and will never arrive again, so a
 	// file declining to count it waits forever.
-	if req.MessageID == "" && f.partsWritten > 0 {
-		f.partsWritten--
+	if req.MessageID == "" {
+		f.w.giveBackUntrackedPart()
 	}
 	// Released here as well as by processRequest's drain. This one is not
 	// redundant belt-and-braces: it keeps the roll-back adjacent to the
@@ -1372,21 +1417,32 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 // drain, and Accept's displaced-article loop, which rolls an article back on a
 // path where nothing failed at all.
 //
-// Un-counting matters as much as the routing. partsWritten is incremented when
-// an article is ACCEPTED, so a rolled-back article leaves the file one part
-// closer to TotalParts with nothing on disk behind it — and a later article
-// can then take it to completion, firing OnFileComplete over bytes that never
-// reached WriteAt while the job's reported health stays at 100%.
+// Un-counting is NOT part of this. FileWriter.fail gives the part back as it
+// rolls the article back, in the same statement pair that removes it from
+// seenDone, so by the time the set arrives here every count is already
+// correct. This function's whole remaining job is disposition: back to
+// Outstanding, or resolved permanently failed.
+//
+// It used to do both, driven by a stored uncount flag on each faultedArticle.
+// That flag was derived from seen-set membership the writer owned and applied
+// by code that did not, which is the arrangement every count defect in this
+// area came out of.
 func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
-	rolled := f.w.takeFaulted()
+	a.routeFaulted(f.w.takeFaulted(), jobID, fileIdx)
+}
+
+// routeFaulted disposes of one already-taken set of rolled-back articles.
+//
+// Split from releaseFaulted so Close's return value has somewhere to go. It
+// takes no *openFile deliberately: there is nothing left for it to do to the
+// file, because the parts were given back when the articles were rolled back.
+// Anything it could reach for would be state it does not own.
+func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx int) {
 	if len(rolled) == 0 {
 		return
 	}
 	arts := make([]int32, 0, len(rolled))
 	for _, r := range rolled {
-		if r.uncount && f.partsWritten > 0 {
-			f.partsWritten--
-		}
 		if r.displaced {
 			// Resolved, not re-fetched. Returning it to Outstanding produced a
 			// ping-pong: the re-fetched copy displaces the article that
@@ -1403,6 +1459,22 @@ func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
 		arts = append(arts, r.id.artIdx)
 	}
 	a.noteArticlesUnwritten(jobID, fileIdx, arts)
+}
+
+// faultedIndices lists the article indices in a rolled-back set, for the two
+// tripwire logs at the Close call sites.
+//
+// It exists because those two lines used to report a COUNT. On the cancel path
+// the set is dropped, so the log is the only record that survives it, and
+// "articles=3" names nothing anyone could act on — not the articles, and not
+// the producer that must have been added for the set to be non-empty at all.
+// The disposition is unchanged either way; this only makes the report legible.
+func faultedIndices(rolled []faultedArticle) []int32 {
+	out := make([]int32, len(rolled))
+	for i, r := range rolled {
+		out[i] = r.id.artIdx
+	}
+	return out
 }
 
 // noteArticlesUnwritten hands one set of un-written articles to their owner.
@@ -1625,13 +1697,15 @@ func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) 
 				// the write failed on. The rest were never attempted and
 				// their buffers are gone, so they are just as un-written.
 				//
-				// This used to run one line before processRequest's
-				// increment, so it decremented for the article being
-				// processed — which had not been counted yet — and the
-				// increment put it straight back, leaving the file a part
-				// ahead of its bytes and able to fire OnFileComplete over a
-				// hole. The count now happens in handleSuccessArticle,
-				// before this runs, so the decrement is exact.
+				// This call used to carry the decrements as well, and ran one
+				// line before processRequest's increment — so it decremented
+				// for the article being processed, which had not been counted
+				// yet, and the increment put it straight back, leaving the
+				// file a part ahead of its bytes and able to fire
+				// OnFileComplete over a hole. The decrements moved into
+				// w.fail above, which applies each one against the seenDone
+				// entry it is derived from, so no ordering between this call
+				// and any increment can reproduce it.
 				a.releaseFaulted(f, key.jobID, key.fileIdx)
 				// Routed, and the flush stops. Logging each failure and
 				// carrying on wrote every remaining article into the same

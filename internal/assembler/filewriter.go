@@ -98,6 +98,23 @@ type FileWriter struct {
 	// caller to route to Outstanding. See fail.
 	faulted []faultedArticle
 
+	// partsWritten counts how many of the file's parts have been accounted
+	// for, whether by a successful accept or by a permanent failure.
+	//
+	// It lives here rather than on openFile because it is DERIVED from
+	// seenDone and seenFailed — it is their combined size, plus the articles
+	// with no Message-ID that neither map can hold. Kept one struct away from
+	// its source and maintained by four external call sites, every defect it
+	// produced was the same one: the count and the record moved at different
+	// moments, and something in between observed the disagreement.
+	//
+	// Recomputing it on demand would be O(n) per article, so it stays a cached
+	// aggregate. What changes is that only this file may move it, and each
+	// mover applies a complete transition — admitAccepted, admitRetryOfFailed,
+	// admitPermanentFailure, fail, giveBackUntrackedPart — so a partial
+	// application is not expressible rather than merely not written.
+	partsWritten int
+
 	// writeAt is handle.WriteAt in production. Tests override it before first
 	// use to inject storage faults, mirroring how diskProbe.statfs is
 	// overridden. Never reassigned after the writer is in service, so the
@@ -126,8 +143,15 @@ type FileWriter struct {
 	closeFile func() error
 }
 
-// faultedArticle is one article a failed write rolled back, and whether it
-// still counts toward its file's part total.
+// faultedArticle is one article a failed write rolled back, and how the caller
+// must dispose of it.
+//
+// It used to carry an uncount flag as well, reporting whether the article's
+// part had to be given back. That flag was itself derived state stored one
+// struct away from its source — the answer is exactly "was it in seenDone and
+// not in seenFailed", which fail already knows at the moment it appends here.
+// fail now applies the give-back directly and the flag is gone, so there is no
+// window in which the two can disagree.
 //
 //nolint:govet // field order follows the doc's narrative, not alignment
 type faultedArticle struct {
@@ -135,9 +159,6 @@ type faultedArticle struct {
 	// out of the cache, rather than one a write failed on. See failDisplaced.
 	displaced bool
 	id        articleID
-	// uncount reports that this article's count must be given back. See fail
-	// for the case where it must not.
-	uncount bool
 }
 
 // newFileWriter wraps an already-open handle.
@@ -181,6 +202,26 @@ func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.writt
 // confirmed. Used by tests to assert the report survives a failed Sync.
 func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
 
+// failDisplaced rolls back an article a LATER article displaced from the same
+// offset, which is a different disposition from a write that failed.
+//
+// Its bytes are gone and nothing will write them, so it has to give its part
+// back like any rollback. But it must not be returned to Outstanding: the
+// collision is a property of what the server sent — two segments claiming one
+// offset — so re-fetching it produces the same collision, and the re-fetched
+// copy displaces the article that displaced it. Observed as a [0 1 0 1 0]
+// ping-pong when this went through the un-written path.
+//
+// So it is resolved permanently failed instead, which is the same disposition
+// handleLateDuplicate reaches for an article that can never be written now or
+// later. See releaseFaulted.
+func (w *FileWriter) failDisplaced(id articleID) {
+	w.fail(id)
+	if n := len(w.faulted); n > 0 && w.faulted[n-1].id == id {
+		w.faulted[n-1].displaced = true
+	}
+}
+
 // fail rolls one article back to never-having-arrived, and records it so the
 // caller can return it to Outstanding.
 //
@@ -207,26 +248,17 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // write that failed, a cache displacement loses whatever it evicted — and the
 // caller was given only one article index to route. So the set is accumulated
 // here and taken by the caller, rather than inferred from an error.
-// failDisplaced rolls back an article a LATER article displaced from the same
-// offset, which is a different disposition from a write that failed.
 //
-// Its bytes are gone and nothing will write them, so it has to give its part
-// back like any rollback. But it must not be returned to Outstanding: the
-// collision is a property of what the server sent — two segments claiming one
-// offset — so re-fetching it produces the same collision, and the re-fetched
-// copy displaces the article that displaced it. Observed as a [0 1 0 1 0]
-// ping-pong when this went through the un-written path.
+// # It gives the part back itself
 //
-// So it is resolved permanently failed instead, which is the same disposition
-// handleLateDuplicate reaches for an article that can never be written now or
-// later. See releaseFaulted.
-func (w *FileWriter) failDisplaced(id articleID) {
-	w.fail(id)
-	if n := len(w.faulted); n > 0 && w.faulted[n-1].id == id {
-		w.faulted[n-1].displaced = true
-	}
-}
-
+// The give-back used to live in Assembler.releaseFaulted, one struct away from
+// the seenDone entry it is derived from, carried across by a stored uncount
+// flag. Both moved here: the delete and the decrement are now one statement
+// pair, so an article cannot lose its seenDone record while keeping its part.
+//
+// The rollback is exempt from the count's own > 0 clamp by construction rather
+// than by luck. An article only loses a part if it held one, which means it
+// was in seenDone and not in seenFailed, which means partsWritten counted it.
 func (w *FileWriter) fail(id articleID) {
 	if id.msgID == "" {
 		return
@@ -234,14 +266,104 @@ func (w *FileWriter) fail(id articleID) {
 	_, wasDone := w.seenDone[id.msgID]
 	_, wasFailed := w.seenFailed[id.msgID]
 	delete(w.seenDone, id.msgID)
-	w.faulted = append(w.faulted, faultedArticle{
-		id: id,
-		// An article already counted as permanently FAILED keeps its count:
-		// handleFatalArticle counted it, and a later retry whose write fails
-		// must not decrement what a different code path added. Only an
-		// article counted as WRITTEN loses its count here.
-		uncount: wasDone && !wasFailed,
-	})
+	// An article already counted as permanently FAILED keeps its count:
+	// admitPermanentFailure counted it, and a later retry whose write fails
+	// must not decrement what a different code path added. Only an article
+	// counted as WRITTEN loses its count here.
+	if wasDone && !wasFailed && w.partsWritten > 0 {
+		w.partsWritten--
+	}
+	w.faulted = append(w.faulted, faultedArticle{id: id})
+}
+
+// parts reports how many of the file's parts have been accounted for. The
+// caller compares it to FileInfo.TotalParts to decide the file is complete.
+func (w *FileWriter) parts() int { return w.partsWritten }
+
+// admitAccepted takes an article on as a part of this file, before its bytes
+// are handed to Accept.
+//
+// The seenDone record and the count are applied together, and that pairing is
+// the point of the method. fail decides whether to give a part back by asking
+// whether the article is in seenDone, so seenDone is the de facto record of
+// "this article holds a part". While the two lived at separate call sites the
+// count could be applied after a write that had already rolled it back, and
+// every transient accept-time write fault undercounted the file by one,
+// permanently, putting partsWritten >= TotalParts out of reach.
+//
+// The count is unconditional while the record is not. An article with no
+// Message-ID is admitted like any other, but no map can hold it — fail and
+// noteWritten both return early on an empty ID — so it is counted here and
+// given back by giveBackUntrackedPart, which is the only path that can
+// un-admit one.
+func (w *FileWriter) admitAccepted(msgID string) {
+	if msgID != "" {
+		w.seenDone[msgID] = struct{}{}
+	}
+	w.partsWritten++
+}
+
+// admitRetryOfFailed records a redelivery of an article already counted as
+// permanently failed, WITHOUT counting it again.
+//
+// Its bytes are still written, because they are still the file's content, but
+// the part was charged when the article was failed and charging it twice would
+// carry the file past TotalParts.
+//
+// The caller owns the precondition that msgID is non-empty, and unlike
+// admitAccepted this does not re-check it. Its only call site reaches it from
+// inside a non-empty-ID branch, and an empty key here would be worse than a
+// no-op: nothing in the package can remove a seenDone[""] entry — fail and
+// noteWritten both return early on an empty ID — so it would be permanent, and
+// every later article with no Message-ID would take the duplicate branch
+// against it.
+func (w *FileWriter) admitRetryOfFailed(msgID string) {
+	w.seenDone[msgID] = struct{}{}
+}
+
+// admitPermanentFailure counts a permanently failed article toward the file's
+// part total, and reports whether it was newly admitted.
+//
+// It records no ack. A permanent failure is the queue's to record via
+// AckPermanentFailure (R10). What is left here is the dedup that keeps
+// partsWritten from overshooting TotalParts, which is purely local
+// bookkeeping.
+//
+// The empty Message-ID is deliberately NOT guarded, unlike its two siblings
+// fail and failPermanent. seenFailed[""] is written and deduped on like any
+// other key, so the first article with no Message-ID is counted and every
+// later one is refused as a duplicate. That is what the call site did before
+// this method existed. Adding the reflexive `if msgID == "" { return false }`
+// that its siblings carry would stop counting such articles altogether and put
+// partsWritten >= TotalParts permanently out of reach — the failure this whole
+// change exists to make unreachable. Whether the dedup-on-"" behaviour is
+// itself right is a separate question; this preserves it exactly.
+func (w *FileWriter) admitPermanentFailure(msgID string) bool {
+	if _, dup := w.seenFailed[msgID]; dup {
+		return false
+	}
+	_, alreadyCounted := w.seenDone[msgID]
+	w.seenFailed[msgID] = struct{}{}
+	// An article already counted as a success must not increment the part
+	// total a second time.
+	if alreadyCounted {
+		return false
+	}
+	w.partsWritten++
+	return true
+}
+
+// giveBackUntrackedPart returns the part held by an article the writer does not
+// track — one with no Message-ID.
+//
+// Such an article cannot be rolled back by fail, which returns early on an
+// empty ID, so nothing appends it to w.faulted and no releaseFaulted will ever
+// see it. It was counted by admitAccepted like any other, so the count is
+// given back here instead.
+func (w *FileWriter) giveBackUntrackedPart() {
+	if w.partsWritten > 0 {
+		w.partsWritten--
+	}
 }
 
 // failPermanent records an article this package will never write, keeping its
@@ -496,10 +618,38 @@ func (w *FileWriter) Truncate(n int64) error {
 	return nil
 }
 
-// Close releases the handle.
-func (w *FileWriter) Close() error {
+// Close releases the handle, and hands back any articles that were rolled back
+// and never routed.
+//
+// # Why the set is a return value
+//
+// Close is the writer's last act: everything it holds is unreachable
+// afterwards, w.faulted included. An article left in that set is neither Done,
+// nor Failed, nor Outstanding — its Emitted bit is still set from dispatch and
+// ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
+// life of the process and only a restart's ClearAllEmitted recovers it.
+//
+// The set is empty at both call sites today, and provably so: every producer
+// of w.faulted is drained before the worker returns to its select loop. This
+// return value does not fix a leak. It converts that emptiness from a property
+// that has to be re-argued across the whole file into one the compiler
+// restates at each call site — the same reason takeFaulted is a take and not a
+// read. A caller that adds a new path into Close now has to say what happens
+// to the articles, instead of silently dropping them.
+//
+// Taken rather than read, on takeFaulted's terms: each set must be routed
+// exactly once, and reporting one twice would clear an Emitted bit a later
+// dispatch had legitimately set.
+//
+// The error is unchanged and still reports STORAGE. A non-empty set is a
+// defect in this package, not a condition of the volume, so it is deliberately
+// not folded into the error: drainAndClose classifies that error into the
+// barrier's fault handling, and a bug reported as a storage fault would stall
+// a job over a healthy disk.
+func (w *FileWriter) Close() ([]faultedArticle, error) {
+	leaked := w.takeFaulted()
 	if err := w.closeFile(); err != nil {
-		return storagefault.Classify("close", w.path, err)
+		return leaked, storagefault.Classify("close", w.path, err)
 	}
-	return nil
+	return leaked, nil
 }

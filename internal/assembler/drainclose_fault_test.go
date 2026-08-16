@@ -49,9 +49,9 @@ func TestDrainAndClose_ReturnsTheRolledBackArticles(t *testing.T) {
 		t.Errorf("rolled-back articles = %v, want [0 1] — an article reported by nobody "+
 			"keeps its Emitted bit and is never re-dispatched", rolledBack)
 	}
-	if f.partsWritten != 0 {
+	if f.w.parts() != 0 {
 		t.Errorf("partsWritten = %d, want 0 — the file is left that many parts closer "+
-			"to TotalParts with nothing on disk behind them", f.partsWritten)
+			"to TotalParts with nothing on disk behind them", f.w.parts())
 	}
 }
 

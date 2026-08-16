@@ -97,9 +97,9 @@ func TestDrainFailure_GivesBackThePartsItRolledBack(t *testing.T) {
 			t.Fatalf("article %d was not accepted, so the fixture never counted it", i)
 		}
 	}
-	if f.partsWritten != 2 {
+	if f.w.parts() != 2 {
 		t.Fatalf("partsWritten = %d, want 2; the fixture did not reach the state under test",
-			f.partsWritten)
+			f.w.parts())
 	}
 
 	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
@@ -112,11 +112,11 @@ func TestDrainFailure_GivesBackThePartsItRolledBack(t *testing.T) {
 	if !slices.Equal(rolledBack, []int32{0, 1}) {
 		t.Errorf("rolled-back articles = %v, want [0 1]", rolledBack)
 	}
-	if f.partsWritten != 0 {
+	if f.w.parts() != 0 {
 		t.Errorf("partsWritten = %d, want 0 — the file is %d parts closer to TotalParts "+
 			"with nothing on disk behind them, so a later article completes it over "+
 			"bytes that never reached WriteAt while health reads 100%%",
-			f.partsWritten, f.partsWritten)
+			f.w.parts(), f.w.parts())
 	}
 }
 
