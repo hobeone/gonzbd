@@ -306,15 +306,6 @@ operation, the path, and whether the condition is `Permanent`.
 | retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
 | permanent | `Stallable.Fail` → `Application.Fail` | stopped, reason carried into history (R20) | stay **Outstanding** |
 
-Both routes are declined while the process is stopping, and the reason is the
-same for each: the action cannot be completed or undone by a process that is
-tearing down. A pause taken then is persisted by Shutdown's final `queue.Save`
-with nothing left alive to re-evaluate it, and a fail then runs `maybeFinalize`
-against collaborators that are already stopping. Neither condition is lost —
-a wedged mount and a read-only filesystem are both still there on the next
-start, where the first barrier to touch the file raises them again with the
-whole machinery available. The fault is logged either way (A2).
-
 In neither case is `Queue.AckPermanentFailure` called, the failed-byte count
 touched, or the job's reported health degraded (R21). Attributing a full disk to
 the article would burn its retry budget over something a user often fixes in ten

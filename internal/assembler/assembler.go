@@ -765,8 +765,6 @@ func (a *Assembler) dispatchRequest(
 
 // drainAndClose flushes a file's buffered bytes, fsyncs, and closes it.
 //
-// # The SUCCESSFUL path claims nothing, deliberately
-//
 // The articles the drain writes are NOT acked here — this package has no ack
 // authority — and no later Drain reports them either: this function's own
 // Drain takes the report, and the Sync that follows is what discards a
@@ -779,70 +777,15 @@ func (a *Assembler) dispatchRequest(
 // this runs there is little left to report. The comment previously claimed the
 // next barrier Drain would pick these up; it will not, and had not since the
 // writer began discarding its report on a successful Sync.
-//
-// # The FAILING path is not the same, and used to be treated as if it were
-//
-// The paragraph above is a statement about a drain that SUCCEEDS, and it was
-// once the whole of this doc — which read as though a failure landed in the
-// same safe place. It does not, in either half:
-//
-//   - The articles. A failed Drain rolls back everything after the write that
-//     failed into w.faulted, and takeFaulted is its only consumer. Without the
-//     releaseFaulted below that set died with the writer, so those articles
-//     kept their Emitted bits and ForEachUnfinishedArticle skipped them — not
-//     Done, not Failed, and specifically NOT Outstanding, which is what the
-//     paragraph above claimed. partsWritten also kept counting them.
-//   - The fault. handleSyncOp's opClose arm leaves the reply error nil, so the
-//     barrier is told the close succeeded and routes nothing. This is the one
-//     FileWriter failure with no second reporter: the opDrain arm has the
-//     barrier, accept has routeAcceptFailure, the pressure flush routes its
-//     own. Here a full device was logged at Warn and the job carried on.
-//
-// So both are routed, on the same terms as every other write failure in this
-// file. Only the FIRST failure is routed: a drain that fails over a full
-// device is usually followed by an fsync that fails too, and reporting both
-// parks the job twice for one condition.
-//
-// Routing during shutdown is intended, not an oversight. drainAndCloseAll
-// reaches this on worker exit, and the stopping guards on Application.Stall
-// and Application.Fail are what decide that a fault raised then does not act
-// on the job — a decision that belongs there, where the process state is
-// known, rather than here in a silence that also covers CloseJobHandles on a
-// live job.
 func (a *Assembler) drainAndClose(f *openFile) {
-	key := f.w.key
-	var first error
 	if _, err := f.w.Drain(); err != nil {
 		a.log.Warn("drain file before close", "path", f.info.Path, "error", err)
-		first = err
 	}
-	// Unconditional, and cheap when there is nothing to give back: this is the
-	// only chance to return what the drain rolled back, because the writer is
-	// closed below and its faulted set goes with it.
-	a.releaseFaulted(f, key.jobID, key.fileIdx)
 	if err := f.w.Sync(); err != nil {
 		a.log.Warn("sync file before close", "path", f.info.Path, "error", err)
-		if first == nil {
-			first = err
-		}
 	}
-	// A failing Close is a storage condition too, and on network-backed mounts
-	// it is frequently the first report of writes that never landed — the
-	// close is where a deferred error surfaces. Routed for that reason rather
-	// than for tidiness.
 	if err := f.w.Close(); err != nil {
 		a.log.Warn("close file", "path", f.info.Path, "error", err)
-		if first == nil {
-			first = err
-		}
-	}
-	if first != nil {
-		// No article index: the fault is about the file, and naming one of the
-		// articles that happened to be in the batch would invite reading it as
-		// evidence about that article, which is the A1 conflation.
-		a.noteWriteFault(f.info.Path, WriteRequest{
-			JobID: key.jobID, FileIdx: key.fileIdx,
-		}, first)
 	}
 }
 
