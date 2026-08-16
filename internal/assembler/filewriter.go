@@ -625,6 +625,13 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	if taken && owner.id != id {
 		w.failDisplaced(owner.id, off, id)
 		alreadyFailed, didFail = owner.id, true
+		// Take the incumbent's bytes away as well as its accounting. Failing an
+		// article whose payload is still buffered leaves the next drain to
+		// write it and the barrier to ack it durable, for an article
+		// routeFaulted has already reported permanently failed. See discardAt:
+		// wc.buffer evicts the entry itself on most paths, but not for a
+		// zero-length arrival, which it refuses before touching the map.
+		w.wc.discardAt(w.key, off)
 	}
 	// A re-accept by the offset's OWN owner keeps the entry it already has,
 	// written latch included. Rewriting it unconditionally reset written to

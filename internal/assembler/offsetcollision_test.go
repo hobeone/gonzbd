@@ -362,6 +362,67 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	}
 }
 
+// TestCollision_DisplacedIncumbentLosesItsBufferedBytes pins that displacing
+// an article actually takes its bytes away.
+//
+// Accept's own comment says "an article displaced from this offset loses its
+// bytes; nothing else will write them now". That was true only as a SIDE
+// EFFECT of wc.buffer replacing the entry at the same offset — and wc.buffer
+// refuses a zero-length article BEFORE it touches fb.articles, returning
+// (false, nil). So a zero-length arrival displaced the incumbent without
+// evicting it.
+//
+// The incumbent was then reported permanently failed by routeFaulted while its
+// bytes sat in the cache waiting for the next Drain, which wrote them and
+// handed them to the barrier to ack durable. One article, two terminal
+// dispositions, and the queue keeps the failure — markDone no-ops once
+// markFailed has run — so bytes that are on disk stay charged to failedBytes
+// and on-demand par2 volumes are released for a file that is intact.
+//
+// Moving detection ahead of the cache is what exposed this: the old detector
+// WAS the eviction, so the two could not disagree.
+func TestCollision_DisplacedIncumbentLosesItsBufferedBytes(t *testing.T) {
+	c := newCollisionFixture(t, 4<<20)
+
+	// Small enough that no run forms, so it stays buffered and unwritten.
+	if !c.accept(1, "<a@x>", 0, []byte("AAAA")) {
+		t.Fatal("precondition: the incumbent was not counted")
+	}
+	if len(c.f.w.writtenSoFar()) != 0 {
+		t.Fatal("precondition: the incumbent was already written, so it would take " +
+			"the settled path rather than the displacement one")
+	}
+
+	// A zero-length arrival at the same offset. wc.buffer refuses it, so
+	// nothing replaces the incumbent's entry.
+	c.accept(2, "<b@x>", 0, nil)
+
+	// processRequest is what drains the faulted set in production; handleSuccessArticle
+	// does not, so route it here to reach the same disposition.
+	c.a.releaseFaulted(c.f, "job", 0)
+	if len(c.rejected) != 1 || c.rejected[0] != 1 {
+		t.Fatalf("OnArticleRejected = %v, want [1] — the fixture is not displacing "+
+			"the incumbent", c.rejected)
+	}
+
+	drained, err := c.f.w.Drain()
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	for _, d := range drained {
+		if d.ArtIdx == 1 {
+			t.Errorf("the displaced article was drained as written (%+v) after being "+
+				"reported permanently failed; the barrier will ack it durable and the "+
+				"queue will keep the failure, so bytes on disk stay charged to "+
+				"failedBytes", d)
+		}
+	}
+	if c.f.w.wc.buffered(c.f.w.key, 0) {
+		t.Error("the displaced article's bytes are still buffered, so a later drain " +
+			"will write bytes belonging to an article nothing will ever ack")
+	}
+}
+
 // --- Unsettled offsets: the cached incumbent is displaced ------------------
 
 // TestFileWriter_CachedIncumbentIsDisplaced pins the other half. An incumbent

@@ -607,3 +607,61 @@ func bufferAt(wc *writeCache, key fileKey, offset int64, data []byte) bool {
 	cached, _ := wc.buffer(key, bufferedArticle{offset: offset, data: data})
 	return cached
 }
+
+// TestWriteCacheDiscardAt covers the per-offset drop the displacement path
+// needs, including its accounting and its degenerate inputs.
+//
+// The accounting matters as much as the removal: a discard that forgets to
+// return the bytes to wc.used and fb.totalBytes leaks the cache's memory
+// budget, which is global across files, so one file's collisions would shrink
+// every other file's share until the process restarts.
+func TestWriteCacheDiscardAt(t *testing.T) {
+	key := fileKey{jobID: "job", fileIdx: 0}
+
+	t.Run("removes the entry and returns its bytes to the budget", func(t *testing.T) {
+		wc := newWriteCache(1 << 20)
+		if !bufferAt(wc, key, 0, make([]byte, 64)) {
+			t.Fatal("precondition: the article was not buffered")
+		}
+		if !bufferAt(wc, key, 4096, make([]byte, 32)) {
+			t.Fatal("precondition: the second article was not buffered")
+		}
+		if wc.used != 96 {
+			t.Fatalf("precondition: used = %d, want 96", wc.used)
+		}
+
+		wc.discardAt(key, 0)
+
+		if wc.buffered(key, 0) {
+			t.Error("the entry is still buffered, so a later drain writes bytes " +
+				"belonging to an article nothing will ack")
+		}
+		if wc.used != 32 {
+			t.Errorf("used = %d, want 32 — the discarded bytes were not returned to "+
+				"the global budget", wc.used)
+		}
+		if got := wc.bytesFor(key); got != 32 {
+			t.Errorf("bytesFor = %d, want 32", got)
+		}
+		if !wc.buffered(key, 4096) {
+			t.Error("discardAt removed an entry at a different offset")
+		}
+	})
+
+	t.Run("an unknown offset is a no-op", func(t *testing.T) {
+		wc := newWriteCache(1 << 20)
+		bufferAt(wc, key, 0, make([]byte, 64))
+
+		wc.discardAt(key, 4096)
+
+		if !wc.buffered(key, 0) || wc.used != 64 {
+			t.Errorf("discarding an absent offset disturbed the cache: buffered=%v used=%d",
+				wc.buffered(key, 0), wc.used)
+		}
+	})
+
+	t.Run("an unknown file is a no-op", func(t *testing.T) {
+		wc := newWriteCache(1 << 20)
+		wc.discardAt(fileKey{jobID: "nope", fileIdx: 9}, 0)
+	})
+}

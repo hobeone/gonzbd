@@ -211,6 +211,38 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 	return true, displaced
 }
 
+// discardAt drops whatever is buffered at one offset, pooling its bytes.
+//
+// It exists because "displaced" has to MEAN something. Accept fails the
+// incumbent at an offset a later article claims, on the strength of its own
+// comment that the incumbent "loses its bytes; nothing else will write them
+// now" — but that was only ever true as a side effect of buffer replacing the
+// entry, and buffer refuses a zero-length article before it touches
+// fb.articles. A zero-length arrival therefore displaced the incumbent and
+// left its bytes in the cache, where the next drain wrote them and handed them
+// to the barrier to ack durable — for an article routeFaulted had already
+// reported permanently failed.
+//
+// Calling this from the displacement path makes the claim true on every path
+// rather than on all but one, and it no longer matters whether the arrival
+// happens to be one the cache will accept.
+func (wc *writeCache) discardAt(key fileKey, off int64) {
+	fb, ok := wc.perFile[key]
+	if !ok {
+		return
+	}
+	existing, dup := fb.articles[off]
+	if !dup {
+		return
+	}
+	delete(fb.articles, off)
+	wc.used -= int64(len(existing.data))
+	fb.totalBytes -= int64(len(existing.data))
+	if existing.data != nil {
+		decoder.PutBuffer(existing.data)
+	}
+}
+
 // buffered reports whether an article is still sitting unwritten at this
 // offset. It distinguishes an article the cache has yet to write from one it
 // has already written and acked, which the two look identical from outside.
