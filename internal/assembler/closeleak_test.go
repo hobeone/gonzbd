@@ -86,7 +86,7 @@ func TestRouteFaulted_SplitsTheSetByDisposition(t *testing.T) {
 		{id: articleID{msgID: "n1", artIdx: 1}},
 		{id: articleID{msgID: "d2", artIdx: 2}, displaced: true},
 		{id: articleID{msgID: "n3", artIdx: 3}},
-	}, "job", 0)
+	}, "job", 0, "/tmp/target.dat")
 
 	if len(unwritten) != 2 || unwritten[0] != 1 || unwritten[1] != 3 {
 		t.Errorf("unwritten = %v, want [1 3] — an article that was never attempted "+
@@ -110,7 +110,7 @@ func TestRouteFaulted_IgnoresAnEmptySet(t *testing.T) {
 		t.Errorf("OnArticleRejected called with %d for an empty set", artIdx)
 	}
 
-	a.routeFaulted(nil, "job", 0)
+	a.routeFaulted(nil, "job", 0, "/tmp/target.dat")
 }
 
 // TestDrainAndClose_RoutesAFaultedSetThatSurvivedTheDrain covers the tripwire

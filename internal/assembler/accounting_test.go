@@ -121,7 +121,7 @@ func TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition(t *testi
 		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
 	}
 
-	w.failDisplaced(articleID{msgID: "x1", artIdx: 1})
+	w.failDisplaced(articleID{msgID: "x1", artIdx: 1}, 0, articleID{msgID: "x2", artIdx: 2})
 
 	if got := w.parts(); got != 0 {
 		t.Errorf("parts() = %d after the displacement, want 0 — this is the CURRENT "+

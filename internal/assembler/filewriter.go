@@ -132,6 +132,10 @@ type FileWriter struct {
 	// exactly as seenDone's duplicate handling is.
 	acceptedAt map[int64]articleID
 
+	// postAnomalyReported latches once this file has raised a job-level
+	// warning about a collision. See faultedArticle.firstCollision.
+	postAnomalyReported bool
+
 	// faulted accumulates the articles a failed write rolled back, for the
 	// caller to route to Outstanding. See fail.
 	faulted []faultedArticle
@@ -197,6 +201,24 @@ type faultedArticle struct {
 	// out of the cache, rather than one a write failed on. See failDisplaced.
 	displaced bool
 	id        articleID
+
+	// offset and displacedBy carry the diagnosis, and are meaningful only
+	// when displaced is set. They exist because the assembler has to tell the
+	// user WHAT it saw — which byte range, and which two segments claimed it —
+	// and the writer is the only layer that knows.
+	//
+	// They are set by the same statement that sets displaced, which is the
+	// whole point of failDisplaced no longer patching this record after the
+	// fact: "displaced with no displacer" is not a state a caller can reach.
+	offset      int64
+	displacedBy articleID
+
+	// firstCollision marks the one record per file that should raise the
+	// job-level warning, so an obfuscated post with N colliding segments
+	// reports once rather than overwriting job.Warning N times with the same
+	// sentence. The per-ARTICLE report is unaffected — every displaced article
+	// still goes to OnArticleRejected.
+	firstCollision bool
 }
 
 // newFileWriter wraps an already-open handle.
@@ -274,9 +296,16 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // Building the record in one statement makes a half-specialized faultedArticle
 // unrepresentable, which is what lets Accept's diagnosis fields be added to it
 // without reopening that window.
-func (w *FileWriter) failDisplaced(id articleID) {
+func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 	w.rollbackPart(id)
-	w.faulted = append(w.faulted, faultedArticle{id: id, displaced: true})
+	w.faulted = append(w.faulted, faultedArticle{
+		id:             id,
+		displaced:      true,
+		offset:         off,
+		displacedBy:    by,
+		firstCollision: !w.postAnomalyReported,
+	})
+	w.postAnomalyReported = true
 }
 
 // rollbackPart undoes the part and seen-set state an admitted article holds,
@@ -493,7 +522,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	var alreadyFailed articleID
 	var didFail bool
 	if owner, taken := w.acceptedAt[off]; taken && owner != id {
-		w.failDisplaced(owner)
+		w.failDisplaced(owner, off, id)
 		alreadyFailed, didFail = owner, true
 	}
 	w.acceptedAt[off] = id
@@ -519,7 +548,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 			if didFail && d == alreadyFailed {
 				continue
 			}
-			w.failDisplaced(d)
+			w.failDisplaced(d, off, id)
 		}
 		if run := w.wc.flushContiguous(w.key); run != nil {
 			return w.flushRun(run)

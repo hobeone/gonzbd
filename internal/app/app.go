@@ -536,6 +536,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		OnWriteFault:        app.handleWriteFault,
 		OnArticlesUnwritten: app.handleArticlesUnwritten,
 		OnArticleRejected:   app.handleArticleRejected,
+		OnPostAnomaly:       app.handlePostAnomaly,
 		OnFileComplete:      onFileComplete,
 	}, log)
 	app.assembler = asm
