@@ -982,6 +982,15 @@ including every failure path.
     re-fetching it reproduces the collision, observed as a ping-pong that never
     settles.
 
+    Its buffered bytes go with it, through `writeCache.discardAt`, and that call
+    is load-bearing rather than tidy. `wc.buffer` evicts the entry itself
+    whenever it accepts the arrival, but it refuses a zero-length article
+    *before* touching `fb.articles` — so without the explicit discard the
+    incumbent stays cached, and the next `Drain` writes its bytes and hands them
+    to the barrier to ack durable, for an article already reported permanently
+    failed. Detection used to BE the eviction, so the two could not disagree;
+    moving detection ahead of the cache separated them.
+
   Either way the first collision on a file raises `Options.OnPostAnomaly`, which
   the app routes to `job.Warning`. That is diagnosis, not accounting: it states
   that two segments claim one byte range without asserting the post is

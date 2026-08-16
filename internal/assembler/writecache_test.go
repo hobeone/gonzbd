@@ -662,6 +662,19 @@ func TestWriteCacheDiscardAt(t *testing.T) {
 
 	t.Run("an unknown file is a no-op", func(t *testing.T) {
 		wc := newWriteCache(1 << 20)
+
 		wc.discardAt(fileKey{jobID: "nope", fileIdx: 9}, 0)
+
+		// Asserted, not merely survived. Without these the subtest proves only
+		// that discardAt does not panic, which no plausible implementation of
+		// it would — so a version that lazily created a fileBuf for the missing
+		// key, or decremented used below zero, would pass unnoticed.
+		if wc.used != 0 {
+			t.Errorf("used = %d, want 0", wc.used)
+		}
+		if len(wc.perFile) != 0 {
+			t.Errorf("perFile has %d entries, want 0 — discarding from an unknown "+
+				"file created one, so every miss leaks a map entry", len(wc.perFile))
+		}
 	})
 }

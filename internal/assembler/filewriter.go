@@ -241,6 +241,7 @@ type faultedArticle struct {
 // unconditionally, so a re-accept by the owner ITSELF replaced the entry with a
 // fresh one and dropped the latch. Accept now rewrites the entry only when the
 // owner actually changes.
+//
 // Those two slices are the barrier's pending evidence: Confirm empties them
 // once the articles have been acked durable. An article that has been acked is
 // the strongest possible claim on its offset, and a claim derived from the
