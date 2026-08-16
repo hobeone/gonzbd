@@ -214,3 +214,53 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 		t.Errorf("parts = %d, want 1: three articles admitted, two displaced", got)
 	}
 }
+
+// TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack pins the accounting
+// hole in failDisplaced's post-hoc patch-up.
+//
+// An article with no Message-ID is admitted and counted like any other —
+// admitAccepted counts unconditionally, because no map can hold it — but fail
+// returns early on an empty ID. So failDisplaced appended nothing, its
+// positional `w.faulted[n-1].id == id` guard found no matching entry and
+// silently no-opped, and the displaced article kept its part while its
+// displacer took another. Two parts counted for one offset, and nothing
+// reported the loser rejected.
+//
+// giveBackUntrackedPart is the only path that can un-admit an untracked
+// article, and it is reachable only from routeAcceptFailure — not from
+// displacement. Unit 1 is what makes this reachable: it turns collisions from
+// timing-dependent into reliably detected.
+func TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(0))
+
+	// Two DISTINCT articles, neither carrying a Message-ID. They differ by
+	// artIdx, which is what lets identity comparison tell them apart at all.
+	first := articleID{msgID: "", artIdx: 1}
+	second := articleID{msgID: "", artIdx: 2}
+
+	w.admitAccepted(first.msgID)
+	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+		t.Fatalf("accept first: %v", err)
+	}
+	w.admitAccepted(second.msgID)
+	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
+		t.Fatalf("accept second: %v", err)
+	}
+
+	rolled := w.takeFaulted()
+	if len(rolled) != 1 {
+		t.Fatalf("got %d rolled-back articles, want 1: an untracked article's "+
+			"displacement was dropped entirely, so nothing resolves it", len(rolled))
+	}
+	if rolled[0].id != first {
+		t.Errorf("rolled back %+v, want the displaced incumbent %+v", rolled[0].id, first)
+	}
+	if !rolled[0].displaced {
+		t.Error("the rolled-back untracked article is not marked displaced")
+	}
+	if got := w.parts(); got != 1 {
+		t.Errorf("parts = %d, want 1: the displaced untracked article kept its part "+
+			"while its displacer took another, so the file can reach TotalParts "+
+			"with one offset's bytes counted twice", got)
+	}
+}

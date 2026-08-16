@@ -254,10 +254,54 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // So it is resolved permanently failed instead, which is the same disposition
 // handleLateDuplicate reaches for an article that can never be written now or
 // later. See releaseFaulted.
+// It does NOT delegate to fail. It used to, and then reached back to
+// specialize the record fail had appended:
+//
+//	w.fail(id)
+//	if n := len(w.faulted); n > 0 && w.faulted[n-1].id == id {
+//		w.faulted[n-1].displaced = true
+//	}
+//
+// That is the shape #375 removed from faultedArticle — a field applied to a
+// record after it was built, by a call site that had to find it again — and it
+// carried a live defect. fail returns early on an empty Message-ID, so for an
+// untracked article nothing was appended, the positional guard matched nothing,
+// and the whole displacement was dropped: no rollback, no report, and the
+// article kept the part admitAccepted had counted for it while its displacer
+// took another. Two parts for one offset, and a file that can reach TotalParts
+// over bytes only one article supplied.
+//
+// Building the record in one statement makes a half-specialized faultedArticle
+// unrepresentable, which is what lets Accept's diagnosis fields be added to it
+// without reopening that window.
 func (w *FileWriter) failDisplaced(id articleID) {
-	w.fail(id)
-	if n := len(w.faulted); n > 0 && w.faulted[n-1].id == id {
-		w.faulted[n-1].displaced = true
+	w.rollbackPart(id)
+	w.faulted = append(w.faulted, faultedArticle{id: id, displaced: true})
+}
+
+// rollbackPart undoes the part and seen-set state an admitted article holds,
+// without deciding what becomes of the article. The caller owns that.
+//
+// The untracked branch is reachable only from failDisplaced. fail keeps its own
+// early return on an empty Message-ID, because on ITS path the give-back
+// already has an owner: routeAcceptFailure calls giveBackUntrackedPart for the
+// write-fault case, and routing the decrement through here as well would charge
+// it twice. A displaced article has no such second owner — it never reaches
+// routeAcceptFailure — so this is the only place its part can come back.
+func (w *FileWriter) rollbackPart(id articleID) {
+	if id.msgID == "" {
+		w.giveBackUntrackedPart()
+		return
+	}
+	_, wasDone := w.seenDone[id.msgID]
+	_, wasFailed := w.seenFailed[id.msgID]
+	delete(w.seenDone, id.msgID)
+	// An article already counted as permanently FAILED keeps its count:
+	// admitPermanentFailure counted it, and a later retry whose write fails
+	// must not decrement what a different code path added. Only an article
+	// counted as WRITTEN loses its count here.
+	if wasDone && !wasFailed && w.partsWritten > 0 {
+		w.partsWritten--
 	}
 }
 
@@ -302,16 +346,7 @@ func (w *FileWriter) fail(id articleID) {
 	if id.msgID == "" {
 		return
 	}
-	_, wasDone := w.seenDone[id.msgID]
-	_, wasFailed := w.seenFailed[id.msgID]
-	delete(w.seenDone, id.msgID)
-	// An article already counted as permanently FAILED keeps its count:
-	// admitPermanentFailure counted it, and a later retry whose write fails
-	// must not decrement what a different code path added. Only an article
-	// counted as WRITTEN loses its count here.
-	if wasDone && !wasFailed && w.partsWritten > 0 {
-		w.partsWritten--
-	}
+	w.rollbackPart(id)
 	w.faulted = append(w.faulted, faultedArticle{id: id})
 }
 
