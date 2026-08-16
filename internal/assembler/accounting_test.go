@@ -121,7 +121,7 @@ func TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition(t *testi
 		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
 	}
 
-	w.failDisplaced(articleID{msgID: "x1", artIdx: 1})
+	w.failDisplaced(articleID{msgID: "x1", artIdx: 1}, 0, articleID{msgID: "x2", artIdx: 2})
 
 	if got := w.parts(); got != 0 {
 		t.Errorf("parts() = %d after the displacement, want 0 — this is the CURRENT "+
@@ -223,6 +223,86 @@ func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 	if _, still := w.seenDone["m1"]; still {
 		t.Error("m1 is still in seenDone after the roll-back, so a redelivery would " +
 			"be read as a duplicate and its bytes never written")
+	}
+}
+
+// TestFileWriter_RollbackPart covers the give-back both dispositions share.
+//
+// fail and failDisplaced differ in what they RECORD — one returns the article
+// to Outstanding, the other resolves it permanently failed — but the part and
+// seen-set accounting is identical, and it is the half with the branching. It
+// is tested directly here so that a change to either disposition cannot alter
+// the accounting without a test noticing.
+//
+// The untracked branch is the one only failDisplaced reaches: fail keeps its
+// own early return on an empty Message-ID because routeAcceptFailure already
+// owns the give-back on that path, and routing it through here as well would
+// charge it twice.
+func TestFileWriter_RollbackPart(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(w *FileWriter)
+		id        articleID
+		wantParts int
+	}{
+		{
+			name:      "an accepted article gives its part back",
+			setup:     func(w *FileWriter) { w.admitAccepted("m1") },
+			id:        articleID{msgID: "m1", artIdx: 1},
+			wantParts: 0,
+		},
+		{
+			name: "an already-failed article keeps its part",
+			setup: func(w *FileWriter) {
+				w.admitPermanentFailure("m1")
+				w.admitRetryOfFailed("m1")
+			},
+			id:        articleID{msgID: "m1", artIdx: 1},
+			wantParts: 1,
+		},
+		{
+			name:      "an article that never held a part takes none away",
+			setup:     func(w *FileWriter) { w.admitAccepted("other") },
+			id:        articleID{msgID: "m1", artIdx: 1},
+			wantParts: 1,
+		},
+		{
+			name:      "an untracked article gives its part back",
+			setup:     func(w *FileWriter) { w.admitAccepted("") },
+			id:        articleID{msgID: "", artIdx: 1},
+			wantParts: 0,
+		},
+		{
+			name:      "an untracked article cannot drive the count negative",
+			setup:     func(*FileWriter) {},
+			id:        articleID{msgID: "", artIdx: 1},
+			wantParts: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newTestFileWriter(t)
+			tc.setup(w)
+
+			w.rollbackPart(tc.id)
+
+			if got := w.parts(); got != tc.wantParts {
+				t.Errorf("parts() = %d, want %d", got, tc.wantParts)
+			}
+			if tc.id.msgID != "" {
+				if _, still := w.seenDone[tc.id.msgID]; still {
+					t.Errorf("%s is still in seenDone, so a redelivery would be read "+
+						"as a duplicate and its bytes never written", tc.id.msgID)
+				}
+			}
+			// The give-back is the whole of it: rollbackPart records no
+			// disposition, so neither caller can inherit one it did not choose.
+			if len(w.faulted) != 0 {
+				t.Errorf("rollbackPart appended %d faulted articles, want 0 — the "+
+					"disposition belongs to the caller", len(w.faulted))
+			}
+		})
 	}
 }
 

@@ -70,6 +70,7 @@ type yencHeader struct {
 	offset int64 // byte offset of this part in the assembled file (0-based, from =ypart begin-1)
 	name   string
 	isPart bool
+	part   int // part ordinal from =ybegin part=, 0 when absent
 }
 
 // yencTrailer holds the fields parsed from a =yend line.
@@ -104,6 +105,19 @@ type Article struct {
 	// CRC is the CRC32 computed over Data. If the trailer's pcrc32/crc32
 	// field was present, DecodeArticle has already verified it matches.
 	CRC uint32
+
+	// PartNumber is the 1-based ordinal the server declared in =ybegin part=,
+	// or 0 when the article carries none — a single-part post, or a
+	// non-numeric value.
+	//
+	// Nothing in this package acts on it. It exists so the dispatcher can
+	// compare it against the NZB segment number that was requested and COUNT
+	// the disagreements (#379). That comparison is novel: SABnzbd's decoder
+	// reads part_begin and part_size without ever checking the served part
+	// against the segment number, so there is no prior evidence about how
+	// often servers and indexers agree. Counting first is what makes it safe
+	// to consider acting later.
+	PartNumber int
 }
 
 // DecodeArticle decodes a yEnc-encoded NNTP article body. body is the raw
@@ -208,14 +222,27 @@ func DecodeArticleBuf(body, scratch []byte) (Article, error) {
 		return Article{}, err
 	}
 
-	// Build the article struct before validation so callers (especially
-	// PAR2 repair) can still use the decoded data even if it's corrupt.
+	// Built before validation so the failure paths below can return the
+	// article alongside their error.
+	//
+	// This used to say callers "especially PAR2 repair" can still use the
+	// decoded data when it is corrupt. No caller does: decodePayload in
+	// internal/downloader is the only caller of DecodeArticle, and it releases
+	// the buffer to the pool on every error branch. Reading the old comment as
+	// a contract — that invalid data survives for a repair step to consume —
+	// would have been reading a use-after-free as a feature.
+	//
+	// Note also that the CRC check below is gated on trailer.valid, which is
+	// false whenever the poster omitted pcrc32. Reaching the assembler
+	// therefore does not imply a checksum was verified, only that none
+	// disagreed.
 	art := Article{
-		Filename:  hdr.name,
-		Offset:    hdr.offset,
-		TotalSize: hdr.size,
-		Data:      decoded,
-		CRC:       computedCRC,
+		Filename:   hdr.name,
+		Offset:     hdr.offset,
+		TotalSize:  hdr.size,
+		Data:       decoded,
+		CRC:        computedCRC,
+		PartNumber: hdr.part,
 	}
 
 	if trailer.size != int64(len(decoded)) {
@@ -395,6 +422,18 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 		case "part":
 			if v != "" {
 				hdr.isPart = true
+				// The VALUE, not just its presence. isPart drives which
+				// checksum field parseTrailer treats as authoritative and is
+				// unchanged; the ordinal is carried so the dispatcher can
+				// compare what the server served against the segment number
+				// the NZB asked for (#379). A non-numeric part= leaves it at
+				// zero, which disables that comparison rather than failing the
+				// article — nothing has ever validated this field, and a
+				// decoder that starts rejecting on it would fail articles that
+				// download correctly today.
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					hdr.part = n
+				}
 			}
 		}
 	})

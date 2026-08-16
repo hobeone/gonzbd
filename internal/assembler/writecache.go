@@ -136,11 +136,20 @@ func (wc *writeCache) enabled() bool {
 // immediately.
 //
 // displaced carries the identity of an article evicted from the same offset,
-// and is nil in every ordinary case. The caller must settle it — as a failure,
-// so it is fetched again — rather than dropping it. Returning it is not
-// bookkeeping for its own sake: once an ack waits on a write, an article
-// silently removed from the cache is an article that is never acked at all and
-// never re-dispatched, which is the defect this whole path exists to close.
+// and is nil in every ordinary case. The caller must settle it rather than
+// dropping it: once an ack waits on a write, an article silently removed from
+// the cache is an article that is never acked at all and never re-dispatched,
+// which is the defect this path exists to close.
+//
+// This is no longer where a collision is DETECTED, and reading it as such is
+// what #383 was. Membership here answers "are these bytes still unwritten",
+// which is a question about caching: buildContiguousRun deletes each article
+// it flushes, so in an in-order download the first article had already left
+// this map before its duplicate arrived, and three paths — flushed, caching
+// disabled, zero-length — reported no collision at all. FileWriter.acceptedAt
+// is the detector now, consulted in Accept before this function, and it sees
+// all three. What remains here is a backstop for the eviction itself, which
+// only this function can observe.
 //
 // Folding the two identities together and letting the winner's write ack both
 // would be wrong. This branch exists for a case upstream dedup should already
@@ -165,21 +174,73 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		fb = &fileBuf{articles: make(map[int64]bufferedArticle)}
 		wc.perFile[key] = fb
 	}
-	// If this offset already exists (shouldn't happen in practice due to
-	// upstream dedup), replace it and adjust accounting.
+	// If this offset already exists, replace it and adjust accounting.
+	//
+	// Reaching this with a DIFFERENT article means Accept's acceptedAt check
+	// has already failed the incumbent, and Accept skips the one it failed —
+	// so a second settlement here would charge the same article's bytes to the
+	// job's par2 budget twice. Reaching it with the same article is a re-accept
+	// after a rollback, which is not a collision at all.
 	if existing, dup := fb.articles[art.offset]; dup {
 		wc.used -= int64(len(existing.data))
 		fb.totalBytes -= int64(len(existing.data))
 		if existing.data != nil {
 			decoder.PutBuffer(existing.data)
 		}
-		displaced = []articleID{existing.id}
+		// Reported ONLY when a different article lost the slot. The buffer is
+		// superseded either way, but "displaced" is a claim about two articles
+		// and the caller settles whoever it names.
+		//
+		// Naming the same article made it displace ITSELF: failDisplaced gave
+		// its part back, appended a faulted record, raised a warning naming one
+		// article twice, and had routeFaulted resolve it permanently failed —
+		// while the replacement entry written just below stayed queued to be
+		// written and acked. Two terminal dispositions for one article.
+		//
+		// Reachable for an article with no Message-ID, which is the one kind
+		// handleSuccessArticle's dedup arm cannot return early for: no map can
+		// hold an empty key, so a second delivery runs the whole accept path.
+		if existing.id != art.id {
+			displaced = []articleID{existing.id}
+		}
 	}
 	fb.articles[art.offset] = art
 	size := int64(len(art.data))
 	fb.totalBytes += size
 	wc.used += size
 	return true, displaced
+}
+
+// discardAt drops whatever is buffered at one offset, pooling its bytes.
+//
+// It exists because "displaced" has to MEAN something. Accept fails the
+// incumbent at an offset a later article claims, on the strength of its own
+// comment that the incumbent "loses its bytes; nothing else will write them
+// now" — but that was only ever true as a side effect of buffer replacing the
+// entry, and buffer refuses a zero-length article before it touches
+// fb.articles. A zero-length arrival therefore displaced the incumbent and
+// left its bytes in the cache, where the next drain wrote them and handed them
+// to the barrier to ack durable — for an article routeFaulted had already
+// reported permanently failed.
+//
+// Calling this from the displacement path makes the claim true on every path
+// rather than on all but one, and it no longer matters whether the arrival
+// happens to be one the cache will accept.
+func (wc *writeCache) discardAt(key fileKey, off int64) {
+	fb, ok := wc.perFile[key]
+	if !ok {
+		return
+	}
+	existing, dup := fb.articles[off]
+	if !dup {
+		return
+	}
+	delete(fb.articles, off)
+	wc.used -= int64(len(existing.data))
+	fb.totalBytes -= int64(len(existing.data))
+	if existing.data != nil {
+		decoder.PutBuffer(existing.data)
+	}
 }
 
 // buffered reports whether an article is still sitting unwritten at this

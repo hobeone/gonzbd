@@ -897,7 +897,7 @@ func TestDownloader_DecodePayload_Coverage(t *testing.T) {
 	// 1. yEnc error branch
 	// 2. UU error branch
 	// 3. invalid DMCA
-	_, _, _, err := decodePayload([]byte("invalid body that fails both yenc and uu"))
+	_, err := decodePayload([]byte("invalid body that fails both yenc and uu"))
 	if err == nil {
 		t.Error("expected error, got nil")
 	}

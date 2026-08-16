@@ -1346,6 +1346,16 @@ type UnfinishedArticle struct {
 	MessageID string
 	Bytes     int
 	Subject   string
+	// PartNumber is the NZB segment number for this article — what the
+	// indexer says this part's ordinal is. Carried per-article on the same
+	// terms as Bytes and Subject.
+	//
+	// The dispatcher compares it against the ordinal the SERVER declares in
+	// =ybegin part= and counts disagreements (#379). Nothing acts on it. It is
+	// the first consumer Manifest.ArticleNumber has ever had, which is
+	// precisely why the comparison only counts: an unvalidated field on both
+	// sides is not something to start failing articles on.
+	PartNumber int
 	// RepairState is the job's repairability verdict, derived once per job in
 	// the walk below and carried per-article so the dispatcher's Early Health
 	// Gate can read it without reaching back into the Job.
@@ -1418,6 +1428,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					MessageID:   m.ArticleID(i),
 					Bytes:       m.ArticleBytes(i),
 					Subject:     m.FileSubject(fi),
+					PartNumber:  m.ArticleNumber(i),
 					RepairState: repairState,
 				}) {
 					return

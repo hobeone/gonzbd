@@ -83,6 +83,17 @@ func ErrorCount(class string) int64 {
 	return iv.Value()
 }
 
+// PartNumberMismatches counts articles whose served =ybegin part= ordinal
+// disagreed with the NZB segment number that was requested.
+//
+// It is a PROBE, not a health metric. Nothing acts on the disagreement — the
+// article is emitted exactly as it would have been — because no prior art
+// establishes how often servers and indexers agree on this field: SABnzbd
+// never compares them, and gonzbd had no consumer for the NZB's segment number
+// at all before #379. A non-zero value here is what would justify designing a
+// response; a zero one retires the idea. See notePartNumberDisagreement.
+var PartNumberMismatches = expvar.NewInt("downloader_part_number_mismatches")
+
 // Assembler counters — incremented by the assembler worker goroutine.
 var (
 	// DiskWrites counts individual WriteAt syscalls to target files.
@@ -129,5 +140,6 @@ func Reset() {
 	CachePressureFlushes.Set(0)
 	FilesCompleted.Set(0)
 	PreallocCalls.Set(0)
+	PartNumberMismatches.Set(0)
 	PipelineErrors.Init()
 }

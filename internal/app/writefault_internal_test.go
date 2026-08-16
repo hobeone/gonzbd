@@ -184,6 +184,40 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset")
 }
 
+// TestHandlePostAnomaly_ReachesTheJobWarning pins the app half of #379: the
+// assembler observes a structural fault in what was served, and this is what
+// puts it somewhere the user will actually see it.
+//
+// Without it the anomaly exists only in the log, which is precisely the failure
+// the issue describes — a user watching a download fail with no way to tell a
+// bad post from a bad disk.
+func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+
+	const reason = "Overlapping segments in a.rar: <x> and <y> both claim byte offset 0"
+	application.handlePostAnomaly(job.ID, 0, reason)
+
+	snap, err := application.queue.Get(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Warning; got != reason {
+		t.Errorf("job.Warning = %q, want %q — the anomaly reached the log but not the "+
+			"queue row, so nothing surfaces it to the user", got, reason)
+	}
+}
+
+// TestHandlePostAnomaly_SurvivesAJobThatHasLeftTheQueue covers the branch where
+// SetWarning fails, on the same terms as the rejection path above: the
+// assembler worker is a separate goroutine, so an anomaly can be reported after
+// its job has been cancelled or moved to history. Nothing is left to warn
+// about, which is ordinary — but not silent (A2).
+func TestHandlePostAnomaly_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	application, _ := newDurabilityTestApp(t, 1, 2)
+
+	application.handlePostAnomaly("job-that-never-existed", 0, "overlapping segments")
+}
+
 // TestHandleWriteFault_DoesNotBlockTheAssemblerWorker pins the hand-off.
 //
 // This callback runs on the assembler's single worker goroutine, and both of

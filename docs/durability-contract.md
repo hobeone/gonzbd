@@ -930,19 +930,72 @@ including every failure path.
 
 ## Duplicate and late-article handling
 
-- **Per-writer `seenDone` / `seenFailed`**: dedup by Message-ID. `seenDone`'s
-  value is the **offset the first copy was accepted at**, which the duplicate
-  branch needs: dedup is keyed on the Message-ID, so a duplicate may carry a
-  different yEnc offset, and asking about its own would interrogate a slot the
-  first copy never occupied — reading empty as "already written".
+- **Per-writer `seenDone` / `seenFailed`**: dedup by Message-ID, membership-only.
+
+  This used to say `seenDone`'s value was "the offset the first copy was
+  accepted at, which the duplicate branch needs". Both halves were wrong. The
+  duplicate branch never asked: `handleSuccessArticle` releases the buffer and
+  returns, because the answer changes nothing — either way the second copy's
+  bytes are redundant and re-writing them is a second `WriteAt` over the same
+  range. The value was written and never read, and #375 removed it.
+
+  Offsets are owned by `acceptedAt` instead, which is a different index for a
+  different question: not "has this article been seen" but "who owns this byte
+  range, and have their bytes been written". See the collision rules below.
 - A write path that **fails** moves its articles out of `seenDone` into
   `seenFailed`, so a later duplicate is not read as a success. There is no ack
   in either direction on a failed write (A1). Absence from the next `Drain` is
   necessary but **not sufficient** to leave the article Outstanding: its
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
-- An article **displaced** from an offset a later one claimed loses its bytes.
-  It made no claim, so failing it only corrects the seen-sets.
+- **Two articles claiming one offset** resolve one of two ways, and which one
+  depends on whether the incumbent has been reported Written. Detection lives in
+  `FileWriter.acceptedAt`, an offset→owner index recorded in `Accept`, and a
+  collision is decided by **identity**: an offset already owned by the same
+  article is a re-accept after a rollback, not a collision.
+
+  Detection used to live in `writeCache.buffer` and keyed on cache residency,
+  which missed the ordinary in-order case entirely — the first article was
+  flushed and evicted before its duplicate arrived, so both were counted and the
+  file completed with one part's bytes overwritten (#383). Detection is
+  per-open-episode, the same residency as `seenDone`.
+
+  - **Incumbent written → the offset is SETTLED and the ARRIVAL is rejected**
+    (`offsetSettledBy`, checked in `acceptArticle`). Its bytes back a durable
+    claim: the pipeline recorded a Class A fact naming its CRC at that offset,
+    and the barrier will ack it. Letting a later article overwrite the range
+    makes that fact unverifiable on restart, and failing the incumbent as well
+    would give one article two terminal dispositions — permanently failed *and*
+    acked durable. The arrival is resolved permanently failed, keeps its part
+    (it will never arrive again), and its bytes are charged to par2.
+
+    The `written` flag is **latched on the offset**, not derived from
+    `w.written`/`w.reported`. `Confirm` empties both once the articles are
+    acked, and an acked article holds the strongest claim there is — a derived
+    check would read the empty set as *no* claim and displace it one checkpoint
+    later.
+
+  - **Incumbent still buffered → the INCUMBENT is displaced**, which is what the
+    write cache always did. It made no claim, so failing it corrects the
+    writer's own accounting and nothing durable. It gives its part back and is
+    resolved *permanently failed* rather than returned to Outstanding —
+    re-fetching it reproduces the collision, observed as a ping-pong that never
+    settles.
+
+    Its buffered bytes go with it, through `writeCache.discardAt`, and that call
+    is load-bearing rather than tidy. `wc.buffer` evicts the entry itself
+    whenever it accepts the arrival, but it refuses a zero-length article
+    *before* touching `fb.articles` — so without the explicit discard the
+    incumbent stays cached, and the next `Drain` writes its bytes and hands them
+    to the barrier to ack durable, for an article already reported permanently
+    failed. Detection used to BE the eviction, so the two could not disagree;
+    moving detection ahead of the cache separated them.
+
+  Either way the first collision on a file raises `Options.OnPostAnomaly`, which
+  the app routes to `job.Warning`. That is diagnosis, not accounting: it states
+  that two segments claim one byte range without asserting the post is
+  malformed, because a redundant posting and a server-mangled `=ypart begin=`
+  produce the same observation and yEnc checksums the payload, never the header.
 - **Cross-state dedup**: a Message-ID previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
@@ -1096,9 +1149,11 @@ articles or sparse regions.
 
   The give-back is **not** part of the routing above, and reading it as such is
   how the two used to drift apart. `partsWritten` lives on `FileWriter`, beside
-  the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter.fail`
+  the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter`
   applies the decrement in the same statement pair that clears the article's
-  `seenDone` entry. The routing callbacks decide *disposition* only. An article
+  `seenDone` entry — in `rollbackPart`, which both roll-back dispositions
+  (`fail` and `failDisplaced`) call before recording what becomes of the
+  article. The routing callbacks decide *disposition* only. An article
   already counted as permanently **failed** keeps its part through a roll-back:
   `admitPermanentFailure` charged it, a redelivery writes bytes without
   charging a second one, and decrementing there leaves the file one part short

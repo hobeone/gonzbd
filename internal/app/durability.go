@@ -152,6 +152,27 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 	})
 }
 
+// handlePostAnomaly surfaces a structural fault in what the servers served, so
+// the user can tell a bad post from a bad disk or a bad connection (#379).
+//
+// It writes job.Warning, which QueueRow renders next to the job. That field is
+// single-valued and has other writers — the stall reason (which QueueRow shows
+// in PREFERENCE to it), the two durability warnings, and the claim-failure note
+// — so this can be overwritten by a later condition, and Resume/Retry clear it.
+// That is acceptable for a diagnostic: the log line in routeFaulted is the
+// durable record, and the warning is the thing that makes a user look.
+//
+// A failure to record it is logged and dropped. A job that has left the queue
+// has nothing to warn about, which is ordinary rather than a defect (A2).
+func (app *Application) handlePostAnomaly(jobID string, fileIdx int, reason string) {
+	app.log.Warn("post anomaly reported by the assembler",
+		"job", jobID, "fileidx", fileIdx, "reason", reason)
+	if err := app.queue.SetWarning(jobID, reason); err != nil {
+		app.log.Debug("record a post anomaly as a job warning",
+			"job", jobID, "err", err)
+	}
+}
+
 // handleArticleRejected records an article the assembler refused as
 // permanently failed.
 //
