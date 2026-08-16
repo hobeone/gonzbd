@@ -329,8 +329,8 @@ func (w *FileWriter) admitRetryOfFailed(msgID string) {
 // partsWritten from overshooting TotalParts, which is purely local
 // bookkeeping.
 //
-// The empty Message-ID is deliberately NOT guarded, unlike fail and
-// failPermanent above it. seenFailed[""] is written and deduped on like any
+// The empty Message-ID is deliberately NOT guarded, unlike its two siblings
+// fail and failPermanent. seenFailed[""] is written and deduped on like any
 // other key, so the first article with no Message-ID is counted and every
 // later one is refused as a duplicate. That is what the call site did before
 // this method existed. Adding the reflexive `if msgID == "" { return false }`

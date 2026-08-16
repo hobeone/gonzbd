@@ -1094,6 +1094,26 @@ articles or sparse regions.
   never reached `WriteAt` with `failedBytes` unchanged, so the job reported
   100% health.
 
+  The give-back is **not** part of the routing above, and reading it as such is
+  how the two used to drift apart. `partsWritten` lives on `FileWriter`, beside
+  the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter.fail`
+  applies the decrement in the same statement pair that clears the article's
+  `seenDone` entry. The routing callbacks decide *disposition* only. An article
+  already counted as permanently **failed** keeps its part through a roll-back:
+  `admitPermanentFailure` charged it, a redelivery writes bytes without
+  charging a second one, and decrementing there leaves the file one part short
+  of `TotalParts` forever.
+
+  `FileWriter.Close` **returns** whatever is left in the rolled-back set
+  alongside its error, so the set cannot be dropped by omission at the moment
+  the writer stops existing. It is empty at both call sites on every reachable
+  path; a non-empty one means a producer was added that nothing drains.
+  `drainAndClose` routes it — that file is closing normally and its articles
+  are still wanted — while the job-cancel arm drops it, because the file is
+  unlinked on the next line and the job is leaving the queue. Both report at
+  Error, with the article indices, since the cancel arm's log is the only
+  record that survives the drop.
+
   A coalesced run rolls back **every** article merged into it, not just the one
   whose arrival triggered the flush: `buildContiguousRun` pooled the originals
   before the write was attempted, so reporting only the trigger would leave the

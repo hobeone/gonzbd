@@ -755,12 +755,17 @@ func (a *Assembler) dispatchRequest(
 			// The set is empty on every reachable path — see FileWriter.Close
 			// — so this branch is a tripwire, not a handler. If it ever fires,
 			// a producer has been added that the worker does not drain.
-			leaked, _ := f.w.Close() //nolint:errcheck // best-effort; file is immediately removed
+			leaked, _ := f.w.Close()
 			if len(leaked) > 0 {
+				// The indices, not just a count. This arm DROPS the set, so
+				// this line is the only record left of which articles were
+				// stranded — a count names nothing an operator or a bug report
+				// could act on.
 				a.log.Error("articles were rolled back and never routed before a "+
 					"cancelled job's file was closed; they keep their Emitted bit and "+
 					"will not be re-dispatched until a restart",
-					"job", k.jobID, "fileidx", k.fileIdx, "articles", len(leaked))
+					"job", k.jobID, "fileidx", k.fileIdx,
+					"articles", len(leaked), "artidxs", faultedIndices(leaked))
 			}
 			if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
 				a.log.Warn("failed to remove cancelled file",
@@ -942,7 +947,7 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 		a.log.Error("articles were rolled back and never routed before the file was "+
 			"closed; routing them now, but a producer of the faulted set is not being "+
 			"drained",
-			"path", f.info.Path, "articles", len(leaked))
+			"path", f.info.Path, "articles", len(leaked), "artidxs", faultedIndices(leaked))
 		a.routeFaulted(leaked, key.jobID, key.fileIdx)
 	}
 
@@ -1070,11 +1075,14 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	if !admitted {
 		return
 	}
+	// Read once, so the count the log reports is provably the count the
+	// comparison below decided on.
+	parts := f.w.parts()
 	a.log.Debug("processed part",
 		"job", req.JobID, "fileidx", req.FileIdx,
-		"part", f.w.parts(), "total", f.info.TotalParts,
+		"part", parts, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
-	if f.info.TotalParts > 0 && f.w.parts() >= f.info.TotalParts {
+	if f.info.TotalParts > 0 && parts >= f.info.TotalParts {
 		a.finalizeFile(f, key, req, completed)
 	}
 }
@@ -1451,6 +1459,22 @@ func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx 
 		arts = append(arts, r.id.artIdx)
 	}
 	a.noteArticlesUnwritten(jobID, fileIdx, arts)
+}
+
+// faultedIndices lists the article indices in a rolled-back set, for the two
+// tripwire logs at the Close call sites.
+//
+// It exists because those two lines used to report a COUNT. On the cancel path
+// the set is dropped, so the log is the only record that survives it, and
+// "articles=3" names nothing anyone could act on — not the articles, and not
+// the producer that must have been added for the set to be non-empty at all.
+// The disposition is unchanged either way; this only makes the report legible.
+func faultedIndices(rolled []faultedArticle) []int32 {
+	out := make([]int32, len(rolled))
+	for i, r := range rolled {
+		out[i] = r.id.artIdx
+	}
+	return out
 }
 
 // noteArticlesUnwritten hands one set of un-written articles to their owner.

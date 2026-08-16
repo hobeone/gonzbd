@@ -1,6 +1,10 @@
 package assembler
 
 import (
+	"bytes"
+	"log/slog"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -48,7 +52,9 @@ func TestFileWriter_CloseTakesTheFaultedSetRatherThanReadingIt(t *testing.T) {
 	w.admitAccepted("a2")
 	w.fail(articleID{msgID: "a2", artIdx: 2})
 
-	if leaked, _ := w.Close(); len(leaked) != 1 { //nolint:errcheck // asserted above
+	// The error is not the subject here — the test above pins it — and this
+	// one asserts only that the SET is taken.
+	if leaked, _ := w.Close(); len(leaked) != 1 {
 		t.Fatalf("Close() leaked = %v, want one article", leaked)
 	}
 	if again := w.takeFaulted(); len(again) != 0 {
@@ -181,5 +187,59 @@ func TestDrainAndClose_RoutesADisplacedArticleAsPermanentlyFailed(t *testing.T) 
 	if len(unwritten) != 0 {
 		t.Errorf("unwritten = %v, want none — returning a displaced article to "+
 			"Outstanding produces a ping-pong that never settles", unwritten)
+	}
+}
+
+// TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt covers the OTHER
+// Close call site, which had no test at all: the branch is reachable only
+// through the cancel control message, and the coverage profile showed it never
+// executed.
+//
+// The two dispositions are deliberately different and neither implies the
+// other. drainAndClose routes its set — that file is closing normally and its
+// articles are still wanted. The cancel arm must NOT: the file is unlinked on
+// the next line, its cache is forgotten, and the job is leaving the queue, so
+// returning the articles to Outstanding re-dispatches work for a job that is
+// going away. What it owes instead is a report, because the set is empty on
+// every reachable path and a non-empty one means a producer was added that
+// nothing drains.
+func TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt(t *testing.T) {
+	var logs bytes.Buffer
+	a := newHelperAssembler()
+	a.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError}))
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		t.Errorf("OnArticlesUnwritten(%v) on the cancel path — the job is leaving the "+
+			"queue, so returning its articles to Outstanding re-dispatches work for a "+
+			"job that is going away", arts)
+	}
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		t.Errorf("OnArticleRejected(%d) on the cancel path", artIdx)
+	}
+
+	f := newHelperFile(t, t.TempDir(), "cancelled.dat", 0)
+	f.w.faulted = []faultedArticle{{id: articleID{msgID: "a5", artIdx: 5}}}
+	key := f.w.key
+	open := map[fileKey]*openFile{key: f}
+	completed := map[fileKey]struct{}{}
+
+	a.dispatchRequest(
+		WriteRequest{FileIdx: -1, MessageID: key.jobID},
+		open, completed, map[string]struct{}{}, newWriteCache(0))
+
+	if _, still := open[key]; still {
+		t.Error("the cancelled job's file is still in the open map")
+	}
+	if _, err := os.Stat(f.info.Path); !os.IsNotExist(err) {
+		t.Errorf("os.Stat(%s) = %v, want not-exist — a cancelled job's partial file "+
+			"must be removed", f.info.Path, err)
+	}
+	if got := f.w.takeFaulted(); len(got) != 0 {
+		t.Errorf("takeFaulted() = %v after the cancel — Close must TAKE the set, or a "+
+			"later reader routes an article this drop already accounted for", got)
+	}
+	if !strings.Contains(logs.String(), "artidxs") || !strings.Contains(logs.String(), "5") {
+		t.Errorf("the dropped articles were not reported by index; log was:\n%s\n"+
+			"this arm DROPS the set, so the log line is the only record of which "+
+			"articles were stranded", logs.String())
 	}
 }

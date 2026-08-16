@@ -1,6 +1,9 @@
 package assembler
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // The part-total transitions, tested against the writer that owns them.
 //
@@ -177,5 +180,113 @@ func TestFileWriter_GiveBackUntrackedPartIsClampedAtZero(t *testing.T) {
 	if got := w.parts(); got != 0 {
 		t.Errorf("parts() = %d, want 0 — a give-back with nothing admitted must not "+
 			"drive the count below zero", got)
+	}
+}
+
+// TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle pins the !wasFailed
+// half of fail's give-back, which nothing else in the package observes.
+//
+// The two halves of the condition guard opposite mistakes and only one of them
+// was pinned. An article counted as WRITTEN must lose its part when a write
+// rolls it back; an article counted as permanently FAILED must NOT, because
+// admitPermanentFailure charged that part against the seenFailed record and a
+// redelivery writes its bytes without charging a second one
+// (admitRetryOfFailed). Giving a part back that this path never took leaves the
+// file permanently one short: partsWritten >= TotalParts becomes unreachable,
+// OnFileComplete never fires, MarkFileComplete never runs, and the job sits at
+// 100% with nothing outstanding across restarts.
+//
+// Confirmed discriminating: neutering `!wasFailed` in fail leaves every other
+// test in the package green.
+func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
+	w := newTestFileWriter(t)
+	if !w.admitPermanentFailure("m1") {
+		t.Fatal("precondition: the fatal article should have been admitted")
+	}
+	// The redelivery: its bytes are the file's content, but the part was
+	// charged when the article was failed, so nothing is counted here.
+	w.admitRetryOfFailed("m1")
+	if w.parts() != 1 {
+		t.Fatalf("parts() = %d, want 1; the fixture did not reach the state under test",
+			w.parts())
+	}
+
+	// The write of that redelivery fails.
+	w.fail(articleID{msgID: "m1", artIdx: 1})
+
+	if got := w.parts(); got != 1 {
+		t.Errorf("parts() = %d after rolling back a retry of an already-failed "+
+			"article, want 1 — the part belongs to the permanent failure, and giving "+
+			"back one this path never took leaves the file one short of TotalParts "+
+			"forever", got)
+	}
+	if _, still := w.seenDone["m1"]; still {
+		t.Error("m1 is still in seenDone after the roll-back, so a redelivery would " +
+			"be read as a duplicate and its bytes never written")
+	}
+}
+
+// TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice pins the
+// CALL SITE, which the method-level tests above cannot.
+//
+// admitAccepted and admitRetryOfFailed differ only in whether they count, so
+// handleSuccessArticle's seenFailed arm reaching for the wrong one is a
+// one-token mistake with no compile-time signal. Confirmed discriminating:
+// swapping the call for admitAccepted left the whole package green before this
+// test existed.
+//
+// Counting the retry a second time carries the file PAST TotalParts, so
+// finalizeFile fires while other articles are still outstanding — a completion
+// event over a file that is not complete.
+func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.T) {
+	a := newHelperAssembler()
+	f := newHelperFile(t, t.TempDir(), "retry-count.dat", 0)
+
+	if !a.handleFatalArticle(f, WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0", FatalErr: os.ErrClosed,
+	}) {
+		t.Fatal("precondition: the permanently failed article was not counted")
+	}
+	if f.w.parts() != 1 {
+		t.Fatalf("parts() = %d, want 1; the fixture did not reach the state under test",
+			f.w.parts())
+	}
+
+	counted := a.handleSuccessArticle(f, WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0",
+		Offset: 0, Data: []byte("abcd"),
+	})
+
+	if counted {
+		t.Error("the redelivery was reported as a new part; its part was charged when " +
+			"the article was failed")
+	}
+	if got := f.w.parts(); got != 1 {
+		t.Errorf("parts() = %d after the redelivery, want 1 — one article holding two "+
+			"parts carries the file past TotalParts, so finalizeFile fires while other "+
+			"articles are still outstanding", got)
+	}
+	// The bytes are still written, because they are still the file's content.
+	if got := f.w.writtenSoFar(); len(got) != 1 {
+		t.Errorf("writtenSoFar = %v, want one article — the redelivery is not counted, "+
+			"but its bytes are the file's content and must still land", got)
+	}
+}
+
+// TestFaultedIndices_ListsEveryArticleInTheSet pins the tripwire logs' one
+// derivation. The cancel arm DROPS the set it reports, so this slice is the
+// only record left of which articles were stranded; a helper that dropped or
+// reordered an entry would make that record quietly wrong.
+func TestFaultedIndices_ListsEveryArticleInTheSet(t *testing.T) {
+	got := faultedIndices([]faultedArticle{
+		{id: articleID{msgID: "n1", artIdx: 7}},
+		{id: articleID{msgID: "d2", artIdx: 2}, displaced: true},
+	})
+	if len(got) != 2 || got[0] != 7 || got[1] != 2 {
+		t.Errorf("faultedIndices = %v, want [7 2] — every article in the set, in order, "+
+			"whatever its disposition", got)
+	}
+	if got := faultedIndices(nil); len(got) != 0 {
+		t.Errorf("faultedIndices(nil) = %v, want empty", got)
 	}
 }
