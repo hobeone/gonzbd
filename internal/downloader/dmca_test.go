@@ -73,7 +73,7 @@ func TestDecodePayload_DMCA(t *testing.T) {
 	// A body that is neither yEnc nor UU, but contains DMCA keywords.
 	body := []byte("This article has been removed due to a DMCA takedown request.\r\n")
 
-	_, _, _, err := decodePayload(body)
+	_, err := decodePayload(body)
 	if err == nil {
 		t.Fatal("expected error for DMCA body, got nil")
 	}
@@ -88,7 +88,7 @@ func TestDecodePayload_NonDMCA_NonYenc(t *testing.T) {
 	// A body that is neither yEnc nor UU and contains no DMCA keywords.
 	body := []byte("Just some random data that is not encoded.\r\n")
 
-	_, _, _, err := decodePayload(body)
+	_, err := decodePayload(body)
 	if err == nil {
 		t.Fatal("expected error for non-encoded body, got nil")
 	}
@@ -116,21 +116,26 @@ func TestDecodePayload_UUYieldsACRCOverTheDecodedBytes(t *testing.T) {
 	const payload = "Hello"
 	body := []byte("begin 644 test.bin\n%2&5L;&\\`\n`\nend\n")
 
-	data, offset, crc, err := decodePayload(body)
+	got, err := decodePayload(body)
 	if err != nil {
 		t.Fatalf("decodePayload: %v", err)
 	}
-	if string(data) != payload {
-		t.Fatalf("decoded %q, want %q — the fixture is not exercising the UU branch", data, payload)
+	if string(got.data) != payload {
+		t.Fatalf("decoded %q, want %q — the fixture is not exercising the UU branch", got.data, payload)
 	}
-	if offset != 0 {
-		t.Errorf("offset = %d, want 0", offset)
+	if got.offset != 0 {
+		t.Errorf("offset = %d, want 0", got.offset)
 	}
-	want := crc32.ChecksumIEEE(data)
-	if crc != want {
+	if got.partNumber != 0 {
+		t.Errorf("partNumber = %d, want 0 — UU has no part ordinal, and a non-zero "+
+			"value here would put every UU article into the disagreement counter",
+			got.partNumber)
+	}
+	want := crc32.ChecksumIEEE(got.data)
+	if got.crc != want {
 		t.Errorf("crc = %#08x, want %#08x (CRC32 of the decoded UU output). "+
 			"A UU article with no CRC cannot be verified on resume, so its bytes "+
-			"are re-fetched forever", crc, want)
+			"are re-fetched forever", got.crc, want)
 	}
 	// A zero CRC here would also satisfy a CRC32-of-empty comparison, so
 	// assert the fixture's payload is one whose CRC is not zero.

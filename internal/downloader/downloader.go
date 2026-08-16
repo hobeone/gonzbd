@@ -87,6 +87,10 @@ type articleRequest struct {
 	artIdx    int32
 	bytes     int
 	subject   string
+	// partNumber is the NZB segment number, carried so the served =ybegin
+	// part= ordinal can be compared against it once the body decodes. Nothing
+	// acts on a disagreement — see notePartNumberDisagreement.
+	partNumber int
 }
 
 // Options tunes Downloader behavior. Defaults (zero values) are
