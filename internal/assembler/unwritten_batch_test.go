@@ -96,7 +96,6 @@ func TestDrainFailure_GivesBackThePartsItRolledBack(t *testing.T) {
 		}) {
 			t.Fatalf("article %d was not accepted, so the fixture never counted it", i)
 		}
-		f.partsWritten++
 	}
 	if f.partsWritten != 2 {
 		t.Fatalf("partsWritten = %d, want 2; the fixture did not reach the state under test",

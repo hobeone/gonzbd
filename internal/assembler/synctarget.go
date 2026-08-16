@@ -413,6 +413,11 @@ func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
 // as long as a wedged mount stays down, and no job's files complete again. The
 // handle then leaks, which is the lesser of the two costs and the one the
 // worker's own shutdown drain still cleans up.
+// The returned error can be a *storagefault.Fault describing the FILE — a
+// failed close-time Drain, Sync or Close — and not only a submit or timeout
+// error about the call itself. That is a materially different class for a
+// caller matching on it, and it was not possible before: the opClose arm used
+// to leave the reply error nil.
 func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) error {
 	t := &jobSyncTarget{a: a, jobID: jobID}
 	_, err := t.submit(ctx, syncOp{kind: opClose, fileIdx: fileIdx})
@@ -520,7 +525,20 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 		case opTruncate:
 			r.err = f.w.Truncate(op.bound)
 		case opClose:
-			a.drainAndClose(f)
+			// Answered, not swallowed. This arm used to leave r.err nil, so
+			// CloseFile reported success for a close whose Drain, Sync or
+			// Close had failed and both callers carried on — the file marked
+			// complete and fed to DirectUnpack and post-processing while its
+			// bytes were not all on disk. opDrain, opSync and opTruncate all
+			// answer their caller; this one now does too.
+			//
+			// The callers still only LOG it, deliberately. By the time the
+			// barrier closes a file it has drained, synced, truncated,
+			// committed the extent and acked the articles, so a fault from
+			// this redundant second fsync is post-hoc: acting on it would race
+			// the completion it is part of. Reporting it is what makes it
+			// visible; deciding what it means belongs to the caller.
+			r.err = a.drainAndClose(f)
 			delete(open, key)
 			wc.forget(key)
 		case opFiles, opJobs:

@@ -81,7 +81,11 @@ type WriteRequest struct {
 	// control message (cancel) has been fully processed -- i.e. after the
 	// job's open file handles have been closed and removed. Set only by
 	// CancelJob; never used by ordinary write requests.
-	ackCh chan struct{}
+	// It carries an error for the control messages that can fail. A sender
+	// with nothing to report closes it without sending, so a receiver reading
+	// `<-ackCh` gets a nil error either way — which is what lets the cancel
+	// arm, which cannot fail, stay a bare close.
+	ackCh chan error
 
 	// syncOp, when non-nil, carries a barrier operation for the worker to
 	// perform on its own goroutine. Set only by jobSyncTarget; never used by
@@ -488,7 +492,7 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 
 	// Control message convention: JobID="" and FileIdx=-1, with the
 	// real job ID in MessageID.
-	ack := make(chan struct{})
+	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
 		FileIdx:   -1,
@@ -507,8 +511,15 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 	// races and drains it during shutdown, the worker still closes ack (see
 	// dispatchRequest), so this is never left blocking indefinitely.
 	select {
-	case <-ack:
-		return nil
+	case err := <-ack:
+		// A close-time failure on THIS path is not merely informational.
+		// maybeFinalize is the only production caller, and it is about to
+		// hand the job to par2, unrar and cleanup — over a file whose
+		// buffered bytes never reached the platter. It used to be dropped
+		// entirely: the arm computed the error and the ack was a bare close,
+		// so this returned nil regardless and the only trace was a Warn
+		// inside drainAndClose.
+		return err
 	case <-a.stopCh:
 		return ErrStopped
 	case <-ctx.Done():
@@ -521,6 +532,13 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 // and blocks until the worker has actually done so. This is called when a job
 // enters post-processing or Par2 repair, ensuring no open handles remain that
 // would trigger NFS silly-rename (.nfs*) leaks when post-processing unlinks files.
+// Its error can be a *storagefault.Fault about a FILE, not only a submit or
+// timeout error about the call — a caller matching on it has to expect both.
+// That reports at least one of the job's files failing its close-time Drain,
+// Sync or Close, which matters because the only production caller is
+// maybeFinalize: it is about to hand this job to par2, unrar and cleanup, and
+// a file whose close-time drain failed has buffered bytes that never reached
+// the platter.
 func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	// A context that is ALREADY cancelled resolves here, before the selects
 	// below, and that is a correctness requirement rather than a fast path.
@@ -561,7 +579,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 
 	// Control message convention: JobID="" and FileIdx=-2, with the
 	// real job ID in MessageID.
-	ack := make(chan struct{})
+	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
 		FileIdx:   -2,
@@ -730,12 +748,36 @@ func (a *Assembler) dispatchRequest(
 	if req.JobID == "" && req.FileIdx == -2 {
 		// Control message: close all open file handles for a job without deleting files.
 		targetID := req.MessageID
+		var closeErr error
 		for k, f := range open {
 			if k.jobID != targetID {
 				continue
 			}
-			a.drainAndClose(f)
+			cerr := a.drainAndClose(f)
+			if cerr != nil {
+				// Recorded on the ack, not swallowed. maybeFinalize is about
+				// to hand this job to par2, unrar and cleanup, and a file
+				// whose close-time drain failed has buffered bytes that never
+				// reached the platter.
+				closeErr = errors.Join(closeErr, cerr)
+			}
 			delete(open, k)
+			// Tombstoned unconditionally, including on failure, and that is
+			// deliberate. An earlier version of this gated the tombstone on
+			// cerr == nil, on the theory that a re-dispatched article should
+			// be able to reopen the file. It cannot be re-dispatched — this
+			// arm's only production caller is maybeFinalize, which sets
+			// PostProc first, and ForEachUnfinishedArticle skips a PostProc
+			// job — so the gate bought nothing and cost a great deal: the key
+			// was then in NEITHER map, so an article already in flight when
+			// the fault hit missed both guards and fell into openTargetFile,
+			// which re-creates and re-preallocates a file the job has already
+			// handed to post-processing. The fd it opens is never closed
+			// (this control message is one-shot behind SetPostProcStarted),
+			// so the job reappears in OpenJobIDs, the checkpoint loop
+			// barriers a job in post-processing, and on NFS the handle held
+			// across the unlink is the silly-rename this function exists to
+			// prevent.
 			completed[k] = struct{}{}
 			// drainFile retains the per-file cache entry to preserve its
 			// write cursor, so a drain alone leaves the cache holding a key
@@ -748,6 +790,9 @@ func (a *Assembler) dispatchRequest(
 			wc.forget(k)
 		}
 		if req.ackCh != nil {
+			if closeErr != nil {
+				req.ackCh <- closeErr
+			}
 			close(req.ackCh)
 		}
 		return 0
@@ -763,30 +808,99 @@ func (a *Assembler) dispatchRequest(
 	return 1
 }
 
-// drainAndClose flushes a file's buffered bytes, fsyncs, and closes it.
+// drainAndClose flushes a file's buffered bytes, fsyncs, closes it, and
+// reports whether any of the three failed.
 //
-// The articles the drain writes are NOT acked here — this package has no ack
-// authority — and no later Drain reports them either: this function's own
-// Drain takes the report, and the Sync that follows is what discards a
-// confirmed one. They are therefore left Outstanding and re-fetched (S3),
-// which is the safe direction and is what this path is for.
+// # What happens to the articles the drain WROTE
+//
+// They are not acked — this package has no ack authority — and no later Drain
+// reports them either, because Close throws the writer away and its retained
+// report with it.
+//
+// It is worth being exact about which step does that, because this comment
+// used to name the wrong one: it said "the Sync that follows is what discards
+// a confirmed one". FileWriter.Sync discards nothing, and says so in its own
+// doc — Confirm releases the report, and drainAndClose never calls Confirm. So
+// a reader tracing "who acks these?" was sent looking for a Sync-side discard
+// that does not exist. It is Close.
+//
+// Their Emitted bits therefore stay set, which is NOT the same as Outstanding
+// — an earlier version of this doc said "left Outstanding and re-fetched (S3)"
+// and that was only ever true of the worker-exit caller, where the next start's
+// ClearAllEmitted resets them. On the CloseJobHandles path the process keeps
+// running and nothing resets them until it stops.
 //
 // That costs nothing in the ordinary case. A clean stop runs
 // Application.shutdownCheckpoint — a full barrier, ack included — while the
 // downloader is already stopped and the handles still exist, so by the time
-// this runs there is little left to report. The comment previously claimed the
-// next barrier Drain would pick these up; it will not, and had not since the
-// writer began discarding its report on a successful Sync.
-func (a *Assembler) drainAndClose(f *openFile) {
-	if _, err := f.w.Drain(); err != nil {
-		a.log.Warn("drain file before close", "path", f.info.Path, "error", err)
+// this runs there is little left to report.
+//
+// # What happens to the articles the drain ROLLED BACK, which is the fix here
+//
+// A failed Drain rolls back everything after the failing write into w.faulted,
+// and takeFaulted is its only consumer. Without the releaseFaulted below that
+// set died with the writer: those articles kept their Emitted bits AND their
+// place in partsWritten, so the file sat closer to TotalParts with nothing
+// behind them. Not Done, not Failed, not Outstanding.
+//
+// # Why the fault is REPORTED and not ROUTED
+//
+// Returning it is the pattern opDrain, opSync and opTruncate already use, and
+// the reason to prefer it here is not symmetry. Routing a fault out-of-band
+// from this function was tried and is wrong three ways:
+//
+//   - It bypasses durability.ErrFaultRouted. Barrier.raise mints that marker so
+//     the application layer does not park a job twice for one condition; a
+//     fault built here carries no marker and reaches Stallable directly, so a
+//     wedged mount that already stalled the job through the barrier's own Drain
+//     stalls it again when the same file is closed.
+//   - On the CloseJobHandles path the job is already StatusVerifying, which is
+//     a phase neither Stall nor Fail can act on: Verifying → Paused is not a
+//     legal status edge, and maybeFinalize is a no-op once PostProc is set.
+//   - On the opClose path the barrier has already drained, synced, truncated,
+//     committed the extent and acked the articles. A fault from the redundant
+//     second fsync would race the completion it is part of.
+//
+// A permanent fault is preferred over the first one when they differ, because
+// only the permanent one preserves R20. ENOSPC on the drain followed by EROFS
+// on the close — an ext4 mounted errors=remount-ro, the Debian default — is
+// the case that makes the difference: reporting the ENOSPC alone describes the
+// condition as one that waiting can clear, when it cannot.
+func (a *Assembler) drainAndClose(f *openFile) error {
+	key := f.w.key
+	var first, permanent error
+	note := func(op string, err error) {
+		if err == nil {
+			return
+		}
+		a.log.Warn(op, "path", f.info.Path, "error", err)
+		if first == nil {
+			first = err
+		}
+		if permanent != nil {
+			return
+		}
+		if fault, ok := errors.AsType[*storagefault.Fault](err); ok && fault.Permanent {
+			permanent = err
+		}
 	}
-	if err := f.w.Sync(); err != nil {
-		a.log.Warn("sync file before close", "path", f.info.Path, "error", err)
+
+	_, err := f.w.Drain()
+	note("drain file before close", err)
+	// Unconditional, and cheap when there is nothing to give back: this is the
+	// only chance to return what the drain rolled back, because Close below
+	// throws the writer away and its faulted set with it.
+	a.releaseFaulted(f, key.jobID, key.fileIdx)
+	note("sync file before close", f.w.Sync())
+	// A failing Close is a storage condition too, and on network-backed mounts
+	// it is frequently the first report of writes that never landed — the
+	// close is where a deferred error surfaces.
+	note("close file", f.w.Close())
+
+	if permanent != nil {
+		return permanent
 	}
-	if err := f.w.Close(); err != nil {
-		a.log.Warn("close file", "path", f.info.Path, "error", err)
-	}
+	return first
 }
 
 // drainAndCloseAll drains and closes every remaining open file. Called on
@@ -794,7 +908,19 @@ func (a *Assembler) drainAndClose(f *openFile) {
 // N-of-M parts is not a completion event.
 func (a *Assembler) drainAndCloseAll(open map[fileKey]*openFile) {
 	for _, f := range open {
-		a.drainAndClose(f)
+		// Nowhere to report it. This runs on worker exit, so there is no
+		// caller left to answer and no barrier to route through — and routing
+		// it out-of-band here is specifically unsafe: Application.Shutdown
+		// joins this goroutine through waitBounded, which ABANDONS its step
+		// after the budget and returns while the worker runs on. A callback
+		// firing after that lands on app.wg.Go concurrently with app.wg.Wait,
+		// which is a WaitGroup misuse panic, and it would take the process
+		// down before Shutdown's final queue.Save.
+		//
+		// drainAndClose has already logged each failure and returned the
+		// articles it rolled back, and the next start re-derives the job's
+		// state from disk regardless (S3).
+		_ = a.drainAndClose(f)
 	}
 }
 
@@ -843,24 +969,53 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		}
 	}
 
+	// admitted reports whether the article was taken on as a part of this
+	// file. The COUNT is no longer applied here — see handleSuccessArticle —
+	// because a count applied after the write could be rolled back by that
+	// write's own failure, and w.fail derives its uncount flag from seenDone.
+	// The two were set at different moments, so uncount reversed a count that
+	// had not been applied yet: every transient accept-time write fault
+	// undercounted the file by one, permanently, and partsWritten >=
+	// TotalParts became unreachable.
+	var admitted bool
 	if req.FatalErr != nil {
-		if !a.handleFatalArticle(f, req) {
-			return
-		}
-		if req.Data != nil {
+		if admitted = a.handleFatalArticle(f, req); admitted && req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-	} else if !a.handleSuccessArticle(f, req) {
+	} else {
+		admitted = a.handleSuccessArticle(f, req)
+	}
+	if admitted {
+		// Memory pressure is a whole-cache property, not a per-file one, so
+		// it is relieved here rather than inside FileWriter: only the worker
+		// can see every file and pick the largest. B2 bounds cached article
+		// memory by configuration independently of job size, file size and
+		// job count, and nothing else enforces that bound.
+		a.relievePressure(wc, open)
+	}
+
+	// THE drain, and the reason it is one call on every path rather than one
+	// per producer.
+	//
+	// The invariant is "w.faulted is empty when partsWritten is compared to
+	// TotalParts", and a release scattered across each producer does not
+	// establish it — it only establishes that each producer eventually gets
+	// drained by somebody. Three defects lived in that gap: the seenFailed
+	// retry arm returned without draining, so a displaced article's rollback
+	// sat pending until an unrelated later failure; relievePressure drained
+	// one line before the increment, so a failed flush un-counted the current
+	// article and the increment put it straight back; and handleFatalArticle
+	// and the rejection branch both reached the comparison below with a stale
+	// set pending. In every case the file could reach TotalParts with a part
+	// whose bytes were pooled and never written, firing OnFileComplete at
+	// 100% reported health over a hole.
+	//
+	// It runs before the comparison and after relievePressure, which is the
+	// only ordering that holds for all of them.
+	a.releaseFaulted(f, req.JobID, req.FileIdx)
+	if !admitted {
 		return
 	}
-	// Memory pressure is a whole-cache property, not a per-file one, so it is
-	// relieved here rather than inside FileWriter: only the worker can see
-	// every file and pick the largest. B2 bounds cached article memory by
-	// configuration independently of job size, file size and job count, and
-	// nothing else enforces that bound.
-	a.relievePressure(wc, open)
-
-	f.partsWritten++
 	a.log.Debug("processed part",
 		"job", req.JobID, "fileidx", req.FileIdx,
 		"part", f.partsWritten, "total", f.info.TotalParts,
@@ -1039,7 +1194,14 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	// An article already counted as a success must not increment the part
 	// total a second time. The ack asymmetry that used to make this branch
 	// delicate is gone with the acks themselves.
-	return !alreadyCounted
+	if alreadyCounted {
+		return false
+	}
+	// Counted here rather than by the caller, for the reason
+	// handleSuccessArticle gives: the count and the record it is derived from
+	// have to move together.
+	f.partsWritten++
+	return true
 }
 
 // handleSuccessArticle hands one article's bytes to the file's writer.
@@ -1079,6 +1241,19 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// putting it straight back.
 		w.seenDone[req.MessageID] = struct{}{}
 	}
+	// Counted in the same breath as the seenDone record above, and that
+	// pairing is the whole fix. w.fail sets uncount from seenDone membership,
+	// so seenDone is the de facto record of "this article holds a part".
+	// While the increment lived in processRequest — after the accept —
+	// uncount reversed a count that had not been applied, so every transient
+	// accept-time write fault undercounted the file by one, permanently, and
+	// partsWritten >= TotalParts became unreachable.
+	//
+	// Outside the block, because an article with no message ID is admitted
+	// too. The writer does not track those — w.fail and noteWritten both
+	// return early on an empty ID — so they are counted here and given back
+	// by routeAcceptFailure, which is the only path that can un-admit one.
+	f.partsWritten++
 	if err := a.acceptArticle(f, id, req); err != nil {
 		// Whether it still counts depends on WHICH failure it was, and that is
 		// the A1 split reaching the part total.
@@ -1164,6 +1339,22 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		}
 		return true
 	}
+	// An article the writer does not track cannot be rolled back by it:
+	// w.fail returns early on an empty message ID, so nothing appends it to
+	// w.faulted and releaseFaulted will never see it. It was counted before
+	// the accept like any other, so the count is given back here.
+	//
+	// Only on THIS branch. A rejected article keeps its part deliberately —
+	// it is resolved permanently failed and will never arrive again, so a
+	// file declining to count it waits forever.
+	if req.MessageID == "" && f.partsWritten > 0 {
+		f.partsWritten--
+	}
+	// Released here as well as by processRequest's drain. This one is not
+	// redundant belt-and-braces: it keeps the roll-back adjacent to the
+	// failure that caused it, which is what the unit-level contract for this
+	// function asserts. The drain is what makes the INVARIANT hold for
+	// producers that have no such site.
 	a.releaseFaulted(f, req.JobID, req.FileIdx)
 	a.noteWriteFault(f.info.Path, req, err)
 	return false
@@ -1172,10 +1363,14 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 // releaseFaulted returns every article a failed writer operation rolled back
 // to Outstanding, and gives the file back the parts they had been counted for.
 //
-// Called after EVERY operation a FileWriter can fail, including the ones whose
-// fault the barrier routes rather than this package. The two are separate
-// concerns: the barrier can park the job, but it never learns which articles
-// lost their bytes, because that set does not cross the SyncTarget interface.
+// Called after every operation that can populate w.faulted — which is not the
+// same set as "every operation that can fail", and reading it as such is how
+// two producers went unpaired. It includes the ones whose fault the barrier
+// routes rather than this package (the two are separate concerns: the barrier
+// can park the job, but it never learns which articles lost their bytes,
+// because that set does not cross the SyncTarget interface), the close-time
+// drain, and Accept's displaced-article loop, which rolls an article back on a
+// path where nothing failed at all.
 //
 // Un-counting matters as much as the routing. partsWritten is incremented when
 // an article is ACCEPTED, so a rolled-back article leaves the file one part
@@ -1191,6 +1386,19 @@ func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
 	for _, r := range rolled {
 		if r.uncount && f.partsWritten > 0 {
 			f.partsWritten--
+		}
+		if r.displaced {
+			// Resolved, not re-fetched. Returning it to Outstanding produced a
+			// ping-pong: the re-fetched copy displaces the article that
+			// displaced it, which is then released in turn. See failDisplaced.
+			a.log.Warn("article was displaced by another claiming the same offset; "+
+				"recording it as permanently failed",
+				"job", jobID, "fileidx", fileIdx, "artidx", r.id.artIdx)
+			if a.opts.OnArticleRejected != nil {
+				a.opts.OnArticleRejected(jobID, fileIdx, r.id.artIdx,
+					"displaced by a later article claiming the same offset")
+			}
+			continue
 		}
 		arts = append(arts, r.id.artIdx)
 	}
@@ -1413,9 +1621,17 @@ func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) 
 					}
 					f.w.fail(rest.id)
 				}
-				// Every article this flush rolled back, not just the one the
-				// write failed on. The rest were never attempted and their
-				// buffers are gone, so they are just as un-written.
+				// Every article this flush rolled back, not just the one
+				// the write failed on. The rest were never attempted and
+				// their buffers are gone, so they are just as un-written.
+				//
+				// This used to run one line before processRequest's
+				// increment, so it decremented for the article being
+				// processed — which had not been counted yet — and the
+				// increment put it straight back, leaving the file a part
+				// ahead of its bytes and able to fire OnFileComplete over a
+				// hole. The count now happens in handleSuccessArticle,
+				// before this runs, so the decrement is exact.
 				a.releaseFaulted(f, key.jobID, key.fileIdx)
 				// Routed, and the flush stops. Logging each failure and
 				// carrying on wrote every remaining article into the same

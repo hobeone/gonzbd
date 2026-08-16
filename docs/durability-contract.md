@@ -455,7 +455,11 @@ the re-report R12 relies on.
 It is never a fault. Files leave the open set for three deliberate reasons — a
 completed finalize closing its handle, a cancelled job, a job entering
 post-processing — and every one of them drains and syncs first, so there is
-nothing left to checkpoint. The race is structural rather than exotic:
+nothing left to checkpoint when they succeed. A close-time drain CAN fail, and
+then `Close` discards the writer's retained report: the file leaves the open set
+with articles written but never acked, and nothing can checkpoint them. That is
+reported on the ack now rather than swallowed, but it is a hole in the
+"nothing left" claim, not covered by it. The race is structural rather than exotic:
 `finalizeCompletedFile` releases the per-job barrier mutex before its deferred
 `CloseFile`, so a checkpoint can hold the lock, take the file from `Files()`,
 and have the close processed before its own `Drain`.
@@ -621,6 +625,34 @@ The sequence is:
                           ├─ Queue.MarkFileComplete
                           └─ DirectUnpack handoff
 ```
+
+**`CloseFile` now answers, and the answer is logged rather than acted on.** Its
+`opClose` arm used to leave the reply error `nil`, so a close whose `Drain`,
+`Sync` or `Close` had failed reported success and the file was marked complete
+and fed to DirectUnpack and post-processing with bytes that were not all on
+disk. It reports the failure now — preferring a permanent errno over the first
+one, so an `ENOSPC` drain followed by an `EROFS` close is not described as a
+condition that waiting can clear.
+
+Both callers still log rather than act on it, but the reason is narrower than
+"post-hoc" and the first draft of this paragraph overstated it. On the path the
+argument describes — a finalize that ran to completion — the barrier has
+drained, synced, truncated, committed the extent and acked the articles, so
+acting on the redundant second fsync's fault would race the completion it is
+part of, and on a permanent errno would carry a 100%-complete, fully acked job
+into history as failed.
+
+That is **not** every entry path. `finalizeCompletedFile`'s defer also runs
+after `app.barrier == nil`, after a nil sync target, and after the
+assembler-stopped and not-in-`open` early returns; and `retryFinalize` reaches
+it on a job whose extent was committed but never acked. On all of those the
+close-time `Drain` is the file's FIRST flush and the fault is not post-hoc at
+all. `Warn` is the floor there, not `Debug`, and the completion should not
+proceed past it — see #374. The close-time fault is
+also **not** routed to `Stallable` from inside the assembler — it carries no
+`ErrFaultRouted` marker, so routing it would park the job a second time for a
+condition the barrier had already routed, and on the `CloseJobHandles` path it
+would arrive at `StatusVerifying`, which neither `Stall` nor `Fail` can act on.
 
 **A failed finalize stops the completion.** The file is not marked complete,
 DirectUnpack is not fed it, and the job does not finalize — because none of those
@@ -926,7 +958,7 @@ which owns every file handle, has done the work and answered.
 | Control | Encoding | Worker behaviour |
 |---|---|---|
 | **CancelJob** | `JobID=""`, `FileIdx=-1`, `MessageID=jobID` | closes and *deletes* all open files for the job, tombstones the job in `cancelledJobs`, discards cached articles, closes `ackCh` |
-| **CloseJobHandles** | `JobID=""`, `FileIdx=-2`, `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, closes `ackCh`. Used when a job enters post-processing or par2 repair |
+| **CloseJobHandles** | `JobID=""`, `FileIdx=-2`, `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing or par2 repair |
 | **Barrier op** | `JobID=""`, `FileIdx=-3`, `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
 
 The barrier-op indirection is invariant X1, not ceremony. One goroutine owns all
