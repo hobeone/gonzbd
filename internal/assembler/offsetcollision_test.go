@@ -385,6 +385,53 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	}
 }
 
+// TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement covers the one way
+// the SAME article can reach the displaced loop.
+//
+// handleSuccessArticle's dedup arm returns before acceptArticle when the
+// Message-ID is already in seenDone, so a redelivery normally never gets this
+// far. An article with no Message-ID cannot be deduped that way — admitAccepted
+// declines to record it, because no map can hold an empty key — so a second
+// delivery runs the whole accept path again.
+//
+// Accept's own check correctly says this is not a collision (same owner), but
+// wc.buffer evicts the article's previous entry and used to report it as
+// displaced regardless of whose it was. The article was then failed as
+// displaced BY ITSELF: part given back, faultedArticle appended, a warning
+// naming one article twice, and OnArticleRejected resolving it permanently
+// failed while its replacement buffer sat in the cache waiting to be written
+// and acked. Two terminal dispositions for one article, again.
+func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
+	w := newTestFileWriter(t, withCacheBytes(1<<20))
+	id := articleID{msgID: "", artIdx: 1}
+
+	// Small enough that no contiguous run forms, so it stays buffered.
+	w.admitAccepted(id.msgID)
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if !w.wc.buffered(w.key, 0) {
+		t.Fatal("precondition: the article is not cache-resident, so the eviction " +
+			"path under test is never reached")
+	}
+
+	// The same article again, still cache-resident.
+	w.admitAccepted(id.msgID)
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+		t.Fatalf("re-accept: %v", err)
+	}
+
+	if rolled := w.takeFaulted(); len(rolled) != 0 {
+		t.Errorf("the article was displaced by itself: %+v — routeFaulted resolves it "+
+			"permanently failed while its own replacement buffer is still queued to be "+
+			"written and acked", rolled)
+	}
+	if w.postAnomalyReported {
+		t.Error("a post anomaly was raised for one article colliding with itself, which " +
+			"tells the user their post is malformed when nothing is wrong with it")
+	}
+}
+
 // TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected pins that detection
 // survives its own disposition.
 //

@@ -187,7 +187,22 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		if existing.data != nil {
 			decoder.PutBuffer(existing.data)
 		}
-		displaced = []articleID{existing.id}
+		// Reported ONLY when a different article lost the slot. The buffer is
+		// superseded either way, but "displaced" is a claim about two articles
+		// and the caller settles whoever it names.
+		//
+		// Naming the same article made it displace ITSELF: failDisplaced gave
+		// its part back, appended a faulted record, raised a warning naming one
+		// article twice, and had routeFaulted resolve it permanently failed —
+		// while the replacement entry written just below stayed queued to be
+		// written and acked. Two terminal dispositions for one article.
+		//
+		// Reachable for an article with no Message-ID, which is the one kind
+		// handleSuccessArticle's dedup arm cannot return early for: no map can
+		// hold an empty key, so a second delivery runs the whole accept path.
+		if existing.id != art.id {
+			displaced = []articleID{existing.id}
+		}
 	}
 	fb.articles[art.offset] = art
 	size := int64(len(art.data))
