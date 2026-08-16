@@ -741,9 +741,16 @@ func (a *Assembler) dispatchRequest(
 			// kind of thing, so it is reported rather than discarded silently.
 			//
 			// Dropped, not routed. The job is being torn down: its files are
-			// deleted below, its cache forgotten, and RemoveJob removes it
-			// from the queue next. Returning these articles to Outstanding
-			// would re-dispatch work for a job that is going away.
+			// deleted below, its cache forgotten, and RemoveJob ordinarily
+			// removes it from the queue next. Returning these articles to
+			// Outstanding would re-dispatch work for a job that is going away.
+			//
+			// "Ordinarily" is exact rather than hedging. RemoveJob can return
+			// early when the queue's store delete fails, leaving the job
+			// resident with its files already gone (#376), so the teardown
+			// this drop assumes is not unconditional. It holds anyway only
+			// because the set is empty — see below — which is why this is a
+			// tripwire and not a disposition anyone should rely on.
 			//
 			// The set is empty on every reachable path — see FileWriter.Close
 			// — so this branch is a tripwire, not a handler. If it ever fires,

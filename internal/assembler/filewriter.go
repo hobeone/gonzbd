@@ -309,6 +309,14 @@ func (w *FileWriter) admitAccepted(msgID string) {
 // Its bytes are still written, because they are still the file's content, but
 // the part was charged when the article was failed and charging it twice would
 // carry the file past TotalParts.
+//
+// The caller owns the precondition that msgID is non-empty, and unlike
+// admitAccepted this does not re-check it. Its only call site reaches it from
+// inside a non-empty-ID branch, and an empty key here would be worse than a
+// no-op: nothing in the package can remove a seenDone[""] entry — fail and
+// noteWritten both return early on an empty ID — so it would be permanent, and
+// every later article with no Message-ID would take the duplicate branch
+// against it.
 func (w *FileWriter) admitRetryOfFailed(msgID string) {
 	w.seenDone[msgID] = struct{}{}
 }

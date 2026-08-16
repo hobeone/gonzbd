@@ -99,11 +99,18 @@ func TestFileWriter_AdmitRetryOfFailedDoesNotCount(t *testing.T) {
 // change introduced, and the gate that surfaced it scans whole files.
 //
 // failDisplaced is a rollback with a different DISPOSITION from a failed write.
-// The article's bytes are gone and nothing will write them, so it gives its
-// part back like any rollback — but it must not go back to Outstanding,
-// because re-fetching it reproduces the collision that displaced it. Both
-// halves are asserted here: the count moves, and the entry carries the marker
-// the caller routes on.
+// It gives the article's part back like any rollback, and marks the entry so
+// the caller resolves it permanently failed rather than returning it to
+// Outstanding — re-fetching it would reproduce the collision that displaced it.
+//
+// This test pins what the code does today; it does not certify that the pair
+// is right. Giving the part back AND resolving the article permanently failed
+// is the combination routeAcceptFailure's doc argues against in the mirror
+// case, and failPermanent — one function away, reached through the same
+// OnArticleRejected route — keeps the part for exactly that reason. Which rule
+// should apply here is open: see #379. The change that moved the counter
+// preserves the current behaviour rather than settling it, so if #379 lands on
+// the other answer, this test's first assertion is the one that flips.
 func TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition(t *testing.T) {
 	w := newTestFileWriter(t)
 	w.admitAccepted("x1")
@@ -114,8 +121,8 @@ func TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition(t *testi
 	w.failDisplaced(articleID{msgID: "x1", artIdx: 1})
 
 	if got := w.parts(); got != 0 {
-		t.Errorf("parts() = %d after the displacement, want 0 — the displaced article's "+
-			"bytes are gone, so a file keeping its part reaches TotalParts over a hole", got)
+		t.Errorf("parts() = %d after the displacement, want 0 — this is the CURRENT "+
+			"disposition, not an endorsement of it", got)
 	}
 	if _, still := w.seenDone["x1"]; still {
 		t.Error("x1 is still in seenDone after being displaced")
