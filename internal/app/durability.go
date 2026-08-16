@@ -126,9 +126,22 @@ func (app *Application) handleArticlesUnwritten(jobID string, _ int, artIdxs []i
 // app.go's onFileComplete guards against it by handing the work to another
 // goroutine. This callback did not.
 //
-// wg.Add during Wait is safe for the same reason it is safe there: this runs
-// on the assembler worker, which Shutdown joins at step 3 — before
-// app.wg.Wait() at step 4.
+// wg.Add during Wait is ORDINARILY safe because this runs on the assembler
+// worker, which Shutdown joins at step 3 — before app.wg.Wait() at step 4.
+//
+// "Ordinarily" is doing real work in that sentence, and an earlier version
+// omitted it. waitBounded ABANDONS its step when the budget expires: it logs
+// "shutdown step exceeded budget; abandoning" and returns while the goroutine
+// it was waiting on runs on. So a wedged mount that keeps Assembler.Stop past
+// its 15s budget lets Shutdown proceed to app.wg.Wait() with the worker still
+// draining — and a write fault raised after that point reaches this function
+// and Adds to a WaitGroup that already has a waiter, which panics and takes
+// the process down before Shutdown's final queue.Save.
+//
+// The window is narrow and this is not the place to close it; what matters
+// here is that the claim is bounded rather than absolute, so nobody builds on
+// it. Assembler.drainAndCloseAll declines to route faults at all for exactly
+// this reason.
 func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
 	app.wg.Go(func() {
 		if f.Permanent {

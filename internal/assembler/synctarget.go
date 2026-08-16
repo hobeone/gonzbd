@@ -413,6 +413,11 @@ func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
 // as long as a wedged mount stays down, and no job's files complete again. The
 // handle then leaks, which is the lesser of the two costs and the one the
 // worker's own shutdown drain still cleans up.
+// The returned error can be a *storagefault.Fault describing the FILE — a
+// failed close-time Drain, Sync or Close — and not only a submit or timeout
+// error about the call itself. That is a materially different class for a
+// caller matching on it, and it was not possible before: the opClose arm used
+// to leave the reply error nil.
 func (a *Assembler) CloseFile(ctx context.Context, jobID string, fileIdx int32) error {
 	t := &jobSyncTarget{a: a, jobID: jobID}
 	_, err := t.submit(ctx, syncOp{kind: opClose, fileIdx: fileIdx})

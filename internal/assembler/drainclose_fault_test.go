@@ -37,7 +37,6 @@ func TestDrainAndClose_ReturnsTheRolledBackArticles(t *testing.T) {
 		}) {
 			t.Fatalf("article %d was not accepted, so the fixture never buffered it", i)
 		}
-		f.partsWritten++
 	}
 
 	// The device fills up between the accepts and the close.
@@ -106,21 +105,23 @@ func TestDrainAndClose_ReportsTheFailureToItsCaller(t *testing.T) {
 
 	t.Run("a failing close", func(t *testing.T) {
 		f := newHelperFile(t, dir, "close.dat", 0)
-		// Closed underneath the writer, so its own Close returns EBADF. On
-		// network-backed mounts the close is frequently where a deferred
-		// write error first surfaces, which is why it is reported at all.
-		if err := f.w.handle.Close(); err != nil {
-			t.Fatalf("the fixture could not pre-close the handle: %v", err)
-		}
+		// Injected through the seam rather than by pre-closing the handle.
+		// Pre-closing makes Sync fail one line earlier, so the arm under test
+		// is never reached — and Go's poll.FD answers an already-closed
+		// handle with os.ErrClosed, not EBADF, so it would not even be the
+		// permanent errno such a fixture appears to be arranging.
+		f.w.closeFile = func() error { return syscall.EIO }
 
 		err := a.drainAndClose(f)
 
 		var fault *storagefault.Fault
 		if !errors.As(err, &fault) {
-			t.Fatalf("drainAndClose() = %v, want a *storagefault.Fault", err)
+			t.Fatalf("drainAndClose() = %v, want a *storagefault.Fault — on "+
+				"network-backed mounts the close is frequently where a deferred "+
+				"write error first surfaces", err)
 		}
-		if fault.Op != "sync" && fault.Op != "close" {
-			t.Errorf("fault op = %q, want the failing syscall named", fault.Op)
+		if fault.Op != "close" {
+			t.Errorf("fault op = %q, want %q", fault.Op, "close")
 		}
 	})
 }
@@ -147,7 +148,7 @@ func TestDrainAndClose_PrefersAPermanentFaultOverTheFirstOne(t *testing.T) {
 		t.Fatal("the article was not accepted, so the fixture never buffered it")
 	}
 	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
-	f.w.syncFile = func() error { return syscall.EROFS }
+	f.w.closeFile = func() error { return syscall.EROFS }
 
 	err := a.drainAndClose(f)
 

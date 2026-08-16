@@ -114,12 +114,27 @@ type FileWriter struct {
 	// fsync-to-platter and cannot; it pins that the syscall is on the path at
 	// all, which is the part that was silently deletable.
 	syncFile func() error
+
+	// closeFile is handle.Close in production, on the same terms as writeAt
+	// and syncFile.
+	//
+	// It exists because the close arm of drainAndClose is documented as
+	// load-bearing — on network-backed mounts the close is frequently where a
+	// deferred write error first surfaces — and had no coverage at all. The
+	// only way to fail a real Close is to close the handle first, which makes
+	// Sync fail one line earlier and never reaches the arm under test.
+	closeFile func() error
 }
 
 // faultedArticle is one article a failed write rolled back, and whether it
 // still counts toward its file's part total.
+//
+//nolint:govet // field order follows the doc's narrative, not alignment
 type faultedArticle struct {
-	id articleID
+	// displaced marks an article a later article at the same offset pushed
+	// out of the cache, rather than one a write failed on. See failDisplaced.
+	displaced bool
+	id        articleID
 	// uncount reports that this article's count must be given back. See fail
 	// for the case where it must not.
 	uncount bool
@@ -137,6 +152,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 	}
 	w.writeAt = handle.WriteAt
 	w.syncFile = handle.Sync
+	w.closeFile = handle.Close
 	return w
 }
 
@@ -191,6 +207,26 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // write that failed, a cache displacement loses whatever it evicted — and the
 // caller was given only one article index to route. So the set is accumulated
 // here and taken by the caller, rather than inferred from an error.
+// failDisplaced rolls back an article a LATER article displaced from the same
+// offset, which is a different disposition from a write that failed.
+//
+// Its bytes are gone and nothing will write them, so it has to give its part
+// back like any rollback. But it must not be returned to Outstanding: the
+// collision is a property of what the server sent — two segments claiming one
+// offset — so re-fetching it produces the same collision, and the re-fetched
+// copy displaces the article that displaced it. Observed as a [0 1 0 1 0]
+// ping-pong when this went through the un-written path.
+//
+// So it is resolved permanently failed instead, which is the same disposition
+// handleLateDuplicate reaches for an article that can never be written now or
+// later. See releaseFaulted.
+func (w *FileWriter) failDisplaced(id articleID) {
+	w.fail(id)
+	if n := len(w.faulted); n > 0 && w.faulted[n-1].id == id {
+		w.faulted[n-1].displaced = true
+	}
+}
+
 func (w *FileWriter) fail(id articleID) {
 	if id.msgID == "" {
 		return
@@ -254,7 +290,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 		// will write them now. It has made no claim — it was never reported
 		// Written — so failing it here only corrects the seen-sets.
 		for _, d := range displaced {
-			w.fail(d)
+			w.failDisplaced(d)
 		}
 		if run := w.wc.flushContiguous(w.key); run != nil {
 			return w.flushRun(run)
@@ -462,7 +498,7 @@ func (w *FileWriter) Truncate(n int64) error {
 
 // Close releases the handle.
 func (w *FileWriter) Close() error {
-	if err := w.handle.Close(); err != nil {
+	if err := w.closeFile(); err != nil {
 		return storagefault.Classify("close", w.path, err)
 	}
 	return nil

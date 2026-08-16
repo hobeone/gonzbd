@@ -4,55 +4,75 @@ import (
 	"testing"
 )
 
-// TestAccept_DisplacedArticleGivesBackItsPart pins a producer of w.faulted on
-// a path where NOTHING failed, which is why it went unpaired for so long.
+// TestDisplacedArticle_GivesBackItsPartAndIsResolved pins a producer of
+// w.faulted on a path where NOTHING failed, which is why it went unpaired.
 //
 // Two segments resolving to the same offset is not exotic — FileInfo.TotalParts'
 // own doc says the assembler trusts the caller here. Article X is buffered and
 // counted toward partsWritten. Article Y arrives at the same offset, wc.buffer
-// pools X's bytes and returns it as displaced, and Accept calls w.fail(X) with
-// uncount:true. If the run is not yet long enough to flush, Accept returns nil,
-// handleSuccessArticle returns true, and Y is counted as well.
+// pools X's bytes and returns it as displaced, and Accept fails X. If the run
+// is not yet long enough to flush, Accept returns nil and Y is admitted too —
+// so the file sits one part closer to TotalParts with one article's bytes
+// behind it, and a later article can fire OnFileComplete over the gap.
 //
-// The file is then one part closer to TotalParts with nothing behind it — the
-// hazard releaseFaulted's own doc names, reached with no storage failure at
-// all — until some unrelated later rollback happened to drain the set.
-func TestAccept_DisplacedArticleGivesBackItsPart(t *testing.T) {
+// Driven through processRequest rather than handleSuccessArticle, because
+// processRequest owns the drain that establishes "w.faulted is empty when
+// partsWritten is compared to TotalParts". A test calling the inner function
+// would pass with the drain deleted.
+func TestDisplacedArticle_GivesBackItsPartAndIsResolved(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
-	var rolledBack []int32
+	var unwritten []int32
+	var rejected []int32
 	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
-		rolledBack = append(rolledBack, artIdxs...)
+		unwritten = append(unwritten, artIdxs...)
+	}
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		rejected = append(rejected, artIdx)
 	}
 
+	wc := newWriteCache(1 << 20)
 	f := newHelperFile(t, dir, "displaced.dat", 0)
-	f.w.wc = newWriteCache(1 << 20)
+	f.w.wc = wc
 	f.info.TotalParts = 4
+	key := fileKey{jobID: "job", fileIdx: 0}
+	open := map[fileKey]*openFile{key: f}
+	completed := map[fileKey]struct{}{}
 
-	// X, at offset 0.
-	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "x", Offset: 0, Data: []byte("XXXX"),
-	}) {
-		t.Fatal("X was not accepted, so the fixture never buffered it")
+	for _, art := range []struct {
+		msg string
+		idx int32
+	}{{"x", 0}, {"y", 1}} {
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: art.idx, MessageID: art.msg,
+			Offset: 0, Data: []byte("XXXX"),
+		}, open, completed, wc)
 	}
-	f.partsWritten++
 
-	// Y, at the SAME offset, which displaces X from the cache.
-	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "y", Offset: 0, Data: []byte("YYYY"),
-	}) {
-		t.Fatal("Y was not accepted, so the fixture never displaced X")
+	// Fixture check on a signal the code under test does not produce: X's
+	// bytes must actually have been displaced from the cache. Asserting on
+	// the rollback instead would make the fixture guard the pin, so removing
+	// the fix would fail here with "the fixture did not displace X" — sending
+	// a maintainer to the wrong mechanism.
+	if got := wc.bytesFor(key); got != 4 {
+		t.Fatalf("cache holds %d bytes for the file, want 4 (one article) — the fixture "+
+			"did not displace X, so it proves nothing about the displaced-article path",
+			got)
 	}
-	f.partsWritten++
 
-	if len(rolledBack) == 0 {
-		t.Fatal("nothing was rolled back, so the fixture did not displace X and this " +
-			"test proves nothing about the displaced-article path")
-	}
 	if f.partsWritten != 1 {
 		t.Errorf("partsWritten = %d, want 1 — X was displaced and its bytes pooled, so "+
 			"only Y is behind a part. Counting both leaves the file one part closer to "+
 			"TotalParts with nothing behind it, and a later article can then fire "+
 			"OnFileComplete over bytes that never reached WriteAt", f.partsWritten)
+	}
+	if len(rejected) != 1 || rejected[0] != 0 {
+		t.Errorf("rejected = %v, want [0] — a displaced article must be RESOLVED, not "+
+			"re-fetched: the collision is a property of what the server sent, so the "+
+			"re-fetched copy displaces the article that displaced it", rejected)
+	}
+	if len(unwritten) != 0 {
+		t.Errorf("unwritten = %v, want none — returning a displaced article to "+
+			"Outstanding is what produced the [0 1 0 1 0] ping-pong", unwritten)
 	}
 }
