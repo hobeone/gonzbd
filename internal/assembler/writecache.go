@@ -136,11 +136,20 @@ func (wc *writeCache) enabled() bool {
 // immediately.
 //
 // displaced carries the identity of an article evicted from the same offset,
-// and is nil in every ordinary case. The caller must settle it — as a failure,
-// so it is fetched again — rather than dropping it. Returning it is not
-// bookkeeping for its own sake: once an ack waits on a write, an article
-// silently removed from the cache is an article that is never acked at all and
-// never re-dispatched, which is the defect this whole path exists to close.
+// and is nil in every ordinary case. The caller must settle it rather than
+// dropping it: once an ack waits on a write, an article silently removed from
+// the cache is an article that is never acked at all and never re-dispatched,
+// which is the defect this path exists to close.
+//
+// This is no longer where a collision is DETECTED, and reading it as such is
+// what #383 was. Membership here answers "are these bytes still unwritten",
+// which is a question about caching: buildContiguousRun deletes each article
+// it flushes, so in an in-order download the first article had already left
+// this map before its duplicate arrived, and three paths — flushed, caching
+// disabled, zero-length — reported no collision at all. FileWriter.acceptedAt
+// is the detector now, consulted in Accept before this function, and it sees
+// all three. What remains here is a backstop for the eviction itself, which
+// only this function can observe.
 //
 // Folding the two identities together and letting the winner's write ack both
 // would be wrong. This branch exists for a case upstream dedup should already
@@ -165,8 +174,13 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		fb = &fileBuf{articles: make(map[int64]bufferedArticle)}
 		wc.perFile[key] = fb
 	}
-	// If this offset already exists (shouldn't happen in practice due to
-	// upstream dedup), replace it and adjust accounting.
+	// If this offset already exists, replace it and adjust accounting.
+	//
+	// Reaching this with a DIFFERENT article means Accept's acceptedAt check
+	// has already failed the incumbent, and Accept skips the one it failed —
+	// so a second settlement here would charge the same article's bytes to the
+	// job's par2 budget twice. Reaching it with the same article is a re-accept
+	// after a rollback, which is not a collision at all.
 	if existing, dup := fb.articles[art.offset]; dup {
 		wc.used -= int64(len(existing.data))
 		fb.totalBytes -= int64(len(existing.data))

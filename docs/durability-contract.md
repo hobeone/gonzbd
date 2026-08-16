@@ -942,7 +942,26 @@ including every failure path.
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
 - An article **displaced** from an offset a later one claimed loses its bytes.
-  It made no claim, so failing it only corrects the seen-sets.
+  It made no claim — it was never reported Written — so failing it corrects the
+  writer's own accounting and nothing durable. It gives its part back, is
+  resolved *permanently failed* rather than returned to Outstanding (re-fetching
+  it reproduces the collision), and its bytes are charged to the job's par2
+  recovery budget.
+
+  Detection lives in `FileWriter.acceptedAt`, an offset→owner index consulted in
+  `Accept`, and a collision is decided by **identity**: an offset already owned
+  by the same article is a re-accept after a rollback, not a collision. It used
+  to live in `writeCache.buffer` and keyed on cache residency, which missed the
+  ordinary in-order case entirely — the first article was flushed and evicted
+  before its duplicate arrived, so both were counted and the file completed with
+  one part's bytes overwritten (#383). Detection is per-open-episode, the same
+  residency as `seenDone`.
+
+  The first collision on a file also raises `Options.OnPostAnomaly`, which the
+  app routes to `job.Warning`. That is diagnosis, not accounting: it states that
+  two segments claim one byte range without asserting the post is malformed,
+  because a redundant posting and a server-mangled `=ypart begin=` produce the
+  same observation and yEnc checksums the payload, never the header.
 - **Cross-state dedup**: a Message-ID previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
