@@ -94,6 +94,44 @@ type FileWriter struct {
 	seenDone   map[string]struct{}
 	seenFailed map[string]struct{}
 
+	// acceptedAt records which article OWNS each offset this writer has
+	// accepted bytes for. It is the collision detector (#383).
+	//
+	// Detection used to live in writeCache.buffer, which decided a collision
+	// by finding the first article still resident in fb.articles. That answers
+	// "are these bytes still unwritten", which is a question about caching,
+	// not about what the file has been told. buildContiguousRun deletes each
+	// article it flushes and advances fb.writeCursor past it, so for an
+	// IN-ORDER download the first article was gone before the duplicate
+	// arrived: the duplicate was buffered, never picked up by a run, and
+	// written over the first at drain time. No detection, no roll-back, both
+	// counted, file completes. Two further paths missed it — caching disabled
+	// (write_cache_size has no validation floor and accepts zero) and
+	// zero-length articles, which buffer refuses. Both route to writeOne.
+	//
+	// A collision is decided by IDENTITY, not by occupancy: an offset already
+	// owned by THIS article is a re-accept, not a collision. That is what
+	// makes the index safe without any removal.
+	//
+	// The occupancy form would have needed it. An article whose write faults
+	// is rolled back and re-dispatched, and comes back at the same offset —
+	// req.ArtIdx is the manifest index, so the redelivered articleID is
+	// identical — and without removal every such retry would report a
+	// collision with itself. Removal in turn could not have worked: fail
+	// returns early on an empty Message-ID, so an untracked article's entry
+	// would never have been removed, which is that false positive arriving on
+	// the one path the mechanism could not reach. Identity comparison answers
+	// all of it and leaves seenDone alone.
+	//
+	// Entries are never removed, and that is deliberate rather than a leak.
+	// The question is "who owns this offset", not "who currently holds a
+	// part", so the index is intentionally NOT equal to seenDone: a
+	// write-faulted article keeps its entry here while losing its seenDone
+	// one. Residency is the writer's, so this is per-open-episode — a
+	// collision spanning a close-handles cycle or a restart is invisible,
+	// exactly as seenDone's duplicate handling is.
+	acceptedAt map[int64]articleID
+
 	// faulted accumulates the articles a failed write rolled back, for the
 	// caller to route to Outstanding. See fail.
 	faulted []faultedArticle
@@ -170,6 +208,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 		wc:         wc,
 		seenDone:   make(map[string]struct{}),
 		seenFailed: make(map[string]struct{}),
+		acceptedAt: make(map[int64]articleID),
 	}
 	w.writeAt = handle.WriteAt
 	w.syncFile = handle.Sync
@@ -405,13 +444,46 @@ func (w *FileWriter) takeFaulted() []faultedArticle {
 // Drain is not enough on its own — and the file goes on to complete over bytes
 // that never landed.
 func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
+	// Collision detection happens HERE, before the cache is consulted, so it
+	// is independent of cache residency and of whether caching is configured
+	// at all. See acceptedAt for why identity rather than occupancy.
+	//
+	// The displaced article is the incumbent, not the arrival: its bytes are
+	// either already on disk or about to be overwritten, and nothing will
+	// write them again. Recording the arrival as the new owner afterwards is
+	// what lets a third article at the same offset be detected in turn.
+	// A bool rather than comparing against a zero articleID: articleID{"", 0}
+	// is a legitimate article — index 0 with no Message-ID — so a zero value
+	// cannot mean "nothing was failed" without silently skipping it below.
+	var alreadyFailed articleID
+	var didFail bool
+	if owner, taken := w.acceptedAt[off]; taken && owner != id {
+		w.failDisplaced(owner)
+		alreadyFailed, didFail = owner, true
+	}
+	w.acceptedAt[off] = id
+
 	art := bufferedArticle{offset: off, data: data, id: id}
 	if cached, displaced := w.wc.buffer(w.key, art); cached {
 		telemetry.CacheHits.Add(1)
 		// An article displaced from this offset loses its bytes; nothing else
 		// will write them now. It has made no claim — it was never reported
 		// Written — so failing it here only corrects the seen-sets.
+		//
+		// The check above has already failed the incumbent in every case the
+		// cache can also see, so this loop is now a backstop rather than the
+		// detector. It stays because wc.buffer owns the eviction and is the
+		// only thing that knows which article it dropped.
+		//
+		// Skipping alreadyFailed is not tidiness. Failing one article twice
+		// appends a second faultedArticle, and routeFaulted resolves each
+		// entry it is handed — so the duplicate would report the same article
+		// permanently failed twice, charging its bytes against the job's par2
+		// budget twice over.
 		for _, d := range displaced {
+			if didFail && d == alreadyFailed {
+				continue
+			}
 			w.failDisplaced(d)
 		}
 		if run := w.wc.flushContiguous(w.key); run != nil {
