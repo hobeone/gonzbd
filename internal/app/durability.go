@@ -152,20 +152,6 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 	})
 }
 
-// handleArticleRejected records an article the assembler refused as
-// permanently failed.
-//
-// Permanently, and not returned to Outstanding, because the reason is a
-// property of what the server sent: the offset comes from the article's own
-// yEnc header, so a re-fetch of the same article yields the same rejection.
-// Ack is what charges its bytes against the job's par2 recovery budget and
-// releases on-demand recovery volumes, and Queue.AckPermanentFailure clears
-// the Emitted bit as part of resolving the article — without it the job waits
-// forever on something nothing will re-dispatch.
-//
-// This is the other side of the A1 split from handleWriteFault: that one
-// stalls the job and touches no article, this one fails the article and
-// touches no job state.
 // handlePostAnomaly surfaces a structural fault in what the servers served, so
 // the user can tell a bad post from a bad disk or a bad connection (#379).
 //
@@ -187,6 +173,20 @@ func (app *Application) handlePostAnomaly(jobID string, fileIdx int, reason stri
 	}
 }
 
+// handleArticleRejected records an article the assembler refused as
+// permanently failed.
+//
+// Permanently, and not returned to Outstanding, because the reason is a
+// property of what the server sent: the offset comes from the article's own
+// yEnc header, so a re-fetch of the same article yields the same rejection.
+// Ack is what charges its bytes against the job's par2 recovery budget and
+// releases on-demand recovery volumes, and Queue.AckPermanentFailure clears
+// the Emitted bit as part of resolving the article — without it the job waits
+// forever on something nothing will re-dispatch.
+//
+// This is the other side of the A1 split from handleWriteFault: that one
+// stalls the job and touches no article, this one fails the article and
+// touches no job state.
 func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string) {
 	app.log.Warn("article rejected by the assembler; recording it as permanently failed",
 		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason)

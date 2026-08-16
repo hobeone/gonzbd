@@ -930,11 +930,18 @@ including every failure path.
 
 ## Duplicate and late-article handling
 
-- **Per-writer `seenDone` / `seenFailed`**: dedup by Message-ID. `seenDone`'s
-  value is the **offset the first copy was accepted at**, which the duplicate
-  branch needs: dedup is keyed on the Message-ID, so a duplicate may carry a
-  different yEnc offset, and asking about its own would interrogate a slot the
-  first copy never occupied — reading empty as "already written".
+- **Per-writer `seenDone` / `seenFailed`**: dedup by Message-ID, membership-only.
+
+  This used to say `seenDone`'s value was "the offset the first copy was
+  accepted at, which the duplicate branch needs". Both halves were wrong. The
+  duplicate branch never asked: `handleSuccessArticle` releases the buffer and
+  returns, because the answer changes nothing — either way the second copy's
+  bytes are redundant and re-writing them is a second `WriteAt` over the same
+  range. The value was written and never read, and #375 removed it.
+
+  Offsets are owned by `acceptedAt` instead, which is a different index for a
+  different question: not "has this article been seen" but "who owns this byte
+  range, and have their bytes been written". See the collision rules below.
 - A write path that **fails** moves its articles out of `seenDone` into
   `seenFailed`, so a later duplicate is not read as a success. There is no ack
   in either direction on a failed write (A1). Absence from the next `Drain` is
@@ -1133,9 +1140,11 @@ articles or sparse regions.
 
   The give-back is **not** part of the routing above, and reading it as such is
   how the two used to drift apart. `partsWritten` lives on `FileWriter`, beside
-  the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter.fail`
+  the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter`
   applies the decrement in the same statement pair that clears the article's
-  `seenDone` entry. The routing callbacks decide *disposition* only. An article
+  `seenDone` entry — in `rollbackPart`, which both roll-back dispositions
+  (`fail` and `failDisplaced`) call before recording what becomes of the
+  article. The routing callbacks decide *disposition* only. An article
   already counted as permanently **failed** keeps its part through a roll-back:
   `admitPermanentFailure` charged it, a redelivery writes bytes without
   charging a second one, and decrementing there leaves the file one part short
