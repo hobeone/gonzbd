@@ -261,6 +261,11 @@ func absorbFile(
 
 type articleCounters struct {
 	dupes, dupeIDs, bad int
+
+	// dupeIDBytes is the declared byte total of the segments dropped for a
+	// repeated Message-ID. It is added back into File.Bytes rather than lost
+	// with the segments themselves — see convertFile.
+	dupeIDBytes int64
 }
 
 // convertFile transforms a wire-format xmlFile into the public File
@@ -285,6 +290,23 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string
 
 	byPart, counters := partitionSegments(xf.Segments, digest, seenIDs)
 	normalizeFileStruct(&file, byPart)
+
+	// Add back the bytes of segments dropped for a repeated Message-ID.
+	//
+	// File.Bytes becomes Manifest.FileBytes and then the assembler's
+	// ExpectedSize, which bounds every write to ExpectedSize + 12.5%. Leaving
+	// the dropped bytes out shrinks that bound below the file's true size, so
+	// the file's own later parts are refused as writing past its declared end.
+	// Dropping k of N equally-sized segments leaves the bound at
+	// (N-k)/N * 1.125 of the truth, which falls below 1.0 once k/N exceeds one
+	// ninth — a single duplicate in a file of eight segments or fewer.
+	//
+	// The asymmetry is what settles it: this figure is an estimate used as an
+	// upper bound, so over-stating it only loosens the bound while
+	// under-stating it refuses data that genuinely belongs to the file. The
+	// dropped segment named an article that exists; only its NZB entry was
+	// redundant.
+	file.Bytes += counters.dupeIDBytes
 
 	if len(file.Articles) == 0 {
 		return file, 0, counters
@@ -330,6 +352,9 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 		// silently change the identity of every affected NZB.
 		if _, dup := seenIDs[id]; dup {
 			counters.dupeIDs++
+			if s.Bytes > 0 && s.Bytes < maxArticleSize {
+				counters.dupeIDBytes += int64(s.Bytes)
+			}
 			continue
 		}
 		if s.Bytes <= 0 || s.Bytes >= maxArticleSize {

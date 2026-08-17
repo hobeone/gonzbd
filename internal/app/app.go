@@ -643,7 +643,15 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		if !force {
 			job.Status = constants.StatusPaused
 		}
-		job.Warning = warning
+		// Appended rather than assigned: BuildIngestJob may already have
+		// recorded what the parser discarded, and a job can be both a
+		// duplicate and malformed. Overwriting would drop the parse warning
+		// silently, on exactly the jobs most likely to need it.
+		if job.Warning != "" {
+			job.Warning += "; " + warning
+		} else {
+			job.Warning = warning
+		}
 	}
 	// Pick a name not already taken in the queue or on disk. queue.Add
 	// re-checks under its write lock (authoritative), so the small TOCTOU
