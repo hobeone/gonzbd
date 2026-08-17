@@ -53,7 +53,15 @@ func fakeSrv(name string, priority int, enabled bool) *Server {
 	})
 }
 
-// fakeArticle returns an UnfinishedArticle with the given message-ID under jobID "j1".
+// fakeArticle returns an UnfinishedArticle with the given message-ID under
+// jobID "j1".
+//
+// ArtIdx is set explicitly rather than left at the struct zero. Every caller
+// dispatches a single article, so index 0 is correct for all of them — but the
+// dispatch tracker keys on (jobID, artIdx), so two fixtures sharing a job and
+// an index are one entry, not two. Stating it here is what makes that a
+// decision rather than an accident; a test needing two articles under one job
+// must give them distinct indices.
 func fakeArticle(msgID string) queue.UnfinishedArticle {
 	return queue.UnfinishedArticle{
 		JobID:     "j1",
@@ -61,6 +69,7 @@ func fakeArticle(msgID string) queue.UnfinishedArticle {
 		JobAdded:  time.Now().Add(-time.Hour),
 		MessageID: msgID,
 		FileIdx:   0,
+		ArtIdx:    0,
 		Bytes:     100,
 		Subject:   "test.bin",
 	}
@@ -1610,8 +1619,8 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 
-	req1 := &articleRequest{jobID: "job1", messageID: "hangup1@h"}
-	req2 := &articleRequest{jobID: "job1", messageID: "hangup2@h"}
+	req1 := &articleRequest{jobID: "job1", artIdx: 1, messageID: "hangup1@h"}
+	req2 := &articleRequest{jobID: "job1", artIdx: 2, messageID: "hangup2@h"}
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -1696,8 +1705,8 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 
-	req1 := &articleRequest{jobID: "job1", messageID: "hangup1@h"}
-	req2 := &articleRequest{jobID: "job1", messageID: "hangup2@h"}
+	req1 := &articleRequest{jobID: "job1", artIdx: 1, messageID: "hangup1@h"}
+	req2 := &articleRequest{jobID: "job1", artIdx: 2, messageID: "hangup2@h"}
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
