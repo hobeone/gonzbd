@@ -31,7 +31,7 @@ The project follows a standard Go project layout:
     - `fsutil/`: File system utilities: path sanitization, atomic writes (temp+fsync+rename), symlink-safe containment checks, and cross-device move.
     - `history/`: Persistence layer for completed jobs using SQLite and `goose` migrations.
     - `humanfmt/`: Human-readable formatting helpers (sizes, durations) shared across packages.
-    - `nntp/`: Low-level NNTP protocol implementation with message-ID validation and bounded response reading.
+    - `nntp/`: Low-level NNTP protocol implementation with bounded response reading. It does not validate message-IDs — see the Message-ID Validation note below.
     - `notifier/`: Dispatcher for user notifications (email, Apprise, scripts).
     - `nzb/`: NZB (XML) parsing and model definitions with input size limits.
     - `par2/`: PAR2 parity verification and repair tool wrapper with structured status parsing.
@@ -108,7 +108,7 @@ To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded
 ### NNTP & Downloader (`internal/nntp`, `internal/downloader`)
 
 - **Connection Management**: The `nntp` package implements the raw NNTP protocol. A `nntp.Conn` represents a single socket. The `downloader` manages pools of these connections per server.
-- **Message-ID Validation**: All message-IDs are validated before use to prevent NNTP command injection (CR, LF, NUL, `>` rejected).
+- **Message-ID Validation**: `nntp` does *not* validate message-IDs; it interpolates them into the command line as given. Validity is decided once, further out, at NZB parse time — `internal/nzb` refuses any ID that is empty, longer than 495 octets, or carrying SP, HT, CR, LF, NUL or an interior `<`/`>`, which is what prevents command injection. `queue.Manifest.UnmarshalJSON` re-applies the same predicate to IDs read back from disk, since a manifest written before that rule existed could still carry one. See `docs/article-validation-contract.md`.
 - **Bounded Reading**: Response lines are capped at 2KB and article bodies at 10MB to prevent OOM from malicious servers.
 - **Pipelining**: The system supports NNTP pipelining (multiple in-flight requests per socket) to maximize throughput over high-latency connections.
 - **Error Classification**: NNTP status codes are mapped to Go sentinel errors (`ErrNoArticle`, `ErrAuthRejected`, etc.), allowing for robust retry and penalty logic.

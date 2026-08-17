@@ -7,70 +7,10 @@ import (
 	"testing"
 )
 
-// --- C1: validateMessageID ---
-
-func TestValidateMessageID(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		ids     []string
-		wantErr bool
-	}{
-		{
-			name: "crlf injection",
-			ids: []string{
-				"abc\r\nQUIT\r\n@news.example.com",
-				"abc\n@news.example.com",
-				"abc\r@news.example.com",
-			},
-			wantErr: true,
-		},
-		{
-			name:    "null byte",
-			ids:     []string{"abc\x00def@news.example.com"},
-			wantErr: true,
-		},
-		{
-			name:    "empty and brackets",
-			ids:     []string{"", "<>", "<", ">"},
-			wantErr: true,
-		},
-		{
-			name:    "close angle bracket injection",
-			ids:     []string{"abc>QUIT@news.example.com"},
-			wantErr: true,
-		},
-		{
-			name: "valid normal ids",
-			ids: []string{
-				"abc123@news.example.com",
-				"<abc123@news.example.com>",
-				"part1of100.abc@provider.net",
-				"a",
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			for _, id := range tc.ids {
-				err := validateMessageID(id)
-				if tc.wantErr {
-					if err == nil {
-						t.Errorf("validateMessageID(%q) = nil, want error", id)
-					} else if !errors.Is(err, ErrInvalidMessageID) {
-						t.Errorf("validateMessageID(%q) = %v, want ErrInvalidMessageID", id, err)
-					}
-				} else if err != nil {
-					t.Errorf("validateMessageID(%q) = %v, want nil", id, err)
-				}
-			}
-		})
-	}
-}
+// validateMessageID's tests are gone with the function. Message-ID validity
+// is decided in internal/nzb now — see internal/nzb/messageid_test.go, which
+// pins the CR/LF injection cases this file used to cover, plus the SP, HT and
+// interior-bracket cases it did not.
 
 // --- C1b: validateCredential ---
 

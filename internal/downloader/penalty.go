@@ -57,9 +57,8 @@ func PenaltyFor(err error) time.Duration {
 // overlaps heavily with PenaltyFor's — both classify the same underlying
 // errors — but is not identical: PenaltyFor exists to pick a penalty
 // duration, this exists to name a diagnostic cause, and the two sets can
-// diverge (e.g. ErrInvalidMessageID/ErrInvalidCredential are local
-// input/config defects with no penalty-worthy server behavior, but are
-// still worth naming here).
+// diverge (e.g. ErrInvalidCredential is a local config defect with no
+// penalty-worthy server behavior, but is still worth naming here).
 func classifyConnError(err error) string {
 	switch {
 	case errors.Is(err, nntp.ErrAuthRejected):
@@ -74,8 +73,6 @@ func classifyConnError(err error) string {
 		return telemetry.ErrClassConnClosed
 	case errors.Is(err, nntp.ErrInvalidState):
 		return telemetry.ErrClassNNTPInvalidState
-	case errors.Is(err, nntp.ErrInvalidMessageID):
-		return telemetry.ErrClassInvalidMessageID
 	case errors.Is(err, nntp.ErrInvalidCredential):
 		return telemetry.ErrClassInvalidCredential
 	}

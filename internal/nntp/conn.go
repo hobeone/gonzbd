@@ -385,7 +385,9 @@ func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
 
 // validateCredential rejects credentials that contain characters
 // capable of injecting additional NNTP commands via CR/LF or null
-// bytes. This is the credential counterpart to validateMessageID.
+// bytes. It has no Message-ID counterpart here any more: those are
+// validated at parse time in internal/nzb, whereas credentials come
+// from config and never pass through that layer.
 // Empty strings are allowed — some servers accept empty passwords.
 func validateCredential(val, label string) error {
 	if strings.ContainsAny(val, "\r\n\x00") {
@@ -470,10 +472,6 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := validateMessageID(messageID); err != nil {
-		return nil, err
-	}
-
 	// Acquire a pipelining slot. Also watch c.ctx so we unblock if
 	// the connection dies (runReader exits without draining sem).
 	select {
@@ -485,7 +483,7 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 	}
 
 	pc := &pendingCmd{kind: cmdBody, done: make(chan struct{})}
-	cmd := fmt.Appendf(make([]byte, 0, 96), "BODY <%s>\r\n", strings.TrimFunc(messageID, trimAngle))
+	cmd := fmt.Appendf(make([]byte, 0, 96), "BODY <%s>\r\n", messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return nil, err
 	}
@@ -515,28 +513,23 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 	}
 }
 
-// trimAngle removes angle-bracket decoration. Callers may pass
-// message IDs with or without brackets; the wire format strictly
-// requires them.
-func trimAngle(r rune) bool { return r == '<' || r == '>' }
-
-// validateMessageID rejects message-IDs that could inject NNTP
-// commands via embedded CR/LF, contain null bytes, embed '>'
-// (which would prematurely close the angle-bracket wrapper), or
-// are empty.
-func validateMessageID(id string) error {
-	raw := strings.TrimFunc(id, trimAngle)
-	if raw == "" {
-		return fmt.Errorf("%w: empty", ErrInvalidMessageID)
-	}
-	for i := range len(raw) {
-		switch raw[i] {
-		case '\r', '\n', 0, '>':
-			return fmt.Errorf("%w: contains 0x%02x at offset %d", ErrInvalidMessageID, raw[i], i)
-		}
-	}
-	return nil
-}
+// Message-ID validity is not checked here, deliberately. internal/nzb
+// normalises the angle-bracket wrapper away and refuses any ID carrying SP,
+// HT, CR, LF, NUL, '<' or '>' — a strict superset of what this layer used to
+// reject — so no such ID can reach a Conn.
+//
+// The restore path is covered by a check rather than by that argument.
+// internal/queue's Manifest.UnmarshalJSON rebuilds a resumed job's article
+// list straight from disk and cannot know which build wrote it, so it
+// re-applies nzb.MessageIDIsFetchable and refuses the manifest outright if
+// any ID fails. Without that, a manifest persisted before the parse-time
+// rule existed would replay an unchecked ID into the command line below.
+//
+// The contract is therefore: a Message-ID handed to Fetch or Stat is already
+// safe to interpolate. See docs/article-validation-contract.md, which argues
+// for enforcing a claim at the outermost layer that can decide it and letting
+// inner layers assume it — a second check here would be a state that cannot
+// occur, which is the class of code that document exists to delete.
 
 // Stat is BODY's cheap cousin: it asks the server whether an article
 // exists without transferring the body. Returns nil if present,
@@ -549,9 +542,6 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateMessageID(messageID); err != nil {
-		return err
-	}
 	select {
 	case c.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -561,7 +551,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 	}
 
 	pc := &pendingCmd{kind: cmdStat, done: make(chan struct{})}
-	cmd := fmt.Appendf(make([]byte, 0, 96), "STAT <%s>\r\n", strings.TrimFunc(messageID, trimAngle))
+	cmd := fmt.Appendf(make([]byte, 0, 96), "STAT <%s>\r\n", messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return err
 	}
