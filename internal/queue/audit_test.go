@@ -2,6 +2,7 @@ package queue
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"time"
@@ -202,7 +203,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		}
 		for ai := range nArticles {
 			art := nzb.Article{
-				ID:     name + "-art" + string(rune('0'+ai)) + "@test",
+				ID:     fmt.Sprintf("%s-art%d@test", name, ai),
 				Bytes:  100_000,
 				Number: ai + 1,
 			}

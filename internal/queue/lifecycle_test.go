@@ -2,6 +2,7 @@ package queue
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -48,8 +49,15 @@ func makeMultiFileJob(t *testing.T, name string, nFiles, nArticles int) *Job {
 	return job
 }
 
+// articleID builds a fixture Message-ID. It formats the indices as decimal
+// rather than offsetting them from '0': the arithmetic form ran past the
+// digits for any index above 9, and at 12 and 14 produced '<' and '>' —
+// characters internal/nzb refuses, because they close the angle-bracket
+// wrapper the ID is interpolated into on the wire. Fixtures with 100
+// articles per file were therefore generating Message-IDs that no real NZB
+// could contain.
 func articleID(fileIdx, artIdx int) string {
-	return "f" + string(rune('0'+fileIdx)) + "a" + string(rune('0'+artIdx)) + "@test"
+	return fmt.Sprintf("f%da%d@test", fileIdx, artIdx)
 }
 
 // ---------- ExistsByName / ExistsByMD5 ----------
