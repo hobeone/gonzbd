@@ -144,6 +144,11 @@ func parseXML(r io.Reader) (*NZB, error) {
 	out := &NZB{Meta: make(map[string][]string)}
 	digest := md5.New() //nolint:gosec // see package-level justification
 	seenGroups := make(map[string]struct{})
+	// Message-ID uniqueness is job-wide, not per-file: a Message-ID addresses
+	// exactly one article on Usenet, so the same ID in two <file> elements is
+	// as malformed as the same ID twice in one. The set therefore lives here
+	// and is threaded down, rather than being rebuilt per file.
+	seenIDs := make(map[string]struct{})
 
 	var ageSum int64
 	var ageCount int
@@ -172,7 +177,7 @@ func parseXML(r io.Reader) (*NZB, error) {
 			if len(out.Files)+out.SkippedFiles >= maxFiles {
 				return nil, fmt.Errorf("nzb: file count exceeds limit of %d", maxFiles)
 			}
-			ts, segs, err := absorbFile(dec, &se, out, digest, seenGroups, now)
+			ts, segs, err := absorbFile(dec, &se, out, digest, seenGroups, seenIDs, now)
 			if err != nil {
 				return nil, err
 			}
@@ -225,6 +230,7 @@ func absorbFile(
 	out *NZB,
 	digest hash.Hash,
 	seenGroups map[string]struct{},
+	seenIDs map[string]struct{},
 	now time.Time,
 ) (timestamp int64, numSegments int, err error) {
 	var xf xmlFile
@@ -232,9 +238,10 @@ func absorbFile(
 		return 0, 0, fmt.Errorf("nzb: decode <file>: %w", err)
 	}
 
-	file, ts, counters := convertFile(xf, now, digest)
+	file, ts, counters := convertFile(xf, now, digest, seenIDs)
 
 	out.DuplicateArticles += counters.dupes
+	out.DuplicateMessageIDs += counters.dupeIDs
 	out.BadArticles += counters.bad
 
 	if len(file.Articles) == 0 {
@@ -253,13 +260,13 @@ func absorbFile(
 }
 
 type articleCounters struct {
-	dupes, bad int
+	dupes, dupeIDs, bad int
 }
 
 // convertFile transforms a wire-format xmlFile into the public File
 // model, applying the dedup and size-sanity rules and folding article
 // IDs into digest in source order.
-func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, articleCounters) {
+func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string]struct{}) (File, int64, articleCounters) {
 	// Since we don't have user config here, we use default options.
 	subject := fsutil.SanitizeFilename(ExtractFilenameFromSubject(xf.Subject), fsutil.SanitizeOptions{})
 
@@ -276,7 +283,7 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, arti
 		Groups:  xf.Groups,
 	}
 
-	byPart, counters := partitionSegments(xf.Segments, digest)
+	byPart, counters := partitionSegments(xf.Segments, digest, seenIDs)
 	normalizeFileStruct(&file, byPart)
 
 	if len(file.Articles) == 0 {
@@ -288,7 +295,7 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, arti
 // partitionSegments iterates through raw xmlSegment elements, filtering out
 // structurally invalid or out-of-bounds segments and deduplicating by part number.
 // Valid segment IDs are hashed into digest in source order.
-func partitionSegments(segments []xmlSegment, digest hash.Hash) (map[int]Article, articleCounters) {
+func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[string]struct{}) (map[int]Article, articleCounters) {
 	byPart := make(map[int]Article, len(segments))
 	var counters articleCounters
 	for _, s := range segments {
@@ -312,10 +319,42 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash) (map[int]Article
 			}
 			continue
 		}
+		// A repeated Message-ID names bytes an earlier segment already claims.
+		// Keeping both would put two manifest articles behind one identity,
+		// which no Message-ID lookup can then resolve unambiguously — so the
+		// later one is dropped and counted.
+		//
+		// This sits AFTER the digest write above on purpose. The digest is the
+		// duplicate-job key and must hash every structurally-valid ID in source
+		// order to match Python SABnzbd; excluding a dropped duplicate would
+		// silently change the identity of every affected NZB.
+		//
+		// The dropped segment's bytes leave with it, and that is deliberate.
+		// File.Bytes is documented as the sum of Articles[].Bytes and is what
+		// JobProgress derives both expected and remaining bytes from, so
+		// counting bytes for an article that is not in the manifest strands
+		// them in `remaining` — it can never be downloaded and never failed.
+		//
+		// The cost is accepted rather than unnoticed: File.Bytes also becomes
+		// the assembler's ExpectedSize, which bounds writes to ExpectedSize +
+		// 12.5%. Dropping k of N equally-sized segments leaves that bound at
+		// (N-k)/N * 1.02 * 1.125 of the file's true size, which falls under 1.0
+		// once k/N passes ~12.85% — one duplicate in a file of seven segments
+		// or fewer. Such a file is already malformed and bound for par2, and
+		// the alternative distorts the size accounting of every affected job to
+		// avoid it.
+		if _, dup := seenIDs[id]; dup {
+			counters.dupeIDs++
+			continue
+		}
 		if s.Bytes <= 0 || s.Bytes >= maxArticleSize {
 			counters.bad++
 			continue
 		}
+		// Recorded only on acceptance: a segment rejected for implausible size
+		// never claimed the ID, so a later well-formed segment carrying it is
+		// not a duplicate of anything.
+		seenIDs[id] = struct{}{}
 		byPart[s.Number] = Article{ID: id, Bytes: s.Bytes, Number: s.Number}
 	}
 	return byPart, counters

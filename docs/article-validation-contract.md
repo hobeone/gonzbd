@@ -238,7 +238,7 @@ the rows.
 | A1 | Message-ID non-empty | L0 | reject, counted **in place** (before the digest) | — |
 | A2–A5 | Message-ID RFC syntax: ≤250 octets, no WSP, no `<`, printable ASCII | L0 | reject, counted after the digest write | — |
 | A6 | Message-ID contains `@` | L0 | **count only** | evidence |
-| A7 | Message-ID unique job-wide | L0 | reject the later part, counted | — |
+| A7 | Message-ID unique job-wide | L0 | ✅ **implemented** — later segment dropped, counted, warned at ingest | — |
 | B1 | `222` Message-ID equals the requested one | L1 | fail article **and drop the connection** | — (see F5) |
 | C1–C3 | payload self-verification | L2 | ✅ already enforced | — |
 | C4 | checksum presence | L2 | count only | — |
@@ -252,7 +252,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> F3 → F2 → F1a (fixture `ArtIdx`) → F1b (flip the key) → F5/B1 → C5 → E5 → A1–A7 → E3/E4
+> F3 → **A7** → F2 → F1a (fixture `ArtIdx`) → F1b (flip the key) → F5/B1 → C5 → E5 → A1–A6 → E3/E4
 
 F3 leads because it is the smallest instance of the pattern and the cheapest
 place to learn its cost; doing it first is what established that the two-commit
@@ -281,16 +281,18 @@ and forbids whitespace inside.
 | A4 | no `<` or `>` inside | ⚠ **half-enforced** — `validateMessageID` rejects `>` anywhere after trimming the wrapper; only an embedded `<` leaks |
 | A5 | printable US-ASCII only | ⚠ **absent** |
 | A6 | contains `@` | ⚠ **absent** — `no-at-sign` parses and is dispatched |
-| A7 | unique across **every segment of the whole NZB**, not merely within one file | ⚠ **absent** — the same ID on two part numbers yields two articles fetching identical bytes to two different offsets, a **guaranteed** overlap |
+| A7 | unique across **every segment of the whole NZB**, not merely within one file | ✅ **enforced** — the later segment is dropped and counted in `DuplicateMessageIDs` |
 
-**A1–A5 and A7 are rejected at L0** with a counter, exactly as `BadArticles`
+**A7 is enforced.** `partitionSegments` carries a document-wide seen-set and
+drops any segment whose Message-ID an accepted segment already claimed, after
+the digest write so `NZB.MD5` is unchanged. Downstream code may therefore treat
+Message-ID as a unique key within a job, which is what makes
+`Manifest.articleIndexByID` unambiguous.
+
+**A1–A5 are rejected at L0** with a counter, exactly as `BadArticles`
 already works — the segment does not become an `Article` and is never
 dispatched. A1–A5 are pure syntax violations that could not produce a successful
-fetch anyway (the wire request itself would be malformed). A7 is not a syntax
-violation but is rejected on a stronger ground: two segments sharing one
-Message-ID fetch identical bytes to two different offsets, so accepting both
-guarantees an overlap. Reject the **later** part number and count it, keeping
-the first occurrence.
+fetch anyway (the wire request itself would be malformed).
 
 **A1 stays, but it is no longer load-bearing.** It is still worth converting the
 silent drop into a counted rejection, because a silent drop is how #392's
@@ -302,21 +304,30 @@ Message-ID with no file scoping and one with no job scoping at all:
 
 - `Manifest.messageIDIndex` (`internal/queue/manifest.go`) is a **job-wide**
   `map[string]int` built last-writer-wins. One Message-ID appearing in two
-  *files* of one NZB silently makes `MarkArticleEmitted` / `ClearArticleEmitted`
-  act on the wrong article. Per-file uniqueness does not close this.
+  *files* of one NZB made `MarkArticleEmitted` / `ClearArticleEmitted` act on
+  the wrong article. Per-file uniqueness would not have closed this, which is
+  why A7 is document-wide.
 - `dispatchTracker.tryList` and `.inFlight` (`internal/downloader/tracker.go`)
   were keyed on Message-ID **alone**, with no job scoping. Two resident jobs
   sharing a Message-ID shared one try-list, so one job's article could exhaust
   its servers without ever having been fetched for the other.
 
-The second is out of A7's reach entirely — two jobs, not one NZB — so ingestion
-could never have fixed it. It is closed structurally instead, by F3, which keys
-the tracker on `(jobID, artIdx)`. The first is F2's to remove on the same terms.
+A7 closes the first: with the ID unique across the document, the index is
+injective and cannot resolve to the wrong article. The second is out of A7's
+reach entirely — two jobs, not one NZB, each internally valid — and is closed
+structurally by F3, which keys the tracker on `(jobID, artIdx)`.
 
-Both are worth stating as the pattern rather than the incidents: **a
-Message-ID-keyed structure whose scope is wider than one job is a bug waiting for
-a duplicate**, and A7 tightening ingestion is a narrower remedy than changing the
-key. Where both are available, prefer the key (§4).
+**The two remedies are complementary, not alternatives, and the split is the
+general lesson.** Ingestion can enforce uniqueness only inside the document it
+is parsing; anything whose scope is wider than one NZB has to change its key
+instead. So: **a Message-ID-keyed structure whose scope exceeds one job is a bug
+waiting for a duplicate, and ingestion cannot save it.**
+
+F2 keeps its value after A7, but for a different reason than it was filed with.
+Its correctness rationale — `messageIDIndex` resolving to the wrong article — is
+gone. What remains is that the map is a `map[string]int` sized `NumArticles()`
+per resident job that no longer needs to exist. Re-argue it on memory, not on
+correctness.
 
 **A6 is counted, not rejected** — the one deliberate exception to decision 1,
 and the reason is #379's. An ID lacking `@` violates RFC 5536 but remains
@@ -666,6 +677,17 @@ later reader can tell a decision from an oversight.
    segments' `bytes` in the `ExpectedSize` sum, or state that it does not and
    accept the tightening deliberately. **Do not discover this during
    implementation.**
+
+   **Settled for A7: the tightening is accepted.** Keeping a dropped segment's
+   bytes was tried and reverted — `File.Bytes` is documented as the sum of
+   `Articles[].Bytes` and is what `JobProgress.sizeFigures` derives both
+   expected and remaining bytes from, so bytes belonging to an article that is
+   not in the manifest can never be downloaded or failed and stay stranded in
+   `remaining`. The write-bound cost is real but narrow: with the ~2% encoded
+   overhead `ExpectedSize` already carries, a rejection needs `k/N` above
+   ~12.85%, i.e. one duplicate in a file of seven segments or fewer, and such a
+   file is already bound for par2. Distorting every affected job's size
+   accounting to avoid it is the worse trade.
 
 The through-line: **reject only what could never have worked, warn about
 everything else, and let par2 adjudicate.** Rejection is reserved for claims

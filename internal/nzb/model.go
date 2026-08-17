@@ -30,6 +30,12 @@
 //   - Each <file>'s articles are sorted by part number; duplicate part
 //     numbers with the same ID are silently skipped, duplicates with a
 //     different ID bump DuplicateArticles.
+//   - A Message-ID already claimed by an accepted segment ANYWHERE in the
+//     document is dropped and bumps DuplicateMessageIDs. This is a
+//     deliberate divergence from the Python parser, which keeps such
+//     segments: it guarantees Message-ID is a unique key within a job, so
+//     downstream lookups cannot silently address the wrong article. The
+//     digest is unaffected — see the MD5 note below.
 //   - Articles with bytes <= 0 or bytes >= 8 MiB bump BadArticles and are
 //     excluded from the file.
 //   - A file with zero valid articles is omitted and bumps SkippedFiles.
@@ -69,6 +75,17 @@ type NZB struct {
 	// an earlier segment and whose ID differed (indicating a malformed
 	// NZB rather than a harmless retransmission).
 	DuplicateArticles int
+
+	// DuplicateMessageIDs counts segments dropped because their Message-ID
+	// had already been claimed by an accepted segment anywhere in the
+	// document — not merely in the same <file>.
+	//
+	// A Message-ID addresses exactly one article, so a repeat names bytes
+	// that are already accounted for. Keeping both copies would put two
+	// manifest articles behind one identity, which no Message-ID lookup can
+	// resolve unambiguously; downstream code may therefore assume the map
+	// from Message-ID to article is injective within a job.
+	DuplicateMessageIDs int
 
 	// BadArticles counts segments rejected for implausible size.
 	BadArticles int
