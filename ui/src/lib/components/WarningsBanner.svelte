@@ -6,8 +6,20 @@
 	let expanded = $state(true);
 	let clearing = $state(false);
 
+	// Substring, not equality: a job can be both a duplicate and malformed,
+	// and the backend joins those into one warning string ("NZB had malformed
+	// segments discarded at ingest: ...; Duplicate NZB"). An exact match
+	// dropped exactly those jobs from this count — the ones with the most
+	// wrong with them.
+	//
+	// "(Forced)" is excluded because this banner's sentence is about jobs
+	// added in a PAUSED state, and a forced duplicate is deliberately not
+	// paused. Exact equality excluded it for free; a substring test has to
+	// say so.
 	function duplicateCount(): number {
-		return getQueueSlots().filter((s) => s.warning === 'Duplicate NZB').length;
+		return getQueueSlots().filter(
+			(s) => s.warning?.includes('Duplicate NZB') && !s.warning.includes('(Forced)')
+		).length;
 	}
 
 	async function handleClear() {

@@ -1568,8 +1568,9 @@ func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx 
 // to a user reading a queue row, and both Message-IDs because they are what
 // makes the claim checkable against the NZB.
 //
-// The wording must not equal WarningsBanner.svelte's 'Duplicate NZB', which it
-// compares for exactly.
+// The wording must not CONTAIN WarningsBanner.svelte's 'Duplicate NZB': that
+// banner counts duplicates by substring, so a reason merely containing the
+// phrase would be tallied as one.
 func postAnomalyReason(path string, r faultedArticle) string {
 	return fmt.Sprintf(
 		"Overlapping segments in %s: %s and %s both claim byte offset %d, so only "+

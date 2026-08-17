@@ -40,6 +40,43 @@ describe('WarningsBanner', () => {
 		expect(screen.getByText(/2 jobs added in paused state/)).toBeInTheDocument();
 	});
 
+	it('counts duplicates whose warning is combined with a parse warning', () => {
+		// The backend appends rather than overwrites, so a job that is both
+		// malformed and a duplicate carries both clauses in one string. An
+		// exact-equality count silently omitted these.
+		vi.mocked(getQueueSlots).mockReturnValue([
+			{ nzo_id: '1', warning: 'Duplicate NZB' } as any,
+			{
+				nzo_id: '2',
+				warning:
+					'NZB had malformed segments discarded at ingest: 1 unusable message-id; Duplicate NZB'
+			} as any,
+			{ nzo_id: '3', warning: 'NZB had malformed segments discarded at ingest: 2 empty message-id' } as any,
+			{ nzo_id: '4' } as any
+		]);
+		render(WarningsBanner);
+
+		expect(screen.getByText('Duplicate NZBs found:')).toBeInTheDocument();
+		expect(screen.getByText(/2 jobs added in paused state/)).toBeInTheDocument();
+	});
+
+	it('excludes forced duplicates, which are not paused', () => {
+		// A forced duplicate is added and left running, so counting it under
+		// "added in paused state" would be a false statement about the queue.
+		vi.mocked(getQueueSlots).mockReturnValue([
+			{ nzo_id: '1', warning: 'Duplicate NZB' } as any,
+			{ nzo_id: '2', warning: 'Duplicate NZB (Forced)' } as any,
+			{
+				nzo_id: '3',
+				warning:
+					'NZB had malformed segments discarded at ingest: 1 empty message-id; Duplicate NZB (Forced)'
+			} as any
+		]);
+		render(WarningsBanner);
+
+		expect(screen.getByText(/1 job added in paused state/)).toBeInTheDocument();
+	});
+
 	it('shows warning count when warnings exist', () => {
 		vi.mocked(getWarningCount).mockReturnValue(3);
 		vi.mocked(getWarnings).mockReturnValue(['warn1', 'warn2', 'warn3']);
