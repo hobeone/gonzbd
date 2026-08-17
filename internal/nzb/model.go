@@ -22,8 +22,10 @@
 //
 // # Parity with the Python parser
 //
-// The Go parser reproduces the on-disk semantics of
-// sabnzbd/nzbparser.py#nzbfile_parser one-for-one:
+// The Go parser follows the on-disk semantics of
+// sabnzbd/nzbparser.py#nzbfile_parser, with the deliberate divergences noted
+// below. Byte-for-byte parity is not a goal: GoNZBD is not a drop-in
+// replacement, and no artefact it writes is read by the Python implementation.
 //
 //   - <meta> is multi-valued: the same type attribute may repeat, and all
 //     values are preserved in document order.
@@ -34,15 +36,16 @@
 //     document is dropped and bumps DuplicateMessageIDs. This is a
 //     deliberate divergence from the Python parser, which keeps such
 //     segments: it guarantees Message-ID is a unique key within a job, so
-//     downstream lookups cannot silently address the wrong article. The
-//     digest is unaffected — see the MD5 note below.
+//     downstream lookups cannot silently address the wrong article.
 //   - Articles with bytes <= 0 or bytes >= 8 MiB bump BadArticles and are
 //     excluded from the file.
 //   - A file with zero valid articles is omitted and bumps SkippedFiles.
-//   - MD5 is the digest of every structurally-complete article ID, in
-//     source order, including IDs that were later deduped or rejected for
-//     size. Callers relying on MD5 for duplicate-job detection must use
-//     this exact order, or jobs imported from Python SABnzbd won't match.
+//   - MD5 is the digest of every ACCEPTED article ID, in source order.
+//     Segments this parser rejects contribute nothing, so the key describes
+//     the job the document actually produced and no rejection rule can
+//     change a document's identity as a side effect. This diverges from the
+//     Python parser, which hashes rejected IDs too; two NZBs differing only
+//     in their rejected segments are duplicates here and distinct there.
 package nzb
 
 import "time"
@@ -62,9 +65,9 @@ type NZB struct {
 	// every file, in the order they were first seen.
 	Groups []string
 
-	// MD5 is the MD5 digest of every structurally-complete article ID
-	// concatenated in source order. See the package doc for the exact
-	// ordering rule; it is load-bearing for duplicate-job detection.
+	// MD5 is the MD5 digest of every accepted article ID concatenated in
+	// source order; rejected segments contribute nothing. It is the
+	// duplicate-job key — see the package doc for what that implies.
 	MD5 [16]byte
 
 	// AvgAge is the mean posted-date across every file that contributed

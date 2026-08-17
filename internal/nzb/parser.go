@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"compress/bzip2"
 	"compress/gzip"
-	"crypto/md5" //nolint:gosec // MD5 is used for duplicate-job detection, not security; digest must match Python SABnzbd
+	"crypto/md5" //nolint:gosec // MD5 is used for duplicate-job detection, not security
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -264,8 +264,8 @@ type articleCounters struct {
 }
 
 // convertFile transforms a wire-format xmlFile into the public File
-// model, applying the dedup and size-sanity rules and folding article
-// IDs into digest in source order.
+// model, applying the dedup and size-sanity rules and folding accepted
+// article IDs into digest in source order.
 func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string]struct{}) (File, int64, articleCounters) {
 	// Since we don't have user config here, we use default options.
 	subject := fsutil.SanitizeFilename(ExtractFilenameFromSubject(xf.Subject), fsutil.SanitizeOptions{})
@@ -294,24 +294,17 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string
 
 // partitionSegments iterates through raw xmlSegment elements, filtering out
 // structurally invalid or out-of-bounds segments and deduplicating by part number.
-// Valid segment IDs are hashed into digest in source order.
+// Accepted segment IDs are hashed into digest in source order.
 func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[string]struct{}) (map[int]Article, articleCounters) {
 	byPart := make(map[int]Article, len(segments))
 	var counters articleCounters
 	for _, s := range segments {
 		id := strings.TrimSpace(s.ID)
 		// Structural validity: id must be present and the part number
-		// must be a positive integer. Missing/zero mirrors Python's
-		// try/except around int(attrib.get(...)): silent drop, no MD5
-		// update, no counter bump.
+		// must be a positive integer.
 		if id == "" || s.Number <= 0 {
 			continue
 		}
-
-		// Hash every structurally-valid article ID, even ones we'll
-		// reject below. See the package doc: digest ordering is
-		// load-bearing for cross-implementation dedup.
-		_, _ = digest.Write([]byte(id)) //nolint:errcheck // hash.Hash never returns a non-nil error
 
 		if prev, seen := byPart[s.Number]; seen {
 			if prev.ID != id {
@@ -324,16 +317,11 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 		// which no Message-ID lookup can then resolve unambiguously — so the
 		// later one is dropped and counted.
 		//
-		// This sits AFTER the digest write above on purpose. The digest is the
-		// duplicate-job key and must hash every structurally-valid ID in source
-		// order to match Python SABnzbd; excluding a dropped duplicate would
-		// silently change the identity of every affected NZB.
-		//
 		// The dropped segment's bytes leave with it, and that is deliberate.
-		// File.Bytes is documented as the sum of Articles[].Bytes and is what
-		// JobProgress derives both expected and remaining bytes from, so
-		// counting bytes for an article that is not in the manifest strands
-		// them in `remaining` — it can never be downloaded and never failed.
+		// File.Bytes is the sum of Articles[].Bytes and is what JobProgress
+		// derives both expected and remaining bytes from, so counting bytes for
+		// an article that is not in the manifest strands them in `remaining` —
+		// it can never be downloaded and never failed.
 		//
 		// The cost is accepted rather than unnoticed: File.Bytes also becomes
 		// the assembler's ExpectedSize, which bounds writes to ExpectedSize +
@@ -351,9 +339,18 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 			counters.bad++
 			continue
 		}
-		// Recorded only on acceptance: a segment rejected for implausible size
-		// never claimed the ID, so a later well-formed segment carrying it is
-		// not a duplicate of anything.
+
+		// Everything below runs once, on acceptance, and is the single place a
+		// segment becomes an Article. The digest covers accepted IDs only: it
+		// is the duplicate-job key, and deriving it from what the job actually
+		// contains means no rejection rule can change a document's identity as
+		// a side effect. Rejections may therefore be added, removed or
+		// reordered above without touching NZB.MD5.
+		//
+		// seenIDs is recorded here for the same reason: a segment rejected for
+		// implausible size never claimed the ID, so a later well-formed segment
+		// carrying it is not a duplicate of anything.
+		_, _ = digest.Write([]byte(id)) //nolint:errcheck // hash.Hash never returns a non-nil error
 		seenIDs[id] = struct{}{}
 		byPart[s.Number] = Article{ID: id, Bytes: s.Bytes, Number: s.Number}
 	}
