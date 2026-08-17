@@ -44,6 +44,16 @@ The downloader pipeline operates across four isolated tiers of ownership:
 | **Server state** | `Server` | Per-server penalty tracking, bad/good connection counters, optional-server auto-deactivation | `Server.mu` (RWMutex) for penalty/deactivation; atomic counters for bad/good. |
 | **Worker / Connection** | `connWorker` & `managedConn` | Pipelined NNTP network I/O (`nntp.Conn`), yEnc decoding, rate shaping, TLS | `managedConn.mu` for dial-coalescing only; `nntp.Conn` internal locks for pipelining. |
 
+**The Tracker's identity is `(jobID, artIdx)`, not the Message-ID.** Both of its
+maps are keyed on that pair. The job is part of the key rather than decoration:
+two resident jobs can legitimately hold the same Message-ID — the same NZB added
+twice, or a reposted par2 volume — and keyed on the Message-ID alone they shared
+one try-list entry and one in-flight count, so one job's article could reach
+`ErrNoServersLeft` without ever having been fetched for it. `artIdx` rather than
+the Message-ID because the manifest already assigns it, it is unique within a job
+by construction, and it cannot be absent; nothing in this tier needs the
+Message-ID's content, only an identity.
+
 ## State machines
 
 ### `nntp.Conn` lifecycle (state.go)
@@ -99,11 +109,17 @@ of their failure ratio.
    (and thus maximum TCP connections) equals `max(S.Connections(), 1)`. Workers
    are created once in `Start` and not resized.
 
-2. **Sequential in-flight invariant**: For any article `MessageID`, exactly one
-   request can be active across all server pools at any moment
-   (`InFlight(msgID) ≤ 1`). `tryDispatch` checks `InFlightLocked(key) > 0`
-   before sending. Fallback to secondary/backup servers is strictly sequential —
-   only after the current request resolves and `clearInFlight` runs.
+2. **Sequential in-flight invariant**: For any article identity
+   `(jobID, artIdx)`, exactly one request can be active across all server pools
+   at any moment (`InFlight(jobID, artIdx) ≤ 1`). `tryDispatch` checks
+   `InFlightLocked(key) > 0` before sending. Fallback to secondary/backup
+   servers is strictly sequential — only after the current request resolves and
+   `clearInFlight` runs.
+
+   The identity is the pair, not the `MessageID`. Two resident jobs holding the
+   same Message-ID have independent in-flight budgets and may be fetched
+   concurrently, which is correct: they are different articles that happen to
+   share a name.
 
 3. **Non-blocking dispatch loop**: The main loop (`run`) must never perform
    blocking socket I/O, wait on unbuffered channels, or take write locks across

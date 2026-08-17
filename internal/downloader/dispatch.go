@@ -145,7 +145,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
-		d.clearTried(req.jobID, req.messageID)
+		d.clearTried(req.jobID, req.artIdx)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassExhaustedAllServers, 1)
 		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
 	}
@@ -257,7 +257,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
 func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
-	key := a.MessageID
+	key := articleKey{jobID: a.JobID, artIdx: a.ArtIdx}
 
 	d.tracker.Lock()
 
@@ -535,7 +535,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
-	defer d.clearInFlight(req.jobID, req.messageID)
+	defer d.clearInFlight(req.jobID, req.artIdx)
 
 	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
 	if !ok {
@@ -559,8 +559,8 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// the user clicked pause on this specific job. Check now before
 	// starting any network I/O.
 	if status, err := d.queue.GetJobStatus(req.jobID); err == nil && status == constants.StatusPaused {
-		d.unmarkTried(req.jobID, req.messageID, serverIdx)
-		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
+		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
+		_ = d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx)
 		return nil, false
 	}
 
@@ -568,14 +568,14 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// The pauseCtx cancellation aborts in-flight reads, but articles
 	// sitting in the workCh buffer still need to be drained.
 	if d.paused.Load() || d.queue.IsPaused() {
-		d.unmarkTried(req.jobID, req.messageID, serverIdx)
-		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
+		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
+		_ = d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx)
 		return nil, false
 	}
 
 	c, err := mc.Get(fetchCtx, d, srv, workerID)
 	if err != nil {
-		d.unmarkTried(req.jobID, req.messageID, serverIdx)
+		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
 		if errors.Is(err, errServerPenalized) {
 			// Don't emit a result — the article is returned to the
 			// dispatch pool silently. The deferred signalDispatch
@@ -646,7 +646,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 				}
 			}
 		}
-		d.unmarkTried(req.jobID, req.messageID, serverIdx)
+		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
 		// Don't emit a result for connection-level failures. The
 		// article is returned to the dispatch pool via unmarkTried;
 		// the deferred signalDispatch triggers retry on another
@@ -686,10 +686,10 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Non-CRC decode errors are terminal failures — mark Emitted so
 		// the dispatcher never re-picks this article, then clear the tryList.
-		if markErr := d.queue.MarkArticleEmitted(req.jobID, req.messageID); markErr != nil && !errors.Is(markErr, queue.ErrNotFound) && !errors.Is(markErr, queue.ErrJobNotResident) {
+		if markErr := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); markErr != nil && !errors.Is(markErr, queue.ErrNotFound) && !errors.Is(markErr, queue.ErrJobNotResident) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
 		}
-		d.clearTried(req.jobID, req.messageID)
+		d.clearTried(req.jobID, req.artIdx)
 		telemetry.PipelineErrors.Add(classifyDecodeError(err), 1)
 		d.emitResult(ctx, req, name, nil, 0, 0, err)
 		return
@@ -700,7 +700,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// no exported constructor outside internal/durability. Only a barrier that
 	// has drained and fsynced the file can mint one.
 	//
-	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher from
+	// MarkArticleEmittedByIdx (transient, not persisted) keeps the dispatcher from
 	// re-picking this article between now and that barrier. If the process
 	// crashes first, Emitted is lost on restart, the startup resume sweep
 	// cannot prove the bytes, and the article is re-dispatched — which is S3,
@@ -712,7 +712,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
-	d.clearTried(req.jobID, req.messageID)
+	d.clearTried(req.jobID, req.artIdx)
 	d.notePartNumberDisagreement(req, payload.partNumber)
 	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil)
 }
@@ -770,24 +770,24 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 // Called from handleRequest's defer, before signalDispatch, so the
 // next dispatch pass observes the cleared state and can fan out to
 // a fallback server if the try-list allows.
-func (d *Downloader) clearInFlight(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tracker.DecrementInFlight(messageID)
+func (d *Downloader) clearInFlight(jobID string, artIdx int32) {
+	d.tracker.DecrementInFlight(articleKey{jobID: jobID, artIdx: artIdx})
 }
 
 // unmarkTried removes serverIdx from an article's try-list, used
 // after a retryable failure (dial error, mid-stream disconnect) so
 // the dispatcher can hand the article back to the same server once
 // it recovers, or bounce it to another.
-func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tracker.UnmarkTried(messageID, serverIdx)
+func (d *Downloader) unmarkTried(jobID string, artIdx int32, serverIdx int) {
+	d.tracker.UnmarkTried(articleKey{jobID: jobID, artIdx: artIdx}, serverIdx)
 }
 
 // clearTried removes an article's entire try-list entry, freeing
 // memory. Called when an article reaches a terminal state (success,
 // decode error, or ErrNoServersLeft) and will never be dispatched
 // again.
-func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tracker.ClearTried(messageID)
+func (d *Downloader) clearTried(jobID string, artIdx int32) {
+	d.tracker.ClearTried(articleKey{jobID: jobID, artIdx: artIdx})
 }
 
 // managedConn encapsulates an NNTP connection and the synchronization
