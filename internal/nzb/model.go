@@ -39,6 +39,14 @@
 //     downstream lookups cannot silently address the wrong article.
 //   - Articles with bytes <= 0 or bytes >= 8 MiB bump BadArticles and are
 //     excluded from the file.
+//   - A segment whose Message-ID could not produce a fetchable NNTP request
+//     is excluded and bumps one of EmptyMessageIDs, OversizeMessageIDs or
+//     MalformedMessageIDs. A segment whose Message-ID merely violates the
+//     RFC while staying requestable is KEPT, and bumps one of
+//     NonConformantMessageIDs, NonASCIIMessageIDs or
+//     MessageIDsMissingAtSign. The Python parser validates neither.
+//   - A Message-ID wrapped in angle brackets is normalised to its bare form
+//     rather than rejected; Article.ID never carries the wrapper.
 //   - A file with zero valid articles is omitted and bumps SkippedFiles.
 //   - MD5 is the digest of every ACCEPTED article ID, in source order.
 //     Segments this parser rejects contribute nothing, so the key describes
@@ -92,6 +100,45 @@ type NZB struct {
 
 	// BadArticles counts segments rejected for implausible size.
 	BadArticles int
+
+	// The Message-ID rejection counters. Each names a segment that was
+	// DROPPED because the NNTP request its Message-ID produces could not
+	// have named an article on any server — RFC conformance is not the
+	// criterion, fetchability is.
+	//
+	// EmptyMessageIDs counts segments whose <segment> text was empty or
+	// consisted only of whitespace and an angle-bracket wrapper.
+	EmptyMessageIDs int
+
+	// OversizeMessageIDs counts Message-IDs too long to fit an NNTP command
+	// argument (RFC 3977 §3.1), which makes the server reject the command
+	// line rather than the article.
+	OversizeMessageIDs int
+
+	// MalformedMessageIDs counts Message-IDs containing a byte that breaks
+	// the wire request: SP or HT (argument tokenisation), CR, LF or NUL
+	// (the command line itself, and the injection vector), or an interior
+	// '<' or '>' (the angle-bracket wrapper).
+	MalformedMessageIDs int
+
+	// The Message-ID advisory counters. Unlike the three above, these
+	// segments are KEPT and downloaded — each records an RFC violation that
+	// still leaves a requestable identifier. They exist so that promoting
+	// any of them to a rejection can rest on observed frequency rather than
+	// on assumption; nothing downstream branches on them.
+	//
+	// NonConformantMessageIDs counts IDs longer than RFC 3977 §3.6's limit
+	// but still short enough to request.
+	NonConformantMessageIDs int
+
+	// NonASCIIMessageIDs counts IDs containing a byte outside printable
+	// US-ASCII — both non-ASCII bytes and stray control bytes that survive
+	// interpolation intact.
+	NonASCIIMessageIDs int
+
+	// MessageIDsMissingAtSign counts IDs with no '@', which RFC 5536 §3.1.3
+	// requires but which servers may nonetheless answer.
+	MessageIDsMissingAtSign int
 
 	// SkippedFiles counts <file> elements that yielded zero valid
 	// articles after dedup and size checks.

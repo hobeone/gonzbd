@@ -63,6 +63,13 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 // Kept separate from logParseAnomalies because the two have different
 // audiences and different length budgets: the log line can afford one
 // key/value pair per counter, this one is displayed in a queue row.
+//
+// Only counters whose segments were DISCARDED belong here. The parser also
+// records anomalies on segments it KEPT — a Message-ID that violates the RFC
+// but still names a fetchable article — and folding those into this sentence
+// would tell the user data was dropped when none was. Those go to
+// logParseAnomalies alone, where the reader is an operator gathering evidence
+// rather than someone deciding whether to re-add a job.
 func parseAnomalySummary(parsed *nzb.NZB) string {
 	if parsed == nil {
 		return ""
@@ -70,6 +77,15 @@ func parseAnomalySummary(parsed *nzb.NZB) string {
 	var parts []string
 	if n := parsed.DuplicateMessageIDs; n > 0 {
 		parts = append(parts, fmt.Sprintf("%d repeated message-id", n))
+	}
+	if n := parsed.EmptyMessageIDs; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d empty message-id", n))
+	}
+	if n := parsed.OversizeMessageIDs; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d over-long message-id", n))
+	}
+	if n := parsed.MalformedMessageIDs; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d unusable message-id", n))
 	}
 	if n := parsed.DuplicateArticles; n > 0 {
 		parts = append(parts, fmt.Sprintf("%d duplicate part number", n))
@@ -104,15 +120,36 @@ func logParseAnomalies(logger *slog.Logger, filename string, parsed *nzb.NZB) {
 	if logger == nil || parsed == nil {
 		return
 	}
-	if parsed.DuplicateMessageIDs == 0 && parsed.DuplicateArticles == 0 &&
-		parsed.BadArticles == 0 && parsed.SkippedFiles == 0 {
-		return
+
+	discarded := parsed.DuplicateMessageIDs + parsed.DuplicateArticles +
+		parsed.BadArticles + parsed.SkippedFiles + parsed.EmptyMessageIDs +
+		parsed.OversizeMessageIDs + parsed.MalformedMessageIDs
+	kept := parsed.NonConformantMessageIDs + parsed.NonASCIIMessageIDs +
+		parsed.MessageIDsMissingAtSign
+
+	if discarded > 0 {
+		logger.Warn("NZB contains malformed segments; they were discarded at ingest",
+			"filename", filename,
+			"duplicate_message_ids", parsed.DuplicateMessageIDs,
+			"duplicate_part_numbers", parsed.DuplicateArticles,
+			"implausible_size", parsed.BadArticles,
+			"empty_message_ids", parsed.EmptyMessageIDs,
+			"oversize_message_ids", parsed.OversizeMessageIDs,
+			"malformed_message_ids", parsed.MalformedMessageIDs,
+			"files_without_usable_segments", parsed.SkippedFiles,
+		)
 	}
-	logger.Warn("NZB contains malformed segments; they were discarded at ingest",
-		"filename", filename,
-		"duplicate_message_ids", parsed.DuplicateMessageIDs,
-		"duplicate_part_numbers", parsed.DuplicateArticles,
-		"implausible_size", parsed.BadArticles,
-		"files_without_usable_segments", parsed.SkippedFiles,
-	)
+
+	// Logged separately, and at Info, because nothing was lost: these
+	// segments download normally. They are recorded so that a decision to
+	// promote any of these rules to a rejection can rest on how often the
+	// shape actually occurs rather than on assumption.
+	if kept > 0 {
+		logger.Info("NZB contains non-conformant message-ids; they were kept and will be fetched",
+			"filename", filename,
+			"over_rfc_length", parsed.NonConformantMessageIDs,
+			"non_printable_ascii", parsed.NonASCIIMessageIDs,
+			"missing_at_sign", parsed.MessageIDsMissingAtSign,
+		)
+	}
 }

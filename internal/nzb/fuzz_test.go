@@ -54,14 +54,22 @@ func TestParse_ExcessiveMetaTags(t *testing.T) {
 // --- M5: Huge article ID ---
 
 func TestParse_HugeArticleID(t *testing.T) {
-	// A segment with a 1 MB message-ID. The parser is bounded by
-	// maxNZBSize (256 MB) so this should fit, but tests that the ID
-	// is stored without truncation or panic.
+	// A segment with a 1 MB message-ID, alongside a well-formed one. The
+	// subject here is robustness: the parser is bounded by maxNZBSize
+	// (256 MB) so the document fits, and an ID this size must not panic,
+	// truncate, or take the rest of the file down with it.
+	//
+	// Its disposition is a counted rejection: no NNTP command line can
+	// carry it (RFC 3977 §3.1 bounds arguments at 497 octets), so the
+	// segment could never have been fetched. The sibling segment is the
+	// part that matters — a rejection is scoped to the segment that earned
+	// it, not the file it appeared in.
 	hugeID := strings.Repeat("x", 1024*1024) + "@huge.example.com"
 	doc := fmt.Sprintf(`<?xml version="1.0"?><nzb>`+
 		`<file subject="huge-id" date="1700000000">`+
 		`<groups><group>g</group></groups>`+
-		`<segments><segment bytes="100" number="1">%s</segment></segments>`+
+		`<segments><segment bytes="100" number="1">%s</segment>`+
+		`<segment bytes="100" number="2">ok@huge.example.com</segment></segments>`+
 		`</file></nzb>`, hugeID)
 
 	got, err := Parse(strings.NewReader(doc))
@@ -71,9 +79,14 @@ func TestParse_HugeArticleID(t *testing.T) {
 	if len(got.Files) != 1 {
 		t.Fatalf("len(Files) = %d, want 1", len(got.Files))
 	}
-	if got.Files[0].Articles[0].ID != hugeID {
-		t.Errorf("article ID was truncated: len=%d, want %d",
-			len(got.Files[0].Articles[0].ID), len(hugeID))
+	if got.OversizeMessageIDs != 1 {
+		t.Errorf("OversizeMessageIDs = %d, want 1", got.OversizeMessageIDs)
+	}
+	if n := len(got.Files[0].Articles); n != 1 {
+		t.Fatalf("len(Articles) = %d, want 1 — only the oversize segment should drop", n)
+	}
+	if id := got.Files[0].Articles[0].ID; id != "ok@huge.example.com" {
+		t.Errorf("surviving article ID = %q, want the well-formed sibling", id)
 	}
 }
 
