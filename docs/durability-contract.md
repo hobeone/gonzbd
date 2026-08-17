@@ -977,10 +977,17 @@ including every failure path.
 
   - **Incumbent still buffered → the INCUMBENT is displaced**, which is what the
     write cache always did. It made no claim, so failing it corrects the
-    writer's own accounting and nothing durable. It gives its part back and is
-    resolved *permanently failed* rather than returned to Outstanding —
-    re-fetching it reproduces the collision, observed as a ping-pong that never
-    settles.
+    writer's own accounting and nothing durable. It is resolved *permanently
+    failed* rather than returned to Outstanding — re-fetching it reproduces the
+    collision, observed as a ping-pong that never settles.
+
+    It **keeps its part**, and is counted for one through
+    `admitPermanentFailure` if it does not already hold one. `TotalParts` counts
+    manifest segments, so two segments claiming one offset are two parts the
+    file waits for; a file that stopped counting the loser could never reach
+    `TotalParts`, which left it permanently one short (#386). An article with no
+    Message-ID is exempt from the call, not from the rule — `admitAccepted`
+    counts it without recording it, so counting it again here would overshoot.
 
     Its buffered bytes go with it, through `writeCache.discardAt`, and that call
     is load-bearing rather than tidy. `wc.buffer` evicts the entry itself
@@ -1151,9 +1158,10 @@ articles or sparse regions.
   how the two used to drift apart. `partsWritten` lives on `FileWriter`, beside
   the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter`
   applies the decrement in the same statement pair that clears the article's
-  `seenDone` entry — in `rollbackPart`, which both roll-back dispositions
-  (`fail` and `failDisplaced`) call before recording what becomes of the
-  article. The routing callbacks decide *disposition* only. An article
+  `seenDone` entry — in `rollbackPart`, which `fail` calls before recording what
+  becomes of the article. `failDisplaced` does not: it resolves its article
+  rather than rolling it back, so it counts through `admitPermanentFailure`
+  instead. The routing callbacks decide *disposition* only. An article
   already counted as permanently **failed** keeps its part through a roll-back:
   `admitPermanentFailure` charged it, a redelivery writes bytes without
   charging a second one, and decrementing there leaves the file one part short
@@ -1172,13 +1180,17 @@ articles or sparse regions.
   A coalesced run rolls back **every** article merged into it, not just the one
   whose arrival triggered the flush: `buildContiguousRun` pooled the originals
   before the write was attempted, so reporting only the trigger would leave the
-  rest believed written with their bytes freed. The same holds for a cache
-  displacement and for everything after a failed write in a drain.
+  rest believed written with their bytes freed. The same holds for everything
+  after a failed write in a drain. A cache displacement contributes to the same
+  set without rolling anything back.
 
   A rolled-back article is **not** put in `seenFailed`. A storage fault says
   nothing about the article's availability (A1), and recording it failed made
   its redelivery take the "already counted as failed" branch — written but not
-  counted — leaving the file's part total permanently short.
+  counted — leaving the file's part total permanently short. A *displaced*
+  article is put there, and that is not a counter-example: it is resolved
+  rather than rolled back, so its redelivery should be recognised and refused
+  rather than written again.
 - **Drain stops at the first write failure**, returning the articles that *did*
   land plus the fault, so the barrier sees both what it may claim and why the
   drain stopped. Continuing would be optimistic: a storage fault is a condition

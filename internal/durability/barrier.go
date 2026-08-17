@@ -562,14 +562,25 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// A completed file whose recorded articles are not ALL durable must not be
 	// trimmed to the durable bound.
 	//
-	// In the healthy case the two sets coincide: every article of a completed
-	// file is Done — hence durable — or permanently failed, and a failed
-	// article never decoded and so wrote no Class A fact. A gap between them
-	// means this is a RETRY of a finalize whose earlier attempt consumed the
-	// writer's drain report without committing the bits it earned. Those bytes
-	// are on disk; the durable bound sits below them; truncating to it destroys
-	// them. That is the #342/#350 family arriving through the recovery path,
-	// and it is silent.
+	// The two sets coincide only when every article of a completed file is
+	// Done — hence durable — or was permanently failed WITHOUT decoding, which
+	// is the only kind that wrote no Class A fact.
+	//
+	// An earlier version of this paragraph asserted that of every failed
+	// article. It is false for the two the assembler refuses after decoding:
+	// an arrival at an already-written offset, and an article displaced from
+	// one. Both decoded, so both have a Class A fact appended at decode time
+	// and independent of any write, and neither earns a durable bit. #386 made
+	// the displaced case routinely reachable — before it, a file with a
+	// cache-resident collision never reached TotalParts and so never finalized
+	// at all. See #389, which is about what that costs rather than what it is.
+	//
+	// So a gap between the sets means one of two things: a collision of that
+	// kind, or a RETRY of a finalize whose earlier attempt consumed the
+	// writer's drain report without committing the bits it earned. The second
+	// is why the bound must not drop: those bytes are on disk, the durable
+	// bound sits below them, and truncating to it destroys them. That is the
+	// #342/#350 family arriving through the recovery path, and it is silent.
 	//
 	// The recorded bound is safe where the durable one is not: every fact names
 	// an article that decoded, so nothing below its end is pre-allocation
@@ -579,8 +590,9 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		recorded, missing, unrecorded := recordedExtent(facts, idx, ext.Durable, t)
 		if missing > 0 {
 			b.log.Warn("finalizing a file whose recorded articles are not all durable; "+
-				"trimming to the recorded extent rather than the durable one so an "+
-				"interrupted finalize's bytes are not destroyed",
+				"trimming to the recorded extent rather than the durable one so no "+
+				"already-written bytes are destroyed. Expected after an offset "+
+				"collision, or on a retry of an interrupted finalize",
 				"job", jobID, "file", idx, "not_durable", missing,
 				"durable_extent", bound, "recorded_extent", recorded)
 			bound = recorded

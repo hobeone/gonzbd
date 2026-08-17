@@ -306,19 +306,63 @@ func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.writt
 // confirmed. Used by tests to assert the report survives a failed Sync.
 func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
 
-// failDisplaced rolls back an article a LATER article displaced from the same
+// failDisplaced resolves an article a LATER article displaced from the same
 // offset, which is a different disposition from a write that failed.
 //
-// Its bytes are gone and nothing will write them, so it has to give its part
-// back like any rollback. But it must not be returned to Outstanding: the
-// collision is a property of what the server sent — two segments claiming one
-// offset — so re-fetching it produces the same collision, and the re-fetched
-// copy displaces the article that displaced it. Observed as a [0 1 0 1 0]
-// ping-pong when this went through the un-written path.
+// Its bytes are gone and nothing will write them, but it must not be returned
+// to Outstanding: the collision is a property of what the server sent — two
+// segments claiming one offset — so re-fetching it produces the same
+// collision, and the re-fetched copy displaces the article that displaced it.
+// Observed as a [0 1 0 1 0] ping-pong when this went through the un-written
+// path.
 //
 // So it is resolved permanently failed instead, which is the same disposition
 // handleLateDuplicate reaches for an article that can never be written now or
 // later. See releaseFaulted.
+//
+// # A resolved article must be COUNTED for a part, not merely keep one
+//
+// TotalParts counts manifest segments, so two segments claiming one offset are
+// two parts the file waits for: one supplies the bytes, the other is
+// permanently failed, and a file that stopped counting the loser could never
+// reach TotalParts. Giving the part back while resolving the article left the
+// file permanently one short — OnFileComplete never fired and the job sat at
+// 100% with nothing outstanding, across restarts (#386).
+//
+// admitPermanentFailure rather than failPermanent, because the incumbent is
+// not guaranteed to hold a part to keep. failPermanent only KEEPS one, which
+// suffices at acceptArticle's call sites because admitAccepted ran a statement
+// earlier. Here it does not: acceptedAt entries are never removed, so a
+// write-faulted article keeps its offset ownership after fail has taken its
+// part and its seenDone entry away, and a later arrival at that offset
+// displaces a stale owner holding nothing. failPermanent would count nothing
+// for it and the file would wedge exactly as before. admitPermanentFailure
+// counts if and only if the article is not already counted.
+//
+// It also leaves the seenDone entry in place, and both duplicate-handling
+// readers — handleSuccessArticle and handleLateDuplicate — test seenDone
+// before seenFailed, so a redelivery of the loser takes the duplicate arm
+// rather than being re-written and displacing the winner in turn.
+// admitPermanentFailure itself reads the two in the opposite order, which is
+// how it tells an already-counted article from a new one.
+//
+// # The empty Message-ID is guarded, and the reason is the overcount
+//
+// admitAccepted counts an untracked article but records nothing, because no
+// map can hold an empty key. An unguarded call here therefore finds it
+// uncounted and increments a SECOND time: two untracked articles at one offset
+// would leave partsWritten at 3 and fire OnFileComplete over a file that is
+// genuinely short. Only second-order would the seenFailed[""] entry then dedup
+// the next genuinely different untracked article out of being counted at all.
+//
+// Guarded, an untracked article keeps its part by omission — nothing decrements
+// it any more. For an ordinary collision that lands in the same place as the
+// tracked path: both articles were admitted separately, both stay counted, and
+// the file reaches TotalParts. It is weaker only under REDELIVERY, where
+// nothing records the article and a second copy re-runs the whole accept path
+// and takes another part. That overshoot is absorbed by the parts >=
+// TotalParts comparison, where the give-back this replaces wedged the file
+// outright.
 //
 // # Precondition: the incumbent must not have been reported Written
 //
@@ -345,16 +389,19 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // record after it was built, by a call site that had to find it again — and it
 // carried a live defect. fail returns early on an empty Message-ID, so for an
 // untracked article nothing was appended, the positional guard matched nothing,
-// and the whole displacement was dropped: no rollback, no report, and the
-// article kept the part admitAccepted had counted for it while its displacer
-// took another. Two parts for one offset, and a file that can reach TotalParts
-// over bytes only one article supplied.
+// and the whole displacement was dropped: no report, and nothing resolved the
+// article in either direction. Keeping its part is now the correct outcome and
+// no longer part of the complaint; what was missing was the faulted record
+// that makes routeFaulted report it at all, without which it stayed Emitted
+// forever and no later run re-dispatched it.
 //
 // Building the record in one statement makes a half-specialized faultedArticle
 // unrepresentable, which is what lets Accept's diagnosis fields be added to it
 // without reopening that window.
 func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
-	w.rollbackPart(id)
+	if id.msgID != "" {
+		w.admitPermanentFailure(id.msgID)
+	}
 	w.faulted = append(w.faulted, faultedArticle{
 		id:             id,
 		displaced:      true,
@@ -367,17 +414,19 @@ func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 // rollbackPart undoes the part and seen-set state an admitted article holds,
 // without deciding what becomes of the article. The caller owns that.
 //
-// The untracked branch is reachable only from failDisplaced. fail keeps its own
-// early return on an empty Message-ID, because on ITS path the give-back
-// already has an owner: routeAcceptFailure calls giveBackUntrackedPart for the
-// write-fault case, and routing the decrement through here as well would charge
-// it twice. A displaced article has no such second owner — it never reaches
-// routeAcceptFailure — so this is the only place its part can come back.
+// # Precondition: id.msgID is non-empty
+//
+// fail is the only caller and returns early on an empty Message-ID, so this
+// never sees one. It used to, from failDisplaced, and handled it by calling
+// giveBackUntrackedPart — the only way an untracked article's part could come
+// back, since no map records it. A displaced article now KEEPS its part
+// (#386), so that branch lost its last caller and was removed rather than left
+// reachable only from a test.
+//
+// giveBackUntrackedPart itself is unaffected: routeAcceptFailure still calls it
+// for the write-fault case, which is why fail keeps its own early return —
+// routing that decrement through here as well would charge it twice.
 func (w *FileWriter) rollbackPart(id articleID) {
-	if id.msgID == "" {
-		w.giveBackUntrackedPart()
-		return
-	}
 	_, wasDone := w.seenDone[id.msgID]
 	_, wasFailed := w.seenFailed[id.msgID]
 	delete(w.seenDone, id.msgID)
@@ -413,9 +462,11 @@ func (w *FileWriter) rollbackPart(id articleID) {
 //
 // Every batch failure rolls back MORE articles than the one that triggered it
 // — a coalesced run loses every part, a drain loses everything after the
-// write that failed, a cache displacement loses whatever it evicted — and the
-// caller was given only one article index to route. So the set is accumulated
-// here and taken by the caller, rather than inferred from an error.
+// write that failed — and the caller was given only one article index to
+// route. So the set is accumulated here and taken by the caller, rather than
+// inferred from an error. A cache displacement adds to the same set without
+// coming through this function, since it resolves its article rather than
+// rolling it back.
 //
 // # It gives the part back itself
 //
@@ -460,7 +511,8 @@ func (w *FileWriter) parts() int { return w.partsWritten }
 // So an offset whose owner has been reported Written is SETTLED, and the later
 // article loses. That is the opposite of the cache-resident case, deliberately:
 // there the incumbent has no claim to protect, so the arrival wins and the
-// incumbent is rolled back.
+// incumbent is resolved permanently failed. Which article loses differs; the
+// accounting does not, since both dispositions keep the loser counted.
 func (w *FileWriter) offsetSettledBy(off int64, arriving articleID) (articleID, bool) {
 	owner, taken := w.acceptedAt[off]
 	if !taken || owner.id == arriving || !owner.written {
