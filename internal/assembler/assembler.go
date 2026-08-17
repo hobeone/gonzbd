@@ -1325,6 +1325,21 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			}
 			return false
 		}
+	} else if _, resolved := w.resolvedUntracked[req.ArtIdx]; resolved {
+		// The same arm as seenFailed above, for an article no map keyed on
+		// Message-ID can hold. It is resolved, so its bytes are not wanted and
+		// its part is already counted; writing them would displace whoever owns
+		// the offset now, and counting it again would carry the file to
+		// TotalParts over a segment that never arrived.
+		//
+		// Unlike the seenFailed arm this does NOT write the bytes. That arm
+		// serves an article the storage layer failed on, whose content is still
+		// the file's; this one serves an article another article has already
+		// superseded at its offset.
+		if req.Data != nil {
+			a.releaseBuffer(req.Data)
+		}
+		return false
 	}
 	// Recorded before the write is attempted, not after, so a write path that
 	// fails can move the article to seenFailed without this function putting

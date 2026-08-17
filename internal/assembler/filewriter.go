@@ -94,6 +94,32 @@ type FileWriter struct {
 	seenDone   map[string]struct{}
 	seenFailed map[string]struct{}
 
+	// resolvedUntracked records, by article index, the articles this writer has
+	// resolved that seenFailed cannot hold — the ones with no Message-ID.
+	//
+	// It exists because those two sets are keyed on the wrong thing for this
+	// question. A Message-ID is the right key for DEDUP, since it is what makes
+	// two deliveries from different servers the same article, but an NZB may
+	// omit it and no map can hold an empty key. The article index is always
+	// present and unique within the file, so it is the only identifier a
+	// terminal disposition can be recorded under when the Message-ID is absent.
+	//
+	// Without it an untracked article's displacement left no trace at all, and
+	// handleSuccessArticle — whose dedup arms are both gated on a non-empty
+	// Message-ID — counted every redelivery afresh. Each one displaced the
+	// current owner in turn, so the count climbed one per copy until it reached
+	// TotalParts and finalized a file with a segment still missing. The
+	// give-back this replaces hid that behind an oscillation: the re-collision
+	// returned the part the redelivery had just taken, so the count never
+	// climbed and the file simply never completed instead.
+	//
+	// Scoped to displacement deliberately. An untracked article refused at a
+	// settled offset still goes unrecorded, because failPermanent returns early
+	// on an empty Message-ID — unchanged here, and the reason that path cannot
+	// reach this one is that acceptArticle refuses the ARRIVAL rather than the
+	// incumbent, so nothing is displaced to record.
+	resolvedUntracked map[int32]struct{}
+
 	// acceptedAt records which article OWNS each offset this writer has
 	// accepted bytes for. It is the collision detector (#383).
 	//
@@ -257,13 +283,14 @@ type offsetOwner struct {
 // newFileWriter wraps an already-open handle.
 func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *FileWriter {
 	w := &FileWriter{
-		handle:     handle,
-		path:       path,
-		key:        key,
-		wc:         wc,
-		seenDone:   make(map[string]struct{}),
-		seenFailed: make(map[string]struct{}),
-		acceptedAt: make(map[int64]offsetOwner),
+		handle:            handle,
+		path:              path,
+		key:               key,
+		wc:                wc,
+		seenDone:          make(map[string]struct{}),
+		seenFailed:        make(map[string]struct{}),
+		acceptedAt:        make(map[int64]offsetOwner),
+		resolvedUntracked: make(map[int32]struct{}),
 	}
 	w.writeAt = handle.WriteAt
 	w.syncFile = handle.Sync
@@ -356,13 +383,17 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // the next genuinely different untracked article out of being counted at all.
 //
 // Guarded, an untracked article keeps its part by omission — nothing decrements
-// it any more. For an ordinary collision that lands in the same place as the
-// tracked path: both articles were admitted separately, both stay counted, and
-// the file reaches TotalParts. It is weaker only under REDELIVERY, where
-// nothing records the article and a second copy re-runs the whole accept path
-// and takes another part. That overshoot is absorbed by the parts >=
-// TotalParts comparison, where the give-back this replaces wedged the file
-// outright.
+// it any more — and its disposition is recorded in resolvedUntracked instead,
+// keyed on the article index because that is the identifier it has. Both
+// articles were admitted separately, both stay counted, and the file reaches
+// TotalParts, exactly as on the tracked path.
+//
+// The record is not optional bookkeeping. Keeping the part without it was a
+// worse defect than the one this function fixes: handleSuccessArticle's dedup
+// arms are both gated on a non-empty Message-ID, so every redelivery of the
+// article was counted afresh, and the count climbed one per copy until it
+// reached TotalParts over a segment that had never arrived. A file finalized
+// short is silent where the wedge it replaced was merely stuck.
 //
 // # Precondition: the incumbent must not have been reported Written
 //
@@ -401,6 +432,8 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 	if id.msgID != "" {
 		w.admitPermanentFailure(id.msgID)
+	} else {
+		w.resolvedUntracked[id.artIdx] = struct{}{}
 	}
 	w.faulted = append(w.faulted, faultedArticle{
 		id:             id,

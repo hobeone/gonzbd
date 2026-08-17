@@ -165,6 +165,67 @@ func TestDisplacement_RedeliveryIsNotCountedTwice(t *testing.T) {
 	}
 }
 
+// TestDisplacement_UntrackedRedeliveryCannotFinalizeAShortFile is the failure
+// mode that keeping the part opens up when nothing records the article.
+//
+// handleSuccessArticle's two dedup arms are both gated on a non-empty
+// Message-ID, so before resolvedUntracked existed an untracked article had no
+// duplicate handling at all. Every redelivery ran the whole accept path, took
+// another part and displaced whoever owned the offset by then, so the count
+// climbed one per copy — and with a third segment still outstanding it reached
+// TotalParts and finalized a file that was genuinely short.
+//
+// The give-back this replaced concealed it rather than preventing it: the
+// re-collision handed back the part the redelivery had just taken, so the
+// count oscillated and the file never completed at all. Trading a visible
+// stall for a silently truncated file is the wrong direction, which is why the
+// part is kept AND the disposition recorded rather than either alone.
+//
+// Three segments, not two, because with TotalParts=2 the file legitimately
+// completes on the collision itself and the premature finalize is
+// indistinguishable from the correct one.
+func TestDisplacement_UntrackedRedeliveryCannotFinalizeAShortFile(t *testing.T) {
+	dir := t.TempDir()
+	a := newHelperAssembler()
+	fired := 0
+	a.opts.OnFileComplete = func(_ string, _ int) { fired++ }
+	a.opts.OnArticleRejected = func(_ string, _ int, _ int32, _ string) {}
+
+	wc := newWriteCache(1 << 20)
+	f := newHelperFile(t, dir, "short.dat", 0)
+	f.w.wc = wc
+	f.info.TotalParts = 3 // the third segment never arrives
+	key := fileKey{jobID: "job", fileIdx: 0}
+	open := map[fileKey]*openFile{key: f}
+	completed := map[fileKey]struct{}{}
+
+	send := func(idx int32) {
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: "",
+			Offset: 0, Data: []byte("XXXX"),
+		}, open, completed, wc)
+	}
+
+	send(1)
+	send(2) // collides with 1, displacing it
+	if got := f.w.parts(); got != 2 {
+		t.Fatalf("parts = %d after the collision, want 2; the fixture is not in the "+
+			"state this test is about", got)
+	}
+
+	send(1) // the displaced article comes back
+
+	if got := f.w.parts(); got != 2 {
+		t.Errorf("parts = %d after the redelivery, want 2: the article is already "+
+			"counted and already resolved, so a second copy must add nothing", got)
+	}
+	if fired != 0 {
+		t.Errorf("OnFileComplete fired %d times: the file has two of three segments, "+
+			"and finalizing it here truncates it silently at whatever the barrier "+
+			"has recorded", fired)
+	}
+}
+
 // TestDisplacement_UntrackedGuardLeavesTheFailureBudgetIntact covers the reason
 // failDisplaced skips an article with no Message-ID rather than handling it.
 //

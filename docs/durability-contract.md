@@ -942,9 +942,13 @@ including every failure path.
   Offsets are owned by `acceptedAt` instead, which is a different index for a
   different question: not "has this article been seen" but "who owns this byte
   range, and have their bytes been written". See the collision rules below.
-- A write path that **fails** moves its articles out of `seenDone` into
-  `seenFailed`, so a later duplicate is not read as a success. There is no ack
-  in either direction on a failed write (A1). Absence from the next `Drain` is
+- A write path that **fails** moves its articles out of `seenDone` and does
+  **not** put them in `seenFailed`. An earlier version of this rule said it did,
+  which contradicts the roll-back rule below and the behaviour of
+  `FileWriter.fail`: recording a failed write as a failed ARTICLE made the
+  redelivery take the already-counted-as-failed branch, written but not counted,
+  leaving the file's part total permanently short. There is no ack in either
+  direction on a failed write (A1). Absence from the next `Drain` is
   necessary but **not sufficient** to leave the article Outstanding: its
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
@@ -988,6 +992,17 @@ including every failure path.
     `TotalParts`, which left it permanently one short (#386). An article with no
     Message-ID is exempt from the call, not from the rule — `admitAccepted`
     counts it without recording it, so counting it again here would overshoot.
+
+    Its disposition is recorded in `FileWriter.resolvedUntracked` instead, keyed
+    on the article index, because `seenDone` and `seenFailed` are keyed on the
+    Message-ID an NZB may omit and no map can hold an empty key.
+    `handleSuccessArticle`'s dedup arms are both gated on a non-empty
+    Message-ID, so without that record every redelivery of such an article was
+    counted afresh and displaced the current owner in turn — the count climbed
+    one per copy until it reached `TotalParts` over a segment that had never
+    arrived, and the file was finalized short. Keeping the part and recording
+    the disposition are one change, not two: keeping it alone converts the
+    wedge into a silent truncation.
 
     Its buffered bytes go with it, through `writeCache.discardAt`, and that call
     is load-bearing rather than tidy. `wc.buffer` evicts the entry itself
