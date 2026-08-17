@@ -512,7 +512,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		}
 
 		digest := md5.New()
-		file, ts, counters := convertFile(xf, time.Now(), digest)
+		file, ts, counters := convertFile(xf, time.Now(), digest, make(map[string]struct{}))
 		if ts != 1700000000 {
 			t.Errorf("ts = %d, want 1700000000", ts)
 		}
@@ -546,7 +546,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		}
 
 		digest := md5.New()
-		byPart, counters := partitionSegments(segs, digest)
+		byPart, counters := partitionSegments(segs, digest, make(map[string]struct{}))
 
 		if len(byPart) != 3 {
 			t.Fatalf("len(byPart) = %d, want 3", len(byPart))
@@ -652,7 +652,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		nzbOut := &NZB{}
 		digest := md5.New()
 		seenGroups := make(map[string]struct{})
-		ts, segs, err := absorbFile(dec, &se, nzbOut, digest, seenGroups, time.Now())
+		ts, segs, err := absorbFile(dec, &se, nzbOut, digest, seenGroups, make(map[string]struct{}), time.Now())
 		if err != nil {
 			t.Fatalf("absorbFile: %v", err)
 		}
@@ -741,10 +741,15 @@ func TestParse_ExactMaxSegments(t *testing.T) {
 	b.WriteString(`<?xml version="1.0"?><nzb>`)
 	b.WriteString(`<file subject="big" date="1700000000">`)
 	b.WriteString(`<groups><group>g</group></groups><segments>`)
+	// Distinct Message-IDs per segment: the parser drops a repeat as a
+	// duplicate, and this test's subject is the segment-count limit, not
+	// deduplication. A real NZB never repeats an ID across segments either.
 	for i := 1; i <= maxSegments; i++ {
 		b.WriteString(`<segment bytes="100" number="`)
 		b.WriteString(strconv.Itoa(i))
-		b.WriteString(`">id@h</segment>`)
+		b.WriteString(`">id`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`@h</segment>`)
 	}
 	b.WriteString(`</segments></file></nzb>`)
 
