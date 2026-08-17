@@ -261,11 +261,6 @@ func absorbFile(
 
 type articleCounters struct {
 	dupes, dupeIDs, bad int
-
-	// dupeIDBytes is the declared byte total of the segments dropped for a
-	// repeated Message-ID. It is added back into File.Bytes rather than lost
-	// with the segments themselves — see convertFile.
-	dupeIDBytes int64
 }
 
 // convertFile transforms a wire-format xmlFile into the public File
@@ -290,23 +285,6 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string
 
 	byPart, counters := partitionSegments(xf.Segments, digest, seenIDs)
 	normalizeFileStruct(&file, byPart)
-
-	// Add back the bytes of segments dropped for a repeated Message-ID.
-	//
-	// File.Bytes becomes Manifest.FileBytes and then the assembler's
-	// ExpectedSize, which bounds every write to ExpectedSize + 12.5%. Leaving
-	// the dropped bytes out shrinks that bound below the file's true size, so
-	// the file's own later parts are refused as writing past its declared end.
-	// Dropping k of N equally-sized segments leaves the bound at
-	// (N-k)/N * 1.125 of the truth, which falls below 1.0 once k/N exceeds one
-	// ninth — a single duplicate in a file of eight segments or fewer.
-	//
-	// The asymmetry is what settles it: this figure is an estimate used as an
-	// upper bound, so over-stating it only loosens the bound while
-	// under-stating it refuses data that genuinely belongs to the file. The
-	// dropped segment named an article that exists; only its NZB entry was
-	// redundant.
-	file.Bytes += counters.dupeIDBytes
 
 	if len(file.Articles) == 0 {
 		return file, 0, counters
@@ -350,11 +328,23 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 		// duplicate-job key and must hash every structurally-valid ID in source
 		// order to match Python SABnzbd; excluding a dropped duplicate would
 		// silently change the identity of every affected NZB.
+		//
+		// The dropped segment's bytes leave with it, and that is deliberate.
+		// File.Bytes is documented as the sum of Articles[].Bytes and is what
+		// JobProgress derives both expected and remaining bytes from, so
+		// counting bytes for an article that is not in the manifest strands
+		// them in `remaining` — it can never be downloaded and never failed.
+		//
+		// The cost is accepted rather than unnoticed: File.Bytes also becomes
+		// the assembler's ExpectedSize, which bounds writes to ExpectedSize +
+		// 12.5%. Dropping k of N equally-sized segments leaves that bound at
+		// (N-k)/N * 1.02 * 1.125 of the file's true size, which falls under 1.0
+		// once k/N passes ~12.85% — one duplicate in a file of seven segments
+		// or fewer. Such a file is already malformed and bound for par2, and
+		// the alternative distorts the size accounting of every affected job to
+		// avoid it.
 		if _, dup := seenIDs[id]; dup {
 			counters.dupeIDs++
-			if s.Bytes > 0 && s.Bytes < maxArticleSize {
-				counters.dupeIDBytes += int64(s.Bytes)
-			}
 			continue
 		}
 		if s.Bytes <= 0 || s.Bytes >= maxArticleSize {

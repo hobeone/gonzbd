@@ -678,6 +678,17 @@ later reader can tell a decision from an oversight.
    accept the tightening deliberately. **Do not discover this during
    implementation.**
 
+   **Settled for A7: the tightening is accepted.** Keeping a dropped segment's
+   bytes was tried and reverted — `File.Bytes` is documented as the sum of
+   `Articles[].Bytes` and is what `JobProgress.sizeFigures` derives both
+   expected and remaining bytes from, so bytes belonging to an article that is
+   not in the manifest can never be downloaded or failed and stay stranded in
+   `remaining`. The write-bound cost is real but narrow: with the ~2% encoded
+   overhead `ExpectedSize` already carries, a rejection needs `k/N` above
+   ~12.85%, i.e. one duplicate in a file of seven segments or fewer, and such a
+   file is already bound for par2. Distorting every affected job's size
+   accounting to avoid it is the worse trade.
+
 The through-line: **reject only what could never have worked, warn about
 everything else, and let par2 adjudicate.** Rejection is reserved for claims
 that are self-defeating — a Message-ID that cannot be fetched, a duplicate that
