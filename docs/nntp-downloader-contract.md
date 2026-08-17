@@ -109,11 +109,17 @@ of their failure ratio.
    (and thus maximum TCP connections) equals `max(S.Connections(), 1)`. Workers
    are created once in `Start` and not resized.
 
-2. **Sequential in-flight invariant**: For any article `MessageID`, exactly one
-   request can be active across all server pools at any moment
-   (`InFlight(msgID) ≤ 1`). `tryDispatch` checks `InFlightLocked(key) > 0`
-   before sending. Fallback to secondary/backup servers is strictly sequential —
-   only after the current request resolves and `clearInFlight` runs.
+2. **Sequential in-flight invariant**: For any article identity
+   `(jobID, artIdx)`, exactly one request can be active across all server pools
+   at any moment (`InFlight(jobID, artIdx) ≤ 1`). `tryDispatch` checks
+   `InFlightLocked(key) > 0` before sending. Fallback to secondary/backup
+   servers is strictly sequential — only after the current request resolves and
+   `clearInFlight` runs.
+
+   The identity is the pair, not the `MessageID`. Two resident jobs holding the
+   same Message-ID have independent in-flight budgets and may be fetched
+   concurrently, which is correct: they are different articles that happen to
+   share a name.
 
 3. **Non-blocking dispatch loop**: The main loop (`run`) must never perform
    blocking socket I/O, wait on unbuffered channels, or take write locks across

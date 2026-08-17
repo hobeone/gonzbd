@@ -560,7 +560,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// starting any network I/O.
 	if status, err := d.queue.GetJobStatus(req.jobID); err == nil && status == constants.StatusPaused {
 		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
+		_ = d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx)
 		return nil, false
 	}
 
@@ -569,7 +569,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// sitting in the workCh buffer still need to be drained.
 	if d.paused.Load() || d.queue.IsPaused() {
 		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
+		_ = d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx)
 		return nil, false
 	}
 
@@ -686,7 +686,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Non-CRC decode errors are terminal failures — mark Emitted so
 		// the dispatcher never re-picks this article, then clear the tryList.
-		if markErr := d.queue.MarkArticleEmitted(req.jobID, req.messageID); markErr != nil && !errors.Is(markErr, queue.ErrNotFound) && !errors.Is(markErr, queue.ErrJobNotResident) {
+		if markErr := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); markErr != nil && !errors.Is(markErr, queue.ErrNotFound) && !errors.Is(markErr, queue.ErrJobNotResident) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
 		}
 		d.clearTried(req.jobID, req.artIdx)
@@ -700,7 +700,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// no exported constructor outside internal/durability. Only a barrier that
 	// has drained and fsynced the file can mint one.
 	//
-	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher from
+	// MarkArticleEmittedByIdx (transient, not persisted) keeps the dispatcher from
 	// re-picking this article between now and that barrier. If the process
 	// crashes first, Emitted is lost on restart, the startup resume sweep
 	// cannot prove the bytes, and the article is re-dispatched — which is S3,

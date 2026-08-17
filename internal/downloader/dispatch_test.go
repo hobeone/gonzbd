@@ -960,6 +960,55 @@ func TestDownloader_DecodePayload_Coverage(t *testing.T) {
 	}
 }
 
+// A job may legitimately hold two articles with the same Message-ID — a
+// reposted segment, or a duplicated one in the NZB. Manifest.articleIndexByID
+// resolves such an ID to a single index, last writer wins, so a queue call
+// keyed on the Message-ID acts on the LATER article whenever the request names
+// the earlier one.
+//
+// That matters here because the tracker side of this path keys on artIdx. If
+// the queue side keys on the Message-ID the two tiers disagree about which
+// article was just resolved: the requested one keeps its Emitted flag and is
+// skipped by every later dispatch pass, while a different article has its flag
+// changed underneath it. The job stalls with work outstanding and nothing in
+// flight.
+func TestProcessFetchedArticle_DecodeErrorMarksTheRequestedIndex(t *testing.T) {
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"dup@h", "dup@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	d := &Downloader{
+		queue:       q,
+		completions: make(chan *ArticleResult, 10),
+		log:         slog.New(slog.DiscardHandler),
+		tracker:     newDispatchTracker(),
+	}
+	srv := NewServer(config.ServerConfig{Name: "s1"})
+
+	// artIdx 0 is the EARLIER of the two duplicates; the Message-ID index
+	// resolves to the later one, so the two identities disagree here and
+	// nowhere else.
+	req := &articleRequest{jobID: job.ID, fileIdx: 0, artIdx: 0, messageID: "dup@h"}
+	d.processFetchedArticle(t.Context(), srv, req, []byte("invalid data"))
+
+	got, err := q.Get(job.ID)
+	if err != nil || got == nil {
+		t.Fatalf("queue.Get(%s): job not resident (%v)", job.ID, err)
+	}
+	p := got.Progress()
+	if !p.ArticleEmitted(0) {
+		t.Error("article 0 is not Emitted after its own decode error — the queue was " +
+			"told about a different article than the tracker was, so the dispatcher " +
+			"will offer article 0 forever")
+	}
+	if p.ArticleEmitted(1) {
+		t.Error("article 1 is Emitted though it was never fetched — the Message-ID " +
+			"index resolved to it instead of the requested index")
+	}
+}
+
 func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
