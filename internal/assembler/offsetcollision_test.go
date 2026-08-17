@@ -459,8 +459,9 @@ func TestFileWriter_CachedIncumbentIsDisplaced(t *testing.T) {
 			"Outstanding and the re-fetched copy displaces its displacer — observed " +
 			"as a ping-pong that never settles")
 	}
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d, want 1: two articles admitted, one displaced", got)
+	if got := w.parts(); got != 2 {
+		t.Errorf("parts = %d, want 2: two articles admitted, one displaced — the loser "+
+			"is resolved rather than rolled back, so it stays counted", got)
 	}
 }
 
@@ -578,26 +579,35 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 			t.Errorf("rollback %d is not marked displaced", i)
 		}
 	}
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d, want 1: three articles admitted, two displaced", got)
+	if got := w.parts(); got != 3 {
+		t.Errorf("parts = %d, want 3: three articles admitted, two displaced — each "+
+			"segment the manifest lists is one part the file waits for, however many "+
+			"of them claim the same offset", got)
 	}
 }
 
-// TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack pins the accounting
-// hole in failDisplaced's former post-hoc patch-up.
+// TestFileWriter_DisplacedUntrackedArticleKeepsItsPart pins the untracked half
+// of #386's disposition, where the outcome is right for a different reason than
+// the tracked half.
 //
-// An article with no Message-ID is admitted and counted like any other —
-// admitAccepted counts unconditionally, because no map can hold it — but fail
-// returns early on an empty ID. So failDisplaced appended nothing, its
-// positional `w.faulted[n-1].id == id` guard found no matching entry and
-// silently no-opped, and the displaced article kept its part while its
-// displacer took another. Two parts counted for one offset, and nothing
-// reported the loser rejected.
+// An article with no Message-ID is admitted and counted like any other, because
+// admitAccepted counts unconditionally — no map can hold an empty key. It is
+// therefore already counted when it is displaced, and failDisplaced's
+// msgID != "" guard skips the call that would count it: it keeps its part by
+// OMISSION rather than by record.
 //
-// giveBackUntrackedPart is the only path that can un-admit an untracked
-// article, and it is reachable only from routeAcceptFailure — not from
-// displacement.
-func TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack(t *testing.T) {
+// The guard is not a shortcut. admitPermanentFailure reads seenDone to decide
+// whether an article is already counted, an untracked one is never in there,
+// so an unguarded call would count it a SECOND time and fire OnFileComplete
+// over a file that is genuinely short.
+//
+// An earlier version of this test asserted the opposite — that the article
+// gives its part back — on the argument that keeping it means "one offset's
+// bytes counted twice". That conflates two different counts. TotalParts counts
+// manifest SEGMENTS, not byte ranges, so two segments claiming one offset are
+// two parts the file waits for however much their bytes overlap. Counting both
+// is what lets the file finish; counting neither is what wedged it.
+func TestFileWriter_DisplacedUntrackedArticleKeepsItsPart(t *testing.T) {
 	w := newTestFileWriter(t, withCacheBytes(1<<20))
 
 	// Two DISTINCT articles, neither carrying a Message-ID. They differ by
@@ -625,9 +635,9 @@ func TestFileWriter_DisplacedUntrackedArticleGivesItsPartBack(t *testing.T) {
 	if !rolled[0].displaced {
 		t.Error("the rolled-back untracked article is not marked displaced")
 	}
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d, want 1: the displaced untracked article kept its part "+
-			"while its displacer took another, so the file can reach TotalParts "+
-			"with one offset's bytes counted twice", got)
+	if got := w.parts(); got != 2 {
+		t.Errorf("parts = %d, want 2: both untracked articles are segments the file "+
+			"waits for — one supplies the bytes, the other is resolved permanently "+
+			"failed, and neither may be un-counted", got)
 	}
 }

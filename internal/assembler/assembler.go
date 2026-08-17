@@ -1130,10 +1130,14 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 // An article can reach here holding no state at all: absent from seenDone,
 // absent from seenFailed, and holding no part. FileWriter.fail puts it in
 // exactly that condition — it clears the seenDone entry and gives the part
-// back together — for every article a coalesced run, a drain or a cache
-// displacement rolled back. The rollback returned it to Outstanding, the
-// downloader re-dispatched it, and the copy that comes back arrives after its
-// file was tombstoned.
+// back together — for every article a coalesced run or a drain rolled back.
+// The rollback returned it to Outstanding, the downloader re-dispatched it,
+// and the copy that comes back arrives after its file was tombstoned.
+//
+// A cache displacement no longer reaches that condition. failDisplaced counts
+// the article and records it in seenFailed (#386), so a redelivery of one is
+// recognised below rather than falling through to the rejection arm and being
+// reported permanently failed a second time.
 //
 // An earlier version of this paragraph derived the same conclusion from
 // "partsWritten is incremented when an article is ACCEPTED and is never
@@ -1158,8 +1162,13 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 // The distinction is drawn on seenDone, so it is only ever made when the
 // answer is positively known. An article the writer accepted is dropped
 // silently, as before — failing it would charge good bytes against recovery
-// and degrade the job's reported health. When the writer is gone there is
-// nothing to consult, and dropping is the older, safer behaviour.
+// and degrade the job's reported health. Since #386 that set also contains
+// articles which were accepted and then displaced: they keep their seenDone
+// entry alongside a seenFailed one, so they are dropped here on the first
+// test rather than the second. The disposition is the same either way — this
+// package cannot write them now — but the reason is no longer only "accepted".
+// When the writer is gone there is nothing to consult, and dropping is the
+// older, safer behaviour.
 func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
@@ -1316,6 +1325,21 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 			}
 			return false
 		}
+	} else if _, resolved := w.resolvedUntracked[req.ArtIdx]; resolved {
+		// The same arm as seenFailed above, for an article no map keyed on
+		// Message-ID can hold. It is resolved, so its bytes are not wanted and
+		// its part is already counted; writing them would displace whoever owns
+		// the offset now, and counting it again would carry the file to
+		// TotalParts over a segment that never arrived.
+		//
+		// Unlike the seenFailed arm this does NOT write the bytes. That arm
+		// serves an article the storage layer failed on, whose content is still
+		// the file's; this one serves an article another article has already
+		// superseded at its offset.
+		if req.Data != nil {
+			a.releaseBuffer(req.Data)
+		}
+		return false
 	}
 	// Recorded before the write is attempted, not after, so a write path that
 	// fails can move the article to seenFailed without this function putting
@@ -1468,7 +1492,7 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 }
 
 // releaseFaulted returns every article a failed writer operation rolled back
-// to Outstanding, and gives the file back the parts they had been counted for.
+// to Outstanding, and reports the displaced ones as permanently failed.
 //
 // Called after every operation that can populate w.faulted — which is not the
 // same set as "every operation that can fail", and reading it as such is how
@@ -1476,14 +1500,16 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 // routes rather than this package (the two are separate concerns: the barrier
 // can park the job, but it never learns which articles lost their bytes,
 // because that set does not cross the SyncTarget interface), the close-time
-// drain, and Accept's displaced-article loop, which rolls an article back on a
+// drain, and Accept's displaced-article loop, which resolves an article on a
 // path where nothing failed at all.
 //
-// Un-counting is NOT part of this. FileWriter.fail gives the part back as it
-// rolls the article back, in the same statement pair that removes it from
-// seenDone, so by the time the set arrives here every count is already
-// correct. This function's whole remaining job is disposition: back to
-// Outstanding, or resolved permanently failed.
+// Counting is NOT part of this, in either direction. FileWriter.fail gives the
+// part back as it rolls the article back, in the same statement pair that
+// removes it from seenDone, and failDisplaced counts the displaced article
+// through admitPermanentFailure rather than giving anything back — so by the
+// time the set arrives here every count is already correct. This function's
+// whole remaining job is disposition: back to Outstanding, or resolved
+// permanently failed.
 //
 // It used to do both, driven by a stored uncount flag on each faultedArticle.
 // That flag was derived from seen-set membership the writer owned and applied
@@ -1497,7 +1523,8 @@ func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
 //
 // Split from releaseFaulted so Close's return value has somewhere to go. It
 // takes no *openFile deliberately: there is nothing left for it to do to the
-// file, because the parts were given back when the articles were rolled back.
+// file, because every part was settled when the articles were rolled back or
+// resolved.
 // Anything it could reach for would be state it does not own.
 func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx int, path string) {
 	if len(rolled) == 0 {

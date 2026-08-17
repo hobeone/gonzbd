@@ -96,25 +96,21 @@ func TestFileWriter_AdmitRetryOfFailedDoesNotCount(t *testing.T) {
 	}
 }
 
-// TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition covers a
-// helper that had no direct test reference before this change. It is
-// pre-existing debt in a file this change touches rather than anything the
-// change introduced, and the gate that surfaced it scans whole files.
+// TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition pins the
+// disposition #386 settled: a displaced article is RESOLVED, not rolled back.
 //
-// failDisplaced is a rollback with a different DISPOSITION from a failed write.
-// It gives the article's part back like any rollback, and marks the entry so
-// the caller resolves it permanently failed rather than returning it to
-// Outstanding — re-fetching it would reproduce the collision that displaced it.
+// The question this leaves open was which of two rules applies to an article
+// that loses its offset. Giving the part back AND resolving it permanently
+// failed is the combination routeAcceptFailure's doc argues against in the
+// mirror case, and it is unsatisfiable: TotalParts counts both colliding
+// segments, so a file that stops counting the loser waits for a part that
+// nothing can now supply.
 //
-// This test pins what the code does today; it does not certify that the pair
-// is right. Giving the part back AND resolving the article permanently failed
-// is the combination routeAcceptFailure's doc argues against in the mirror
-// case, and failPermanent — one function away, reached through the same
-// OnArticleRejected route — keeps the part for exactly that reason. Which rule
-// should apply here is open: see #379. The change that moved the counter
-// preserves the current behaviour rather than settling it, so if #379 lands on
-// the other answer, this test's first assertion is the one that flips.
-func TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition(t *testing.T) {
+// So the part stays. The seen-set half is what makes a redelivery cheap —
+// handleSuccessArticle and handleLateDuplicate both test seenDone before
+// seenFailed, and membership in either is enough to refuse the copy without
+// re-writing it.
+func TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition(t *testing.T) {
 	w := newTestFileWriter(t)
 	w.admitAccepted("x1")
 	if w.parts() != 1 {
@@ -123,12 +119,14 @@ func TestFileWriter_FailDisplacedGivesThePartBackAndMarksTheDisposition(t *testi
 
 	w.failDisplaced(articleID{msgID: "x1", artIdx: 1}, 0, articleID{msgID: "x2", artIdx: 2})
 
-	if got := w.parts(); got != 0 {
-		t.Errorf("parts() = %d after the displacement, want 0 — this is the CURRENT "+
-			"disposition, not an endorsement of it", got)
+	if got := w.parts(); got != 1 {
+		t.Errorf("parts() = %d after the displacement, want 1 — the article is resolved "+
+			"permanently failed, and a file that stopped counting it could never reach "+
+			"TotalParts", got)
 	}
-	if _, still := w.seenDone["x1"]; still {
-		t.Error("x1 is still in seenDone after being displaced")
+	if _, failed := w.seenFailed["x1"]; !failed {
+		t.Error("x1 is not in seenFailed after being displaced, so a redelivery is not " +
+			"recognised and gets reported permanently failed a second time")
 	}
 	rolled := w.takeFaulted()
 	if len(rolled) != 1 || rolled[0].id.msgID != "x1" {
@@ -228,16 +226,17 @@ func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 
 // TestFileWriter_RollbackPart covers the give-back both dispositions share.
 //
-// fail and failDisplaced differ in what they RECORD — one returns the article
-// to Outstanding, the other resolves it permanently failed — but the part and
-// seen-set accounting is identical, and it is the half with the branching. It
-// is tested directly here so that a change to either disposition cannot alter
-// the accounting without a test noticing.
+// rollbackPart is now fail's alone. It used to be shared with failDisplaced,
+// on the premise that the two dispositions differed in what they RECORDED but
+// not in how they counted; #386 retired that premise, since a displaced
+// article keeps its part and a rolled-back one gives it up.
 //
-// The untracked branch is the one only failDisplaced reaches: fail keeps its
-// own early return on an empty Message-ID because routeAcceptFailure already
-// owns the give-back on that path, and routing it through here as well would
-// charge it twice.
+// It is tested directly because the branching lives here rather than at either
+// call site, so a change to fail's accounting cannot pass unnoticed.
+//
+// There is no untracked case any more. fail returns early on an empty
+// Message-ID before reaching this, so the branch that handled one was removed
+// with its last caller rather than left reachable only from this test.
 func TestFileWriter_RollbackPart(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -265,18 +264,6 @@ func TestFileWriter_RollbackPart(t *testing.T) {
 			setup:     func(w *FileWriter) { w.admitAccepted("other") },
 			id:        articleID{msgID: "m1", artIdx: 1},
 			wantParts: 1,
-		},
-		{
-			name:      "an untracked article gives its part back",
-			setup:     func(w *FileWriter) { w.admitAccepted("") },
-			id:        articleID{msgID: "", artIdx: 1},
-			wantParts: 0,
-		},
-		{
-			name:      "an untracked article cannot drive the count negative",
-			setup:     func(*FileWriter) {},
-			id:        articleID{msgID: "", artIdx: 1},
-			wantParts: 0,
 		},
 	}
 

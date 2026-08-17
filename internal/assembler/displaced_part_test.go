@@ -60,11 +60,11 @@ func TestDisplacedArticle_GivesBackItsPartAndIsResolved(t *testing.T) {
 			got)
 	}
 
-	if f.w.parts() != 1 {
-		t.Errorf("partsWritten = %d, want 1 — X was displaced and its bytes pooled, so "+
-			"only Y is behind a part. Counting both leaves the file one part closer to "+
-			"TotalParts with nothing behind it, and a later article can then fire "+
-			"OnFileComplete over bytes that never reached WriteAt", f.w.parts())
+	if f.w.parts() != 2 {
+		t.Errorf("partsWritten = %d, want 2 — X was displaced and its bytes pooled, but "+
+			"TotalParts counts X and Y as two segments, so both must be accounted for. "+
+			"X is counted as permanently failed rather than written; declining to count "+
+			"it leaves the file waiting on a part nothing can supply (#386)", f.w.parts())
 	}
 	if len(rejected) != 1 || rejected[0] != 0 {
 		t.Errorf("rejected = %v, want [0] — a displaced article must be RESOLVED, not "+
