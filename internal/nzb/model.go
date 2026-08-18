@@ -91,11 +91,26 @@ type NZB struct {
 	// had already been claimed by an accepted segment anywhere in the
 	// document — not merely in the same <file>.
 	//
+	// One class of repeat is dropped without landing here: the per-file part
+	// number is checked first, so a segment repeating both the part number
+	// and the Message-ID of one already accepted is discarded by that check
+	// and counted by neither this field nor DuplicateArticles. A wholly
+	// identical repeat is the only shape that goes uncounted; a repeated part
+	// number with a different ID still bumps DuplicateArticles.
+	//
 	// A Message-ID addresses exactly one article, so a repeat names bytes
-	// that are already accounted for. Keeping both copies would put two
-	// manifest articles behind one identity, which no Message-ID lookup can
-	// resolve unambiguously; downstream code may therefore assume the map
-	// from Message-ID to article is injective within a job.
+	// that are already accounted for. Keeping both copies would double-count
+	// those bytes in File.Bytes and fetch them twice, and that reason stands
+	// on its own — it does not depend on anything downstream keying on the
+	// Message-ID.
+	//
+	// Something downstream still does, though, so this drop remains
+	// load-bearing rather than merely tidy: internal/assembler's
+	// FileWriter.seenDone/seenFailed are keyed on Message-ID until F1
+	// re-keys them on ArtIdx. Two articles sharing an ID would make the
+	// second look like a duplicate of the first, so it would be dropped and
+	// the assembled file left silently short. Do not weaken this to a
+	// counted warning, or narrow it to per-file, while that is true.
 	DuplicateMessageIDs int
 
 	// BadArticles counts segments rejected for implausible size.

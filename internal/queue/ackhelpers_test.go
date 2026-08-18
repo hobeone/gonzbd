@@ -37,11 +37,18 @@ func artIdxFor(t *testing.T, q *Queue, jobID, msgID string) int32 {
 	if job.manifest == nil {
 		t.Fatalf("artIdxFor: job %s is not resident, so message IDs cannot be resolved", jobID)
 	}
-	i, ok := job.manifest.articleIndexByID(msgID)
-	if !ok {
-		t.Fatalf("artIdxFor: job %s has no article %s", jobID, msgID)
+	// A linear scan, matching the copies in internal/api, internal/app,
+	// internal/downloader and internal/postproc. There is no by-ID lookup to
+	// call any more, and building one here would reintroduce the map F2
+	// deleted. Fixture manifests are small, and the parser rejects duplicate
+	// Message-IDs (A7), so first-match is the only match.
+	for i := range job.manifest.NumArticles() {
+		if job.manifest.ArticleID(i) == msgID {
+			return int32(i) //nolint:gosec // G115: article counts are far below int32
+		}
 	}
-	return int32(i) //nolint:gosec // G115: article counts are far below int32
+	t.Fatalf("artIdxFor: job %s has no article %s", jobID, msgID)
+	return 0
 }
 
 // ackDoneIdx marks articles durable through SeedFromExtents, the path a

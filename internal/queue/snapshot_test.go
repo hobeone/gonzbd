@@ -91,10 +91,10 @@ func TestQueue_SnapshotJob(t *testing.T) {
 
 // TestSnapshotJob_ArtIdxIsolation verifies that a cloned job's Progress is an
 // independent deep copy, isolated from the original — Manifest, by contrast,
-// is now legitimately shared by reference (it's immutable after
-// construction), so this test mutates via Progress's own state rather than
-// through a pointer returned by the messageID index, proving isolation on
-// the half of the split that's actually meant to be isolated.
+// is legitimately shared by reference, being immutable after construction.
+// So this test mutates via Progress's own state, proving isolation on the
+// half of the split that is actually meant to be isolated, and asserts
+// pointer identity on the half that is meant to be shared.
 func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 	q := New()
 	job := &Job{ID: "idx-test", Name: "ArtIdx Isolation"}
@@ -110,12 +110,6 @@ func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 	job.progress = newJobProgress(job.manifest)
 	_ = q.Add(job)
 
-	// Force the original's manifest to build its messageIDIndex.
-	origIdx, ok := job.manifest.articleIndexByID("art-001")
-	if !ok {
-		t.Fatal("articleIndexByID returned false on original job")
-	}
-
 	// Take a snapshot — Manifest is shared (immutable, safe to alias), but
 	// Progress must be an independent deep copy.
 	snap := q.SnapshotJob("idx-test")
@@ -126,16 +120,14 @@ func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 		t.Error("clone's Manifest should be the same shared pointer as the original's")
 	}
 
-	cloneIdx, ok := mustManifest(t, snap).articleIndexByID("art-001")
-	if !ok || cloneIdx != origIdx {
-		t.Fatal("articleIndexByID returned inconsistent index on cloned job's shared manifest")
-	}
+	// article 0 is "art-001", the fixture's first article.
+	const idx = 0
 
 	// Mutate the clone's Progress directly.
-	snap.progress.done.Set(cloneIdx)
+	snap.progress.done.Set(idx)
 
 	// Verify the original's Progress is unaffected.
-	if job.progress.done.Get(origIdx) {
+	if job.progress.done.Get(idx) {
 		t.Error("mutation via clone's Progress affected original job's Progress — clone was not isolated")
 	}
 }

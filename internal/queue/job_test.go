@@ -356,49 +356,6 @@ func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
 	}
 }
 
-// TestAdd_DoesNotBuildArtIndexEagerly pins the memory-reduction invariant: a
-// freshly queued job that has not yet been touched by the download pipeline
-// must not have allocated the messageID->index map. articleIndexByID builds
-// it lazily on first access; Add's recompute call must not force it early.
-func TestAdd_DoesNotBuildArtIndexEagerly(t *testing.T) {
-	job, err := NewJob(minimalNZB(), AddOptions{Filename: "rel.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	q := New()
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if job.manifest.messageIDIndex != nil {
-		t.Fatalf("messageIDIndex was built eagerly at Add; want nil until first articleIndexByID call")
-	}
-}
-
-// TestJob_DropArtIndex pins dropMessageIDIndex's own behavior directly on
-// *Manifest, isolated from any Queue method that happens to call it.
-func TestJob_DropArtIndex(t *testing.T) {
-	job, err := NewJob(minimalNZB(), AddOptions{Filename: "rel.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	id := job.manifest.ArticleID(0)
-	if _, ok := job.manifest.articleIndexByID(id); !ok {
-		t.Fatal("articleIndexByID returned false for a present article")
-	}
-	if job.manifest.messageIDIndex == nil {
-		t.Fatal("precondition: index should be built after articleIndexByID")
-	}
-	job.manifest.dropMessageIDIndex()
-	if job.manifest.messageIDIndex != nil {
-		t.Fatal("dropMessageIDIndex should nil out the index")
-	}
-	// articleIndexByID must still work afterward, rebuilding from scratch.
-	idx, ok := job.manifest.articleIndexByID(id)
-	if !ok || job.manifest.ArticleID(idx) != id {
-		t.Fatalf("articleIndexByID(%q) after dropMessageIDIndex = (%v, %v), want a match", id, idx, ok)
-	}
-}
-
 // TestResetForRetry_OnlyTouchesFailedArticles pins ResetForRetry's
 // selective-reset contract directly (rather than through app.RetryHistoryJob's
 // indirect coverage) on a three-file job where only some files have failed

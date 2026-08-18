@@ -347,11 +347,11 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 
 #### Queue (`internal/queue/`)
 
-- **Use `Manifest.articleIndexByID()` for O(1) message-ID lookups, never linear scans.** The `messageIDIndex` map is built lazily on first access. Any queue method that resolves a message-ID must use it, not nested `for fi / for ai` loops. Index-keyed entry points (`AckDurable`, `AckPermanentFailure`, `MarkArticleEmittedByIdx`) skip the lookup entirely and are the production path.
+- **Address an article by its global index, never by message-ID.** Every mutation entry point carries indices rather than IDs, in the shape that suits it: `MarkArticleEmittedByIdx` and `ClearArticleEmittedByIdx` take a single `artIdx int32`, `AckPermanentFailure` takes a `[]int32`, and `AckDurable` takes a `durability.DurableProof` whose `Articles()` payload carries them. Every production caller already holds an index. There is deliberately no by-ID lookup structure to reach for: one existed as a lazily-built `map[string]int` per resident job, and was deleted once the last caller stopped needing it. If queue code seems to need to resolve a message-ID, the index is available further up the call stack — pass it down rather than reintroducing the map.
 
 - **A global article index maps to its file through `Manifest.fileIndexForArticle`.** That is what lets a mutation update per-file `Pending` without scanning for the parent file. It is derived from the manifest's file ranges, never persisted separately.
 
-- **All transient fields (`Pending`, `pendingArticles`, the lazy message-ID index, `emitted`) are excluded from the persisted shape.** They are recomputed by `JobProgress.recompute(m)` on load, and `emitted` is additionally cleared by `ClearAllEmitted` so a restart re-dispatches anything no barrier made durable. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
+- **All transient fields (`Pending`, `pendingArticles`, `emitted`) are excluded from the persisted shape.** They are recomputed by `JobProgress.recompute(m)` on load, and `emitted` is additionally cleared by `ClearAllEmitted` so a restart re-dispatches anything no barrier made durable. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
 
 - **`ClearAllEmitted` is the self-healing reset.** It calls `JobProgress.recompute(m)` to rebuild all counters from ground truth. If you suspect counter drift during development, calling `recompute(m)` on a job will correct it. The `pending_test.go` `verifyPending` helper validates counters against ground truth.
 

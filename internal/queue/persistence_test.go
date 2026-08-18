@@ -460,8 +460,8 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 
 	ackDone(t, q, id, m.ArticleID(0))
 	ackFailed(t, q, id, m.ArticleID(1))
-	if err := q.MarkArticleEmitted(id, m.ArticleID(2)); err != nil {
-		t.Fatalf("MarkArticleEmitted: %v", err)
+	if err := q.MarkArticleEmittedByIdx(id, 2); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
 
 	// After load, Emitted flags are always cleared (json:"-") so arts0[2]
@@ -533,8 +533,8 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 // undefer one recovery volume, discard the other still-deferred one),
 // marshal it, unmarshal into a fresh Job (plus the post-unmarshal recompute
 // Load/LoadJob perform), and assert every accessor matches — a correctness
-// round-trip, not a byte-compatibility one. Also confirms messageIDIndex/
-// emitted/the derived counters never appear in the marshaled bytes.
+// round-trip, not a byte-compatibility one. Also confirms the transient
+// emitted flags and the derived counters never appear in the marshaled bytes.
 func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "content1.bin", Bytes: 200, Articles: []nzb.Article{
@@ -577,7 +577,7 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 
 	// The transient/excluded fields must never appear in the marshaled bytes.
 	raw := string(data)
-	for _, forbidden := range []string{"messageIDIndex", "emitted", "pendingArticles", "articlesResolved", "articlesFailed", "earlyAborted"} {
+	for _, forbidden := range []string{"emitted", "pendingArticles", "articlesResolved", "articlesFailed", "earlyAborted"} {
 		if strings.Contains(raw, forbidden) {
 			t.Errorf("marshaled JSON unexpectedly contains %q:\n%s", forbidden, raw)
 		}
@@ -659,7 +659,7 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 
 // ---------- Direct Persistence/Job Helpers ----------
 
-func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
+func TestJob_RecomputePending_Direct(t *testing.T) {
 	job := &Job{ID: "test-job"}
 	job.manifest = newManifest([]JobFile{
 		{
@@ -680,13 +680,6 @@ func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
 	}
 	if job.progress.files[0].BytesDownloaded != 100 {
 		t.Errorf("expected file 0 bytes downloaded 100, got %d", job.progress.files[0].BytesDownloaded)
-	}
-
-	// No manual buildMessageIDIndex call: articleIndexByID must build the
-	// index lazily on its own from a manifest whose index was never touched.
-	idx, ok := job.manifest.articleIndexByID("art1")
-	if !ok || job.manifest.ArticleID(idx) != "art1" {
-		t.Fatal("expected to find art1")
 	}
 }
 
@@ -801,8 +794,11 @@ func TestLoad_RehydratesResidentJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Manifest after Load: %v", err)
 	}
-	if _, ok := m.articleIndexByID(articleID(0, 1)); !ok {
-		t.Error("the message-ID index was not built, so article lookups by ID will miss")
+	// Check the article's content at its known index, not merely that a lookup
+	// for it succeeds: this asserts the manifest came back describing the same
+	// articles, which is the property Load has to preserve.
+	if m.ArticleID(1) != articleID(0, 1) {
+		t.Errorf("article 1 ID = %q, want %q — the manifest did not survive Load intact", m.ArticleID(1), articleID(0, 1))
 	}
 }
 

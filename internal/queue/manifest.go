@@ -13,9 +13,16 @@ import (
 // Manifest is the immutable article/file structure of a job: parsed once
 // from the NZB (or loaded once from disk) and never mutated afterward.
 // Safe to share by reference across Job and every Snapshot/SnapshotJob
-// clone of it — there is no aliasing hazard because nothing ever writes
-// through it after construction, except the lazy messageID index below,
-// which is guarded by the owning Queue's write lock.
+// clone of it — there is no aliasing hazard, because the only writes to a
+// Manifest's fields happen during construction, and newManifest is the sole
+// place that construction occurs (UnmarshalJSON reaches it too, replacing
+// the whole value rather than editing fields).
+//
+// That is unconditional. It was not always: a lazily-built messageID ->
+// article index used to be the one field written after construction, which
+// made the share-by-reference argument carry an exception every reader had
+// to re-check. Nothing keys on a Message-ID here any more, so the exception
+// is gone rather than merely documented.
 type Manifest struct {
 	files         []manifestFile
 	articleIDs    []string // flat, global article index
@@ -29,14 +36,6 @@ type Manifest struct {
 	totalBytes    int64
 	recoveryBytes int64
 	recoveryFiles int
-
-	// messageIDIndex is the messageID -> global article index lookup, built
-	// lazily on first call to articleIndexByID and dropped by
-	// dropMessageIDIndex. Must only be read or built while the owning
-	// Queue's write lock (q.mu) is held. Safe to share unsynchronized
-	// across snapshots because the only call sites (the four
-	// article-mutation Queue methods) all already hold q.mu for write.
-	messageIDIndex map[string]int
 }
 
 type manifestFile struct {
@@ -198,34 +197,6 @@ func (m *Manifest) RecoveryBytes() int64 { return m.recoveryBytes }
 // index. See RecoveryBytes.
 func (m *Manifest) RecoveryFiles() int { return m.recoveryFiles }
 
-// articleIndexByID returns the global article index for messageID, or
-// (0, false) if not found. Lazily builds messageIDIndex on first call.
-// Must be called with the owning Queue's write lock held.
-func (m *Manifest) articleIndexByID(messageID string) (int, bool) {
-	if m.messageIDIndex == nil {
-		m.buildMessageIDIndex()
-	}
-	i, ok := m.messageIDIndex[messageID]
-	return i, ok
-}
-
-// buildMessageIDIndex populates messageIDIndex over all articles.
-func (m *Manifest) buildMessageIDIndex() {
-	m.messageIDIndex = make(map[string]int, len(m.articleIDs))
-	for i, id := range m.articleIDs {
-		m.messageIDIndex[id] = i
-	}
-}
-
-// dropMessageIDIndex releases messageIDIndex. Called from the same place
-// dropArtIndex is called today (SetPostProcStarted). DiscardDeferredPar2 does
-// not call it and does not need to: since #331 that path mutates a
-// FetchPolicy in place and leaves the manifest — index included — exactly as
-// it was.
-func (m *Manifest) dropMessageIDIndex() {
-	m.messageIDIndex = nil
-}
-
 // manifestJSONArticle is one article's on-disk shape within a manifestJSONFile.
 type manifestJSONArticle struct {
 	ID     string `json:"id"`
@@ -245,10 +216,9 @@ type manifestJSONFile struct {
 	Articles       []manifestJSONArticle `json:"articles"`
 }
 
-// manifestJSON is Manifest's on-disk shape. messageIDIndex is deliberately
-// excluded — it is rebuilt lazily on demand rather than persisted.
+// manifestJSON is Manifest's on-disk shape.
 //
-// The recovery figures are excluded too, and recomputed on load from the
+// The recovery figures are excluded, and recomputed on load from the
 // per-file is_par2_recovery flags this format already carries. They were
 // persisted while DiscardDeferredPar2 rebuilt the manifest against a reduced
 // file set, because the discard deliberately left them describing the larger

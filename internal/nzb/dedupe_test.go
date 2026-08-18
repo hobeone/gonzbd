@@ -29,8 +29,8 @@ func seg(number, bytes int, id string) string {
 
 // A Message-ID addresses exactly one article on Usenet, so the same ID on two
 // segments is malformed however the part numbers fall. Both copies name the
-// same bytes, and keeping both puts two manifest articles behind one identity —
-// which is what makes a Message-ID lookup ambiguous downstream.
+// same bytes, so keeping both would count those bytes twice and fetch them
+// twice.
 func TestParse_DuplicateMessageIDWithinAFileIsDropped(t *testing.T) {
 	src := nzbWithSegments(seg(1, 100, "dup@h") + seg(2, 100, "dup@h") + seg(3, 100, "other@h"))
 

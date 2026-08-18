@@ -439,9 +439,8 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 			continue
 		}
 		// A repeated Message-ID names bytes an earlier segment already claims.
-		// Keeping both would put two manifest articles behind one identity,
-		// which no Message-ID lookup can then resolve unambiguously — so the
-		// later one is dropped and counted.
+		// Keeping both would count those bytes twice and fetch them twice, so
+		// the later one is dropped and counted.
 		//
 		// The dropped segment's bytes leave with it, and that is deliberate.
 		// File.Bytes is the sum of Articles[].Bytes and is what JobProgress

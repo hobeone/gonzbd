@@ -93,10 +93,6 @@ func bitsetRetained(b bitset) int { return cap(b.words) * 8 }
 // per-file slice and its subject strings, and the offsets prefix sum. It
 // counts the slice payloads rather than the struct, which is the part that
 // scales with the job and the part terminal eviction reclaims.
-//
-// messageIDIndex is excluded: it is built lazily and dropped by
-// dropMessageIDIndex, so a parked job does not hold it. Counting it would
-// overstate the very figure this test is used to defend.
 func manifestRetained(m *Manifest) int {
 	const (
 		stringHeader = int(unsafe.Sizeof(""))

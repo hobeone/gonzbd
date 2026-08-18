@@ -1130,8 +1130,8 @@ func TestFetchArticle_PausedJobEvictedMidFlight(t *testing.T) {
 	q.PromoteNext(context.Background())
 
 	// The article is dispatched and in flight before the pause lands.
-	if err := q.MarkArticleEmitted(job.ID, "inflight@h"); err != nil {
-		t.Fatalf("MarkArticleEmitted: %v", err)
+	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, "inflight@h")); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -2012,24 +2012,13 @@ func TestSelectWork_NilDisconnectBlocksUntilWorkOrCancel(t *testing.T) {
 	}
 }
 
-func TestMarkArticleEmitted_ErrNotFound(t *testing.T) {
+func TestMarkArticleEmittedByIdx_ErrNotFound(t *testing.T) {
 	t.Parallel()
 
 	q := queue.New()
-	err1 := q.MarkArticleEmitted("nonexistent-job", "msg1@h")
-	if !errors.Is(err1, queue.ErrNotFound) {
-		t.Fatalf("got %v, want ErrNotFound", err1)
-	}
-	err2 := q.MarkArticleEmittedByIdx("nonexistent-job", 0)
-	if !errors.Is(err2, queue.ErrNotFound) {
-		t.Fatalf("got %v, want ErrNotFound", err2)
-	}
-
-	if err1 != nil && !errors.Is(err1, queue.ErrNotFound) {
-		t.Errorf("expected ErrNotFound to be filtered out, got %v", err1)
-	}
-	if err2 != nil && !errors.Is(err2, queue.ErrNotFound) {
-		t.Errorf("expected ErrNotFound to be filtered out, got %v", err2)
+	err := q.MarkArticleEmittedByIdx("nonexistent-job", 0)
+	if !errors.Is(err, queue.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
 

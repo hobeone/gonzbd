@@ -102,25 +102,25 @@ func TestPendingCounter_EmitAndClear(t *testing.T) {
 	verifyPending(t, q, "after Add")
 
 	// Emit one article
-	if err := q.MarkArticleEmitted("j1", artID(0, 0)); err != nil {
+	if err := q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0))); err != nil {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after Emit")
 
 	// Emit same article again (idempotent)
-	if err := q.MarkArticleEmitted("j1", artID(0, 0)); err != nil {
+	if err := q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0))); err != nil {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after Emit idempotent")
 
 	// Clear emitted → article returns to pending
-	if err := q.ClearArticleEmitted("j1", artID(0, 0)); err != nil {
+	if err := q.ClearArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0))); err != nil {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after ClearEmitted")
 
 	// Clear again (idempotent)
-	if err := q.ClearArticleEmitted("j1", artID(0, 0)); err != nil {
+	if err := q.ClearArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0))); err != nil {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after ClearEmitted idempotent")
@@ -136,7 +136,7 @@ func TestPendingCounter_MarkDone(t *testing.T) {
 	verifyPending(t, q, "after MarkDone unemitted")
 
 	// Emit then mark done (normal path)
-	_ = q.MarkArticleEmitted("j1", artID(0, 1))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 1)))
 	verifyPending(t, q, "after Emit")
 	ackDone(t, q, "j1", artID(0, 1))
 	verifyPending(t, q, "after MarkDone emitted")
@@ -155,7 +155,7 @@ func TestPendingCounter_MarkFailed(t *testing.T) {
 	verifyPending(t, q, "after MarkFailed unemitted")
 
 	// Emit then fail
-	_ = q.MarkArticleEmitted("j1", artID(0, 1))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 1)))
 	ackFailed(t, q, "j1", artID(0, 1))
 	verifyPending(t, q, "after MarkFailed emitted")
 }
@@ -165,8 +165,8 @@ func TestPendingCounter_BatchDone(t *testing.T) {
 	_ = q.Add(makeTestJob("j1", 2, 3))
 
 	// Emit some, leave others unemitted, then batch-mark done
-	_ = q.MarkArticleEmitted("j1", artID(0, 0))
-	_ = q.MarkArticleEmitted("j1", artID(1, 2))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0)))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(1, 2)))
 
 	ackDone(t, q, "j1",
 		artID(0, 0), // emitted
@@ -180,7 +180,7 @@ func TestPendingCounter_BatchFailed(t *testing.T) {
 	q := New()
 	_ = q.Add(makeTestJob("j1", 1, 4))
 
-	_ = q.MarkArticleEmitted("j1", artID(0, 1))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 1)))
 
 	ackFailed(t, q, "j1",
 		artID(0, 0), // unemitted
@@ -194,9 +194,9 @@ func TestPendingCounter_ClearAllEmitted(t *testing.T) {
 	_ = q.Add(makeTestJob("j1", 2, 3))
 
 	// Emit several articles and mark some done
-	_ = q.MarkArticleEmitted("j1", artID(0, 0))
-	_ = q.MarkArticleEmitted("j1", artID(0, 1))
-	_ = q.MarkArticleEmitted("j1", artID(1, 0))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0)))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 1)))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(1, 0)))
 	ackDone(t, q, "j1", artID(0, 0))
 	ackFailed(t, q, "j1", artID(1, 0))
 	verifyPending(t, q, "before ClearAllEmitted")
@@ -359,10 +359,10 @@ func TestCounterConsistencyUnderRandomMutations(t *testing.T) {
 			ackDone(t, q, "prop", id)
 		case 1: // MarkArticlesFailed (now AckPermanentFailure via ackFailed)
 			ackFailed(t, q, "prop", id)
-		case 2: // MarkArticleEmitted (no-op if already Done)
-			_ = q.MarkArticleEmitted("prop", id)
-		case 3: // ClearArticleEmitted
-			_ = q.ClearArticleEmitted("prop", id)
+		case 2: // MarkArticleEmittedByIdx (no-op if already Done)
+			_ = q.MarkArticleEmittedByIdx("prop", artIdxFor(t, q, "prop", id))
+		case 3: // ClearArticleEmittedByIdx
+			_ = q.ClearArticleEmittedByIdx("prop", artIdxFor(t, q, "prop", id))
 		}
 		verifyPending(t, q, label)
 	}

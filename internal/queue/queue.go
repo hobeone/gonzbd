@@ -761,7 +761,6 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 
 		// Attach manifest & progress if not already resident
 		if job.manifest == nil {
-			manifest.buildMessageIDIndex()
 			job.setResidency(&manifest, newJobProgress(&manifest))
 			// A job promoted here after a restart (StatusQueued, restored via
 			// SQLiteStore.Get/Load without a manifest) never had these
@@ -1264,9 +1263,6 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 	if q.store != nil {
 		_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the PostProc transition consistent; tracked in #229
 	}
-	if job.manifest != nil {
-		job.manifest.dropMessageIDIndex()
-	}
 	q.dirty.Store(true)
 	return true, nil
 }
@@ -1438,9 +1434,9 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	}
 }
 
-// MarkArticleEmitted flags an article as having a result in flight from the
-// downloader to the assembler. This is a transient, in-memory-only bit
-// (JobProgress's emitted array, never persisted): its purpose is to
+// MarkArticleEmittedByIdx flags article artIdx as having a result in flight
+// from the downloader to the assembler. This is a transient, in-memory-only
+// bit (JobProgress's emitted array, never persisted): its purpose is to
 // prevent the dispatcher from re-dispatching the same article between the
 // moment the downloader sends a result on the completions channel and the
 // moment the outcome is resolved — by durability.Barrier through AckDurable
@@ -1450,24 +1446,9 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 // made durable is re-downloaded; see docs/nntp-downloader-contract.md §5.
 //
 // Idempotent: setting Emitted on an article that is already Emitted, Done,
-// or Failed is a no-op. Returns ErrNotFound if the job/article is absent, or
-// ErrJobNotResident if the job exists but is not currently hydrated.
-func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
-	}
-	i, ok := job.manifest.articleIndexByID(messageID)
-	if !ok {
-		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
-	}
-	job.progress.markEmitted(job.manifest, i)
-	return nil
-}
-
-// MarkArticleEmittedByIdx flags article artIdx as emitted in O(1) time.
+// or Failed is a no-op. Returns ErrNotFound if the job is absent,
+// ErrJobNotResident if it exists but is not currently hydrated, and a plain
+// error only for a genuine out-of-range artIdx.
 func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1485,44 +1466,22 @@ func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
 	return nil
 }
 
-// ClearArticleEmitted resets the transient Emitted flag on a single article,
+// ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx,
 // allowing the dispatcher to re-dispatch it. This is used when the pipeline
 // receives a retryable download error: the article was emitted but did not
 // succeed on this attempt, so it must be returned to the dispatch pool.
 // Wakes the dispatcher so the article is picked up on the next pass.
-func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	// Skipping this for a non-resident job is safe: emitted is transient and
-	// excluded from persistence, and the progress holding it is discarded on
-	// eviction, so PromoteNext rebuilds it all-false from stored state and the
-	// article is offered again.
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
-	}
-	i, ok := job.manifest.articleIndexByID(messageID)
-	if !ok {
-		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
-	}
-	// Only restore to pending if the article is not already done. An article
-	// can have Emitted=true and Done=true when AckDurable ran before
-	// ClearArticleEmitted (e.g. a late assembler flush after a downloader
-	// reload). In that case the article is finished and must not be counted
-	// as pending.
-	job.progress.clearEmitted(job.manifest, i)
-	q.notifyLocked()
-	return nil
-}
-
-// ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx
-// in O(1) time. Returns ErrNotFound if the job is absent, ErrJobNotResident if
-// it exists but is not currently hydrated, and a plain error only for a genuine
-// out-of-range artIdx.
+//
+// See MarkArticleEmittedByIdx for what the Emitted bit means and why it is
+// transient. Errors follow the same three cases it documents.
 func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// As in MarkArticleEmittedByIdx: a non-resident job is not a bounds error.
+	// As in MarkArticleEmittedByIdx, a non-resident job is not a bounds error —
+	// and returning early for one is safe: emitted is transient and excluded
+	// from persistence, and the progress holding it is discarded on eviction,
+	// so PromoteNext rebuilds it all-false from stored state and the article is
+	// offered again.
 	job, err := q.residentJob(jobID)
 	if err != nil {
 		return err
@@ -1530,6 +1489,10 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
 		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
 	}
+	// clearEmitted only restores the article to pending if it is not already
+	// done. An article can have Emitted=true and Done=true when AckDurable ran
+	// first (e.g. a late assembler flush after a downloader reload); it is
+	// finished then, and must not be counted as pending.
 	job.progress.clearEmitted(job.manifest, int(artIdx))
 	q.notifyLocked()
 	return nil
