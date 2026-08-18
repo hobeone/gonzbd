@@ -182,7 +182,7 @@ Per article, measured against the field types:
 
 | | per article | 20k-article job |
 |---|---|---|
-| `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber`, lazy index | ~80 B + map | ~3.3 MB |
+| `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~80 B | ~3.3 MB |
 | `JobProgress` — `done`/`failed`/`emitted` as `[]bool` | 3 B | ~60 KB |
 | `JobProgress` — the same, as bitsets | 0.375 B | ~7.5 KB |
 

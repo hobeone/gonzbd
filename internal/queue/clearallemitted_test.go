@@ -111,8 +111,8 @@ func TestClearAllEmitted_ResetsEmittedSoDispatcherRetries(t *testing.T) {
 	}
 
 	// Simulate two in-flight articles.
-	_ = q.MarkArticleEmitted("j1", artID(0, 0))
-	_ = q.MarkArticleEmitted("j1", artID(0, 1))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 0)))
+	_ = q.MarkArticleEmittedByIdx("j1", artIdxFor(t, q, "j1", artID(0, 1)))
 
 	var countBefore int
 	q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {

@@ -203,9 +203,9 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 }
 
-// ---------- MarkArticleEmitted / ClearArticleEmitted / ClearAllEmitted ----------
+// ---------- MarkArticleEmittedByIdx / ClearArticleEmittedByIdx / ClearAllEmitted ----------
 
-func TestMarkArticleEmitted(t *testing.T) {
+func TestMarkArticleEmittedByIdx(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "emit", 1, 3)
@@ -214,8 +214,8 @@ func TestMarkArticleEmitted(t *testing.T) {
 	msgID := articleID(0, 0)
 
 	t.Run("emitted article is skipped by ForEachUnfinished", func(t *testing.T) {
-		if err := q.MarkArticleEmitted(j.ID, msgID); err != nil {
-			t.Fatalf("MarkArticleEmitted: %v", err)
+		if err := q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msgID)); err != nil {
+			t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 		}
 		var yielded []string
 		q.ForEachUnfinishedArticle(func(ua UnfinishedArticle) bool {
@@ -233,25 +233,21 @@ func TestMarkArticleEmitted(t *testing.T) {
 	})
 
 	t.Run("idempotent: re-emitting is no-op", func(t *testing.T) {
-		if err := q.MarkArticleEmitted(j.ID, msgID); err != nil {
+		if err := q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msgID)); err != nil {
 			t.Errorf("re-emit should not error: %v", err)
 		}
 	})
 
+	// An out-of-range index is covered by TestArtIdx_EdgeCases; this pins the
+	// other error, an absent job, which nothing else in this package covers.
 	t.Run("error on nonexistent job", func(t *testing.T) {
-		if err := q.MarkArticleEmitted("bogus", msgID); err == nil {
+		if err := q.MarkArticleEmittedByIdx("bogus", 0); err == nil {
 			t.Error("expected error for nonexistent job")
-		}
-	})
-
-	t.Run("error on nonexistent article", func(t *testing.T) {
-		if err := q.MarkArticleEmitted(j.ID, "nosuch@test"); err == nil {
-			t.Error("expected error for nonexistent article")
 		}
 	})
 }
 
-func TestClearArticleEmitted(t *testing.T) {
+func TestClearArticleEmittedByIdx(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "clear-emit", 1, 2)
@@ -262,9 +258,9 @@ func TestClearArticleEmitted(t *testing.T) {
 	msg0 := articleID(0, 0)
 
 	// Emit, then clear.
-	_ = q.MarkArticleEmitted(j.ID, msg0)
-	if err := q.ClearArticleEmitted(j.ID, msg0); err != nil {
-		t.Fatalf("ClearArticleEmitted: %v", err)
+	_ = q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msg0))
+	if err := q.ClearArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msg0)); err != nil {
+		t.Fatalf("ClearArticleEmittedByIdx: %v", err)
 	}
 
 	// After clearing, the article should be yielded again.
@@ -283,19 +279,20 @@ func TestClearArticleEmitted(t *testing.T) {
 		t.Errorf("cleared article %q should be yielded by ForEachUnfinished", msg0)
 	}
 
-	// ClearArticleEmitted must signal the dispatcher.
+	// ClearArticleEmittedByIdx must signal the dispatcher.
 	select {
 	case <-q.Notify():
 	case <-time.After(time.Second):
-		t.Error("ClearArticleEmitted should signal notify channel")
+		t.Error("ClearArticleEmittedByIdx should signal notify channel")
 	}
 
 	// Error cases.
-	if err := q.ClearArticleEmitted("bogus", msg0); err == nil {
+	// An absent job. This is the only pin on ClearArticleEmittedByIdx's
+	// ErrNotFound path anywhere in the repo — internal/downloader covers the
+	// Mark side, nothing covers this one. An out-of-range index is covered
+	// separately by TestArtIdx_EdgeCases.
+	if err := q.ClearArticleEmittedByIdx("bogus", 0); err == nil {
 		t.Error("expected error for nonexistent job")
-	}
-	if err := q.ClearArticleEmitted(j.ID, "nosuch@test"); err == nil {
-		t.Error("expected error for nonexistent article")
 	}
 }
 
@@ -309,10 +306,10 @@ func TestClearAllEmitted(t *testing.T) {
 
 	// Emit every article in both jobs.
 	for i := range mustManifest(t, j1).NumArticles() {
-		_ = q.MarkArticleEmitted(j1.ID, mustManifest(t, j1).ArticleID(i))
+		_ = q.MarkArticleEmittedByIdx(j1.ID, int32(i)) //nolint:gosec // G115: fixture article counts are tiny
 	}
 	for i := range mustManifest(t, j2).NumArticles() {
-		_ = q.MarkArticleEmitted(j2.ID, mustManifest(t, j2).ArticleID(i))
+		_ = q.MarkArticleEmittedByIdx(j2.ID, int32(i)) //nolint:gosec // G115: fixture article counts are tiny
 	}
 
 	// ForEach should yield nothing: all emitted.
@@ -391,7 +388,7 @@ func TestForEachUnfinishedArticle(t *testing.T) {
 	})
 
 	t.Run("skips Emitted articles", func(t *testing.T) {
-		_ = q.MarkArticleEmitted(j.ID, articleID(0, 1))
+		_ = q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, articleID(0, 1)))
 		var count int
 		q.ForEachUnfinishedArticle(func(_ UnfinishedArticle) bool {
 			count++
@@ -866,7 +863,7 @@ func TestFullArticleLifecycle(t *testing.T) {
 
 	// Phase 2: Emit all articles (simulating dispatcher sending to workers).
 	for i := range mustManifest(t, j).NumArticles() {
-		_ = q.MarkArticleEmitted(j.ID, mustManifest(t, j).ArticleID(i))
+		_ = q.MarkArticleEmittedByIdx(j.ID, int32(i)) //nolint:gosec // G115: fixture article counts are tiny
 	}
 	count = 0
 	q.ForEachUnfinishedArticle(func(_ UnfinishedArticle) bool {
@@ -916,10 +913,10 @@ func TestArticleRetryLifecycle(t *testing.T) {
 	msg1 := articleID(0, 1)
 
 	// Step 1: Dispatcher emits article 0.
-	_ = q.MarkArticleEmitted(j.ID, msg0)
+	_ = q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msg0))
 
 	// Step 2: Download fails → clear emitted so it can be retried.
-	_ = q.ClearArticleEmitted(j.ID, msg0)
+	_ = q.ClearArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msg0))
 
 	// Article should be yielded again.
 	var yielded []string
@@ -931,15 +928,15 @@ func TestArticleRetryLifecycle(t *testing.T) {
 		t.Errorf("expected 2 unfinished after retry clear, got %d", len(yielded))
 	}
 
-	// ClearArticleEmitted should have woken the dispatcher.
+	// ClearArticleEmittedByIdx should have woken the dispatcher.
 	select {
 	case <-q.Notify():
 	case <-time.After(time.Second):
-		t.Error("ClearArticleEmitted should signal notify")
+		t.Error("ClearArticleEmittedByIdx should signal notify")
 	}
 
 	// Step 3: Re-emit and this time it succeeds.
-	_ = q.MarkArticleEmitted(j.ID, msg0)
+	_ = q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msg0))
 	ackDone(t, q, j.ID, msg0)
 	ackDone(t, q, j.ID, msg1)
 	_ = q.MarkFileComplete(j.ID, 0)
@@ -969,7 +966,7 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 		wg.Go(func() {
 			for ai := range nArticles {
 				msgID := articleID(fi, ai)
-				_ = q.MarkArticleEmitted(j.ID, msgID)
+				_ = q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, msgID))
 				ackDone(t, q, j.ID, msgID)
 			}
 			_ = q.MarkFileComplete(j.ID, fi)
@@ -1070,7 +1067,7 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 
 	// Verify Emitted flag is NOT persisted (per B.6 invariant).
 	// We emit an article, round-trip, and expect it cleared.
-	_ = q.MarkArticleEmitted(j.ID, articleID(1, 0))
+	_ = q.MarkArticleEmittedByIdx(j.ID, artIdxFor(t, q, j.ID, articleID(1, 0)))
 	lj2 := storeRoundTrip(t, j)
 	if lj2.Progress().ArticleEmitted(3) {
 		t.Error("Emitted flag should NOT survive a store round trip (B.6 invariant)")

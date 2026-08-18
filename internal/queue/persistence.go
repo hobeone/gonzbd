@@ -244,21 +244,18 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 		func() {
 			q.mu.Lock()
 			defer q.mu.Unlock()
+			// Nothing here hydrates a job, and nothing needs to: a
+			// resident-status job arrives from the store already hydrated, or
+			// not at all. SQLiteStore.Get reads manifests/<id>.json.gz
+			// whenever that file exists, from the same directory this function
+			// was handed. There used to be a re-read fallback for the
+			// manifest == nil case, but it could never do anything —
+			// manifest == nil means Get found no file, so re-reading the
+			// identical path fails too. It was removed with the rest of the
+			// unreachable persistence code in #266.
 			for _, job := range jobs {
 				q.jobs = append(q.jobs, job)
 				q.byID[job.ID] = job
-				// A resident-status job arrives from the store already
-				// hydrated, or not at all: SQLiteStore.Get reads
-				// manifests/<id>.json.gz whenever that file exists, from the
-				// same directory this function was handed. There used to be a
-				// re-read fallback here for the manifest == nil case, but it
-				// could never do anything — manifest == nil means Get found
-				// no file, so re-reading the identical path fails too. It was
-				// removed with the rest of the unreachable persistence code
-				// in #266.
-				if job.manifest != nil {
-					job.manifest.buildMessageIDIndex()
-				}
 			}
 			q.paused = paused
 		}()

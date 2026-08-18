@@ -37,8 +37,8 @@ func newEvictedJobQueue(t *testing.T) (*Queue, string) {
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := q.MarkArticleEmitted(job.ID, articleID(0, 0)); err != nil {
-		t.Fatalf("MarkArticleEmitted: %v", err)
+	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, articleID(0, 0))); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -59,8 +59,9 @@ func newEvictedJobQueue(t *testing.T) (*Queue, string) {
 }
 
 // TestNonResidentJobMethodsDoNotPanic covers every exported Queue method known
-// to dereference job.manifest or job.progress. Before the fix, the four
-// by-message-ID and count/abort entry points panicked here.
+// to dereference job.manifest or job.progress. Before the fix, the by-message-ID
+// and count/abort entry points panicked here. The by-message-ID verbs are gone
+// now, replaced by the index-keyed ones this table still exercises.
 //
 // ForEachUnfinishedArticle belongs in this table for a different reason than
 // the others: it never panicked on the ordinary bare-New()/no-persistence
@@ -86,20 +87,6 @@ func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
 		// ErrJobNotResident rather than through a non-error return.
 		wantNotResident bool
 	}{
-		{
-			name: "ClearArticleEmitted",
-			call: func(_ *testing.T, q *Queue, jobID string) error {
-				return q.ClearArticleEmitted(jobID, articleID(0, 0))
-			},
-			wantNotResident: true,
-		},
-		{
-			name: "MarkArticleEmitted",
-			call: func(_ *testing.T, q *Queue, jobID string) error {
-				return q.MarkArticleEmitted(jobID, articleID(0, 1))
-			},
-			wantNotResident: true,
-		},
 		{
 			name: "CountUnfinishedArticles",
 			call: func(t *testing.T, q *Queue, jobID string) error {
@@ -188,7 +175,9 @@ func TestNonResidentJobMissingIsStillNotFound(t *testing.T) {
 
 	q := New(WithStateDir(t.TempDir()))
 
-	err := q.ClearArticleEmitted("no-such-job", articleID(0, 0))
+	// A literal index: the queue holds no job at all, so there is nothing to
+	// resolve a Message-ID against.
+	err := q.ClearArticleEmittedByIdx("no-such-job", 0)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("error = %v, want ErrNotFound", err)
 	}
@@ -230,8 +219,8 @@ func newStoreBackedPausedJob(t *testing.T) (*Queue, string, []string) {
 	// article can be marked emitted against live progress.
 	q.PromoteNext(context.Background())
 
-	if err := q.MarkArticleEmitted(job.ID, articleID(0, 0)); err != nil {
-		t.Fatalf("MarkArticleEmitted: %v", err)
+	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, articleID(0, 0))); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -246,7 +235,7 @@ func newStoreBackedPausedJob(t *testing.T) (*Queue, string, []string) {
 
 // TestPausedJobArticlesRedispatchedAfterResume is why skipping the work on a
 // non-resident job is safe rather than a silent regression. The emitted bit
-// that ClearArticleEmitted would have cleared is transient: it is excluded
+// that ClearArticleEmittedByIdx would have cleared is transient: it is excluded
 // from persistence, and Pause discards the whole JobProgress, so PromoteNext
 // rebuilds it from stored ground truth on the way back in. Every article must
 // therefore be offered again after Resume even though the clear never ran.

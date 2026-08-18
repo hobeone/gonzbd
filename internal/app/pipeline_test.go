@@ -159,8 +159,8 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 
 	// 2. Test handleFailureResult with a retryable error
-	if err := q.MarkArticleEmitted(job.ID, "a1@x"); err != nil {
-		t.Fatalf("MarkArticleEmitted: %v", err)
+	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, "a1@x")); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
 	retriesBefore := telemetry.ArticlesRetried.Value()
 
@@ -204,8 +204,8 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	}
 
 	// Test handleSuccessResult
-	if err := q.MarkArticleEmitted(job.ID, "a1@x"); err != nil {
-		t.Fatalf("MarkArticleEmitted: %v", err)
+	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, "a1@x")); err != nil {
+		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
 	writtenBefore := telemetry.ArticlesWritten.Value()
 

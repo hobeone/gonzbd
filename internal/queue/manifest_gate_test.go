@@ -30,7 +30,6 @@ var manifestGateExempt = map[string]string{
 	"undeferRecoveryLocked":    "takes an already-resolved *Job from a gated caller",
 	"ClearAllEmitted":          "sweeps every job; skipping the non-resident ones is the correct behaviour, not a dropped request",
 	"ForEachUnfinishedArticle": "enumerates dispatchable work across all jobs; a non-resident job has none to contribute",
-	"SetPostProcStarted":       "reads the field only to drop the lazy message-ID index, which is meaningless when absent",
 }
 
 // Every *Queue method that dereferences job.manifest must obtain its job

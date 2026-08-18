@@ -60,7 +60,6 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 			"job_id", cp.ID, "path", manifestPath, "err", err)
 		return
 	}
-	m.buildMessageIDIndex()
 	// Attach the manifest to the progress the clone already carries; do not
 	// build a fresh one.
 	//

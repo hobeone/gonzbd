@@ -1,7 +1,7 @@
 # Article Validation Contract
 
-> **Status: in progress; dispositions settled.** F3, A7, F6 and the whole
-> A-block have landed; B1/F5, C5, E3–E5 and F1/F2/F4 remain proposed. §8 is no longer open — what each class of violation
+> **Status: in progress; dispositions settled.** F3, A7, F6, F2 and the whole
+> A-block have landed; B1/F5, C5, E3–E5 and F1/F4 remain proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -116,7 +116,7 @@ a second enforcement point.
 
 **Two concrete consequences, both settled below.** The Python-parity constraint
 on `NZB.MD5`'s digest ordering is void (§8, decision 1), and A7's invariant
-holds for restored jobs as well as newly-parsed ones, which unblocks F2 (§5.A,
+holds for restored jobs as well as newly-parsed ones, which unblocked F2 (§5.A,
 §5.F).
 
 ### State has one owner
@@ -407,7 +407,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → F2 → F5/B1 → C5 → E5 → F1a (fixture `ArtIdx`) → F1b (flip the key) → E3/E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → F5/B1 → C5 → E5 → F1a (fixture `ArtIdx`) → F1b (flip the key) → E3/E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -503,8 +503,13 @@ which is a different and worse failure — that half rejects.
 
 **A7 is enforced.** `partitionSegments` carries a document-wide seen-set and
 drops any segment whose Message-ID an accepted segment already claimed.
-Downstream code may therefore treat Message-ID as a unique key within a job,
-which is what makes `Manifest.articleIndexByID` unambiguous. The drop once had
+Downstream code may therefore treat Message-ID as a unique key within a job.
+F2 removed the last by-ID lookup **in `internal/queue`**, but the guarantee is
+still load-bearing elsewhere: `internal/assembler`'s `FileWriter.seenDone` and
+`.seenFailed` remain keyed on Message-ID until F1 re-keys them on `ArtIdx`, and
+two articles sharing an ID would make the second look like a duplicate of the
+first — dropped, with the assembled file silently short. **A7 is not
+retire-able until F1 lands.** The drop once had
 to sit after the `digest.Write` to leave `NZB.MD5` unchanged; F6 removed that
 constraint, and the placement is now free.
 
@@ -531,8 +536,8 @@ digest covering accepted articles only, before and after are the same digest.
 **A7 is job-wide, not per-file**, because two structures downstream key on
 Message-ID with no file scoping and one with no job scoping at all:
 
-- `Manifest.messageIDIndex` (`internal/queue/manifest.go`) is a **job-wide**
-  `map[string]int` built last-writer-wins. One Message-ID appearing in two
+- `Manifest.messageIDIndex` (`internal/queue/manifest.go`) was a **job-wide**
+  `map[string]int` built last-writer-wins, until F2 deleted it. One Message-ID appearing in two
   *files* of one NZB made `MarkArticleEmitted` / `ClearArticleEmitted` act on
   the wrong article. Per-file uniqueness would not have closed this, which is
   why A7 is document-wide.
@@ -541,8 +546,9 @@ Message-ID with no file scoping and one with no job scoping at all:
   sharing a Message-ID shared one try-list, so one job's article could exhaust
   its servers without ever having been fetched for the other.
 
-A7 closes the first: with the ID unique across the document, the index is
-injective and cannot resolve to the wrong article. The second is out of A7's
+A7 closed the first: with the ID unique across the document, the index could not
+resolve to the wrong article — and F2 then removed the index altogether, so the
+class is gone twice over. The second is out of A7's
 reach entirely — two jobs, not one NZB, each internally valid — and is closed
 structurally by F3, which keys the tracker on `(jobID, artIdx)`.
 
@@ -553,7 +559,7 @@ was "real for new jobs and untrue for old ones until the queue drains", and kept
 `messageIDIndex` working for the latter. The no-backcompat rule deletes that
 population outright: every manifest on disk was written by a parser that
 enforces A7. **Do not add a uniqueness check to `Manifest` construction** — it
-would guard a state that no longer occurs, on a structure F2 deletes. (The
+would guard a state that no longer occurs, on a structure F2 has deleted. (The
 *fetchability* check `UnmarshalJSON` does carry is a different matter, and the
 Ground rules' security carve-out states why: a duplicate ID is a correctness
 bug the no-backcompat rule disposes of, a CRLF-bearing ID is an injection it
@@ -573,12 +579,32 @@ is parsing; anything whose scope is wider than one NZB has to change its key
 instead. So: **a Message-ID-keyed structure whose scope exceeds one job is a bug
 waiting for a duplicate, and ingestion cannot save it.**
 
-F2 keeps its value after A7, but for a different reason than it was filed with.
-Its correctness rationale — `messageIDIndex` resolving to the wrong article — is
-gone. What remains is that the map is a `map[string]int` sized `NumArticles()`
-per resident job that no longer needs to exist. Re-argue it on memory, not on
-correctness — and note that the ground rules turned it from a change needing a
-compatibility path into a straight deletion, which is most of its cost.
+F2 kept its value after A7, but for a different reason than it was filed with.
+Its correctness rationale — `messageIDIndex` resolving to the wrong article —
+was gone. What remained was a `map[string]int` sized `NumArticles()` per
+resident job that no longer needed to exist, so it was re-argued on memory
+rather than correctness; the ground rules had already turned it from a change
+needing a compatibility path into a straight deletion, which was most of its
+cost.
+
+**That re-argument came back with more than it was sent for, and the surplus is
+the part worth keeping.** Memory turned out to be the *weakest* of three
+reasons. The map cost 35–58 B per article, about 0.87 MB for a 20,000-article
+job — real, but not decisive on its own. The two that mattered more were
+structural. `messageIDIndex` was the sole exception to `Manifest`'s
+immutability, so the type's share-by-reference safety argument carried a
+carve-out every reader had to re-check; deleting it made that claim
+unconditional. And the field's own doc had gone stale in two independent ways —
+it named four article-mutation callers when two remained, and asserted they all
+held `q.mu` for write when `hydrateSnapshot` held no lock at all. That was
+harmless, being a private clone, but it is the shape of comment that stops
+being harmless later.
+
+The general lesson, and the reason this is recorded rather than deleted with
+the change: **when a rule tells you to re-argue an item on one axis, the
+re-argument is also the moment to notice the axes nobody listed.** The
+instruction above named memory because memory was what survived A7. It was not
+wrong, but it was the smallest of the three things F2 turned out to buy.
 
 **A5 and A6 are counted for the same reason, and the reference implementation
 is the evidence.** Python SABnzbd validates a Message-ID nowhere: `nzbparser.py`
@@ -768,7 +794,7 @@ the rest of this document would otherwise have to guard.
 | # | Change | Deletes |
 |---|---|---|
 | F1 | key `FileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
-| F2 | call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
+| F2 | ✅ **done** — call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
 | F3 | key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
 | F5 | carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
