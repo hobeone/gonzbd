@@ -51,7 +51,10 @@ type ServerConfig struct {
 	Timeout int `yaml:"timeout" json:"timeout"`
 
 	// PipeliningRequests is the max in-flight commands per connection.
-	// Default 2. Servers that misbehave under pipelining can be set to 1.
+	// Required and must be positive — validate rejects a zero rather
+	// than defaulting it, so there is no code default; the sample
+	// config and README use 2. Servers that misbehave under pipelining
+	// can be set to 1.
 	PipeliningRequests int `yaml:"pipelining_requests" json:"pipelining_requests"`
 
 	// Enable allows the server to be used. Disabled servers are kept in

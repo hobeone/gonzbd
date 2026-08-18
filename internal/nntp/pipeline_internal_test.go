@@ -1,50 +1,101 @@
 package nntp
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"strings"
 	"testing"
 )
 
-// newTestConn builds a Conn wired to one end of a net.Pipe, with the
-// reader goroutine deliberately NOT started, so a test can drive the
+// newTestConn adds the pipelining state to newPipeConn's socket wiring:
+// a Conn that is Ready and has a semaphore and a FIFO, but whose reader
+// goroutine is deliberately NOT started, so a test can drive the
 // pipeline primitives directly or start runReader itself after
-// arranging the FIFO. The returned net.Conn is the peer: write
-// response bytes to it, or close it to fail the client's next read.
+// arranging the FIFO. The returned net.Conn is the peer: write response
+// bytes to it, or close it to fail the client's next read.
 //
-// Dial is not usable for this. Every state these tests exercise —
-// an under-filled semaphore, a FIFO entry with no matching command on
-// the wire, a write to a socket that is already gone — is one the
-// handshake path exists to make unreachable.
+// Dial is not usable for this. Every state these tests exercise — an
+// under-filled semaphore, a FIFO entry with no matching command on the
+// wire, a write to a socket that is already gone — is one the handshake
+// path exists to make unreachable.
 func newTestConn(t *testing.T, pipelining int) (*Conn, net.Conn) {
 	t.Helper()
-	client, peer := net.Pipe()
+	c, peer := newPipeConn(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(func() {
-		cancel()
-		_ = client.Close()
-		_ = peer.Close()
-	})
-	return &Conn{
-		log:        slog.New(slog.DiscardHandler),
-		nc:         client,
-		bw:         bufio.NewWriter(client),
-		br:         bufio.NewReader(client),
-		state:      StateReady,
-		sem:        make(chan struct{}, pipelining),
-		readerDone: make(chan struct{}),
-		ctx:        ctx,
-		cancel:     cancel,
-	}, peer
+	t.Cleanup(cancel) // LIFO: runs before newPipeConn's socket close
+	c.state = StateReady
+	c.sem = make(chan struct{}, pipelining)
+	c.readerDone = make(chan struct{})
+	c.ctx, c.cancel = ctx, cancel
+	return c, peer
 }
 
 func newPending(kind cmdKind, msgID string) *pendingCmd {
 	return &pendingCmd{kind: kind, msgID: msgID, done: make(chan struct{})}
+}
+
+func TestNewArticleCmd(t *testing.T) {
+	t.Parallel()
+	// The point of the helper is that the ID it remembers and the ID it
+	// puts on the wire come from one argument, so assert they agree
+	// rather than that either matches a literal.
+	for _, tc := range []struct {
+		kind cmdKind
+		verb string
+	}{
+		{cmdBody, "BODY"},
+		{cmdStat, "STAT"},
+	} {
+		t.Run(tc.verb, func(t *testing.T) {
+			t.Parallel()
+			const id = "a@h"
+			pc, wire := newArticleCmd(tc.kind, tc.verb, id)
+			if pc.kind != tc.kind || pc.msgID != id {
+				t.Errorf("pendingCmd = {kind:%d msgID:%q}, want {kind:%d msgID:%q}", pc.kind, pc.msgID, tc.kind, id)
+			}
+			if pc.done == nil {
+				t.Error("done channel not created; the caller would block forever")
+			}
+			if want := tc.verb + " <" + id + ">\r\n"; string(wire) != want {
+				t.Errorf("wire = %q, want %q", wire, want)
+			}
+			// The identity on the wire must be the one runReader will
+			// compare against — that equality is the whole invariant.
+			got, ok := messageIDFromStatusLine("0 <" + pc.msgID + ">")
+			if !ok || !strings.Contains(string(wire), "<"+got+">") {
+				t.Errorf("remembered ID %q is not the one sent in %q", pc.msgID, wire)
+			}
+		})
+	}
+}
+
+func TestFailPopped(t *testing.T) {
+	t.Parallel()
+	// A popped command is no longer in the FIFO, so wakeOrphans will
+	// never reach it: failPopped owes it both the result and the close,
+	// on top of ending the connection.
+	c, _ := newTestConn(t, 1)
+	pc := newPending(cmdBody, "a@h")
+	want := errors.New("fatal")
+
+	c.failPopped(pc, cmdResult{code: 222, line: "0 <a@h>"}, want)
+
+	select {
+	case <-pc.done:
+	default:
+		t.Fatal("failPopped did not close done; the caller would block forever")
+	}
+	if !errors.Is(pc.result.err, want) {
+		t.Errorf("result.err = %v, want %v", pc.result.err, want)
+	}
+	if pc.result.code != 222 {
+		t.Errorf("result.code = %d, want the response fields preserved", pc.result.code)
+	}
+	if !c.closed.Load() || !errors.Is(c.closeError(), want) {
+		t.Errorf("connection not ended on %v (closed=%v, err=%v)", want, c.closed.Load(), c.closeError())
+	}
 }
 
 func TestPendingFIFO(t *testing.T) {
@@ -226,6 +277,21 @@ func TestRunReaderFatalPaths(t *testing.T) {
 			wantErr: "semaphore underflow",
 		},
 		{
+			// Distinct from a mismatch: the server did not name the
+			// wrong article, it sent a success line this command
+			// cannot be matched against at all. Both are fatal, but
+			// they read differently in a log.
+			name: "success line carries no Message-ID",
+			arrange: func(c *Conn) *pendingCmd {
+				pc := newPending(cmdStat, "a@h")
+				c.pending = append(c.pending, pc)
+				c.sem <- struct{}{}
+				return pc
+			},
+			respond: func(peer net.Conn) { _, _ = peer.Write([]byte("223 0 a@h\r\n")) },
+			wantErr: "carries no Message-ID",
+		},
+		{
 			name: "body truncated mid-transfer",
 			arrange: func(c *Conn) *pendingCmd {
 				pc := newPending(cmdBody, "a@h")
@@ -309,14 +375,20 @@ func TestMessageIDFromStatusLine(t *testing.T) {
 	}{
 		{"canonical", "0 <abc@host> body follows", "abc@host", true},
 		{"no trailing commentary", "0 <abc@host>", "abc@host", true},
-		{"unbracketed", "0 abc@host", "abc@host", true},
 		{"case is preserved", "0 <ABC@Host>", "ABC@Host", true},
-		// A 222 with no Message-ID field is not a response we can pair
-		// with a request, so it must not read as a match for anything.
+		// The wrapper locates the ID, so a server that omits the
+		// article number is read correctly rather than yielding the
+		// wrong token. A positional rule returns "body" here, which
+		// then fails the compare and kills the connection.
+		{"no article number", "<abc@host> body follows", "abc@host", true},
+		{"extra leading field", "0 1 <abc@host>", "abc@host", true},
+		// Nothing bracketed: not a mismatch, an unpairable response.
 		{"article number only", "0", "", false},
 		{"empty", "", "", false},
+		{"unbracketed id", "0 abc@host", "", false},
 		{"empty second field", "0  rest", "", false},
 		{"brackets only", "0 <>", "", false},
+		{"unterminated bracket", "0 <abc@host body", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -653,27 +653,50 @@ consistent.
 
 **It was built as F5 (§5.F) rather than as an assertion.** Matching was only
 needed because `runReader` popped the FIFO blind; the requested Message-ID now
-rides on `pendingCmd` and is compared there, so the pairing is established
-rather than assumed. `popPending() == nil` had always caught an unsolicited
-response arriving on an **empty** FIFO — the live gap was specifically
-pipelining depth > 1, and `PipeliningRequests` defaults to 2, so it was
-reachable in stock configuration rather than only under tuning.
+rides on `pendingCmd` and is compared there.
 
-Three details the implementation settled, each of which would have been wrong
-if guessed:
+**On the responses that carry an identity, and only those.** An error response
+— `430`/`423`, the *common* outcome for a missing article — names no
+Message-ID, so it still pairs by FIFO position alone, and a desync landing on a
+run of those is undetected until the next success line. The claim is therefore
+"a successful response is established as answering the command it was paired
+with", not "the pairing is established": stating the second would license a
+later change to treat FIFO position as verified everywhere.
+
+`popPending() == nil` had always caught an unsolicited response arriving on an
+**empty** FIFO. The live gap was specifically pipelining depth > 1 — the
+configuration the shipped sample specifies, `pipelining_requests: 2`, so this
+was reachable as configured rather than only under tuning. There is no code
+default: `internal/config` requires a positive value, and `newDialOptions`
+clamps a zero to 1 only for a config that never went through validation.
+
+Four details the implementation settled, each of which would have been wrong if
+guessed:
 
 - The `222` line arrives as one undivided remainder string, so this is
   field-splitting plus angle-bracket normalisation, not a bare string compare.
   The comparison is octet-exact, because RFC 3977 §3.6 makes Message-IDs
   case-sensitive.
+- The ID is found **by its wrapper, not by its position**. RFC 3977 §6.2
+  brackets it in every response that carries one, so the wrapper locates it
+  wherever it sits; reading field 2 positionally assumes the article-number
+  field is present, and against a server that omits it yields some other token
+  entirely — which then fails the comparison and kills the connection. The
+  positional reading fails silently wrong *and* fatally, which is the worst
+  available combination.
 - The check covers every command kind whose success line echoes a Message-ID
   (`BODY` 222, `ARTICLE` 220, `HEAD` 221, `STAT` 223), not `BODY` alone, and
   reads that set from `cmdKind.successResponse` — one owner for the table, so a
-  code cannot be listed for the body decision and forgotten for this one.
-- A success line carrying **no** Message-ID field is treated as a mismatch, not
-  waved through. RFC 3977 §6.2 requires the field; a response that omits it
-  cannot be paired with a request at all, which is the condition this check
-  exists to refuse.
+  code cannot be listed for the body decision and forgotten for this one. The
+  reader publishes its verdict as `cmdResult.success` so `Fetch` and `Stat` do
+  not restate the same codes as literals; two expressions of "this succeeded"
+  can drift, and the drift is silent in the direction that matters.
+- A success line carrying **no** Message-ID is fatal too, but is reported apart
+  from a mismatch. One says the server answered about the wrong article; the
+  other says it sent a line this command cannot be matched against at all.
+  Both wrap `nntp.ErrDesynced`, because a desync is the one connection failure
+  an operator must act on and it is otherwise indistinguishable from a flaky
+  link.
 
 **A mismatch drops the connection, it does not merely fail the article.** A
 disagreement is proof the FIFO is desynced, which means the *next* response is

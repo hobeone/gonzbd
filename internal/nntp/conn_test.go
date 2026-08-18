@@ -892,12 +892,12 @@ func TestFetchMessageIDMismatch(t *testing.T) {
 		if e == nil {
 			t.Fatal("Fetch succeeded on a connection whose 222 line named a different article")
 		}
-		if strings.Contains(e.Error(), "Message-ID mismatch") {
+		if errors.Is(e, ErrDesynced) {
 			mismatch++
 		}
 	}
 	if mismatch == 0 {
-		t.Errorf("no Fetch reported a Message-ID mismatch; errors were not attributable to the desync")
+		t.Errorf("no Fetch reported a desync; the errors were not attributable to the mismatch")
 	}
 	// The connection must be unusable afterwards, not merely have
 	// failed the two commands in flight. Note that this asserts on a
@@ -937,8 +937,15 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 		}
 		// Both responses are well-formed and body-less; only the
 		// pairing is wrong, and it is wrong by exactly one place.
-		c.send(fmt.Sprintf("223 0 <%s>", ids[1]))
-		c.send(fmt.Sprintf("223 0 <%s>", ids[1]))
+		//
+		// Sent as ONE write: the client is expected to drop the socket
+		// on the first line, so issuing the second as a separate write
+		// would race the close and mockConn.send reports a failed write
+		// as a test error. One write lands both lines before the client
+		// has read either, and the mutation this test pins still sees
+		// them — a reader that does not drop finds the second already
+		// buffered.
+		c.sendRaw(fmt.Sprintf("223 0 <%s>\r\n223 0 <%s>\r\n", ids[1], ids[1]))
 		<-serverDone
 	})
 
@@ -958,9 +965,21 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 	wg.Wait()
 	close(errs)
 
+	var desynced int
+	var got []error
 	for e := range errs {
 		if e == nil {
 			t.Fatal("Stat reported an article present on the strength of a 223 naming a different one")
 		}
+		got = append(got, e)
+		if errors.Is(e, ErrDesynced) {
+			desynced++
+		}
+	}
+	// Both Stats failing is not on its own the property under test —
+	// they would also both fail if the connection died of something
+	// else entirely. At least one must fail *of the desync*.
+	if desynced == 0 {
+		t.Errorf("both Stats failed, but neither of the desync: %v", got)
 	}
 }

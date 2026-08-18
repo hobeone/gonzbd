@@ -49,6 +49,14 @@ type cmdResult struct {
 	line string // response line after the 3-digit code and space
 	body []byte // populated for multi-line responses
 	err  error  // non-nil on I/O or protocol errors
+
+	// success reports whether code is the success code for the
+	// command's kind. The reader computes it from successResponse and
+	// publishes it here so callers do not restate the same code as a
+	// literal: two expressions of "this response succeeded" can drift,
+	// and the drift is silent in the direction that matters — a caller
+	// accepting a body the reader never identity-checked.
+	success bool
 }
 
 // successResponse reports the single status code that marks a
@@ -79,25 +87,56 @@ func (k cmdKind) successResponse() (code int, hasBody, echoesMsgID bool) {
 }
 
 // messageIDFromStatusLine extracts the Message-ID from the text
-// following the status code of an article response — "n message-id"
-// with optional trailing commentary. The angle-bracket wrapper is
-// stripped so the result is directly comparable to the bare form
-// pendingCmd.msgID holds.
+// following the status code of an article response — canonically
+// "n message-id" with optional trailing commentary. The angle-bracket
+// wrapper is stripped so the result is directly comparable to the bare
+// form pendingCmd.msgID holds.
 //
-// Both fields are taken with strings.Cut, so no allocation occurs and
-// the work is bounded by the response line, which readResponseLine
-// already caps at maxResponseLineLen.
+// It finds the ID by its wrapper rather than by its position, and that
+// is deliberate. RFC 3977 §6.2 brackets the Message-ID in every
+// response that carries one, so the wrapper identifies it unambiguously
+// wherever it sits; a positional rule has to assume the article-number
+// field is present, and a server that omits it (non-conformant, but the
+// shape real servers deviate into — see parseStatus, which already
+// tolerates one such deviation) would yield a token that is not a
+// Message-ID at all. That token then fails the comparison and kills the
+// connection, so the positional reading fails in the worst direction:
+// silently wrong, and fatal.
+//
+// A line carrying no bracketed token yields ok=false. That is not a
+// mismatch but an unpairable response, and runReader distinguishes the
+// two when reporting.
+//
+// Scanning is bounded by the response line, which readResponseLine caps
+// at maxResponseLineLen, and allocates nothing: Cut and the Trim
+// helpers all return substrings of their input.
 func messageIDFromStatusLine(text string) (string, bool) {
-	_, rest, ok := strings.Cut(text, " ")
-	if !ok {
-		return "", false
+	for rest := text; rest != ""; {
+		var field string
+		field, rest, _ = strings.Cut(rest, " ")
+		if len(field) >= 2 && field[0] == '<' && field[len(field)-1] == '>' {
+			if id := field[1 : len(field)-1]; id != "" {
+				return id, true
+			}
+		}
 	}
-	id, _, _ := strings.Cut(rest, " ")
-	id = strings.TrimSuffix(strings.TrimPrefix(id, "<"), ">")
-	if id == "" {
-		return "", false
-	}
-	return id, true
+	return "", false
+}
+
+// newArticleCmd builds the FIFO entry and the wire bytes for a command
+// naming a single article, from one Message-ID argument.
+//
+// It exists so those two never come from separate mentions of the same
+// variable. A pendingCmd whose remembered identity disagrees with what
+// its command actually asked for would make runReader's comparison
+// assert the wrong thing, and the two call sites that build one had no
+// structural reason to stay in step — the ID appeared twice, and the
+// kinds successResponse marks as echoing already outnumber the kinds
+// anything constructs. A third call site that omitted msgID would leave
+// it empty and fail every response it ever received.
+func newArticleCmd(kind cmdKind, verb, messageID string) (pc *pendingCmd, wire []byte) {
+	return &pendingCmd{kind: kind, msgID: messageID, done: make(chan struct{})},
+		fmt.Appendf(make([]byte, 0, 96), "%s <%s>\r\n", verb, messageID)
 }
 
 // runReader consumes responses from br in order and dispatches them to
@@ -131,9 +170,8 @@ func (c *Conn) runReader() {
 			return
 		}
 
-		res := cmdResult{code: code, line: text}
 		expected, hasBody, echoesMsgID := pc.kind.successResponse()
-		success := code == expected
+		res := cmdResult{code: code, line: text, success: code == expected}
 
 		// Establish that this response is an answer to the command it
 		// was paired with, before reading anything further from the
@@ -144,29 +182,30 @@ func (c *Conn) runReader() {
 		// comparison is octet-exact because RFC 3977 §3.6 makes
 		// Message-IDs case-sensitive.
 		//
-		// A disagreement is proof the queue is desynced, which makes
-		// the NEXT response mis-paired too, so the connection dies
-		// here rather than failing one article and continuing.
-		if success && echoesMsgID {
-			got, ok := messageIDFromStatusLine(text)
-			if !ok || got != pc.msgID {
-				err := fmt.Errorf("nntp: response Message-ID mismatch: %d response to %q names %q; connection desynced",
-					code, pc.msgID, got)
-				res.err = err
-				pc.result = res
-				close(pc.done)
-				c.finishReader(err)
+		// Either failure is proof the queue can no longer be trusted,
+		// which makes the NEXT response mis-paired too, so the
+		// connection dies here rather than failing one article and
+		// continuing. They are reported apart because they say
+		// different things to whoever reads the log: one server
+		// answered about the wrong article, the other sent a line this
+		// command cannot be matched against at all.
+		if res.success && echoesMsgID {
+			switch got, ok := messageIDFromStatusLine(text); {
+			case !ok:
+				c.failPopped(pc, res, fmt.Errorf("%w: %d response to %q carries no Message-ID: %q",
+					ErrDesynced, code, pc.msgID, text))
+				return
+			case got != pc.msgID:
+				c.failPopped(pc, res, fmt.Errorf("%w: %d response to %q names %q instead",
+					ErrDesynced, code, pc.msgID, got))
 				return
 			}
 		}
 
-		if success && hasBody {
+		if res.success && hasBody {
 			body, berr := readDotStuffedBody(c.br)
 			if berr != nil {
-				res.err = berr
-				pc.result = res
-				close(pc.done)
-				c.finishReader(berr)
+				c.failPopped(pc, res, berr)
 				return
 			}
 			res.body = body
@@ -248,6 +287,26 @@ func (c *Conn) popPending() *pendingCmd {
 	c.pending[0] = nil
 	c.pending = c.pending[1:]
 	return pc
+}
+
+// failPopped ends the connection on err, having first delivered it to
+// pc — the command the reader has already taken off the FIFO.
+//
+// That ordering is the whole reason this exists as a named step. The
+// reader's usual teardown, wakeOrphans, drains the FIFO, and pc is no
+// longer in it; nothing else will ever close its done channel, so
+// finishReader alone leaves pc's caller blocked until its context
+// expires. Every fatal path taken between popPending and the final
+// close(pc.done) owes pc this, and the obligation is easy to miss
+// because forgetting it produces a hang rather than an error.
+//
+// The caller must return immediately: the connection is dead and the
+// reader loop must not go round again.
+func (c *Conn) failPopped(pc *pendingCmd, res cmdResult, err error) {
+	res.err = err
+	pc.result = res
+	close(pc.done)
+	c.finishReader(err)
 }
 
 // finishReader flips the Conn into a terminal error state and wakes

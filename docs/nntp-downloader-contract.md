@@ -225,18 +225,30 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   semaphore slot.
 - **Response identity**: FIFO position alone does not establish that a response
   answers the command it was popped against. `pendingCmd.msgID` carries the
-  Message-ID the command asked for, and `runReader` compares it — octet-exact,
-  because RFC 3977 §3.6 makes Message-IDs case-sensitive — against the one
-  echoed on the success line of every command kind that echoes one (`BODY` 222,
-  `ARTICLE` 220, `HEAD` 221, `STAT` 223). `cmdKind.successResponse` is the sole
-  owner of that table.
+  Message-ID the command asked for — `newArticleCmd` emits it and the wire bytes
+  from one argument, so the two cannot disagree — and `runReader` compares it
+  against the one echoed on the **success** line of every kind that echoes one
+  (`BODY` 222, `ARTICLE` 220, `HEAD` 221, `STAT` 223). The comparison is
+  octet-exact, because RFC 3977 §3.6 makes Message-IDs case-sensitive, and the
+  ID is located by its angle brackets rather than by field position.
+
+  `cmdKind.successResponse` is the sole owner of that code table:
+  `runReader` publishes its verdict as `cmdResult.success`, and `Fetch`/`Stat`
+  branch on that rather than re-comparing 222/223 themselves.
+
+  This covers only responses that carry an identity. An error response
+  (`430`/`423`) names no article, so it still pairs by FIFO alone; a desync
+  landing on a run of those goes unnoticed until the next success line.
 
   A disagreement, or a success line carrying no Message-ID at all, is proof the
   queue is desynced — which makes the *next* response mis-paired too — so it
   kills the connection through `finishReader` rather than failing one article.
   Failing one article would catch the first casualty and silently mis-attribute
   every article after it: each would be a well-formed, CRC-valid body written
-  into the wrong file, and no later layer can detect that.
+  into the wrong file, and no later layer can detect that. Both cases wrap
+  `nntp.ErrDesynced` so the class is distinguishable from an ordinary socket
+  failure; note that `penalty.go` does not yet give it a row of its own, so it
+  still lands on `PenaltyUnknown`.
 - **Context cancellation**: If a caller's `ctx` is cancelled while waiting for
   `pc.done`, the `pendingCmd` is marked `orphaned`. The reader goroutine still
   reads and discards the response to keep the connection in protocol sync. The
