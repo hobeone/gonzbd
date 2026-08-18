@@ -9,7 +9,7 @@ require (
 	github.com/hobeone/par2engine v1.0.6
 	github.com/hobeone/rarengine v1.1.1
 	github.com/lmittmann/tint v1.2.0
-	github.com/mxschmitt/playwright-go v0.6201.0
+	github.com/mxschmitt/playwright-go v0.6201.1
 	github.com/pressly/goose/v3 v3.27.3
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.47.0
@@ -25,7 +25,6 @@ require (
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
