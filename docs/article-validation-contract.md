@@ -216,7 +216,7 @@ which side is wrong may or may not be decidable.
 
 | Claim | Sources | Which side is authoritative |
 |---|---|---|
-| Message-ID of the served article | our request, the `222` response line | **Ours.** Fully decidable. |
+| Message-ID of the served article | our request, the success response line | **Ours.** Fully decidable. |
 | Part ordinal | NZB `<segment number=>`, yEnc `part=` | Neither. Count it. |
 | Total file size | NZB sum of `bytes`, yEnc `=ybegin size=` | Neither; NZB is encoded bytes, yEnc is decoded. |
 | `=ybegin size=` across parts of one file | each part of the same file | **Must be identical.** Disagreement is proof of malformation. |
@@ -393,7 +393,7 @@ the rows.
 | A5 | Message-ID is printable US-ASCII | L0 | ✅ **implemented** — count only | evidence |
 | A6 | Message-ID contains `@` | L0 | ✅ **implemented** — count only | evidence |
 | A7 | Message-ID unique job-wide | L0 | ✅ **implemented** — later segment dropped, counted, warned at ingest | — |
-| B1 | `222` Message-ID equals the requested one | L1 | ✅ **implemented** — drop the connection; the article fails with it | — (built as F5) |
+| B1 | a success response's Message-ID equals the requested one (`BODY` 222, `ARTICLE` 220, `HEAD` 221, `STAT` 223) | L1 | ✅ **implemented** — drop the connection; the article fails with it | — (built as F5) |
 | C1–C3 | payload self-verification | L2 | ✅ already enforced | — |
 | C4 | checksum presence | L2 | count only | — |
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
@@ -638,7 +638,7 @@ case is real and rare.
 
 | # | Assertion | Status |
 |---|---|---|
-| B1 | the `222` response's Message-ID equals the one requested | ✅ enforced (built as F5) |
+| B1 | a success response's Message-ID equals the requested one (`BODY` 222, `ARTICLE` 220, `HEAD` 221, `STAT` 223) | ✅ enforced (built as F5) |
 | B2 | body size ≤ 10 MB | ✅ enforced |
 
 **B1 was the most important gap in the system**, and it is the assumption every
