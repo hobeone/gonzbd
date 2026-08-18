@@ -3,6 +3,7 @@ package nntp
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 )
 
@@ -29,8 +30,15 @@ const (
 // result and closes done. Callers that cancel their context set
 // orphaned=1; the reader still reads+discards the corresponding
 // response so the connection stays in sync.
+//
+// msgID carries the Message-ID the command asked for, without angle
+// brackets, for the command kinds whose success response echoes it
+// back. It exists so the reader can establish that a response belongs
+// to the request it was paired with, rather than trusting FIFO
+// position alone — see runReader.
 type pendingCmd struct {
 	kind     cmdKind
+	msgID    string        // requested Message-ID, no angle brackets; "" if the kind has none
 	done     chan struct{} // closed by reader on completion
 	result   cmdResult     // valid only after done is closed
 	orphaned atomic.Bool
@@ -43,21 +51,53 @@ type cmdResult struct {
 	err  error  // non-nil on I/O or protocol errors
 }
 
-// expectedBodyCode reports the status code that marks a multi-line
-// response for each command kind. Any other code means "single-line
-// response, usually an error."
-func (k cmdKind) expectedBodyCode() (int, bool) {
+// successResponse reports the single status code that marks a
+// successful response for a command kind, whether that response is
+// followed by a dot-terminated multi-line body, and whether its status
+// line echoes the requested Message-ID back (RFC 3977 §6.2: the
+// article commands answer "NNN n message-id"). Any other code means a
+// single-line response, usually an error.
+//
+// This is the sole owner of that table. The reader consults it for
+// both decisions rather than keeping a second copy of the mapping,
+// because a code listed in one place and omitted from the other would
+// silently disable a check on exactly the responses it applies to.
+func (k cmdKind) successResponse() (code int, hasBody, echoesMsgID bool) {
 	switch k {
 	case cmdBody:
-		return 222, true
+		return 222, true, true
 	case cmdArticle:
-		return 220, true
+		return 220, true, true
 	case cmdHead:
-		return 221, true
+		return 221, true, true
+	case cmdStat:
+		return 223, false, true
 	case cmdCapabilities:
-		return 101, true
+		return 101, true, false
 	}
-	return 0, false
+	return 0, false, false
+}
+
+// messageIDFromStatusLine extracts the Message-ID from the text
+// following the status code of an article response — "n message-id"
+// with optional trailing commentary. The angle-bracket wrapper is
+// stripped so the result is directly comparable to the bare form
+// pendingCmd.msgID holds.
+//
+// Both fields are taken with strings.Cut, so no allocation occurs and
+// the work is bounded by the response line, which readResponseLine
+// already caps at maxResponseLineLen.
+func messageIDFromStatusLine(text string) (string, bool) {
+	_, rest, ok := strings.Cut(text, " ")
+	if !ok {
+		return "", false
+	}
+	id, _, _ := strings.Cut(rest, " ")
+	id = strings.TrimSuffix(strings.TrimPrefix(id, "<"), ">")
+	if id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 // runReader consumes responses from br in order and dispatches them to
@@ -92,7 +132,35 @@ func (c *Conn) runReader() {
 		}
 
 		res := cmdResult{code: code, line: text}
-		if expected, multi := pc.kind.expectedBodyCode(); multi && code == expected {
+		expected, hasBody, echoesMsgID := pc.kind.successResponse()
+		success := code == expected
+
+		// Establish that this response is an answer to the command it
+		// was paired with, before reading anything further from the
+		// wire. FIFO position alone does not establish that: a single
+		// spurious response desyncs the queue, and every subsequent
+		// article is then mis-attributed with bytes that are
+		// internally consistent and pass every downstream check. The
+		// comparison is octet-exact because RFC 3977 §3.6 makes
+		// Message-IDs case-sensitive.
+		//
+		// A disagreement is proof the queue is desynced, which makes
+		// the NEXT response mis-paired too, so the connection dies
+		// here rather than failing one article and continuing.
+		if success && echoesMsgID {
+			got, ok := messageIDFromStatusLine(text)
+			if !ok || got != pc.msgID {
+				err := fmt.Errorf("nntp: response Message-ID mismatch: %d response to %q names %q; connection desynced",
+					code, pc.msgID, got)
+				res.err = err
+				pc.result = res
+				close(pc.done)
+				c.finishReader(err)
+				return
+			}
+		}
+
+		if success && hasBody {
 			body, berr := readDotStuffedBody(c.br)
 			if berr != nil {
 				res.err = berr

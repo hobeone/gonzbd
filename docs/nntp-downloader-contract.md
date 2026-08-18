@@ -223,6 +223,20 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   reads the response (including dot-stuffed body for BODY commands), fills the
   result, and closes the `pendingCmd.done` channel. It then releases the
   semaphore slot.
+- **Response identity**: FIFO position alone does not establish that a response
+  answers the command it was popped against. `pendingCmd.msgID` carries the
+  Message-ID the command asked for, and `runReader` compares it — octet-exact,
+  because RFC 3977 §3.6 makes Message-IDs case-sensitive — against the one
+  echoed on the success line of every command kind that echoes one (`BODY` 222,
+  `ARTICLE` 220, `HEAD` 221, `STAT` 223). `cmdKind.successResponse` is the sole
+  owner of that table.
+
+  A disagreement, or a success line carrying no Message-ID at all, is proof the
+  queue is desynced — which makes the *next* response mis-paired too — so it
+  kills the connection through `finishReader` rather than failing one article.
+  Failing one article would catch the first casualty and silently mis-attribute
+  every article after it: each would be a well-formed, CRC-valid body written
+  into the wrong file, and no later layer can detect that.
 - **Context cancellation**: If a caller's `ctx` is cancelled while waiting for
   `pc.done`, the `pendingCmd` is marked `orphaned`. The reader goroutine still
   reads and discards the response to keep the connection in protocol sync. The

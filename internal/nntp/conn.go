@@ -482,7 +482,7 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 		return nil, c.closeError()
 	}
 
-	pc := &pendingCmd{kind: cmdBody, done: make(chan struct{})}
+	pc := &pendingCmd{kind: cmdBody, msgID: messageID, done: make(chan struct{})}
 	cmd := fmt.Appendf(make([]byte, 0, 96), "BODY <%s>\r\n", messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return nil, err
@@ -550,7 +550,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 		return c.closeError()
 	}
 
-	pc := &pendingCmd{kind: cmdStat, done: make(chan struct{})}
+	pc := &pendingCmd{kind: cmdStat, msgID: messageID, done: make(chan struct{})}
 	cmd := fmt.Appendf(make([]byte, 0, 96), "STAT <%s>\r\n", messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return err

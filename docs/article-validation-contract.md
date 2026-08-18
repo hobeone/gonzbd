@@ -1,7 +1,7 @@
 # Article Validation Contract
 
-> **Status: in progress; dispositions settled.** F3, A7, F6, F2 and the whole
-> A-block have landed; B1/F5, C5, E3–E5 and F1/F4 remain proposed. §8 is no longer open — what each class of violation
+> **Status: in progress; dispositions settled.** F3, A7, F6, F2, F5/B1 and the
+> whole A-block have landed; C5, E3–E5 and F1/F4 remain proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -393,7 +393,7 @@ the rows.
 | A5 | Message-ID is printable US-ASCII | L0 | ✅ **implemented** — count only | evidence |
 | A6 | Message-ID contains `@` | L0 | ✅ **implemented** — count only | evidence |
 | A7 | Message-ID unique job-wide | L0 | ✅ **implemented** — later segment dropped, counted, warned at ingest | — |
-| B1 | `222` Message-ID equals the requested one | L1 | fail article **and drop the connection** | — (see F5) |
+| B1 | `222` Message-ID equals the requested one | L1 | ✅ **implemented** — drop the connection; the article fails with it | — (built as F5) |
 | C1–C3 | payload self-verification | L2 | ✅ already enforced | — |
 | C4 | checksum presence | L2 | count only | — |
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
@@ -407,7 +407,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → F5/B1 → C5 → E5 → F1a (fixture `ArtIdx`) → F1b (flip the key) → E3/E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → E5 → F1a (fixture `ArtIdx`) → F1b (flip the key) → E3/E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -638,35 +638,55 @@ case is real and rare.
 
 | # | Assertion | Status |
 |---|---|---|
-| B1 | the `222` response's Message-ID equals the one requested | ⚠ **absent — highest-value single change** |
+| B1 | the `222` response's Message-ID equals the one requested | ✅ enforced (built as F5) |
 | B2 | body size ≤ 10 MB | ✅ enforced |
 
-**B1 is the most important gap in the system.** `internal/nntp/pipeline.go`
-matches responses to requests by **FIFO order only**. The `222 <n> <message-id>`
-line is parsed into `cmdResult.line` and never compared. A single desync — one
+**B1 was the most important gap in the system**, and it is the assumption every
+layer from L2 outward silently depends on. `internal/nntp/pipeline.go` matched
+responses to requests by **FIFO order only**: the `222 <n> <message-id>` line
+was parsed into `cmdResult.line` and never compared. A single desync — one
 unsolicited response, one server that answers out of order — silently
 mis-attributes *every subsequent article on that connection*, writing correct,
 CRC-valid bytes into the wrong file at the offset their own header declares.
 Nothing downstream can detect this, because each article is internally
 consistent.
 
-It is one string comparison on data already parsed, and it is the assumption
-every layer from L2 outward silently depends on.
+**It was built as F5 (§5.F) rather than as an assertion.** Matching was only
+needed because `runReader` popped the FIFO blind; the requested Message-ID now
+rides on `pendingCmd` and is compared there, so the pairing is established
+rather than assumed. `popPending() == nil` had always caught an unsolicited
+response arriving on an **empty** FIFO — the live gap was specifically
+pipelining depth > 1, and `PipeliningRequests` defaults to 2, so it was
+reachable in stock configuration rather than only under tuning.
 
-**B1 is better built as F5 (§5.F) than as an assertion.** Matching is only
-needed because `runReader` pops the FIFO blind; carrying the requested
-Message-ID on `pendingCmd` and matching there makes a desync *unrepresentable*
-rather than detected. Note also that `popPending() == nil` already catches an
-unsolicited response arriving on an **empty** FIFO — the live gap is specifically
-pipelining depth > 1, which is the case worth stating in the change. And the
-`222` line arrives as one undivided remainder string, so this is field-splitting
-plus angle-bracket normalisation, not a bare string compare.
+Three details the implementation settled, each of which would have been wrong
+if guessed:
 
-**A mismatch must drop the connection, not merely fail the article.** A
+- The `222` line arrives as one undivided remainder string, so this is
+  field-splitting plus angle-bracket normalisation, not a bare string compare.
+  The comparison is octet-exact, because RFC 3977 §3.6 makes Message-IDs
+  case-sensitive.
+- The check covers every command kind whose success line echoes a Message-ID
+  (`BODY` 222, `ARTICLE` 220, `HEAD` 221, `STAT` 223), not `BODY` alone, and
+  reads that set from `cmdKind.successResponse` — one owner for the table, so a
+  code cannot be listed for the body decision and forgotten for this one.
+- A success line carrying **no** Message-ID field is treated as a mismatch, not
+  waved through. RFC 3977 §6.2 requires the field; a response that omits it
+  cannot be paired with a request at all, which is the condition this check
+  exists to refuse.
+
+**A mismatch drops the connection, it does not merely fail the article.** A
 disagreement is proof the FIFO is desynced, which means the *next* response is
 mis-paired too. Failing one article and continuing would catch the first
-casualty and silently produce all the rest. `finishReader` already exists for
-exactly this and is the correct exit.
+casualty and silently produce all the rest. `finishReader` already existed for
+exactly this and is the exit taken.
+
+That half needs a body-less response to pin: with a `222` the reader must
+consume a body, so *any* early exit from the mismatch branch leaves that body to
+be read as the next status line and the connection dies of a parse error
+regardless. `STAT`'s `223` carries no body, so the stream stays parseable across
+a mismatch and the drop becomes observable on its own — which is what
+`TestStatMessageIDMismatchDropsConnection` exists for.
 
 ### C. Payload self-verification (L2 — decode)
 
@@ -787,9 +807,20 @@ Saying so at ingestion is free.
 
 ### F. Structural invariants — violations made unrepresentable (§4)
 
-These are not assertions. Nothing checks them, nothing can fail them, and they
-need no error path. They are changes of representation that delete the states
-the rest of this document would otherwise have to guard.
+These are changes of representation that delete the states the rest of this
+document would otherwise have to guard. For F1–F4, F6 and F7 that is the whole
+story: nothing checks them, nothing can fail them, and they need no error path,
+because the state they would report has stopped existing.
+
+**F5 is the exception, and it is worth stating rather than glossing.** The
+server is outside the program, so no representation choice can make a lying
+`222` unrepresentable; F5 is what makes the disagreement *decidable* — it
+carries the request's identity to the point the response is read, where
+previously the two never met. The check that follows is real and has a real
+error path. What F5 deletes is not the check but the ambiguity: without it there
+is no fact at that point to compare against, and B1 could only have been an
+assertion bolted on somewhere further out, working from data the reader had
+already thrown away.
 
 | # | Change | Deletes |
 |---|---|---|
@@ -797,7 +828,7 @@ the rest of this document would otherwise have to guard.
 | F2 | ✅ **done** — call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
 | F3 | key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
-| F5 | carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
+| F5 | ✅ **done** — carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
 | F6 | ✅ **done** — fold `NZB.MD5`'s digest over **accepted** article IDs, at the acceptance point | the digest-ordering rule, A1's carve-out, and the whole class "a new rejection silently changes every document's identity" — see §8, decision 1 |
 | F7 | ✅ **done** — `Manifest.UnmarshalJSON` delegates to `newManifest` | the second constructor, and the persisted `total_bytes` as a source of truth. Landed with the A-block because deleting `validateMessageID` rests on every in-process Manifest deriving its state from one owner |
 
