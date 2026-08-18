@@ -27,6 +27,98 @@ implementation lives at `../sabnzbd/`.
     - **Concurrency:** Idiomatic goroutines + channels; `sync.RWMutex` for
       shared state.
 
+## Standing Design Rules
+
+Two constraints that precede any specific design decision. They are stated here
+rather than in a topic doc because both have already been missed by work that
+never had cause to open the doc arguing for them, and both change what the
+right answer is rather than merely how to write it down.
+
+`docs/article-validation-contract.md` carries the full argument for each, the
+worked examples, and the article-validation consequences. This section is the
+rule.
+
+### 1. No backwards compatibility
+
+GoNZBD targets fresh installations, is not a drop-in replacement, and runs as a
+single self-administered instance.
+
+> **No change owes anything to state an earlier build wrote, or to parity with
+> any other implementation.**
+
+Persisted manifests, queue rows, history entries and NZB backups written before
+a change may be assumed to satisfy the invariants that change introduces. There
+is no drain period, no dual-read path, no migration, and no "old jobs behave
+differently" caveat. Where an invariant is newly enforced at ingestion, it is
+simply true everywhere.
+
+The rule's force is in what it forbids:
+
+> **Before writing a guard, name the state that makes it necessary — then check
+> whether that state is in scope at all.** If the only answer is "data an
+> earlier build wrote", the guard is not needed. Delete the class rather than
+> defend against it.
+
+This does **not** weaken validation of what the *world* produces. An NZB and an
+NNTP response stay untrusted regardless; on-disk corruption is a separate
+failure class that `docs/durability-contract.md` owns.
+
+**One carve-out, and it is narrow: the rule waives persistence FORMAT, not a
+security invariant.** Where trusting older persisted state could hand an
+attacker something — rather than produce a stale figure or a missing field —
+the guard stays. The test is what the value could *do*:
+
+- A stale total, a missing counter, a figure from a superseded rule → the rule
+  applies; delete the guard.
+- A value interpolated into a protocol, a path, a query, or a command → the
+  rule does not apply; keep the guard and say why at the check.
+
+This was got wrong twice on one PR before it was written down: the rule was
+stretched to cover a Message-ID reaching an NNTP command line, which is a
+command injection rather than a formatting difference.
+
+### 2. State has one owner
+
+The rule that has retired the most defects here — #372 gave every `FileWriter`
+product a consumer, #378 gave the article accounting an owner, #385 made offset
+collisions exact.
+
+> **Every piece of derived state has exactly one function that computes it and
+> exactly one path that mutates it. Everything else reads.**
+
+A field whose value is *documented* as a function of other fields, but which
+any caller may assign, is not an invariant — it is a comment. `File.Bytes ==
+Σ Articles[].Bytes` holds because `normalizeFileStruct` is its sole writer, not
+because a comment says so; the one change that wrote it from elsewhere broke it
+and stranded bytes in `JobProgress`'s remaining count.
+
+> **When a check and an owner would both work, take the owner.** A check must be
+> called at every site that could violate the invariant, and the failure mode of
+> forgetting one is silence. An owner cannot be forgotten, because there is
+> nowhere else to write.
+
+Three smells this names, all of which have been real here:
+
+- **Two constructors for one type.** `newManifest` and `Manifest.UnmarshalJSON`
+  populated the same eight fields by two independently-maintained paths and had
+  already diverged over `totalBytes`. A doc comment saying "both paths call
+  this, so they cannot disagree" is a comment doing an owner's job, and it
+  covers only the fields someone remembered.
+- **A derived value that is also persisted.** Anything recomputable from its
+  parts should be derived on load, not stored and trusted. Storing it creates a
+  second source of truth, and the stored copy is the one that drifts.
+- **A type with a valid zero used as a key.** Re-keying a map from a string to
+  an index trades a loud empty-key error for a silent alias to element 0. Where
+  the substitute type has no invalid value, pair the change with an owner that
+  makes the zero unreachable, rather than abandoning it.
+
+When a type cannot be made incapable of the bad value, make it unreachable
+except through a gatekeeper. Prefer that to adding a check at each call site.
+
+**Escalate before adding a second constructor, a second writer of a derived
+field, or a second enforcement point for one invariant** — see the Decision
+Protocol below.
+
 ## Repository Layout
 
 - `cmd/gonzbd/`: Entry point, flag parsing, and application orchestration.
@@ -66,6 +158,7 @@ design-level change.
 | [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file | Idioms, anti-patterns, concurrency/persistence architecture, library selection, testing standards, the Go backend lessons-learned catalog |
 | [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
+| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind the two Standing Design Rules above |
 | [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the `ActiveSet`, the promotion loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
 | [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
 | [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | Class A/B facts, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
@@ -199,6 +292,20 @@ git grep -n 'bytes that reached disk'   # tracked files only, so no ui/dist or n
 Restricting the search to `internal/` and `docs/` is how the first draft of this
 section missed that `docs/go-standards.md` still said to `git stash`, in the
 same change that added the rule against it.
+
+**`git grep` is blind to paraphrase, and the docs are where paraphrase
+lives.** A code comment usually repeats the symbol, so grepping the symbol
+finds it. A `docs/*.md` file restates the claim in prose and shares no token
+with the code: `docs/ARCHITECTURE.md` said "All message-IDs are validated
+before use to prevent NNTP command injection" and survived a sweep for
+`validateMessageID`, because it never names the function it is describing.
+
+So when a change alters what a doc *describes* — a layer's responsibility, an
+enforced invariant, a security property, a data-flow direction — **read
+`docs/ARCHITECTURE.md` and the relevant `docs/*-contract.md` section in full at
+the end**, rather than grepping them. That is two files and a few minutes, and
+it is the only pass that catches a sentence which is wrong without containing
+any of your keywords. Grep still covers the code.
 
 Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
 It and the grep cover different things: the analyzer reads the comments you
@@ -405,6 +512,8 @@ Decisions that must be escalated:
 - Adding new external dependencies (libraries) not already in use
 - Changing public interfaces between packages
 - Departing from the architecture in `docs/ARCHITECTURE.md`
+- Adding a second constructor for a type, a second writer of a derived field, or a second enforcement point for one invariant (see "Standing Design Rules" — each is an owner-model violation, and each has shipped a defect here)
+- Keeping a guard whose only justification is state an earlier build wrote, unless the security carve-out applies
 - Persistence format changes (file paths, schema, on-disk layout)
 - API behavior changes that affect compatibility with the existing Glitter web UI
 - Database schema changes (always add a new `goose` migration in `internal/history/migrations/` — never modify existing migration files)
@@ -446,6 +555,18 @@ These rules exist because a batch of refactor commits violated them — the cost
 
 - **The subject line MUST describe what is actually in the diff.** Before committing, run `git diff --cached --stat` and confirm the scope and files match the message. A commit subjected `refactor(api): …` that actually changes `internal/assembler/` is a defect, not a typo — it makes the assembler change invisible to anyone searching api history.
 - **One logical change per commit — verify, don't assume.** When several edits accumulate in the working tree, do not `git add -A` and split by timing. Stage per logical unit (`git add <paths>`) and confirm each commit contains only that unit. Two unrelated extractions (e.g. an assembler refactor and an api/config helper) must be two commits.
+- **Per-path staging only works when the units own disjoint paths.** `git add <path>` stages the *working-tree* version of that file, not "the part of it belonging to this unit" — so if two logical units both touched `parser.go` and all the edits were made before the first commit, commit one silently gets both. This has happened: a commit subjected `refactor(nzb): fold the digest` carried an entire feature as well, and the rule above read as satisfied the whole time, because `git add -A` had been avoided. `git status` shows the file as staged either way.
+
+  Before committing, check whether any touched file carries hunks from more than one unit. If it does, per-path staging cannot produce an honest boundary, and the fix is to reconstruct the intermediate: check the file out at the base commit, re-apply only the first unit's edits, verify it builds and its tests pass in isolation, commit, then restore the final version for the second. (Interactive `git add -p` is not available in this harness.)
+
+  Verify with a **negative grep on the staged diff**, not by re-reading the message — `git diff --cached -- <path> | grep -c '<a-symbol-from-the-other-unit>'` must be `0`. This is also the two-commit-split rule's real purpose: not tidy history, but making the intermediate state exist so a red-green check is possible at all.
+- **After rewriting commit boundaries, prove only the boundaries moved.** `git diff <old-tip> HEAD --stat` must be empty, and every commit must build and vet independently:
+  ```bash
+  for c in $(git rev-list --reverse <base>..HEAD); do
+    git checkout -q --detach "$c" && go build ./... && go vet ./... || echo "BROKEN $c"
+  done
+  git checkout -q <branch>
+  ```
 - **Quantitative claims in commit bodies MUST be measured, not estimated.** If you write "drops cyclomatic complexity from 24 to <5," you must have run the tool (`gocyclo`/`gocognit`) on the result. An extraction reduces the *parent's* complexity by construction, but the magnitude is not guessable — a real case dropped 24→12, not the claimed <5. State the measured number or omit the claim.
 - **Re-run `golangci-lint` on the final diff, not a mental model of it.** Refactors that convert control flow (e.g. fall-through `return` into boolean returns) can introduce *new* lint findings (`S1008`, `ifElseChain`) that did not exist in the original. The gate must be run against the code you are about to commit.
 
