@@ -155,19 +155,15 @@ func TestParseMalformedSegments(t *testing.T) {
 		t.Errorf("Bytes = %d, want 300000", f.Bytes)
 	}
 
-	// MD5 ordering parity: every structurally-complete article ID
-	// contributes, in source order, even if later deduped or rejected.
-	// File 1 segments in order: c3, c1, c2, c2-dup-same, c1, c4, c5.
-	// File 2 segments in order: skip-me.
+	// The digest covers ACCEPTED article IDs only, in source order.
+	// File 1 segments in order: c3, c1, c2, c2-dup-same, c1, c4, c5 — of
+	// which c2-dup-same and the repeated c1 collide on a part number, and
+	// c4 (bytes=0) and c5 (bytes=8 MiB) fail the size check. File 2's
+	// lone segment skip-me also fails the size check. Three survive.
 	wantOrder := []string{
 		"c3@example.com",
 		"c1@example.com",
 		"c2@example.com",
-		"c2-dup-same@example.com",
-		"c1@example.com",
-		"c4@example.com",
-		"c5@example.com",
-		"skip-me@example.com",
 	}
 	h := md5.New() //nolint:gosec // test only
 	for _, id := range wantOrder {
@@ -568,8 +564,10 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 			t.Errorf("counters.bad = %d, want 3", counters.bad)
 		}
 
+		// Accepted IDs only, in source order: the three that reach byPart.
+		// msg1@foo is hashed in its trimmed form, which is what is stored.
 		wantDigest := md5.New()
-		for _, id := range []string{"msg1@foo", "msg2@foo", "bad-bytes-0", "bad-bytes-neg", "bad-bytes-max", "msg7@foo", "msg1-dup@foo", "msg2@foo"} {
+		for _, id := range []string{"msg1@foo", "msg2@foo", "msg7@foo"} {
 			_, _ = wantDigest.Write([]byte(id))
 		}
 		if !slices.Equal(digest.Sum(nil), wantDigest.Sum(nil)) {

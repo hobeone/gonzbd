@@ -53,7 +53,6 @@ const (
 	ErrClassNNTPAuthRequired      = "nntp_auth_required"
 	ErrClassConnClosed            = "conn_closed"
 	ErrClassNNTPInvalidState      = "nntp_invalid_state"
-	ErrClassInvalidMessageID      = "invalid_message_id"
 	ErrClassInvalidCredential     = "invalid_credential" //nolint:gosec // diagnostic label, not a secret
 	ErrClassNetworkError          = "network_error"
 	ErrClassTimeout               = "timeout"

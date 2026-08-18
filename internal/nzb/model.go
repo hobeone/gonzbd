@@ -22,8 +22,10 @@
 //
 // # Parity with the Python parser
 //
-// The Go parser reproduces the on-disk semantics of
-// sabnzbd/nzbparser.py#nzbfile_parser one-for-one:
+// The Go parser follows the on-disk semantics of
+// sabnzbd/nzbparser.py#nzbfile_parser, with the deliberate divergences noted
+// below. Byte-for-byte parity is not a goal: GoNZBD is not a drop-in
+// replacement, and no artefact it writes is read by the Python implementation.
 //
 //   - <meta> is multi-valued: the same type attribute may repeat, and all
 //     values are preserved in document order.
@@ -34,15 +36,24 @@
 //     document is dropped and bumps DuplicateMessageIDs. This is a
 //     deliberate divergence from the Python parser, which keeps such
 //     segments: it guarantees Message-ID is a unique key within a job, so
-//     downstream lookups cannot silently address the wrong article. The
-//     digest is unaffected — see the MD5 note below.
+//     downstream lookups cannot silently address the wrong article.
 //   - Articles with bytes <= 0 or bytes >= 8 MiB bump BadArticles and are
 //     excluded from the file.
+//   - A segment whose Message-ID could not produce a fetchable NNTP request
+//     is excluded and bumps one of EmptyMessageIDs, OversizeMessageIDs or
+//     MalformedMessageIDs. A segment whose Message-ID merely violates the
+//     RFC while staying requestable is KEPT, and bumps one of
+//     NonConformantMessageIDs, NonASCIIMessageIDs or
+//     MessageIDsMissingAtSign. The Python parser validates neither.
+//   - A Message-ID wrapped in angle brackets is normalised to its bare form
+//     rather than rejected; Article.ID never carries the wrapper.
 //   - A file with zero valid articles is omitted and bumps SkippedFiles.
-//   - MD5 is the digest of every structurally-complete article ID, in
-//     source order, including IDs that were later deduped or rejected for
-//     size. Callers relying on MD5 for duplicate-job detection must use
-//     this exact order, or jobs imported from Python SABnzbd won't match.
+//   - MD5 is the digest of every ACCEPTED article ID, in source order.
+//     Segments this parser rejects contribute nothing, so the key describes
+//     the job the document actually produced and no rejection rule can
+//     change a document's identity as a side effect. This diverges from the
+//     Python parser, which hashes rejected IDs too; two NZBs differing only
+//     in their rejected segments are duplicates here and distinct there.
 package nzb
 
 import "time"
@@ -62,9 +73,9 @@ type NZB struct {
 	// every file, in the order they were first seen.
 	Groups []string
 
-	// MD5 is the MD5 digest of every structurally-complete article ID
-	// concatenated in source order. See the package doc for the exact
-	// ordering rule; it is load-bearing for duplicate-job detection.
+	// MD5 is the MD5 digest of every accepted article ID concatenated in
+	// source order; rejected segments contribute nothing. It is the
+	// duplicate-job key — see the package doc for what that implies.
 	MD5 [16]byte
 
 	// AvgAge is the mean posted-date across every file that contributed
@@ -89,6 +100,45 @@ type NZB struct {
 
 	// BadArticles counts segments rejected for implausible size.
 	BadArticles int
+
+	// The Message-ID rejection counters. Each names a segment that was
+	// DROPPED because the NNTP request its Message-ID produces could not
+	// have named an article on any server — RFC conformance is not the
+	// criterion, fetchability is.
+	//
+	// EmptyMessageIDs counts segments whose <segment> text was empty or
+	// consisted only of whitespace and an angle-bracket wrapper.
+	EmptyMessageIDs int
+
+	// OversizeMessageIDs counts Message-IDs too long to fit an NNTP command
+	// argument (RFC 3977 §3.1), which makes the server reject the command
+	// line rather than the article.
+	OversizeMessageIDs int
+
+	// MalformedMessageIDs counts Message-IDs containing a byte that breaks
+	// the wire request: SP or HT (argument tokenisation), CR, LF or NUL
+	// (the command line itself, and the injection vector), or an interior
+	// '<' or '>' (the angle-bracket wrapper).
+	MalformedMessageIDs int
+
+	// The Message-ID advisory counters. Unlike the three above, these
+	// segments are KEPT and downloaded — each records an RFC violation that
+	// still leaves a requestable identifier. They exist so that promoting
+	// any of them to a rejection can rest on observed frequency rather than
+	// on assumption; nothing downstream branches on them.
+	//
+	// NonConformantMessageIDs counts IDs longer than RFC 3977 §3.6's limit
+	// but still short enough to request.
+	NonConformantMessageIDs int
+
+	// NonASCIIMessageIDs counts IDs containing a byte outside printable
+	// US-ASCII — both non-ASCII bytes and stray control bytes that survive
+	// interpolation intact.
+	NonASCIIMessageIDs int
+
+	// MessageIDsMissingAtSign counts IDs with no '@', which RFC 5536 §3.1.3
+	// requires but which servers may nonetheless answer.
+	MessageIDsMissingAtSign int
 
 	// SkippedFiles counts <file> elements that yielded zero valid
 	// articles after dedup and size checks.

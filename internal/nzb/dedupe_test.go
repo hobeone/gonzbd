@@ -83,12 +83,15 @@ func TestParse_DuplicateMessageIDAcrossFilesIsDropped(t *testing.T) {
 	}
 }
 
-// The digest is the duplicate-JOB detection key and must match Python
-// SABnzbd's, which hashes every structurally-valid ID in source order
-// regardless of what is rejected afterwards. Dropping a duplicate must
-// therefore happen AFTER the digest write, or every affected NZB silently
-// changes identity and stops matching its own earlier import.
-func TestParse_DuplicateMessageIDStillContributesToTheDigest(t *testing.T) {
+// The digest is the duplicate-JOB detection key and covers ACCEPTED article
+// IDs only. A segment the parser drops contributes nothing, so the key
+// describes the job the document actually produced rather than the text it
+// was written from — which is what lets a rejection rule be added, removed
+// or reordered without changing any document's identity as a side effect.
+//
+// The consequence worth pinning: two NZBs differing only in a dropped
+// duplicate hash the same, and the second is recognised as a duplicate job.
+func TestParse_DuplicateMessageIDIsExcludedFromTheDigest(t *testing.T) {
 	src := nzbWithSegments(seg(1, 100, "dup@h") + seg(2, 100, "dup@h") + seg(3, 100, "other@h"))
 
 	got, err := Parse(strings.NewReader(src))
@@ -97,16 +100,28 @@ func TestParse_DuplicateMessageIDStillContributesToTheDigest(t *testing.T) {
 	}
 
 	h := md5.New() //nolint:gosec // test only
-	for _, id := range []string{"dup@h", "dup@h", "other@h"} {
+	for _, id := range []string{"dup@h", "other@h"} {
 		_, _ = h.Write([]byte(id))
 	}
 	var want [16]byte
 	copy(want[:], h.Sum(nil))
 
 	if got.MD5 != want {
-		t.Errorf("MD5 = %x, want %x — the dropped duplicate was excluded from the "+
-			"digest, which changes the NZB's identity for duplicate-job detection",
+		t.Errorf("MD5 = %x, want %x — the dropped duplicate contributed to the "+
+			"digest, so a rejection rule is still able to change an NZB's identity",
 			got.MD5, want)
+	}
+
+	// The same document without the duplicate segment must hash identically.
+	clean := nzbWithSegments(seg(1, 100, "dup@h") + seg(3, 100, "other@h"))
+	cleanParsed, err := Parse(strings.NewReader(clean))
+	if err != nil {
+		t.Fatalf("Parse(clean): %v", err)
+	}
+	if cleanParsed.MD5 != got.MD5 {
+		t.Errorf("MD5 with duplicate = %x, without = %x — the two must agree, "+
+			"since the accepted article set is identical",
+			got.MD5, cleanParsed.MD5)
 	}
 }
 

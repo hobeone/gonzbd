@@ -6,9 +6,21 @@
 	let expanded = $state(true);
 	let clearing = $state(false);
 
-	function duplicateCount(): number {
-		return getQueueSlots().filter((s) => s.warning === 'Duplicate NZB').length;
-	}
+	// Substring, not equality: a job can be both a duplicate and malformed,
+	// and the backend joins those into one warning string ("NZB had malformed
+	// segments discarded at ingest: ...; Duplicate NZB"). An exact match
+	// dropped exactly those jobs from this count — the ones with the most
+	// wrong with them.
+	//
+	// "(Forced)" is excluded because this banner's sentence is about jobs
+	// added in a PAUSED state, and a forced duplicate is deliberately not
+	// paused. Exact equality excluded it for free; a substring test has to
+	// say so.
+	let duplicateCount = $derived(
+		getQueueSlots().filter(
+			(s) => s.warning?.includes('Duplicate NZB') && !s.warning.includes('(Forced)')
+		).length
+	);
 
 	async function handleClear() {
 		clearing = true;
@@ -20,14 +32,14 @@
 	}
 </script>
 
-{#if duplicateCount() > 0}
+{#if duplicateCount > 0}
 	<div class="mb-4 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
 		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-5 shrink-0">
 			<path fill-rule="evenodd" d="M6.701 2.25c.577-1 1.419-1 1.998 0l5.156 8.93c.577 1 .158 1.82-1 1.82H3.145c-1.158 0-1.577-.82-1-1.82l5.156-8.93ZM8 5.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 5.5Zm0 6a.625.625 0 1 0 0-1.25.625.625 0 0 0 0 1.25Z" clip-rule="evenodd" />
 		</svg>
 		<div class="flex-1 text-sm">
 			<span class="font-bold">Duplicate NZBs found:</span>
-			{duplicateCount()} job{duplicateCount() !== 1 ? 's' : ''} added in paused state.
+			{duplicateCount} job{duplicateCount !== 1 ? 's' : ''} added in paused state.
 		</div>
 	</div>
 {/if}

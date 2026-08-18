@@ -17,6 +17,9 @@ func TestParseAnomalySummary_NamesEachDiscardKind(t *testing.T) {
 		DuplicateArticles:   1,
 		BadArticles:         3,
 		SkippedFiles:        1,
+		EmptyMessageIDs:     4,
+		OversizeMessageIDs:  5,
+		MalformedMessageIDs: 6,
 	})
 
 	for _, want := range []string{
@@ -24,6 +27,9 @@ func TestParseAnomalySummary_NamesEachDiscardKind(t *testing.T) {
 		"1 duplicate part number",
 		"3 implausible size",
 		"1 file with no usable segments",
+		"4 empty message-id",
+		"5 over-long message-id",
+		"6 unusable message-id",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary does not report %q\ngot: %s", want, got)
@@ -53,6 +59,40 @@ func TestParseAnomalySummary_OmitsCountersThatDidNotFire(t *testing.T) {
 	for _, unwanted := range []string{"duplicate part number", "implausible size", "no usable segments"} {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("summary names %q though its counter was zero: %s", unwanted, got)
+		}
+	}
+}
+
+// The summary's subject is data the job LOST. The parser also records
+// anomalies on segments it kept — a Message-ID that violates the RFC but
+// still names a fetchable article — and naming those here would tell the user
+// segments were discarded when none were, on a job that will download in
+// full. Those counters belong in the log alone.
+func TestParseAnomalySummary_IgnoresAnomaliesOnKeptSegments(t *testing.T) {
+	got := parseAnomalySummary(&nzb.NZB{
+		NonConformantMessageIDs: 3,
+		NonASCIIMessageIDs:      2,
+		MessageIDsMissingAtSign: 1,
+	})
+	if got != "" {
+		t.Errorf("kept-segment anomalies produced a discard warning: %q", got)
+	}
+}
+
+// A document with both kinds reports only the discarded half, and the counts
+// it prints must not silently absorb the kept ones.
+func TestParseAnomalySummary_SeparatesKeptFromDiscarded(t *testing.T) {
+	got := parseAnomalySummary(&nzb.NZB{
+		EmptyMessageIDs:         1,
+		NonASCIIMessageIDs:      7,
+		MessageIDsMissingAtSign: 9,
+	})
+	if !strings.Contains(got, "1 empty message-id") {
+		t.Errorf("summary does not report the discarded segment\ngot: %s", got)
+	}
+	for _, unwanted := range []string{"7", "9", "non-printable", "at-sign", "at sign"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("summary leaked a kept-segment anomaly (%q)\ngot: %s", unwanted, got)
 		}
 	}
 }

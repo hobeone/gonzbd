@@ -1,9 +1,8 @@
 # Article Validation Contract
 
-> **Status: proposal; dispositions settled.** None of the assertions below are
-> implemented as stated yet, but §8 is no longer open — what each class of
-> violation produces has been decided and is binding on the work that follows.
-> This
+> **Status: in progress; dispositions settled.** F3, A7, F6 and the whole
+> A-block have landed; B1/F5, C5, E3–E5 and F1/F2/F4 remain proposed. §8 is no longer open — what each class of violation
+> produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
 > replace case-by-case defensive coding with a stated invariant set.
@@ -35,6 +34,119 @@ The lesson generalises:
 The remedy is not more validation. It is validation placed **once, as far out
 as it can be decided**, and stated loudly enough that inner layers may assume
 it.
+
+## Ground rules
+
+Two standing constraints that precede every section below. They are not
+validation policy; they decide which of the options in §4 is even on the table,
+and both have already changed conclusions this document reached without them.
+
+### No backwards compatibility
+
+GoNZBD targets fresh installations, is explicitly **not** a drop-in replacement
+for Python SABnzbd, and runs as a single self-administered instance. Therefore:
+
+> **No change in this document owes anything to state written by an earlier
+> version of this code, or to parity with any other implementation.**
+
+Persisted manifests, queue rows, history entries and NZB backups written before
+a change may be assumed to satisfy the invariants that change introduces. There
+is no drain period, no dual-read path, no migration, and no "old jobs behave
+differently" caveat. Where an invariant is newly enforced at ingestion, it is
+simply true everywhere.
+
+The rule's real force is in what it forbids, not what it permits:
+
+> **Before writing a guard, state which persisted or foreign state makes it
+> necessary — then check whether that state is in scope at all.** If the only
+> answer is "data an earlier build wrote", the guard is not needed; delete the
+> class instead of defending against it.
+
+This is not a licence to skip validation of things the *world* produces. The
+distinction that matters throughout §4 and §5:
+
+| Input | Trusted? | Why |
+|---|---|---|
+| A parsed NZB | **no** | a third party wrote it |
+| An NNTP response | **no** | §1 — untrusted for resource consumption, identity verifiable |
+| A manifest we wrote, read back | **yes** | we wrote it, under invariants we enforce |
+| A manifest an *older build* wrote | **out of scope**, except below | this rule |
+| A manifest corrupted on disk | **yes-with-integrity-check** | a different failure class; `internal/durability` owns it, not this document |
+
+The fourth row is the one this rule eliminates. The fifth is unaffected by it:
+truncation and bit-rot are not versioning, and nothing here weakens the
+durability contract's checks.
+
+**The one carve-out, and it is narrow: the rule waives persistence FORMAT, not
+a security invariant.** Where the state an older build persisted could, if
+trusted, hand an attacker something — rather than merely produce a stale
+figure or a missing field — the guard stays and the rule does not excuse it.
+There is exactly one such case today. `Manifest.UnmarshalJSON` re-applies
+`nzb.MessageIDIsFetchable` to every article ID it reads, because
+`internal/nntp` no longer validates Message-IDs at all (§5.A) and a manifest
+written before that parse-time rule existed can still carry a CR or LF — which
+is a command injection, not a formatting difference.
+
+The test for the carve-out is what the trusted value could *do*, not how old
+it is:
+
+- A stale `total_bytes`, a missing counter, a figure computed by a superseded
+  rule → the rule applies, delete the guard.
+- A value that is interpolated into a protocol, a path, a query, or a command
+  → the rule does not apply, keep the guard and say why at the check.
+
+This is why §5.A can say "do not add a uniqueness check to `Manifest`
+construction" while `UnmarshalJSON` gained a *fetchability* check in the same
+release. A duplicate Message-ID resolves a lookup to the wrong article, which
+is a correctness bug the ground rule genuinely does dispose of. A Message-ID
+carrying CRLF writes attacker-chosen bytes to a socket. Only the second earns
+a second enforcement point.
+
+**Two concrete consequences, both settled below.** The Python-parity constraint
+on `NZB.MD5`'s digest ordering is void (§8, decision 1), and A7's invariant
+holds for restored jobs as well as newly-parsed ones, which unblocks F2 (§5.A,
+§5.F).
+
+### State has one owner
+
+The second rule is the one that has retired the most defects in this codebase —
+#372 gave every `FileWriter` product a consumer, #378 gave the article
+accounting an owner, #385 made offset collisions exact.
+
+> **Every piece of derived state has exactly one function that computes it and
+> exactly one path that mutates it. Everything else reads.**
+
+A field whose value is *documented* as a function of other fields, but which any
+caller may assign, is not an invariant — it is a comment. The distinction is not
+academic: #394 attempted to add dropped-duplicate bytes back into `File.Bytes`
+from outside its derivation, which broke the documented identity
+`File.Bytes == Σ Articles[].Bytes` and stranded bytes in `JobProgress`'s
+`remaining` forever. The comment saying `File.Bytes` was that sum did not stop
+it. `normalizeFileStruct` being the sole writer is what makes it true.
+
+Two smells this rule names, both present in the tree today:
+
+- **Two constructors for one type.** `newManifest` and `Manifest.UnmarshalJSON`
+  populate the same eight fields by two independently-maintained code paths.
+  They have already diverged: `newManifest` *derives* `totalBytes` by summing
+  `f.Bytes`, while `UnmarshalJSON` *trusts* `mj.TotalBytes` from disk, and
+  nothing reconciles them. `recoveryFigures`' doc comment — "Both construction
+  paths … call it, so the two cannot disagree" — is a comment doing an owner's
+  job, and it only covers the two fields someone remembered.
+- **A derived value that is also persisted.** Anything recomputable from the
+  articles (a file's byte total, recovery figures, article offsets) should be
+  derived on load, not stored and trusted. Storing it creates a second source of
+  truth that can disagree with the first, and under the no-backcompat rule there
+  is no reason to keep the stored copy.
+
+The remedy for both is the same and is cheap here: `UnmarshalJSON` decodes to
+the public `[]JobFile` shape and delegates to `newManifest`. One derivation, one
+owner, and the persisted `TotalBytes` field stops being read at all.
+
+> **When a check and an owner would both work, take the owner.** A check must be
+> called at every site that could violate the invariant, and the failure mode of
+> forgetting one is silence. An owner cannot be forgotten, because there is
+> nowhere else to write.
 
 ## 1. Threat model — state it before choosing controls
 
@@ -171,13 +283,28 @@ Do not conflate the two. Rejecting an article because its header had an
 unrecognised key is a compatibility regression; accepting an offset that
 overlaps a durable range is a correctness one.
 
-## 4. The placement rule — and the tier above it
+## 4. The placement rule — and the two tiers above it
 
-Before applying the ladder, ask whether the ladder is needed at all.
+Before applying the ladder, ask whether the ladder is needed at all. There are
+three tiers, in order of preference, and the ladder is the last of them.
 
-> **Prefer making a violation unrepresentable over checking for it.**
-> An enforced invariant costs a check, a test, and an error path — three things
-> that can be wrong. A structural one costs nothing and cannot be bypassed.
+> **Tier 1 — make the violation unrepresentable.** Change the key or the type so
+> the bad state has no encoding. Costs nothing at runtime and cannot be
+> bypassed.
+>
+> **Tier 2 — give the state an owner.** When the type cannot exclude the bad
+> value, make one function the sole place it is computed and one path the sole
+> place it is mutated. The invariant then holds because there is nowhere else to
+> write it, not because every writer remembered a rule.
+>
+> **Tier 3 — enforce on the ladder.** A check, at the outermost layer that can
+> decide it. Costs a check, a test, and an error path — three things that can be
+> wrong, and one that can be forgotten at a call site.
+
+Tier 2 is the one this codebase reaches for least and has gained most from
+(Ground rules, above). It is also the answer whenever tier 1 *almost* works: a
+type that cannot be made incapable of the bad value can still be made
+unreachable except through a gatekeeper.
 
 The empty-Message-ID saga is the worked example, and the obvious remedy is the
 wrong one. Enforcing "every article has a Message-ID" at L0 so the assembler can
@@ -192,17 +319,28 @@ The test: *if the invariant can be violated, is that because the data model
 permits it, or because the world does?* Only the second kind belongs on the
 ladder.
 
-**The tier has a precondition, and F1 sits right on its edge.** It works only
+**Tier 1 has a precondition, and F1 sits right on its edge.** It works only
 when the replacement identifier has **no representable-but-invalid value**.
 `""` is not a valid Message-ID, so an empty-string key is a loud, checkable
 error. `0` *is* a valid `ArtIdx`. Re-keying therefore trades a noisy guard for a
 silent alias: a struct-zero `WriteRequest` reaching the accept path would
 address article 0 rather than trip anything. Today that is excluded by the
-`FileIdx` sentinel check, **not by the type** — which is an argument for doing
-F4 (splitting control messages out of `WriteRequest`) alongside F1 rather than
-after it. Where the substitute type has a valid zero, the tier converts a
-detectable failure into an undetectable one unless something else makes the
-zero unreachable.
+`FileIdx` sentinel check, **not by the type**.
+
+**This is exactly the case tier 2 exists for, and it is cheaper than the F4
+route the earlier draft proposed.** `Assembler.WriteArticle` is already the sole
+entry point for an article write from outside `internal/assembler` — both
+external construction sites are `p.assembler.WriteArticle(ctx,
+assembler.WriteRequest{…})` in `internal/app/pipeline.go`, and the `reqs`
+channel is unexported. Making that one function the owner — taking the identity
+as explicit parameters, or rejecting a request whose `ArtIdx` was never set —
+makes the struct-zero unreachable on the path that matters, without splitting
+control messages out of the type first. F4 remains worth doing for its own
+reasons (§5.F); it is not a prerequisite for F1.
+
+The general form: **where the substitute type has a valid zero, tier 1 converts
+a detectable failure into an undetectable one — so pair it with tier 2 rather
+than abandoning it.**
 
 A claim is **decidable at layer L** if L holds all the information needed to
 prove it false.
@@ -235,9 +373,13 @@ the rows.
 
 | # | Assertion | Layer | Violation produces | Blocked on |
 |---|---|---|---|---|
-| A1 | Message-ID non-empty | L0 | reject, counted **in place** (before the digest) | — |
-| A2–A5 | Message-ID RFC syntax: ≤250 octets, no WSP, no `<`, printable ASCII | L0 | reject, counted after the digest write | — |
-| A6 | Message-ID contains `@` | L0 | **count only** | evidence |
+| A1 | Message-ID non-empty | L0 | ✅ **implemented** — reject, counted | — |
+| A2a | Message-ID ≤ 495 octets (NNTP argument bound) | L0 | ✅ **implemented** — reject, counted | — |
+| A2b | Message-ID ≤ 248 octets (RFC 3977 §3.6, bare form) | L0 | ✅ **implemented** — count only | evidence |
+| A3 | Message-ID contains no SP, HT, CR, LF or NUL | L0 | ✅ **implemented** — reject, counted | — |
+| A4 | wrapper normalised away; no *interior* `<` or `>` | L0 | ✅ **implemented** — reject, counted | — |
+| A5 | Message-ID is printable US-ASCII | L0 | ✅ **implemented** — count only | evidence |
+| A6 | Message-ID contains `@` | L0 | ✅ **implemented** — count only | evidence |
 | A7 | Message-ID unique job-wide | L0 | ✅ **implemented** — later segment dropped, counted, warned at ingest | — |
 | B1 | `222` Message-ID equals the requested one | L1 | fail article **and drop the connection** | — (see F5) |
 | C1–C3 | payload self-verification | L2 | ✅ already enforced | — |
@@ -249,14 +391,38 @@ the rows.
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
 | F1–F5 | structural (§5.F) | — | nothing — the state stops existing | — |
+| F6 | digest over accepted IDs (§5.F) | — | ✅ **implemented** | — |
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> F3 → **A7** → F2 → F1a (fixture `ArtIdx`) → F1b (flip the key) → F5/B1 → C5 → E5 → A1–A6 → E3/E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → F2 → F5/B1 → C5 → E5 → F1a (fixture `ArtIdx`) → F1b (flip the key) → E3/E4
 
-F3 leads because it is the smallest instance of the pattern and the cheapest
-place to learn its cost; doing it first is what established that the two-commit
-split in §5.F applies to the whole class rather than to F1 alone.
+Struck items have landed. F3 led because it was the smallest instance of the
+pattern and the cheapest place to learn its cost; doing it first is what
+established that the two-commit split in §5.F applies to the whole class rather
+than to F1 alone.
+
+**The order changed once the ground rules were applied**, and the reasons are
+worth keeping because they are the rules doing work rather than a preference:
+
+- **F6 and A1–A6 moved to the front, together.** F6 deletes the digest-ordering
+  hazard (§8, decision 1). Every rejection that `continue`s out of the segment
+  loop had to be placed after the `digest.Write` or it silently changed the
+  document's identity, and the A-block adds three such rejections (A2a, A3, A4)
+  on top of relocating A1's. With F6 in place the A-block is a mechanical
+  addition to one function; before it, it was the riskiest work in the document.
+  Neither half is worth doing without the other: F6 alone deletes a trap nothing
+  is currently walking into, and A1–A6 alone walks into it. The counted rows
+  (A2b, A5, A6) never interact with the hazard, since a counted segment is still
+  accepted and hashed.
+- **F2 moved earlier and got cheaper.** Its remaining blocker was that a job
+  persisted before A7 could still hold duplicate Message-IDs on restore, so
+  `messageIDIndex` had to keep working for those. The no-backcompat rule deletes
+  that case, leaving F2 a pure deletion with no compatibility path.
+- **F1 moved later.** It is the most expensive item (~80 fixture literals) and
+  the only one whose value is a code deletion rather than a closed defect. It is
+  also no longer entangled with F4 — §4's tier-2 argument closes its valid-zero
+  problem at `WriteArticle` instead.
 
 F4 is deliberately unscheduled: it shares one channel with article requests and
 the cancel path depends on that channel's FIFO ordering, so it is a larger change
@@ -273,31 +439,82 @@ requires it to be 3–250 octets, printable US-ASCII only, begin `<`, end `>`,
 and contain `>` nowhere else. RFC 5536 additionally requires `id-left@id-right`
 and forbids whitespace inside.
 
+**Conformance is not the criterion — fetchability is.** The rows below split on
+a single question, and it is deliberately not "does this violate the RFC":
+
+> **Write the request this ID produces. Does it name an article a server could
+> answer?**
+>
+> If not, the segment could never have downloaded and rejecting it costs
+> nothing. If it could, rejecting it fails an article that works today, on no
+> evidence, and the correct disposition is a counter.
+
+The concrete form of that question is `BODY <%s>\r\n` — the line the ID is
+interpolated into. Applying it to all six rows does **not** group them the way
+RFC conformance does, and the earlier draft of this section grouped them wrong:
+it had A6 alone as the count-only exception, because A6 is where the criterion
+was first noticed rather than where it stops applying.
+
+| # | On the wire | Fetchable? | Disposition |
+|---|---|---|---|
+| A1 | `BODY <>` | **no** — names nothing | reject |
+| A2a | line over the NNTP limit | **no** — the server rejects the *line* | reject |
+| A2b | `BODY <251..495 octets>` | **yes** — nonconformant, syntactically fine | count |
+| A3 | `BODY <a b>` | **no** — breaks the command grammar | reject |
+| A4 | `BODY <a>b>` | **no** — closes the wrapper early | reject |
+| A5 | `BODY <caf\xc3\xa9@h>` | **yes** — the server's call | count |
+| A6 | `BODY <noat>` | **yes** | count |
+
 | # | Assertion | Status |
 |---|---|---|
-| A1 | Message-ID is non-empty | ✅ enforced — but **silently dropped**, not counted or reported |
-| A2 | ≤ 250 octets | ⚠ **absent** — a 402-octet ID parses and is dispatched |
-| A3 | no whitespace (SP, HT), no CR/LF/NUL | ⚠ **partial** — L1 rejects CR/LF/NUL as an *injection* guard; SP and HT pass and are emitted to the wire |
-| A4 | no `<` or `>` inside | ⚠ **half-enforced** — `validateMessageID` rejects `>` anywhere after trimming the wrapper; only an embedded `<` leaks |
-| A5 | printable US-ASCII only | ⚠ **absent** |
-| A6 | contains `@` | ⚠ **absent** — `no-at-sign` parses and is dispatched |
+| A1 | Message-ID is non-empty | ✅ enforced and counted (`EmptyMessageIDs`) |
+| A2a | ≤ 495 octets, the NNTP argument bound | ✅ enforced (`OversizeMessageIDs`) |
+| A2b | ≤ 248 octets | ✅ counted (`NonConformantMessageIDs`), still dispatched |
+| A3 | no whitespace (SP, HT), no CR/LF/NUL | ✅ enforced at L0 (`MalformedMessageIDs`); the L1 injection guard is gone, this replaces it |
+| A4 | no `<` or `>` inside | ✅ enforced — a matched wrapper is normalised away first, so `Article.ID` is always bare |
+| A5 | printable US-ASCII only | ✅ counted (`NonASCIIMessageIDs`), still dispatched |
+| A6 | contains `@` | ✅ counted (`MessageIDsMissingAtSign`), still dispatched |
 | A7 | unique across **every segment of the whole NZB**, not merely within one file | ✅ **enforced** — the later segment is dropped and counted in `DuplicateMessageIDs` |
 
-**A7 is enforced.** `partitionSegments` carries a document-wide seen-set and
-drops any segment whose Message-ID an accepted segment already claimed, after
-the digest write so `NZB.MD5` is unchanged. Downstream code may therefore treat
-Message-ID as a unique key within a job, which is what makes
-`Manifest.articleIndexByID` unambiguous.
+**A2 splits, and the RFC's 250 is the wrong number to reject on.** RFC 3977
+§3.6's 250-octet limit is a conformance bound on the identifier; §3.1's limit is
+a protocol bound on the *line*, and only the second one makes an article
+unfetchable. §3.1 caps a command line at 512 octets including CRLF and its
+arguments at 497, so for `BODY <id>\r\n` the binding constraint is the argument
+`<id>` — giving roughly **495 octets** of Message-ID. Pin the exact constant
+against the RFC text when implementing rather than inheriting it from this
+sentence; the point is which clause binds, not the arithmetic.
 
-**A1–A5 are rejected at L0** with a counter, exactly as `BadArticles`
-already works — the segment does not become an `Article` and is never
-dispatched. A1–A5 are pure syntax violations that could not produce a successful
-fetch anyway (the wire request itself would be malformed).
+Between 251 and that bound the ID is nonconformant and perfectly requestable,
+so it counts. Above it the server rejects the line rather than the article,
+which is a different and worse failure — that half rejects.
+
+**A7 is enforced.** `partitionSegments` carries a document-wide seen-set and
+drops any segment whose Message-ID an accepted segment already claimed.
+Downstream code may therefore treat Message-ID as a unique key within a job,
+which is what makes `Manifest.articleIndexByID` unambiguous. The drop once had
+to sit after the `digest.Write` to leave `NZB.MD5` unchanged; F6 removed that
+constraint, and the placement is now free.
+
+**A1, A2a, A3 and A4 are rejected at L0** with a counter, exactly as
+`BadArticles` already works — the segment does not become an `Article` and is
+never dispatched. All four make the wire request itself malformed, so they could
+not have produced a successful fetch under any server.
+
+**A2b, A5 and A6 are counted and dispatched.** They are RFC violations that
+leave a requestable identifier, so rejecting them would fail articles that
+download today. Their counters share the reporting path A7 already built —
+`articleCounters` → `parseAnomalySummary` → `job.Warning` — so the cost of
+counting is a field, not a mechanism.
 
 **A1 stays, but it is no longer load-bearing.** It is still worth converting the
 silent drop into a counted rejection, because a silent drop is how #392's
 machinery came to exist (§7). But F1 deletes that machinery structurally, so A1
 is now hygiene rather than a prerequisite — do not sequence F1 behind it.
+
+**A1's placement in the loop no longer matters.** It once sat before the
+`digest.Write`, and moving it was a silent way to change `NZB.MD5`; with the
+digest covering accepted articles only, before and after are the same digest.
 
 **A7 is job-wide, not per-file**, because two structures downstream key on
 Message-ID with no file scoping and one with no job scoping at all:
@@ -317,6 +534,27 @@ injective and cannot resolve to the wrong article. The second is out of A7's
 reach entirely — two jobs, not one NZB, each internally valid — and is closed
 structurally by F3, which keys the tracker on `(jobID, artIdx)`.
 
+**A7 holds for restored jobs too, and this is a ground-rule consequence rather
+than an enforcement.** `Manifest.UnmarshalJSON` replays stored article IDs
+verbatim and re-checks nothing, so an earlier draft recorded that the invariant
+was "real for new jobs and untrue for old ones until the queue drains", and kept
+`messageIDIndex` working for the latter. The no-backcompat rule deletes that
+population outright: every manifest on disk was written by a parser that
+enforces A7. **Do not add a uniqueness check to `Manifest` construction** — it
+would guard a state that no longer occurs, on a structure F2 deletes. (The
+*fetchability* check `UnmarshalJSON` does carry is a different matter, and the
+Ground rules' security carve-out states why: a duplicate ID is a correctness
+bug the no-backcompat rule disposes of, a CRLF-bearing ID is an injection it
+does not.)
+
+That said, the *reason* the invariant survives a round-trip is worth stating,
+because it is tier 2 and not luck: the manifest's articles are written by the
+same parser that enforces A7, and nothing between there and disk may add one.
+Preserving that is what makes `newManifest` the right sole owner (Ground rules)
+— an `UnmarshalJSON` that builds the manifest by its own separate path is one
+edit away from being able to violate an invariant its sibling constructor
+cannot.
+
 **The two remedies are complementary, not alternatives, and the split is the
 general lesson.** Ingestion can enforce uniqueness only inside the document it
 is parsing; anything whose scope is wider than one NZB has to change its key
@@ -327,15 +565,36 @@ F2 keeps its value after A7, but for a different reason than it was filed with.
 Its correctness rationale — `messageIDIndex` resolving to the wrong article — is
 gone. What remains is that the map is a `map[string]int` sized `NumArticles()`
 per resident job that no longer needs to exist. Re-argue it on memory, not on
-correctness.
+correctness — and note that the ground rules turned it from a change needing a
+compatibility path into a straight deletion, which is most of its cost.
 
-**A6 is counted, not rejected** — the one deliberate exception to decision 1,
-and the reason is #379's. An ID lacking `@` violates RFC 5536 but remains
-*fetchable*: unlike A1–A5 it produces a well-formed wire request that a server
-may well answer. Rejecting it would fail articles that download correctly today,
-across every server, on zero evidence about how often real posters emit it.
-Count first; promote to rejection once the counter says the case is real and
-rare.
+**A5 and A6 are counted for the same reason, and the reference implementation
+is the evidence.** Python SABnzbd validates a Message-ID nowhere: `nzbparser.py`
+checks only the segment's `bytes` and `number` attributes, and `newswrapper.py`
+builds the request as `utob("BODY <%s>\r\n" % article.article)` — a UTF-8
+encode straight onto the wire. **Non-ASCII Message-IDs have therefore been sent
+to real servers by the reference client for years.** Had that been common *and*
+rejected by servers, users would have seen unexplained article failures, and
+that symptom would plausibly have produced a fix. No such code exists. This is
+weak evidence, but it is the only evidence available, and it points away from
+rejecting.
+
+**What SABnzbd's silence is not evidence for.** Its non-validation is an
+absence, not a decision: the same interpolation means a Message-ID containing
+CRLF injects arbitrary NNTP commands from a hostile NZB, which this codebase
+refuses and the reference does not. "The reference does not check" bounds how
+often a shape occurs in the wild; it says nothing about whether accepting it is
+safe. Read it only for the first.
+
+**A3's CR/LF arm is load-bearing, and that was confirmed rather than assumed.**
+XML rejects NUL and the other C0 controls outright ("illegal character code"),
+so those cannot reach the parser at all — but `&#13;` and `&#10;` decode to a
+bare CR and LF, and a literal CR is folded to LF by XML line-ending
+normalisation. The injection vector is real and reachable, and after A3 landed
+this is the only layer that closes it.
+
+Count first; promote any of A2b/A5/A6 to rejection once its counter says the
+case is real and rare.
 
 ### B. Response identity (L1 — NNTP)
 
@@ -501,6 +760,8 @@ the rest of this document would otherwise have to guard.
 | F3 | key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
 | F5 | carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
+| F6 | ✅ **done** — fold `NZB.MD5`'s digest over **accepted** article IDs, at the acceptance point | the digest-ordering rule, A1's carve-out, and the whole class "a new rejection silently changes every document's identity" — see §8, decision 1 |
+| F7 | ✅ **done** — `Manifest.UnmarshalJSON` delegates to `newManifest` | the second constructor, and the persisted `total_bytes` as a source of truth. Landed with the A-block because deleting `validateMessageID` rests on every in-process Manifest deriving its state from one owner |
 
 **Implementation planning for these lives in their issues, not here.** Each
 carries a blast radius, an ordering constraint and a red-green argument that are
@@ -538,13 +799,23 @@ level and stated here because getting them wrong is silent:
 
 `ArtIdx == 0` is a valid index where `""` was not a valid Message-ID (§4), so F1
 trades a loud key error for a silent alias. F4 does **not** mitigate that — it
-removes control messages, not unset article ones. The mitigation is the
-two-commit split above, and it is the reason that split is mandatory rather than
-stylistic.
+removes control messages, not unset article ones. Two things do: the two-commit
+split above, which is why it is mandatory rather than stylistic, and the tier-2
+move in §4 — making `Assembler.WriteArticle` the owner of article identity, so a
+never-set `ArtIdx` cannot reach the accept path from outside the package at all.
+Take the second and F1 stops depending on F4.
 
-None of the five alters behaviour for well-formed input, none depends on any §8
-decision, and none needs an L0 change first. **They land before the assertions**,
-because every assertion written first would guard states these make unreachable.
+F6 is the exception to this section's framing: it deletes no state, and instead
+deletes a **rule about where code may be placed**. It belongs here because the
+failure it prevents has the same shape — an invariant maintained by every author
+remembering it, with silence as the failure mode — and because the remedy is
+likewise structural rather than a check.
+
+None of the six alters behaviour for well-formed input, none needs an L0 change
+first, and only F6 interacts with an §8 decision (it settles one). **They land
+before the assertions**, because every assertion written first would guard
+states these make unreachable — and in F6's case, would have to be placed
+correctly by hand five times over.
 
 ## 6. What we cannot guard against
 
@@ -622,30 +893,59 @@ enumeration is for.
 Decided; binding on the work that follows. Recorded with their reasoning so a
 later reader can tell a decision from an oversight.
 
-1. **Reject, don't report.** A1–A5 and A7 are refused at L0: the segment never
-   becomes an `Article` and is never dispatched, with a counter on the parse
-   result alongside `BadArticles`. Rejection is cheap here because these
-   segments could not have produced a usable article anyway. **A6 is the single
-   exception** — it is counted, not rejected, because unlike the others it is
-   still fetchable and no evidence exists about its frequency in the wild
-   (see §5.A). **A7 is scoped job-wide, not per-file**: the downstream
-   structures that a duplicate Message-ID corrupts are job-wide.
+1. **Reject only the unfetchable; count the rest.** A1, A2a, A3, A4 and A7 are
+   refused at L0: the segment never becomes an `Article` and is never
+   dispatched, with a counter on the parse result alongside `BadArticles`.
+   Rejection is cheap for these because they could not have produced a usable
+   article under any server — the request they generate is malformed, not merely
+   nonconformant.
 
-   **Where in the loop matters, and getting it wrong is silent.**
-   `partitionSegments` folds every structurally-valid article ID into the
-   SABnzbd-compatible MD5 digest *before* it applies the dedup and size
-   rejections — deliberately, and the comment there says so. Any new rejection
-   that skips the `digest.Write` changes `NZB.MD5` for every affected document,
-   breaking duplicate-job detection (`ExistsByMD5`), history MD5 search, and
-   cross-implementation parity with Python SABnzbd. **New rejections must sit
-   after the digest write**, exactly where the `bytes` rejection already sits.
-   Nothing fails loudly if this is wrong.
+   **A2b, A5 and A6 are counted, not rejected.** Each leaves a requestable
+   identifier, so rejecting would fail articles that download today on no
+   evidence. **The criterion is fetchability, not RFC conformance** — write the
+   `BODY <%s>\r\n` line the ID produces and ask whether a server could answer
+   it (§5.A has the row-by-row table). An earlier draft of this decision had A6
+   as the single exception and rejected A2 and A5; that grouping followed
+   conformance, applied the fetchability test only to the row where it was first
+   noticed, and would have failed working downloads. **A7 is scoped job-wide,
+   not per-file**: the downstream structures that a duplicate Message-ID
+   corrupts are job-wide.
 
-   **A1 is the exception and must stay *before* the digest**, where it already
-   is. Empty IDs are dropped ahead of the digest write deliberately, mirroring
-   Python. Converting A1's silent drop into a counted rejection must not move
-   it — count in place. Applying the rule above to A1 would change `NZB.MD5` for
-   every affected document, which is the breakage the rule exists to prevent.
+   **The digest-ordering hazard this decision used to carry has been deleted,
+   not documented.** `partitionSegments` folds every structurally-valid article
+   ID into the MD5 digest *before* it applies the dedup and size rejections, so
+   every new rejection had to be placed after the `digest.Write` — with A1 as a
+   carve-out that had to stay before it — or `NZB.MD5` would change for every
+   affected document. Nothing failed loudly if that was got wrong, which made it
+   the single most dangerous property in the parser for exactly the work §5.A
+   proposes: five new rejections, each of which had to be placed correctly by
+   hand.
+
+   That ordering existed for one reason: byte-for-byte parity with Python
+   SABnzbd's digest, so an NZB imported by either implementation produced the
+   same duplicate-job key. **Under the no-backcompat ground rule that goal does
+   not exist** — GoNZBD is not a drop-in replacement, and the only two consumers
+   of `NZB.MD5` are duplicate detection against our own active queue
+   (`ExistsByMD5`) and our own history (`history.SearchOptions.MD5Sum`), both of
+   which are self-consistent under any stable definition.
+
+   **Settled and done: the digest covers accepted articles only.** The
+   `digest.Write` now sits at the acceptance point, beside
+   `seenIDs[id] = struct{}{}`. This was F6 (§5.F) and it landed *before* the
+   A-block, which is what made the A-block a mechanical addition rather than
+   several chances to silently change every document's identity. It deleted
+   the ordering rule, the A1 carve-out, the `//nolint:gosec` rationale's
+   parity clause, and ~25 lines of comment whose only job was to stop a future
+   reader from moving a line.
+
+   The one-time cost, stated rather than discovered: history rows written before
+   the change carry the old digest, so re-adding one of those NZBs will not be
+   recognised as a duplicate the first time. It is recognised thereafter, no
+   data is lost, and per the ground rule this is not a reason to keep the
+   hazard.
+
+   A1's placement no longer matters — before or after the digest write is the
+   same digest — and its silent drop is now a counted rejection.
 
 2. **A Class 2 disagreement is a job-level warning.** Not telemetry alone —
    the user is the party who can act on "this posting is malformed" by finding
@@ -668,7 +968,9 @@ later reader can tell a decision from an oversight.
    **Caveat found in review, and it is a genuine conflict with decision 1.**
    `ExpectedSize` is `Manifest.FileBytes(fileIdx)`, which traces back to the sum
    of the segments that *survived* parsing. A1 already rejects today, so only the
-   **newly** rejecting rules — A2–A5 and A7 — shrink the sum. Each one therefore
+   **newly** rejecting rules — A2a, A3, A4 and A7 — shrink the sum; the counted
+   rows (A2b, A5, A6) leave it untouched, since their segments are still
+   accepted. Each rejection therefore
    shrinks the denominator and **tightens** `offsetOutOfRange`'s limit, and
    separately shrinks the `preallocateFile` size (benign, but unnamed until now)
    — decision 1 silently moving a bound decision 4 promises to leave alone. A
@@ -678,12 +980,23 @@ later reader can tell a decision from an oversight.
    accept the tightening deliberately. **Do not discover this during
    implementation.**
 
-   **Settled for A7: the tightening is accepted.** Keeping a dropped segment's
-   bytes was tried and reverted — `File.Bytes` is documented as the sum of
-   `Articles[].Bytes` and is what `JobProgress.sizeFigures` derives both
-   expected and remaining bytes from, so bytes belonging to an article that is
-   not in the manifest can never be downloaded or failed and stay stranded in
-   `remaining`. The write-bound cost is real but narrow: with the ~2% encoded
+   **Settled for A7, and by the owner rule for A2a/A3/A4 as well: the tightening
+   is accepted.** `normalizeFileStruct` is the sole writer of `File.Bytes` and
+   derives it from the articles that survived — so every rejection this document
+   adds shrinks the sum by construction, and there is no per-rule decision left
+   to make. Re-opening it for the A-block would mean writing `File.Bytes` from
+   outside its owner, which is the exact change #394 reverted.
+
+   The fetchability split shrinks this caveat's reach as a side effect worth
+   noting: of the five rules that once carried it, two (A2b, A5) no longer
+   reject and so no longer move the bound at all.
+
+   That revert is the evidence. Keeping a dropped segment's bytes was tried:
+   `File.Bytes` is the sum of `Articles[].Bytes` and is what
+   `JobProgress.sizeFigures` derives both expected *and remaining* bytes from,
+   so bytes belonging to an article that is not in the manifest can never be
+   downloaded and can never be failed, and stay stranded in `remaining` for as
+   long as the file is incomplete. The write-bound cost is real but narrow: with the ~2% encoded
    overhead `ExpectedSize` already carries, a rejection needs `k/N` above
    ~12.85%, i.e. one duplicate in a file of seven segments or fewer, and such a
    file is already bound for par2. Distorting every affected job's size
@@ -703,6 +1016,18 @@ An index, not new material — each rule names the section that argues for it.
 - **Ask whether a check is needed at all** (§4). If the *data model* permits the
   violation, change the key or the type. Only reach for the ladder when the
   *world* permits it — and check the substitute type has no valid zero.
+- **Name the state a guard defends against, then check it is in scope** (Ground
+  rules). If the answer is "something an earlier build wrote", there is no such
+  state; delete the class rather than defend it. This does not extend to input
+  from the world — an NZB or an NNTP response is untrusted regardless.
+- **Prefer an owner to a check** (Ground rules, §4 tier 2). A check must be
+  called everywhere the invariant could be violated, and forgetting one is
+  silent. An owner cannot be forgotten. Two constructors for one type, or a
+  derived value that is also persisted, are the two smells.
+- **A documented identity between fields is not an invariant unless one function
+  owns it** (Ground rules). `File.Bytes == Σ Articles[].Bytes` held because
+  `normalizeFileStruct` is its sole writer, not because a comment said so — and
+  the one change that wrote it from elsewhere broke it.
 - **Classify before you check** (§2, §4). The cost of misfiling a claim as
   unfalsifiable is silent: its bound gets pushed inward and nothing reveals it.
 - **A check on a field with no consumer is ceremony** (§5.D). Grep for readers
@@ -710,7 +1035,20 @@ An index, not new material — each rule names the section that argues for it.
 - **Never add a control for something in §6.** If the mechanism cannot succeed
   against the failure it names, it is a comment, not a control.
 - **Reject only what could never have worked** (§8). Otherwise warn — even for
-  an unambiguous spec violation.
+  an unambiguous spec violation. **The test is fetchability, not conformance**:
+  write the wire request the value produces and ask whether a server could
+  answer it. Conformance and fetchability group the Message-ID rules
+  differently, and §5.A grouped them by the wrong one until the request line was
+  written out.
+- **Apply a new criterion to every sibling row, not just the row that prompted
+  it** (§5.A). A6's count-only disposition rested on a rule that also covered
+  A2b and A5, and the other two rows were written as rejections in the same
+  draft; nothing surfaced the contradiction, because a criterion stated in prose
+  is not re-run against the rows it was not written for.
+- **The reference implementation bounds frequency, not safety** (§5.A). That
+  Python SABnzbd omits a check tells you the shape is survivable in the wild; it
+  does not tell you accepting it is safe, because SABnzbd never rejects anything
+  and lacks guards this codebase has.
 - **A refusal must always produce a recorded disposition** (§7). Silent drops
   are how #392's machinery came to exist.
 - **Do not tighten yEnc syntax tolerance** (§3) without evidence from real

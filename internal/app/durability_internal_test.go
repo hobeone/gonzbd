@@ -58,7 +58,7 @@ func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *queue
 
 func fileFixtureName(f int) string { return string(rune('A'+f)) + ".bin" }
 func fileFixtureArticleID(f, a int) string {
-	return string(rune('A'+f)) + string(rune('0'+a)) + "@t"
+	return fmt.Sprintf("%c%d@t", 'A'+f, a)
 }
 
 // writeFixtureArticle hands one article of one file to the assembler, at the

@@ -52,7 +52,7 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 		file := nzb.File{Subject: string(rune('A'+f)) + ".bin", Bytes: 2 * unitArtLen}
 		for a := range 2 {
 			file.Articles = append(file.Articles, nzb.Article{
-				ID:     string(rune('A'+f)) + string(rune('0'+a)) + "@t",
+				ID:     fmt.Sprintf("%c%d@t", 'A'+f, a),
 				Bytes:  unitArtLen,
 				Number: a + 1,
 			})

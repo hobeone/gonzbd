@@ -81,10 +81,13 @@ func TestPostAnomaly_ReasonDoesNotDiagnoseTheCause(t *testing.T) {
 				"same observation", got, verdict)
 		}
 	}
-	// WarningsBanner.svelte compares job.Warning against this string exactly,
-	// and would render an unrelated banner if the anomaly text matched it.
-	if got == "Duplicate NZB" {
-		t.Error("the reason collides with WarningsBanner's exact 'Duplicate NZB' compare")
+	// WarningsBanner.svelte counts duplicates by SUBSTRING, so a reason that
+	// merely contains the phrase inflates that count. Equality was the right
+	// test while the banner compared exactly; it is now too weak to catch the
+	// collision it exists for.
+	if strings.Contains(got, "Duplicate NZB") {
+		t.Error("the reason contains 'Duplicate NZB', which WarningsBanner would " +
+			"tally as a duplicate job")
 	}
 }
 

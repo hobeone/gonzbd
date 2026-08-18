@@ -311,7 +311,6 @@ func TestClassifyConnError(t *testing.T) {
 		{"ErrAuthRequired", nntp.ErrAuthRequired, telemetry.ErrClassNNTPAuthRequired},
 		{"ErrClosed", nntp.ErrClosed, telemetry.ErrClassConnClosed},
 		{"ErrInvalidState", nntp.ErrInvalidState, telemetry.ErrClassNNTPInvalidState},
-		{"ErrInvalidMessageID", nntp.ErrInvalidMessageID, telemetry.ErrClassInvalidMessageID},
 		{"ErrInvalidCredential", nntp.ErrInvalidCredential, telemetry.ErrClassInvalidCredential},
 		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, telemetry.ErrClassNNTPAuthRejected},
 		{"net.OpError non-timeout (connection refused)", &net.OpError{Op: "dial", Net: "tcp",

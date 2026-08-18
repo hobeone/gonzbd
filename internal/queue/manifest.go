@@ -2,9 +2,12 @@ package queue
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
 // Manifest is the immutable article/file structure of a job: parsed once
@@ -47,8 +50,10 @@ type manifestFile struct {
 // articles into the parallel global arrays and computing the
 // fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
 //
-// NewJob is the only caller. DiscardDeferredPar2 used to call it too, to
-// rebuild against a reduced file set, and that rebuild is why the recovery
+// NewJob and UnmarshalJSON are the only callers, which is the point: every
+// Manifest in the process, however it arrived, has its derived state computed
+// here and nowhere else. DiscardDeferredPar2 used to call it too, to rebuild
+// against a reduced file set, and that rebuild is why the recovery
 // figures were once stored rather than derived — the discard deliberately
 // left them describing the larger, pre-discard job. Since #331 the discard
 // only marks a FetchPolicy and changes no file set, so nothing can make
@@ -258,8 +263,14 @@ type manifestJSONFile struct {
 // a legacy blob's par2_bytes is larger than the recovery figure derived from
 // the same file list. That difference is the point of the change, not a loss.
 type manifestJSON struct {
-	Files      []manifestJSONFile `json:"files"`
-	TotalBytes int64              `json:"total_bytes"`
+	Files []manifestJSONFile `json:"files"`
+
+	// TotalBytes is still written, so a manifest this build produces stays
+	// readable by tooling that expects the key, but it is NOT read back:
+	// UnmarshalJSON derives the total from Files via newManifest. A derived
+	// value that is also persisted is a second source of truth, and the
+	// stored copy is the one that can drift.
+	TotalBytes int64 `json:"total_bytes"`
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -290,29 +301,58 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
+//
+// It decodes to the same []JobFile shape NewJob passes and delegates to
+// newManifest, rather than populating the fields itself. newManifest is the
+// sole owner of a Manifest's derived state; a second constructor filling the
+// same eight fields by its own code path is one edit away from disagreeing
+// with the first, and the two had already diverged over totalBytes — this
+// path trusted the persisted total while newManifest derived it from the
+// files. Deriving on load means the stored total cannot drift from the file
+// list it claims to summarise, so manifestJSON.TotalBytes is now written for
+// compatibility with nothing and read by no one.
+//
+// It also re-checks each Message-ID, which is the sole thing here that does
+// not trust this package's own earlier output — see the comment at the check
+// for why a persisted ID is not self-evidently safe.
 func (m *Manifest) UnmarshalJSON(data []byte) error {
 	var mj manifestJSON
 	if err := json.Unmarshal(data, &mj); err != nil {
 		return err
 	}
-	m.files = make([]manifestFile, len(mj.Files))
-	m.fileArticleOffsets = make([]int, len(mj.Files)+1)
+	files := make([]JobFile, len(mj.Files))
 	for fi, f := range mj.Files {
-		m.files[fi] = manifestFile{
-			subject:        f.Subject,
-			date:           f.Date,
-			bytes:          f.Bytes,
-			isPar2Recovery: f.IsPar2Recovery,
+		articles := make([]JobArticle, len(f.Articles))
+		for ai, a := range f.Articles {
+			// A Message-ID read back from disk is re-checked, which is the
+			// one place this package does not simply trust its own earlier
+			// output. internal/nntp interpolates the ID into a command line
+			// and no longer validates it, so an ID carrying CR or LF is a
+			// command-injection vector — and a manifest written before that
+			// rule existed at parse time can still contain one.
+			//
+			// Refusing the whole manifest rather than dropping the article
+			// is deliberate: the caller already handles this as a corrupt
+			// manifest, failing the job visibly and setting the file aside,
+			// whereas a silent drop would leave a job quietly short of
+			// articles with nothing to explain it.
+			if !nzb.MessageIDIsFetchable(a.ID) {
+				return fmt.Errorf("queue: manifest file %d article %d: unusable message-id %q",
+					fi, ai, a.ID)
+			}
+			// Convertible because the two shapes are field-for-field
+			// identical; adding a field to either one breaks this line
+			// rather than silently dropping it.
+			articles[ai] = JobArticle(a)
 		}
-		m.fileArticleOffsets[fi] = len(m.articleIDs)
-		for _, a := range f.Articles {
-			m.articleIDs = append(m.articleIDs, a.ID)
-			m.articleBytes = append(m.articleBytes, a.Bytes)
-			m.articleNumber = append(m.articleNumber, a.Number)
+		files[fi] = JobFile{
+			Subject:        f.Subject,
+			Date:           f.Date,
+			Bytes:          f.Bytes,
+			IsPar2Recovery: f.IsPar2Recovery,
+			Articles:       articles,
 		}
 	}
-	m.fileArticleOffsets[len(mj.Files)] = len(m.articleIDs)
-	m.totalBytes = mj.TotalBytes
-	m.recoveryBytes, m.recoveryFiles = recoveryFigures(m.files)
+	*m = *newManifest(files)
 	return nil
 }

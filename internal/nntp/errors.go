@@ -43,14 +43,9 @@ var (
 	// connection or apply PENALTY_VERYSHORT.
 	ErrTransient = errors.New("nntp: transient server error")
 
-	// ErrInvalidMessageID is returned when a message-ID contains
-	// characters that could inject NNTP commands (CR, LF, null) or
-	// is empty (FR-NNTP-2).
-	ErrInvalidMessageID = errors.New("nntp: invalid message-ID")
-
 	// ErrInvalidCredential is returned when a username or password
 	// contains characters that could inject NNTP commands (CR, LF,
-	// null) — the credential counterpart to ErrInvalidMessageID.
+	// null) — the credential counterpart to the Message-ID rules internal/nzb enforces.
 	ErrInvalidCredential = errors.New("nntp: credential contains illegal control characters")
 )
 

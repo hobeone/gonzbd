@@ -80,7 +80,7 @@ func makeTestJob(id string, nFiles, nArtsPerFile int) *Job {
 }
 
 func artID(fi, ai int) string {
-	return "art-" + string(rune('0'+fi)) + "-" + string(rune('0'+ai))
+	return fmt.Sprintf("art-%d-%d", fi, ai)
 }
 
 func TestPendingCounter_Add(t *testing.T) {

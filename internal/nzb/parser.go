@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"compress/bzip2"
 	"compress/gzip"
-	"crypto/md5" //nolint:gosec // MD5 is used for duplicate-job detection, not security; digest must match Python SABnzbd
+	"crypto/md5" //nolint:gosec // MD5 is used for duplicate-job detection, not security
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -243,6 +243,12 @@ func absorbFile(
 	out.DuplicateArticles += counters.dupes
 	out.DuplicateMessageIDs += counters.dupeIDs
 	out.BadArticles += counters.bad
+	out.EmptyMessageIDs += counters.emptyID
+	out.OversizeMessageIDs += counters.oversizeID
+	out.MalformedMessageIDs += counters.malformedID
+	out.NonConformantMessageIDs += counters.nonConformantID
+	out.NonASCIIMessageIDs += counters.nonASCIIID
+	out.MessageIDsMissingAtSign += counters.missingAtID
 
 	if len(file.Articles) == 0 {
 		out.SkippedFiles++
@@ -261,11 +267,113 @@ func absorbFile(
 
 type articleCounters struct {
 	dupes, dupeIDs, bad int
+
+	// Rejected: the segment is dropped because the wire request its
+	// Message-ID produces could not name an article on any server.
+	emptyID, oversizeID, malformedID int
+
+	// Counted: the segment is KEPT and downloaded normally. These record
+	// RFC violations that leave a requestable identifier, so that a future
+	// decision to promote one to a rejection can rest on evidence rather
+	// than on how often the shape is imagined to occur.
+	nonConformantID, nonASCIIID, missingAtID int
+}
+
+// Message-ID bounds, derived from RFC 3977. Both of the RFC's limits are
+// stated for the BRACKETED form — §3.6 defines a message-id as beginning
+// "<" and ending ">", then bounds that whole thing — while Article.ID holds
+// the bare form. Each constant is therefore two octets smaller than the
+// number the RFC prints.
+const (
+	// maxMessageIDOctets is the largest bare Message-ID that fits an NNTP
+	// command argument. RFC 3977 §3.1: "The arguments MUST NOT exceed 497
+	// octets." The argument is "<" + id + ">", so id <= 495. Exceeding it
+	// makes the server reject the command LINE rather than the article,
+	// which is why this half rejects.
+	//
+	// The same section's 512-octet command-line limit never binds here:
+	// "BODY " + "<id>" + CRLF is len(id)+9, permitting 503. It could only
+	// bind if a verb plus its space exceeded 512-497-2 = 13 octets, and the
+	// longest verb taking a message-id is ARTICLE at 8 including the space.
+	maxMessageIDOctets = 495
+
+	// rfcMessageIDOctets is RFC 3977 §3.6's conformance limit ("between 3
+	// and 250 octets"), bracketed, so 248 bare. Exceeding it is COUNTED,
+	// not rejected: the request stays well-formed and a server may answer
+	// it, so refusing would fail articles that download today.
+	rfcMessageIDOctets = 248
+)
+
+// unfetchableMessageIDBytes are the bytes that make the wire request
+// unfetchable, as opposed to merely non-conformant.
+//
+// SP and HT break the command's argument tokenisation; CR, LF and NUL break
+// the command line itself and are the NNTP injection vector; '<' and '>'
+// break the angle-bracket wrapper the ID is interpolated into. RFC 3977 §3.6
+// permits '>' only as the final octet; normaliseMessageID has already removed
+// it in that position WHEN it closed a matched pair, so anything reaching
+// this set is an unmatched or interior bracket, which is the case to refuse.
+//
+// Other control bytes are deliberately absent: they survive interpolation
+// intact, so the server simply answers 430. They are counted by the
+// printable-ASCII rule instead of rejected.
+//
+// Every byte here is ASCII, so strings.ContainsAny cannot match inside a
+// multi-byte UTF-8 sequence — a non-ASCII Message-ID is unaffected by this
+// set and falls to the printable-ASCII counter instead.
+const unfetchableMessageIDBytes = " \t\r\n\x00<>"
+
+// MessageIDIsFetchable reports whether id could name an article on a server —
+// that is, whether interpolating it into an NNTP command produces a
+// well-formed request. It is the exported form of the rejection rules
+// partitionSegments applies, and exists so that a consumer holding a
+// Message-ID this package did not just parse can apply the same test rather
+// than reimplementing it.
+//
+// It expects the bare form, as stored in Article.ID: normaliseMessageID has
+// already stripped any angle-bracket wrapper, so a bracket reaching here is
+// unmatched or interior and is refused.
+//
+// This is deliberately NOT a conformance check. An ID may be fetchable and
+// still violate RFC 3977 — over 248 octets, non-ASCII, or lacking '@' — and
+// those are counted at parse time rather than refused.
+func MessageIDIsFetchable(id string) bool {
+	return id != "" &&
+		len(id) <= maxMessageIDOctets &&
+		!strings.ContainsAny(id, unfetchableMessageIDBytes)
+}
+
+// normaliseMessageID trims surrounding whitespace and a matched angle-bracket
+// wrapper, returning the bare form stored in Article.ID.
+//
+// The wrapper is stripped rather than rejected because an NZB may write its
+// segment text either way — internal/nntp documented exactly that tolerance
+// at the wire layer, so rejecting a bracketed ID here would drop every
+// segment of such a document. Stripping a MATCHED pair only, rather than
+// trimming any leading or trailing angle bracket, keeps "a>b" rejectable.
+func normaliseMessageID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if len(id) >= 2 && id[0] == '<' && id[len(id)-1] == '>' {
+		id = strings.TrimSpace(id[1 : len(id)-1])
+	}
+	return id
+}
+
+// nonPrintableASCII reports whether id contains a byte outside the printable
+// US-ASCII range RFC 3977 §3.6 requires. Covers both non-ASCII (>= 0x80) and
+// stray control bytes in one counter, since the disposition is identical.
+func nonPrintableASCII(id string) bool {
+	for i := range len(id) {
+		if id[i] < 0x21 || id[i] > 0x7e {
+			return true
+		}
+	}
+	return false
 }
 
 // convertFile transforms a wire-format xmlFile into the public File
-// model, applying the dedup and size-sanity rules and folding article
-// IDs into digest in source order.
+// model, applying the dedup and size-sanity rules and folding accepted
+// article IDs into digest in source order.
 func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string]struct{}) (File, int64, articleCounters) {
 	// Since we don't have user config here, we use default options.
 	subject := fsutil.SanitizeFilename(ExtractFilenameFromSubject(xf.Subject), fsutil.SanitizeOptions{})
@@ -294,24 +402,35 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash, seenIDs map[string
 
 // partitionSegments iterates through raw xmlSegment elements, filtering out
 // structurally invalid or out-of-bounds segments and deduplicating by part number.
-// Valid segment IDs are hashed into digest in source order.
+// Accepted segment IDs are hashed into digest in source order.
 func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[string]struct{}) (map[int]Article, articleCounters) {
 	byPart := make(map[int]Article, len(segments))
 	var counters articleCounters
 	for _, s := range segments {
-		id := strings.TrimSpace(s.ID)
-		// Structural validity: id must be present and the part number
-		// must be a positive integer. Missing/zero mirrors Python's
-		// try/except around int(attrib.get(...)): silent drop, no MD5
-		// update, no counter bump.
-		if id == "" || s.Number <= 0 {
+		id := normaliseMessageID(s.ID)
+		// Structural validity: the part number must be a positive integer.
+		// A missing or zero number is a malformed XML attribute rather than
+		// a Message-ID defect, and is dropped without a counter.
+		if s.Number <= 0 {
 			continue
 		}
 
-		// Hash every structurally-valid article ID, even ones we'll
-		// reject below. See the package doc: digest ordering is
-		// load-bearing for cross-implementation dedup.
-		_, _ = digest.Write([]byte(id)) //nolint:errcheck // hash.Hash never returns a non-nil error
+		// Message-ID validity, checked before the part-number and size rules
+		// so that an unfetchable ID is never treated as a legitimate claim
+		// on a part number. Each of these makes the wire request malformed,
+		// so the segment could not have downloaded under any server.
+		if id == "" {
+			counters.emptyID++
+			continue
+		}
+		if len(id) > maxMessageIDOctets {
+			counters.oversizeID++
+			continue
+		}
+		if strings.ContainsAny(id, unfetchableMessageIDBytes) {
+			counters.malformedID++
+			continue
+		}
 
 		if prev, seen := byPart[s.Number]; seen {
 			if prev.ID != id {
@@ -324,16 +443,11 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 		// which no Message-ID lookup can then resolve unambiguously — so the
 		// later one is dropped and counted.
 		//
-		// This sits AFTER the digest write above on purpose. The digest is the
-		// duplicate-job key and must hash every structurally-valid ID in source
-		// order to match Python SABnzbd; excluding a dropped duplicate would
-		// silently change the identity of every affected NZB.
-		//
 		// The dropped segment's bytes leave with it, and that is deliberate.
-		// File.Bytes is documented as the sum of Articles[].Bytes and is what
-		// JobProgress derives both expected and remaining bytes from, so
-		// counting bytes for an article that is not in the manifest strands
-		// them in `remaining` — it can never be downloaded and never failed.
+		// File.Bytes is the sum of Articles[].Bytes and is what JobProgress
+		// derives both expected and remaining bytes from, so counting bytes for
+		// an article that is not in the manifest strands them in `remaining` —
+		// it can never be downloaded and never failed.
 		//
 		// The cost is accepted rather than unnoticed: File.Bytes also becomes
 		// the assembler's ExpectedSize, which bounds writes to ExpectedSize +
@@ -351,9 +465,32 @@ func partitionSegments(segments []xmlSegment, digest hash.Hash, seenIDs map[stri
 			counters.bad++
 			continue
 		}
-		// Recorded only on acceptance: a segment rejected for implausible size
-		// never claimed the ID, so a later well-formed segment carrying it is
-		// not a duplicate of anything.
+
+		// Everything below runs once, on acceptance, and is the single place a
+		// segment becomes an Article. The digest covers accepted IDs only: it
+		// is the duplicate-job key, and deriving it from what the job actually
+		// contains means no rejection rule can change a document's identity as
+		// a side effect. Rejections may therefore be added, removed or
+		// reordered above without touching NZB.MD5.
+		//
+		// seenIDs is recorded here for the same reason: a segment rejected for
+		// implausible size never claimed the ID, so a later well-formed segment
+		// carrying it is not a duplicate of anything.
+		// The counted rows are evaluated HERE, not beside the rejections
+		// above, because they describe a segment that was kept. Counting one
+		// earlier would report an anomaly for a segment a later rule then
+		// dropped, and the reporting distinguishes the two by that fact.
+		if len(id) > rfcMessageIDOctets {
+			counters.nonConformantID++
+		}
+		if nonPrintableASCII(id) {
+			counters.nonASCIIID++
+		}
+		if !strings.Contains(id, "@") {
+			counters.missingAtID++
+		}
+
+		_, _ = digest.Write([]byte(id)) //nolint:errcheck // hash.Hash never returns a non-nil error
 		seenIDs[id] = struct{}{}
 		byPart[s.Number] = Article{ID: id, Bytes: s.Bytes, Number: s.Number}
 	}

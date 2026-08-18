@@ -777,15 +777,6 @@ func TestStat_Errors(t *testing.T) {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
 	}
-
-	// 3. Invalid message ID
-	{
-		conn := &Conn{state: StateReady}
-		err := conn.Stat(t.Context(), "test\n@host")
-		if !errors.Is(err, ErrInvalidMessageID) {
-			t.Errorf("expected ErrInvalidMessageID, got %v", err)
-		}
-	}
 }
 
 func TestStat_ServerErrors(t *testing.T) {
