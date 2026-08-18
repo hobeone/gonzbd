@@ -128,6 +128,12 @@ func TestPendingFIFO(t *testing.T) {
 	if got := c.popPending(); got != nil {
 		t.Fatalf("popPending() on an empty FIFO = %v, want nil", got)
 	}
+	// Also on an empty FIFO: there is no tail to compare against, and
+	// looking for one must not index before the start of the slice.
+	c.unappendPending(newPending(cmdStat, "never-submitted@h"))
+	if len(c.pending) != 0 {
+		t.Fatalf("unappendPending on an empty FIFO left %d entries", len(c.pending))
+	}
 
 	a, b := newPending(cmdStat, "a@h"), newPending(cmdStat, "b@h")
 	c.pending = append(c.pending, a, b)
@@ -399,6 +405,10 @@ func TestMessageIDFromStatusLine(t *testing.T) {
 		{"canonical", "0 <abc@host> body follows", "abc@host", true},
 		{"no trailing commentary", "0 <abc@host>", "abc@host", true},
 		{"case is preserved", "0 <ABC@Host>", "ABC@Host", true},
+		// The shortest ID a bracketed token can hold, and the exact
+		// boundary of the len >= 3 test. Off by one and this legal
+		// Message-ID reads as unpairable, killing the connection.
+		{"single-character id", "0 <a>", "a", true},
 		// The wrapper locates the ID, so a server that omits the
 		// article number is read correctly rather than yielding the
 		// wrong token. A positional rule returns "body" here, which
