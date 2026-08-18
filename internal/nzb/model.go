@@ -91,6 +91,13 @@ type NZB struct {
 	// had already been claimed by an accepted segment anywhere in the
 	// document — not merely in the same <file>.
 	//
+	// One class of repeat is dropped without landing here: the per-file part
+	// number is checked first, so a segment repeating both the part number
+	// and the Message-ID of one already accepted is discarded by that check
+	// and counted by neither this field nor DuplicateArticles. A wholly
+	// identical repeat is the only shape that goes uncounted; a repeated part
+	// number with a different ID still bumps DuplicateArticles.
+	//
 	// A Message-ID addresses exactly one article, so a repeat names bytes
 	// that are already accounted for. Keeping both copies would double-count
 	// those bytes in File.Bytes and fetch them twice, and that reason stands

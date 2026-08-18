@@ -182,14 +182,23 @@ Per article, measured against the field types:
 
 | | per article | 20k-article job |
 |---|---|---|
-| `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~80 B | ~3.3 MB |
+| `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~86 B | ~1.6 MB |
 | `JobProgress` — `done`/`failed`/`emitted` as `[]bool` | 3 B | ~60 KB |
 | `JobProgress` — the same, as bitsets | 0.375 B | ~7.5 KB |
 
-Progress is roughly 2% of what eviction currently reclaims. Keeping it resident
-for hundreds of jobs costs tens of MB; keeping manifests resident for the same
-queue approaches 1 GB. That asymmetry is the whole justification for evicting
-one and not the other.
+The `Manifest` row is measured, via the same `manifestRetained` accounting
+`terminal_retention_test.go` uses, over a 20-file 20,000-article job with
+realistic ~52-character Message-IDs: 1,722,384 B, or 86.1 B per article. It
+previously read `~80 B + map` / `~3.3 MB`. The map term went when the lazy
+message-ID index was deleted, and the `~3.3 MB` did not survive re-measurement
+— it is not the map's absence that accounts for the difference, since the index
+was only ~0.9 MB at this size.
+
+Progress is therefore roughly 4% of what eviction reclaims, not 2%. Keeping it
+resident for hundreds of jobs costs tens of MB; keeping manifests resident for
+the same queue costs hundreds. That asymmetry — a factor of about 27 — is the
+whole justification for evicting one and not the other, and it is unchanged by
+the correction.
 
 `done`/`failed`/`emitted` are stored as bitsets, not `[]bool`. Three `[]bool`
 spend three bytes to hold three bits; #203 assumed bitsets throughout and the

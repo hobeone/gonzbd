@@ -347,7 +347,7 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 
 #### Queue (`internal/queue/`)
 
-- **Address an article by its global index, never by message-ID.** Every mutation entry point (`AckDurable`, `AckPermanentFailure`, `MarkArticleEmittedByIdx`, `ClearArticleEmittedByIdx`) takes an `artIdx`, and every production caller already has one in hand. There is deliberately no by-ID lookup structure to reach for: one existed as a lazily-built `map[string]int` per resident job, and was deleted once the last caller stopped needing it. If queue code seems to need to resolve a message-ID, the index is available further up the call stack — pass it down rather than reintroducing the map.
+- **Address an article by its global index, never by message-ID.** Every mutation entry point carries indices rather than IDs, in the shape that suits it: `MarkArticleEmittedByIdx` and `ClearArticleEmittedByIdx` take a single `artIdx int32`, `AckPermanentFailure` takes a `[]int32`, and `AckDurable` takes a `durability.DurableProof` whose `Articles()` payload carries them. Every production caller already holds an index. There is deliberately no by-ID lookup structure to reach for: one existed as a lazily-built `map[string]int` per resident job, and was deleted once the last caller stopped needing it. If queue code seems to need to resolve a message-ID, the index is available further up the call stack — pass it down rather than reintroducing the map.
 
 - **A global article index maps to its file through `Manifest.fileIndexForArticle`.** That is what lets a mutation update per-file `Pending` without scanning for the parent file. It is derived from the manifest's file ranges, never persisted separately.
 
