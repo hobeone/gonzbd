@@ -246,9 +246,14 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   Failing one article would catch the first casualty and silently mis-attribute
   every article after it: each would be a well-formed, CRC-valid body written
   into the wrong file, and no later layer can detect that. Both cases wrap
-  `nntp.ErrDesynced` so the class is distinguishable from an ordinary socket
-  failure; note that `penalty.go` does not yet give it a row of its own, so it
-  still lands on `PenaltyUnknown`.
+  `nntp.ErrDesynced`, which `classifyConnError` counts under its own
+  `nntp_desynced` label rather than folding into `other_connection_error` — a
+  desync is a server bug or a MITM, not a flaky link, and it is the one
+  connection failure here that warrants a human looking at it. `PenaltyFor`
+  gives it `PenaltyUnknown`: the same figure the catch-all would, stated
+  explicitly so it is a decision rather than a fall-through. Nothing yet
+  justifies a harsher one — a single bad response should not retire a server —
+  and the new label is where the evidence to revisit it will come from.
 - **Context cancellation**: If a caller's `ctx` is cancelled while waiting for
   `pc.done`, the `pendingCmd` is marked `orphaned`. The reader goroutine still
   reads and discards the response to keep the connection in protocol sync. The
@@ -302,11 +307,19 @@ part of this contract — changing a duration changes server failover behavior:
 | `ErrAuthRejected` (481/482) | `PenaltyPerm` | 10 min |
 | `ErrServerUnavailable` (502/503) | `Penalty502` | 5 min |
 | `ErrClosed` (unexpected disconnect) | `PenaltyUnknown` | 3 min |
+| `ErrDesynced` (response identity mismatch) | `PenaltyUnknown` | 3 min |
 | `ErrAuthRequired` (480 mid-session) | `PenaltyShort` | 1 min |
 | `ErrInvalidState` (programming error) | `PenaltyShort` | 1 min |
 | `ErrTransient` (bare 4xx) | `PenaltyVeryShort` | 6 sec |
 | `ErrNoArticle` (430/423) | — | 0 (no penalty) |
 | Anything else | `PenaltyUnknown` | 3 min |
+
+`ErrDesynced` draws the same duration as the catch-all, and has its own row
+anyway: the figure is chosen rather than inherited, so a later change to the
+catch-all does not silently redecide it. It is deliberately not harsher —
+a desync may be a one-off, and `PenaltyPerm` would retire a server on a single
+bad response. `classifyConnError` counts it under `nntp_desynced`, which is
+where the evidence to revisit this would come from.
 
 When `opts.NoPenalties` is set, `clampPenalty` caps all penalties to
 `PenaltyShort` (1 min) regardless of the error class.

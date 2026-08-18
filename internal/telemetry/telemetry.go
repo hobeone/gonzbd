@@ -56,6 +56,7 @@ const (
 	ErrClassInvalidCredential     = "invalid_credential" //nolint:gosec // diagnostic label, not a secret
 	ErrClassNetworkError          = "network_error"
 	ErrClassTimeout               = "timeout"
+	ErrClassNNTPDesynced          = "nntp_desynced"
 	ErrClassOtherConnectionError  = "other_connection_error"
 	ErrClassCRCMismatch           = "crc_mismatch"
 	ErrClassDMCARemoved           = "dmca_removed"
