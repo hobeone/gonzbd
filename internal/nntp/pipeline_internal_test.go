@@ -51,7 +51,7 @@ func TestNewArticleCmd(t *testing.T) {
 		t.Run(tc.verb, func(t *testing.T) {
 			t.Parallel()
 			const id = "a@h"
-			pc, wire := newArticleCmd(tc.kind, tc.verb, id)
+			pc, wire := newArticleCmd(tc.kind, id)
 			if pc.kind != tc.kind || pc.msgID != id {
 				t.Errorf("pendingCmd = {kind:%d msgID:%q}, want {kind:%d msgID:%q}", pc.kind, pc.msgID, tc.kind, id)
 			}
@@ -68,6 +68,29 @@ func TestNewArticleCmd(t *testing.T) {
 				t.Errorf("remembered ID %q is not the one sent in %q", pc.msgID, wire)
 			}
 		})
+	}
+}
+
+// TestKindTablesAgree pins the one thing the two cmdKind tables must
+// say consistently. verb() owns what we send, successResponse owns what
+// counts as a successful answer, and they are separate facts kept in
+// separate switches — but "this kind names a single article" appears in
+// both, as a non-empty verb and as echoesMsgID.
+//
+// A kind in one and not the other is silently broken in a way neither
+// table's own test can see: a verb with no echo check sends an article
+// command whose identity is never verified, and an echo check with no
+// verb has nothing that could construct it.
+func TestKindTablesAgree(t *testing.T) {
+	t.Parallel()
+	// Every kind in the enum, including the reserved ones, so adding a
+	// kind to one table and forgetting the other fails here.
+	for k := cmdKind(1); k <= _cmdAuthInfoPass; k++ {
+		_, _, echoes := k.successResponse()
+		if hasVerb := k.verb() != ""; hasVerb != echoes {
+			t.Errorf("cmdKind(%d): verb()=%q (hasVerb=%v) but successResponse echoesMsgID=%v — a kind must be in both tables or neither",
+				k, k.verb(), hasVerb, echoes)
+		}
 	}
 }
 

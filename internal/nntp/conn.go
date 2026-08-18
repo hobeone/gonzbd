@@ -482,7 +482,7 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 		return nil, c.closeError()
 	}
 
-	pc, cmd := newArticleCmd(cmdBody, "BODY", messageID)
+	pc, cmd := newArticleCmd(cmdBody, messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return nil, err
 	}
@@ -553,7 +553,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 		return c.closeError()
 	}
 
-	pc, cmd := newArticleCmd(cmdStat, "STAT", messageID)
+	pc, cmd := newArticleCmd(cmdStat, messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return err
 	}

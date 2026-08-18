@@ -86,6 +86,31 @@ func (k cmdKind) successResponse() (code int, hasBody, echoesMsgID bool) {
 	return 0, false, false
 }
 
+// verb names the NNTP command that asks about a single article for
+// each kind, and is empty for the kinds that name no article.
+//
+// It is the sole owner of that mapping, for the same reason
+// successResponse owns the code table: passing the verb alongside the
+// kind would be two representations of one fact travelling together,
+// and newArticleCmd exists to stop exactly that. The two tables are
+// separate because they are separate facts — what we send, and what
+// counts as a successful answer — but they must agree on which kinds
+// name an article, which TestKindTablesAgree checks rather than
+// assumes.
+func (k cmdKind) verb() string {
+	switch k {
+	case cmdBody:
+		return "BODY"
+	case cmdArticle:
+		return "ARTICLE"
+	case cmdHead:
+		return "HEAD"
+	case cmdStat:
+		return "STAT"
+	}
+	return ""
+}
+
 // messageIDFromStatusLine extracts the Message-ID from the text
 // following the status code of an article response — canonically
 // "n message-id" with optional trailing commentary. The angle-bracket
@@ -114,10 +139,11 @@ func messageIDFromStatusLine(text string) (string, bool) {
 	for rest := text; rest != ""; {
 		var field string
 		field, rest, _ = strings.Cut(rest, " ")
-		if len(field) >= 2 && field[0] == '<' && field[len(field)-1] == '>' {
-			if id := field[1 : len(field)-1]; id != "" {
-				return id, true
-			}
+		// len >= 3 rather than >= 2: a bracketed token is empty exactly
+		// when it is "<>", so the length bound is also the emptiness
+		// check.
+		if len(field) >= 3 && field[0] == '<' && field[len(field)-1] == '>' {
+			return field[1 : len(field)-1], true
 		}
 	}
 	return "", false
@@ -134,9 +160,9 @@ func messageIDFromStatusLine(text string) (string, bool) {
 // kinds successResponse marks as echoing already outnumber the kinds
 // anything constructs. A third call site that omitted msgID would leave
 // it empty and fail every response it ever received.
-func newArticleCmd(kind cmdKind, verb, messageID string) (pc *pendingCmd, wire []byte) {
+func newArticleCmd(kind cmdKind, messageID string) (pc *pendingCmd, wire []byte) {
 	return &pendingCmd{kind: kind, msgID: messageID, done: make(chan struct{})},
-		fmt.Appendf(make([]byte, 0, 96), "%s <%s>\r\n", verb, messageID)
+		fmt.Appendf(make([]byte, 0, 96), "%s <%s>\r\n", kind.verb(), messageID)
 }
 
 // runReader consumes responses from br in order and dispatches them to
