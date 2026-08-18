@@ -160,6 +160,18 @@ func TestSetupHandshakeDeadlineWithDeadline(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	cleanup()
+
+	// Retire the reader inside the test body rather than leaving it parked on
+	// the pipe until t.Cleanup runs. A net.Pipe read with no deadline blocks
+	// forever, and cleanup() has just cleared the one that was set.
+	if err := c.nc.SetDeadline(time.Now()); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Error("the reader did not unblock; it would have outlived the test body")
+	}
 }
 
 // Without a context deadline it spawns a watcher that unblocks the socket on
