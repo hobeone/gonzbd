@@ -300,6 +300,33 @@ with the code: `docs/ARCHITECTURE.md` said "All message-IDs are validated
 before use to prevent NNTP command injection" and survived a sweep for
 `validateMessageID`, because it never names the function it is describing.
 
+**Two checks on what you WROTE, not on what you removed.** Finding the stale
+sentence is only half the sweep; both of these are about the replacement, and
+neither is caught by any gate — comments are neither type-checked nor executed,
+and `check_dup_comments` only finds copies.
+
+- **Narrowing a referent must not broaden a scope.** When a change deletes the
+  thing a justification named, the fix is to say what *still* holds, not to
+  assert a universal. "`internal/queue` no longer keys on X" is not "nothing
+  keys on X". This shipped: F2 deleted the queue's Message-ID lookup and the
+  rewritten comment claimed nothing downstream keyed on Message-ID, while
+  `internal/assembler`'s `seenDone`/`seenFailed` still do until F1 lands. That
+  sentence is the stated reason A7 drops duplicates document-wide, so acting on
+  it would have let a second segment be taken for a duplicate of the first —
+  buffer released, assembled file silently short, no error raised. If a
+  rewritten claim contains *nothing*, *never*, *always* or *only*, name what you
+  actually checked and scope the claim to it.
+
+- **Removing one term from a stated formula leaves the rest asserting
+  something false.** Recompute the stated result from the surviving terms. This
+  is arithmetic on what is already written down, not a re-derivation, and it
+  takes one line. `docs/queue-lifecycle.md` read `~80 B + map` per article and
+  `~3.3 MB` per 20k-article job; deleting the `+ map` term left `80 x 20,000`
+  visibly failing to equal `3.3 MB`. Re-measuring showed the total had been
+  wrong all along (1.64 MB), which the composite form had been hiding. A
+  deliberate decision not to re-derive a figure is not a licence to leave a
+  visible contradiction behind.
+
 So when a change alters what a doc *describes* — a layer's responsibility, an
 enforced invariant, a security property, a data-flow direction — **read
 `docs/ARCHITECTURE.md` and the relevant `docs/*-contract.md` section in full at
