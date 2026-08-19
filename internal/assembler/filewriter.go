@@ -83,6 +83,11 @@ type FileWriter struct {
 	// moved here from openFile because the writer owns the cache the first
 	// copy may still be sitting in.
 	//
+	// Both are keyed on ArtIdx, the article's manifest index, rather than its
+	// Message-ID. ArtIdx has no value that doubles as "absent" — an NZB may
+	// omit the Message-ID, but never the index — so every article has a key
+	// these maps can hold, and there is no empty-key class to guard against.
+	//
 	// Both are membership-only. seenDone used to carry the offset the article
 	// was accepted at, and this comment said the duplicate branch needed it in
 	// order to ask wc.buffered whether the first copy had left the cache. It
@@ -91,34 +96,8 @@ type FileWriter struct {
 	// way the second copy's bytes are redundant and re-writing them would be a
 	// second WriteAt over the same range. The offset was written and never
 	// read.
-	seenDone   map[string]struct{}
-	seenFailed map[string]struct{}
-
-	// resolvedUntracked records, by article index, the articles this writer has
-	// resolved that seenFailed cannot hold — the ones with no Message-ID.
-	//
-	// It exists because those two sets are keyed on the wrong thing for this
-	// question. A Message-ID is the right key for DEDUP, since it is what makes
-	// two deliveries from different servers the same article, but an NZB may
-	// omit it and no map can hold an empty key. The article index is always
-	// present and unique within the file, so it is the only identifier a
-	// terminal disposition can be recorded under when the Message-ID is absent.
-	//
-	// Without it an untracked article's displacement left no trace at all, and
-	// handleSuccessArticle — whose dedup arms are both gated on a non-empty
-	// Message-ID — counted every redelivery afresh. Each one displaced the
-	// current owner in turn, so the count climbed one per copy until it reached
-	// TotalParts and finalized a file with a segment still missing. The
-	// give-back this replaces hid that behind an oscillation: the re-collision
-	// returned the part the redelivery had just taken, so the count never
-	// climbed and the file simply never completed instead.
-	//
-	// Scoped to displacement deliberately. An untracked article refused at a
-	// settled offset still goes unrecorded, because failPermanent returns early
-	// on an empty Message-ID — unchanged here, and the reason that path cannot
-	// reach this one is that acceptArticle refuses the ARRIVAL rather than the
-	// incumbent, so nothing is displaced to record.
-	resolvedUntracked map[int32]struct{}
+	seenDone   map[int32]struct{}
+	seenFailed map[int32]struct{}
 
 	// acceptedAt records which article OWNS each offset this writer has
 	// accepted bytes for. It is the collision detector (#383).
@@ -283,14 +262,13 @@ type offsetOwner struct {
 // newFileWriter wraps an already-open handle.
 func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *FileWriter {
 	w := &FileWriter{
-		handle:            handle,
-		path:              path,
-		key:               key,
-		wc:                wc,
-		seenDone:          make(map[string]struct{}),
-		seenFailed:        make(map[string]struct{}),
-		acceptedAt:        make(map[int64]offsetOwner),
-		resolvedUntracked: make(map[int32]struct{}),
+		handle:     handle,
+		path:       path,
+		key:        key,
+		wc:         wc,
+		seenDone:   make(map[int32]struct{}),
+		seenFailed: make(map[int32]struct{}),
+		acceptedAt: make(map[int64]offsetOwner),
 	}
 	w.writeAt = handle.WriteAt
 	w.syncFile = handle.Sync
@@ -373,28 +351,6 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // admitPermanentFailure itself reads the two in the opposite order, which is
 // how it tells an already-counted article from a new one.
 //
-// # The empty Message-ID is guarded, and the reason is the overcount
-//
-// admitAccepted counts an untracked article but records nothing, because no
-// map can hold an empty key. An unguarded call here therefore finds it
-// uncounted and increments a SECOND time: two untracked articles at one offset
-// would leave partsWritten at 3 and fire OnFileComplete over a file that is
-// genuinely short. Only second-order would the seenFailed[""] entry then dedup
-// the next genuinely different untracked article out of being counted at all.
-//
-// Guarded, an untracked article keeps its part by omission — nothing decrements
-// it any more — and its disposition is recorded in resolvedUntracked instead,
-// keyed on the article index because that is the identifier it has. Both
-// articles were admitted separately, both stay counted, and the file reaches
-// TotalParts, exactly as on the tracked path.
-//
-// The record is not optional bookkeeping. Keeping the part without it was a
-// worse defect than the one this function fixes: handleSuccessArticle's dedup
-// arms are both gated on a non-empty Message-ID, so every redelivery of the
-// article was counted afresh, and the count climbed one per copy until it
-// reached TotalParts over a segment that had never arrived. A file finalized
-// short is silent where the wedge it replaced was merely stuck.
-//
 // # Precondition: the incumbent must not have been reported Written
 //
 // This is only correct for an article that made no durability claim. One that
@@ -430,11 +386,7 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // unrepresentable, which is what lets Accept's diagnosis fields be added to it
 // without reopening that window.
 func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
-	if id.msgID != "" {
-		w.admitPermanentFailure(id.msgID)
-	} else {
-		w.resolvedUntracked[id.artIdx] = struct{}{}
-	}
+	w.admitPermanentFailure(id.artIdx)
 	w.faulted = append(w.faulted, faultedArticle{
 		id:             id,
 		displaced:      true,
@@ -447,22 +399,19 @@ func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 // rollbackPart undoes the part and seen-set state an admitted article holds,
 // without deciding what becomes of the article. The caller owns that.
 //
-// # Precondition: id.msgID is non-empty
-//
-// fail is the only caller and returns early on an empty Message-ID, so this
-// never sees one. It used to, from failDisplaced, and handled it by calling
-// giveBackUntrackedPart — the only way an untracked article's part could come
-// back, since no map records it. A displaced article now KEEPS its part
-// (#386), so that branch lost its last caller and was removed rather than left
+// fail is the only caller. It used to reach a giveBackUntrackedPart branch
+// here for an article with no Message-ID, since no Message-ID-keyed map
+// could record one. Keying on ArtIdx instead means every article has a key
+// this function's maps can hold, and that branch is gone rather than
 // reachable only from a test.
 //
 // giveBackUntrackedPart itself is unaffected: routeAcceptFailure still calls it
 // for the write-fault case, which is why fail keeps its own early return —
 // routing that decrement through here as well would charge it twice.
 func (w *FileWriter) rollbackPart(id articleID) {
-	_, wasDone := w.seenDone[id.msgID]
-	_, wasFailed := w.seenFailed[id.msgID]
-	delete(w.seenDone, id.msgID)
+	_, wasDone := w.seenDone[id.artIdx]
+	_, wasFailed := w.seenFailed[id.artIdx]
+	delete(w.seenDone, id.artIdx)
 	// An article already counted as permanently FAILED keeps its count:
 	// admitPermanentFailure counted it, and a later retry whose write fails
 	// must not decrement what a different code path added. Only an article
@@ -576,16 +525,8 @@ func (w *FileWriter) notePostAnomaly() bool {
 // count could be applied after a write that had already rolled it back, and
 // every transient accept-time write fault undercounted the file by one,
 // permanently, putting partsWritten >= TotalParts out of reach.
-//
-// The count is unconditional while the record is not. An article with no
-// Message-ID is admitted like any other, but no map can hold it — fail and
-// noteWritten both return early on an empty ID — so it is counted here and
-// given back by giveBackUntrackedPart, which is the only path that can
-// un-admit one.
-func (w *FileWriter) admitAccepted(msgID string) {
-	if msgID != "" {
-		w.seenDone[msgID] = struct{}{}
-	}
+func (w *FileWriter) admitAccepted(artIdx int32) {
+	w.seenDone[artIdx] = struct{}{}
 	w.partsWritten++
 }
 
@@ -595,16 +536,8 @@ func (w *FileWriter) admitAccepted(msgID string) {
 // Its bytes are still written, because they are still the file's content, but
 // the part was charged when the article was failed and charging it twice would
 // carry the file past TotalParts.
-//
-// The caller owns the precondition that msgID is non-empty, and unlike
-// admitAccepted this does not re-check it. Its only call site reaches it from
-// inside a non-empty-ID branch, and an empty key here would be worse than a
-// no-op: nothing in the package can remove a seenDone[""] entry — fail and
-// noteWritten both return early on an empty ID — so it would be permanent, and
-// every later article with no Message-ID would take the duplicate branch
-// against it.
-func (w *FileWriter) admitRetryOfFailed(msgID string) {
-	w.seenDone[msgID] = struct{}{}
+func (w *FileWriter) admitRetryOfFailed(artIdx int32) {
+	w.seenDone[artIdx] = struct{}{}
 }
 
 // admitPermanentFailure counts a permanently failed article toward the file's
@@ -614,22 +547,12 @@ func (w *FileWriter) admitRetryOfFailed(msgID string) {
 // AckPermanentFailure (R10). What is left here is the dedup that keeps
 // partsWritten from overshooting TotalParts, which is purely local
 // bookkeeping.
-//
-// The empty Message-ID is deliberately NOT guarded, unlike its two siblings
-// fail and failPermanent. seenFailed[""] is written and deduped on like any
-// other key, so the first article with no Message-ID is counted and every
-// later one is refused as a duplicate. That is what the call site did before
-// this method existed. Adding the reflexive `if msgID == "" { return false }`
-// that its siblings carry would stop counting such articles altogether and put
-// partsWritten >= TotalParts permanently out of reach — the failure this whole
-// change exists to make unreachable. Whether the dedup-on-"" behaviour is
-// itself right is a separate question; this preserves it exactly.
-func (w *FileWriter) admitPermanentFailure(msgID string) bool {
-	if _, dup := w.seenFailed[msgID]; dup {
+func (w *FileWriter) admitPermanentFailure(artIdx int32) bool {
+	if _, dup := w.seenFailed[artIdx]; dup {
 		return false
 	}
-	_, alreadyCounted := w.seenDone[msgID]
-	w.seenFailed[msgID] = struct{}{}
+	_, alreadyCounted := w.seenDone[artIdx]
+	w.seenFailed[artIdx] = struct{}{}
 	// An article already counted as a success must not increment the part
 	// total a second time.
 	if alreadyCounted {
@@ -660,11 +583,8 @@ func (w *FileWriter) giveBackUntrackedPart() {
 // could never reach TotalParts. That is the opposite of fail's case, where the
 // article is coming back.
 func (w *FileWriter) failPermanent(id articleID) {
-	if id.msgID == "" {
-		return
-	}
-	delete(w.seenDone, id.msgID)
-	w.seenFailed[id.msgID] = struct{}{}
+	delete(w.seenDone, id.artIdx)
+	w.seenFailed[id.artIdx] = struct{}{}
 }
 
 // takeFaulted returns and clears the articles rolled back since the last call.

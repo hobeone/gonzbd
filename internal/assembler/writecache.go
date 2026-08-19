@@ -74,12 +74,12 @@ type fileBuf struct {
 // carried. The cache is the only place that knows an article's bytes are still
 // in memory, and a claim made before then is one no later run can check (#355).
 //
-// Both fields are carried because they answer different questions. msgID drives
-// this package's own duplicate handling (FileWriter.seenDone / seenFailed),
-// which is keyed on Message-ID. artIdx is what FileWriter.noteWritten puts on a
-// durability.WrittenArticle, and is therefore what the barrier places a durable
-// bit for — so it must match the queue's numbering. Neither reaches the queue
-// from here: this package has no ack path in either direction.
+// Both fields are carried, but they no longer answer the same question equally.
+// artIdx is identity: it is what FileWriter.seenDone / seenFailed key duplicate
+// handling on, and what FileWriter.noteWritten puts on a durability.WrittenArticle,
+// so it must match the queue's numbering. msgID travels alongside it for
+// logging and telemetry. Neither reaches the queue from here: this package has
+// no ack path in either direction.
 type articleID struct {
 	msgID  string
 	artIdx int32
@@ -198,9 +198,13 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		// stayed queued to be written and acked. Two terminal dispositions for
 		// one article.
 		//
-		// Reachable for an article with no Message-ID, which is the one kind
-		// handleSuccessArticle's dedup arm cannot return early for: no map can
-		// hold an empty key, so a second delivery runs the whole accept path.
+		// Reachable for the cache-eviction case Accept's own doc describes: its
+		// acceptedAt check already recorded the new owner before calling here,
+		// but the old article's bytes are still sitting in fb.articles because
+		// nothing has flushed or discarded them yet. handleSuccessArticle's
+		// dedup arms key on ArtIdx and would have caught a genuine redelivery
+		// before Accept was called at all, so this is a different article at
+		// the same offset, not a repeat delivery of the same one.
 		if existing.id != art.id {
 			displaced = []articleID{existing.id}
 		}

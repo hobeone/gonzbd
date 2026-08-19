@@ -13,55 +13,26 @@ import (
 // tests that pin the arithmetic; the suites that drive processRequest pin the
 // routing around them.
 
-// TestFileWriter_AdmitCountsAnArticleWithNoMessageID pins the half of
-// admitAccepted that the seen-set half hides.
-//
-// An article with no Message-ID is admitted like any other and counts toward
-// TotalParts, but no map can hold it — fail and noteWritten both return early
-// on an empty ID. Guarding the COUNT on a non-empty ID, the way the writer's
-// other methods guard their map writes, would stop such a file ever reaching
-// TotalParts. So the count is deliberately unconditional and the record is not.
-func TestFileWriter_AdmitCountsAnArticleWithNoMessageID(t *testing.T) {
-	w := newTestFileWriter(t)
-
-	w.admitAccepted("")
-
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts() = %d after admitting an article with no Message-ID, want 1 — "+
-			"declining to count it puts partsWritten >= TotalParts permanently out of "+
-			"reach for the file", got)
-	}
-	if len(w.seenDone) != 0 {
-		t.Errorf("seenDone = %v; an empty Message-ID is not a dedup key and must not be "+
-			"stored as one", w.seenDone)
-	}
-}
-
-// TestFileWriter_AdmitPermanentFailureDedupsTheEmptyMessageID pins the empty
-// Message-ID on the FATAL path, which behaves differently from the accept path
-// above and is easy to "tidy" into a defect.
-//
-// admitPermanentFailure writes seenFailed[""] and dedups on it, so the first
-// such article is counted and every later one is refused. That is what the call
-// site did before the method existed, and it is preserved deliberately.
+// TestFileWriter_AdmitPermanentFailureDedupsRepeatedArtIdx pins that
+// admitPermanentFailure dedups on ArtIdx, so a redelivery of the same fatal
+// article is not counted twice.
 //
 // Two articles are required. One passes whether or not the dedup is there, so a
 // single-article test would not discriminate.
-func TestFileWriter_AdmitPermanentFailureDedupsTheEmptyMessageID(t *testing.T) {
+func TestFileWriter_AdmitPermanentFailureDedupsRepeatedArtIdx(t *testing.T) {
 	w := newTestFileWriter(t)
 
-	if !w.admitPermanentFailure("") {
-		t.Fatal("the first fatal article with no Message-ID was not admitted; it has to " +
-			"be counted or the file can never reach TotalParts")
+	if !w.admitPermanentFailure(1) {
+		t.Fatal("the first fatal article was not admitted; it has to be counted or the " +
+			"file can never reach TotalParts")
 	}
 	if got := w.parts(); got != 1 {
 		t.Fatalf("parts() = %d after the first, want 1", got)
 	}
 
-	if w.admitPermanentFailure("") {
-		t.Error("a second fatal article with no Message-ID was admitted again; the empty " +
-			"key is deduped like any other, and counting it twice carries the file past " +
-			"TotalParts")
+	if w.admitPermanentFailure(1) {
+		t.Error("a second fatal article with the same ArtIdx was admitted again; " +
+			"counting it twice carries the file past TotalParts")
 	}
 	if got := w.parts(); got != 1 {
 		t.Errorf("parts() = %d after the second, want 1 — the dedup on the seenFailed "+
@@ -79,14 +50,14 @@ func TestFileWriter_AdmitPermanentFailureDedupsTheEmptyMessageID(t *testing.T) {
 func TestFileWriter_AdmitRetryOfFailedDoesNotCount(t *testing.T) {
 	w := newTestFileWriter(t)
 
-	if !w.admitPermanentFailure("m1") {
+	if !w.admitPermanentFailure(1) {
 		t.Fatal("precondition: the fatal article should have been admitted")
 	}
 	before := w.parts()
 
-	w.admitRetryOfFailed("m1")
+	w.admitRetryOfFailed(1)
 
-	if _, recorded := w.seenDone["m1"]; !recorded {
+	if _, recorded := w.seenDone[1]; !recorded {
 		t.Error("the retry was not recorded in seenDone, so a later copy would be " +
 			"written a second time over the same range")
 	}
@@ -112,7 +83,7 @@ func TestFileWriter_AdmitRetryOfFailedDoesNotCount(t *testing.T) {
 // re-writing it.
 func TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition(t *testing.T) {
 	w := newTestFileWriter(t)
-	w.admitAccepted("x1")
+	w.admitAccepted(1)
 	if w.parts() != 1 {
 		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
 	}
@@ -124,7 +95,7 @@ func TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition(t *testing.T
 			"permanently failed, and a file that stopped counting it could never reach "+
 			"TotalParts", got)
 	}
-	if _, failed := w.seenFailed["x1"]; !failed {
+	if _, failed := w.seenFailed[1]; !failed {
 		t.Error("x1 is not in seenFailed after being displaced, so a redelivery is not " +
 			"recognised and gets reported permanently failed a second time")
 	}
@@ -149,7 +120,7 @@ func TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition(t *testing.T
 // — so the counter is the whole of the state being corrected.
 func TestFileWriter_GiveBackUntrackedPartReturnsTheCount(t *testing.T) {
 	w := newTestFileWriter(t)
-	w.admitAccepted("")
+	w.admitAccepted(1)
 	if w.parts() != 1 {
 		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
 	}
@@ -198,12 +169,12 @@ func TestFileWriter_GiveBackUntrackedPartIsClampedAtZero(t *testing.T) {
 // test in the package green.
 func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 	w := newTestFileWriter(t)
-	if !w.admitPermanentFailure("m1") {
+	if !w.admitPermanentFailure(1) {
 		t.Fatal("precondition: the fatal article should have been admitted")
 	}
 	// The redelivery: its bytes are the file's content, but the part was
 	// charged when the article was failed, so nothing is counted here.
-	w.admitRetryOfFailed("m1")
+	w.admitRetryOfFailed(1)
 	if w.parts() != 1 {
 		t.Fatalf("parts() = %d, want 1; the fixture did not reach the state under test",
 			w.parts())
@@ -218,7 +189,7 @@ func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 			"back one this path never took leaves the file one short of TotalParts "+
 			"forever", got)
 	}
-	if _, still := w.seenDone["m1"]; still {
+	if _, still := w.seenDone[1]; still {
 		t.Error("m1 is still in seenDone after the roll-back, so a redelivery would " +
 			"be read as a duplicate and its bytes never written")
 	}
@@ -246,22 +217,22 @@ func TestFileWriter_RollbackPart(t *testing.T) {
 	}{
 		{
 			name:      "an accepted article gives its part back",
-			setup:     func(w *FileWriter) { w.admitAccepted("m1") },
+			setup:     func(w *FileWriter) { w.admitAccepted(1) },
 			id:        articleID{msgID: "m1", artIdx: 1},
 			wantParts: 0,
 		},
 		{
 			name: "an already-failed article keeps its part",
 			setup: func(w *FileWriter) {
-				w.admitPermanentFailure("m1")
-				w.admitRetryOfFailed("m1")
+				w.admitPermanentFailure(1)
+				w.admitRetryOfFailed(1)
 			},
 			id:        articleID{msgID: "m1", artIdx: 1},
 			wantParts: 1,
 		},
 		{
 			name:      "an article that never held a part takes none away",
-			setup:     func(w *FileWriter) { w.admitAccepted("other") },
+			setup:     func(w *FileWriter) { w.admitAccepted(99) },
 			id:        articleID{msgID: "m1", artIdx: 1},
 			wantParts: 1,
 		},
@@ -277,11 +248,9 @@ func TestFileWriter_RollbackPart(t *testing.T) {
 			if got := w.parts(); got != tc.wantParts {
 				t.Errorf("parts() = %d, want %d", got, tc.wantParts)
 			}
-			if tc.id.msgID != "" {
-				if _, still := w.seenDone[tc.id.msgID]; still {
-					t.Errorf("%s is still in seenDone, so a redelivery would be read "+
-						"as a duplicate and its bytes never written", tc.id.msgID)
-				}
+			if _, still := w.seenDone[tc.id.artIdx]; still {
+				t.Errorf("%d is still in seenDone, so a redelivery would be read "+
+					"as a duplicate and its bytes never written", tc.id.artIdx)
 			}
 			// The give-back is the whole of it: rollbackPart records no
 			// disposition, so neither caller can inherit one it did not choose.

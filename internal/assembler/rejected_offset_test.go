@@ -52,11 +52,11 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 	}
 	// Counted as FAILED, not as done: the seen-sets are what stop a redelivery
 	// from taking the part total past TotalParts.
-	if _, ok := f.w.seenFailed["<evil@x>"]; !ok {
+	if _, ok := f.w.seenFailed[7]; !ok {
 		t.Error("the rejected article is not in seenFailed, so a redelivery would be " +
 			"counted a second time and overshoot the file's part total")
 	}
-	if _, ok := f.w.seenDone["<evil@x>"]; ok {
+	if _, ok := f.w.seenDone[7]; ok {
 		t.Error("a rejected article is recorded as done; nothing wrote its bytes")
 	}
 	if a.handleSuccessArticle(f, req) {

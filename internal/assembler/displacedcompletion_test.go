@@ -84,7 +84,7 @@ func TestDisplacement_StaleOwnerIsCountedNotMerelyKept(t *testing.T) {
 	first := articleID{msgID: "a", artIdx: 0}
 	second := articleID{msgID: "b", artIdx: 1}
 
-	w.admitAccepted("a")
+	w.admitAccepted(first.artIdx)
 	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 32)...)); err != nil {
 		t.Fatalf("accept first: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestDisplacement_StaleOwnerIsCountedNotMerelyKept(t *testing.T) {
 			"fixture did not produce a stale owner", owner.id, taken)
 	}
 
-	w.admitAccepted("b")
+	w.admitAccepted(second.artIdx)
 	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 32)...)); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDisplacement_RedeliveryIsNotCountedTwice(t *testing.T) {
 
 	send("x", 0)
 	send("y", 1)
-	if _, failed := f.w.seenFailed["x"]; !failed {
+	if _, failed := f.w.seenFailed[0]; !failed {
 		t.Fatalf("x is not in seenFailed after the displacement; the fixture did not " +
 			"reach the disposition this test is about")
 	}
@@ -166,20 +166,17 @@ func TestDisplacement_RedeliveryIsNotCountedTwice(t *testing.T) {
 }
 
 // TestDisplacement_UntrackedRedeliveryCannotFinalizeAShortFile is the failure
-// mode that keeping the part opens up when nothing records the article.
+// mode a redelivery of a displaced article with no Message-ID must not
+// reopen.
 //
-// handleSuccessArticle's two dedup arms are both gated on a non-empty
-// Message-ID, so before resolvedUntracked existed an untracked article had no
-// duplicate handling at all. Every redelivery ran the whole accept path, took
-// another part and displaced whoever owned the offset by then, so the count
-// climbed one per copy — and with a third segment still outstanding it reached
-// TotalParts and finalized a file that was genuinely short.
-//
-// The give-back this replaced concealed it rather than preventing it: the
-// re-collision handed back the part the redelivery had just taken, so the
-// count oscillated and the file never completed at all. Trading a visible
-// stall for a silently truncated file is the wrong direction, which is why the
-// part is kept AND the disposition recorded rather than either alone.
+// seenDone and seenFailed are keyed on ArtIdx, so an article with no
+// Message-ID gets the same duplicate handling as any other: its redelivery is
+// recognised by index and takes the duplicate arm rather than running the
+// whole accept path again. If that dedup ever regressed to keying on the
+// Message-ID instead, every redelivery of an untracked article would take
+// another part and displace whoever owned the offset by then, so the count
+// would climb one per copy — and with a third segment still outstanding it
+// would reach TotalParts and finalize a file that was genuinely short.
 //
 // Three segments, not two, because with TotalParts=2 the file legitimately
 // completes on the collision itself and the premature finalize is
@@ -223,44 +220,5 @@ func TestDisplacement_UntrackedRedeliveryCannotFinalizeAShortFile(t *testing.T) 
 		t.Errorf("OnFileComplete fired %d times: the file has two of three segments, "+
 			"and finalizing it here truncates it silently at whatever the barrier "+
 			"has recorded", fired)
-	}
-}
-
-// TestDisplacement_UntrackedGuardLeavesTheFailureBudgetIntact covers the reason
-// failDisplaced skips an article with no Message-ID rather than handling it.
-//
-// admitPermanentFailure deduplicates on its argument, and an empty key is a
-// legal one. Recording the displacement under it would spend that single slot,
-// and the next genuinely different untracked article to fail would be waved
-// through as a duplicate and never counted — the same shortfall #386 fixed,
-// arriving from the other direction.
-//
-// There is no code change to revert here, so the red check is the mutation
-// described in the commit: record the empty key in failDisplaced and watch this
-// fail.
-func TestDisplacement_UntrackedGuardLeavesTheFailureBudgetIntact(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
-	first := articleID{msgID: "", artIdx: 1}
-	second := articleID{msgID: "", artIdx: 2}
-
-	w.admitAccepted(first.msgID)
-	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 32)...)); err != nil {
-		t.Fatalf("accept first: %v", err)
-	}
-	w.admitAccepted(second.msgID)
-	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 32)...)); err != nil {
-		t.Fatalf("accept second: %v", err)
-	}
-	_ = w.takeFaulted()
-
-	// A third untracked article, unrelated to the collision, fails outright.
-	if !w.admitPermanentFailure("") {
-		t.Error("a distinct untracked article was refused as a duplicate: the " +
-			"displacement spent the empty key's single dedup slot, so this article " +
-			"is never counted and the file cannot reach TotalParts")
-	}
-	if got := w.parts(); got != 3 {
-		t.Errorf("parts = %d, want 3: two colliding articles plus the one that failed "+
-			"on its own, each of which is a segment the file waits for", got)
 	}
 }

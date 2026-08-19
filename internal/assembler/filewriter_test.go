@@ -312,7 +312,7 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
 	// Admitted rather than inserted into seenDone by hand, so the article
 	// actually holds the part the roll-back below has to give back.
-	w.admitAccepted("a9")
+	w.admitAccepted(9)
 	if w.parts() != 1 {
 		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
 	}
@@ -320,10 +320,10 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	if err := w.writeOne(bufferedArticle{offset: 0, data: []byte("xy"), id: articleID{msgID: "a9", artIdx: 9}}); err == nil {
 		t.Fatal("writeOne returned nil after EIO")
 	}
-	if _, still := w.seenDone["a9"]; still {
+	if _, still := w.seenDone[9]; still {
 		t.Error("a9 is still in seenDone after its write failed; a re-delivery would be skipped as a duplicate")
 	}
-	if _, failed := w.seenFailed["a9"]; failed {
+	if _, failed := w.seenFailed[9]; failed {
 		t.Error("a9 was recorded as FAILED by a storage fault, which A1 forbids")
 	}
 	rolled := w.takeFaulted()

@@ -56,7 +56,7 @@ func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 		}
 		f := newHelperFile(t, dir, "benign.dat", 1000)
 		key := f.w.key
-		f.w.seenDone["<already-here@x>"] = struct{}{}
+		f.w.seenDone[4] = struct{}{}
 		open := map[fileKey]*openFile{key: f}
 		completed := map[fileKey]struct{}{key: {}}
 

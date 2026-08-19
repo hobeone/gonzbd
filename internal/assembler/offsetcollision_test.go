@@ -319,17 +319,25 @@ func TestFileWriter_NotePostAnomalyLatches(t *testing.T) {
 // resets `written` to false and UNSETTLES the offset — after which the next
 // article to claim it is no longer refused, and displaces an article whose
 // bytes the barrier has already acked. That is the double-disposition defect
-// again, reached through the one article kind that can re-enter Accept at all.
+// again.
 //
-// Only an article with no Message-ID can: handleSuccessArticle's dedup arms
-// key on seenDone/seenFailed, and admitAccepted records nothing for an empty
-// key, so a second delivery runs the whole accept path.
+// seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm now
+// recognises a redelivery of the SAME ArtIdx regardless of its Message-ID and
+// returns before acceptArticle is ever called — no production path calls
+// Accept twice for one ArtIdx. This test therefore calls acceptArticle
+// directly, below that dedup, which is the only way left to reach Accept a
+// second time with an identical article and exercise the guard this test is
+// about.
 func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	c := newCollisionFixture(t, 4<<20)
+	id := articleID{msgID: "<first@x>", artIdx: 1}
+	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "<first@x>", Offset: 0}
 
-	// An untracked article, large enough to flush at once, so it is written.
-	if !c.accept(1, "", 0, bytes.Repeat([]byte{'A'}, contiguousRunSize+1)) {
-		t.Fatal("precondition: the incumbent was not counted")
+	// The incumbent, large enough to flush at once, so it is written.
+	c.f.w.admitAccepted(id.artIdx)
+	req.Data = bytes.Repeat([]byte{'A'}, contiguousRunSize+1)
+	if err := c.a.acceptArticle(c.f, id, req); err != nil {
+		t.Fatalf("accept incumbent: %v", err)
 	}
 	if owner := c.f.w.acceptedAt[0]; !owner.written {
 		t.Fatal("precondition: the incumbent was not latched as written")
@@ -341,7 +349,11 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	//
 	// A re-accept that writes immediately re-latches the flag in noteWritten
 	// and hides the defect, which is why this half has to stay buffered.
-	c.accept(1, "", 0, []byte("AAAA"))
+	c.f.w.admitAccepted(id.artIdx)
+	req.Data = []byte("AAAA")
+	if err := c.a.acceptArticle(c.f, id, req); err != nil {
+		t.Fatalf("re-accept: %v", err)
+	}
 
 	if owner := c.f.w.acceptedAt[0]; !owner.written {
 		t.Error("a re-accept by the offset's own owner cleared the written latch, " +
@@ -349,7 +361,12 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	}
 
 	// The consequence: a genuinely different article must still be refused.
-	c.accept(2, "", 0, []byte("BBBB"))
+	second := articleID{msgID: "<second@x>", artIdx: 2}
+	req2 := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "<second@x>", Offset: 0, Data: []byte("BBBB")}
+	c.f.w.admitAccepted(second.artIdx)
+	if err := c.a.acceptArticle(c.f, second, req2); err != nil {
+		c.a.routeAcceptFailure(c.f, req2, err)
+	}
 
 	if len(c.rejected) != 1 || c.rejected[0] != 2 {
 		t.Errorf("OnArticleRejected = %v, want [2] — the offset was unsettled by the "+
@@ -436,7 +453,7 @@ func TestFileWriter_CachedIncumbentIsDisplaced(t *testing.T) {
 	second := articleID{msgID: "second", artIdx: 2}
 
 	// Small enough that no contiguous run forms, so it stays buffered.
-	w.admitAccepted(first.msgID)
+	w.admitAccepted(first.artIdx)
 	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("accept first: %v", err)
 	}
@@ -445,7 +462,7 @@ func TestFileWriter_CachedIncumbentIsDisplaced(t *testing.T) {
 			"the settled path instead of the displacement one")
 	}
 
-	w.admitAccepted(second.msgID)
+	w.admitAccepted(second.artIdx)
 	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
@@ -478,7 +495,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	id := articleID{msgID: "retried", artIdx: 7}
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
-	w.admitAccepted(id.msgID)
+	w.admitAccepted(id.artIdx)
 	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
@@ -488,7 +505,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 
 	// The re-dispatched copy, at the same offset.
 	w.writeAt = func(p []byte, _ int64) (int, error) { return len(p), nil }
-	w.admitAccepted(id.msgID)
+	w.admitAccepted(id.artIdx)
 	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
@@ -502,10 +519,11 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 // the SAME article can reach the displaced loop.
 //
 // handleSuccessArticle's dedup arm returns before acceptArticle when the
-// Message-ID is already in seenDone, so a redelivery normally never gets this
-// far. An article with no Message-ID cannot be deduped that way — admitAccepted
-// declines to record it, because no map can hold an empty key — so a second
-// delivery runs the whole accept path again.
+// article's ArtIdx is already in seenDone, so a redelivery through that path
+// never reaches Accept a second time. This test calls FileWriter.Accept
+// directly, below that dedup, which is the only way to reach the eviction loop
+// with the identical article: production code has no path that calls Accept
+// twice for one ArtIdx.
 //
 // Accept's own check correctly says this is not a collision (same owner), but
 // wc.buffer evicts the article's previous entry and used to report it as
@@ -519,7 +537,7 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 	id := articleID{msgID: "", artIdx: 1}
 
 	// Small enough that no contiguous run forms, so it stays buffered.
-	w.admitAccepted(id.msgID)
+	w.admitAccepted(id.artIdx)
 	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
@@ -529,7 +547,7 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 	}
 
 	// The same article again, still cache-resident.
-	w.admitAccepted(id.msgID)
+	w.admitAccepted(id.artIdx)
 	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
@@ -560,7 +578,7 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 		{msgID: "a", artIdx: 1}, {msgID: "b", artIdx: 2}, {msgID: "c", artIdx: 3},
 	}
 	for _, id := range ids {
-		w.admitAccepted(id.msgID)
+		w.admitAccepted(id.artIdx)
 		if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'x'}, 64)...)); err != nil {
 			t.Fatalf("accept %s: %v", id.msgID, err)
 		}
@@ -583,61 +601,5 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 		t.Errorf("parts = %d, want 3: three articles admitted, two displaced — each "+
 			"segment the manifest lists is one part the file waits for, however many "+
 			"of them claim the same offset", got)
-	}
-}
-
-// TestFileWriter_DisplacedUntrackedArticleKeepsItsPart pins the untracked half
-// of #386's disposition, where the outcome is right for a different reason than
-// the tracked half.
-//
-// An article with no Message-ID is admitted and counted like any other, because
-// admitAccepted counts unconditionally — no map can hold an empty key. It is
-// therefore already counted when it is displaced, and failDisplaced's
-// msgID != "" guard skips the call that would count it: it keeps its part by
-// OMISSION rather than by record.
-//
-// The guard is not a shortcut. admitPermanentFailure reads seenDone to decide
-// whether an article is already counted, an untracked one is never in there,
-// so an unguarded call would count it a SECOND time and fire OnFileComplete
-// over a file that is genuinely short.
-//
-// An earlier version of this test asserted the opposite — that the article
-// gives its part back — on the argument that keeping it means "one offset's
-// bytes counted twice". That conflates two different counts. TotalParts counts
-// manifest SEGMENTS, not byte ranges, so two segments claiming one offset are
-// two parts the file waits for however much their bytes overlap. Counting both
-// is what lets the file finish; counting neither is what wedged it.
-func TestFileWriter_DisplacedUntrackedArticleKeepsItsPart(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
-
-	// Two DISTINCT articles, neither carrying a Message-ID. They differ by
-	// artIdx, which is what lets identity comparison tell them apart at all.
-	first := articleID{msgID: "", artIdx: 1}
-	second := articleID{msgID: "", artIdx: 2}
-
-	w.admitAccepted(first.msgID)
-	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
-		t.Fatalf("accept first: %v", err)
-	}
-	w.admitAccepted(second.msgID)
-	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
-		t.Fatalf("accept second: %v", err)
-	}
-
-	rolled := w.takeFaulted()
-	if len(rolled) != 1 {
-		t.Fatalf("got %d rolled-back articles, want 1: an untracked article's "+
-			"displacement was dropped entirely, so nothing resolves it", len(rolled))
-	}
-	if rolled[0].id != first {
-		t.Errorf("rolled back %+v, want the displaced incumbent %+v", rolled[0].id, first)
-	}
-	if !rolled[0].displaced {
-		t.Error("the rolled-back untracked article is not marked displaced")
-	}
-	if got := w.parts(); got != 2 {
-		t.Errorf("parts = %d, want 2: both untracked articles are segments the file "+
-			"waits for — one supplies the bytes, the other is resolved permanently "+
-			"failed, and neither may be un-counted", got)
 	}
 }

@@ -774,8 +774,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if !a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return true for first-time failure")
 		}
-		if _, ok := f.w.seenFailed["msg1"]; !ok {
-			t.Error("expected seenFailed to contain msg1")
+		if _, ok := f.w.seenFailed[0]; !ok {
+			t.Error("expected seenFailed to contain artidx 0")
 		}
 
 		// Duplicate failure.
@@ -784,8 +784,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		// Cross-check: already counted as success.
-		f.w.seenFailed = make(map[string]struct{})
-		f.w.seenDone["msg1"] = struct{}{}
+		f.w.seenFailed = make(map[int32]struct{})
+		f.w.seenDone[0] = struct{}{}
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false when already counted as success")
 		}
@@ -808,8 +808,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if !a.handleSuccessArticle(f, req) {
 			t.Error("expected handleSuccessArticle to return true")
 		}
-		if _, ok := f.w.seenDone["msg1"]; !ok {
-			t.Error("expected seenDone to contain msg1")
+		if _, ok := f.w.seenDone[0]; !ok {
+			t.Error("expected seenDone to contain artidx 0")
 		}
 		if got := f.w.writtenSoFar(); len(got) != 1 {
 			t.Fatalf("writtenSoFar = %v, want 1 entry — the bytes reached WriteAt", got)
@@ -824,14 +824,14 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// Cross-check: already counted as failure. The retry still writes —
 		// the bytes are still the file's content — but must not be counted
 		// toward partsWritten a second time.
-		f.w.seenDone = make(map[string]struct{})
-		f.w.seenFailed["msg1"] = struct{}{}
+		f.w.seenDone = make(map[int32]struct{})
+		f.w.seenFailed[0] = struct{}{}
 		req3 := WriteRequest{JobID: "job1", ArtIdx: 0, MessageID: "msg1", Offset: 20, Data: []byte("world")}
 		if a.handleSuccessArticle(f, req3) {
 			t.Error("expected handleSuccessArticle to return false when already counted as failure")
 		}
-		if _, ok := f.w.seenDone["msg1"]; !ok {
-			t.Error("expected seenDone to contain msg1 after the retry")
+		if _, ok := f.w.seenDone[0]; !ok {
+			t.Error("expected seenDone to contain artidx 0 after the retry")
 		}
 	})
 
@@ -942,12 +942,12 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if got := f.w.writtenSoFar(); len(got) != 0 {
 			t.Errorf("writtenSoFar = %v after a failed write, want empty", got)
 		}
-		if _, ok := f.w.seenFailed["msgFail"]; ok {
-			t.Error("msgFail was recorded as FAILED by a storage fault, which A1 forbids: " +
+		if _, ok := f.w.seenFailed[0]; ok {
+			t.Error("artidx 0 was recorded as FAILED by a storage fault, which A1 forbids: " +
 				"a full disk is not evidence about the article's availability")
 		}
-		if _, ok := f.w.seenDone["msgFail"]; ok {
-			t.Error("msgFail should not remain in seenDone after write failure")
+		if _, ok := f.w.seenDone[0]; ok {
+			t.Error("artidx 0 should not remain in seenDone after write failure")
 		}
 	})
 }
@@ -1640,5 +1640,58 @@ func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
 				t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 			}
 		})
+	}
+}
+
+// TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID pins that the
+// assembler tells articles apart by index.
+//
+// The input is one the parser cannot produce: A7 makes a repeated Message-ID
+// impossible in a parsed NZB, and the restore path is assumed to satisfy A7
+// rather than re-checking it. So this documents a property, not a defect — for
+// every reachable input the two keys are in bijection and behave identically.
+//
+// It is worth pinning anyway because the property is invisible otherwise. While
+// dedup keyed on the Message-ID, the assembler's correctness rested on A7
+// holding, and nothing else in the suite would notice if that were reintroduced.
+func TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "job1", 0, 2)
+
+	completed := make(chan int, 1)
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+	a := startAssembler(t, opts)
+
+	// Same Message-ID, different indices, different offsets.
+	for _, art := range []struct {
+		artIdx int32
+		off    int64
+		data   string
+	}{
+		{0, 0, "AAAA"},
+		{1, 4, "BBBB"},
+	} {
+		if err := writeArticle(t.Context(), a, WriteRequest{
+			JobID: "job1", FileIdx: 0, ArtIdx: art.artIdx, MessageID: "shared@t",
+			Offset: art.off, Data: []byte(art.data),
+		}); err != nil {
+			t.Fatalf("writeArticle %d: %v", art.artIdx, err)
+		}
+	}
+
+	select {
+	case got := <-completed:
+		if got != 0 {
+			t.Errorf("completed file %d, want 0", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the file never completed: the second article was taken for a " +
+			"duplicate of the first because they share a Message-ID, so " +
+			"identity is not the index")
+	}
+	if got := readFile(t, path); string(got) != "AAAABBBB" {
+		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 	}
 }

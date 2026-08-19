@@ -27,7 +27,7 @@ import (
 // told about it.
 func TestFileWriter_CloseHandsBackTheUnroutedFaultedSet(t *testing.T) {
 	w := newTestFileWriter(t)
-	w.admitAccepted("a1")
+	w.admitAccepted(1)
 	w.fail(articleID{msgID: "a1", artIdx: 1})
 
 	leaked, err := w.Close()
@@ -49,7 +49,7 @@ func TestFileWriter_CloseHandsBackTheUnroutedFaultedSet(t *testing.T) {
 // clears an Emitted bit a later dispatch legitimately set.
 func TestFileWriter_CloseTakesTheFaultedSetRatherThanReadingIt(t *testing.T) {
 	w := newTestFileWriter(t)
-	w.admitAccepted("a2")
+	w.admitAccepted(2)
 	w.fail(articleID{msgID: "a2", artIdx: 2})
 
 	// The error is not the subject here — the test above pins it — and this

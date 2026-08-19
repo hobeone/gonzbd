@@ -1255,10 +1255,10 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	if f == nil || req.MessageID == "" {
 		return
 	}
-	if _, accepted := f.w.seenDone[req.MessageID]; accepted {
+	if _, accepted := f.w.seenDone[req.ArtIdx]; accepted {
 		return
 	}
-	if _, failed := f.w.seenFailed[req.MessageID]; failed {
+	if _, failed := f.w.seenFailed[req.ArtIdx]; failed {
 		// Already resolved in the other direction by the path that failed it.
 		return
 	}
@@ -1367,7 +1367,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
 		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-	return f.w.admitPermanentFailure(req.MessageID)
+	return f.w.admitPermanentFailure(req.ArtIdx)
 }
 
 // handleSuccessArticle hands one article's bytes to the file's writer.
@@ -1380,51 +1380,32 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 	w := f.w
 	id := articleID{msgID: req.MessageID, artIdx: req.ArtIdx}
-	if req.MessageID != "" {
-		if _, dup := w.seenDone[req.MessageID]; dup {
-			// A duplicate of an article already accepted. Its first copy is
-			// either still buffered or already written; either way this copy's
-			// bytes are redundant, and re-writing them would be a second
-			// WriteAt for the same range. Nothing is claimed here — the
-			// barrier absorbs duplicate reports itself (R12).
-			if req.Data != nil {
-				a.releaseBuffer(req.Data)
-			}
-			return false
-		}
-		if _, was := w.seenFailed[req.MessageID]; was {
-			// A retry of an article already counted as failed. The false
-			// return keeps partsWritten from counting it twice; the bytes are
-			// still written, because they are still the file's content.
-			w.admitRetryOfFailed(req.MessageID)
-			if err := a.acceptArticle(f, id, req); err != nil {
-				a.routeAcceptFailure(f, req, err)
-			}
-			return false
-		}
-	} else if _, resolved := w.resolvedUntracked[req.ArtIdx]; resolved {
-		// The same arm as seenFailed above, for an article no map keyed on
-		// Message-ID can hold. It is resolved, so its bytes are not wanted and
-		// its part is already counted; writing them would displace whoever owns
-		// the offset now, and counting it again would carry the file to
-		// TotalParts over a segment that never arrived.
-		//
-		// Unlike the seenFailed arm this does NOT write the bytes. That arm
-		// serves an article the storage layer failed on, whose content is still
-		// the file's; this one serves an article another article has already
-		// superseded at its offset.
+	if _, dup := w.seenDone[req.ArtIdx]; dup {
+		// A duplicate of an article already accepted. Its first copy is
+		// either still buffered or already written; either way this copy's
+		// bytes are redundant, and re-writing them would be a second
+		// WriteAt for the same range. Nothing is claimed here — the
+		// barrier absorbs duplicate reports itself (R12).
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
+		}
+		return false
+	}
+	if _, was := w.seenFailed[req.ArtIdx]; was {
+		// A retry of an article already counted as failed. The false
+		// return keeps partsWritten from counting it twice; the bytes are
+		// still written, because they are still the file's content.
+		w.admitRetryOfFailed(req.ArtIdx)
+		if err := a.acceptArticle(f, id, req); err != nil {
+			a.routeAcceptFailure(f, req, err)
 		}
 		return false
 	}
 	// Recorded before the write is attempted, not after, so a write path that
 	// fails can move the article to seenFailed without this function putting
 	// it straight back — and recorded in the same breath as the count, which
-	// is what admitAccepted exists to make inseparable. Its doc carries the
-	// reasoning, including why an article with no Message-ID is counted
-	// without being recorded.
-	w.admitAccepted(req.MessageID)
+	// is what admitAccepted exists to make inseparable.
+	w.admitAccepted(req.ArtIdx)
 	if err := a.acceptArticle(f, id, req); err != nil {
 		// Whether it still counts depends on WHICH failure it was, and that is
 		// the A1 split reaching the part total.
