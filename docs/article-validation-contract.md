@@ -349,7 +349,7 @@ makes the struct-zero unreachable on the path that matters, without splitting
 control messages out of the type first. F4 remains worth doing for its own
 reasons (§5.F); it is not a prerequisite for F1.
 
-**The owner has landed** (#402): the signature is
+**The owner has landed** (#403): the signature is
 `WriteArticle(ctx, ref ArticleRef, req WriteRequest)`, and `ArticleRef` carries
 `JobID`, `FileIdx`, `ArtIdx` and `MessageID`. Omitting the identity is a compile
 error at both `internal/app` call sites. The identity fields stay on
@@ -922,7 +922,7 @@ move in §4 — making `Assembler.WriteArticle` the owner of article identity, s
 never-set `ArtIdx` cannot reach the accept path from outside the package at all.
 Take the second and F1 stops depending on F4.
 
-Both landed in #402, ahead of F1: every `WriteRequest` fixture carries an
+Both landed in #403, ahead of F1: every `WriteRequest` fixture carries an
 explicit `ArtIdx` under the unchanged Message-ID key, and `WriteArticle` takes
 an `ArticleRef`. F1 is therefore a behaviour change against a prepared tree.
 Neither closes the valid-zero gap itself, and §4 explains why closing it is
