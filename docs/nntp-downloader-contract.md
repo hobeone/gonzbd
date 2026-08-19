@@ -63,10 +63,10 @@ by `canTransition`; illegal moves return `ErrInvalidState`.
 
 ```
 Disconnected ──► Connected ──► Authenticated ──► Ready ──► Closed
-                    │                                │
-                    ├──► Ready (no-auth servers)      │
-                    │                                │
-                    └──► Closed                      └──► Connected (480 re-auth)
+     │              │                                │
+     │              ├──► Ready (no-auth servers)      │
+     │              │                                │
+     └──► Closed    └──► Closed                      └──► Connected (480 re-auth)
 ```
 
 `Closed` is terminal. Once closed, discard the `*Conn` and `Dial` a fresh one.
@@ -279,14 +279,25 @@ downstream action:
 | Error Category / Response | Try-List Retention | Server Penalty | Downloader Action |
 |---|---|---|---|
 | **Success (NNTP 222)** | Cleared (`clearTried`) | None | `MarkArticleEmittedByIdx`, emits `ArticleResult` with data. |
-| **NNTP 430 / 423 (Not Found)** | Retained (`mask.set(idx)`) | None — server healthy, `RecordGoodConnection` | Logs debug, falls through to next eligible server. |
-| **CRC Mismatch** | Retained (`mask.set(idx)`) | None — `RecordGoodConnection` | Increments `ErrClassCRCMismatch`, tries alternate server. |
+| **NNTP 430 / 423 (Not Found)** | Retained (`mask.set(idx)`) | None — server healthy, `RecordGoodConnection` | Emits retryable `ArticleResult` (`ErrNoArticle`), leaves un-emitted so next pass tries fallback server. Pipeline filters retryable error. |
+| **CRC Mismatch** | Retained (`mask.set(idx)`) | None — `RecordGoodConnection` | Increments `ErrClassCRCMismatch`, emits retryable `ArticleResult` (`ErrCRCMismatch`), leaves un-emitted so dispatcher tries alternate server. Pipeline filters retryable error. |
 | **Connection / Socket Error** | Unmarked (`unmarkTried`) | Yes — `PenaltyFor(err)` | Drops socket via `DropIfMatches`, returns article to pool. Only the first goroutine to observe the failure records `RecordBadConnection` and applies penalty. |
 | **Penalized Server Dial** | Unmarked (`unmarkTried`) | Existing penalty retained | Silently returns article to dispatch pool. No result emitted, no telemetry counted. |
 | **Context Cancelled (pause/shutdown)** | Unmarked (`unmarkTried`) | None — not a server fault | `ClearArticleEmittedByIdx`, article re-dispatched on resume. |
 | **Decode Error (non-CRC)** | Cleared (`clearTried`) | None | `MarkArticleEmittedByIdx` (terminal), emits failed `ArticleResult`. Includes DMCA/takedown (`ErrArticleRemoved`). |
 | **Max Tries Exceeded (`maxArtTries`)** | — | None | Emits `ErrNoServersLeft`. |
 | **All Eligible Servers Exhausted** | — | None | Emits `ErrNoServersLeft` after queue lock release (via `applyDispatchPlan`). |
+
+### Pre-check probing (`PreCheck`)
+
+When `Options.PreCheck` is enabled, `fetchArticle` sends an initial `STAT <msgid>`
+command (`c.Stat`) before issuing `BODY`.
+- If `STAT` returns `ErrNoArticle` (430/423), the server is confirmed not to have
+  the article without spending bandwidth transferring a body. `RecordGoodConnection`
+  is called and a retryable `ArticleResult` is emitted immediately.
+- If `STAT` fails with any connection-level or socket error, execution falls
+  through to the standard `c.Fetch` call so standard dial/connection error and
+  penalty logic apply uniformly.
 
 ### DMCA / takedown handling
 
@@ -324,6 +335,10 @@ where the evidence to revisit this would come from.
 When `opts.NoPenalties` is set, `clampPenalty` caps all penalties to
 `PenaltyShort` (1 min) regardless of the error class.
 
+*(Note: `constants.PenaltyTimeout`, `constants.PenaltyShare`, and `constants.PenaltyTooMany`
+are defined in `internal/constants` as protocol constants from the upstream spec, but are
+reserved and not currently mapped by `PenaltyFor`.)*
+
 ### Optional server auto-deactivation
 
 `shouldDeactivateOptional` fires inside `ApplyPenalty` when a non-required
@@ -360,12 +375,13 @@ a server that intermittently succeeds will never trigger auto-deactivation.
   active (no `dispatchReady` signals arriving). `checkExpiredPenalties` calls
   `ClearDeactivation` on any server whose penalty has passed.
 
-- **Global pause / Job pause**: Pausing cancels the `pauseCtx`, which is
-  snapshotted by workers in `fetchArticle` as the context for `mc.Get()` and
-  `c.Fetch()`. In-flight network reads abort immediately. Workers drain pending
-  `workCh` items, call `unmarkTried` and `ClearArticleEmittedByIdx` so articles can
-  be cleanly re-dispatched on resume. `DisconnectAll()` is called to free idle
-  sockets.
+- **Global pause / Job pause**: Before initiating network I/O in `fetchArticle`,
+  workers check both per-job pause (`queue.GetJobStatus(jobID) == StatusPaused`)
+  and global pause (`d.paused.Load() || queue.IsPaused()`). Pausing also cancels
+  `pauseCtx`, aborting in-flight socket reads immediately. Buffered requests
+  in `workCh` are drained without I/O, calling `unmarkTried` and
+  `ClearArticleEmittedByIdx` so articles re-dispatch cleanly on resume.
+  `DisconnectAll()` is called to close idle sockets.
 
 - **Completions buffer full**: If the assembler cannot keep up, the
   `completions` channel fills. Workers block on `emitResult`'s channel send
@@ -392,7 +408,7 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 
 ## Status
 
-Landed:
+### Landed
 - `managedConn` dial-coalescing with documented `lockio` exception.
 - `selectWork` pre-check for disconnect-on-idle race protection (#182).
 - Two-phase dispatch separation (`buildDispatchPlan` / `applyDispatchPlan`).
@@ -402,3 +418,7 @@ Landed:
 - Optional server auto-deactivation via `shouldDeactivateOptional`.
 - Per-connection goroutine bounding via local semaphore.
 - Emitted-is-transient durability contract, now derived from the durability design's S3 rather than standing alone.
+- `PreCheck` STAT probe support before BODY fetch.
+
+### Open Gaps
+No open gaps. All contract invariants are implemented and tested.
