@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1476,37 +1477,52 @@ func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
 // WriteArticle's doc comment asserts: the ref is authoritative and the
 // request's own identity fields are not read on this path.
 //
-// Nothing else exercises it. Every other call site passes an identity that
-// already agrees with the ref — the writeArticle helper derives one from the
-// other, and both internal/app sites build them from one ArticleResult through
-// refFor — so the overwrite could be deleted entirely and the whole suite would
-// stay green while the doc comment kept claiming it.
+// Each of the four fields needs its own observable consequence, because they
+// fail independently. An earlier version of this test made all four disagree
+// but asserted only on completion and file contents, which depend on JobID and
+// FileIdx alone — deleting the ArtIdx and MessageID assignments left it green.
+// The three assertions below are one per mechanism:
 //
-// The fixture makes the two disagree on all four fields. If the request won,
-// the write would be routed to a job and file that were never registered and
-// the file under test would never complete. It calls WriteArticle directly
-// rather than through writeArticle, which derives the ref from the request and
-// so could never make them disagree.
+//   - JobID and FileIdx: the file completes at all. If the request won, the
+//     write would be routed to a job and file that were never registered.
+//   - MessageID: the second article is written rather than swallowed. Both
+//     requests carry the SAME wrong Message-ID, so if the request won, the
+//     second would hit seenDone as a late duplicate of the first, claim
+//     nothing, and the file would never reach both its parts.
+//   - ArtIdx: the drained durability records carry the refs' indices. This is
+//     the field with the quietest failure — a wrong ArtIdx here is persisted
+//     into the checkpoint, so it is asserted against the record a checkpoint
+//     would actually write rather than against anything in memory.
+//
+// It calls WriteArticle directly rather than through the writeArticle helper,
+// which derives the ref from the request and so could never make them disagree.
 func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
-	path := registerFile(t, dir, files, "real-job", 0, 1)
+	path := registerFile(t, dir, files, "real-job", 0, 2)
 
 	completed := make(chan int, 1)
 	opts := makeOpts(dir, files)
 	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
 	a := startAssembler(t, opts)
 
-	err := a.WriteArticle(t.Context(), ArticleRef{
-		JobID: "real-job", FileIdx: 0, ArtIdx: 3, MessageID: "real@id",
-	}, WriteRequest{
-		// Every identity field here is wrong, and deliberately so.
-		JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
-		Offset: 0, Data: []byte("AAAA"),
-	})
-	if err != nil {
-		t.Fatalf("WriteArticle: %v", err)
+	// The refs differ from each other in ArtIdx and MessageID; the requests do
+	// not differ at all. Every identity field on the request is wrong, and
+	// deliberately so.
+	write := func(artIdx int32, msgID string, off int64, data string) {
+		t.Helper()
+		err := a.WriteArticle(t.Context(), ArticleRef{
+			JobID: "real-job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+		}, WriteRequest{
+			JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
+			Offset: off, Data: []byte(data),
+		})
+		if err != nil {
+			t.Fatalf("WriteArticle %s: %v", msgID, err)
+		}
 	}
+	write(0, "real-a@id", 0, "AAAA")
+	write(1, "real-b@id", 4, "BBBB")
 
 	select {
 	case got := <-completed:
@@ -1515,11 +1531,27 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the file never completed, so the request's identity was used " +
-			"instead of the ref's: the write went to a job and file that were " +
-			"never registered")
+			"instead of the ref's: either the write was routed to a job and " +
+			"file that were never registered, or the second article was taken " +
+			"for a duplicate of the first because both requests name ghost@id")
 	}
 
-	if got := readFile(t, path); string(got) != "AAAA" {
-		t.Errorf("file contents = %q, want %q", got, "AAAA")
+	if got := readFile(t, path); string(got) != "AAAABBBB" {
+		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
+	}
+
+	written, err := a.SyncTargetFor("real-job", oneFileMap{n: 2}).Drain(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("Drain: %v — an out-of-range ArtIdx fails the barrier's "+
+			"file-local ordinal lookup, which is what the request's 99 would be", err)
+	}
+	gotIdx := make([]int32, 0, len(written))
+	for _, w := range written {
+		gotIdx = append(gotIdx, w.ArtIdx)
+	}
+	slices.Sort(gotIdx)
+	if !slices.Equal(gotIdx, []int32{0, 1}) {
+		t.Errorf("durable records carry ArtIdx %v, want [0 1] — the request's "+
+			"ArtIdx reached the checkpoint instead of the ref's", gotIdx)
 	}
 }
