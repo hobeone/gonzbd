@@ -577,8 +577,8 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 
 	defer a.wg.Done()
 
-	// Control message convention: JobID="" and FileIdx=-1, with the
-	// real job ID in MessageID.
+	// Control message convention: JobID="" and FileIdx=fileIdxCancelJob,
+	// with the real job ID in MessageID.
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
@@ -664,8 +664,8 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 
 	defer a.wg.Done()
 
-	// Control message convention: JobID="" and FileIdx=-2, with the
-	// real job ID in MessageID.
+	// Control message convention: JobID="" and FileIdx=fileIdxCloseHandles,
+	// with the real job ID in MessageID.
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
@@ -739,7 +739,8 @@ mainLoop:
 			// duplicating it: a closed reqs makes this receive permanently
 			// ready, so `default` would never be selected and this loop would
 			// spin at full CPU dispatching zero-value requests forever. A zero
-			// WriteRequest is not the cancel sentinel (JobID=="" && FileIdx==-1),
+			// WriteRequest is not the cancel sentinel (JobID=="" &&
+			// FileIdx==fileIdxCancelJob),
 			// so it would reach processRequest with an empty job ID.
 			//
 			// Note `break drain` must be labelled: a bare break would exit the
@@ -787,7 +788,7 @@ mainLoop:
 }
 
 // dispatchRequest handles a single request from the channel. It processes
-// cancel control messages (JobID="" && FileIdx==-1) by closing and removing
+// cancel control messages (JobID="" && FileIdx==fileIdxCancelJob) by closing and removing
 // all open files for the cancelled job, skips articles for already-cancelled
 // jobs, and delegates normal write requests to processRequest. Returns 1 if
 // a normal request was processed (for reqCount tracking), 0 otherwise.
