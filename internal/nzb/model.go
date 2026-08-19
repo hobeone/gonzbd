@@ -104,13 +104,14 @@ type NZB struct {
 	// on its own — it does not depend on anything downstream keying on the
 	// Message-ID.
 	//
-	// Something downstream still does, though, so this drop remains
-	// load-bearing rather than merely tidy: internal/assembler's
-	// FileWriter.seenDone/seenFailed are keyed on Message-ID until F1
-	// re-keys them on ArtIdx. Two articles sharing an ID would make the
-	// second look like a duplicate of the first, so it would be dropped and
-	// the assembled file left silently short. Do not weaken this to a
-	// counted warning, or narrow it to per-file, while that is true.
+	// That reason is sufficient by itself for both halves of the original
+	// instruction. Do not weaken this to a counted warning: a counter does
+	// not stop the double-fetch or the inflated byte total, and both are
+	// wrong regardless of whether anything downstream keys on the Message-ID.
+	// Do not narrow it to per-file either: a Message-ID repeated in a
+	// different file of the same document still names the same bytes, so a
+	// per-file scope would leave that case free to double-count and
+	// double-fetch just the same.
 	DuplicateMessageIDs int
 
 	// BadArticles counts segments rejected for implausible size.

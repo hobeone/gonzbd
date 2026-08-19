@@ -1,7 +1,7 @@
 # Article Validation Contract
 
-> **Status: in progress; dispositions settled.** F3, A7, F6, F2, F5/B1 and the
-> whole A-block have landed; C5, E3–E5 and F1/F4 remain proposed. §8 is no longer open — what each class of violation
+> **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1 and the
+> whole A-block have landed; C5, E3–E5 and F4 remain proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -318,14 +318,14 @@ Tier 2 is the one this codebase reaches for least and has gained most from
 type that cannot be made incapable of the bad value can still be made
 unreachable except through a gatekeeper.
 
-The empty-Message-ID saga is the worked example, and the obvious remedy is the
+The empty-Message-ID saga is the worked example, and the obvious remedy was the
 wrong one. Enforcing "every article has a Message-ID" at L0 so the assembler can
-assume it does work — but the assembler does not need Message-IDs at all:
-it keys `seenDone`/`seenFailed` on `msgID` when every `WriteRequest` already
-carries `ArtIdx`, a globally unique `int32` that cannot be empty. **Re-keying
-those maps deletes the same six functions' worth of machinery without enforcing
-anything, without an L0 change, and without a new error path.** §5.F carries
-this class.
+assume it does would have worked — but the assembler never needed Message-IDs
+at all: it used to key `seenDone`/`seenFailed` on `msgID` when every
+`WriteRequest` already carried `ArtIdx`, a globally unique `int32` that cannot
+be empty. **Re-keying those maps (F1) deleted the same six functions' worth of
+machinery without enforcing anything, without an L0 change, and without a new
+error path.** §5.F carries this class.
 
 The test: *if the invariant can be violated, is that because the data model
 permits it, or because the world does?* Only the second kind belongs on the
@@ -427,12 +427,13 @@ the rows.
 | E3 | range overlap | L4 | **telemetry only** | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
-| F1–F5 | structural (§5.F) | — | nothing — the state stops existing | — |
+| F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
+| F2–F5 | structural (§5.F) | — | nothing — the state stops existing | — |
 | F6 | digest over accepted IDs (§5.F) | — | ✅ **implemented** | — |
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → E5 → F1a (fixture `ArtIdx`) → F1b (flip the key) → E3/E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → E5 → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3/E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -527,16 +528,19 @@ so it counts. Above it the server rejects the line rather than the article,
 which is a different and worse failure — that half rejects.
 
 **A7 is enforced.** `partitionSegments` carries a document-wide seen-set and
-drops any segment whose Message-ID an accepted segment already claimed.
-Downstream code may therefore treat Message-ID as a unique key within a job.
-F2 removed the last by-ID lookup **in `internal/queue`**, but the guarantee is
-still load-bearing elsewhere: `internal/assembler`'s `FileWriter.seenDone` and
-`.seenFailed` remain keyed on Message-ID until F1 re-keys them on `ArtIdx`, and
-two articles sharing an ID would make the second look like a duplicate of the
-first — dropped, with the assembled file silently short. **A7 is not
-retire-able until F1 lands.** The drop once had
-to sit after the `digest.Write` to leave `NZB.MD5` unchanged; F6 removed that
-constraint, and the placement is now free.
+drops any segment whose Message-ID an accepted segment already claimed. F2
+removed the last by-ID lookup **in `internal/queue`**, and F1 removed the last
+one **in `internal/assembler`**: `FileWriter.seenDone` and `.seenFailed` now
+key on `ArtIdx`, so two articles sharing a Message-ID no longer risk the second
+being taken for a duplicate of the first. **A7 is no longer load-bearing for
+correctness anywhere downstream** — nothing left keys on Message-ID uniqueness
+to avoid misidentifying an article. It stays enforced regardless, for the
+reason `internal/nzb/model.go`'s `DuplicateMessageIDs` doc states on its own
+terms: a Message-ID addresses exactly one article, so a repeat names bytes
+already accounted for, and keeping both copies would double-count those bytes
+in `File.Bytes` and fetch them twice. The drop once had to sit after the
+`digest.Write` to leave `NZB.MD5` unchanged; F6 removed that constraint, and
+the placement is now free.
 
 **A1, A2a, A3 and A4 are rejected at L0** with a counter, exactly as
 `BadArticles` already works — the segment does not become an `Article` and is
@@ -551,8 +555,9 @@ counting is a field, not a mechanism.
 
 **A1 stays, but it is no longer load-bearing.** It is still worth converting the
 silent drop into a counted rejection, because a silent drop is how #392's
-machinery came to exist (§7). But F1 deletes that machinery structurally, so A1
-is now hygiene rather than a prerequisite — do not sequence F1 behind it.
+machinery came to exist (§7). F1 has landed and deleted that machinery
+structurally, so A1 was hygiene rather than a prerequisite — it did not need to
+be sequenced behind F1.
 
 **A1's placement in the loop no longer matters.** It once sat before the
 `digest.Write`, and moving it was a silent way to change `NZB.MD5`; with the
@@ -872,7 +877,7 @@ already thrown away.
 
 | # | Change | Deletes |
 |---|---|---|
-| F1 | key `FileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
+| F1 | ✅ **done** — key `FileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
 | F2 | ✅ **done** — call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
 | F3 | key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
