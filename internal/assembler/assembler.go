@@ -1627,9 +1627,14 @@ func postAnomalyReason(path string, r faultedArticle) string {
 		r.offset, articleLabel(r.id))
 }
 
-// articleLabel identifies an article for a human. Not every article has a
-// Message-ID — the NZB may omit it — so the index is the fallback rather than
-// printing an empty string where an identifier belongs.
+// articleLabel identifies an article for a human.
+//
+// An NZB may omit a segment's Message-ID, but such a segment is dropped at
+// parse and counted, so nothing the assembler sees carries an empty one. The
+// index fallback is therefore unreachable from any production path and is kept
+// only so this cannot print an empty string where an identifier belongs — a
+// display concern, not a claim that untracked articles exist. Removing msgID
+// from articleID altogether is a separate change.
 func articleLabel(id articleID) string {
 	if id.msgID == "" {
 		return fmt.Sprintf("#%d", id.artIdx)

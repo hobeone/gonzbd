@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1477,18 +1478,20 @@ func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
 // WriteArticle's doc comment asserts: the ref is authoritative and the
 // request's own identity fields are not read on this path.
 //
-// Each of the four fields needs its own observable consequence, because they
-// fail independently. An earlier version of this test made all four disagree
-// but asserted only on completion and file contents, which depend on JobID and
+// Each field needs its own observable consequence, because they fail
+// independently. An earlier version of this test made all four disagree but
+// asserted only on completion and file contents, which depend on JobID and
 // FileIdx alone — deleting the ArtIdx and MessageID assignments left it green.
-// The three assertions below are one per mechanism:
+//
+// This test covers three of the four. MessageID moved to
+// TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports: it used to be
+// discriminated here through seenDone, on the strength of both requests
+// sharing one Message-ID, and seenDone keys on ArtIdx now — so that leg went
+// vacuous the moment the maps were re-keyed and had to be rebuilt on something
+// that still reads the field.
 //
 //   - JobID and FileIdx: the file completes at all. If the request won, the
 //     write would be routed to a job and file that were never registered.
-//   - MessageID: the second article is written rather than swallowed. Both
-//     requests carry the SAME wrong Message-ID, so if the request won, the
-//     second would hit seenDone as a late duplicate of the first, claim
-//     nothing, and the file would never reach both its parts.
 //   - ArtIdx: the drained durability records carry the refs' indices. This is
 //     the field with the quietest failure — a wrong ArtIdx here is persisted
 //     into the checkpoint, so it is asserted against the record a checkpoint
@@ -1553,6 +1556,66 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 	if !slices.Equal(gotIdx, []int32{0, 1}) {
 		t.Errorf("durable records carry ArtIdx %v, want [0 1] — the request's "+
 			"ArtIdx reached the checkpoint instead of the ref's", gotIdx)
+	}
+}
+
+// TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports pins the fourth
+// identity field, which its sibling above can no longer cover.
+//
+// That test discriminated MessageID through seenDone: both requests carried one
+// Message-ID, so a request that won would make the second article look like a
+// duplicate of the first. seenDone keys on ArtIdx now and never reads the
+// Message-ID, so deleting the overwrite left that assertion green — the leg
+// went vacuous the moment the maps were re-keyed, without failing.
+//
+// What still reads the field is the human-facing report. articleLabel renders
+// an article as <message-id>, and postAnomalyReason names both sides of an
+// offset collision, so a collision's reason string is where the ref's
+// Message-ID becomes observable. If the request won, both sides would be
+// reported as <ghost@id> and the operator would be told an article collided
+// with itself.
+func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "real-job", 0, 2)
+
+	anomaly := make(chan string, 1)
+	opts := makeOpts(dir, files)
+	opts.OnPostAnomaly = func(_ string, _ int, reason string) { anomaly <- reason }
+	a := startAssembler(t, opts)
+
+	// Two different articles claiming one offset. Their refs carry distinct
+	// Message-IDs; both requests carry the same wrong one.
+	for _, art := range []struct {
+		artIdx int32
+		msgID  string
+	}{
+		{0, "incumbent@id"},
+		{1, "arrival@id"},
+	} {
+		if err := a.WriteArticle(t.Context(), ArticleRef{
+			JobID: "real-job", FileIdx: 0, ArtIdx: art.artIdx, MessageID: art.msgID,
+		}, WriteRequest{
+			JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
+			Offset: 0, Data: []byte("AAAA"),
+		}); err != nil {
+			t.Fatalf("WriteArticle %s: %v", art.msgID, err)
+		}
+	}
+
+	select {
+	case reason := <-anomaly:
+		if strings.Contains(reason, "ghost@id") {
+			t.Errorf("the collision was reported as %q — the request's Message-ID "+
+				"reached the worker instead of the ref's", reason)
+		}
+		for _, want := range []string{"incumbent@id", "arrival@id"} {
+			if !strings.Contains(reason, want) {
+				t.Errorf("the collision report %q does not name %s", reason, want)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no anomaly was reported for two articles claiming one offset")
 	}
 }
 
