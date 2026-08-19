@@ -153,14 +153,14 @@ func TestNoteArticlesUnwritten_IsSilentOnAnEmptySet(t *testing.T) {
 // would clear an Emitted bit the ack is about to resolve.
 func TestFailPermanent_KeepsTheArticleCounted(t *testing.T) {
 	w := newTestFileWriter(t)
-	w.seenDone["m1"] = struct{}{}
+	w.seenDone[1] = struct{}{}
 
-	w.failPermanent(articleID{msgID: "m1", artIdx: 1})
+	w.failPermanent(1)
 
-	if _, still := w.seenDone["m1"]; still {
+	if _, still := w.seenDone[1]; still {
 		t.Error("a permanently refused article is still recorded as done; nothing wrote its bytes")
 	}
-	if _, failed := w.seenFailed["m1"]; !failed {
+	if _, failed := w.seenFailed[1]; !failed {
 		t.Error("the refused article is not in seenFailed, so a redelivery would be " +
 			"counted a second time and overshoot the file's part total")
 	}
@@ -170,10 +170,11 @@ func TestFailPermanent_KeepsTheArticleCounted(t *testing.T) {
 			"unusable article forever", got)
 	}
 
-	// An empty Message-ID has nothing to key either set on, so it is a no-op
-	// rather than a map entry under "".
-	w.failPermanent(articleID{artIdx: 2})
-	if _, bogus := w.seenFailed[""]; bogus {
-		t.Error("an article with no Message-ID was recorded under the empty key")
+	// An article with no Message-ID is keyed on its ArtIdx like any other —
+	// ArtIdx has no value that doubles as "absent", so there is no empty-key
+	// case to special-case here.
+	w.failPermanent(2)
+	if _, failed := w.seenFailed[2]; !failed {
+		t.Error("an article with no Message-ID was not recorded in seenFailed under its ArtIdx")
 	}
 }

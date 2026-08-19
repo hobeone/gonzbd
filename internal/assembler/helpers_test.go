@@ -280,7 +280,7 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	if got := f.w.writtenSoFar(); len(got) != 0 {
 		t.Errorf("writtenSoFar = %v after a rejected offset, want empty", got)
 	}
-	if _, failed := f.w.seenFailed["bad"]; !failed {
+	if _, failed := f.w.seenFailed[4]; !failed {
 		t.Error("the rejected article was not moved to seenFailed")
 	}
 }

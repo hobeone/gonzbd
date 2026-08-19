@@ -1252,13 +1252,13 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	if f == nil || req.MessageID == "" {
+	if f == nil {
 		return
 	}
-	if _, accepted := f.w.seenDone[req.MessageID]; accepted {
+	if _, accepted := f.w.seenDone[req.ArtIdx]; accepted {
 		return
 	}
-	if _, failed := f.w.seenFailed[req.MessageID]; failed {
+	if _, failed := f.w.seenFailed[req.ArtIdx]; failed {
 		// Already resolved in the other direction by the path that failed it.
 		return
 	}
@@ -1367,7 +1367,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
 		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-	return f.w.admitPermanentFailure(req.MessageID)
+	return f.w.admitPermanentFailure(req.ArtIdx)
 }
 
 // handleSuccessArticle hands one article's bytes to the file's writer.
@@ -1380,51 +1380,32 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 	w := f.w
 	id := articleID{msgID: req.MessageID, artIdx: req.ArtIdx}
-	if req.MessageID != "" {
-		if _, dup := w.seenDone[req.MessageID]; dup {
-			// A duplicate of an article already accepted. Its first copy is
-			// either still buffered or already written; either way this copy's
-			// bytes are redundant, and re-writing them would be a second
-			// WriteAt for the same range. Nothing is claimed here — the
-			// barrier absorbs duplicate reports itself (R12).
-			if req.Data != nil {
-				a.releaseBuffer(req.Data)
-			}
-			return false
-		}
-		if _, was := w.seenFailed[req.MessageID]; was {
-			// A retry of an article already counted as failed. The false
-			// return keeps partsWritten from counting it twice; the bytes are
-			// still written, because they are still the file's content.
-			w.admitRetryOfFailed(req.MessageID)
-			if err := a.acceptArticle(f, id, req); err != nil {
-				a.routeAcceptFailure(f, req, err)
-			}
-			return false
-		}
-	} else if _, resolved := w.resolvedUntracked[req.ArtIdx]; resolved {
-		// The same arm as seenFailed above, for an article no map keyed on
-		// Message-ID can hold. It is resolved, so its bytes are not wanted and
-		// its part is already counted; writing them would displace whoever owns
-		// the offset now, and counting it again would carry the file to
-		// TotalParts over a segment that never arrived.
-		//
-		// Unlike the seenFailed arm this does NOT write the bytes. That arm
-		// serves an article the storage layer failed on, whose content is still
-		// the file's; this one serves an article another article has already
-		// superseded at its offset.
+	if _, dup := w.seenDone[req.ArtIdx]; dup {
+		// A duplicate of an article already accepted. Its first copy is
+		// either still buffered or already written; either way this copy's
+		// bytes are redundant, and re-writing them would be a second
+		// WriteAt for the same range. Nothing is claimed here — the
+		// barrier absorbs duplicate reports itself (R12).
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
+		}
+		return false
+	}
+	if _, was := w.seenFailed[req.ArtIdx]; was {
+		// A retry of an article already counted as failed. The false
+		// return keeps partsWritten from counting it twice; the bytes are
+		// still written, because they are still the file's content.
+		w.admitRetryOfFailed(req.ArtIdx)
+		if err := a.acceptArticle(f, id, req); err != nil {
+			a.routeAcceptFailure(f, req, err)
 		}
 		return false
 	}
 	// Recorded before the write is attempted, not after, so a write path that
 	// fails can move the article to seenFailed without this function putting
 	// it straight back — and recorded in the same breath as the count, which
-	// is what admitAccepted exists to make inseparable. Its doc carries the
-	// reasoning, including why an article with no Message-ID is counted
-	// without being recorded.
-	w.admitAccepted(req.MessageID)
+	// is what admitAccepted exists to make inseparable.
+	w.admitAccepted(req.ArtIdx)
 	if err := a.acceptArticle(f, id, req); err != nil {
 		// Whether it still counts depends on WHICH failure it was, and that is
 		// the A1 split reaching the part total.
@@ -1473,7 +1454,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.failPermanent(id)
+		f.w.failPermanent(id.artIdx)
 		return &rejectedArticleError{reason: reason}
 	}
 	// An offset whose owner has already been reported Written is settled, and
@@ -1487,7 +1468,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.failPermanent(id)
+		f.w.failPermanent(id.artIdx)
 		rej := &rejectedArticleError{
 			reason: "claims a byte offset already written by another article",
 		}
@@ -1546,17 +1527,6 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 			a.opts.OnPostAnomaly(req.JobID, req.FileIdx, rej.anomaly)
 		}
 		return true
-	}
-	// An article the writer does not track cannot be rolled back by it:
-	// w.fail returns early on an empty message ID, so nothing appends it to
-	// w.faulted and releaseFaulted will never see it. It was counted before
-	// the accept like any other, so the count is given back here.
-	//
-	// Only on THIS branch. A rejected article keeps its part deliberately —
-	// it is resolved permanently failed and will never arrive again, so a
-	// file declining to count it waits forever.
-	if req.MessageID == "" {
-		f.w.giveBackUntrackedPart()
 	}
 	// Released here as well as by processRequest's drain. This one is not
 	// redundant belt-and-braces: it keeps the roll-back adjacent to the
@@ -1657,9 +1627,14 @@ func postAnomalyReason(path string, r faultedArticle) string {
 		r.offset, articleLabel(r.id))
 }
 
-// articleLabel identifies an article for a human. Not every article has a
-// Message-ID — the NZB may omit it — so the index is the fallback rather than
-// printing an empty string where an identifier belongs.
+// articleLabel identifies an article for a human.
+//
+// An NZB may omit a segment's Message-ID, but such a segment is dropped at
+// parse and counted, so nothing the assembler sees carries an empty one. The
+// index fallback is therefore unreachable from any production path and is kept
+// only so this cannot print an empty string where an identifier belongs — a
+// display concern, not a claim that untracked articles exist. Removing msgID
+// from articleID altogether is a separate change.
 func articleLabel(id articleID) string {
 	if id.msgID == "" {
 		return fmt.Sprintf("#%d", id.artIdx)

@@ -930,7 +930,7 @@ including every failure path.
 
 ## Duplicate and late-article handling
 
-- **Per-writer `seenDone` / `seenFailed`**: dedup by Message-ID, membership-only.
+- **Per-writer `seenDone` / `seenFailed`**: dedup by `ArtIdx`, membership-only.
 
   This used to say `seenDone`'s value was "the offset the first copy was
   accepted at, which the duplicate branch needs". Both halves were wrong. The
@@ -989,20 +989,23 @@ including every failure path.
     `admitPermanentFailure` if it does not already hold one. `TotalParts` counts
     manifest segments, so two segments claiming one offset are two parts the
     file waits for; a file that stopped counting the loser could never reach
-    `TotalParts`, which left it permanently one short (#386). An article with no
-    Message-ID is exempt from the call, not from the rule — `admitAccepted`
-    counts it without recording it, so counting it again here would overshoot.
+    `TotalParts`, which left it permanently one short (#386). Every displaced
+    article goes through the same call, keyed on `ArtIdx`: there is no
+    Message-ID-specific case to exempt, because `seenDone` and `seenFailed` are
+    keyed on `ArtIdx` — which an NZB can never leave empty — not on the
+    Message-ID an earlier version of this code needed a separate exemption for.
 
-    Its disposition is recorded in `FileWriter.resolvedUntracked` instead, keyed
-    on the article index, because `seenDone` and `seenFailed` are keyed on the
-    Message-ID an NZB may omit and no map can hold an empty key.
-    `handleSuccessArticle`'s dedup arms are both gated on a non-empty
-    Message-ID, so without that record every redelivery of such an article was
-    counted afresh and displaced the current owner in turn — the count climbed
-    one per copy until it reached `TotalParts` over a segment that had never
-    arrived, and the file was finalized short. Keeping the part and recording
-    the disposition are one change, not two: keeping it alone converts the
-    wedge into a silent truncation.
+    `handleSuccessArticle`'s and `handleLateDuplicate`'s dedup arms test
+    `seenDone` before `seenFailed`, so a redelivery of the loser takes the
+    duplicate arm — matched by `ArtIdx` — rather than being re-written and
+    displacing the winner in turn. Before F1's re-key, those arms were gated on
+    a non-empty Message-ID, so an article carrying none needed a separate
+    record, `FileWriter.resolvedUntracked`, to get the same protection: without
+    it, every redelivery of such an article was counted afresh and displaced
+    the current owner in turn — the count climbed one per copy until it reached
+    `TotalParts` over a segment that had never arrived, and the file was
+    finalized short. `resolvedUntracked` is gone; `seenFailed` alone now does
+    that job for every article, tracked or not.
 
     Its buffered bytes go with it, through `writeCache.discardAt`, and that call
     is load-bearing rather than tidy. `wc.buffer` evicts the entry itself
@@ -1018,7 +1021,7 @@ including every failure path.
   that two segments claim one byte range without asserting the post is
   malformed, because a redundant posting and a server-mangled `=ypart begin=`
   produce the same observation and yEnc checksums the payload, never the header.
-- **Cross-state dedup**: a Message-ID previously counted as a success arriving as
+- **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
   handled by `handleLateDuplicate` — data returned to the pool, no disk write, no

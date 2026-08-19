@@ -74,16 +74,25 @@ type fileBuf struct {
 // carried. The cache is the only place that knows an article's bytes are still
 // in memory, and a claim made before then is one no later run can check (#355).
 //
-// Both fields are carried because they answer different questions. msgID drives
-// this package's own duplicate handling (FileWriter.seenDone / seenFailed),
-// which is keyed on Message-ID. artIdx is what FileWriter.noteWritten puts on a
-// durability.WrittenArticle, and is therefore what the barrier places a durable
-// bit for — so it must match the queue's numbering. Neither reaches the queue
-// from here: this package has no ack path in either direction.
+// Both fields are carried, but they no longer answer the same question equally.
+// artIdx is identity: it is what FileWriter.seenDone / seenFailed key duplicate
+// handling on, and what FileWriter.noteWritten puts on a durability.WrittenArticle,
+// so it must match the queue's numbering. msgID travels alongside it for
+// logging and telemetry. Neither reaches the queue from here: this package has
+// no ack path in either direction.
 type articleID struct {
 	msgID  string
 	artIdx int32
 }
+
+// sameArticle reports whether two identities name the same article.
+//
+// The index alone decides. msgID travels with the article for logging and
+// telemetry and is deliberately NOT compared: identity is the manifest index,
+// which is what FileWriter's seen-sets key on. Comparing the pair as well would
+// give the assembler a second, finer notion of sameness than the one its
+// accounting uses, and the two could disagree.
+func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
 
 // bufferedArticle is a flushable article with its offset, data, and identity.
 type bufferedArticle struct {
@@ -198,10 +207,19 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		// stayed queued to be written and acked. Two terminal dispositions for
 		// one article.
 		//
-		// Reachable for an article with no Message-ID, which is the one kind
-		// handleSuccessArticle's dedup arm cannot return early for: no map can
-		// hold an empty key, so a second delivery runs the whole accept path.
-		if existing.id != art.id {
+		// Not reachable from Accept as it stands, and kept as a backstop rather
+		// than as a detector. Accept calls wc.discardAt the moment its
+		// acceptedAt check finds a different owner, and discardAt deletes the
+		// entry — so by the time buffer runs, the collision case has no
+		// incumbent left here to find. The same-article case is excluded by the
+		// test below instead.
+		//
+		// It stays because this is the only place that knows what buffer
+		// dropped, so a future path that reaches buffer without going through
+		// Accept's check still reports rather than silently overwrites. That is
+		// a weaker justification than "buffer owns the eviction", which is what
+		// this said while discardAt already owned it.
+		if !existing.id.sameArticle(art.id) {
 			displaced = []articleID{existing.id}
 		}
 	}

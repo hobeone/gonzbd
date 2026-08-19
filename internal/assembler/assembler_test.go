@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -774,8 +775,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if !a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return true for first-time failure")
 		}
-		if _, ok := f.w.seenFailed["msg1"]; !ok {
-			t.Error("expected seenFailed to contain msg1")
+		if _, ok := f.w.seenFailed[0]; !ok {
+			t.Error("expected seenFailed to contain artidx 0")
 		}
 
 		// Duplicate failure.
@@ -784,8 +785,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		// Cross-check: already counted as success.
-		f.w.seenFailed = make(map[string]struct{})
-		f.w.seenDone["msg1"] = struct{}{}
+		f.w.seenFailed = make(map[int32]struct{})
+		f.w.seenDone[0] = struct{}{}
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false when already counted as success")
 		}
@@ -808,8 +809,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if !a.handleSuccessArticle(f, req) {
 			t.Error("expected handleSuccessArticle to return true")
 		}
-		if _, ok := f.w.seenDone["msg1"]; !ok {
-			t.Error("expected seenDone to contain msg1")
+		if _, ok := f.w.seenDone[0]; !ok {
+			t.Error("expected seenDone to contain artidx 0")
 		}
 		if got := f.w.writtenSoFar(); len(got) != 1 {
 			t.Fatalf("writtenSoFar = %v, want 1 entry — the bytes reached WriteAt", got)
@@ -824,14 +825,14 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// Cross-check: already counted as failure. The retry still writes —
 		// the bytes are still the file's content — but must not be counted
 		// toward partsWritten a second time.
-		f.w.seenDone = make(map[string]struct{})
-		f.w.seenFailed["msg1"] = struct{}{}
+		f.w.seenDone = make(map[int32]struct{})
+		f.w.seenFailed[0] = struct{}{}
 		req3 := WriteRequest{JobID: "job1", ArtIdx: 0, MessageID: "msg1", Offset: 20, Data: []byte("world")}
 		if a.handleSuccessArticle(f, req3) {
 			t.Error("expected handleSuccessArticle to return false when already counted as failure")
 		}
-		if _, ok := f.w.seenDone["msg1"]; !ok {
-			t.Error("expected seenDone to contain msg1 after the retry")
+		if _, ok := f.w.seenDone[0]; !ok {
+			t.Error("expected seenDone to contain artidx 0 after the retry")
 		}
 	})
 
@@ -942,12 +943,12 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if got := f.w.writtenSoFar(); len(got) != 0 {
 			t.Errorf("writtenSoFar = %v after a failed write, want empty", got)
 		}
-		if _, ok := f.w.seenFailed["msgFail"]; ok {
-			t.Error("msgFail was recorded as FAILED by a storage fault, which A1 forbids: " +
+		if _, ok := f.w.seenFailed[0]; ok {
+			t.Error("artidx 0 was recorded as FAILED by a storage fault, which A1 forbids: " +
 				"a full disk is not evidence about the article's availability")
 		}
-		if _, ok := f.w.seenDone["msgFail"]; ok {
-			t.Error("msgFail should not remain in seenDone after write failure")
+		if _, ok := f.w.seenDone[0]; ok {
+			t.Error("artidx 0 should not remain in seenDone after write failure")
 		}
 	})
 }
@@ -1477,18 +1478,20 @@ func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
 // WriteArticle's doc comment asserts: the ref is authoritative and the
 // request's own identity fields are not read on this path.
 //
-// Each of the four fields needs its own observable consequence, because they
-// fail independently. An earlier version of this test made all four disagree
-// but asserted only on completion and file contents, which depend on JobID and
+// Each field needs its own observable consequence, because they fail
+// independently. An earlier version of this test made all four disagree but
+// asserted only on completion and file contents, which depend on JobID and
 // FileIdx alone — deleting the ArtIdx and MessageID assignments left it green.
-// The three assertions below are one per mechanism:
+//
+// This test covers three of the four. MessageID moved to
+// TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports: it used to be
+// discriminated here through seenDone, on the strength of both requests
+// sharing one Message-ID, and seenDone keys on ArtIdx now — so that leg went
+// vacuous the moment the maps were re-keyed and had to be rebuilt on something
+// that still reads the field.
 //
 //   - JobID and FileIdx: the file completes at all. If the request won, the
 //     write would be routed to a job and file that were never registered.
-//   - MessageID: the second article is written rather than swallowed. Both
-//     requests carry the SAME wrong Message-ID, so if the request won, the
-//     second would hit seenDone as a late duplicate of the first, claim
-//     nothing, and the file would never reach both its parts.
 //   - ArtIdx: the drained durability records carry the refs' indices. This is
 //     the field with the quietest failure — a wrong ArtIdx here is persisted
 //     into the checkpoint, so it is asserted against the record a checkpoint
@@ -1553,6 +1556,66 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 	if !slices.Equal(gotIdx, []int32{0, 1}) {
 		t.Errorf("durable records carry ArtIdx %v, want [0 1] — the request's "+
 			"ArtIdx reached the checkpoint instead of the ref's", gotIdx)
+	}
+}
+
+// TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports pins the fourth
+// identity field, which its sibling above can no longer cover.
+//
+// That test discriminated MessageID through seenDone: both requests carried one
+// Message-ID, so a request that won would make the second article look like a
+// duplicate of the first. seenDone keys on ArtIdx now and never reads the
+// Message-ID, so deleting the overwrite left that assertion green — the leg
+// went vacuous the moment the maps were re-keyed, without failing.
+//
+// What still reads the field is the human-facing report. articleLabel renders
+// an article as <message-id>, and postAnomalyReason names both sides of an
+// offset collision, so a collision's reason string is where the ref's
+// Message-ID becomes observable. If the request won, both sides would be
+// reported as <ghost@id> and the operator would be told an article collided
+// with itself.
+func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "real-job", 0, 2)
+
+	anomaly := make(chan string, 1)
+	opts := makeOpts(dir, files)
+	opts.OnPostAnomaly = func(_ string, _ int, reason string) { anomaly <- reason }
+	a := startAssembler(t, opts)
+
+	// Two different articles claiming one offset. Their refs carry distinct
+	// Message-IDs; both requests carry the same wrong one.
+	for _, art := range []struct {
+		artIdx int32
+		msgID  string
+	}{
+		{0, "incumbent@id"},
+		{1, "arrival@id"},
+	} {
+		if err := a.WriteArticle(t.Context(), ArticleRef{
+			JobID: "real-job", FileIdx: 0, ArtIdx: art.artIdx, MessageID: art.msgID,
+		}, WriteRequest{
+			JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
+			Offset: 0, Data: []byte("AAAA"),
+		}); err != nil {
+			t.Fatalf("WriteArticle %s: %v", art.msgID, err)
+		}
+	}
+
+	select {
+	case reason := <-anomaly:
+		if strings.Contains(reason, "ghost@id") {
+			t.Errorf("the collision was reported as %q — the request's Message-ID "+
+				"reached the worker instead of the ref's", reason)
+		}
+		for _, want := range []string{"incumbent@id", "arrival@id"} {
+			if !strings.Contains(reason, want) {
+				t.Errorf("the collision report %q does not name %s", reason, want)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no anomaly was reported for two articles claiming one offset")
 	}
 }
 
@@ -1640,5 +1703,112 @@ func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
 				t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 			}
 		})
+	}
+}
+
+// TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID pins that the
+// assembler tells articles apart by index.
+//
+// The input is one the parser cannot produce: A7 makes a repeated Message-ID
+// impossible in a parsed NZB, and the restore path is assumed to satisfy A7
+// rather than re-checking it. So this documents a property, not a defect — for
+// every reachable input the two keys are in bijection and behave identically.
+//
+// It is worth pinning anyway because the property is invisible otherwise. While
+// dedup keyed on the Message-ID, the assembler's correctness rested on A7
+// holding, and nothing else in the suite would notice if that were reintroduced.
+func TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "job1", 0, 2)
+
+	completed := make(chan int, 1)
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+	a := startAssembler(t, opts)
+
+	// Same Message-ID, different indices, different offsets.
+	for _, art := range []struct {
+		artIdx int32
+		off    int64
+		data   string
+	}{
+		{0, 0, "AAAA"},
+		{1, 4, "BBBB"},
+	} {
+		if err := writeArticle(t.Context(), a, WriteRequest{
+			JobID: "job1", FileIdx: 0, ArtIdx: art.artIdx, MessageID: "shared@t",
+			Offset: art.off, Data: []byte(art.data),
+		}); err != nil {
+			t.Fatalf("writeArticle %d: %v", art.artIdx, err)
+		}
+	}
+
+	select {
+	case got := <-completed:
+		if got != 0 {
+			t.Errorf("completed file %d, want 0", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the file never completed: the second article was taken for a " +
+			"duplicate of the first because they share a Message-ID, so " +
+			"identity is not the index")
+	}
+	if got := readFile(t, path); string(got) != "AAAABBBB" {
+		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
+	}
+}
+
+// TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity pins that a late
+// article for a completed file is resolved by index, with no early return that
+// depends on it carrying a Message-ID.
+//
+// An unresolved late article leaves the job waiting on it forever, so the guard
+// removed here was the difference between reporting and hanging — for an input
+// that, since the parse gate landed, no production path produces.
+func TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 1)
+
+	rejected := make(chan int32, 1)
+	opts := makeOpts(dir, files)
+	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) { rejected <- artIdx }
+	a := startAssembler(t, opts)
+
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "first@t",
+		Offset: 0, Data: []byte("AAAA"),
+	}); err != nil {
+		t.Fatalf("writeArticle: %v", err)
+	}
+	// A late article for the now-complete file, carrying no Message-ID.
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 1, MessageID: "",
+		Offset: 0, Data: []byte("BBBB"),
+	}); err != nil {
+		t.Fatalf("writeArticle late: %v", err)
+	}
+	select {
+	case got := <-rejected:
+		if got != 1 {
+			t.Errorf("rejected ArtIdx %d, want 1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late article was never resolved, so the job waits on it " +
+			"forever: handleLateDuplicate still returns early when the article " +
+			"carries no Message-ID")
+	}
+}
+
+// TestArticleID_IdentityIsTheIndexAlone pins that msgID is not compared.
+func TestArticleID_IdentityIsTheIndexAlone(t *testing.T) {
+	a := articleID{msgID: "one@t", artIdx: 4}
+	b := articleID{msgID: "two@t", artIdx: 4}
+	if !a.sameArticle(b) {
+		t.Error("two identities with one index compared unequal; msgID is still part of identity")
+	}
+	if a.sameArticle(articleID{msgID: "one@t", artIdx: 5}) {
+		t.Error("two identities with different indices compared equal")
 	}
 }

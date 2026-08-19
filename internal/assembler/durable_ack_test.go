@@ -295,7 +295,7 @@ func TestDisplacedArticleIsFailed(t *testing.T) {
 	if len(got) != 1 || got[0].ArtIdx != 8 {
 		t.Errorf("Drain = %v, want exactly the surviving article (8)", got)
 	}
-	if _, still := w.seenDone["msg7"]; still {
+	if _, still := w.seenDone[7]; still {
 		t.Error("the displaced article is still in seenDone")
 	}
 	// It has to be reported to the caller, or its Emitted bit is never cleared
@@ -488,17 +488,17 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	if !a.handleSuccessArticle(f, req) {
 		t.Fatal("article was not accepted")
 	}
-	if _, ok := f.w.seenDone["msg0"]; !ok {
+	if _, ok := f.w.seenDone[0]; !ok {
 		t.Fatal("precondition: accepting the article should record it in seenDone")
 	}
 
 	// Force the write to fail directly, mirroring what a storage fault does.
 	f.w.fail(articleID{msgID: "msg0", artIdx: 0})
-	if _, stillDone := f.w.seenDone["msg0"]; stillDone {
+	if _, stillDone := f.w.seenDone[0]; stillDone {
 		t.Error("the failed article is still in seenDone; its retry would take " +
 			"the discard branch and never be written")
 	}
-	if _, failed := f.w.seenFailed["msg0"]; failed {
+	if _, failed := f.w.seenFailed[0]; failed {
 		t.Error("a storage fault resolved against the article (A1). It also makes the " +
 			"retry take the \"already counted as failed\" branch, which writes the bytes " +
 			"without counting them and leaves the part total permanently short")
@@ -532,18 +532,15 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	}
 }
 
-// TestFailWithoutAMessageIDIsANoOp translates
-// TestFailArticleWithoutAMessageIDStillAcks. There is no ack for the queue
-// to hear any more, so the only live claim left is that fail() tolerates an
-// empty Message-ID — no dedup key to record — without touching the seen-set
-// maps.
-func TestFailWithoutAMessageIDIsANoOp(t *testing.T) {
-	w := newTestFileWriter(t)
-	w.fail(articleID{msgID: "", artIdx: 3})
-	if len(w.seenFailed) != 0 {
-		t.Errorf("seenFailed = %v; an empty Message-ID is not a dedup key", w.seenFailed)
-	}
-}
+// The test that stood here, TestFailToleratesAnEmptyMessageID, translated
+// TestFailArticleWithoutAMessageIDStillAcks and has been folded into
+// accounting_test.go's TestFileWriter_FailRollsBackEveryArticlesPart, whose
+// table already runs the empty-Message-ID identity alongside a real one. Its
+// one distinct assertion — that fail leaves seenFailed alone — moved with it.
+//
+// The claim it made about seenFailed was also too strong. fail does not write
+// seenFailed, but it is not the case that only admitPermanentFailure does:
+// failPermanent records there too.
 
 // TestRelievePressureForUnknownFileIsSkippedSafely covers the branch taken
 // when the cache holds articles for a file relievePressure cannot find in
