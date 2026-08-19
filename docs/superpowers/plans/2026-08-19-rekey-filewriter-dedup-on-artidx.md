@@ -138,6 +138,12 @@ Message: `refactor(assembler): delete resolvedUntracked, whose only writer was t
 
 The core change. `ArtIdx` is a flat global index into `Manifest.articleIDs`, and `fileArticleOffsets` gives each file a contiguous range of it — so within one `FileWriter` the indices are distinct by construction, which is what makes them a sound key.
 
+**This task is behaviourally inert for every reachable input, and the implementer must not go looking for a red-green cycle that does not exist.** Within a file, `msgID` and `ArtIdx` are in bijection: A7 makes the Message-ID unique document-wide (`partitionSegments` carries a `seenIDs` set and drops repeats), and the index is unique by construction. A redelivery carries both unchanged. Keying on either therefore produces identical behaviour for every input the parser can produce, and the restore path is assumed to satisfy A7 under the no-backcompat ground rule rather than re-checking it.
+
+What the change buys is structural, not corrective: the empty-key class stops existing rather than being guarded, and the assembler stops *resting on* A7 for its own correctness — so a future relaxation of A7's scope, or a defect in its enforcement, can no longer silently short a file here. Neither is a defect being fixed today.
+
+The verification is therefore **inertness**, not a new failing test: the full suite must pass unchanged. A test that fails during this task is evidence of a mistake in the re-key, or a test that was pinning the Message-ID key itself — triage it, do not adjust production code to keep it green.
+
 **Files:**
 - Modify: `internal/assembler/filewriter.go` (both fields, `newFileWriter`, `admitAccepted`, `admitRetryOfFailed`, `admitPermanentFailure`, `rollbackPart`, `failPermanent`)
 - Modify: `internal/assembler/assembler.go` (`handleSuccessArticle`, `handleLateDuplicate` read sites)
@@ -151,21 +157,24 @@ The core change. `ArtIdx` is a flat global index into `Manifest.articleIDs`, and
   - `func (w *FileWriter) admitPermanentFailure(artIdx int32) bool`
   - fields `seenDone map[int32]struct{}`, `seenFailed map[int32]struct{}`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the design pin**
 
-Add to `internal/assembler/assembler_test.go`. This is the behavioural witness for the whole change: it is the property that does not hold today.
+Add to `internal/assembler/assembler_test.go`. This is **not** a red-green pin and its comment must not pretend otherwise — see the inertness note above. It pins a design decision, using an input the parser cannot produce, and its job is to fail if someone re-keys on the Message-ID again.
 
 ```go
-// TestFileWriter_TwoArticlesSharingAMessageIDAreNotConfused pins that the
-// assembler tells articles apart by index, not by Message-ID.
+// TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID pins that the
+// assembler tells articles apart by index.
 //
-// Invariant A7 makes a repeated Message-ID impossible in a parsed NZB, so this
-// state cannot arise from a real document today. The point is precisely that
-// the assembler no longer DEPENDS on A7 for its own correctness: while dedup
-// keyed on the Message-ID, two articles sharing one made the second look like a
-// redelivery of the first — released, never written, and the file finalized a
-// segment short with no error raised.
-func TestFileWriter_TwoArticlesSharingAMessageIDAreNotConfused(t *testing.T) {
+// The input is one the parser cannot produce: A7 makes a repeated Message-ID
+// impossible in a parsed NZB, and the restore path is assumed to satisfy A7
+// rather than re-checking it. So this documents a property, not a defect — for
+// every reachable input the two keys are in bijection and behave identically.
+//
+// It is worth pinning anyway because the property is invisible otherwise. While
+// dedup keyed on the Message-ID, the assembler's correctness rested on A7
+// holding; re-keying removed that dependence, and nothing else in the suite
+// would notice if it were reintroduced.
+func TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
 	path := registerFile(t, dir, files, "job1", 0, 2)
@@ -198,8 +207,8 @@ func TestFileWriter_TwoArticlesSharingAMessageIDAreNotConfused(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the file never completed: the second article was taken for a " +
-			"duplicate of the first because they share a Message-ID, so its " +
-			"bytes were released and the file is a segment short")
+			"duplicate of the first because they share a Message-ID, so " +
+			"identity is not the index")
 	}
 	if got := readFile(t, path); string(got) != "AAAABBBB" {
 		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
@@ -207,10 +216,14 @@ func TestFileWriter_TwoArticlesSharingAMessageIDAreNotConfused(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it and confirm it FAILS**
+- [ ] **Step 2: Run it against the UNCHANGED code and record what it does**
 
-Run: `go test -count=1 ./internal/assembler/ -run TestFileWriter_TwoArticlesSharingAMessageIDAreNotConfused -v`
-Expected: FAIL after ~5s with "the file never completed: the second article was taken for a duplicate…". Record this message for the commit body. If it passes, stop — the premise of this task is wrong and the plan needs revisiting.
+Run: `go test -count=1 ./internal/assembler/ -run TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID -v`
+Expected: FAIL after ~5s, because dedup still keys on the Message-ID.
+
+Record the message, but describe it accurately in the commit body: this is a **constructed** state, not a reproduction of a reachable defect. Do not write "fixes a bug where files finalize short" — no in-scope input reaches this. The honest claim is "the assembler distinguished articles by Message-ID; it now distinguishes them by index, and this pins the difference."
+
+If it *passes* against unchanged code, the fixture is not reaching the dedup arm — fix the fixture before proceeding, rather than concluding the task is unnecessary.
 
 - [ ] **Step 3: Change the field types**
 
@@ -287,9 +300,9 @@ Delete `rollbackPart`'s `# Precondition: id.msgID is non-empty` block — the pr
 
 Leave `handleLateDuplicate`'s `req.MessageID == ""` guard and `fail`'s early return in place — Task 3 and Task 4 remove them, and removing `fail`'s here without `giveBackUntrackedPart` would double-charge `partsWritten`.
 
-- [ ] **Step 7: Run the test and confirm it PASSES**
+- [ ] **Step 7: Run the design pin and confirm it PASSES**
 
-Run: `go test -count=1 ./internal/assembler/ -run TestFileWriter_TwoArticlesSharingAMessageIDAreNotConfused -v`
+Run: `go test -count=1 ./internal/assembler/ -run TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID -v`
 Expected: PASS.
 
 - [ ] **Step 8: Run the full gates**
@@ -507,3 +520,5 @@ Message: `docs: record that FileWriter keys on ArtIdx and no longer needs A7`
 **Type consistency.** `admitAccepted`, `admitRetryOfFailed` and `admitPermanentFailure` take `artIdx int32` from Task 2 onward; Task 1 calls `admitPermanentFailure(id.msgID)` because it runs *before* the re-key, and Task 2 Step 6 changes that call. That ordering is deliberate and stated in both tasks.
 
 **Known gap, stated rather than hidden.** Task 3's pairing constraint cannot be pinned by a test: the double-charge it prevents requires an empty-ID article, which no path can construct once Task 2 lands. The commit body must say so instead of implying a red check that did not happen.
+
+**What this change is, stated plainly.** It is inert for every reachable input, and no task here fixes a defect a user could hit today. The four accounting defects #392 was filed about became unreachable when #395 landed; the empty-key machinery has been dead code since. This plan removes the class rather than the dead code, so that the guards cannot come back and the assembler's correctness stops resting on A7. Every commit body must be honest about that — a red check on a constructed input is evidence the code changed, not evidence a bug existed. The one claim worth making is the structural one.
