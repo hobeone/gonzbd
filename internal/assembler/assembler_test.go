@@ -1695,3 +1695,57 @@ func TestFileWriter_ArticleIdentityIsTheIndexNotTheMessageID(t *testing.T) {
 		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 	}
 }
+
+// TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity pins that a late
+// article for a completed file is resolved by index, with no early return that
+// depends on it carrying a Message-ID.
+//
+// An unresolved late article leaves the job waiting on it forever, so the guard
+// removed here was the difference between reporting and hanging — for an input
+// that, since the parse gate landed, no production path produces.
+func TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 1)
+
+	rejected := make(chan int32, 1)
+	opts := makeOpts(dir, files)
+	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) { rejected <- artIdx }
+	a := startAssembler(t, opts)
+
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "first@t",
+		Offset: 0, Data: []byte("AAAA"),
+	}); err != nil {
+		t.Fatalf("writeArticle: %v", err)
+	}
+	// A late article for the now-complete file, carrying no Message-ID.
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 1, MessageID: "",
+		Offset: 0, Data: []byte("BBBB"),
+	}); err != nil {
+		t.Fatalf("writeArticle late: %v", err)
+	}
+	select {
+	case got := <-rejected:
+		if got != 1 {
+			t.Errorf("rejected ArtIdx %d, want 1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late article was never resolved, so the job waits on it " +
+			"forever: handleLateDuplicate still returns early when the article " +
+			"carries no Message-ID")
+	}
+}
+
+// TestArticleID_IdentityIsTheIndexAlone pins that msgID is not compared.
+func TestArticleID_IdentityIsTheIndexAlone(t *testing.T) {
+	a := articleID{msgID: "one@t", artIdx: 4}
+	b := articleID{msgID: "two@t", artIdx: 4}
+	if !a.sameArticle(b) {
+		t.Error("two identities with one index compared unequal; msgID is still part of identity")
+	}
+	if a.sameArticle(articleID{msgID: "one@t", artIdx: 5}) {
+		t.Error("two identities with different indices compared equal")
+	}
+}

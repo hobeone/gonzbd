@@ -292,7 +292,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 // content at this offset", and applying one without the other is the
 // derived-state split #375 was about.
 func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
-	if owner, taken := w.acceptedAt[off]; taken && owner.id == id {
+	if owner, taken := w.acceptedAt[off]; taken && owner.id.sameArticle(id) {
 		owner.written = true
 		w.acceptedAt[off] = owner
 	}
@@ -499,7 +499,7 @@ func (w *FileWriter) parts() int { return w.partsWritten }
 // accounting does not, since both dispositions keep the loser counted.
 func (w *FileWriter) offsetSettledBy(off int64, arriving articleID) (articleID, bool) {
 	owner, taken := w.acceptedAt[off]
-	if !taken || owner.id == arriving || !owner.written {
+	if !taken || owner.id.sameArticle(arriving) || !owner.written {
 		return articleID{}, false
 	}
 	return owner.id, true
@@ -617,7 +617,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	// before calling Accept — so any incumbent found here has made no
 	// durability claim, and displacing it contradicts nothing.
 	owner, taken := w.acceptedAt[off]
-	if taken && owner.id != id {
+	if taken && !owner.id.sameArticle(id) {
 		w.failDisplaced(owner.id, off, id)
 		alreadyFailed, didFail = owner.id, true
 		// Take the incumbent's bytes away as well as its accounting. Failing an
@@ -645,7 +645,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	// acceptedAt), so the same identity finds itself already the owner. A
 	// re-accept that writes through immediately hid the old defect by
 	// re-latching in noteWritten; one that lands in the cache did not.
-	if !taken || owner.id != id {
+	if !taken || !owner.id.sameArticle(id) {
 		w.acceptedAt[off] = offsetOwner{id: id}
 	}
 
@@ -675,7 +675,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 		// permanently failed twice, charging its bytes against the job's par2
 		// budget twice over.
 		for _, d := range displaced {
-			if didFail && d == alreadyFailed {
+			if didFail && d.sameArticle(alreadyFailed) {
 				continue
 			}
 			w.failDisplaced(d, off, id)

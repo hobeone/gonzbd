@@ -1252,7 +1252,7 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	if f == nil || req.MessageID == "" {
+	if f == nil {
 		return
 	}
 	if _, accepted := f.w.seenDone[req.ArtIdx]; accepted {

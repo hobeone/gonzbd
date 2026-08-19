@@ -85,6 +85,15 @@ type articleID struct {
 	artIdx int32
 }
 
+// sameArticle reports whether two identities name the same article.
+//
+// The index alone decides. msgID travels with the article for logging and
+// telemetry and is deliberately NOT compared: identity is the manifest index,
+// which is what FileWriter's seen-sets key on. Comparing the pair as well would
+// give the assembler a second, finer notion of sameness than the one its
+// accounting uses, and the two could disagree.
+func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
+
 // bufferedArticle is a flushable article with its offset, data, and identity.
 type bufferedArticle struct {
 	offset int64
@@ -205,7 +214,7 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		// dedup arms key on ArtIdx and would have caught a genuine redelivery
 		// before Accept was called at all, so this is a different article at
 		// the same offset, not a repeat delivery of the same one.
-		if existing.id != art.id {
+		if !existing.id.sameArticle(art.id) {
 			displaced = []articleID{existing.id}
 		}
 	}
