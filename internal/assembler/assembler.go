@@ -1528,17 +1528,6 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		}
 		return true
 	}
-	// An article the writer does not track cannot be rolled back by it:
-	// w.fail returns early on an empty message ID, so nothing appends it to
-	// w.faulted and releaseFaulted will never see it. It was counted before
-	// the accept like any other, so the count is given back here.
-	//
-	// Only on THIS branch. A rejected article keeps its part deliberately —
-	// it is resolved permanently failed and will never arrive again, so a
-	// file declining to count it waits forever.
-	if req.MessageID == "" {
-		f.w.giveBackUntrackedPart()
-	}
 	// Released here as well as by processRequest's drain. This one is not
 	// redundant belt-and-braces: it keeps the roll-back adjacent to the
 	// failure that caused it, which is what the unit-level contract for this

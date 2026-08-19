@@ -532,16 +532,26 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	}
 }
 
-// TestFailWithoutAMessageIDIsANoOp translates
-// TestFailArticleWithoutAMessageIDStillAcks. There is no ack for the queue
-// to hear any more, so the only live claim left is that fail() tolerates an
-// empty Message-ID — no dedup key to record — without touching the seen-set
-// maps.
-func TestFailWithoutAMessageIDIsANoOp(t *testing.T) {
+// TestFailToleratesAnEmptyMessageID translates
+// TestFailArticleWithoutAMessageIDStillAcks. There is no ack for the queue to
+// hear any more, and fail is no longer a no-op for this identity either — it
+// used to return early on an empty Message-ID; now the maps are keyed on
+// ArtIdx, so this identity is rolled back exactly like any other. The
+// surviving claim is narrower: fail does not panic or otherwise mishandle an
+// empty Message-ID, and it still never touches seenFailed, whatever identity
+// it is given — only admitPermanentFailure does that.
+func TestFailToleratesAnEmptyMessageID(t *testing.T) {
 	w := newTestFileWriter(t)
+	w.admitAccepted(3)
 	w.fail(articleID{msgID: "", artIdx: 3})
 	if len(w.seenFailed) != 0 {
-		t.Errorf("seenFailed = %v; an empty Message-ID is not a dedup key", w.seenFailed)
+		t.Errorf("seenFailed = %v; fail never populates it, for any identity", w.seenFailed)
+	}
+	if _, still := w.seenDone[3]; still {
+		t.Error("the article kept its seenDone entry after fail")
+	}
+	if w.parts() != 0 {
+		t.Errorf("parts() = %d after fail, want 0", w.parts())
 	}
 }
 

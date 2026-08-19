@@ -130,11 +130,14 @@ type FileWriter struct {
 	// is rolled back and re-dispatched, and comes back at the same offset —
 	// req.ArtIdx is the manifest index, so the redelivered articleID is
 	// identical — and without removal every such retry would report a
-	// collision with itself. Removal in turn could not have worked: fail
-	// returns early on an empty Message-ID, so an untracked article's entry
-	// would never have been removed, which is that false positive arriving on
-	// the one path the mechanism could not reach. Identity comparison answers
-	// all of it and leaves seenDone alone.
+	// collision with itself. Removal used to be additionally blocked for one
+	// class of article: fail returned early on an empty Message-ID, so an
+	// untracked article's entry would never have been removed, which was that
+	// false positive arriving on the one path the mechanism could not reach.
+	// fail no longer has that early return, but removal still is not how
+	// acceptedAt behaves — see below, entries are never removed by design,
+	// independent of what fail does. Identity comparison answers all of it and
+	// leaves seenDone alone.
 	//
 	// Entries are never removed, and that is deliberate rather than a leak.
 	// The question is "who owns this offset", not "who currently holds a
@@ -157,17 +160,16 @@ type FileWriter struct {
 	// for, whether by a successful accept or by a permanent failure.
 	//
 	// It lives here rather than on openFile because it is DERIVED from
-	// seenDone and seenFailed — it is their combined size, plus the articles
-	// with no Message-ID that neither map can hold. Kept one struct away from
-	// its source and maintained by four external call sites, every defect it
-	// produced was the same one: the count and the record moved at different
-	// moments, and something in between observed the disagreement.
+	// seenDone and seenFailed — it is their combined size. Kept one struct
+	// away from its source and maintained by four external call sites, every
+	// defect it produced was the same one: the count and the record moved at
+	// different moments, and something in between observed the disagreement.
 	//
 	// Recomputing it on demand would be O(n) per article, so it stays a cached
 	// aggregate. What changes is that only this file may move it, and each
 	// mover applies a complete transition — admitAccepted, admitRetryOfFailed,
-	// admitPermanentFailure, fail, giveBackUntrackedPart — so a partial
-	// application is not expressible rather than merely not written.
+	// admitPermanentFailure, fail — so a partial application is not
+	// expressible rather than merely not written.
 	partsWritten int
 
 	// writeAt is handle.WriteAt in production. Tests override it before first
@@ -374,12 +376,16 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 //
 // That is the shape #375 removed from faultedArticle — a field applied to a
 // record after it was built, by a call site that had to find it again — and it
-// carried a live defect. fail returns early on an empty Message-ID, so for an
-// untracked article nothing was appended, the positional guard matched nothing,
-// and the whole displacement was dropped: no report, and nothing resolved the
-// article in either direction. Keeping its part is now the correct outcome and
-// no longer part of the complaint; what was missing was the faulted record
-// that makes routeFaulted report it at all, without which it stayed Emitted
+// carried a live defect. fail returned early on an empty Message-ID at the
+// time, so for an untracked article nothing was appended, the positional
+// guard matched nothing, and the whole displacement was dropped: no report,
+// and nothing resolved the article in either direction. (That early return is
+// gone now — see fail's doc — but the reason failDisplaced still does not
+// delegate to it is independent: fail rolls a part back, and a displaced
+// article keeps its part, so delegating would decrement the wrong way
+// regardless of identity.) Keeping its part is now the correct outcome and no
+// longer part of the complaint; what was missing was the faulted record that
+// makes routeFaulted report it at all, without which it stayed Emitted
 // forever and no later run re-dispatched it.
 //
 // Building the record in one statement makes a half-specialized faultedArticle
@@ -399,15 +405,14 @@ func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 // rollbackPart undoes the part and seen-set state an admitted article holds,
 // without deciding what becomes of the article. The caller owns that.
 //
-// fail is the only caller. It used to reach a giveBackUntrackedPart branch
-// here for an article with no Message-ID, since no Message-ID-keyed map
-// could record one. Keying on ArtIdx instead means every article has a key
-// this function's maps can hold, and that branch is gone rather than
-// reachable only from a test.
-//
-// giveBackUntrackedPart itself is unaffected: routeAcceptFailure still calls it
-// for the write-fault case, which is why fail keeps its own early return —
-// routing that decrement through here as well would charge it twice.
+// fail is the only caller, and it is the whole give-back — routeAcceptFailure
+// no longer routes a decrement of its own around it. It used to reach a
+// giveBackUntrackedPart branch here for an article with no Message-ID, since
+// no Message-ID-keyed map could record one. Keying on ArtIdx instead means
+// every article has a key this function's maps can hold, and that branch is
+// gone rather than reachable only from a test. giveBackUntrackedPart itself is
+// gone too: with fail no longer returning early on any identity, it was the
+// only caller that decrement needed.
 func (w *FileWriter) rollbackPart(id articleID) {
 	_, wasDone := w.seenDone[id.artIdx]
 	_, wasFailed := w.seenFailed[id.artIdx]
@@ -461,9 +466,6 @@ func (w *FileWriter) rollbackPart(id articleID) {
 // than by luck. An article only loses a part if it held one, which means it
 // was in seenDone and not in seenFailed, which means partsWritten counted it.
 func (w *FileWriter) fail(id articleID) {
-	if id.msgID == "" {
-		return
-	}
 	w.rollbackPart(id)
 	w.faulted = append(w.faulted, faultedArticle{id: id})
 }
@@ -562,19 +564,6 @@ func (w *FileWriter) admitPermanentFailure(artIdx int32) bool {
 	return true
 }
 
-// giveBackUntrackedPart returns the part held by an article the writer does not
-// track — one with no Message-ID.
-//
-// Such an article cannot be rolled back by fail, which returns early on an
-// empty ID, so nothing appends it to w.faulted and no releaseFaulted will ever
-// see it. It was counted by admitAccepted like any other, so the count is
-// given back here instead.
-func (w *FileWriter) giveBackUntrackedPart() {
-	if w.partsWritten > 0 {
-		w.partsWritten--
-	}
-}
-
 // failPermanent records an article this package will never write, keeping its
 // count toward the file's part total.
 //
@@ -645,10 +634,16 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	// which the next article to claim it was no longer refused and displaced
 	// an article the barrier had acked — the double disposition again.
 	//
-	// Only an untracked article reaches this: handleSuccessArticle's dedup
-	// arms key on seenDone/seenFailed, and admitAccepted records nothing for
-	// an empty Message-ID, so a second delivery runs the whole accept path.
-	// A re-accept that writes through immediately hid the defect by
+	// seenDone is keyed on ArtIdx now, so a genuine DUPLICATE delivery of an
+	// already-accepted article is caught by handleSuccessArticle's dedup arm
+	// and never reaches acceptArticle at all, whatever its Message-ID — that
+	// used to be the only way an untracked article reached here, because
+	// admitAccepted recorded nothing for an empty Message-ID and the dedup
+	// missed it. What still reaches this branch is a write-fault RETRY:
+	// rollbackPart deletes the seenDone entry so the redelivery is not a
+	// duplicate, but acceptedAt's entry for this offset is never removed (see
+	// acceptedAt), so the same identity finds itself already the owner. A
+	// re-accept that writes through immediately hid the old defect by
 	// re-latching in noteWritten; one that lands in the cache did not.
 	if !taken || owner.id != id {
 		w.acceptedAt[off] = offsetOwner{id: id}

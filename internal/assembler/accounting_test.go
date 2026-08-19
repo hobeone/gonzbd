@@ -111,47 +111,6 @@ func TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition(t *testing.T
 	}
 }
 
-// TestFileWriter_GiveBackUntrackedPartReturnsTheCount is the ordinary half of
-// the give-back: an article with no Message-ID was admitted, its accept was
-// then refused, and the part it was charged has to come back.
-//
-// It is the only un-admit path the writer cannot derive from its own maps —
-// nothing recorded the article, because an empty Message-ID is not a dedup key
-// — so the counter is the whole of the state being corrected.
-func TestFileWriter_GiveBackUntrackedPartReturnsTheCount(t *testing.T) {
-	w := newTestFileWriter(t)
-	w.admitAccepted(1)
-	if w.parts() != 1 {
-		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
-	}
-
-	w.giveBackUntrackedPart()
-
-	if got := w.parts(); got != 0 {
-		t.Errorf("parts() = %d after the give-back, want 0 — the accept was refused, so "+
-			"the file would otherwise sit one part closer to TotalParts with nothing "+
-			"behind it", got)
-	}
-}
-
-// TestFileWriter_GiveBackUntrackedPartIsClampedAtZero pins the degenerate input
-// on the one give-back the writer cannot derive from its own maps.
-//
-// The article has no Message-ID, so nothing records that it ever held a part
-// and the method has only the counter to go on. Reaching it at zero would mean
-// un-admitting an article that was never admitted; the clamp is what keeps that
-// from making the count negative and the file uncompletable.
-func TestFileWriter_GiveBackUntrackedPartIsClampedAtZero(t *testing.T) {
-	w := newTestFileWriter(t)
-
-	w.giveBackUntrackedPart()
-
-	if got := w.parts(); got != 0 {
-		t.Errorf("parts() = %d, want 0 — a give-back with nothing admitted must not "+
-			"drive the count below zero", got)
-	}
-}
-
 // TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle pins the !wasFailed
 // half of fail's give-back, which nothing else in the package observes.
 //
@@ -205,9 +164,10 @@ func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 // It is tested directly because the branching lives here rather than at either
 // call site, so a change to fail's accounting cannot pass unnoticed.
 //
-// There is no untracked case any more. fail returns early on an empty
-// Message-ID before reaching this, so the branch that handled one was removed
-// with its last caller rather than left reachable only from this test.
+// There is no untracked case any more. fail no longer returns early on any
+// identity, so the branch that used to handle an empty Message-ID separately
+// was removed with its last caller rather than left reachable only from this
+// test.
 func TestFileWriter_RollbackPart(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -306,6 +266,44 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 	if got := f.w.writtenSoFar(); len(got) != 1 {
 		t.Errorf("writtenSoFar = %v, want one article — the redelivery is not counted, "+
 			"but its bytes are the file's content and must still land", got)
+	}
+}
+
+// TestFileWriter_FailRollsBackEveryArticlesPart pins that fail decrements the
+// part count for any admitted article, with no identity-dependent early return.
+//
+// fail used to skip articles with no Message-ID, because rollbackPart could not
+// find them in a Message-ID-keyed map; routeAcceptFailure gave their part back
+// separately through giveBackUntrackedPart. With the maps keyed on ArtIdx there
+// is one path.
+func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		msgID string
+	}{
+		{"with a Message-ID", "a@t"},
+		// Constructible only in-package; no production path produces it. It is
+		// here because it is the input the deleted guard responded to, and so
+		// the only one that can show the guard is gone.
+		{"with none", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newHelperFile(t, t.TempDir(), "rollback.dat", 0).w
+			id := articleID{msgID: tc.msgID, artIdx: 7}
+
+			w.admitAccepted(id.artIdx)
+			if got := w.parts(); got != 1 {
+				t.Fatalf("parts() = %d after admit, want 1", got)
+			}
+			w.fail(id)
+			if got := w.parts(); got != 0 {
+				t.Errorf("parts() = %d after fail, want 0 — the part was not "+
+					"rolled back, so fail still returns early on this identity", got)
+			}
+			if _, still := w.seenDone[id.artIdx]; still {
+				t.Error("the article kept its seenDone entry after fail")
+			}
+		})
 	}
 }
 
