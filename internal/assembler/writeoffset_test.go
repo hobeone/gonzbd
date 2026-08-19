@@ -84,7 +84,7 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 
 			const msgID = "under-test"
 			_ = a.WriteArticle(t.Context(), WriteRequest{
-				JobID: "job1", FileIdx: 0,
+				JobID: "job1", FileIdx: 0, ArtIdx: 0,
 				Offset:    tc.offset,
 				Data:      tc.data,
 				MessageID: msgID,

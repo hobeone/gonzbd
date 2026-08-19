@@ -67,7 +67,7 @@ func TestDrainAndClose_ReportsTheFailureToItsCaller(t *testing.T) {
 		f := newHelperFile(t, dir, "drain.dat", 0)
 		f.w.wc = newWriteCache(1 << 20)
 		if !a.handleSuccessArticle(f, WriteRequest{
-			JobID: "job", FileIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
+			JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
 		}) {
 			t.Fatal("the article was not accepted, so the fixture never buffered it")
 		}
@@ -143,7 +143,7 @@ func TestDrainAndClose_PrefersAPermanentFaultOverTheFirstOne(t *testing.T) {
 	f := newHelperFile(t, dir, "remount.dat", 0)
 	f.w.wc = newWriteCache(1 << 20)
 	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
 	}) {
 		t.Fatal("the article was not accepted, so the fixture never buffered it")
 	}

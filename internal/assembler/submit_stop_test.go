@@ -50,7 +50,7 @@ func TestSubmit_ADeadlineFreeCallerIsReleasedByStop(t *testing.T) {
 	t.Cleanup(unpark)
 
 	_ = a.WriteArticle(t.Context(), WriteRequest{
-		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AAAA"), MessageID: "m1",
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"), MessageID: "m1",
 	})
 	select {
 	case <-blocked:

@@ -308,7 +308,7 @@ func TestAssemblerWithWriteCache_BasicCoalescing(t *testing.T) {
 	// Write 3 contiguous articles.
 	for i := range 3 {
 		data := fmt.Appendf(nil, "PT%02d", i)
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: data}
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: data} //nolint:gosec // G115: loop bound is small
 		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -353,8 +353,8 @@ func TestAssemblerWithWriteCache_OutOfOrder(t *testing.T) {
 		{8, "CCCC"},
 		{4, "BBBB"},
 	}
-	for _, art := range articles {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: art.offset, Data: []byte(art.data)}
+	for i, art := range articles {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: art.offset, Data: []byte(art.data)} //nolint:gosec // G115: loop bound is small
 		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -393,8 +393,8 @@ func TestAssemblerWithWriteCache_PressureFlush(t *testing.T) {
 	// This exceeds the 100-byte cache limit, forcing pressure flushes.
 	for i := range 10 {
 		data := make([]byte, 20)
-		data[0] = byte(i + 1) // marker
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 20), Data: data}
+		data[0] = byte(i + 1)                                                                               // marker
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 20), Data: data} //nolint:gosec // G115: loop bound is 10
 		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -435,10 +435,10 @@ func TestAssemblerWithWriteCache_MultipleFiles(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	reqs := []WriteRequest{
-		{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AA")},
-		{JobID: "job1", FileIdx: 1, Offset: 0, Data: []byte("XX")},
-		{JobID: "job1", FileIdx: 0, Offset: 2, Data: []byte("BB")},
-		{JobID: "job1", FileIdx: 1, Offset: 2, Data: []byte("YY")},
+		{JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AA")},
+		{JobID: "job1", FileIdx: 1, ArtIdx: 1, Offset: 0, Data: []byte("XX")},
+		{JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 2, Data: []byte("BB")},
+		{JobID: "job1", FileIdx: 1, ArtIdx: 3, Offset: 2, Data: []byte("YY")},
 	}
 	for _, r := range reqs {
 		if err := a.WriteArticle(t.Context(), r); err != nil {
@@ -477,7 +477,7 @@ func TestAssemblerWithWriteCache_ShutdownDrain(t *testing.T) {
 	// Write 3 articles (of 100 needed), then stop.
 	for i := range 3 {
 		data := fmt.Appendf(nil, "D%03d", i)
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: data}
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: data} //nolint:gosec // G115: loop bound is small
 		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
