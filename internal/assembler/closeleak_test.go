@@ -223,7 +223,10 @@ func TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt(t *testing.T) {
 	completed := map[fileKey]struct{}{}
 
 	a.dispatchRequest(
-		WriteRequest{FileIdx: -1, MessageID: key.jobID},
+		// ackCh is what marks this a control message; CancelJob always sets
+		// one, and the worker discriminates on it rather than on the sentinel
+		// alone so that no request built outside the package can pose as one.
+		WriteRequest{FileIdx: fileIdxCancelJob, MessageID: key.jobID, ackCh: make(chan error, 1)},
 		open, completed, map[string]struct{}{}, newWriteCache(0))
 
 	if _, still := open[key]; still {

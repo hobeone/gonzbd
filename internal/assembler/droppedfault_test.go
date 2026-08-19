@@ -53,7 +53,7 @@ func TestRelievePressure_RoutesTheFaultAndStopsWriting(t *testing.T) {
 		wc.buffer(key, bufferedArticle{
 			offset: int64(i) * 4,
 			data:   []byte("AAAA"),
-			id:     articleID{msgID: "m", artIdx: int32(i)},
+			id:     articleID{msgID: "m", artIdx: testArtIdx(i)},
 		})
 	}
 
@@ -110,7 +110,7 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 	}
 
 	a := startAssembler(t, opts)
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
 		Offset: 0, Data: []byte("AAAA"),
 	}); err != nil {

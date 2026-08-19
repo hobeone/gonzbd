@@ -41,7 +41,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 	completed := map[fileKey]struct{}{}
 
 	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
 	}) {
 		t.Fatal("the article was not accepted, so the fixture never buffered it")
 	}
@@ -49,7 +49,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
-		WriteRequest{JobID: "", FileIdx: -2, MessageID: "job", ackCh: ack},
+		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
 		open, completed, map[string]struct{}{}, wc)
 
 	if _, tombstoned := completed[key]; !tombstoned {
@@ -79,7 +79,7 @@ func TestCloseJobHandles_ReportsACloseTimeFailureToItsCaller(t *testing.T) {
 	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
 
 	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
 	}) {
 		t.Fatal("the article was not accepted, so the fixture never buffered it")
 	}
@@ -87,7 +87,7 @@ func TestCloseJobHandles_ReportsACloseTimeFailureToItsCaller(t *testing.T) {
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
-		WriteRequest{JobID: "", FileIdx: -2, MessageID: "job", ackCh: ack},
+		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
 		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
 
 	err := <-ack

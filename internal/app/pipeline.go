@@ -79,6 +79,24 @@ type fileKey struct {
 	fileIdx int
 }
 
+// refFor is the sole place a downloaded article's identity becomes an
+// assembler.ArticleRef.
+//
+// Both write paths need the same four fields off the same result, and writing
+// them out twice would leave the derivation with two authors a hundred lines
+// apart: adding a fifth identity field means finding both, and editing one
+// means they disagree with nothing able to notice, since they currently agree
+// by construction. That is the shape ArticleRef exists to remove from the
+// assembler's caller contract, so it should not be reintroduced here.
+func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
+	return assembler.ArticleRef{
+		JobID:     res.JobID,
+		FileIdx:   res.FileIdx,
+		ArtIdx:    res.ArtIdx,
+		MessageID: res.MessageID,
+	}
+}
+
 // pipeline plumbs Downloader.Completions() → decoder → assembler.
 // The reader goroutine (run) fans out ArticleResults to a pool of worker
 // goroutines that call handleResult concurrently. The fileInfo map is
@@ -266,12 +284,8 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// The article still goes to the assembler, which counts it toward the
 		// file's part total so the file can complete with a hole in it. It
 		// writes nothing and acks nothing.
-		writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
-			JobID:     res.JobID,
-			FileIdx:   res.FileIdx,
-			ArtIdx:    res.ArtIdx,
-			MessageID: res.MessageID,
-			FatalErr:  res.Err,
+		writeErr := p.assembler.WriteArticle(ctx, refFor(res), assembler.WriteRequest{
+			FatalErr: res.Err,
 		})
 		// If the assembler couldn't accept the request, clear Emitted
 		// so the dispatcher can retry the article.
@@ -371,13 +385,9 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		CRC32:   res.CRC,
 	})
 
-	writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
-		JobID:     res.JobID,
-		FileIdx:   res.FileIdx,
-		ArtIdx:    res.ArtIdx,
-		MessageID: res.MessageID,
-		Offset:    res.Offset,
-		Data:      res.Data,
+	writeErr := p.assembler.WriteArticle(ctx, refFor(res), assembler.WriteRequest{
+		Offset: res.Offset,
+		Data:   res.Data,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",

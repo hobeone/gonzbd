@@ -153,14 +153,14 @@ func TestRejectedOffset_TheFileStillCompletes(t *testing.T) {
 
 	a := startAssembler(t, opts)
 
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "<good@x>",
 		Offset: 0, Data: []byte("AAAA"),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// A yEnc header claiming an offset far past the file's expected size.
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, MessageID: "<evil@x>",
 		Offset: 1 << 20, Data: []byte("B"),
 	}); err != nil {

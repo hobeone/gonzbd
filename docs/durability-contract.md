@@ -1028,13 +1028,15 @@ including every failure path.
 
 All three are encoded as sentinel `FileIdx` values on `WriteRequest` and are
 synchronous from the caller's perspective: the caller blocks until the worker,
-which owns every file handle, has done the work and answered.
+which owns every file handle, has done the work and answered. The sentinels are
+declared together in `internal/assembler/synctarget.go`; the numbers below are
+the encoding, and the names are what the code reads.
 
 | Control | Encoding | Worker behaviour |
 |---|---|---|
-| **CancelJob** | `JobID=""`, `FileIdx=-1`, `MessageID=jobID` | closes and *deletes* all open files for the job, tombstones the job in `cancelledJobs`, discards cached articles, closes `ackCh` |
-| **CloseJobHandles** | `JobID=""`, `FileIdx=-2`, `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing or par2 repair |
-| **Barrier op** | `JobID=""`, `FileIdx=-3`, `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
+| **CancelJob** | `JobID=""`, `FileIdx=fileIdxCancelJob` (-1), `MessageID=jobID` | closes and *deletes* all open files for the job, tombstones the job in `cancelledJobs`, discards cached articles, closes `ackCh` |
+| **CloseJobHandles** | `JobID=""`, `FileIdx=fileIdxCloseHandles` (-2), `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing or par2 repair |
+| **Barrier op** | `JobID=""`, `FileIdx=fileIdxSyncOp` (-3), `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
 
 The barrier-op indirection is invariant X1, not ceremony. One goroutine owns all
 the state, so the barrier can reach a file's cache and handle without a lock. The

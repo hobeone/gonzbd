@@ -83,8 +83,8 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 			target := a.SyncTargetFor("job1", oneFileMap{n: 8})
 
 			const msgID = "under-test"
-			_ = a.WriteArticle(t.Context(), WriteRequest{
-				JobID: "job1", FileIdx: 0,
+			_ = writeArticle(t.Context(), a, WriteRequest{
+				JobID: "job1", FileIdx: 0, ArtIdx: 0,
 				Offset:    tc.offset,
 				Data:      tc.data,
 				MessageID: msgID,

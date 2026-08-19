@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -101,9 +102,9 @@ func TestOutOfOrderAssembly(t *testing.T) {
 
 	a := startAssembler(t, opts)
 
-	for _, art := range art {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: art.offset, Data: art.data}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+	for i, art := range art {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: art.offset, Data: art.data}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -135,8 +136,8 @@ func TestFileCompleteCallbackFiresExactlyOnce(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i := range 3 {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -168,13 +169,13 @@ func TestMultipleFilesInterleaved(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	reqs := []WriteRequest{
-		{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AA")},
-		{JobID: "job1", FileIdx: 1, Offset: 0, Data: []byte("XX")},
-		{JobID: "job1", FileIdx: 0, Offset: 2, Data: []byte("BB")},
-		{JobID: "job1", FileIdx: 1, Offset: 2, Data: []byte("YY")},
+		{JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AA")},
+		{JobID: "job1", FileIdx: 1, ArtIdx: 1, Offset: 0, Data: []byte("XX")},
+		{JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 2, Data: []byte("BB")},
+		{JobID: "job1", FileIdx: 1, ArtIdx: 3, Offset: 2, Data: []byte("YY")},
 	}
 	for _, r := range reqs {
-		if err := a.WriteArticle(t.Context(), r); err != nil {
+		if err := writeArticle(t.Context(), a, r); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -209,8 +210,8 @@ func TestFileInfoError(t *testing.T) {
 
 	a := startAssembler(t, opts)
 
-	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data")}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
+	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("data")}
+	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 
@@ -240,8 +241,8 @@ func TestLowDiskCallback(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i := range total {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -269,8 +270,8 @@ func TestLowDiskCallbackDisabledWhenZero(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i := range total {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -297,8 +298,8 @@ func TestStopDrainsChannel(t *testing.T) {
 
 	// Enqueue n writes before stopping.
 	for i := range n {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("WXYZ")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("WXYZ")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -354,7 +355,7 @@ func TestWriteArticleAfterStopReturnsErrStopped(t *testing.T) {
 	if err := a.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	err := a.WriteArticle(t.Context(), WriteRequest{})
+	err := writeArticle(t.Context(), a, WriteRequest{})
 	if !errors.Is(err, ErrStopped) {
 		t.Errorf("WriteArticle after Stop returned %v, want ErrStopped", err)
 	}
@@ -364,7 +365,7 @@ func TestWriteArticleBeforeStartReturnsErrNotStarted(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	err := a.WriteArticle(t.Context(), WriteRequest{})
+	err := writeArticle(t.Context(), a, WriteRequest{})
 	if !errors.Is(err, ErrNotStarted) {
 		t.Errorf("WriteArticle before Start returned %v, want ErrNotStarted", err)
 	}
@@ -422,7 +423,7 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 
 	// Send first request; the worker will call FileInfo and block.
 	go func() {
-		_ = a2.WriteArticle(t.Context(), WriteRequest{JobID: "j", FileIdx: 0, Offset: 0, Data: []byte("x")})
+		_ = writeArticle(t.Context(), a2, WriteRequest{JobID: "j", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("x")})
 	}()
 
 	// Deterministically wait until the worker has dequeued the request and
@@ -435,13 +436,13 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 	// Fill the queue (cap 1) with another request.
 	fillCtx, fillCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer fillCancel()
-	_ = a2.WriteArticle(fillCtx, WriteRequest{JobID: "j", FileIdx: 1, Offset: 0, Data: []byte("y")})
+	_ = writeArticle(fillCtx, a2, WriteRequest{JobID: "j", FileIdx: 1, ArtIdx: 1, Offset: 0, Data: []byte("y")})
 
 	// Now try to enqueue with a cancellable context — should get ctx.Err() or ErrStopped.
 	cancelCtx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- a2.WriteArticle(cancelCtx, WriteRequest{JobID: "j", FileIdx: 2, Offset: 0, Data: []byte("z")})
+		errCh <- writeArticle(cancelCtx, a2, WriteRequest{JobID: "j", FileIdx: 2, ArtIdx: 2, Offset: 0, Data: []byte("z")})
 	}()
 	cancel()
 
@@ -495,6 +496,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 			allReqs = append(allReqs, WriteRequest{
 				JobID:   "job1",
 				FileIdx: fi,
+				ArtIdx:  testArtIdx(fi*partsPerFile + part),
 				Offset:  int64(part * articleSize),
 				Data:    fmt.Appendf(nil, "%04d%04d", fi, part),
 			})
@@ -515,7 +517,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 				end = len(allReqs)
 			}
 			for _, req := range allReqs[start:end] {
-				if err := a.WriteArticle(t.Context(), req); err != nil {
+				if err := writeArticle(t.Context(), a, req); err != nil {
 					t.Errorf("WriteArticle: %v", err)
 				}
 			}
@@ -608,10 +610,11 @@ func TestTelemetryDiskWriteCounters(t *testing.T) {
 		req := WriteRequest{
 			JobID:   "job1",
 			FileIdx: 0,
+			ArtIdx:  testArtIdx(i),
 			Offset:  int64(i * 4),
 			Data:    []byte("XXXX"),
 		}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -650,10 +653,11 @@ func TestTelemetryDiskWriteCountersCachedDrain(t *testing.T) {
 		req := WriteRequest{
 			JobID:   "job1",
 			FileIdx: 0,
+			ArtIdx:  testArtIdx(i),
 			Offset:  int64(i * 4),
 			Data:    []byte("XXXX"),
 		}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -689,20 +693,20 @@ func TestTelemetryFileCompleted(t *testing.T) {
 	// Complete file 0 (2 parts).
 	for i := range 2 {
 		req := WriteRequest{
-			JobID: "job1", FileIdx: 0,
+			JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i),
 			Offset: int64(i * 4), Data: []byte("AAAA"),
 		}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
 
 	// Complete file 1 (1 part).
 	req := WriteRequest{
-		JobID: "job1", FileIdx: 1,
+		JobID: "job1", FileIdx: 1, ArtIdx: 2,
 		Offset: 0, Data: []byte("BBBB"),
 	}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
+	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 
@@ -728,10 +732,10 @@ func TestTelemetryPreallocCalls(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	req := WriteRequest{
-		JobID: "job1", FileIdx: 0,
+		JobID: "job1", FileIdx: 0, ArtIdx: 0,
 		Offset: 0, Data: []byte("DATA"),
 	}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
+	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 
@@ -761,6 +765,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		f := newHelperFile(t, dir, "fatal.dat", 0)
 		req := WriteRequest{
 			JobID:     "job1",
+			ArtIdx:    0,
 			MessageID: "msg1",
 			FatalErr:  fmt.Errorf("article error"),
 		}
@@ -793,6 +798,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		req := WriteRequest{
 			JobID:     "job1",
+			ArtIdx:    0,
 			MessageID: "msg1",
 			Offset:    0,
 			Data:      []byte("hello success"),
@@ -810,7 +816,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		// Duplicate success.
-		req2 := WriteRequest{JobID: "job1", MessageID: "msg1", Offset: 0, Data: []byte("hello success")}
+		req2 := WriteRequest{JobID: "job1", ArtIdx: 0, MessageID: "msg1", Offset: 0, Data: []byte("hello success")}
 		if a.handleSuccessArticle(f, req2) {
 			t.Error("expected handleSuccessArticle to return false for duplicate success")
 		}
@@ -820,7 +826,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// toward partsWritten a second time.
 		f.w.seenDone = make(map[string]struct{})
 		f.w.seenFailed["msg1"] = struct{}{}
-		req3 := WriteRequest{JobID: "job1", MessageID: "msg1", Offset: 20, Data: []byte("world")}
+		req3 := WriteRequest{JobID: "job1", ArtIdx: 0, MessageID: "msg1", Offset: 20, Data: []byte("world")}
 		if a.handleSuccessArticle(f, req3) {
 			t.Error("expected handleSuccessArticle to return false when already counted as failure")
 		}
@@ -864,6 +870,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		req := WriteRequest{
 			JobID:   "job1",
 			FileIdx: 0,
+			ArtIdx:  0,
 		}
 
 		a.finalizeFile(f, key, req, completed)
@@ -920,6 +927,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		req := WriteRequest{
 			JobID:     "job1",
+			ArtIdx:    0,
 			MessageID: "msgFail",
 			Offset:    0,
 			Data:      []byte("data that will not be written"),
@@ -989,8 +997,8 @@ func TestDiskCheckInterval(t *testing.T) {
 	}
 
 	// 1. Send first request. It will block inside FileInfo, stalling the worker.
-	req1 := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("XXXX")}
-	if err := a.WriteArticle(t.Context(), req1); err != nil {
+	req1 := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("XXXX")}
+	if err := writeArticle(t.Context(), a, req1); err != nil {
 		t.Fatalf("WriteArticle 1: %v", err)
 	}
 
@@ -999,8 +1007,8 @@ func TestDiskCheckInterval(t *testing.T) {
 
 	// 2. Queue 31 more requests (total = 32 requests). They will block in the channel.
 	for i := 1; i < total; i++ {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle %d: %v", i, err)
 		}
 	}
@@ -1041,10 +1049,10 @@ func TestPreallocCallsNotIncrementedWhenSizeZero(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	req := WriteRequest{
-		JobID: "job1", FileIdx: 0,
+		JobID: "job1", FileIdx: 0, ArtIdx: 0,
 		Offset: 0, Data: []byte("DATA"),
 	}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
+	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 
@@ -1068,8 +1076,8 @@ func TestTotalPartsZero_DoesNotComplete(t *testing.T) {
 
 	a := startAssembler(t, opts)
 
-	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AAAA")}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
+	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA")}
+	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 
@@ -1122,8 +1130,8 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 	}
 	a := startAssembler(t, opts)
 
-	if err := a.WriteArticle(t.Context(), WriteRequest{
-		JobID: "target", FileIdx: 0, MessageID: "m1", Offset: 0, Data: []byte("AAAA"),
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "target", FileIdx: 0, ArtIdx: 0, MessageID: "m1", Offset: 0, Data: []byte("AAAA"),
 	}); err != nil {
 		t.Fatalf("WriteArticle(target): %v", err)
 	}
@@ -1132,8 +1140,8 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 	// it's parked inside the blocker's FileInfo call, the "target" article
 	// enqueued above is guaranteed to have already been fully processed
 	// (file opened and written).
-	if err := a.WriteArticle(t.Context(), WriteRequest{
-		JobID: "blocker", FileIdx: 0, MessageID: "b1", Offset: 0, Data: []byte("Z"),
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "blocker", FileIdx: 0, ArtIdx: 0, MessageID: "b1", Offset: 0, Data: []byte("Z"),
 	}); err != nil {
 		t.Fatalf("WriteArticle(blocker): %v", err)
 	}
@@ -1221,10 +1229,11 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 				req := WriteRequest{
 					JobID:   "job1",
 					FileIdx: w % numFiles,
+					ArtIdx:  testArtIdx(w*partsPerFile + part),
 					Offset:  int64(part * 4),
 					Data:    []byte("DATA"),
 				}
-				_ = a.WriteArticle(t.Context(), req)
+				_ = writeArticle(t.Context(), a, req)
 			}
 		}()
 	}
@@ -1244,8 +1253,8 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 		t.Fatal("timeout waiting for Stop() to return (possible deadlock)")
 	}
 
-	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("TEST")}
-	if err := a.WriteArticle(t.Context(), req); !errors.Is(err, ErrStopped) {
+	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("TEST")}
+	if err := writeArticle(t.Context(), a, req); !errors.Is(err, ErrStopped) {
 		t.Errorf("WriteArticle after Stop() = %v, want ErrStopped", err)
 	}
 	if err := a.CancelJob(t.Context(), "job1"); !errors.Is(err, ErrStopped) {
@@ -1276,8 +1285,8 @@ func TestAssembler_CacheUsageBytes_TracksBufferedBytes(t *testing.T) {
 	// actually process the request. Poll to wait for the worker to process
 	// both articles.
 	for i := range 2 {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -1288,8 +1297,8 @@ func TestAssembler_CacheUsageBytes_TracksBufferedBytes(t *testing.T) {
 	waitUntil(t, func() bool { return a.CacheUsageBytes() >= 8 }, 2*time.Second, "cache reaches at least 8 bytes")
 
 	// Complete the file (3rd part) — this drains all buffered articles.
-	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 8, Data: []byte("XXXX")}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
+	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 8, Data: []byte("XXXX")}
+	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 	if err := a.Stop(); err != nil {
@@ -1415,8 +1424,8 @@ func TestAssembler_CloseJobHandles(t *testing.T) {
 
 	// Write 1 part to each file index so all 3 are opened and sitting incomplete in open map.
 	for idx := range 3 {
-		req := WriteRequest{JobID: "job1", FileIdx: idx, Offset: 0, Data: []byte("0000")}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		req := WriteRequest{JobID: "job1", FileIdx: idx, ArtIdx: testArtIdx(idx), Offset: 0, Data: []byte("0000")}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle fileIdx=%d: %v", idx, err)
 		}
 	}
@@ -1461,5 +1470,175 @@ func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
 	cancel()
 	if err := a.CloseJobHandles(ctx, "job1"); !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestWriteArticle_RefOverridesTheRequestsOwnIdentity pins the sentence
+// WriteArticle's doc comment asserts: the ref is authoritative and the
+// request's own identity fields are not read on this path.
+//
+// Each of the four fields needs its own observable consequence, because they
+// fail independently. An earlier version of this test made all four disagree
+// but asserted only on completion and file contents, which depend on JobID and
+// FileIdx alone — deleting the ArtIdx and MessageID assignments left it green.
+// The three assertions below are one per mechanism:
+//
+//   - JobID and FileIdx: the file completes at all. If the request won, the
+//     write would be routed to a job and file that were never registered.
+//   - MessageID: the second article is written rather than swallowed. Both
+//     requests carry the SAME wrong Message-ID, so if the request won, the
+//     second would hit seenDone as a late duplicate of the first, claim
+//     nothing, and the file would never reach both its parts.
+//   - ArtIdx: the drained durability records carry the refs' indices. This is
+//     the field with the quietest failure — a wrong ArtIdx here is persisted
+//     into the checkpoint, so it is asserted against the record a checkpoint
+//     would actually write rather than against anything in memory.
+//
+// It calls WriteArticle directly rather than through the writeArticle helper,
+// which derives the ref from the request and so could never make them disagree.
+func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "real-job", 0, 2)
+
+	completed := make(chan int, 1)
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+	a := startAssembler(t, opts)
+
+	// The refs differ from each other in ArtIdx and MessageID; the requests do
+	// not differ at all. Every identity field on the request is wrong, and
+	// deliberately so.
+	write := func(artIdx int32, msgID string, off int64, data string) {
+		t.Helper()
+		err := a.WriteArticle(t.Context(), ArticleRef{
+			JobID: "real-job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+		}, WriteRequest{
+			JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
+			Offset: off, Data: []byte(data),
+		})
+		if err != nil {
+			t.Fatalf("WriteArticle %s: %v", msgID, err)
+		}
+	}
+	write(0, "real-a@id", 0, "AAAA")
+	write(1, "real-b@id", 4, "BBBB")
+
+	select {
+	case got := <-completed:
+		if got != 0 {
+			t.Errorf("completed file %d, want 0", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the file never completed, so the request's identity was used " +
+			"instead of the ref's: either the write was routed to a job and " +
+			"file that were never registered, or the second article was taken " +
+			"for a duplicate of the first because both requests name ghost@id")
+	}
+
+	if got := readFile(t, path); string(got) != "AAAABBBB" {
+		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
+	}
+
+	written, err := a.SyncTargetFor("real-job", oneFileMap{n: 2}).Drain(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("Drain: %v — an out-of-range ArtIdx fails the barrier's "+
+			"file-local ordinal lookup, which is what the request's 99 would be", err)
+	}
+	gotIdx := make([]int32, 0, len(written))
+	for _, w := range written {
+		gotIdx = append(gotIdx, w.ArtIdx)
+	}
+	slices.Sort(gotIdx)
+	if !slices.Equal(gotIdx, []int32{0, 1}) {
+		t.Errorf("durable records carry ArtIdx %v, want [0 1] — the request's "+
+			"ArtIdx reached the checkpoint instead of the ref's", gotIdx)
+	}
+}
+
+// TestWriteArticle_CannotForgeAControlMessage pins that the worker tells a
+// control message from an article by an unexported field, not by the FileIdx
+// sentinel.
+//
+// JobID and FileIdx are exported and are both overwritten from the caller's
+// ArticleRef, so a caller outside this package chooses them freely. While the
+// worker discriminated on the sentinel pair alone, a ref naming an empty job
+// and fileIdxSyncOp reached the barrier arm, which dereferences a *syncOp an
+// outside caller has no way to set — a nil dereference on the worker
+// goroutine, which has no recover(), so it takes the process with it.
+//
+// All three sentinels are exercised because they fail differently: the barrier
+// one panics, while the other two would silently cancel a job or close its
+// handles, naming the target through the article's own MessageID.
+//
+// The assertion is that a legitimate article sent AFTER the forgery still
+// completes its file, not merely that the forged one wrote nothing. The forged
+// request is discarded either way — it names no registered file — so "the
+// forgery wrote nothing" is true whether or not the worker acted on it, and an
+// earlier version of this test asserted exactly that and passed against the
+// cancel arm unfixed. What separates the two worlds is the damage left behind:
+// a cancel tombstones the job and a close-handles tombstones its files, so the
+// article that follows is silently dropped.
+//
+// The forgery is sandwiched between two real articles rather than sent first,
+// because close-handles closes the job's OPEN handles: arriving before any
+// file is open, it is a no-op on an empty map and does no damage to detect.
+// The worker processes the channel in order, so the first article has opened
+// the file by the time the forgery is dispatched.
+func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fileIdx int
+	}{
+		{"barrier sentinel", fileIdxSyncOp},
+		{"cancel sentinel", fileIdxCancelJob},
+		{"close-handles sentinel", fileIdxCloseHandles},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := make(map[string]FileInfo)
+			path := registerFile(t, dir, files, "real-job", 0, 2)
+
+			completed := make(chan int, 1)
+			opts := makeOpts(dir, files)
+			opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+			a := startAssembler(t, opts)
+
+			real := func(artIdx int32, msgID string, off int64, data string) {
+				t.Helper()
+				if err := a.WriteArticle(t.Context(), ArticleRef{
+					JobID: "real-job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+				}, WriteRequest{Offset: off, Data: []byte(data)}); err != nil {
+					t.Fatalf("WriteArticle %s: %v", msgID, err)
+				}
+			}
+
+			real(0, "real-a@id", 0, "AAAA")
+
+			// An empty JobID and a sentinel FileIdx, with the job to attack
+			// named in MessageID exactly as a real control message names it:
+			// this is precisely what the worker used to accept as proof.
+			if err := a.WriteArticle(t.Context(), ArticleRef{
+				JobID: "", FileIdx: tc.fileIdx, ArtIdx: 0, MessageID: "real-job",
+			}, WriteRequest{Offset: 0, Data: []byte("XXXX")}); err != nil {
+				t.Fatalf("forged WriteArticle: %v", err)
+			}
+
+			real(1, "real-b@id", 4, "BBBB")
+
+			select {
+			case got := <-completed:
+				if got != 0 {
+					t.Errorf("completed file %d, want 0", got)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the file never completed: the forged request was taken " +
+					"for a control message and tombstoned the job or its handles, " +
+					"so the article after it was silently dropped")
+			}
+			if got := readFile(t, path); string(got) != "AAAABBBB" {
+				t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
+			}
+		})
 	}
 }

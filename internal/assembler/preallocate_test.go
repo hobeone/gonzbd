@@ -169,9 +169,9 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 		{0, []byte("AAAA")},
 		{4, []byte("BBBB")},
 	}
-	for _, art := range articles {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: art.offset, Data: art.data}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+	for i, art := range articles {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: art.offset, Data: art.data}
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}

@@ -48,19 +48,31 @@ var (
 // WriteRequest is the unit of work sent to the assembler. Each request
 // corresponds to one decoded NZB article segment.
 type WriteRequest struct {
-	// JobID identifies the parent download job.
+	// JobID, FileIdx, ArtIdx and MessageID identify the article, and on the
+	// article path the CALLER DOES NOT OWN THEM: WriteArticle overwrites all
+	// four from its ArticleRef argument, and a value supplied here is
+	// discarded. Setting them on a request destined for WriteArticle has no
+	// effect. See ArticleRef for why the identity is a parameter.
+	//
+	// They stay on this struct because control messages are WriteRequest
+	// values too, and those DO own them: a control message carries one of the
+	// negative FileIdx sentinels (see synctarget.go) with JobID empty and the
+	// job named in MessageID, which is how dispatchRequest tells an operation
+	// from an article before any writer sees it.
 	JobID string
 
-	// FileIdx is the index into the job's Files slice, identifying which
-	// file this article belongs to.
+	// FileIdx is the index into the job's Files slice on the article path, or
+	// a control-message sentinel. See the block above.
 	FileIdx int
 
-	// ArtIdx is the global index of the article within the job's manifest.
+	// ArtIdx is the article's index in the job's manifest. Unused by control
+	// messages. See the block above.
 	ArtIdx int32
 
-	// MessageID is the article's NNTP Message-ID. The assembler uses it to
-	// mark the article Done (on success, after fsync) or Failed (on FatalErr)
-	// in the queue. Required.
+	// MessageID is the article's NNTP Message-ID on the article path, and the
+	// job ID on a control message. The assembler uses the former to mark the
+	// article Done (on success, after fsync) or Failed (on FatalErr) in the
+	// queue. See the block above.
 	MessageID string
 
 	// Offset is the byte position within the target file where Data should
@@ -445,10 +457,46 @@ func (a *Assembler) Stop() error {
 	return nil
 }
 
-// WriteArticle enqueues req for writing. It blocks until the worker accepts the
-// request or ctx is cancelled. Returns ErrStopped if Stop has been called.
-// Returns ctx.Err() if ctx is cancelled while waiting for channel capacity.
-func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
+// ArticleRef is the identity of the article a WriteArticle call carries: which
+// job, which file, which article, and the Message-ID it was fetched by.
+//
+// It is a separate parameter rather than four fields the caller may leave unset
+// on WriteRequest, because ArtIdx has no invalid value. A Message-ID is empty or
+// it is not, so an omitted one is a loud error; an omitted ArtIdx is
+// indistinguishable from a deliberate article 0. Taking the identity as a
+// required parameter makes omission a compile error at every caller outside this
+// package. See docs/article-validation-contract.md §4.
+//
+// The identity is un-omittable, not unrepresentable: a caller passing a zero
+// ArtIdx deliberately cannot be told apart from one who defaulted it. Read the
+// guarantee as "someone supplied an identity", not "the identity is valid".
+type ArticleRef struct {
+	// JobID identifies the parent download job.
+	JobID string
+
+	// FileIdx is the index into the job's Files slice.
+	FileIdx int
+
+	// ArtIdx is the global index of the article within the job's manifest.
+	ArtIdx int32
+
+	// MessageID is the article's NNTP Message-ID.
+	MessageID string
+}
+
+// WriteArticle enqueues req for writing, under the identity in ref. It blocks
+// until the worker accepts the request or ctx is cancelled. Returns ErrStopped
+// if Stop has been called. Returns ctx.Err() if ctx is cancelled while waiting
+// for channel capacity.
+//
+// ref is authoritative: the request's own identity fields are overwritten from
+// it and are not read on this path. They remain on WriteRequest because the
+// control-message convention builds WriteRequest values carrying FileIdx
+// sentinels, and those do not pass through here.
+//
+// The identity is applied after the started/stopped checks, so a caller probing
+// those errors with a bare request still gets them.
+func (a *Assembler) WriteArticle(ctx context.Context, ref ArticleRef, req WriteRequest) error {
 	a.mu.Lock()
 	if !a.started {
 		a.mu.Unlock()
@@ -463,6 +511,15 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 	a.mu.Unlock()
 
 	defer a.wg.Done()
+
+	// The ref owns the identity. Applying it here rather than trusting the
+	// request's own fields is the whole point of the parameter: there is no
+	// path from outside this package that reaches the worker with an identity
+	// nobody supplied.
+	req.JobID = ref.JobID
+	req.FileIdx = ref.FileIdx
+	req.ArtIdx = ref.ArtIdx
+	req.MessageID = ref.MessageID
 
 	select {
 	case a.reqs <- req:
@@ -520,12 +577,14 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 
 	defer a.wg.Done()
 
-	// Control message convention: JobID="" and FileIdx=-1, with the
-	// real job ID in MessageID.
+	// Control message convention: FileIdx=fileIdxCancelJob and a non-nil
+	// ackCh, with the real job ID in MessageID and JobID left empty. The
+	// worker discriminates on ackCh, which is unexported; the sentinel picks
+	// which control message this is.
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
-		FileIdx:   -1,
+		FileIdx:   fileIdxCancelJob,
 		MessageID: jobID,
 		ackCh:     ack,
 	}
@@ -607,12 +666,14 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 
 	defer a.wg.Done()
 
-	// Control message convention: JobID="" and FileIdx=-2, with the
-	// real job ID in MessageID.
+	// Control message convention: FileIdx=fileIdxCloseHandles and a non-nil
+	// ackCh, with the real job ID in MessageID and JobID left empty. The
+	// worker discriminates on ackCh, which is unexported; the sentinel picks
+	// which control message this is.
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
-		FileIdx:   -2,
+		FileIdx:   fileIdxCloseHandles,
 		MessageID: jobID,
 		ackCh:     ack,
 	}
@@ -682,8 +743,9 @@ mainLoop:
 			// duplicating it: a closed reqs makes this receive permanently
 			// ready, so `default` would never be selected and this loop would
 			// spin at full CPU dispatching zero-value requests forever. A zero
-			// WriteRequest is not the cancel sentinel (JobID=="" && FileIdx==-1),
-			// so it would reach processRequest with an empty job ID.
+			// WriteRequest has a nil ackCh and a nil syncOp, so it matches no
+			// control arm in dispatchRequest and would reach processRequest
+			// with an empty job ID.
 			//
 			// Note `break drain` must be labelled: a bare break would exit the
 			// select and fall straight back into this loop, which is the spin
@@ -730,7 +792,7 @@ mainLoop:
 }
 
 // dispatchRequest handles a single request from the channel. It processes
-// cancel control messages (JobID="" && FileIdx==-1) by closing and removing
+// cancel control messages (a non-nil ackCh with FileIdx==fileIdxCancelJob) by closing and removing
 // all open files for the cancelled job, skips articles for already-cancelled
 // jobs, and delegates normal write requests to processRequest. Returns 1 if
 // a normal request was processed (for reqCount tracking), 0 otherwise.
@@ -746,13 +808,28 @@ func (a *Assembler) dispatchRequest(
 ) int {
 	defer func() { a.cacheUsedBytes.Store(wc.used) }()
 
-	if req.JobID == "" && req.FileIdx == fileIdxSyncOp {
+	// Control messages are told from articles by an unexported field being
+	// set, not by the FileIdx sentinel alone.
+	//
+	// The sentinel is the encoding; it is not the proof. JobID and FileIdx are
+	// both exported and both overwritten from the caller's ArticleRef, so on
+	// the sentinel alone a caller outside this package could submit an article
+	// with an empty JobID and a negative FileIdx and have the worker act on it
+	// as a control message — for the barrier arm, dereferencing a syncOp the
+	// caller had no way to set. ackCh and syncOp are unexported, so no value
+	// built outside internal/assembler can have either, and the confusion is
+	// unrepresentable rather than rejected.
+	//
+	// A zero WriteRequest is excluded by the same test, which matters for the
+	// shutdown drain loop below: it dispatches zero values when the channel is
+	// closed, and they must reach processRequest rather than any arm here.
+	if req.syncOp != nil {
 		// Control message: a barrier operation. Answered on this goroutine,
 		// which owns every file handle and every write cache (X1).
 		a.handleSyncOp(req.syncOp, open, wc)
 		return 0
 	}
-	if req.JobID == "" && req.FileIdx == -1 {
+	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
 		// Control message: cancel a job. Close and remove all
 		// open files for the job encoded in MessageID.
 		cancelID := req.MessageID
@@ -805,7 +882,7 @@ func (a *Assembler) dispatchRequest(
 		}
 		return 0
 	}
-	if req.JobID == "" && req.FileIdx == -2 {
+	if req.ackCh != nil && req.FileIdx == fileIdxCloseHandles {
 		// Control message: close all open file handles for a job without deleting files.
 		targetID := req.MessageID
 		var closeErr error

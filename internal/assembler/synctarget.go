@@ -10,19 +10,38 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// fileIdxSyncOp is the control-message FileIdx that carries a barrier request.
+// The control-message FileIdx values. A negative FileIdx is the marker that a
+// WriteRequest carries an operation for the worker rather than an article, and
+// each value names which operation.
 //
-// It joins the two the assembler already had — -1 cancel, -2 close-handles —
-// and works the same way: the caller puts a request on the worker's channel
-// and blocks until the worker, which owns every file handle, has done the work
-// and answered.
+// They are declared together because that convention is load-bearing beyond
+// this file: it is the reason WriteArticle keeps the identity fields on
+// WriteRequest rather than moving them onto ArticleRef outright — control
+// messages share the channel and set those same fields. A reader sent to look
+// for "the sentinel convention" should find all of it in one place rather than
+// three bare literals at the construct sites and three more at the reads.
+//
+// fileIdxSyncOp carries a barrier request. It works like the other two: the
+// caller puts a request on the worker's channel and blocks until the worker,
+// which owns every file handle, has done the work and answered.
 //
 // That indirection is invariant X1, not ceremony. One goroutine owns all the
 // state, so the barrier can read a file's cache and handle without a lock. The
 // alternative — a mutex over the open-file map and the writers — would put
 // WriteAt and fsync inside a critical section, which is both a contention
 // disaster on the hot path and the thing check_lock_io exists to catch.
-const fileIdxSyncOp = -3
+const (
+	// fileIdxCancelJob asks the worker to drop a job's in-flight work and
+	// close its handles.
+	fileIdxCancelJob = -1
+
+	// fileIdxCloseHandles asks the worker to close a job's handles, leaving
+	// the job itself alone.
+	fileIdxCloseHandles = -2
+
+	// fileIdxSyncOp carries a durability barrier operation.
+	fileIdxSyncOp = -3
+)
 
 // syncOp is one barrier operation for the worker to perform.
 type syncOp struct {

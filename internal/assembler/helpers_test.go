@@ -14,6 +14,49 @@ import (
 // their behaviour without naming them. These call them directly, so a change
 // to one of them fails against its own contract rather than against whichever
 // pipeline test happened to route through it.
+//
+// The file also holds the small shims the package's own tests submit work
+// through, which are not production code paths at all.
+
+// writeArticle submits req under the identity carried on req itself, so a
+// fixture stays one readable literal instead of being split into a ref and a
+// payload at every call site.
+//
+// The reason to prefer this over splitting the fixtures is not convenience.
+// Eighty split fixtures would be eighty new places where the ref and the
+// payload can disagree about which article this is — and identity having one
+// source per call is the property the whole change exists to establish. The
+// helper gives the tests exactly that property by construction, arrived at by
+// the means available inside the package.
+//
+// It is also sound, which is the separate question: ArticleRef exists so a
+// caller OUTSIDE this package cannot reach the worker with an identity nobody
+// supplied. Tests are inside it and could always construct any request they
+// liked, so nothing is smuggled past the owner. internal/app's call sites,
+// which are the ones the guarantee is about, pass a real ref — and the
+// asymmetry with them is the compile-time package boundary showing through,
+// not an inconsistency to iron out.
+//
+// The cost is that these call sites no longer see WriteArticle's signature, so
+// a change to ArticleRef's shape will not break them. That is deliberate: their
+// subject is the assembler's behaviour, not its parameter list.
+func writeArticle(ctx context.Context, a *Assembler, req WriteRequest) error {
+	return a.WriteArticle(ctx, ArticleRef{
+		JobID:     req.JobID,
+		FileIdx:   req.FileIdx,
+		ArtIdx:    req.ArtIdx,
+		MessageID: req.MessageID,
+	}, req)
+}
+
+// testArtIdx narrows a loop counter to the ArtIdx field's type.
+//
+// It exists so the conversion's lint suppression is written once rather than at
+// every fixture that numbers its articles from a loop variable. Test article
+// counts are small by construction, so the narrowing cannot lose information.
+func testArtIdx(i int) int32 {
+	return int32(i) //nolint:gosec // G115: test article counts are far below int32
+}
 
 // newHelperAssembler builds an Assembler as a literal, without Start, for
 // tests that drive one helper. Nothing here reads a.reqs or the worker state.
@@ -156,7 +199,7 @@ func TestRelievePressure(t *testing.T) {
 			wc.buffer(f.w.key, bufferedArticle{
 				offset: int64(i * 20),
 				data:   []byte("12345678901234567890"),
-				id:     articleID{msgID: "<x@y>", artIdx: int32(i)},
+				id:     articleID{msgID: "<x@y>", artIdx: testArtIdx(i)},
 			})
 		}
 		if !wc.pressure() {
