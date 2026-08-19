@@ -451,15 +451,13 @@ func (a *Assembler) Stop() error {
 // It is a separate parameter rather than four fields the caller may leave unset
 // on WriteRequest, because ArtIdx has no invalid value. A Message-ID is empty or
 // it is not, so an omitted one is a loud error; an omitted ArtIdx is
-// indistinguishable from a deliberate article 0, and the seen-sets are moving to
-// key on it. Taking the identity as a required parameter makes omission a
-// compile error at every caller outside this package — see
-// docs/article-validation-contract.md §4, which prescribes exactly this rather
-// than splitting control messages out of WriteRequest first.
+// indistinguishable from a deliberate article 0. Taking the identity as a
+// required parameter makes omission a compile error at every caller outside this
+// package. See docs/article-validation-contract.md §4.
 //
-// This makes the identity un-omittable, not unrepresentable: a caller passing a
-// zero ArtIdx deliberately still cannot be told apart from one who defaulted it.
-// Closing that gap is a separate change.
+// The identity is un-omittable, not unrepresentable: a caller passing a zero
+// ArtIdx deliberately cannot be told apart from one who defaulted it. Read the
+// guarantee as "someone supplied an identity", not "the identity is valid".
 type ArticleRef struct {
 	// JobID identifies the parent download job.
 	JobID string

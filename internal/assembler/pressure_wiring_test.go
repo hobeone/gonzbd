@@ -75,7 +75,7 @@ func TestWriteCachePressureIsRelievedOnTheWritePath(t *testing.T) {
 		}
 		if err := writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0,
-			ArtIdx: int32(i), //nolint:gosec // G115: loop bound is 40
+			ArtIdx: testArtIdx(i),
 			// Distinct per article. string(rune('a'+i%26)) collided for
 			// i>=26, so 14 of the 40 were dropped by handleSuccessArticle's
 			// duplicate branch and only 26 KiB was ever buffered — the pin

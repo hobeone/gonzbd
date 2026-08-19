@@ -132,7 +132,7 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 		a.handleSuccessArticle(f, WriteRequest{
 			JobID:     "job",
 			MessageID: fmt.Sprintf("msg%d", i),
-			ArtIdx:    int32(i), //nolint:gosec // G115: tiny test index
+			ArtIdx:    testArtIdx(i),
 			Offset:    int64(i) * artSize,
 			Data:      body(i),
 		})

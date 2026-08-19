@@ -34,7 +34,7 @@ func BenchmarkDiskThroughput(b *testing.B) {
 			req := WriteRequest{
 				JobID:     jobID,
 				FileIdx:   0,
-				ArtIdx:    int32(p), //nolint:gosec // G115: bench part index is small
+				ArtIdx:    testArtIdx(p),
 				MessageID: fmt.Sprintf("%s-%d", jobID, p),
 				Offset:    int64(p * articleSize),
 				Data:      payload, // Shared payload is fine for throughput test

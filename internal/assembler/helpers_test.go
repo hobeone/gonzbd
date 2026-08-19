@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The helpers exercised here are reached in production only through
@@ -36,6 +37,65 @@ func writeArticle(ctx context.Context, a *Assembler, req WriteRequest) error {
 		ArtIdx:    req.ArtIdx,
 		MessageID: req.MessageID,
 	}, req)
+}
+
+// TestWriteArticle_RefOverridesTheRequestsOwnIdentity pins the sentence
+// WriteArticle's doc comment asserts: the ref is authoritative and the
+// request's own identity fields are not read on this path.
+//
+// Nothing else exercises it. Every other call site passes an identity that
+// already agrees with the ref — the writeArticle helper derives one from the
+// other, and both internal/app sites build them from the same ArticleResult —
+// so the overwrite could be deleted entirely and the whole suite would stay
+// green while the doc comment kept claiming it.
+//
+// The fixture makes the two disagree on all four fields. If the request won,
+// the write would be routed to a job and file that were never registered and
+// the file under test would never complete.
+func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "real-job", 0, 1)
+
+	completed := make(chan int, 1)
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+	a := startAssembler(t, opts)
+
+	err := a.WriteArticle(t.Context(), ArticleRef{
+		JobID: "real-job", FileIdx: 0, ArtIdx: 3, MessageID: "real@id",
+	}, WriteRequest{
+		// Every identity field here is wrong, and deliberately so.
+		JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
+		Offset: 0, Data: []byte("AAAA"),
+	})
+	if err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	select {
+	case got := <-completed:
+		if got != 0 {
+			t.Errorf("completed file %d, want 0", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the file never completed, so the request's identity was used " +
+			"instead of the ref's: the write went to a job and file that were " +
+			"never registered")
+	}
+
+	if got := readFile(t, path); string(got) != "AAAA" {
+		t.Errorf("file contents = %q, want %q", got, "AAAA")
+	}
+}
+
+// testArtIdx narrows a loop counter to the ArtIdx field's type.
+//
+// It exists so the conversion's lint suppression is written once rather than at
+// every fixture that numbers its articles from a loop variable. Test article
+// counts are small by construction, so the narrowing cannot lose information.
+func testArtIdx(i int) int32 {
+	return int32(i) //nolint:gosec // G115: test article counts are far below int32
 }
 
 // newHelperAssembler builds an Assembler as a literal, without Start, for

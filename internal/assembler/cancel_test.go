@@ -93,7 +93,7 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	// Send more articles after cancellation — they should be silently dropped.
 	for i := 1; i < 5; i++ {
 		_ = writeArticle(t.Context(), a, WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: int32(i + 1), Offset: int64(i * 4), Data: []byte("late"), //nolint:gosec // G115: loop bound is small
+			JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i + 1), Offset: int64(i * 4), Data: []byte("late"),
 		})
 	}
 

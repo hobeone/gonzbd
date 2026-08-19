@@ -183,7 +183,7 @@ func TestCloseAll_PartialFilesNoCallback(t *testing.T) {
 	// Write 3 of 100 parts, then stop.
 	for i := range 3 {
 		_ = writeArticle(t.Context(), a, WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX"), //nolint:gosec // G115: loop bound is small
+			JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX"),
 		})
 	}
 

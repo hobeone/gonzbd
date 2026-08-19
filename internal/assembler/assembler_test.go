@@ -102,7 +102,7 @@ func TestOutOfOrderAssembly(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i, art := range art {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: art.offset, Data: art.data} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: art.offset, Data: art.data}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -135,7 +135,7 @@ func TestFileCompleteCallbackFiresExactlyOnce(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i := range 3 {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX")} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -240,7 +240,7 @@ func TestLowDiskCallback(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i := range total {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX")} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -269,7 +269,7 @@ func TestLowDiskCallbackDisabledWhenZero(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	for i := range total {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX")} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -297,7 +297,7 @@ func TestStopDrainsChannel(t *testing.T) {
 
 	// Enqueue n writes before stopping.
 	for i := range n {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("WXYZ")} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("WXYZ")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -495,7 +495,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 			allReqs = append(allReqs, WriteRequest{
 				JobID:   "job1",
 				FileIdx: fi,
-				ArtIdx:  int32(fi*partsPerFile + part), //nolint:gosec // G115: loop bounds are small
+				ArtIdx:  testArtIdx(fi*partsPerFile + part),
 				Offset:  int64(part * articleSize),
 				Data:    fmt.Appendf(nil, "%04d%04d", fi, part),
 			})
@@ -609,7 +609,7 @@ func TestTelemetryDiskWriteCounters(t *testing.T) {
 		req := WriteRequest{
 			JobID:   "job1",
 			FileIdx: 0,
-			ArtIdx:  int32(i), //nolint:gosec // G115: loop bound is 3
+			ArtIdx:  testArtIdx(i),
 			Offset:  int64(i * 4),
 			Data:    []byte("XXXX"),
 		}
@@ -652,7 +652,7 @@ func TestTelemetryDiskWriteCountersCachedDrain(t *testing.T) {
 		req := WriteRequest{
 			JobID:   "job1",
 			FileIdx: 0,
-			ArtIdx:  int32(i), //nolint:gosec // G115: loop bound is 3
+			ArtIdx:  testArtIdx(i),
 			Offset:  int64(i * 4),
 			Data:    []byte("XXXX"),
 		}
@@ -692,7 +692,7 @@ func TestTelemetryFileCompleted(t *testing.T) {
 	// Complete file 0 (2 parts).
 	for i := range 2 {
 		req := WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: int32(i), //nolint:gosec // G115: loop bound is 2
+			JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i),
 			Offset: int64(i * 4), Data: []byte("AAAA"),
 		}
 		if err := writeArticle(t.Context(), a, req); err != nil {
@@ -1006,7 +1006,7 @@ func TestDiskCheckInterval(t *testing.T) {
 
 	// 2. Queue 31 more requests (total = 32 requests). They will block in the channel.
 	for i := 1; i < total; i++ {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX")} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle %d: %v", i, err)
 		}
@@ -1228,7 +1228,7 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 				req := WriteRequest{
 					JobID:   "job1",
 					FileIdx: w % numFiles,
-					ArtIdx:  int32(w*partsPerFile + part), //nolint:gosec // G115: loop bounds are small
+					ArtIdx:  testArtIdx(w*partsPerFile + part),
 					Offset:  int64(part * 4),
 					Data:    []byte("DATA"),
 				}
@@ -1284,7 +1284,7 @@ func TestAssembler_CacheUsageBytes_TracksBufferedBytes(t *testing.T) {
 	// actually process the request. Poll to wait for the worker to process
 	// both articles.
 	for i := range 2 {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX")} //nolint:gosec // G115: loop bound is small
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
@@ -1423,7 +1423,7 @@ func TestAssembler_CloseJobHandles(t *testing.T) {
 
 	// Write 1 part to each file index so all 3 are opened and sitting incomplete in open map.
 	for idx := range 3 {
-		req := WriteRequest{JobID: "job1", FileIdx: idx, ArtIdx: int32(idx), Offset: 0, Data: []byte("0000")} //nolint:gosec // G115: loop bound is 3
+		req := WriteRequest{JobID: "job1", FileIdx: idx, ArtIdx: testArtIdx(idx), Offset: 0, Data: []byte("0000")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle fileIdx=%d: %v", idx, err)
 		}

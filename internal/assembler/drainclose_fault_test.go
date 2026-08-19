@@ -32,7 +32,7 @@ func TestDrainAndClose_ReturnsTheRolledBackArticles(t *testing.T) {
 
 	for i := range 2 {
 		if !a.handleSuccessArticle(f, WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: int32(i), //nolint:gosec // G115: tiny test index
+			JobID: "job", FileIdx: 0, ArtIdx: testArtIdx(i),
 			MessageID: string(rune('a' + i)), Offset: int64(i) * 4, Data: []byte("AAAA"),
 		}) {
 			t.Fatalf("article %d was not accepted, so the fixture never buffered it", i)
