@@ -68,7 +68,9 @@ func writeFixtureArticle(t *testing.T, application *Application, jobID string, f
 	if err := application.pipeline.registerFile(jobID, fileIdx); err != nil {
 		t.Fatalf("registerFile %d: %v", fileIdx, err)
 	}
-	ref, req := assemblerWrite(jobID, globalArt)
+	// Offset 0: this helper writes one article at the start of its file, so
+	// the offset is file-local and does not follow the global article index.
+	ref, req := assemblerWrite(jobID, fileIdx, globalArt, 0)
 	if err := application.assembler.WriteArticle(t.Context(), ref, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
@@ -1161,13 +1163,11 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
 	if err := application.pipeline.registerFile(job.ID, 1); err != nil {
 		t.Fatalf("registerFile 1: %v", err)
 	}
-	// FileIdx 1 explicitly: assemblerWrite always targets file 0, and sending
-	// this to file 0 would never reach the wedge.
-	if err := application.assembler.WriteArticle(ctx, assembler.ArticleRef{
-		JobID: job.ID, FileIdx: 1, ArtIdx: 1, MessageID: "b@t",
-	}, assembler.WriteRequest{
-		Offset: 0, Data: make([]byte, 100),
-	}); err != nil {
+	// File 1 explicitly: sending this to file 0 would never reach the wedge.
+	// It is not routed through writeFixtureArticle because that waits for the
+	// file to open, and the whole point here is that the open never returns.
+	ref, req := assemblerWrite(job.ID, 1, 1, 0)
+	if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
 		t.Fatalf("WriteArticle 1: %v", err)
 	}
 	select {

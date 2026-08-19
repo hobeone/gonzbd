@@ -135,7 +135,7 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 		t.Fatalf("registerFile: %v", err)
 	}
 	for i := range nArts {
-		ref, req := assemblerWrite(job.ID, i)
+		ref, req := assemblerWrite(job.ID, 0, i, int64(i)*100)
 		if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
 			t.Fatalf("WriteArticle %d: %v", i, err)
 		}
@@ -176,14 +176,21 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 	}
 }
 
-// assemblerWrite builds the identity and the write request for article i of
-// file 0, at the offset the fixture's 100-byte articles imply.
-func assemblerWrite(jobID string, i int) (assembler.ArticleRef, assembler.WriteRequest) {
+// assemblerWrite builds the identity and the write request for global article
+// globalArt of file fileIdx, at the given file-local offset.
+//
+// The offset is a parameter rather than derived from globalArt because the two
+// index different things: article indices are global to the job, offsets are
+// local to the file. An earlier version derived the offset from the article
+// index and hardcoded FileIdx 0, which meant a caller asking for file 1 got a
+// write to file 0 and a fixture writing file 1's first article had to be built
+// by hand to avoid file 0's offsets.
+func assemblerWrite(jobID string, fileIdx, globalArt int, offset int64) (assembler.ArticleRef, assembler.WriteRequest) {
 	return assembler.ArticleRef{
-			JobID: jobID, FileIdx: 0, ArtIdx: int32(i), //nolint:gosec // G115: test article counts are tiny
-			MessageID: string(rune('a'+i)) + "@t",
+			JobID: jobID, FileIdx: fileIdx, ArtIdx: int32(globalArt), //nolint:gosec // G115: test article counts are tiny
+			MessageID: string(rune('a'+globalArt)) + "@t",
 		}, assembler.WriteRequest{
-			Offset: int64(i) * 100,
+			Offset: offset,
 			Data:   make([]byte, 100),
 		}
 }
