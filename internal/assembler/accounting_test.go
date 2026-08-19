@@ -203,7 +203,7 @@ func TestFileWriter_RollbackPart(t *testing.T) {
 			w := newTestFileWriter(t)
 			tc.setup(w)
 
-			w.rollbackPart(tc.id)
+			w.rollbackPart(tc.id.artIdx)
 
 			if got := w.parts(); got != tc.wantParts {
 				t.Errorf("parts() = %d, want %d", got, tc.wantParts)
@@ -288,7 +288,7 @@ func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
 		{"with none", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := newHelperFile(t, t.TempDir(), "rollback.dat", 0).w
+			w := newTestFileWriter(t)
 			id := articleID{msgID: tc.msgID, artIdx: 7}
 
 			w.admitAccepted(id.artIdx)
@@ -302,6 +302,15 @@ func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
 			}
 			if _, still := w.seenDone[id.artIdx]; still {
 				t.Error("the article kept its seenDone entry after fail")
+			}
+			// fail rolls the article back without deciding what becomes of it,
+			// so it must not resolve the article as failed. The permanent
+			// dispositions — admitPermanentFailure and failPermanent — are what
+			// write seenFailed.
+			if len(w.seenFailed) != 0 {
+				t.Errorf("seenFailed = %v after fail; rolling an article back is "+
+					"not resolving it, and a seenFailed entry would stop a "+
+					"redelivery being counted", w.seenFailed)
 			}
 		})
 	}

@@ -1454,7 +1454,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.failPermanent(id)
+		f.w.failPermanent(id.artIdx)
 		return &rejectedArticleError{reason: reason}
 	}
 	// An offset whose owner has already been reported Written is settled, and
@@ -1468,7 +1468,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.failPermanent(id)
+		f.w.failPermanent(id.artIdx)
 		rej := &rejectedArticleError{
 			reason: "claims a byte offset already written by another article",
 		}

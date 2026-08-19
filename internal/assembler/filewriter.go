@@ -413,10 +413,10 @@ func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 // gone rather than reachable only from a test. giveBackUntrackedPart itself is
 // gone too: with fail no longer returning early on any identity, it was the
 // only caller that decrement needed.
-func (w *FileWriter) rollbackPart(id articleID) {
-	_, wasDone := w.seenDone[id.artIdx]
-	_, wasFailed := w.seenFailed[id.artIdx]
-	delete(w.seenDone, id.artIdx)
+func (w *FileWriter) rollbackPart(artIdx int32) {
+	_, wasDone := w.seenDone[artIdx]
+	_, wasFailed := w.seenFailed[artIdx]
+	delete(w.seenDone, artIdx)
 	// An article already counted as permanently FAILED keeps its count:
 	// admitPermanentFailure counted it, and a later retry whose write fails
 	// must not decrement what a different code path added. Only an article
@@ -466,7 +466,7 @@ func (w *FileWriter) rollbackPart(id articleID) {
 // than by luck. An article only loses a part if it held one, which means it
 // was in seenDone and not in seenFailed, which means partsWritten counted it.
 func (w *FileWriter) fail(id articleID) {
-	w.rollbackPart(id)
+	w.rollbackPart(id.artIdx)
 	w.faulted = append(w.faulted, faultedArticle{id: id})
 }
 
@@ -571,9 +571,9 @@ func (w *FileWriter) admitPermanentFailure(artIdx int32) bool {
 // the queue — so it will not arrive again, and a file that stopped counting it
 // could never reach TotalParts. That is the opposite of fail's case, where the
 // article is coming back.
-func (w *FileWriter) failPermanent(id articleID) {
-	delete(w.seenDone, id.artIdx)
-	w.seenFailed[id.artIdx] = struct{}{}
+func (w *FileWriter) failPermanent(artIdx int32) {
+	delete(w.seenDone, artIdx)
+	w.seenFailed[artIdx] = struct{}{}
 }
 
 // takeFaulted returns and clears the articles rolled back since the last call.
@@ -664,10 +664,15 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 		// w.written, so rolling it back left one article both permanently
 		// failed and acked durable. See offsetSettledBy.
 		//
-		// The check above has already failed the incumbent in every case the
-		// cache can also see, so this loop is now a backstop rather than the
-		// detector. It stays because wc.buffer owns the eviction and is the
-		// only thing that knows which article it dropped.
+		// This loop is a backstop, not the detector, and as the code stands it
+		// does not run at all: the check above discards the incumbent through
+		// wc.discardAt before buffer is reached, so buffer finds nothing to
+		// report as displaced. It stays because buffer is the only thing that
+		// knows what it dropped, so a future path reaching buffer without
+		// Accept's check still reports rather than silently overwriting.
+		//
+		// Deleting it, and buffer's eviction branch with it, is a real
+		// simplification and is deliberately not part of this change.
 		//
 		// Skipping alreadyFailed is not tidiness. Failing one article twice
 		// appends a second faultedArticle, and routeFaulted resolves each

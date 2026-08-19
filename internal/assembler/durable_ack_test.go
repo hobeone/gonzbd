@@ -532,28 +532,15 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	}
 }
 
-// TestFailToleratesAnEmptyMessageID translates
-// TestFailArticleWithoutAMessageIDStillAcks. There is no ack for the queue to
-// hear any more, and fail is no longer a no-op for this identity either — it
-// used to return early on an empty Message-ID; now the maps are keyed on
-// ArtIdx, so this identity is rolled back exactly like any other. The
-// surviving claim is narrower: fail does not panic or otherwise mishandle an
-// empty Message-ID, and it still never touches seenFailed, whatever identity
-// it is given — only admitPermanentFailure does that.
-func TestFailToleratesAnEmptyMessageID(t *testing.T) {
-	w := newTestFileWriter(t)
-	w.admitAccepted(3)
-	w.fail(articleID{msgID: "", artIdx: 3})
-	if len(w.seenFailed) != 0 {
-		t.Errorf("seenFailed = %v; fail never populates it, for any identity", w.seenFailed)
-	}
-	if _, still := w.seenDone[3]; still {
-		t.Error("the article kept its seenDone entry after fail")
-	}
-	if w.parts() != 0 {
-		t.Errorf("parts() = %d after fail, want 0", w.parts())
-	}
-}
+// The test that stood here, TestFailToleratesAnEmptyMessageID, translated
+// TestFailArticleWithoutAMessageIDStillAcks and has been folded into
+// accounting_test.go's TestFileWriter_FailRollsBackEveryArticlesPart, whose
+// table already runs the empty-Message-ID identity alongside a real one. Its
+// one distinct assertion — that fail leaves seenFailed alone — moved with it.
+//
+// The claim it made about seenFailed was also too strong. fail does not write
+// seenFailed, but it is not the case that only admitPermanentFailure does:
+// failPermanent records there too.
 
 // TestRelievePressureForUnknownFileIsSkippedSafely covers the branch taken
 // when the cache holds articles for a file relievePressure cannot find in

@@ -353,6 +353,14 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	//
 	// A re-accept that writes immediately re-latches the flag in noteWritten
 	// and hides the defect, which is why this half has to stay buffered.
+	//
+	// Staged as the write-fault retry that is the real route here: fail rolls
+	// the part back and clears the seenDone entry, then the redelivery is
+	// admitted afresh. Admitting a second time without the fail would charge
+	// partsWritten twice for one article and model a state production cannot
+	// produce.
+	c.f.w.fail(id)
+	_ = c.f.w.takeFaulted()
 	c.f.w.admitAccepted(id.artIdx)
 	req.Data = []byte("AAAA")
 	if err := c.a.acceptArticle(c.f, id, req); err != nil {
@@ -523,11 +531,12 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 // the SAME article can reach the displaced loop.
 //
 // handleSuccessArticle's dedup arm returns before acceptArticle when the
-// article's ArtIdx is already in seenDone, so a redelivery through that path
-// never reaches Accept a second time. This test calls FileWriter.Accept
-// directly, below that dedup, which is the only way to reach the eviction loop
-// with the identical article: production code has no path that calls Accept
-// twice for one ArtIdx.
+// article's ArtIdx is already in seenDone, so a PLAIN redelivery never reaches
+// Accept a second time. That is not the only route: a write-fault retry gets
+// there, because fail deletes the seenDone entry and never sets seenFailed
+// while acceptedAt is never removed, so the redelivery misses both dedup arms
+// and finds itself already the owner. This test drives the same second Accept
+// through acceptArticle directly rather than staging a fault to reach it.
 //
 // Accept's own check correctly says this is not a collision (same owner), but
 // wc.buffer evicts the article's previous entry and used to report it as

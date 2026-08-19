@@ -428,7 +428,8 @@ the rows.
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
-| F2–F5 | structural (§5.F) | — | nothing — the state stops existing | — |
+| F2, F5 | structural (§5.F) | — | ✅ **implemented** — the state stops existing | — |
+| F3, F4 | structural (§5.F) | — | proposed — the state stops existing | — |
 | F6 | digest over accepted IDs (§5.F) | — | ✅ **implemented** | — |
 
 **Build order.** The F-items land first (§5.F), then the assertions:

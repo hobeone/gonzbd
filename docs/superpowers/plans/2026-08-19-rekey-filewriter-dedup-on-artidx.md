@@ -53,6 +53,13 @@ These are **one task, not two**. `handleSuccessArticle`'s dedup arms sit inside 
 
 Splitting them creates a defect that exists in neither endpoint: with `resolvedUntracked` deleted but the wrapper still keying on `msgID`, an empty-ID loser sits in `seenFailed[""]`, matches neither arm on redelivery, falls through to `admitAccepted("")` and `acceptArticle`, and ping-pongs with the article that owns its offset — the count-climb documented at `filewriter.go:107-114`.
 
+**Prerequisite, already met.** The contract sequences this as F1a (give every fixture an explicit
+`ArtIdx` under the unchanged key) then F1b (flip the key), and **F1a landed in #403** — which is what
+makes the churn below mechanical rather than a rewrite. The hazard that ordering exists to prevent is
+a fixture left at the `ArtIdx` zero value, where several articles alias article 0 and a test passes
+without exercising the identity it names. Confirm it is still met before starting: every
+`articleID{...}` fixture that shares a writer with another should carry a distinct index.
+
 **This task is large, and the size is in the tests, not the production code.** The three `admit*` signatures and the two map types are referenced at **132 call sites across 14 test files**. Most are a mechanical `""` → index substitution, but they must all land in this commit or the package does not build. Budget for that before starting; a reviewer rejecting this task will be rejecting the re-key, not the churn.
 
 **Files:**
@@ -250,7 +257,7 @@ Run the pin: expect PASS. Then `go test -race -count=1 ./...` and `go test -coun
 
 A **compile** error here is expected churn from Step 8 — finish the substitution. A **test failure** is different: it is either a mistake in the re-key or a test pinning the Message-ID key itself. Triage each on its own; do not adjust production code to keep such a test green, and do not adjust a fixture's index to make an assertion pass without understanding which of the two it is.
 
-- [ ] **Step 8: Sweep and commit**
+- [ ] **Step 10: Sweep and commit**
 
 ```bash
 git grep -n 'resolvedUntracked'   # must be empty
@@ -505,6 +512,12 @@ go run ./scripts/check_dup_comments && go run ./scripts/check_review_banner
 ```
 
 Message: `docs: record that FileWriter keys on ArtIdx and no longer needs A7`
+
+**That subject is too broad, and the landed commit carries it.** A7 stays enforced and stays
+document-wide for a reason F1 does not touch — a repeated Message-ID names bytes already accounted
+for, so keeping both copies double-counts `File.Bytes` and fetches them twice. What F1 retires is
+only the *assembler's* dependence on A7 for article identity and accounting. The prose inside the
+documents is scoped correctly; the subject line is the part that overstates.
 
 ---
 

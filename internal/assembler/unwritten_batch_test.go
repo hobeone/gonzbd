@@ -155,7 +155,7 @@ func TestFailPermanent_KeepsTheArticleCounted(t *testing.T) {
 	w := newTestFileWriter(t)
 	w.seenDone[1] = struct{}{}
 
-	w.failPermanent(articleID{msgID: "m1", artIdx: 1})
+	w.failPermanent(1)
 
 	if _, still := w.seenDone[1]; still {
 		t.Error("a permanently refused article is still recorded as done; nothing wrote its bytes")
@@ -173,7 +173,7 @@ func TestFailPermanent_KeepsTheArticleCounted(t *testing.T) {
 	// An article with no Message-ID is keyed on its ArtIdx like any other —
 	// ArtIdx has no value that doubles as "absent", so there is no empty-key
 	// case to special-case here.
-	w.failPermanent(articleID{artIdx: 2})
+	w.failPermanent(2)
 	if _, failed := w.seenFailed[2]; !failed {
 		t.Error("an article with no Message-ID was not recorded in seenFailed under its ArtIdx")
 	}

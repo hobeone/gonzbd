@@ -207,13 +207,18 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 		// stayed queued to be written and acked. Two terminal dispositions for
 		// one article.
 		//
-		// Reachable for the cache-eviction case Accept's own doc describes: its
-		// acceptedAt check already recorded the new owner before calling here,
-		// but the old article's bytes are still sitting in fb.articles because
-		// nothing has flushed or discarded them yet. handleSuccessArticle's
-		// dedup arms key on ArtIdx and would have caught a genuine redelivery
-		// before Accept was called at all, so this is a different article at
-		// the same offset, not a repeat delivery of the same one.
+		// Not reachable from Accept as it stands, and kept as a backstop rather
+		// than as a detector. Accept calls wc.discardAt the moment its
+		// acceptedAt check finds a different owner, and discardAt deletes the
+		// entry — so by the time buffer runs, the collision case has no
+		// incumbent left here to find. The same-article case is excluded by the
+		// test below instead.
+		//
+		// It stays because this is the only place that knows what buffer
+		// dropped, so a future path that reaches buffer without going through
+		// Accept's check still reports rather than silently overwrites. That is
+		// a weaker justification than "buffer owns the eviction", which is what
+		// this said while discardAt already owned it.
 		if !existing.id.sameArticle(art.id) {
 			displaced = []articleID{existing.id}
 		}

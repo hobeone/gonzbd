@@ -1021,7 +1021,7 @@ including every failure path.
   that two segments claim one byte range without asserting the post is
   malformed, because a redundant posting and a server-mangled `=ypart begin=`
   produce the same observation and yEnc checksums the payload, never the header.
-- **Cross-state dedup**: a Message-ID previously counted as a success arriving as
+- **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
   handled by `handleLateDuplicate` — data returned to the pool, no disk write, no
