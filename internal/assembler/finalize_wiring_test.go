@@ -70,7 +70,7 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 		idx int32
 		off int64
 	}{{0, 0}, {2, 200}} {
-		if err := a.WriteArticle(t.Context(), WriteRequest{
+		if err := writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0, ArtIdx: art.idx,
 			MessageID: string(rune('a' + art.idx)), //nolint:unconvert // art.idx is int32; the rune conversion is the point
 			Offset:    art.off, Data: make([]byte, 100),
@@ -207,7 +207,7 @@ func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
 	}
 	a := startAssembler(t, opts)
 
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
 		Offset: 0, Data: make([]byte, 100),
 	}); err != nil {

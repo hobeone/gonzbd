@@ -68,7 +68,8 @@ func writeFixtureArticle(t *testing.T, application *Application, jobID string, f
 	if err := application.pipeline.registerFile(jobID, fileIdx); err != nil {
 		t.Fatalf("registerFile %d: %v", fileIdx, err)
 	}
-	if err := application.assembler.WriteArticle(t.Context(), assemblerWrite(jobID, globalArt)); err != nil {
+	ref, req := assemblerWrite(jobID, globalArt)
+	if err := application.assembler.WriteArticle(t.Context(), ref, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 	// WriteArticle returns once the worker has ACCEPTED the request, not once
@@ -1162,8 +1163,9 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
 	}
 	// FileIdx 1 explicitly: assemblerWrite always targets file 0, and sending
 	// this to file 0 would never reach the wedge.
-	if err := application.assembler.WriteArticle(ctx, assembler.WriteRequest{
+	if err := application.assembler.WriteArticle(ctx, assembler.ArticleRef{
 		JobID: job.ID, FileIdx: 1, ArtIdx: 1, MessageID: "b@t",
+	}, assembler.WriteRequest{
 		Offset: 0, Data: make([]byte, 100),
 	}); err != nil {
 		t.Fatalf("WriteArticle 1: %v", err)

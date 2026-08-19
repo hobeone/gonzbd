@@ -135,7 +135,8 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 		t.Fatalf("registerFile: %v", err)
 	}
 	for i := range nArts {
-		if err := application.assembler.WriteArticle(ctx, assemblerWrite(job.ID, i)); err != nil {
+		ref, req := assemblerWrite(job.ID, i)
+		if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
 			t.Fatalf("WriteArticle %d: %v", i, err)
 		}
 	}
@@ -175,13 +176,14 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 	}
 }
 
-// assemblerWrite builds the write request for article i of file 0, at the
-// offset the fixture's 100-byte articles imply.
-func assemblerWrite(jobID string, i int) assembler.WriteRequest {
-	return assembler.WriteRequest{
-		JobID: jobID, FileIdx: 0, ArtIdx: int32(i), //nolint:gosec // G115: test article counts are tiny
-		MessageID: string(rune('a'+i)) + "@t",
-		Offset:    int64(i) * 100,
-		Data:      make([]byte, 100),
-	}
+// assemblerWrite builds the identity and the write request for article i of
+// file 0, at the offset the fixture's 100-byte articles imply.
+func assemblerWrite(jobID string, i int) (assembler.ArticleRef, assembler.WriteRequest) {
+	return assembler.ArticleRef{
+			JobID: jobID, FileIdx: 0, ArtIdx: int32(i), //nolint:gosec // G115: test article counts are tiny
+			MessageID: string(rune('a'+i)) + "@t",
+		}, assembler.WriteRequest{
+			Offset: int64(i) * 100,
+			Data:   make([]byte, 100),
+		}
 }

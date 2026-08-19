@@ -342,13 +342,27 @@ address article 0 rather than trip anything. Today that is excluded by the
 **This is exactly the case tier 2 exists for, and it is cheaper than the F4
 route the earlier draft proposed.** `Assembler.WriteArticle` is already the sole
 entry point for an article write from outside `internal/assembler` — both
-external construction sites are `p.assembler.WriteArticle(ctx,
-assembler.WriteRequest{…})` in `internal/app/pipeline.go`, and the `reqs`
+external construction sites are in `internal/app/pipeline.go`, and the `reqs`
 channel is unexported. Making that one function the owner — taking the identity
 as explicit parameters, or rejecting a request whose `ArtIdx` was never set —
 makes the struct-zero unreachable on the path that matters, without splitting
 control messages out of the type first. F4 remains worth doing for its own
 reasons (§5.F); it is not a prerequisite for F1.
+
+**The owner has landed** (#402): the signature is
+`WriteArticle(ctx, ref ArticleRef, req WriteRequest)`, and `ArticleRef` carries
+`JobID`, `FileIdx`, `ArtIdx` and `MessageID`. Omitting the identity is a compile
+error at both `internal/app` call sites. The identity fields stay on
+`WriteRequest` — the control-message convention builds `WriteRequest` values
+carrying `FileIdx` sentinels, and removing them is F4's job, not this one's.
+
+Note what that does and does not buy, because the difference is the whole reason
+this section exists. The identity is now **un-omittable**, not
+**unrepresentable**: a caller passing `ArtIdx: 0` deliberately is still
+indistinguishable from one who never thought about it. What tier 2 removes is
+the caller who supplied no identity at all. Closing the remaining gap needs a
+type with no valid zero, which F1 does not require and this change does not
+attempt.
 
 The general form: **where the substitute type has a valid zero, tier 1 converts
 a detectable failure into an undetectable one — so pair it with tier 2 rather
@@ -896,6 +910,12 @@ split above, which is why it is mandatory rather than stylistic, and the tier-2
 move in §4 — making `Assembler.WriteArticle` the owner of article identity, so a
 never-set `ArtIdx` cannot reach the accept path from outside the package at all.
 Take the second and F1 stops depending on F4.
+
+Both landed in #402, ahead of F1: every `WriteRequest` fixture carries an
+explicit `ArtIdx` under the unchanged Message-ID key, and `WriteArticle` takes
+an `ArticleRef`. F1 is therefore a behaviour change against a prepared tree.
+Neither closes the valid-zero gap itself — see §4 on un-omittable versus
+unrepresentable.
 
 F6 is the exception to this section's framing: it deletes no state, and instead
 deletes a **rule about where code may be placed**. It belongs here because the

@@ -415,7 +415,7 @@ func TestSyncTargetDrainReportsUntilTheCycleIsConfirmed(t *testing.T) {
 			JobID: "job1", FileIdx: 0, ArtIdx: i,
 			MessageID: fmt.Sprintf("msg%d", i), Offset: int64(i) * 4, Data: []byte("abcd"),
 		}
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle %d: %v", i, err)
 		}
 	}
@@ -600,7 +600,7 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 	a := startAssembler(t, makeOpts(dir, files))
 
 	// The article's bytes land first.
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
 		Offset: 0, Data: []byte("abcd"),
 	}); err != nil {
@@ -608,7 +608,7 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 	}
 	// Then a permanent failure arrives for the SAME article — the order that
 	// used to let a Failed ack overwrite a Done one.
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
 		FatalErr: errFatalProbe,
 	}); err != nil {

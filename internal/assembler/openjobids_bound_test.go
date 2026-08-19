@@ -51,7 +51,7 @@ func TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	// Park the worker inside the resolver.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"), MessageID: "m1",
 	})
 	select {

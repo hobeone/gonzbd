@@ -110,7 +110,7 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 	}
 
 	a := startAssembler(t, opts)
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
 		Offset: 0, Data: []byte("AAAA"),
 	}); err != nil {

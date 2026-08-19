@@ -171,7 +171,7 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 	}
 	for i, art := range articles {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: art.offset, Data: art.data} //nolint:gosec // G115: loop bound is small
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}

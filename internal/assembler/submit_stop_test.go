@@ -49,7 +49,7 @@ func TestSubmit_ADeadlineFreeCallerIsReleasedByStop(t *testing.T) {
 	}
 	t.Cleanup(unpark)
 
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"), MessageID: "m1",
 	})
 	select {

@@ -136,7 +136,7 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 	path := registerFile(t, dir, files, "job1", 0, 2)
 	a := startAssembler(t, makeOpts(dir, files))
 
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0", Offset: 0, Data: []byte("abcd"),
 	}); err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestSyncTargetFor_NilArticleMapReportsNoFiles(t *testing.T) {
 	registerFile(t, dir, files, "job1", 0, 1000)
 	a := startAssembler(t, makeOpts(dir, files))
 
-	if err := a.WriteArticle(t.Context(), WriteRequest{
+	if err := writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0", Offset: 0, Data: []byte("abcd"),
 	}); err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestOpenJobIDs_ReportsEveryJobHoldingAFileOnce(t *testing.T) {
 		file int
 		art  int32
 	}{{"job1", 0, 0}, {"job1", 1, 1}, {"job2", 0, 2}} {
-		if err := a.WriteArticle(t.Context(), WriteRequest{
+		if err := writeArticle(t.Context(), a, WriteRequest{
 			JobID: w.job, FileIdx: w.file, ArtIdx: w.art,
 			MessageID: string(rune('a' + w.art)), //nolint:unconvert // the rune conversion is the point
 			Offset:    0, Data: make([]byte, 10),

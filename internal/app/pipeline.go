@@ -266,12 +266,13 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// The article still goes to the assembler, which counts it toward the
 		// file's part total so the file can complete with a hole in it. It
 		// writes nothing and acks nothing.
-		writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
+		writeErr := p.assembler.WriteArticle(ctx, assembler.ArticleRef{
 			JobID:     res.JobID,
 			FileIdx:   res.FileIdx,
 			ArtIdx:    res.ArtIdx,
 			MessageID: res.MessageID,
-			FatalErr:  res.Err,
+		}, assembler.WriteRequest{
+			FatalErr: res.Err,
 		})
 		// If the assembler couldn't accept the request, clear Emitted
 		// so the dispatcher can retry the article.
@@ -371,13 +372,14 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		CRC32:   res.CRC,
 	})
 
-	writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
+	writeErr := p.assembler.WriteArticle(ctx, assembler.ArticleRef{
 		JobID:     res.JobID,
 		FileIdx:   res.FileIdx,
 		ArtIdx:    res.ArtIdx,
 		MessageID: res.MessageID,
-		Offset:    res.Offset,
-		Data:      res.Data,
+	}, assembler.WriteRequest{
+		Offset: res.Offset,
+		Data:   res.Data,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",

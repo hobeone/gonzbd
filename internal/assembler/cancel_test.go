@@ -36,10 +36,10 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write one article per file to open the file handles.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("hello"),
 	})
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 1, ArtIdx: 1, Offset: 0, Data: []byte("world"),
 	})
 
@@ -85,14 +85,14 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write one article then cancel.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("data"),
 	})
 	_ = a.CancelJob(t.Context(), "job1")
 
 	// Send more articles after cancellation — they should be silently dropped.
 	for i := 1; i < 5; i++ {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
+		_ = writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0, ArtIdx: int32(i + 1), Offset: int64(i * 4), Data: []byte("late"), //nolint:gosec // G115: loop bound is small
 		})
 	}
@@ -119,10 +119,10 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write to both jobs.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 	})
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job2", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("XXXX"),
 	})
 
@@ -130,7 +130,7 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 	_ = a.CancelJob(t.Context(), "job1")
 
 	// Finish job2.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job2", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("YYYY"),
 	})
 
@@ -193,7 +193,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 
 	// Fill the queue with a request that blocks the worker.
 	go func() {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
+		_ = writeArticle(t.Context(), a, WriteRequest{
 			JobID: "block", FileIdx: 0, ArtIdx: 0, Data: []byte("x"),
 		})
 	}()
@@ -204,7 +204,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 	// Fill the queue (cap 1).
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
-	_ = a.WriteArticle(ctx, WriteRequest{
+	_ = writeArticle(ctx, a, WriteRequest{
 		JobID: "fill", FileIdx: 0, ArtIdx: 0, Data: []byte("y"),
 	})
 
@@ -242,15 +242,15 @@ func TestFatalErrCountsTowardCompletion(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// 2 good articles, 1 fatal.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("BBBB"),
 		MessageID: "good2",
 	})
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 2,
 		MessageID: "fail1",
 		FatalErr:  fmt.Errorf("article not found on any server"),
@@ -276,14 +276,14 @@ func TestFatalErrDuplicate(t *testing.T) {
 
 	// Send the same FatalErr twice — only one should count.
 	for range 2 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
+		_ = writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0, ArtIdx: 0,
 			MessageID: "dup-fail",
 			FatalErr:  fmt.Errorf("gone"),
 		})
 	}
 	// Send one good article to complete the file (total=2 parts).
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
@@ -309,17 +309,17 @@ func TestLateDuplicateForCompletedFile(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Complete the file.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AA"),
 		MessageID: "msg1",
 	})
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 2, Data: []byte("BB"),
 		MessageID: "msg2",
 	})
 
 	// Send a late duplicate — should be rejected (tombstone set).
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 0, Data: []byte("XX"),
 		MessageID: "msg1-late",
 	})

@@ -39,7 +39,7 @@ func BenchmarkDiskThroughput(b *testing.B) {
 				Offset:    int64(p * articleSize),
 				Data:      payload, // Shared payload is fine for throughput test
 			}
-			if err := a.WriteArticle(b.Context(), req); err != nil {
+			if err := writeArticle(b.Context(), a, req); err != nil {
 				b.Fatalf("WriteArticle: %v", err)
 			}
 		}

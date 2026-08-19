@@ -22,7 +22,7 @@ func TestWriteError_TreatedAsFailed(t *testing.T) {
 
 	// Make the file read-only to cause a write error.
 	// First, write one good article to open the file handle.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
@@ -36,12 +36,12 @@ func TestWriteError_TreatedAsFailed(t *testing.T) {
 
 	// Create a new assembler targeting the same file.
 	a2 := startAssembler(t, opts)
-	_ = a2.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a2, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 0, Data: []byte("BBBB"),
 		MessageID: "write-err-msg",
 	})
 	// Need a second article to complete the file.
-	_ = a2.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a2, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 4, Data: []byte("CCCC"),
 		MessageID: "write-err-msg2",
 	})
@@ -72,13 +72,13 @@ func TestDuplicateSuccessDedup(t *testing.T) {
 
 	// Send the same successful article twice.
 	for range 2 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
+		_ = writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 			MessageID: "dup-success",
 		})
 	}
 	// Send a different article to complete the file (total=2).
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("BBBB"),
 		MessageID: "unique-msg",
 	})
@@ -102,18 +102,18 @@ func TestSuccessAfterFailure_RecoveryWrite(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// First: article arrives as FatalErr (failed on all servers).
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0,
 		MessageID: "retry-msg",
 		FatalErr:  fmt.Errorf("article expired"),
 	})
 	// Then: the same article successfully downloads (backup server).
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("RECOVERED"),
 		MessageID: "retry-msg",
 	})
 	// Second article to complete.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 9, Data: []byte("!"),
 		MessageID: "msg2",
 	})
@@ -144,18 +144,18 @@ func TestFailureAfterSuccess_NoDoubleCount(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// First: success.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "cross-msg",
 	})
 	// Then: the same article arrives as FatalErr (stale retry).
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0,
 		MessageID: "cross-msg",
 		FatalErr:  fmt.Errorf("stale failure"),
 	})
 	// Complete with a second article.
-	_ = a.WriteArticle(t.Context(), WriteRequest{
+	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("BBBB"),
 		MessageID: "msg2",
 	})
@@ -182,7 +182,7 @@ func TestCloseAll_PartialFilesNoCallback(t *testing.T) {
 
 	// Write 3 of 100 parts, then stop.
 	for i := range 3 {
-		_ = a.WriteArticle(t.Context(), WriteRequest{
+		_ = writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: []byte("XXXX"), //nolint:gosec // G115: loop bound is small
 		})
 	}

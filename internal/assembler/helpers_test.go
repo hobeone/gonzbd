@@ -15,6 +15,29 @@ import (
 // to one of them fails against its own contract rather than against whichever
 // pipeline test happened to route through it.
 
+// writeArticle submits req under the identity carried on req itself, so a
+// fixture stays one readable literal instead of being split into a ref and a
+// payload at every call site.
+//
+// Deriving the ref from the request is safe HERE and would not be safe in
+// production. ArticleRef exists so that a caller OUTSIDE this package cannot
+// reach the worker with an identity nobody supplied; tests are inside it and
+// could always construct any request they liked, so nothing is being smuggled
+// past the owner. internal/app's call sites, which are the ones the guarantee
+// is about, pass a real ref.
+//
+// The cost is that these call sites no longer see WriteArticle's signature, so
+// a change to ArticleRef's shape will not break them. That is deliberate: their
+// subject is the assembler's behaviour, not its parameter list.
+func writeArticle(ctx context.Context, a *Assembler, req WriteRequest) error {
+	return a.WriteArticle(ctx, ArticleRef{
+		JobID:     req.JobID,
+		FileIdx:   req.FileIdx,
+		ArtIdx:    req.ArtIdx,
+		MessageID: req.MessageID,
+	}, req)
+}
+
 // newHelperAssembler builds an Assembler as a literal, without Start, for
 // tests that drive one helper. Nothing here reads a.reqs or the worker state.
 func newHelperAssembler() *Assembler {

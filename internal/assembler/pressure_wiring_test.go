@@ -73,7 +73,7 @@ func TestWriteCachePressureIsRelievedOnTheWritePath(t *testing.T) {
 		if got := a.CacheUsageBytes(); got > peakBuffered {
 			peakBuffered = got
 		}
-		if err := a.WriteArticle(t.Context(), WriteRequest{
+		if err := writeArticle(t.Context(), a, WriteRequest{
 			JobID: "job1", FileIdx: 0,
 			ArtIdx: int32(i), //nolint:gosec // G115: loop bound is 40
 			// Distinct per article. string(rune('a'+i%26)) collided for

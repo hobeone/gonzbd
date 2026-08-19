@@ -309,7 +309,7 @@ func TestAssemblerWithWriteCache_BasicCoalescing(t *testing.T) {
 	for i := range 3 {
 		data := fmt.Appendf(nil, "PT%02d", i)
 		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: data} //nolint:gosec // G115: loop bound is small
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -355,7 +355,7 @@ func TestAssemblerWithWriteCache_OutOfOrder(t *testing.T) {
 	}
 	for i, art := range articles {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: art.offset, Data: []byte(art.data)} //nolint:gosec // G115: loop bound is small
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -395,7 +395,7 @@ func TestAssemblerWithWriteCache_PressureFlush(t *testing.T) {
 		data := make([]byte, 20)
 		data[0] = byte(i + 1)                                                                               // marker
 		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 20), Data: data} //nolint:gosec // G115: loop bound is 10
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -441,7 +441,7 @@ func TestAssemblerWithWriteCache_MultipleFiles(t *testing.T) {
 		{JobID: "job1", FileIdx: 1, ArtIdx: 3, Offset: 2, Data: []byte("YY")},
 	}
 	for _, r := range reqs {
-		if err := a.WriteArticle(t.Context(), r); err != nil {
+		if err := writeArticle(t.Context(), a, r); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -478,7 +478,7 @@ func TestAssemblerWithWriteCache_ShutdownDrain(t *testing.T) {
 	for i := range 3 {
 		data := fmt.Appendf(nil, "D%03d", i)
 		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: int32(i), Offset: int64(i * 4), Data: data} //nolint:gosec // G115: loop bound is small
-		if err := a.WriteArticle(t.Context(), req); err != nil {
+		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
