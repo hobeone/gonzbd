@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // The helpers exercised here are reached in production only through
@@ -15,17 +14,28 @@ import (
 // their behaviour without naming them. These call them directly, so a change
 // to one of them fails against its own contract rather than against whichever
 // pipeline test happened to route through it.
+//
+// The file also holds the small shims the package's own tests submit work
+// through, which are not production code paths at all.
 
 // writeArticle submits req under the identity carried on req itself, so a
 // fixture stays one readable literal instead of being split into a ref and a
 // payload at every call site.
 //
-// Deriving the ref from the request is safe HERE and would not be safe in
-// production. ArticleRef exists so that a caller OUTSIDE this package cannot
-// reach the worker with an identity nobody supplied; tests are inside it and
-// could always construct any request they liked, so nothing is being smuggled
-// past the owner. internal/app's call sites, which are the ones the guarantee
-// is about, pass a real ref.
+// The reason to prefer this over splitting the fixtures is not convenience.
+// Eighty split fixtures would be eighty new places where the ref and the
+// payload can disagree about which article this is — and identity having one
+// source per call is the property the whole change exists to establish. The
+// helper gives the tests exactly that property by construction, arrived at by
+// the means available inside the package.
+//
+// It is also sound, which is the separate question: ArticleRef exists so a
+// caller OUTSIDE this package cannot reach the worker with an identity nobody
+// supplied. Tests are inside it and could always construct any request they
+// liked, so nothing is smuggled past the owner. internal/app's call sites,
+// which are the ones the guarantee is about, pass a real ref — and the
+// asymmetry with them is the compile-time package boundary showing through,
+// not an inconsistency to iron out.
 //
 // The cost is that these call sites no longer see WriteArticle's signature, so
 // a change to ArticleRef's shape will not break them. That is deliberate: their
@@ -37,56 +47,6 @@ func writeArticle(ctx context.Context, a *Assembler, req WriteRequest) error {
 		ArtIdx:    req.ArtIdx,
 		MessageID: req.MessageID,
 	}, req)
-}
-
-// TestWriteArticle_RefOverridesTheRequestsOwnIdentity pins the sentence
-// WriteArticle's doc comment asserts: the ref is authoritative and the
-// request's own identity fields are not read on this path.
-//
-// Nothing else exercises it. Every other call site passes an identity that
-// already agrees with the ref — the writeArticle helper derives one from the
-// other, and both internal/app sites build them from the same ArticleResult —
-// so the overwrite could be deleted entirely and the whole suite would stay
-// green while the doc comment kept claiming it.
-//
-// The fixture makes the two disagree on all four fields. If the request won,
-// the write would be routed to a job and file that were never registered and
-// the file under test would never complete.
-func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	path := registerFile(t, dir, files, "real-job", 0, 1)
-
-	completed := make(chan int, 1)
-	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
-	a := startAssembler(t, opts)
-
-	err := a.WriteArticle(t.Context(), ArticleRef{
-		JobID: "real-job", FileIdx: 0, ArtIdx: 3, MessageID: "real@id",
-	}, WriteRequest{
-		// Every identity field here is wrong, and deliberately so.
-		JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
-		Offset: 0, Data: []byte("AAAA"),
-	})
-	if err != nil {
-		t.Fatalf("WriteArticle: %v", err)
-	}
-
-	select {
-	case got := <-completed:
-		if got != 0 {
-			t.Errorf("completed file %d, want 0", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the file never completed, so the request's identity was used " +
-			"instead of the ref's: the write went to a job and file that were " +
-			"never registered")
-	}
-
-	if got := readFile(t, path); string(got) != "AAAA" {
-		t.Errorf("file contents = %q, want %q", got, "AAAA")
-	}
 }
 
 // testArtIdx narrows a loop counter to the ArtIdx field's type.
@@ -239,7 +199,7 @@ func TestRelievePressure(t *testing.T) {
 			wc.buffer(f.w.key, bufferedArticle{
 				offset: int64(i * 20),
 				data:   []byte("12345678901234567890"),
-				id:     articleID{msgID: "<x@y>", artIdx: int32(i)},
+				id:     articleID{msgID: "<x@y>", artIdx: testArtIdx(i)},
 			})
 		}
 		if !wc.pressure() {

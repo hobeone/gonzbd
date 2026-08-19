@@ -360,9 +360,20 @@ Note what that does and does not buy, because the difference is the whole reason
 this section exists. The identity is now **un-omittable**, not
 **unrepresentable**: a caller passing `ArtIdx: 0` deliberately is still
 indistinguishable from one who never thought about it. What tier 2 removes is
-the caller who supplied no identity at all. Closing the remaining gap needs a
-type with no valid zero, which F1 does not require and this change does not
-attempt.
+the caller who supplied no identity at all.
+
+**Closing the remainder is rejected, not deferred**, and the reason is worth
+stating so it is not queued as work. Article 0 is a legitimate index, so making
+the zero invalid means a 1-based encoding — which puts an encode/decode step
+between the manifest's numbering and the assembler's, and creates a second
+representation of the same number. That is a broad, invisible owner violation
+traded for a narrow, visible one, and it is the worse deal before and after F1.
+
+The residual risk is also smaller than the bare statement suggests. Under the
+old signature an omitted `ArtIdx` hid among `Offset`, `Data` and `FatalErr` in a
+payload literal. It would now have to be omitted from a struct whose only
+purpose is identity, with the other three fields filled in beside it — a
+self-announcing mistake rather than a quiet one.
 
 The general form: **where the substitute type has a valid zero, tier 1 converts
 a detectable failure into an undetectable one — so pair it with tier 2 rather
@@ -914,8 +925,9 @@ Take the second and F1 stops depending on F4.
 Both landed in #402, ahead of F1: every `WriteRequest` fixture carries an
 explicit `ArtIdx` under the unchanged Message-ID key, and `WriteArticle` takes
 an `ArticleRef`. F1 is therefore a behaviour change against a prepared tree.
-Neither closes the valid-zero gap itself — see §4 on un-omittable versus
-unrepresentable.
+Neither closes the valid-zero gap itself, and §4 explains why closing it is
+**rejected rather than pending** — a 1-based encoding would buy
+unrepresentability at the price of a second representation of every index.
 
 F6 is the exception to this section's framing: it deletes no state, and instead
 deletes a **rule about where code may be placed**. It belongs here because the

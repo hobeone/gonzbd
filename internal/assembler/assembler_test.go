@@ -1471,3 +1471,55 @@ func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
+
+// TestWriteArticle_RefOverridesTheRequestsOwnIdentity pins the sentence
+// WriteArticle's doc comment asserts: the ref is authoritative and the
+// request's own identity fields are not read on this path.
+//
+// Nothing else exercises it. Every other call site passes an identity that
+// already agrees with the ref — the writeArticle helper derives one from the
+// other, and both internal/app sites build them from one ArticleResult through
+// refFor — so the overwrite could be deleted entirely and the whole suite would
+// stay green while the doc comment kept claiming it.
+//
+// The fixture makes the two disagree on all four fields. If the request won,
+// the write would be routed to a job and file that were never registered and
+// the file under test would never complete. It calls WriteArticle directly
+// rather than through writeArticle, which derives the ref from the request and
+// so could never make them disagree.
+func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "real-job", 0, 1)
+
+	completed := make(chan int, 1)
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+	a := startAssembler(t, opts)
+
+	err := a.WriteArticle(t.Context(), ArticleRef{
+		JobID: "real-job", FileIdx: 0, ArtIdx: 3, MessageID: "real@id",
+	}, WriteRequest{
+		// Every identity field here is wrong, and deliberately so.
+		JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
+		Offset: 0, Data: []byte("AAAA"),
+	})
+	if err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	select {
+	case got := <-completed:
+		if got != 0 {
+			t.Errorf("completed file %d, want 0", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the file never completed, so the request's identity was used " +
+			"instead of the ref's: the write went to a job and file that were " +
+			"never registered")
+	}
+
+	if got := readFile(t, path); string(got) != "AAAA" {
+		t.Errorf("file contents = %q, want %q", got, "AAAA")
+	}
+}

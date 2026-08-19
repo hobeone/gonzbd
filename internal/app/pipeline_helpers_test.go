@@ -14,6 +14,33 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
+// TestRefFor_CarriesEveryIdentityField pins that refFor copies all four
+// identity fields off the result.
+//
+// The failure it guards is a field being added to assembler.ArticleRef and
+// silently left unset here — the two write paths would both submit articles
+// with a zero in it, agreeing with each other and so breaking no other test.
+// Asserting on the whole struct rather than field by field is what makes a
+// new field fail this: a field-by-field check would keep passing.
+func TestRefFor_CarriesEveryIdentityField(t *testing.T) {
+	res := &downloader.ArticleResult{
+		JobID:     "job-7",
+		FileIdx:   4,
+		ArtIdx:    11,
+		MessageID: "a@b",
+	}
+
+	want := assembler.ArticleRef{
+		JobID:     "job-7",
+		FileIdx:   4,
+		ArtIdx:    11,
+		MessageID: "a@b",
+	}
+	if got := refFor(res); got != want {
+		t.Errorf("refFor(%+v) = %+v, want %+v", res, got, want)
+	}
+}
+
 // helperJob builds a queue with one job of nFiles files and nArticles
 // articles each, and returns both.
 func helperJob(t *testing.T, name string, nFiles, nArticles int) (*queue.Queue, *queue.Job) {

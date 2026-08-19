@@ -49,7 +49,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
-		WriteRequest{JobID: "", FileIdx: -2, MessageID: "job", ackCh: ack},
+		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
 		open, completed, map[string]struct{}{}, wc)
 
 	if _, tombstoned := completed[key]; !tombstoned {
@@ -87,7 +87,7 @@ func TestCloseJobHandles_ReportsACloseTimeFailureToItsCaller(t *testing.T) {
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
-		WriteRequest{JobID: "", FileIdx: -2, MessageID: "job", ackCh: ack},
+		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
 		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
 
 	err := <-ack

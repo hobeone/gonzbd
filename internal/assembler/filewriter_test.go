@@ -406,7 +406,7 @@ func TestFileWriter_StatOnAClosedHandleIsAStorageFault(t *testing.T) {
 func TestFileWriter_DrainReleasesUnattemptedBuffersOnFailure(t *testing.T) {
 	w := newTestFileWriter(t, withCacheBytes(1<<20), withWriteError(syscall.ENOSPC))
 	for i, off := range []int64{4096, 8192, 12288} {
-		if err := w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: int32(i)}, off, make([]byte, 64)); err != nil {
+		if err := w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)}, off, make([]byte, 64)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -431,7 +431,7 @@ func TestFileWriter_CoalescedRunWriteFailureReportsNothing(t *testing.T) {
 	var off int64
 	var lastErr error
 	for i := range 12 {
-		lastErr = w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: int32(i)}, off, make([]byte, chunk))
+		lastErr = w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)}, off, make([]byte, chunk))
 		off += chunk
 		if lastErr != nil {
 			break
@@ -465,7 +465,7 @@ func TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange(t *testing.T) {
 	const n = 12 // 768 KiB, past contiguousRunSize (512 KiB)
 	for i := range n {
 		if err := w.Accept(
-			articleID{msgID: string(rune('a' + i)), artIdx: int32(i)}, //nolint:gosec // G115: loop bound is 12
+			articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)},
 			int64(i)*chunk, make([]byte, chunk),
 		); err != nil {
 			t.Fatalf("Accept %d: %v", i, err)

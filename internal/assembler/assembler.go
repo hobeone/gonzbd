@@ -48,19 +48,31 @@ var (
 // WriteRequest is the unit of work sent to the assembler. Each request
 // corresponds to one decoded NZB article segment.
 type WriteRequest struct {
-	// JobID identifies the parent download job.
+	// JobID, FileIdx, ArtIdx and MessageID identify the article, and on the
+	// article path the CALLER DOES NOT OWN THEM: WriteArticle overwrites all
+	// four from its ArticleRef argument, and a value supplied here is
+	// discarded. Setting them on a request destined for WriteArticle has no
+	// effect. See ArticleRef for why the identity is a parameter.
+	//
+	// They stay on this struct because control messages are WriteRequest
+	// values too, and those DO own them: a control message carries one of the
+	// negative FileIdx sentinels (see synctarget.go) with JobID empty and the
+	// job named in MessageID, which is how dispatchRequest tells an operation
+	// from an article before any writer sees it.
 	JobID string
 
-	// FileIdx is the index into the job's Files slice, identifying which
-	// file this article belongs to.
+	// FileIdx is the index into the job's Files slice on the article path, or
+	// a control-message sentinel. See the block above.
 	FileIdx int
 
-	// ArtIdx is the global index of the article within the job's manifest.
+	// ArtIdx is the article's index in the job's manifest. Unused by control
+	// messages. See the block above.
 	ArtIdx int32
 
-	// MessageID is the article's NNTP Message-ID. The assembler uses it to
-	// mark the article Done (on success, after fsync) or Failed (on FatalErr)
-	// in the queue. Required.
+	// MessageID is the article's NNTP Message-ID on the article path, and the
+	// job ID on a control message. The assembler uses the former to mark the
+	// article Done (on success, after fsync) or Failed (on FatalErr) in the
+	// queue. See the block above.
 	MessageID string
 
 	// Offset is the byte position within the target file where Data should
@@ -570,7 +582,7 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
-		FileIdx:   -1,
+		FileIdx:   fileIdxCancelJob,
 		MessageID: jobID,
 		ackCh:     ack,
 	}
@@ -657,7 +669,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
-		FileIdx:   -2,
+		FileIdx:   fileIdxCloseHandles,
 		MessageID: jobID,
 		ackCh:     ack,
 	}
@@ -797,7 +809,7 @@ func (a *Assembler) dispatchRequest(
 		a.handleSyncOp(req.syncOp, open, wc)
 		return 0
 	}
-	if req.JobID == "" && req.FileIdx == -1 {
+	if req.JobID == "" && req.FileIdx == fileIdxCancelJob {
 		// Control message: cancel a job. Close and remove all
 		// open files for the job encoded in MessageID.
 		cancelID := req.MessageID
@@ -850,7 +862,7 @@ func (a *Assembler) dispatchRequest(
 		}
 		return 0
 	}
-	if req.JobID == "" && req.FileIdx == -2 {
+	if req.JobID == "" && req.FileIdx == fileIdxCloseHandles {
 		// Control message: close all open file handles for a job without deleting files.
 		targetID := req.MessageID
 		var closeErr error

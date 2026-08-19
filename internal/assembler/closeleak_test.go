@@ -223,7 +223,7 @@ func TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt(t *testing.T) {
 	completed := map[fileKey]struct{}{}
 
 	a.dispatchRequest(
-		WriteRequest{FileIdx: -1, MessageID: key.jobID},
+		WriteRequest{FileIdx: fileIdxCancelJob, MessageID: key.jobID},
 		open, completed, map[string]struct{}{}, newWriteCache(0))
 
 	if _, still := open[key]; still {

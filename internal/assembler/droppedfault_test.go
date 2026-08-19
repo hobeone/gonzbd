@@ -53,7 +53,7 @@ func TestRelievePressure_RoutesTheFaultAndStopsWriting(t *testing.T) {
 		wc.buffer(key, bufferedArticle{
 			offset: int64(i) * 4,
 			data:   []byte("AAAA"),
-			id:     articleID{msgID: "m", artIdx: int32(i)},
+			id:     articleID{msgID: "m", artIdx: testArtIdx(i)},
 		})
 	}
 
