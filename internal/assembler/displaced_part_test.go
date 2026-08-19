@@ -4,22 +4,33 @@ import (
 	"testing"
 )
 
-// TestDisplacedArticle_GivesBackItsPartAndIsResolved pins a producer of
-// w.faulted on a path where NOTHING failed, which is why it went unpaired.
+// TestDisplacedArticle_IsCountedAndResolved pins the disposition of the article
+// that LOSES an offset collision: it is counted toward the file's part total,
+// resolved permanently failed, and never returned to Outstanding.
 //
-// Two segments resolving to the same offset is not exotic — FileInfo.TotalParts'
-// own doc says the assembler trusts the caller here. Article X is buffered and
-// counted toward partsWritten. Article Y arrives at the same offset, wc.buffer
-// pools X's bytes and returns it as displaced, and Accept fails X. If the run
-// is not yet long enough to flush, Accept returns nil and Y is admitted too —
-// so the file sits one part closer to TotalParts with one article's bytes
-// behind it, and a later article can fire OnFileComplete over the gap.
+// Two segments resolving to one offset is not exotic. The offset comes from the
+// server's yEnc =ypart header rather than from the NZB, so a mispost or a faulty
+// server can put two distinct segments at one byte position, and each passes
+// validation on its own because nothing checks an article against its siblings.
+//
+// Article X is admitted and counted. Article Y arrives at the same offset;
+// Accept's acceptedAt check finds X, discards its buffered bytes through
+// wc.discardAt, and routes X to failDisplaced. X keeps its count because it is
+// RESOLVED — OnArticleRejected carries it to the queue and it will never arrive
+// again, so a file that stopped counting it could never reach TotalParts.
+//
+// The name this test carried until 2026-08-19 asserted the opposite — that X
+// gives its part back. That WAS the behaviour, and returning X to Outstanding
+// is what produced the [0 1 0 1 0] ping-pong the last assertion still names.
+// b2793dc1 (#386) changed it and rewrote the assertions below without rewriting
+// the name or this comment, so both went on documenting a defect that no longer
+// existed. #379 was filed against that stale reading and outlived its own fix.
 //
 // Driven through processRequest rather than handleSuccessArticle, because
 // processRequest owns the drain that establishes "w.faulted is empty when
 // partsWritten is compared to TotalParts". A test calling the inner function
 // would pass with the drain deleted.
-func TestDisplacedArticle_GivesBackItsPartAndIsResolved(t *testing.T) {
+func TestDisplacedArticle_IsCountedAndResolved(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	var unwritten []int32
