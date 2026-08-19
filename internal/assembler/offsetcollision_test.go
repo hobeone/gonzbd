@@ -321,13 +321,17 @@ func TestFileWriter_NotePostAnomalyLatches(t *testing.T) {
 // bytes the barrier has already acked. That is the double-disposition defect
 // again.
 //
-// seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm now
-// recognises a redelivery of the SAME ArtIdx regardless of its Message-ID and
-// returns before acceptArticle is ever called — no production path calls
-// Accept twice for one ArtIdx. This test therefore calls acceptArticle
-// directly, below that dedup, which is the only way left to reach Accept a
-// second time with an identical article and exercise the guard this test is
-// about.
+// seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm recognises a
+// PLAIN redelivery of the same ArtIdx regardless of its Message-ID and returns
+// before acceptArticle is called. That closes the route this test used to take,
+// which is why it now calls acceptArticle directly, below the dedup.
+//
+// It does NOT mean nothing reaches Accept twice. A write fault does: fail
+// deletes the seenDone entry and never sets seenFailed, while acceptedAt is
+// never removed by design — so a redelivery after a fault misses both dedup
+// arms and re-accepts against the entry the first delivery left. That is the
+// path this guard exists for, and it is why the guard must stay. The direct
+// call reaches the same second Accept without staging a fault to get there.
 func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	c := newCollisionFixture(t, 4<<20)
 	id := articleID{msgID: "<first@x>", artIdx: 1}
