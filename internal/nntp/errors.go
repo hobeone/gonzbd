@@ -47,6 +47,18 @@ var (
 	// contains characters that could inject NNTP commands (CR, LF,
 	// null) — the credential counterpart to the Message-ID rules internal/nzb enforces.
 	ErrInvalidCredential = errors.New("nntp: credential contains illegal control characters")
+
+	// ErrDesynced is returned when a response cannot be shown to
+	// belong to the command it was paired with: the Message-ID it
+	// echoes disagrees with the one requested, or it carries none at
+	// all. It is fatal to the connection, not to the article — see
+	// runReader.
+	//
+	// It exists as a sentinel because a desync is the one connection
+	// failure an operator must act on. Without it the error is an
+	// unclassified socket error to everything above L1, and a server
+	// bug or a MITM reads exactly like a flaky link.
+	ErrDesynced = errors.New("nntp: response does not match the command it answers")
 )
 
 // ServerError wraps an unexpected NNTP status code so callers can

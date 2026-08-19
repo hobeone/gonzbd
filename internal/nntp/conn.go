@@ -482,8 +482,7 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 		return nil, c.closeError()
 	}
 
-	pc := &pendingCmd{kind: cmdBody, done: make(chan struct{})}
-	cmd := fmt.Appendf(make([]byte, 0, 96), "BODY <%s>\r\n", messageID)
+	pc, cmd := newArticleCmd(cmdBody, messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return nil, err
 	}
@@ -498,7 +497,11 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 			c.log.Debug("fetch rejected", "msgid", messageID, "code", pc.result.code)
 			return nil, fmt.Errorf("%w: %d %s", sentinel, pc.result.code, pc.result.line)
 		}
-		if pc.result.code != 222 {
+		// !success rather than a literal 222: the reader decides what
+		// success means for this kind, and a second copy of that code
+		// here could drift into accepting a response the reader never
+		// identity-checked.
+		if !pc.result.success {
 			return nil, &ServerError{Code: pc.result.code, Text: pc.result.line}
 		}
 		c.log.Debug("fetch ok", "msgid", messageID, "bytes", len(pc.result.body))
@@ -550,8 +553,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 		return c.closeError()
 	}
 
-	pc := &pendingCmd{kind: cmdStat, done: make(chan struct{})}
-	cmd := fmt.Appendf(make([]byte, 0, 96), "STAT <%s>\r\n", messageID)
+	pc, cmd := newArticleCmd(cmdStat, messageID)
 	if err := c.submit(pc, cmd); err != nil {
 		return err
 	}
@@ -564,7 +566,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 		if sentinel := classifyStatus(pc.result.code); sentinel != nil {
 			return fmt.Errorf("%w: %d %s", sentinel, pc.result.code, pc.result.line)
 		}
-		if pc.result.code != 223 {
+		if !pc.result.success { // see Fetch — the reader owns what success means
 			return &ServerError{Code: pc.result.code, Text: pc.result.line}
 		}
 		return nil

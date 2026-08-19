@@ -249,6 +249,14 @@ func TestPenaltyFor(t *testing.T) {
 			want: constants.PenaltyShort,
 		},
 		{
+			// Same figure the catch-all would give. Pinned anyway: the
+			// point is that it is chosen, so a later change to the
+			// default does not silently redecide it for a desync.
+			name: "ErrDesynced → PenaltyUnknown",
+			err:  nntp.ErrDesynced,
+			want: constants.PenaltyUnknown,
+		},
+		{
 			name: "unknown error → PenaltyUnknown",
 			err:  errors.New("some random error"),
 			want: constants.PenaltyUnknown,
@@ -312,6 +320,11 @@ func TestClassifyConnError(t *testing.T) {
 		{"ErrClosed", nntp.ErrClosed, telemetry.ErrClassConnClosed},
 		{"ErrInvalidState", nntp.ErrInvalidState, telemetry.ErrClassNNTPInvalidState},
 		{"ErrInvalidCredential", nntp.ErrInvalidCredential, telemetry.ErrClassInvalidCredential},
+		{"ErrDesynced", nntp.ErrDesynced, telemetry.ErrClassNNTPDesynced},
+		// The sentinel reaches here wrapped, never bare: runReader
+		// always wraps it with the codes and IDs that disagreed.
+		{"wrapped ErrDesynced", &wrappedErr{msg: "222 response to \"a@h\" names \"b@h\" instead", inner: nntp.ErrDesynced},
+			telemetry.ErrClassNNTPDesynced},
 		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, telemetry.ErrClassNNTPAuthRejected},
 		{"net.OpError non-timeout (connection refused)", &net.OpError{Op: "dial", Net: "tcp",
 			Err: &net.AddrError{Err: "connection refused", Addr: "localhost:119"}}, telemetry.ErrClassNetworkError},

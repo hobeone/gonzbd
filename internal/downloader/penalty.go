@@ -22,6 +22,7 @@ import (
 //	ErrNoArticle         → 0             (not a server fault; no penalty)
 //	ErrAuthRequired      → PenaltyShort  (re-auth prompt; transient)
 //	ErrClosed            → PenaltyUnknown (unexpected disconnect)
+//	ErrDesynced          → PenaltyUnknown (protocol desync; see below)
 //	anything else        → PenaltyUnknown (catch-all)
 //
 // A zero return means no penalty should be applied.
@@ -42,6 +43,16 @@ func PenaltyFor(err error) time.Duration {
 		return constants.PenaltyShort
 	case errors.Is(err, nntp.ErrClosed):
 		// Connection closed unexpectedly — unknown cause.
+		return constants.PenaltyUnknown
+	case errors.Is(err, nntp.ErrDesynced):
+		// Same duration the catch-all would give, stated explicitly so
+		// it is a decision rather than a fall-through. A desync is a
+		// real server-side fault and backing off is right, but nothing
+		// here justifies a harsher figure: it may be a one-off, and
+		// PenaltyPerm would retire a server on a single bad response.
+		// Revisit with evidence — classifyConnError now counts these
+		// under their own label, which is where that evidence will
+		// come from.
 		return constants.PenaltyUnknown
 	case errors.Is(err, nntp.ErrInvalidState):
 		// Programming error; log and apply a short hold to avoid spin.
@@ -75,6 +86,14 @@ func classifyConnError(err error) string {
 		return telemetry.ErrClassNNTPInvalidState
 	case errors.Is(err, nntp.ErrInvalidCredential):
 		return telemetry.ErrClassInvalidCredential
+	case errors.Is(err, nntp.ErrDesynced):
+		// Naming this apart from other_connection_error is the whole
+		// point of the sentinel. A desync means the server answered
+		// about an article we did not ask for — a server bug or a
+		// MITM, not a flaky link — and it is the one connection
+		// failure here that warrants a human looking at it. Folded
+		// into the catch-all it is invisible.
+		return telemetry.ErrClassNNTPDesynced
 	}
 	// Check Timeout() before *net.OpError: net.OpError itself implements
 	// Timeout() bool, so checking OpError first would swallow every real

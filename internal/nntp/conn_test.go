@@ -828,3 +828,158 @@ func TestStat_ServerErrors(t *testing.T) {
 		t.Errorf("expected ServerError 300, got %v", err)
 	}
 }
+
+// TestFetchMessageIDMismatch pins B1/F5: the reader must compare the
+// Message-ID echoed on a 222 line against the one the corresponding
+// request asked for, and treat a disagreement as a desynced connection
+// rather than as one bad article.
+//
+// The server here reads BOTH pipelined BODY commands before answering
+// either — which makes the FIFO order known to the test — and then
+// answers the FIRST one with the SECOND one's Message-ID. Matching by
+// FIFO position alone accepts that response and hands the caller a
+// perfectly well-formed body belonging to a different article; nothing
+// downstream can detect it, because the bytes are internally consistent.
+//
+// Both callers must therefore fail: the first on the mismatch itself,
+// the second because the connection it was queued on is now known to be
+// desynced. The server deliberately sends only the one response, so the
+// test never depends on a write to an already-closed socket.
+func TestFetchMessageIDMismatch(t *testing.T) {
+	const n = 2
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { close(serverDone) })
+
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		c.expect("CAPABILITIES")
+		c.sendCaps()
+		// Read both requests first: the protocol guarantees the FIFO
+		// order matches the order they arrive in, so ids[0] is the
+		// request the first response will be paired with.
+		ids := make([]string, n)
+		for i := range ids {
+			line := c.readLine()
+			ids[i] = strings.TrimSuffix(strings.TrimPrefix(line, "BODY <"), ">")
+		}
+		// Answer request ids[0] with request ids[1]'s identity.
+		c.send(fmt.Sprintf("222 0 <%s> body follows", ids[1]))
+		c.sendRaw(fmt.Sprintf("body-for-%s\r\n.\r\n", ids[1]))
+		<-serverDone
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn, err := Dial(ctx, makeCfg(ms.addr))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Go(func() {
+			_, ferr := conn.Fetch(ctx, fmt.Sprintf("m%d@h", i))
+			errs <- ferr
+		})
+	}
+	wg.Wait()
+	close(errs)
+
+	var mismatch int
+	for e := range errs {
+		if e == nil {
+			t.Fatal("Fetch succeeded on a connection whose 222 line named a different article")
+		}
+		if errors.Is(e, ErrDesynced) {
+			mismatch++
+		}
+	}
+	if mismatch == 0 {
+		t.Errorf("no Fetch reported a desync; the errors were not attributable to the mismatch")
+	}
+	// The connection must be unusable afterwards, not merely have
+	// failed the two commands in flight. Note that this asserts on a
+	// subsequent Fetch rather than on State(): finishReader records
+	// the failure in c.closed and does not advance the lifecycle
+	// state, which is true of every reader-side failure and not
+	// specific to a desync.
+	if _, err := conn.Fetch(ctx, "after@h"); err == nil {
+		t.Error("Fetch succeeded after a desync; the connection was not dropped")
+	}
+}
+
+// TestStatMessageIDMismatchDropsConnection pins the second half of
+// B1/F5 — that a mismatch kills the connection rather than failing one
+// command — which TestFetchMessageIDMismatch cannot isolate.
+//
+// With a 222 the reader must consume a body, so ANY early exit from
+// the mismatch branch leaves that body to be read as the next status
+// line; the connection then dies of a parse error whether or not the
+// mismatch itself dropped it. STAT's 223 carries no body, so the
+// stream stays perfectly parseable across a mismatch: without the
+// drop, the reader would sail on and the SECOND Stat would succeed —
+// answered, unnoticed, by a response belonging to the first.
+func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
+	const n = 2
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { close(serverDone) })
+
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		c.expect("CAPABILITIES")
+		c.sendCaps()
+		ids := make([]string, n)
+		for i := range ids {
+			line := c.readLine()
+			ids[i] = strings.TrimSuffix(strings.TrimPrefix(line, "STAT <"), ">")
+		}
+		// Both responses are well-formed and body-less; only the
+		// pairing is wrong, and it is wrong by exactly one place.
+		//
+		// Sent as ONE write: the client is expected to drop the socket
+		// on the first line, so issuing the second as a separate write
+		// would race the close and mockConn.send reports a failed write
+		// as a test error. One write lands both lines before the client
+		// has read either, and the mutation this test pins still sees
+		// them — a reader that does not drop finds the second already
+		// buffered.
+		c.sendRaw(fmt.Sprintf("223 0 <%s>\r\n223 0 <%s>\r\n", ids[1], ids[1]))
+		<-serverDone
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn, err := Dial(ctx, makeCfg(ms.addr))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Go(func() { errs <- conn.Stat(ctx, fmt.Sprintf("s%d@h", i)) })
+	}
+	wg.Wait()
+	close(errs)
+
+	var desynced int
+	var got []error
+	for e := range errs {
+		if e == nil {
+			t.Fatal("Stat reported an article present on the strength of a 223 naming a different one")
+		}
+		got = append(got, e)
+		if errors.Is(e, ErrDesynced) {
+			desynced++
+		}
+	}
+	// Both Stats failing is not on its own the property under test —
+	// they would also both fail if the connection died of something
+	// else entirely. At least one must fail *of the desync*.
+	if desynced == 0 {
+		t.Errorf("both Stats failed, but neither of the desync: %v", got)
+	}
+}

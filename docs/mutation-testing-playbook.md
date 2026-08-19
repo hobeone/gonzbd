@@ -11,8 +11,11 @@ mutation testing on X and fix what it finds."
 > *executed* during tests. Mutation testing tells you whether a test would
 > *notice* if that line's logic were wrong. A `LIVED` mutant means the
 > mutated code ran and every test still passed — the assertion that would
-> catch that bug doesn't exist. `NOT COVERED` is a stronger signal: the line
-> never executed at all during any test.
+> catch that bug doesn't exist. `NOT COVERED` usually means the line never
+> executed at all during any test — but read it as "no coverage block records
+> this expression", which is not always the same claim. See §2b: a `switch`
+> case expression has no block of its own, so it reports `NOT COVERED` even
+> while tests exercise and kill it.
 
 ## 1. Run gremlins
 
@@ -44,10 +47,28 @@ RAM, fallback `32G`), `GREMLINS_DISK_MAX_MB` (default `51200` = 50GiB), `GREMLIN
 (default `1800` = 30min), `GREMLINS_DIR` (scratch dir base — must not be
 inside the repo, the script errors out if it is).
 
-Mutant-type selection and `timeout-coefficient` are configured project-wide
-in `.gremlins.yaml` at the repo root, so they don't need to be passed as
-flags (superseding the older `--timeout-coefficient=40` guidance from this
-codebase's project memory — the current `.gremlins.yaml` sets `100`).
+Mutant-type selection is configured project-wide in `.gremlins.yaml` at the
+repo root and needs no flags.
+
+**`timeout-coefficient` is not so simple, and this paragraph previously said
+the opposite.** `.gremlins.yaml` sets `100`, and on a package whose suite is
+fast that value makes essentially every mutant report `TIMED OUT` — a run that
+reads like total collapse but is purely an artifact of the setting. Measured on
+`internal/nntp`, same tree, same commit:
+
+| Invocation | Result |
+|---|---|
+| `--timeout-coefficient=40` (three runs) | 92.1% / 91.7% / 93.2% efficacy |
+| config default `100`, workers auto | Killed 0, **Timed out 179**, efficacy 0% |
+| config default `100`, `GREMLINS_WORKERS=1` | Killed 1, **Timed out 178**, efficacy 0% |
+
+Worker count is not the variable — the coefficient is. So **pass
+`--timeout-coefficient=40` explicitly** on packages with fast suites, and treat
+a run that is almost entirely `TIMED OUT` as a configuration symptom to retry,
+never as a test-quality result. The direction is counter-intuitive (a larger
+coefficient producing more timeouts, and 179 of them inside 1.7s, which is far
+too fast to be real elapsed timeouts) and has not been traced to a cause in
+gremlins; it is recorded here as an observation, not an explanation.
 
 **Gotchas:**
 - Pass a single package path, not a `...` wildcard suffix appended to an
@@ -146,7 +167,33 @@ A mutation that cannot change observable behavior. The classic example:
 `append`), so no test could ever kill it. Don't write tests for these; note
 them and move on.
 
-### b. Real gaps — group by theme, not by line
+### b. Coverage-model artifacts — verify before believing `NOT COVERED`
+Go's cover tool instruments *blocks*, and a `switch { case cond: }` case
+expression is not one — only the case body is. A mutation of the condition
+therefore reports `NOT COVERED` even when tests execute it and would kill it.
+The `if cond { }` form of the same logic reports normally.
+
+This is not hypothetical: the F5/B1 run reported `NOT COVERED
+CONDITIONALS_NEGATION at pipeline.go:224:13`, the `case got != pc.msgID:` arm
+of the response-identity check — the single most-tested line in that change.
+Two independent checks refuted it. The coverage profile has a block at
+`224.25,227.11` with a non-zero count, and applying the mutation by hand
+(`!=` → `==`) failed **ten** tests.
+
+So before writing a test for a `NOT COVERED` line, confirm it is really
+untested:
+
+```bash
+go test -count=1 -coverprofile=/tmp/c.out ./internal/<pkg>/
+grep '<file>.go:<line>' /tmp/c.out    # trailing 0 = genuinely unexecuted
+```
+
+If the profile disagrees with gremlins, apply the mutation by hand and run the
+suite. Writing a test to satisfy a mutant that existing tests already kill adds
+a redundant test and — worse — records a false conclusion about where the gaps
+are.
+
+### c. Real gaps — group by theme, not by line
 Cluster the remaining `LIVED`/`NOT COVERED` lines by what *behavior* they
 represent, not by file. In the `par2` run, four themes emerged:
 
