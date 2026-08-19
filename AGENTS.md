@@ -300,6 +300,33 @@ with the code: `docs/ARCHITECTURE.md` said "All message-IDs are validated
 before use to prevent NNTP command injection" and survived a sweep for
 `validateMessageID`, because it never names the function it is describing.
 
+**A table row is the same claim, compressed — and it is missed for the
+opposite reason.** The paragraph above is about a claim carrying none of your
+search tokens. A Markdown table row usually carries the token and gets missed
+anyway, because it is nowhere near the prose that explains it: you rewrite the
+paragraph you came for, and the row two hundred lines up still states the old
+version in four words. Nothing marks it as the same claim.
+
+This happened three times in one document on #401.
+`docs/article-validation-contract.md`'s §5.B prose was rewritten to say the
+response-identity check covers `BODY` 222, `ARTICLE` 220, `HEAD` 221 and
+`STAT` 223 — while both B1 table rows, and a row in the decidability table
+150 lines earlier, still said `222` alone. The document contradicted itself
+about its own scope. A reviewer found two of the three; the third only turned
+up because that finding prompted a grep for the rest of the class.
+
+So when a change alters a claim that is stated anywhere as a **literal** — a
+status code, a duration, a threshold, a limit, a field name — sweep for that
+literal from the repository root, not for the concept you were editing:
+
+```bash
+git grep -n '222'          # finds all three rows in one command
+git grep -n 'PenaltyUnknown'
+```
+
+No search for "the Message-ID check" would have found any of them. The concept
+is what you are thinking about; the literal is what is written down.
+
 **Two checks on what you WROTE, not on what you removed.** Finding the stale
 sentence is only half the sweep; both of these are about the replacement, and
 neither is caught by any gate — comments are neither type-checked nor executed,
