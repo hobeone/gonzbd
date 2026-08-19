@@ -577,8 +577,10 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 
 	defer a.wg.Done()
 
-	// Control message convention: JobID="" and FileIdx=fileIdxCancelJob,
-	// with the real job ID in MessageID.
+	// Control message convention: FileIdx=fileIdxCancelJob and a non-nil
+	// ackCh, with the real job ID in MessageID and JobID left empty. The
+	// worker discriminates on ackCh, which is unexported; the sentinel picks
+	// which control message this is.
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
@@ -664,8 +666,10 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 
 	defer a.wg.Done()
 
-	// Control message convention: JobID="" and FileIdx=fileIdxCloseHandles,
-	// with the real job ID in MessageID.
+	// Control message convention: FileIdx=fileIdxCloseHandles and a non-nil
+	// ackCh, with the real job ID in MessageID and JobID left empty. The
+	// worker discriminates on ackCh, which is unexported; the sentinel picks
+	// which control message this is.
 	ack := make(chan error, 1)
 	control := WriteRequest{
 		JobID:     "",
@@ -739,9 +743,9 @@ mainLoop:
 			// duplicating it: a closed reqs makes this receive permanently
 			// ready, so `default` would never be selected and this loop would
 			// spin at full CPU dispatching zero-value requests forever. A zero
-			// WriteRequest is not the cancel sentinel (JobID=="" &&
-			// FileIdx==fileIdxCancelJob),
-			// so it would reach processRequest with an empty job ID.
+			// WriteRequest has a nil ackCh and a nil syncOp, so it matches no
+			// control arm in dispatchRequest and would reach processRequest
+			// with an empty job ID.
 			//
 			// Note `break drain` must be labelled: a bare break would exit the
 			// select and fall straight back into this loop, which is the spin
@@ -788,7 +792,7 @@ mainLoop:
 }
 
 // dispatchRequest handles a single request from the channel. It processes
-// cancel control messages (JobID="" && FileIdx==fileIdxCancelJob) by closing and removing
+// cancel control messages (a non-nil ackCh with FileIdx==fileIdxCancelJob) by closing and removing
 // all open files for the cancelled job, skips articles for already-cancelled
 // jobs, and delegates normal write requests to processRequest. Returns 1 if
 // a normal request was processed (for reqCount tracking), 0 otherwise.
@@ -804,13 +808,28 @@ func (a *Assembler) dispatchRequest(
 ) int {
 	defer func() { a.cacheUsedBytes.Store(wc.used) }()
 
-	if req.JobID == "" && req.FileIdx == fileIdxSyncOp {
+	// Control messages are told from articles by an unexported field being
+	// set, not by the FileIdx sentinel alone.
+	//
+	// The sentinel is the encoding; it is not the proof. JobID and FileIdx are
+	// both exported and both overwritten from the caller's ArticleRef, so on
+	// the sentinel alone a caller outside this package could submit an article
+	// with an empty JobID and a negative FileIdx and have the worker act on it
+	// as a control message — for the barrier arm, dereferencing a syncOp the
+	// caller had no way to set. ackCh and syncOp are unexported, so no value
+	// built outside internal/assembler can have either, and the confusion is
+	// unrepresentable rather than rejected.
+	//
+	// A zero WriteRequest is excluded by the same test, which matters for the
+	// shutdown drain loop below: it dispatches zero values when the channel is
+	// closed, and they must reach processRequest rather than any arm here.
+	if req.syncOp != nil {
 		// Control message: a barrier operation. Answered on this goroutine,
 		// which owns every file handle and every write cache (X1).
 		a.handleSyncOp(req.syncOp, open, wc)
 		return 0
 	}
-	if req.JobID == "" && req.FileIdx == fileIdxCancelJob {
+	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
 		// Control message: cancel a job. Close and remove all
 		// open files for the job encoded in MessageID.
 		cancelID := req.MessageID
@@ -863,7 +882,7 @@ func (a *Assembler) dispatchRequest(
 		}
 		return 0
 	}
-	if req.JobID == "" && req.FileIdx == fileIdxCloseHandles {
+	if req.ackCh != nil && req.FileIdx == fileIdxCloseHandles {
 		// Control message: close all open file handles for a job without deleting files.
 		targetID := req.MessageID
 		var closeErr error

@@ -1555,3 +1555,90 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 			"ArtIdx reached the checkpoint instead of the ref's", gotIdx)
 	}
 }
+
+// TestWriteArticle_CannotForgeAControlMessage pins that the worker tells a
+// control message from an article by an unexported field, not by the FileIdx
+// sentinel.
+//
+// JobID and FileIdx are exported and are both overwritten from the caller's
+// ArticleRef, so a caller outside this package chooses them freely. While the
+// worker discriminated on the sentinel pair alone, a ref naming an empty job
+// and fileIdxSyncOp reached the barrier arm, which dereferences a *syncOp an
+// outside caller has no way to set — a nil dereference on the worker
+// goroutine, which has no recover(), so it takes the process with it.
+//
+// All three sentinels are exercised because they fail differently: the barrier
+// one panics, while the other two would silently cancel a job or close its
+// handles, naming the target through the article's own MessageID.
+//
+// The assertion is that a legitimate article sent AFTER the forgery still
+// completes its file, not merely that the forged one wrote nothing. The forged
+// request is discarded either way — it names no registered file — so "the
+// forgery wrote nothing" is true whether or not the worker acted on it, and an
+// earlier version of this test asserted exactly that and passed against the
+// cancel arm unfixed. What separates the two worlds is the damage left behind:
+// a cancel tombstones the job and a close-handles tombstones its files, so the
+// article that follows is silently dropped.
+//
+// The forgery is sandwiched between two real articles rather than sent first,
+// because close-handles closes the job's OPEN handles: arriving before any
+// file is open, it is a no-op on an empty map and does no damage to detect.
+// The worker processes the channel in order, so the first article has opened
+// the file by the time the forgery is dispatched.
+func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fileIdx int
+	}{
+		{"barrier sentinel", fileIdxSyncOp},
+		{"cancel sentinel", fileIdxCancelJob},
+		{"close-handles sentinel", fileIdxCloseHandles},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := make(map[string]FileInfo)
+			path := registerFile(t, dir, files, "real-job", 0, 2)
+
+			completed := make(chan int, 1)
+			opts := makeOpts(dir, files)
+			opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+			a := startAssembler(t, opts)
+
+			real := func(artIdx int32, msgID string, off int64, data string) {
+				t.Helper()
+				if err := a.WriteArticle(t.Context(), ArticleRef{
+					JobID: "real-job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+				}, WriteRequest{Offset: off, Data: []byte(data)}); err != nil {
+					t.Fatalf("WriteArticle %s: %v", msgID, err)
+				}
+			}
+
+			real(0, "real-a@id", 0, "AAAA")
+
+			// An empty JobID and a sentinel FileIdx, with the job to attack
+			// named in MessageID exactly as a real control message names it:
+			// this is precisely what the worker used to accept as proof.
+			if err := a.WriteArticle(t.Context(), ArticleRef{
+				JobID: "", FileIdx: tc.fileIdx, ArtIdx: 0, MessageID: "real-job",
+			}, WriteRequest{Offset: 0, Data: []byte("XXXX")}); err != nil {
+				t.Fatalf("forged WriteArticle: %v", err)
+			}
+
+			real(1, "real-b@id", 4, "BBBB")
+
+			select {
+			case got := <-completed:
+				if got != 0 {
+					t.Errorf("completed file %d, want 0", got)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the file never completed: the forged request was taken " +
+					"for a control message and tombstoned the job or its handles, " +
+					"so the article after it was silently dropped")
+			}
+			if got := readFile(t, path); string(got) != "AAAABBBB" {
+				t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
+			}
+		})
+	}
+}
