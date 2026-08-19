@@ -53,10 +53,19 @@ These are **one task, not two**. `handleSuccessArticle`'s dedup arms sit inside 
 
 Splitting them creates a defect that exists in neither endpoint: with `resolvedUntracked` deleted but the wrapper still keying on `msgID`, an empty-ID loser sits in `seenFailed[""]`, matches neither arm on redelivery, falls through to `admitAccepted("")` and `acceptArticle`, and ping-pongs with the article that owns its offset — the count-climb documented at `filewriter.go:107-114`.
 
+**This task is large, and the size is in the tests, not the production code.** The three `admit*` signatures and the two map types are referenced at **132 call sites across 14 test files**. Most are a mechanical `""` → index substitution, but they must all land in this commit or the package does not build. Budget for that before starting; a reviewer rejecting this task will be rejecting the re-key, not the churn.
+
 **Files:**
 - Modify: `internal/assembler/filewriter.go` — both map fields, `resolvedUntracked` field, `newFileWriter`, `admitAccepted`, `admitRetryOfFailed`, `admitPermanentFailure`, `rollbackPart`, `failPermanent`, `failDisplaced`
 - Modify: `internal/assembler/assembler.go` — `handleSuccessArticle`, `handleLateDuplicate`, `handleFatalArticle`
-- Test: `internal/assembler/assembler_test.go`
+- Modify: `internal/assembler/writecache.go` — the `articleID` doc ("keyed on Message-ID") and the eviction comment ("no map can hold an empty key, so a second delivery runs the whole accept path"). Both are falsified **here**, not in Task 3 where the code changes; leaving them means two commits of stale prose.
+- Test — every one of these has at least one affected call site: `accounting_test.go`, `assembler_test.go`, `closeleak_test.go`, `displacedcompletion_test.go`, `durable_ack_test.go`, `filewriter_test.go`, `helpers_test.go`, `late_duplicate_test.go`, `offsetcollision_test.go`, `partcount_test.go`, `postanomaly_test.go`, `rejected_offset_test.go`, `report_retention_test.go`, `unwritten_batch_test.go`
+
+Confirm the list before starting, since it moves with the tree:
+
+```bash
+grep -rln 'seenDone\|seenFailed\|admitAccepted\|admitPermanentFailure\|admitRetryOfFailed' internal/assembler/*_test.go
+```
 
 **Interfaces:**
 - Produces:
@@ -184,6 +193,8 @@ func (w *FileWriter) admitPermanentFailure(artIdx int32) bool {
 
 Delete `admitPermanentFailure`'s "The empty Message-ID is deliberately NOT guarded…" paragraph and `admitRetryOfFailed`'s "The caller owns the precondition that msgID is non-empty…" paragraph. Both document a question this change answers.
 
+Delete `failDisplaced`'s five-paragraph section headed `# The empty Message-ID is guarded, and the reason is the overcount` — it argues for the branch Step 5 collapses, and is the largest single block of prose this task falsifies. Also `admitAccepted`'s "The count is unconditional while the record is not" paragraph, which is now false in the other direction: both are unconditional.
+
 - [ ] **Step 5: Re-key `rollbackPart`, `failPermanent`, `failDisplaced`**
 
 In `rollbackPart` replace the three `id.msgID` keyings with `id.artIdx`, and delete its `# Precondition: id.msgID is non-empty` block — the precondition dissolves with the key change.
@@ -219,11 +230,25 @@ In `handleSuccessArticle`, delete the `if req.MessageID != "" {` wrapper **and**
 
 Leave `fail`'s early return and `giveBackUntrackedPart` alone — Task 2 removes both together.
 
-- [ ] **Step 7: Run the pin and the full suite**
+- [ ] **Step 7: Delete the tests whose premise this task voids**
+
+Three tests do not survive the re-key, and none of them can be fixed by a mechanical substitution. They must go in **this** commit, or the gate is red when it runs.
+
+- `accounting_test.go` `TestFileWriter_AdmitCountsAnArticleWithNoMessageID` — asserts `len(w.seenDone) != 0` is an error after `admitAccepted("")`. Substituted to `admitAccepted(0)` it inverts: `admitAccepted` now records unconditionally, which is the point of the change. Delete it.
+- `displacedcompletion_test.go` `TestDisplacement_UntrackedGuardLeavesTheFailureBudgetIntact` — exists to pin `failDisplaced`'s `msgID != ""` guard, which Step 5 deletes.
+- `offsetcollision_test.go` `TestFileWriter_DisplacedUntrackedArticleKeepsItsPart` — same guard, and its doc ("the displacement spent the empty key's single dedup slot") describes a mechanism that no longer exists.
+
+The second and third are the dangerous ones: after a mechanical re-key they may still **compile and pass** while their names and docs assert a guard that is gone. A green test is not evidence it still means anything.
+
+- [ ] **Step 8: Re-key the remaining test call sites**
+
+The other ~129 sites are mechanical: `admitAccepted("a@t")` → `admitAccepted(1)`, `w.seenDone["a@t"]` → `w.seenDone[1]`, and so on. Give each fixture the index its own article already carries where one exists, rather than inventing a fresh number — a fixture whose map key and `articleID.artIdx` disagree will pass while pinning nothing.
+
+- [ ] **Step 9: Run the pin and the full suite**
 
 Run the pin: expect PASS. Then `go test -race -count=1 ./...` and `go test -count=1 -tags=integration ./test/integration/...`.
 
-Any failure is either a mistake in the re-key or a test pinning the Message-ID key itself. Triage each; do not adjust production code to keep such a test green.
+A **compile** error here is expected churn from Step 8 — finish the substitution. A **test failure** is different: it is either a mistake in the re-key or a test pinning the Message-ID key itself. Triage each on its own; do not adjust production code to keep such a test green, and do not adjust a fixture's index to make an assertion pass without understanding which of the two it is.
 
 - [ ] **Step 8: Sweep and commit**
 
@@ -297,7 +322,9 @@ Expected: `with a Message-ID` PASSES, `with none` FAILS with `parts() = 1 after 
 
 - [ ] **Step 3: Delete the two obsolete accounting tests**
 
-Delete `TestFileWriter_GiveBackUntrackedPartReturnsTheCount` and `TestFileWriter_GiveBackUntrackedPartIsClampedAtZero` from `accounting_test.go`, plus any `TestFileWriter_AdmitCountsAnArticleWithNoMessageID` and the empty-ID row of the dedup table test.
+Delete `TestFileWriter_GiveBackUntrackedPartReturnsTheCount` and `TestFileWriter_GiveBackUntrackedPartIsClampedAtZero` from `accounting_test.go`. They test the function this task removes.
+
+`TestFileWriter_AdmitCountsAnArticleWithNoMessageID` is **not** here — Task 1 Step 7 deletes it, because the re-key inverts its assertion and leaving it would put Task 1's own gate in the red.
 
 - [ ] **Step 4: Remove the guard and the function**
 
@@ -329,7 +356,7 @@ Expected: both subtests PASS. Message: `refactor(assembler): delete giveBackUntr
 
 **Files:**
 - Modify: `internal/assembler/assembler.go` — `handleLateDuplicate`
-- Modify: `internal/assembler/writecache.go` — `articleID` doc, new `sameArticle` method, the eviction comparison
+- Modify: `internal/assembler/writecache.go` — new `sameArticle` method and the eviction comparison. Its two stale doc blocks were already corrected in Task 1, where the change that falsified them landed.
 - Modify: `internal/assembler/filewriter.go` — comparisons in `noteWritten`, `offsetSettledBy`, `Accept`
 - Test: `internal/assembler/assembler_test.go`
 
@@ -495,3 +522,7 @@ Message: `docs: record that FileWriter keys on ArtIdx and no longer needs A7`
 **Type consistency.** `admitAccepted`, `admitRetryOfFailed` and `admitPermanentFailure` take `artIdx int32` from Task 1 onward, and every caller is updated in the same task — including `handleFatalArticle`, which an earlier draft of this plan omitted.
 
 **Inertness claim, scoped.** Task 1 is inert for reachable inputs. Tasks 2 and 3 each have an observed red on a **constructed** input — an empty `msgID`, which is package-constructible but not producible by any parse or restore path. That distinction belongs in the commit bodies: the tests discriminate, and what they discriminate is not a live defect.
+
+**Task 1's size is deliberate and was measured, not estimated.** 132 call sites across 14 test files, counted with the grep in its Files block. The alternative — re-keying production code in one commit and the tests in another — is not available, because the package would not compile in between. Three tests are deleted rather than substituted, and two of those would otherwise compile and pass while their names asserted a guard that no longer exists; that is the failure mode the task's own Step 7 exists to prevent.
+
+**Where the prose changes, relative to where the code changes.** Two `writecache.go` doc blocks are corrected in Task 1 even though the code they sit above is not touched until Task 3, because Task 1 is what makes them false. Leaving them would ship two commits in which the comment authoritatively describes behaviour the tree no longer has.
