@@ -128,6 +128,13 @@ This is a bound on blast radius, not a licence to validate less. Reject fast and
 cheaply — the point is that being *wrong about which kind of bad an article is*
 must cost one article, so that precision stops being load-bearing.
 
+**It takes an injection carve-out, like rule 1 does.** The bound never justifies
+weakening a check whose absence would let a value reach a protocol, a path, a
+query or a command. Rule 1's carve-out and this one arrive there by different
+routes — that one asks whether trusting old persisted state hands an attacker
+something, this one asks whether the blast radius is really one article — but a
+Message-ID carrying CRLF fails both tests, and neither rule excuses it.
+
 It exists as a counterweight to §2 of the article-validation contract, which
 classifies every claim an NZB or article makes. That taxonomy is right and earns
 its place, but a table of claim classes makes every unfilled row look like work,

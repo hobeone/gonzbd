@@ -209,8 +209,18 @@ download; with it, it loses a hole.
 **It is not a licence to validate less.** Reject fast and reject cheaply; the
 bound is on the *consequence*, not on the checking. In particular it never
 weakens a check whose absence would let a value reach a protocol, a path, a
-query or a command — the same carve-out the no-backcompat rule takes, and for
-the same reason.
+query or a command.
+
+That is an *analogous* carve-out to the no-backcompat rule's, not the same one,
+and the difference is worth keeping straight because the two tests are asked of
+different things. The no-backcompat carve-out asks whether trusting state an
+older build persisted could hand an attacker something. This one asks whether
+the blast radius of getting an article's disposition wrong is really confined to
+that article. A Message-ID carrying CRLF fails both — the first because a
+manifest written before the parse-time rule existed can still carry it, the
+second because the cost lands on a socket rather than on one article's bytes —
+which is why `Manifest.UnmarshalJSON` keeps its fetchability check under either
+rule.
 
 #### The worked example: what it did to this cluster
 
