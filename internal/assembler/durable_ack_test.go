@@ -321,13 +321,9 @@ func TestZeroLengthArticleIsNotBuffered(t *testing.T) {
 	wc := newWriteCache(1 << 20)
 	key := fileKey{jobID: "job1", fileIdx: 0}
 
-	cached, displaced := wc.buffer(key, bufferedArticle{offset: 0, data: nil})
-	if cached {
+	if wc.buffer(key, bufferedArticle{offset: 0, data: nil}) {
 		t.Error("a zero-length article was buffered; it cannot advance the " +
 			"write cursor, so buildContiguousRun would never terminate")
-	}
-	if len(displaced) != 0 {
-		t.Errorf("displaced = %v for an article that was never taken", displaced)
 	}
 
 	// End to end: it takes the inline path through Accept and is reported.

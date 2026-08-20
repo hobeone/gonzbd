@@ -608,18 +608,12 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	// either already on disk or about to be overwritten, and nothing will
 	// write them again. Recording the arrival as the new owner afterwards is
 	// what lets a third article at the same offset be detected in turn.
-	// A bool rather than comparing against a zero articleID: articleID{"", 0}
-	// is a legitimate article — index 0 with no Message-ID — so a zero value
-	// cannot mean "nothing was failed" without silently skipping it below.
-	var alreadyFailed articleID
-	var didFail bool
 	// A settled offset never reaches here — acceptArticle refuses the arrival
 	// before calling Accept — so any incumbent found here has made no
 	// durability claim, and displacing it contradicts nothing.
 	owner, taken := w.acceptedAt[off]
 	if taken && !owner.id.sameArticle(id) {
 		w.failDisplaced(owner.id, off, id)
-		alreadyFailed, didFail = owner.id, true
 		// Take the incumbent's bytes away as well as its accounting. Failing an
 		// article whose payload is still buffered leaves the next drain to
 		// write it and the barrier to ack it durable, for an article
@@ -650,41 +644,8 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 	}
 
 	art := bufferedArticle{offset: off, data: data, id: id}
-	if cached, displaced := w.wc.buffer(w.key, art); cached {
+	if w.wc.buffer(w.key, art) {
 		telemetry.CacheHits.Add(1)
-		// An article displaced from this offset loses its bytes; nothing else
-		// will write them now. It has made no claim — it was never reported
-		// Written — so failing it here only corrects the seen-sets.
-		//
-		// That last clause is a PRECONDITION, not an observation, and it holds
-		// because acceptArticle refuses any arrival whose incumbent was
-		// written. It was silently false for one commit on this branch, when
-		// detection started covering the flushed case while this disposition
-		// still assumed the cache-eviction one: the incumbent was already in
-		// w.written, so rolling it back left one article both permanently
-		// failed and acked durable. See offsetSettledBy.
-		//
-		// This loop is a backstop, not the detector, and as the code stands it
-		// does not run at all: the check above discards the incumbent through
-		// wc.discardAt before buffer is reached, so buffer finds nothing to
-		// report as displaced. It stays because buffer is the only thing that
-		// knows what it dropped, so a future path reaching buffer without
-		// Accept's check still reports rather than silently overwriting.
-		//
-		// Deleting it, and buffer's eviction branch with it, is a real
-		// simplification and is deliberately not part of this change.
-		//
-		// Skipping alreadyFailed is not tidiness. Failing one article twice
-		// appends a second faultedArticle, and routeFaulted resolves each
-		// entry it is handed — so the duplicate would report the same article
-		// permanently failed twice, charging its bytes against the job's par2
-		// budget twice over.
-		for _, d := range displaced {
-			if didFail && d.sameArticle(alreadyFailed) {
-				continue
-			}
-			w.failDisplaced(d, off, id)
-		}
 		if run := w.wc.flushContiguous(w.key); run != nil {
 			return w.flushRun(run)
 		}

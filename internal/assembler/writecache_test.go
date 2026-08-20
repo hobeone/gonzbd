@@ -604,7 +604,7 @@ func BenchmarkWriteCache_ContiguousFlush(b *testing.B) {
 // is coalescing rather than acking. Tests that care about the ack call
 // wc.buffer directly.
 func bufferAt(wc *writeCache, key fileKey, offset int64, data []byte) bool {
-	cached, _ := wc.buffer(key, bufferedArticle{offset: offset, data: data})
+	cached := wc.buffer(key, bufferedArticle{offset: offset, data: data})
 	return cached
 }
 
