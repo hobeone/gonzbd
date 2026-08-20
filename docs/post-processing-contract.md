@@ -148,9 +148,12 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    happened to see. Facts persist across restarts, so they name every article
    of the file whichever run fetched it — a *resumed* file supplies a CRC as
    readily as a fresh one, which the old design could not.
-   `Barrier.gaplessPrefix` combines them during the walk it already performs,
-   with no read of the file, and `Application.recordAssembledCRC` threads the
-   result to `Queue.SetFileCRC32` when the file finalizes.
+   `durability.verifiedPrefix` combines them during the walk it already
+   performs, with no read of the file, and `Application.recordAssembledCRC`
+   threads the result to `Queue.SetFileCRC32` when the file finalizes — but
+   only when the walk both reached the file's end and consumed every fact, so
+   a file with an article overlapping a sibling supplies no CRC rather than one
+   describing bytes it may not hold.
 
    A file whose gapless prefix stops short of its end — a permanently failed
    article leaves a hole — still reads as `NoCRC`, which is zero's documented

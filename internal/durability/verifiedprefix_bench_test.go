@@ -53,7 +53,7 @@ func BenchmarkGaplessPrefix_WholeFile(b *testing.B) {
 		b.Run(fmt.Sprintf("articles=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				verifiedTo, _ := gaplessPrefix(facts, 0, bm, tgt)
+				verifiedTo, _, _ := verifiedPrefix(facts, durableAt(facts, 0, bm, tgt), 0)
 				if verifiedTo == 0 {
 					b.Fatal("fixture walked nothing, so this measures the break and not the walk")
 				}
@@ -79,7 +79,7 @@ func BenchmarkGaplessPrefix_StallsAtFirstHole(b *testing.B) {
 		b.Run(fmt.Sprintf("articles=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				gaplessPrefix(facts, 0, bm, tgt)
+				verifiedPrefix(facts, durableAt(facts, 0, bm, tgt), 0)
 			}
 		})
 	}

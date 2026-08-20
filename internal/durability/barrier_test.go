@@ -535,7 +535,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 	}
 }
 
-// errFactLog fails ForFile so gaplessPrefix's error path can be pinned:
+// errFactLog fails ForFile so the fact-load error path can be pinned:
 // A2 forbids computing a CRC anchor from a fact log that could not be read.
 type errFactLog struct {
 	FactLog
@@ -885,9 +885,9 @@ func TestGaplessPrefix(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, _ := gaplessPrefix(stored, 0, bm, &fakeTarget{artCount: 4})
+			got, _, _ := verifiedPrefix(stored, durableAt(stored, 0, bm, &fakeTarget{artCount: 4}), 0)
 			if got != tt.want {
-				t.Errorf("gaplessPrefix = %d, want %d", got, tt.want)
+				t.Errorf("verifiedPrefix = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -913,9 +913,9 @@ func TestGaplessPrefix_UnplaceableFactStopsTheWalk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := gaplessPrefix(stored, 0, bm, &fakeTarget{artCount: 4, noOrd: true})
+	got, _, _ := verifiedPrefix(stored, durableAt(stored, 0, bm, &fakeTarget{artCount: 4, noOrd: true}), 0)
 	if got != 0 {
-		t.Errorf("gaplessPrefix = %d, want 0 — an unplaceable fact proves nothing", got)
+		t.Errorf("verifiedPrefix = %d, want 0 — an unplaceable fact proves nothing", got)
 	}
 }
 

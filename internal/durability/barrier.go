@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -283,7 +282,7 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// barrier at all. Writing facts here would make them barrier-ordered and
 	// quietly destroy the property.
 
-	verified, prefixCRC := gaplessPrefix(facts, idx, ext.Durable, t)
+	verified, prefixCRC, whole := verifiedPrefix(facts, durableAt(facts, idx, ext.Durable, t), size)
 	// Both assigned from the same walk, so the CRC always describes exactly
 	// the prefix beside it. The old code could only CLEAR them — it carried a
 	// loaded PrefixCRC across an unchanged VerifiedTo and zeroed it otherwise,
@@ -296,12 +295,16 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// rule about when to discard.
 	ext.VerifiedTo = verified
 	ext.PrefixCRC = prefixCRC
-	// A prefix that reaches the file's end IS the whole file. During a
-	// download this is normally false — the stat reads pre-allocation's full
-	// size while the prefix is still growing — and FinalizeFile re-evaluates
-	// it after the truncate, where size is the file's true end. R23 keeps
-	// "unavailable" distinguishable from a CRC of zero.
-	ext.HasPrefixCRC = verified > 0 && verified == size
+	// A prefix that reaches the file's end IS the whole file — but only when
+	// it also accounts for every fact, which is why verifiedPrefix decides it
+	// rather than this call site. Deriving it here from VerifiedTo and Size
+	// alone is what let an overlapping article's leftover fact go unnoticed
+	// (#387). During a download this is normally false — the stat reads
+	// pre-allocation's full size while the prefix is still growing — and
+	// FinalizeFile re-evaluates it after the truncate, where size is the
+	// file's true end. R23 keeps "unavailable" distinguishable from a CRC of
+	// zero.
+	ext.HasPrefixCRC = whole
 	return ext, acked, nil
 }
 
@@ -432,50 +435,23 @@ func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artC
 	return e, nil
 }
 
-// gaplessPrefix returns the length of the durable, contiguous run of bytes
-// starting at offset 0 — the CRC anchor VerifiedTo records.
+// durableAt builds verifiedPrefix's per-fact predicate for the barrier: a
+// fact counts when its article has a file-local ordinal and that ordinal's
+// durable bit is set.
 //
-// A hole stops this walk and leaves durable untouched. That separation is
-// the #311/#353 distinction: resume reads the bitmap, so an article above
-// the hole is still durable and is not re-fetched, while the CRC anchor
-// reads this, so it does not claim a prefix it cannot prove. Collapsing the
-// two into one value is what made writeCursor unusable as a durability
-// anchor.
+// A hole stops the walk and leaves durable untouched. That separation is the
+// #311/#353 distinction: resume reads the bitmap, so an article above the hole
+// is still durable and is not re-fetched, while the CRC anchor reads the walk,
+// so it does not claim a prefix it cannot prove. Collapsing the two into one
+// value is what made writeCursor unusable as a durability anchor.
 //
-// FactLog.ForFile already returns facts ordered by Offset — a Task 4 test
-// pins that — so the walk needs no sort of its own.
-//
-// It takes the facts rather than loading them. The caller has already read
-// them for the other walks over the same file, and a read failure is that
-// caller's to surface: an unreadable fact log yields no evidence, and
-// committing VerifiedTo = 0 as if it were derived would be a silent wrong
-// answer, which A2 and R28 forbid.
-func gaplessPrefix(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) (verifiedTo int64, prefixCRC uint32) {
-	var prefix int64
-	var crc uint32
-	for _, f := range facts {
-		// Not exactly abutting the run so far: either a hole, or an overlap
-		// this walk cannot prove tiles the range (R23). Either way the
-		// prefix ends here.
-		if f.Offset != prefix {
-			break
-		}
-		ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx)
-		if !ok || !durable.Get(ord) {
-			break
-		}
-		// Combined from the facts rather than read from the file. This is the
-		// source #349's combine lacked: the assembler could only ever see the
-		// articles THIS run fetched, so on a resumed file its parts did not
-		// tile and the value described a fragment. Class A persists, so it
-		// names every article of the file whichever run fetched it.
-		//
-		// Arithmetic over rows already loaded — no read of the file, which is
-		// why this can sit on the barrier's path at all (R24).
-		crc = crc32util.Combine(crc, f.CRC32, int64(f.Length))
-		prefix = f.Offset + int64(f.Length)
+// A closure rather than a precomputed []bool so the ordinal lookup is skipped
+// for every fact past the break — verifiedPrefix stops at the first false.
+func durableAt(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) func(i int) bool {
+	return func(i int) bool {
+		ord, ok := t.FileLocalOrdinal(idx, facts[i].ArtIdx)
+		return ok && durable.Get(ord)
 	}
-	return prefix, crc
 }
 
 // Truncator is a SyncTarget that can also trim a completed file.
@@ -652,7 +628,15 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		// unavailable. The truncate has just made Size the file's true end, so
 		// this is the first point at which "the prefix covers the whole file"
 		// can be answered.
-		ext.HasPrefixCRC = ext.VerifiedTo > 0 && ext.VerifiedTo == ext.Size
+		//
+		// Re-asked through verifiedPrefix against the same facts, NOT recomputed
+		// from VerifiedTo and Size. Those two alone cannot see a fact the walk
+		// never consumed, which is how an article overlapping a sibling without
+		// extending the file published a CRC of the bytes that should have been
+		// written (#387). The walk is cheap — arithmetic over rows already in
+		// memory, no read of the file (R24).
+		_, _, whole := verifiedPrefix(facts, durableAt(facts, idx, ext.Durable, t), ext.Size)
+		ext.HasPrefixCRC = whole
 	}
 
 	if err := b.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {
@@ -677,11 +661,11 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 // durableExtent returns the highest end offset among the file's durable
 // articles, or 0 when none is durable.
 //
-// Unlike gaplessPrefix this does NOT stop at a hole. A hole means an article
+// Unlike verifiedPrefix this does NOT stop at a hole. A hole means an article
 // permanently failed, and the bytes above it are still real bytes that par2
 // repairs from — stopping there is the data-loss bug this function exists to
 // avoid. The two walks read the same facts and answer deliberately different
-// questions: gaplessPrefix asks "what can I prove about a CRC anchor", this
+// questions: verifiedPrefix asks "what can I prove about a CRC anchor", this
 // asks "how long is the file".
 func durableExtent(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) int64 {
 	var high int64

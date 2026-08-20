@@ -163,7 +163,7 @@ func slicesContains(s []int32, v int32) bool {
 }
 
 // TestDurableExtent_DoesNotStopAtAHole is the direct pin on the one line that
-// separates durableExtent from gaplessPrefix. They read the same facts and
+// separates durableExtent from verifiedPrefix. They read the same facts and
 // must answer differently: the prefix walk stops at the first gap because a
 // CRC anchor cannot be proven past it, while this walk must NOT, because the
 // bytes above the gap are real bytes on disk and truncating them away is the

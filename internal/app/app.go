@@ -1399,7 +1399,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // The CRCs come from Class A. The assembler used to combine the per-article
 // CRCs it happened to see, which was #349 — a resumed run never receives the
 // articles an earlier run completed, so its parts do not tile the file — and
-// that writer is gone. Barrier.gaplessPrefix combines the FACTS instead, which
+// that writer is gone. durability.verifiedPrefix combines the FACTS instead, which
 // persist across restarts and so name every article whichever run fetched it,
 // and Application.recordAssembledCRC copies the result onto the queue when the
 // file finalizes.

@@ -16,7 +16,7 @@ const poly = uint32(0xEDB88320)
 //
 // Time complexity: O(log(len2)) matrix multiplications — measured at 7.47 us
 // for len2 = 1e6 on a Ryzen 9 9950X3D, which makes this the dominant cost of
-// durability.gaplessPrefix (~89% of it at 20 000 articles).
+// durability.verifiedPrefix (~89% of it at 20 000 articles).
 //
 // # Do not hoist the shift matrix out across calls
 //
