@@ -25,7 +25,42 @@ type prefixWalk struct {
 	// A fact left over means something known about this file lies outside
 	// PrefixCRC's range.
 	consumedAll bool
+	// overlapAt is the index of the fact the walk stopped on when that fact
+	// started BELOW the run, and hasOverlap says whether it did.
+	//
+	// An explicit bool rather than a sentinel index, because the zero
+	// prefixWalk is a real value — buildExtent returns it on four error paths —
+	// and a sentinel of 0 would make it claim an overlap at article 0.
+	overlapAt  int
+	hasOverlap bool
 }
+
+// overlap reports the fact the walk stopped on because it started below the
+// run, meaning two articles the predicate accepted claim the same bytes.
+//
+// Distinguishing this from the walk's other stop reasons is the whole point.
+// The walk halts on three conditions and only this one is a defect in the
+// posted data:
+//
+//   - the predicate rejected the fact — not durable, so nothing is on disk to
+//     conflict. This is also what keeps the assembler's own exact-offset
+//     collisions from being reported twice: its loser is resolved permanently
+//     failed and never earns a durable bit.
+//   - the fact starts ABOVE the run — a hole, which is the ordinary state of
+//     a file still downloading.
+//   - the fact starts BELOW the run — this. Everything under it is durable and
+//     tiles, so the bytes it names were already written by another article.
+//
+// The overlapped sibling is facts[overlapAt-1], and that is derived rather than
+// searched for: prefix is only ever assigned facts[i].Offset+Length at the end
+// of a successful iteration, so at the break it equals the previous fact's end
+// exactly. With facts offset-ordered, facts[i-1].Offset <= facts[i].Offset <
+// prefix == facts[i-1].End, so the two ranges intersect.
+//
+// At most ONE overlap per file is ever reported, because the walk stops here.
+// A file with two overlaps names the lower one and never the other. This says
+// the file is damaged; it is not an inventory of the damage.
+func (w prefixWalk) overlap() (int, bool) { return w.overlapAt, w.hasOverlap }
 
 // wholeFile reports whether this walk may be published as the file's whole-file
 // CRC, against the size the file has now.
@@ -95,13 +130,28 @@ func verifiedPrefix(facts []ArticleFact, verified func(i int) bool) prefixWalk {
 	var prefix int64
 	var crc uint32
 	consumed := 0
+	var overlapAt int
+	var hasOverlap bool
 	for i, fact := range facts {
 		if !verified(i) {
 			break
 		}
 		// Not exactly abutting the run so far: either a hole, or an overlap
 		// this walk cannot prove tiles the range (R23).
+		//
+		// Classified HERE, where the walk knows which it saw, rather than
+		// re-derived by a caller from VerifiedTo afterwards. A caller could
+		// reach the same answer with one more predicate call, but that would
+		// be a second computation of one fact — the shape this file was
+		// extracted to delete.
+		//
+		// i > 0 is required, not defensive: reaching this at i == 0 needs
+		// Offset < 0, which the decoder bounds at parse, and an unguarded
+		// facts[i-1] would panic the barrier's goroutine.
 		if fact.Offset != prefix {
+			if fact.Offset < prefix && i > 0 {
+				overlapAt, hasOverlap = i, true
+			}
 			break
 		}
 		// Combined from the facts rather than read from the file. Class A
@@ -112,5 +162,11 @@ func verifiedPrefix(facts []ArticleFact, verified func(i int) bool) prefixWalk {
 		prefix = fact.Offset + int64(fact.Length)
 		consumed++
 	}
-	return prefixWalk{VerifiedTo: prefix, PrefixCRC: crc, consumedAll: consumed == len(facts)}
+	return prefixWalk{
+		VerifiedTo:  prefix,
+		PrefixCRC:   crc,
+		consumedAll: consumed == len(facts),
+		overlapAt:   overlapAt,
+		hasOverlap:  hasOverlap,
+	}
 }

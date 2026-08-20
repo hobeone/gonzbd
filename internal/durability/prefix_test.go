@@ -8,6 +8,68 @@ import (
 	"github.com/hobeone/gonzbd/internal/crc32util"
 )
 
+// TestVerifiedPrefix_DistinguishesAnOverlapFromAHole pins the classification
+// the walk already had the information for and used to discard.
+//
+// The walk stops at the first fact that does not abut the run, and its own
+// comment names both causes: a hole, or an overlap. Only the second means two
+// durable articles claim the same bytes, and only the second may be reported —
+// telling a user their post is malformed because a file is merely incomplete
+// would fire on every running download.
+func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
+	crcA := uint32(0x11111111)
+	all := func(int) bool { return true }
+
+	// A0 [0,100), A1 [100,200), X [150,200) — X starts BELOW the run.
+	overlapping := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcA},
+		{ArtIdx: 2, Offset: 150, Length: 50, CRC32: crcA},
+	}
+	idx, ok := verifiedPrefix(overlapping, all).overlap()
+	if !ok || idx != 2 {
+		t.Errorf("overlap() = (%d, %v), want (2, true) — X starts at 150 inside a "+
+			"run that already reached 200, so two durable articles claim those bytes",
+			idx, ok)
+	}
+
+	// A0 [0,100), then a fact at 200 — a HOLE, not an overlap. Reporting this
+	// would tell the user their post is malformed when the file is merely
+	// incomplete, which is the ordinary state of a running download.
+	gapped := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crcA},
+	}
+	if _, ok := verifiedPrefix(gapped, all).overlap(); ok {
+		t.Error("overlap() reported true for a hole — a file waiting on an article " +
+			"would be reported as a malformed post on every checkpoint")
+	}
+
+	// An UNVERIFIED fact stops the walk before the offset is ever compared, so
+	// it must not be classified either way. This is what keeps the assembler's
+	// own exact-offset collisions from being reported twice: its loser is
+	// resolved permanently failed and never earns a durable bit.
+	//
+	// The unverified fact must ALSO be the overlapping one. With verified =
+	// {true, false, ...} the walk stops at A1, which ABUTS, so the offset test
+	// cannot fire there under either ordering and the mutation below would be
+	// invisible — a green that reads as evidence and is nothing of the kind.
+	twoOfThree := func(i int) bool { return i < 2 }
+	if _, ok := verifiedPrefix(overlapping, twoOfThree).overlap(); ok {
+		t.Error("overlap() reported true when the walk stopped on an unverified " +
+			"fact; the assembler's own collisions would be double-reported")
+	}
+}
+
+// TestVerifiedPrefix_TheZeroWalkReportsNoOverlap pins the zero value, which
+// buildExtent returns on four error paths. A sentinel index rather than an
+// explicit bool would make the zero walk claim an overlap at article 0.
+func TestVerifiedPrefix_TheZeroWalkReportsNoOverlap(t *testing.T) {
+	if idx, ok := (prefixWalk{}).overlap(); ok {
+		t.Errorf("the zero prefixWalk reported an overlap at %d", idx)
+	}
+}
+
 // TestVerifiedPrefix_Table exercises the walk directly, over the fact/verified
 // shapes that are awkward to reach through Resume: an empty fact list, a
 // verified run that stops because the next fact was not proven, and one that
