@@ -29,9 +29,9 @@ implementation lives at `../sabnzbd/`.
 
 ## Standing Design Rules
 
-Two constraints that precede any specific design decision. They are stated here
-rather than in a topic doc because both have already been missed by work that
-never had cause to open the doc arguing for them, and both change what the
+Three constraints that precede any specific design decision. They are stated
+here rather than in a topic doc because each has already been missed by work
+that never had cause to open the doc arguing for it, and each changes what the
 right answer is rather than merely how to write it down.
 
 `docs/article-validation-contract.md` carries the full argument for each, the
@@ -119,6 +119,46 @@ except through a gatekeeper. Prefer that to adding a check at each call site.
 field, or a second enforcement point for one invariant** — see the Decision
 Protocol below.
 
+### 3. A bad article costs only its own bytes
+
+> **No single bad article may degrade the handling of any other byte in the
+> file.** Reject it, charge its bytes to par2, and carry on.
+
+This is a bound on blast radius, not a licence to validate less. Reject fast and
+cheaply — the point is that being *wrong about which kind of bad an article is*
+must cost one article, so that precision stops being load-bearing.
+
+**It takes an injection carve-out, like rule 1 does.** The bound never justifies
+weakening a check whose absence would let a value reach a protocol, a path, a
+query or a command. Rule 1's carve-out and this one arrive there by different
+routes — that one asks whether trusting old persisted state hands an attacker
+something, this one asks whether the blast radius is really one article — but a
+Message-ID carrying CRLF fails both tests, and neither rule excuses it.
+
+It exists as a counterweight to §2 of the article-validation contract, which
+classifies every claim an NZB or article makes. That taxonomy is right and earns
+its place, but a table of claim classes makes every unfilled row look like work,
+and the pull toward completeness is invisible from inside it:
+
+> **Classification decides WHERE a check belongs, not WHETHER one is owed.**
+
+So before taking on article-validation work, ask what one instance costs when we
+get it wrong. If the answer is "that article's bytes", it is par2's job and the
+correct action is usually none. If the answer names *other* bytes, other
+articles, or the whole file or job, it is a violation of this rule and it is
+real work.
+
+**A post with no par2 does not weaken this — it is the case that needs it
+most.** Those bytes are then unrecoverable, which is a risk the poster took, and
+the rule holds unchanged: one bad article still costs only its own bytes. What
+changes is the consequence to the user, and that is exactly why the blast radius
+must not be the whole file. Without this bound, a no-recovery post loses a
+download; with it, it loses a hole.
+
+**This rule removes work.** Applied to the 19 open issues in this cluster, three
+survived as violations and ten were not article-validation work at all — see the
+contract's Ground rules for the triage.
+
 ## Repository Layout
 
 - `cmd/gonzbd/`: Entry point, flag parsing, and application orchestration.
@@ -158,7 +198,7 @@ design-level change.
 | [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file | Idioms, anti-patterns, concurrency/persistence architecture, library selection, testing standards, the Go backend lessons-learned catalog |
 | [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
-| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind the two Standing Design Rules above |
+| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind the three Standing Design Rules above |
 | [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the `ActiveSet`, the promotion loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
 | [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
 | [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | Class A/B facts, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |

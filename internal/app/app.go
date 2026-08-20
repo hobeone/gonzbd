@@ -55,6 +55,24 @@ const (
 	// follows it, so a wedged mount delays shutdown rather than preventing it.
 	shutdownCheckpointTimeout = 10 * time.Second
 
+	// reloadCheckpointTimeout is the BUDGET the barrier ReloadDownloader runs
+	// before clearing the Emitted bits divides among resident jobs.
+	//
+	// It is deliberately not called a bound, because it does not bound the
+	// call. checkpointJob acquires the per-job barrier lock before it looks
+	// at any context, and sync.Mutex is not cancellable, so a job whose
+	// barrier is already running under the periodic sweep is waited for
+	// however long that sweep takes — a per-job hold of up to one full
+	// checkpoint interval. The budget governs how the remaining time is
+	// shared out, not when the call returns.
+	//
+	// A SEPARATE constant from shutdownCheckpointTimeout despite the equal
+	// value, because the two bound different things and one is free to move.
+	// Shutdown's sits inside a per-step budget it must not exceed; this one
+	// paces a config change, and a user waiting on a settings save is a
+	// different tolerance from a process on its way out.
+	reloadCheckpointTimeout = 10 * time.Second
+
 	// factAppendTimeout bounds one Class A insert. It exists because the
 	// append drops the caller's cancellation (see pipeline.appendArticleFacts)
 	// and something must still stop a contended database from holding the
@@ -131,9 +149,9 @@ type Application struct {
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
 	// from mu (which only guards the brief downloader/downloaderStats field
 	// swap) so concurrent reloads queue up instead of interleaving their
-	// Stop/setCompletions/ClearAllEmitted/Start sequences, which would
-	// otherwise risk wiring app.downloader and app.pipeline's completions
-	// source to two different downloader instances.
+	// Stop/setCompletions/checkpoint/ClearAllEmitted/Start sequences, which
+	// would otherwise risk wiring app.downloader and app.pipeline's
+	// completions source to two different downloader instances.
 	reloadMu sync.Mutex
 	config   *config.Config
 	emitter  EventEmitter

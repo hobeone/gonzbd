@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -246,6 +248,104 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 			t.Errorf("onHeartbeat fired %d times for a success, want 1", beats)
 		}
 	})
+}
+
+// TestAwaitInFlight covers both of awaitInFlight's exits directly. The swap
+// test above drives it through run(), which exercises only the success arm —
+// the cancellation arm is what stops a wedged write from blocking a config
+// reload forever, so it needs its own case rather than inheriting coverage.
+func TestAwaitInFlight(t *testing.T) {
+	t.Run("returns true once the outstanding work is done", func(t *testing.T) {
+		p := &pipeline{log: slog.New(slog.DiscardHandler)}
+		// Go adds before it returns, so the counter is already 1 when the
+		// wait below starts — the Add/Done pair this replaces had to be
+		// written out for the same guarantee.
+		p.inFlight.Go(func() { time.Sleep(10 * time.Millisecond) })
+		if !p.awaitInFlight(t.Context()) {
+			t.Error("awaitInFlight reported cancellation for work that completed")
+		}
+	})
+
+	t.Run("returns false when the context ends first", func(t *testing.T) {
+		p := &pipeline{log: slog.New(slog.DiscardHandler)}
+		p.inFlight.Add(1)
+		// Released at the end so the Wait goroutine this spawns can exit;
+		// leaving it blocked would leak it for the rest of the test binary.
+		defer p.inFlight.Done()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if p.awaitInFlight(ctx) {
+			t.Error("awaitInFlight reported completion while an item was still in flight")
+		}
+	})
+}
+
+// TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel pins the half of
+// the swap contract that used to be a comment: setCompletions(nil) must not
+// return while results it drained are still queued for a worker.
+//
+// This runs the REAL run() loop rather than a stand-in, because the defect
+// lived in run(): the drain loop moves results from the completions channel
+// onto a buffered work channel and the pwrite happens later, so "the channel
+// is empty" and "the work is done" are different facts. ReloadDownloader
+// reads setCompletions(nil) as a quiescence point and checkpoints against it,
+// which is why the difference is #390 and not a nicety.
+//
+// The failure results take the retryable path, which needs no assembler — the
+// point under test is the run loop's accounting, not what a worker does.
+func TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel(t *testing.T) {
+	const results = 16
+	const perResult = 5 * time.Millisecond
+
+	var handled atomic.Int64
+	p := &pipeline{
+		log:        slog.New(slog.DiscardHandler),
+		queue:      queue.New(),
+		fileInfo:   make(map[fileKey]assembler.FileInfo),
+		updateCh:   make(chan completionSwap, 1),
+		numWorkers: 1,
+		// Deliberately slow, so the workers cannot plausibly finish inside
+		// the window where an unfixed setCompletions returns. One worker and
+		// 16 results is ~80ms of work against a swap that would otherwise
+		// complete in microseconds.
+		onHeartbeat: func() {
+			time.Sleep(perResult)
+			handled.Add(1)
+		},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	p.ctx = ctx
+
+	comp := make(chan *downloader.ArticleResult, results)
+	for i := range results {
+		comp <- &downloader.ArticleResult{
+			JobID:  "no-such-job",
+			ArtIdx: int32(i), //nolint:gosec // loop bound is 16
+			Err:    nntp.ErrNoArticle,
+		}
+	}
+	p.completions = comp
+
+	runDone := make(chan struct{})
+	go func() { p.run(ctx); close(runDone) }()
+
+	p.setCompletions(nil)
+
+	if got := handled.Load(); got != results {
+		t.Errorf("setCompletions returned with %d of %d results still unprocessed — "+
+			"it drained the channel but not the work, so a caller treating the swap "+
+			"as a quiescence point (ReloadDownloader, before its checkpoint) acks "+
+			"less than it believes and #390 survives the fix", results-got, results)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not exit after its context was cancelled")
+	}
 }
 
 func TestSetCompletions(t *testing.T) {

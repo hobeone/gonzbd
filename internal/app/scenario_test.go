@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
@@ -60,6 +61,18 @@ func newScenarioHarness(t testing.TB) *scenarioHarness {
 
 func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 	t.Helper()
+	return newScenarioHarnessWithConfig(t, conns, nil)
+}
+
+// newScenarioHarnessWithConfig is newScenarioHarnessWithConns with one hook to
+// adjust the config before the Application is built. tweak may be nil.
+//
+// It exists for tests that need to observe a state the defaults hide rather
+// than tests that want different defaults — the write cache is the case in
+// point: with it on, an article can be "written" and still be in userspace,
+// which is not the state a durability test means by written.
+func newScenarioHarnessWithConfig(t testing.TB, conns int, tweak func(*config.Config)) *scenarioHarness {
+	t.Helper()
 
 	h := &scenarioHarness{
 		t:           t,
@@ -82,6 +95,9 @@ func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 		h.adminDir,
 		h.server.ServerConfig("scenario", conns),
 	)
+	if tweak != nil {
+		cfg.With(tweak)
+	}
 
 	a, err := app.New(cfg, h.repo, app.WithPostProcStages([]postproc.Stage{noOpStage{}}))
 	if err != nil {
