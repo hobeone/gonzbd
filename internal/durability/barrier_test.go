@@ -117,7 +117,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 	ack := &recordingAcker{}
 	b, _ := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)), ack, &recordingStall{})
 
-	if err := b.Run(ctx, "job-1", tgt); err != nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"drain", "sync", "stat"}
@@ -157,7 +157,7 @@ func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 	stall := &recordingStall{}
 	b, _ := newBarrierWithStores(t, es, ack, stall)
 
-	if err := b.Run(ctx, "job-1", tgt); err == nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err == nil {
 		t.Fatal("Run returned nil after a failed sync")
 	}
 	if len(ack.proofs) != 0 {
@@ -191,7 +191,7 @@ func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
 	stall := &recordingStall{}
 	b, _ := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)), &recordingAcker{}, stall)
 
-	if err := b.Run(ctx, "job-1", tgt); err == nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err == nil {
 		t.Fatal("Run returned nil after EROFS")
 	}
 	if len(stall.failed) != 1 {
@@ -229,7 +229,7 @@ func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
 			ack := &recordingAcker{}
 			b, _ := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)), ack, stall)
 
-			err := b.Run(ctx, "job-1", tt.tgt)
+			_, err := b.Run(ctx, "job-1", tt.tgt)
 			if err == nil {
 				t.Fatal("Run returned nil after a storage fault")
 			}
@@ -315,7 +315,7 @@ func TestBarrier_VerifiedToAdvancesOnlyOverAGaplessPrefix(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := b.Run(ctx, "job-1", tgt); err != nil {
+			if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 				t.Fatal(err)
 			}
 			got, err := es.Load(ctx, "job-1")
@@ -351,7 +351,7 @@ func TestBarrier_ReplayedDrainDoesNotInflateBytesDurable(t *testing.T) {
 	b, _ := newBarrierWithStores(t, es, &recordingAcker{}, &recordingStall{})
 
 	for i := range 3 {
-		if err := b.Run(ctx, "job-1", tgt); err != nil {
+		if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 			t.Fatalf("barrier %d: %v", i, err)
 		}
 	}
@@ -387,7 +387,7 @@ func TestBarrier_PriorPaddingBitsDoNotInflateTheDurableCount(t *testing.T) {
 
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, artCount: 4}
 	b, _ := newBarrierWithStores(t, es, &recordingAcker{}, &recordingStall{})
-	if err := b.Run(ctx, "job-1", tgt); err != nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	got, err := es.Load(ctx, "job-1")
@@ -416,7 +416,7 @@ func TestBarrier_PriorBitmapWidensToTheArticleCount(t *testing.T) {
 		artCount: 130,
 	}
 	b, _ := newBarrierWithStores(t, es, &recordingAcker{}, &recordingStall{})
-	if err := b.Run(ctx, "job-1", tgt); err != nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	got, err := es.Load(ctx, "job-1")
@@ -446,7 +446,7 @@ func TestBarrier_UnplaceableArticleIsAnError(t *testing.T) {
 	stall := &recordingStall{}
 	b, _ := newBarrierWithStores(t, es, ack, stall)
 
-	err := b.Run(ctx, "job-1", tgt)
+	_, err := b.Run(ctx, "job-1", tgt)
 	if err == nil {
 		t.Fatal("Run returned nil for an article with no file-local ordinal")
 	}
@@ -484,7 +484,7 @@ func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 	ack := &recordingAcker{}
 	b, _ := newBarrierWithStores(t, es, ack, &recordingStall{})
 
-	err := b.Run(ctx, "job-1", tgt)
+	_, err := b.Run(ctx, "job-1", tgt)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the commit failure", err)
 	}
@@ -503,7 +503,7 @@ func TestBarrier_NothingDrainedAcksNothing(t *testing.T) {
 	ack := &recordingAcker{}
 	b, _ := newBarrierWithStores(t, es, ack, &recordingStall{})
 
-	if err := b.Run(ctx, "job-1", tgt); err != nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	if len(ack.proofs) != 0 {
@@ -530,7 +530,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 	}
 	b, _ := newBarrierWithStores(t, NewSQLiteExtentStore(openTestDB(t)), ack, &recordingStall{})
 
-	if err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
+	if _, err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the ack failure", err)
 	}
 }
@@ -561,7 +561,7 @@ func TestBarrier_FactLogReadFailureAbortsTheBarrier(t *testing.T) {
 		artCount: 4,
 	}
 
-	if err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
+	if _, err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the fact-log failure", err)
 	}
 	if len(ack.proofs) != 0 {
@@ -598,7 +598,7 @@ func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 	}
 	ack := &recordingAcker{}
 	b, _ := newBarrierWithStores(t, es, ack, &recordingStall{})
-	if err := b.Run(ctx, "job-1", tgt); err != nil {
+	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"drain", "drain", "sync", "sync", "stat", "stat"}
@@ -699,7 +699,7 @@ func TestBarrier_RecomputesThePrefixCRCRatherThanCarryingIt(t *testing.T) {
 				written:  map[int32][]WrittenArticle{0: tt.drain},
 				artCount: 4,
 			}
-			if err := b.Run(ctx, "job-1", tgt); err != nil {
+			if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 				t.Fatal(err)
 			}
 
@@ -972,7 +972,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 			t.Fatal(err)
 		}
 		tgt := &fakeTarget{written: drain, artCount: 4}
-		if err := b.Run(ctx, "job-1", tgt); err != nil {
+		if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		if len(tgt.confirmed) == 0 {
@@ -990,7 +990,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 			t.Fatal(err)
 		}
 		tgt := &fakeTarget{written: drain, artCount: 4}
-		if err := b.Run(ctx, "job-1", tgt); err == nil {
+		if _, err := b.Run(ctx, "job-1", tgt); err == nil {
 			t.Fatal("Run reported success while the ack failed")
 		}
 		if len(tgt.confirmed) != 0 {

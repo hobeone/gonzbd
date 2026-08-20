@@ -52,7 +52,7 @@ func TestFinalizeFile_ProducesAWholeFileCRC(t *testing.T) {
 		},
 	}
 	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestFinalizeFile_NoWholeFileCRCWhenAnArticleIsMissing(t *testing.T) {
 		drained:  []WrittenArticle{{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}},
 	}
 	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 

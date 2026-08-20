@@ -120,7 +120,7 @@ func TestRaise(t *testing.T) {
 	t.Run("the call sites reach it", func(t *testing.T) {
 		s := &recordingStall{}
 		tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC, artCount: 4}
-		if err := newBarrier(s).Run(context.Background(), "job-1", tgt); err == nil {
+		if _, err := newBarrier(s).Run(context.Background(), "job-1", tgt); err == nil {
 			t.Fatal("Run succeeded over a failing sync")
 		}
 		if len(s.stalled) != 1 {

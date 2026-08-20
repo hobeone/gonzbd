@@ -1018,9 +1018,31 @@ including every failure path.
 
   Either way the first collision on a file raises `Options.OnPostAnomaly`, which
   the app routes to `job.Warning`. That is diagnosis, not accounting: it states
-  that two segments claim one byte range without asserting the post is
+  that two segments claim one byte **offset** without asserting the post is
   malformed, because a redundant posting and a server-mangled `=ypart begin=`
   produce the same observation and yEnc checksums the payload, never the header.
+
+  **This detects an exact shared start offset only, and it is one of two
+  sources.** Two articles whose ranges overlap without sharing a start offset
+  are invisible here — `acceptedAt` is keyed on the offset — and the later one
+  overwrites the earlier's bytes. The durability layer catches that case
+  instead, after both writes have landed, by classifying why `verifiedPrefix`
+  stopped walking a file's Class A facts: a fact that starts BELOW the run means
+  two durable articles describe the same bytes. It reports through
+  `durability.PostAnomaly` on the barrier's return, and the app routes it to the
+  same `job.Warning`, at most once per `(jobID, fileIdx)`. The latch is in
+  memory, so that bound is per process: a restart raises each finding once
+  more, which is what a user who restarted to fix something would expect.
+
+  The two are not redundant, though the reason is narrower than "their cases
+  are disjoint". Within one process they are: the assembler resolves its
+  collision's loser permanently failed, so it never earns a durable bit and the
+  walk never reaches it. Across a **restart** `acceptedAt` is empty, so two
+  articles at the same offset can both be written and both become durable, and
+  the barrier does then see an exact-offset pair — still not a double report,
+  because the assembler is blind in exactly that window. What the barrier alone
+  can see, in any window, is a range overlap sharing no start offset. Neither
+  prevents the write; see #387 for what detection here does not cover.
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is

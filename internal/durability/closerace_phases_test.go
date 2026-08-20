@@ -82,7 +82,7 @@ func TestBarrier_ACloseAfterTheDrainDropsOnlyThatFile(t *testing.T) {
 				ack, stall, slog.New(slog.DiscardHandler))
 
 			tgt := &lateCloseTarget{closeAt: closeAt}
-			err := b.Run(context.Background(), "job-1", tgt)
+			_, err := b.Run(context.Background(), "job-1", tgt)
 
 			// Grounding: the race must have happened, or every assertion below
 			// is true for a reason unrelated to the defect.
@@ -204,7 +204,7 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 				&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 			tgt := &finalizeCloseTarget{closeOn: closeOn}
-			err := b.FinalizeFile(context.Background(), "job-1", 0, tgt)
+			_, err := b.FinalizeFile(context.Background(), "job-1", 0, tgt)
 
 			if closeOn == "truncate" && !tgt.truncated {
 				t.Fatal("the truncate was never attempted, so this arm proves nothing " +
@@ -241,7 +241,7 @@ func TestBarrier_ARoutedFaultSaysSo(t *testing.T) {
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC, artCount: 4}
-	err := b.Run(context.Background(), "job-1", tgt)
+	_, err := b.Run(context.Background(), "job-1", tgt)
 
 	if len(stall.stalled) == 0 {
 		t.Fatal("the fixture's fault was not routed, so this test cannot observe the marker")

@@ -49,7 +49,7 @@ func TestBarrier_ADeliberatelyClosedFileDoesNotStallTheJob(t *testing.T) {
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 	tgt := &closedFileTarget{}
-	err := b.Run(context.Background(), "job-1", tgt)
+	_, err := b.Run(context.Background(), "job-1", tgt)
 
 	// Grounding: the fixture must actually have been asked, or "no stall" is
 	// true for a reason unrelated to the defect.

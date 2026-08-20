@@ -99,7 +99,7 @@ func mintProof(t *testing.T, jobID string, arts []int32, artCount int) durabilit
 		noopStallable{},
 		slog.New(slog.DiscardHandler),
 	)
-	if err := b.Run(context.Background(), jobID, tgt); err != nil {
+	if _, err := b.Run(context.Background(), jobID, tgt); err != nil {
 		t.Fatalf("mintProof: barrier run: %v", err)
 	}
 	if len(got.Articles()) != len(arts) {

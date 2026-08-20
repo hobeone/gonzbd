@@ -259,7 +259,7 @@ func TestFinalizeFile_FactsButNoneDurableDoesNotTruncate(t *testing.T) {
 	tgt := &factGapTarget{artCount: 2, size: 5000}
 	b := NewBarrier(facts, NewSQLiteExtentStore(db), &recordingAcker{}, &recordingStall{},
 		slog.New(slog.DiscardHandler))
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 	if tgt.called {
