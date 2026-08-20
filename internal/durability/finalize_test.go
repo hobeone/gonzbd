@@ -96,7 +96,7 @@ func TestFinalizeFile_TruncatesToTheHighestDurableFactEnd(t *testing.T) {
 	ack := &recordingAcker{}
 	b := NewBarrier(facts, exts, ack, &recordingStall{}, slog.New(slog.DiscardHandler))
 
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestFinalizeFile_NoDurableFactsDoesNotTruncate(t *testing.T) {
 
 	tgt := &truncTarget{artCount: 4}
 	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 	if tgt.called {
@@ -270,7 +270,7 @@ func TestFinalizeFile_ZeroArticleCountDoesNotEraseTheStoredExtent(t *testing.T) 
 	// A target that cannot answer the manifest questions, with an EMPTY drain.
 	tgt := &truncTarget{artCount: 0}
 
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err == nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err == nil {
 		t.Error("FinalizeFile accepted a target reporting zero articles; it must refuse " +
 			"rather than commit an extent it cannot size")
 	}
@@ -310,7 +310,7 @@ func TestRun_ZeroArticleCountDoesNotEraseTheStoredExtent(t *testing.T) {
 	b := NewBarrier(NewSQLiteFactLog(db), exts, &recordingAcker{}, &recordingStall{},
 		slog.New(slog.DiscardHandler))
 
-	if err := b.Run(ctx, "job-1", &truncTarget{artCount: 0}); err == nil {
+	if _, err := b.Run(ctx, "job-1", &truncTarget{artCount: 0}); err == nil {
 		t.Error("Run accepted a target reporting zero articles for a file it listed")
 	}
 
@@ -389,7 +389,7 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 			stall := &recordingStall{}
 			b := NewBarrier(facts, exts, ack, stall, slog.New(slog.DiscardHandler))
 
-			if err := b.FinalizeFile(ctx, "job-1", 0, tc.target()); err == nil {
+			if _, err := b.FinalizeFile(ctx, "job-1", 0, tc.target()); err == nil {
 				t.Fatal("FinalizeFile returned nil on a storage fault")
 			}
 			routed := append(append([]*storagefault.Fault{}, stall.stalled...), stall.failed...)
@@ -458,7 +458,7 @@ func TestFinalizeFile_RetryDoesNotTrimBelowRecordedBytes(t *testing.T) {
 	tgt := &truncTarget{artCount: 2}
 	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
 
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 

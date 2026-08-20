@@ -101,7 +101,7 @@ func TestFinalizeFile_DoesNotTrimBelowADurableArticleWithNoFact(t *testing.T) {
 	ack := &recordingAcker{}
 	b := NewBarrier(facts, exts, ack, &recordingStall{}, slog.New(slog.DiscardHandler))
 
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
 	stall := &recordingStall{}
 	b := NewBarrier(facts, exts, &recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
-	err := b.FinalizeFile(ctx, "job-1", 0, tgt)
+	_, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
 	if err == nil {
 		t.Fatal("FinalizeFile returned nil; the injected stat failure was not surfaced")
 	}

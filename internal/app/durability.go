@@ -164,9 +164,31 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 //
 // A failure to record it is logged and dropped. A job that has left the queue
 // has nothing to warn about, which is ordinary rather than a defect (A2).
+//
+// There are TWO sources, which the log line names rather than assumes. The
+// assembler detects an exact-offset collision at accept time, before either
+// article is written. The barrier detects a RANGE overlap between two articles
+// that are both already durable, from the Class A facts, after both writes
+// landed — see durability.PostAnomaly. They are not redundant: neither sees the
+// other's case.
 func (app *Application) handlePostAnomaly(jobID string, fileIdx int, reason string) {
-	app.log.Warn("post anomaly reported by the assembler",
-		"job", jobID, "fileidx", fileIdx, "reason", reason)
+	app.postAnomaly(jobID, fileIdx, "assembler", reason)
+}
+
+// reportPostAnomalies routes the barrier's findings.
+//
+// Called on both barrier paths and always AFTER their per-job mutex is
+// released — see the call sites. Nil and empty are the overwhelmingly common
+// case and cost one branch.
+func (app *Application) reportPostAnomalies(jobID string, found []durability.PostAnomaly) {
+	for _, pa := range found {
+		app.postAnomaly(jobID, int(pa.FileIdx), "barrier", pa.Reason)
+	}
+}
+
+func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason string) {
+	app.log.Warn("post anomaly reported",
+		"job", jobID, "fileidx", fileIdx, "source", source, "reason", reason)
 	if err := app.queue.SetWarning(jobID, reason); err != nil {
 		app.log.Debug("record a post anomaly as a job warning",
 			"job", jobID, "err", err)
@@ -532,7 +554,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	pending := app.takeJobBytes(jobID)
 
 	app.barrierRuns.Add(1)
-	err := app.barrier.Run(ctx, jobID, tgt)
+	found, err := app.barrier.Run(ctx, jobID, tgt)
 	mu.Unlock()
 	// --- No lock held below this line ---
 
@@ -540,6 +562,12 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	// the barrier's I/O by design — that is the serialisation — but a log
 	// write is I/O of its own, and a slow handler would hold every other
 	// checkpoint for this job behind a message about one that already failed.
+	//
+	// Post anomalies travel the same route for the same reason, and the reason
+	// is I/O under a lock and nothing more. barrier-mu already nests q.mu on
+	// every successful checkpoint, through AckDurable, so reporting under it
+	// would introduce no new ordering — there is no deadlock argument here.
+	app.reportPostAnomalies(jobID, found)
 	if err != nil {
 		// The reset this run did not earn is put back, so the figure keeps
 		// describing the bytes still at risk rather than dropping to zero
@@ -880,10 +908,15 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	defer app.releaseJobBarrierLock(jobID)
 	mu.Lock()
 	// --- Barrier serialised per job below this line ---
-	err = app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
+	found, err := app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
 	mu.Unlock()
 	// --- No lock held below this line ---
 
+	// Below the unlock for the same reason the error report is, and reported
+	// even though the file is about to be called finalized: it IS finalized,
+	// and it is also damaged. #410 already withheld its whole-file CRC, which
+	// sends it to par2; this is what tells the user why.
+	app.reportPostAnomalies(jobID, found)
 	if err != nil {
 		// Reported by the caller, not here: the lock spans the barrier's I/O
 		// by design, and a log write is I/O of its own with no business

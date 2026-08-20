@@ -55,7 +55,7 @@ func TestFinalizeFile_AnOverlappingFactWithholdsTheWholeFileCRC(t *testing.T) {
 		},
 	}
 	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
