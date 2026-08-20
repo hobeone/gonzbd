@@ -17,10 +17,13 @@ import (
 // The write cache is disabled (newHelperFile builds newWriteCache(0)), so both
 // articles go straight to WriteAt and A's bytes are on disk before B arrives.
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
-	t.Skip("#387: FileWriter detects collisions by exact start offset only, so this " +
-		"overlap is undetected. Kept executable rather than deleted — #387 records that " +
-		"its original probe was thrown away and had to be rebuilt. Remove this Skip as " +
-		"the first step of the detection change; it must then fail before it passes.")
+	t.Skip("#387: FileWriter detects collisions by exact start offset only, so THIS " +
+		"layer does not see the overlap and the bytes are overwritten. The durability " +
+		"layer now detects it afterwards, from the Class A facts, and reports it as a " +
+		"post anomaly — but that is detection after the write, and what this pins is " +
+		"that the write happens at all. Kept executable rather than deleted: #387 " +
+		"records that its original probe was thrown away and had to be rebuilt. Remove " +
+		"this Skip when prevention lands; it must fail before it passes.")
 
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -89,11 +92,12 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 // A0 [0,100), A1 [100,200), X [150,200). X overlaps A1 without sharing its
 // start offset, so acceptedAt's exact-key probe at 150 misses.
 func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
-	t.Skip("#387: as above, the overlap is undetected. Note what this one shows that " +
-		"the other does not: the file COMPLETES, which is what let the barrier publish " +
-		"a whole-file CRC. That half is fixed — durability.verifiedPrefix now withholds " +
-		"the claim when a fact is left unconsumed, so par2 runs. What remains unfixed, " +
-		"and what this pins, is that the bytes are overwritten silently in the first place.")
+	t.Skip("#387: as above, THE ASSEMBLER does not see the overlap. Note what this one " +
+		"shows that the other does not: the file COMPLETES, which is what let the " +
+		"barrier publish a whole-file CRC. That half is fixed — durability.verifiedPrefix " +
+		"withholds the claim when a fact is left unconsumed, so par2 runs — and the " +
+		"barrier now also reports the overlap, so it is no longer silent. What remains " +
+		"unfixed, and what this pins, is that the bytes are overwritten in the first place.")
 
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -141,9 +145,10 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 	}
 	if f.w.parts() >= f.info.TotalParts && len(rejected) == 0 && len(anomalies) == 0 {
 		t.Errorf("the file reached parts=%d/%d with nothing rejected and no anomaly, "+
-			"so it finalizes as healthy over a range that was overwritten — this is the "+
-			"shape where the recorded whole-file CRC describes the CORRECT file and so "+
-			"matches par2, causing QuickCheck to pass and repair to be skipped",
+			"so the ASSEMBLER finalizes it as healthy over a range that was overwritten. "+
+			"The downstream consequences are fixed elsewhere — the barrier withholds the "+
+			"whole-file CRC for this shape so par2 runs, and reports the overlap so the "+
+			"user is told — but neither undoes the overwrite, which is what this pins",
 			f.w.parts(), f.info.TotalParts)
 	}
 }

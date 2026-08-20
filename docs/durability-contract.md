@@ -1018,9 +1018,21 @@ including every failure path.
 
   Either way the first collision on a file raises `Options.OnPostAnomaly`, which
   the app routes to `job.Warning`. That is diagnosis, not accounting: it states
-  that two segments claim one byte range without asserting the post is
+  that two segments claim one byte **offset** without asserting the post is
   malformed, because a redundant posting and a server-mangled `=ypart begin=`
   produce the same observation and yEnc checksums the payload, never the header.
+
+  **This detects an exact shared start offset only, and it is one of two
+  sources.** Two articles whose ranges overlap without sharing a start offset
+  are invisible here — `acceptedAt` is keyed on the offset — and the later one
+  overwrites the earlier's bytes. The durability layer catches that case
+  instead, after both writes have landed, by classifying why `verifiedPrefix`
+  stopped walking a file's Class A facts: a fact that starts BELOW the run means
+  two durable articles describe the same bytes. It reports through
+  `durability.PostAnomaly` on the barrier's return, and the app routes it to the
+  same `job.Warning`. The two are not redundant — neither sees the other's case
+  — and neither prevents the write; see #387 for what detection here does not
+  cover.
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is

@@ -1,5 +1,22 @@
 # Overlapping Byte-Range Detection Implementation Plan
 
+> ## ⚠ HISTORICAL — the detection design here was abandoned
+>
+> The durability half of this plan shipped in #410 and is current. **The
+> `FileWriter`-side detection it describes was never built and should not be.**
+> Two reviewers broke it five ways; the decisive one is that `req.Offset` is
+> attacker-controlled, so a same-article retry returning at a different offset
+> can permanently corrupt any index ordered by insertion on that value.
+>
+> Detection was rebuilt from the opposite direction and shipped separately: the
+> durability layer classifies why `verifiedPrefix` stopped walking a file's
+> Class A facts, which carry length, persist across restarts, and are ordered by
+> the query rather than by insertion. See
+> `2026-08-20-overlap-detection-design.md`.
+>
+> This file is kept because the rejected reasoning is worth reading before
+> anyone proposes a `FileWriter`-side index again.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop the durability layer from publishing a whole-file CRC it cannot justify, which is what makes an overlapping-range corruption *silent and unrepairable* rather than merely present.

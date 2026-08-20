@@ -424,7 +424,7 @@ the rows.
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
 | D1–D3 | NZB ↔ article disagreements | L3 | job-level warning | — |
 | E1–E2 | bounds, exact-offset collision | L4 | ✅ already enforced | — |
-| E3 | range overlap | L4 | **telemetry only** | A7 **and** E5 |
+| E3 | range overlap | L4 detects nothing; the durability layer detects it from the Class A facts | **post anomaly** (user warning), after the write | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -825,7 +825,7 @@ remains advisory everywhere it is already advisory.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles share an exact start offset | ✅ enforced (#385) |
-| E3 | no two articles' ranges **overlap** | ⚠ **absent** (#387) |
+| E3 | no two articles' ranges **overlap** | ⚠ **not prevented**; detected after the fact (#387) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a UU-decoded body only satisfies a single-segment file | ⚠ **absent** (#346) |
