@@ -140,32 +140,24 @@ func (wc *writeCache) enabled() bool {
 	return wc.limit > 0
 }
 
-// buffer adds an article to the cache. cached reports whether the article was
-// taken; false means caching is disabled and the caller should write
-// immediately.
+// buffer adds an article to the cache. It reports whether the article was
+// taken; false means caching is disabled, or the article is zero-length and
+// was refused, and the caller should write it immediately.
 //
-// displaced carries the identity of an article evicted from the same offset,
-// and is nil in every ordinary case. The caller must settle it rather than
-// dropping it: once an ack waits on a write, an article silently removed from
-// the cache is an article that is never acked at all and never re-dispatched,
-// which is the defect this path exists to close.
+// It no longer reports what it evicted. That return, and FileWriter.Accept's
+// loop over it, were unreachable: Accept calls wc.discardAt the moment its
+// acceptedAt check finds a DIFFERENT article owning the offset, so the only
+// incumbent that survives to here is the same article re-accepting after a
+// rollback, which is not a collision (#406).
 //
-// This is no longer where a collision is DETECTED, and reading it as such is
-// what #383 was. Membership here answers "are these bytes still unwritten",
-// which is a question about caching: buildContiguousRun deletes each article
-// it flushes, so in an in-order download the first article had already left
-// this map before its duplicate arrived, and three paths — flushed, caching
-// disabled, zero-length — reported no collision at all. FileWriter.acceptedAt
-// is the detector now, consulted in Accept before this function, and it sees
-// all three. What remains here is a backstop for the eviction itself, which
-// only this function can observe.
-//
-// Folding the two identities together and letting the winner's write ack both
-// would be wrong. This branch exists for a case upstream dedup should already
-// have caught, so nothing constrains the two articles to the same length, and a
-// shorter winner would ack the displaced article over bytes its write never
-// covered.
-func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool) {
+// This is not where a collision is DETECTED, and reading it as such is what
+// #383 was. Membership here answers "are these bytes still unwritten", which is
+// a question about caching: buildContiguousRun deletes each article it flushes,
+// so in an in-order download the first article had already left this map before
+// its duplicate arrived, and three paths — flushed, caching disabled,
+// zero-length — reported no collision at all. FileWriter.acceptedAt is the
+// detector, consulted in Accept before this function, and it sees all three.
+func (wc *writeCache) buffer(key fileKey, art bufferedArticle) bool {
 	if !wc.enabled() {
 		return false
 	}

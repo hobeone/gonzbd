@@ -141,7 +141,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 		if err != nil {
 			return fmt.Errorf("durability: barrier facts job=%s file=%d: %w", jobID, idx, err)
 		}
-		ext, arts, err := b.buildExtent(ctx, jobID, idx, drained[idx], facts, t)
+		ext, _, arts, err := b.buildExtent(ctx, jobID, idx, drained[idx], facts, t)
 		if errors.Is(err, ErrFileNotOpen) {
 			// Closed between the fsync and the stat — the same race phases 1
 			// and 2 each handle, arriving at the third place a closed handle
@@ -214,7 +214,7 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 // other call site, so a guard here covers every path that can overwrite a
 // stored extent — which a guard on Files() did not, because FinalizeFile takes
 // an explicit file index and never calls it.
-func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drained []WrittenArticle, facts []ArticleFact, t SyncTarget) (FileExtent, []int32, error) {
+func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drained []WrittenArticle, facts []ArticleFact, t SyncTarget) (FileExtent, prefixWalk, []int32, error) {
 	// A target that cannot say how many articles the file holds must not have
 	// an extent built for it, and this is a data-loss guard rather than
 	// tidiness.
@@ -236,18 +236,18 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// Stallable — blaming storage for it would be the A1 conflation in reverse.
 	artCount := t.ArticleCount(idx)
 	if artCount <= 0 {
-		return FileExtent{}, nil, fmt.Errorf(
+		return FileExtent{}, prefixWalk{}, nil, fmt.Errorf(
 			"durability: job %s file %d: target reports %d articles, refusing to build an extent "+
 				"(committing a zero-width bitmap would erase the stored durable bits)",
 			jobID, idx, artCount)
 	}
 	size, modNs, err := t.Stat(idx)
 	if err != nil {
-		return FileExtent{}, nil, b.raise(jobID, "stat", t.Path(idx), err)
+		return FileExtent{}, prefixWalk{}, nil, b.raise(jobID, "stat", t.Path(idx), err)
 	}
 	ext, err := b.priorExtent(ctx, jobID, idx, artCount)
 	if err != nil {
-		return FileExtent{}, nil, err
+		return FileExtent{}, prefixWalk{}, nil, err
 	}
 	ext.FileIdx = idx
 	ext.Size = size
@@ -261,7 +261,7 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 			// a bookkeeping defect, not a storage fault, and it must not be
 			// swallowed (A2, R28). Routing it through Stallable would also
 			// be wrong: it would blame storage for a numbering bug.
-			return FileExtent{}, nil, fmt.Errorf("durability: job %s file %d: article %d has no file-local ordinal", jobID, idx, w.ArtIdx)
+			return FileExtent{}, prefixWalk{}, nil, fmt.Errorf("durability: job %s file %d: article %d has no file-local ordinal", jobID, idx, w.ArtIdx)
 		}
 		// Charge the bytes only on a 0->1 transition. Drain may report an
 		// article this or a previous barrier already recorded — R12 makes
@@ -282,7 +282,8 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// barrier at all. Writing facts here would make them barrier-ordered and
 	// quietly destroy the property.
 
-	verified, prefixCRC, whole := verifiedPrefix(facts, durableAt(facts, idx, ext.Durable, t), size)
+	walk := verifiedPrefix(facts, durableAt(facts, idx, ext.Durable, t))
+	verified, prefixCRC := walk.VerifiedTo, walk.PrefixCRC
 	// Both assigned from the same walk, so the CRC always describes exactly
 	// the prefix beside it. The old code could only CLEAR them — it carried a
 	// loaded PrefixCRC across an unchanged VerifiedTo and zeroed it otherwise,
@@ -304,8 +305,8 @@ func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drai
 	// FinalizeFile re-evaluates it after the truncate, where size is the
 	// file's true end. R23 keeps "unavailable" distinguishable from a CRC of
 	// zero.
-	ext.HasPrefixCRC = whole
-	return ext, acked, nil
+	ext.HasPrefixCRC = walk.wholeFile(size)
+	return ext, walk, acked, nil
 }
 
 // routeFault dispatches a storage fault per A1 and returns it as the error,
@@ -525,7 +526,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	if err != nil {
 		return fmt.Errorf("durability: finalize facts job=%s file=%d: %w", jobID, idx, err)
 	}
-	ext, acked, err := b.buildExtent(ctx, jobID, idx, written, facts, t)
+	ext, walk, acked, err := b.buildExtent(ctx, jobID, idx, written, facts, t)
 	if errors.Is(err, ErrFileNotOpen) {
 		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)
 		return nil
@@ -633,10 +634,13 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		// from VerifiedTo and Size. Those two alone cannot see a fact the walk
 		// never consumed, which is how an article overlapping a sibling without
 		// extending the file published a CRC of the bytes that should have been
-		// written (#387). The walk is cheap — arithmetic over rows already in
-		// memory, no read of the file (R24).
-		_, _, whole := verifiedPrefix(facts, durableAt(facts, idx, ext.Durable, t), ext.Size)
-		ext.HasPrefixCRC = whole
+		// written (#387).
+		//
+		// Re-ASKED, not re-walked. buildExtent's walk already established the
+		// prefix and whether it consumed every fact; only the size has changed,
+		// so this is a comparison rather than another full pass of
+		// crc32util.Combine (163 ms on a 20,000-article file, measured).
+		ext.HasPrefixCRC = walk.wholeFile(ext.Size)
 	}
 
 	if err := b.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {

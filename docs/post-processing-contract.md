@@ -133,10 +133,10 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
    nameable and the switch in `stage_repair.go` exhaustive.
 
-   **Where QuickCheck's CRCs come from, and why there currently are none.**
+   **Where QuickCheck's CRCs come from.**
    The stage compares the par2 index's per-file checksums against
-   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32`.
-   That method **has no production caller**. The assembler used to compute a
+   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32`
+   (see below for its one caller). The assembler used to compute a
    whole-file value by folding the per-article CRCs it happened to see, which
    was #349 — a resumed run is never sent the articles an earlier run
    completed, so its parts do not tile the file — and that writer is gone with

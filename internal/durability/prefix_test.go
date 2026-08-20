@@ -8,72 +8,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/crc32util"
 )
 
-// TestVerifiedPrefix_AnUnconsumedFactWithholdsTheWholeFileClaim is the pin for
-// the defect this function was extracted to fix.
-//
-// A0 [0,100), A1 [100,200), X [150,200). X overlaps A1 without sharing a start
-// offset, so the walk tiles [0,200) from A0+A1 and breaks at X. The prefix
-// reaches the file's end while a fact remains unconsumed.
-//
-// Reporting wholeFile here publishes a CRC combined from the facts — which are
-// built from each article's own decoded bytes before the write, so they describe
-// the file that SHOULD have been written. That is also what par2 describes, so
-// the wrong value matches par2, QuickCheck reports clean, repair is skipped and
-// the recovery volumes are never fetched. Barrier used to do exactly this; the
-// equivalent walk on the resume path did not.
-func TestVerifiedPrefix_AnUnconsumedFactWithholdsTheWholeFileClaim(t *testing.T) {
-	facts := []ArticleFact{
-		{Offset: 0, Length: 100, CRC32: 0x11111111},
-		{Offset: 100, Length: 100, CRC32: 0x22222222},
-		{Offset: 150, Length: 50, CRC32: 0x33333333},
-	}
-	all := func(int) bool { return true }
-
-	to, _, whole := verifiedPrefix(facts, all, 200)
-	if to != 200 {
-		t.Errorf("verifiedTo = %d, want 200 — A0 and A1 tile the file", to)
-	}
-	if whole {
-		t.Error("wholeFile = true with an unconsumed overlapping fact — the CRC " +
-			"describes bytes the file may not hold, and R23 wants unavailable " +
-			"rather than a relabelling")
-	}
-}
-
-// TestVerifiedPrefix_AGaplessFileClaimsWholeFile is the other half of the pin
-// above: the guard must not withhold the claim from a file that genuinely tiles.
-func TestVerifiedPrefix_AGaplessFileClaimsWholeFile(t *testing.T) {
-	facts := []ArticleFact{
-		{Offset: 0, Length: 100, CRC32: 0x11111111},
-		{Offset: 100, Length: 100, CRC32: 0x22222222},
-	}
-	all := func(int) bool { return true }
-	if to, _, whole := verifiedPrefix(facts, all, 200); !whole || to != 200 {
-		t.Errorf("verifiedTo=%d wholeFile=%v, want 200/true", to, whole)
-	}
-}
-
-// TestVerifiedPrefix_AnUnverifiedFactStopsTheWalk pins that the predicate, not
-// just the offsets, bounds the run. This is the clause that differs between the
-// two callers — Barrier passes a durable-bitmap lookup, Resumer a precomputed
-// slice — so it is the one a closure refactor could silently drop.
-func TestVerifiedPrefix_AnUnverifiedFactStopsTheWalk(t *testing.T) {
-	facts := []ArticleFact{
-		{Offset: 0, Length: 100, CRC32: 0x11111111},
-		{Offset: 100, Length: 100, CRC32: 0x22222222},
-	}
-	firstOnly := func(i int) bool { return i == 0 }
-
-	to, _, whole := verifiedPrefix(facts, firstOnly, 200)
-	if to != 100 {
-		t.Errorf("verifiedTo = %d, want 100 — the second fact is not verified", to)
-	}
-	if whole {
-		t.Error("wholeFile = true while a fact is unverified — the prefix stops " +
-			"short of the file's end and cannot describe it")
-	}
-}
-
 // TestVerifiedPrefix_Table exercises the walk directly, over the fact/verified
 // shapes that are awkward to reach through Resume: an empty fact list, a
 // verified run that stops because the next fact was not proven, and one that
@@ -138,10 +72,29 @@ func TestVerifiedPrefix_Table(t *testing.T) {
 			facts: abut, verified: []bool{true, false}, size: 100,
 			wantTo: 100, wantCRC: crcA,
 		},
+		{
+			// #387's shape, and the reason the consumed clause exists. The case
+			// above reaches the same clause through an UNVERIFIED fact; this one
+			// reaches it through a verified fact that overlaps a sibling, which
+			// is the input that actually occurs. A0 and A1 tile [0,200), so the
+			// prefix reaches the file's end with X left over — and a CRC over
+			// [0,200) describes the bytes that SHOULD be there, which is what
+			// par2 compares against. Publishing it makes QuickCheck report clean
+			// and skips the repair that would have fixed the file.
+			name: "an overlapping fact left over is not whole",
+			facts: []ArticleFact{
+				{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+				{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcB},
+				{ArtIdx: 2, Offset: 150, Length: 50, CRC32: crcB},
+			},
+			verified: []bool{true, true, true}, size: 200,
+			wantTo: 200, wantCRC: crc32util.Combine(crcA, crcB, 100),
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			to, crc, whole := verifiedPrefix(tc.facts, func(i int) bool { return tc.verified[i] }, tc.size)
+			w := verifiedPrefix(tc.facts, func(i int) bool { return tc.verified[i] })
+			to, crc, whole := w.VerifiedTo, w.PrefixCRC, w.wholeFile(tc.size)
 			if to != tc.wantTo || crc != tc.wantCRC || whole != tc.wantWhole {
 				t.Errorf("verifiedPrefix = (%d, %#x, %v), want (%d, %#x, %v)",
 					to, crc, whole, tc.wantTo, tc.wantCRC, tc.wantWhole)

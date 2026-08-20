@@ -25,6 +25,7 @@ The durability half is what matters. It alone removes the *unrepairable* propert
 - **Red-green is mechanical, not mental.** Every behavioural pin must be observed failing against unfixed code, with `-count=1`. A cached `ok` is not an observation. Record the observed failure message.
 - **Never `git stash`** — the stash stack is shared across worktrees.
 - **Sweep the literal, not the concept**, from the repository root, after each task that changes a claim.
+- After every `.go` edit, immediately: `goimports -w <file>`, then `go build ./...`. These are per-edit, not per-commit, and are the ones most often skipped because the next command usually catches the failure anyway.
 - Quality gates before every commit: `gofmt`, `go vet ./...`, `go test -race ./...`, `golangci-lint run ./...`, `go run ./scripts/check_dup_comments`, `go run ./scripts/check_review_banner`, plus the diff-scoped `scripts/check_coverage` and `scripts/check_test_alignment`. **Expect `check_test_alignment` to fire on Task 1** — `prefix.go` is a new file of unexported helpers.
 - **The reproduction ships skipped, not failing.** `internal/assembler/overlaprange_test.go` demonstrates the undetected overlap and cannot pass until detection lands, which this plan no longer does. Committing it red would leave `main` permanently red; deleting it repeats the mistake #387 itself records ("the probe was deleted rather than committed"). So both tests carry `t.Skip` naming #387, and the full unqualified gate applies to every commit here:
   ```bash

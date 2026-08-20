@@ -139,7 +139,8 @@ func TestFinalizeFile_NoWholeFileCRCWhenAnArticleIsMissing(t *testing.T) {
 // barrier and the resume alike. It used to pin only the resume copy, which is
 // how the two came to disagree about a different clause (#387).
 func TestVerifiedPrefix_EmptyFileClaimsNoWholeFileCRC(t *testing.T) {
-	verifiedTo, crc, whole := verifiedPrefix(nil, func(int) bool { return true }, 0)
+	w := verifiedPrefix(nil, func(int) bool { return true })
+	verifiedTo, crc, whole := w.VerifiedTo, w.PrefixCRC, w.wholeFile(0)
 	if whole {
 		t.Error("verifiedPrefix reported a verified whole-file CRC for a zero-length " +
 			"file with no facts; QuickCheck would compare 0 against par2's real hash " +

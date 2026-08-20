@@ -583,8 +583,17 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 	if got := w.wc.bytesFor(w.key); got != 64 {
 		t.Errorf("cache holds %d bytes for the file, want 64 — the re-accept "+
 			"replaced one 64-byte entry with another, so buffer must subtract the "+
-			"superseded copy. Counting both permanently inflates wc.used against the "+
-			"cache budget and leaks the superseded buffer instead of pooling it", got)
+			"superseded copy. Counting both leaks the superseded buffer instead of "+
+			"pooling it", got)
+	}
+	// Both counters, because they are decremented by separate statements and
+	// bytesFor reads only the per-file one. Dropping the wc.used subtraction
+	// alone would leave the assertion above green while every re-accept
+	// permanently inflated the GLOBAL cache budget, evicting healthy files
+	// early for the process's lifetime.
+	if w.wc.used != 64 {
+		t.Errorf("wc.used = %d, want 64 — the global budget still counts the "+
+			"superseded copy", w.wc.used)
 	}
 }
 

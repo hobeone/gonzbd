@@ -306,7 +306,8 @@ func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, pa
 		}
 	}
 
-	prefix, crc, whole := verifiedPrefix(facts, func(i int) bool { return verified[i] }, size)
+	walk := verifiedPrefix(facts, func(i int) bool { return verified[i] })
+	prefix, crc, whole := walk.VerifiedTo, walk.PrefixCRC, walk.wholeFile(size)
 	r.log.Info("durability resume recomputed a file from its bytes",
 		"job", jobID, "file", fileIdx, "articles_durable", durable.Count(),
 		"facts", len(facts), "verified_to", prefix)
