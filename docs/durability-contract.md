@@ -1030,7 +1030,9 @@ including every failure path.
   stopped walking a file's Class A facts: a fact that starts BELOW the run means
   two durable articles describe the same bytes. It reports through
   `durability.PostAnomaly` on the barrier's return, and the app routes it to the
-  same `job.Warning`, at most once per file per process.
+  same `job.Warning`, at most once per `(jobID, fileIdx)`. The latch is in
+  memory, so that bound is per process: a restart raises each finding once
+  more, which is what a user who restarted to fix something would expect.
 
   The two are not redundant, though the reason is narrower than "their cases
   are disjoint". Within one process they are: the assembler resolves its

@@ -1094,10 +1094,16 @@ later reader can tell a decision from an oversight.
    decision does not hold** and E3 must be a guard.
 
    As shipped there is **no counter**, which earlier drafts of this section
-   promised twice. What exists is a per-file job warning raised at most once
-   per file per process — enough for a user to act on, and not a rate anyone
-   can aggregate. Deciding whether the design above is justified therefore
-   needs telemetry that does not yet exist.
+   promised twice. What exists is a job warning raised at most once per
+   `(jobID, fileIdx)`, latched in memory and therefore per process — a restart
+   raises each finding once more. That is enough for a user to act on and is
+   not a rate anyone can aggregate, so deciding whether the deferral above is
+   justified needs telemetry that does not yet exist.
+
+   **E5 is still absent, so the condition this decision rests on is unmet.**
+   Detection shipping does not discharge it. Read the decision as: prevention
+   is deferred *and* the argument for deferring it is incomplete until E5
+   lands, at which point this should be re-read rather than assumed settled.
 
 4. **The NZB's `bytes` gains no authority.** It stays advisory. D3 observes
    disagreement without acting on it, `offsetOutOfRange` keeps its 12.5% slack

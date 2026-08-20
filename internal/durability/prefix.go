@@ -154,6 +154,31 @@ func verifiedPrefix(facts []ArticleFact, verified func(i int) bool) prefixWalk {
 		if !verified(i) {
 			break
 		}
+		// A zero-length fact describes no bytes, so it can neither extend the
+		// run nor conflict with it: consume it and keep walking.
+		//
+		// Consumed WITHOUT touching prefix or crc, which the ordinary path
+		// below cannot do — it would assign prefix = fact.Offset + 0 and drag
+		// the run BACKWARDS to an empty article's offset. Counting it as
+		// consumed is nonetheless right: consumedAll asks whether anything
+		// known about this file lies outside the CRC's range, and zero bytes
+		// never do.
+		//
+		// Skipping rather than stopping is what keeps a later, real overlap
+		// findable. An empty fact below the run does not abut it, so the
+		// ordinary path would break the walk there and every fact after it —
+		// including the one that genuinely overwrote a sibling — would go
+		// unexamined. That is a MISSED warning rather than a false one, which
+		// is the worse of the two: the file is silently malformed. prev is
+		// deliberately left alone here, so the article any later arrival
+		// landed inside is still the last non-empty one.
+		//
+		// No empty-payload guard exists on the decode path, so this is
+		// reachable rather than theoretical: Length comes from len(res.Data).
+		if fact.Length == 0 {
+			consumed++
+			continue
+		}
 		// Not exactly abutting the run so far: either a hole, or an overlap
 		// this walk cannot prove tiles the range (R23).
 		//
@@ -168,15 +193,8 @@ func verifiedPrefix(facts []ArticleFact, verified func(i int) bool) prefixWalk {
 		// 0 needs Offset < 0, which the decoder bounds at parse. prev rather
 		// than facts[i-1] because the two are equal by construction here and
 		// only one of them can be out of range.
-		//
-		// Length > 0 is the non-empty-intersection test, not a special case
-		// for empty articles. prev's end IS prefix, so the two ranges share
-		// [fact.Offset, min(prefix, fact.End)) — non-empty exactly when the
-		// arrival describes at least one byte. A zero-length fact below the run
-		// overwrote nothing, and saying it did would name two articles over a
-		// range no article claims.
 		if fact.Offset != prefix {
-			if fact.Offset < prefix && consumed > 0 && fact.Length > 0 {
+			if fact.Offset < prefix && consumed > 0 {
 				overlapVictim, overlapArrival = prev, fact
 				hasOverlap = true
 			}

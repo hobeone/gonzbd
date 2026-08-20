@@ -46,9 +46,8 @@ func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
 			"would be reported as a malformed post on every checkpoint")
 	}
 
-	// A ZERO-LENGTH fact below the run. It stops the walk, but it overwrote
-	// nothing: the two ranges share no byte, so there is no overlap to report.
-	// Classifying it would name two articles over a range no article claims.
+	// A ZERO-LENGTH fact below the run overwrote nothing: the two ranges share
+	// no byte, so there is no overlap to report.
 	empty := []ArticleFact{
 		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
 		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcA},
@@ -57,6 +56,24 @@ func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
 	if _, _, ok := verifiedPrefix(empty, all).overlap(); ok {
 		t.Error("overlap() reported true for a zero-length fact below the run — it " +
 			"describes no bytes, so nothing of the sibling was overwritten")
+	}
+
+	// ...and it must not stop the walk either, or the REAL overlap after it is
+	// never examined. This is the case that makes skipping the empty fact
+	// mandatory rather than tidy: treating it as a terminal stop trades a false
+	// warning for a missing one, and a silently malformed file is the worse
+	// outcome. X at 75 lands inside A0's [0,100) and must still be found.
+	emptyThenReal := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+		{ArtIdx: 1, Offset: 50, Length: 0},
+		{ArtIdx: 2, Offset: 75, Length: 100, CRC32: crcA},
+	}
+	victim, arrival, ok = verifiedPrefix(emptyThenReal, all).overlap()
+	if !ok || victim.ArtIdx != 0 || arrival.ArtIdx != 2 {
+		t.Errorf("overlap() = (#%d, #%d, %v), want (#0, #2, true) — an empty fact "+
+			"before the real overlap must not end the walk, and the article X landed "+
+			"inside is the last NON-EMPTY one",
+			victim.ArtIdx, arrival.ArtIdx, ok)
 	}
 
 	// An UNVERIFIED fact stops the walk before the offset is ever compared, so

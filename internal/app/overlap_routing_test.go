@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -70,11 +71,18 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 	// Facts by hand: this fixture writes through the assembler directly and so
 	// never passes through pipeline.appendArticleFacts, which is what would
 	// normally record them.
+	//
+	// The facts must reach the file's real end, 300. FinalizeFile derives its
+	// truncate bound from them, so a fact set stopping at 200 would trim away
+	// article 2's bytes — the test would still see its warning, while the
+	// fixture quietly exercised a destructive truncate. Article 2's fact
+	// therefore spans [150,300): it overlaps article 1 without sharing a start
+	// offset, which is #387's shape, AND ends where the file does.
 	facts := durability.NewSQLiteFactLog(repo.DB())
 	if err := facts.Append(ctx, job.ID, []durability.ArticleFact{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
 		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
-		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50},
+		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 150},
 	}); err != nil {
 		t.Fatalf("Append facts: %v", err)
 	}
@@ -180,4 +188,22 @@ func TestFinalizeFile_RoutesAnOverlapToTheJobWarning(t *testing.T) {
 		t.Fatalf("finalizeCompletedFile: %v", err)
 	}
 	assertOverlapWarned(t, application, jobID, "FinalizeFile")
+
+	// The finalize must not have trimmed the file. Asserted because this
+	// fixture supplies its facts by hand, so nothing else keeps them
+	// consistent with what was written: a fact set stopping short of the
+	// file's end produces a truncate that destroys real bytes, and the warning
+	// assertion above would pass anyway. Checking the warning alone cannot
+	// tell a healthy route from one that reported correctly while eating the
+	// last article.
+	st, err := os.Stat(application.filePathFor(jobID, 0))
+	if err != nil {
+		t.Fatalf("stat the finalized file: %v", err)
+	}
+	if st.Size() != 300 {
+		t.Errorf("file is %d bytes after finalize, want 300 — three 100-byte "+
+			"articles were written at 0, 100 and 200, so a smaller file means the "+
+			"truncate bound was derived from facts that do not reach the end",
+			st.Size())
+	}
 }
