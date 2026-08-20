@@ -24,24 +24,7 @@ func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 	facts := NewSQLiteFactLog(db)
 	exts := NewSQLiteExtentStore(db)
 
-	a := bytes.Repeat([]byte{0x01}, 100)
-	if err := facts.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a)},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a)},
-		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50, CRC32: crc32.ChecksumIEEE(a)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	tgt := &factGapTarget{
-		artCount: 3,
-		size:     200,
-		drained: []WrittenArticle{
-			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
-			{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50},
-		},
-	}
+	tgt := overlapJob(t, ctx, facts)
 	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
 	found, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
 	if err != nil {

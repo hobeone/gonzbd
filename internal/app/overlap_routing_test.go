@@ -93,26 +93,6 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 	return application, job.ID
 }
 
-// addWarnableJob adds a minimal job that can carry a warning. It needs no
-// assembler and no facts: the helpers under test take the finding as an
-// argument rather than deriving it.
-func addWarnableJob(t *testing.T, application *Application) string {
-	t.Helper()
-	parsed := &nzb.NZB{Files: []nzb.File{{
-		Subject:  "warnable.bin",
-		Bytes:    100,
-		Articles: []nzb.Article{{ID: "w0@t", Bytes: 100, Number: 1}},
-	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "warnable"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := application.queue.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	return job.ID
-}
-
 // assertOverlapWarned checks the message, not that a warning exists.
 // job.Warning is single-valued with at least four other writers — the stall
 // reason, two durability warnings, the claim-failure note — and both
@@ -147,7 +127,7 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 // list, this test fails and asks the question.
 func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
-	jobID := addWarnableJob(t, application)
+	jobID := addStallTestJob(t, application, "warnable").ID
 
 	// Empty first: the overwhelmingly common case must not touch the warning.
 	application.reportPostAnomalies(jobID, nil)
