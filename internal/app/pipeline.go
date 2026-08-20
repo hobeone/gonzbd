@@ -201,7 +201,20 @@ func (p *pipeline) run(ctx context.Context) {
 							goto drained
 						}
 						p.inFlight.Add(1)
-						work <- res
+						// work holds nw*2 and completions holds up to
+						// 256, so a stalled worker can fill it and leave
+						// this send blocked. Without the ctx arm that
+						// blocks the swap — and therefore a reload or a
+						// shutdown — behind storage that may never
+						// answer. Done() before returning, or the count
+						// is left claiming an item no worker has.
+						select {
+						case work <- res:
+						case <-ctx.Done():
+							p.inFlight.Done()
+							close(swap.done)
+							return
+						}
 					default:
 						goto drained
 					}
@@ -235,7 +248,16 @@ func (p *pipeline) run(ctx context.Context) {
 				continue
 			}
 			p.inFlight.Add(1)
-			work <- res
+			// Same blocking send as the drain loop above, and the same
+			// reason for the ctx arm: selecting ctx.Done() at the top of
+			// this loop achieves nothing if the send it chose instead can
+			// park forever on a stalled worker.
+			select {
+			case work <- res:
+			case <-ctx.Done():
+				p.inFlight.Done()
+				return
+			}
 		}
 	}
 }

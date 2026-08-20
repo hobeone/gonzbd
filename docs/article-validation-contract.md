@@ -50,8 +50,9 @@ them; the third was written to stop work §2 of this document was inviting.
 > touching `internal/nzb`, `internal/nntp`, `internal/decoder` and the two paths
 > named in its header, while the rules govern constructor design and migration
 > decisions everywhere. Someone working in `internal/queue` or
-> `internal/history` would never have seen them. The third was written in
-> `AGENTS.md` from the start, for the same reason.
+> `internal/history` would never have seen them. The third is not a correction
+> of the same error: it was added to `AGENTS.md` and to this section in one
+> change, with `AGENTS.md` canonical from the outset.
 >
 > What follows is the **argument** — why each rule holds, what it forbids, and
 > the worked cases. If `AGENTS.md` and this section ever disagree, `AGENTS.md`

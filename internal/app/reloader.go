@@ -199,7 +199,9 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// and stopWorkers acquires reloadMu with no timeout of its own, so a
 	// wedged barrier here delays Shutdown by the same amount. Making that
 	// bound real needs a cancellable acquisition in checkpointJob, which is
-	// its own change.
+	// its own change — issue #417, which also covers the fact that this
+	// checkpoint is best-effort: it reports no status, so the clear below
+	// runs whether it acked every job or none.
 	//
 	// No app.barrier nil check: checkpointAllWithBudget and checkpointJob
 	// each already return early on nil, and a third copy here would gate

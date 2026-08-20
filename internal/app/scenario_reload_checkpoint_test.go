@@ -100,7 +100,7 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 		if name == "" {
 			return ""
 		}
-		return filepath.Join(h.downloadDir, "reload-unacked", name)
+		return filepath.Join(h.downloadDir, job.Name, name)
 	}
 	if !h.WaitUntil(10*time.Second, func() bool {
 		p := diskPath()
@@ -110,7 +110,7 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 		onDisk, err := os.ReadFile(p) //nolint:gosec // test-controlled path
 		return err == nil && len(onDisk) >= len(raw) && bytes.Equal(onDisk[:len(raw)], raw)
 	}) {
-		jobDir := filepath.Join(h.downloadDir, "reload-unacked")
+		jobDir := filepath.Join(h.downloadDir, job.Name)
 		ents, rerr := os.ReadDir(jobDir)
 		var names []string
 		for _, e := range ents {

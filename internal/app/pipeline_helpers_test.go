@@ -257,11 +257,10 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 func TestAwaitInFlight(t *testing.T) {
 	t.Run("returns true once the outstanding work is done", func(t *testing.T) {
 		p := &pipeline{log: slog.New(slog.DiscardHandler)}
-		p.inFlight.Add(1)
-		go func() {
-			time.Sleep(10 * time.Millisecond)
-			p.inFlight.Done()
-		}()
+		// Go adds before it returns, so the counter is already 1 when the
+		// wait below starts — the Add/Done pair this replaces had to be
+		// written out for the same guarantee.
+		p.inFlight.Go(func() { time.Sleep(10 * time.Millisecond) })
 		if !p.awaitInFlight(t.Context()) {
 			t.Error("awaitInFlight reported cancellation for work that completed")
 		}
