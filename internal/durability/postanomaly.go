@@ -50,12 +50,21 @@ func overlapFrom(w prefixWalk, idx int32, pathFn func() string) (PostAnomaly, bo
 	if !ok {
 		return PostAnomaly{}, false
 	}
-	path := pathFn()
+	return overlapAnomaly(idx, pathFn(), victim, arrival), true
+}
+
+// overlapAnomaly renders one overlapping pair.
+//
+// The single owner of what a finding looks like. Both classifiers reach it —
+// prefixWalk.overlap through overlapFrom, and overlapAnywhere directly — so
+// neither can describe the same defect differently depending on which of them
+// happened to notice it first.
+func overlapAnomaly(idx int32, path string, victim, arrival ArticleFact) PostAnomaly {
 	end := min(victim.Offset+int64(victim.Length), arrival.Offset+int64(arrival.Length))
 	return PostAnomaly{
 		FileIdx: idx,
 		Reason:  overlapReason(path, victim.ArtIdx, arrival.ArtIdx, arrival.Offset, end),
-	}, true
+	}
 }
 
 // overlapReason renders an overlap between two durable articles for a human.

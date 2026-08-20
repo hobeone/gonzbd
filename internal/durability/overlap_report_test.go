@@ -110,6 +110,53 @@ func TestAdmit_LatchesPerJobAndFile(t *testing.T) {
 	}
 }
 
+// TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole pins the wiring, not
+// just the classifier: FinalizeFile must use the thorough scan, because the
+// prefix walk it also runs cannot see past the hole.
+//
+// A0 [0,100), nothing covering [100,200), then A2 [200,300) and A3 [250,300).
+// A file being finalized has stopped receiving articles, so that hole is
+// permanent — no later checkpoint fills it and no later finalize runs — and the
+// walk's silence about the overlap above it would be final.
+func TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	facts, exts := NewSQLiteFactLog(db), NewSQLiteExtentStore(db)
+
+	a := bytes.Repeat([]byte{0x01}, 100)
+	if err := facts.Append(ctx, "job-1", []ArticleFact{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a)},
+		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: crc32.ChecksumIEEE(a)},
+		{FileIdx: 0, ArtIdx: 3, Offset: 250, Length: 50, CRC32: crc32.ChecksumIEEE(a)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tgt := &factGapTarget{
+		artCount: 4,
+		size:     300,
+		drained: []WrittenArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
+			{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100},
+			{FileIdx: 0, ArtIdx: 3, Offset: 250, Length: 50},
+		},
+	}
+	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
+	found, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
+	if err != nil {
+		t.Fatalf("FinalizeFile: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("FinalizeFile returned %d anomalies, want 1 — articles #2 and #3 "+
+			"both claim [250,300), and the hole below them is permanent, so nothing "+
+			"else will ever look", len(found))
+	}
+	for _, want := range []string{"#2", "#3"} {
+		if !strings.Contains(found[0].Reason, want) {
+			t.Errorf("Reason = %q, want it to name article %s", found[0].Reason, want)
+		}
+	}
+}
+
 // TestForgetJob_LetsARetryWarnAgain pins the latch reset.
 //
 // A retry re-enters the queue under the SAME job ID and its Class A facts
@@ -244,6 +291,20 @@ func TestOverlapFrom_ReportsTheIntersectionNotTheVictimsEnd(t *testing.T) {
 		t.Errorf("Reason = %q, want the intersection [50,60) — article #1 describes "+
 			"ten bytes, and reporting to #0's end claims 150 bytes were overwritten "+
 			"when 10 were", pa.Reason)
+	}
+
+	// The same pair through the OTHER classifier. overlapAnywhere reaches
+	// overlapAnomaly directly rather than through overlapFrom, so without this
+	// the two entry points could describe one defect differently — which is the
+	// whole reason the renderer was split out.
+	victim, arrival, ok := overlapAnywhere(facts, func(int) bool { return true })
+	if !ok {
+		t.Fatal("overlapAnywhere found nothing for a contained overlap")
+	}
+	direct := overlapAnomaly(0, "/downloads/movie/vol042.rar", victim, arrival)
+	if direct != pa {
+		t.Errorf("the two classifiers rendered the same overlap differently:\n"+
+			" walk: %+v\n scan: %+v", pa, direct)
 	}
 }
 

@@ -747,14 +747,23 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		ext.HasPrefixCRC = walk.wholeFile(ext.Size)
 	}
 
-	// Classified once, from the walk buildExtent already did, so the two
-	// returns below cannot disagree about whether a finding exists.
+	// Classified once, so the two returns below cannot disagree about whether
+	// a finding exists.
+	//
+	// overlapAnywhere rather than the walk's own classification, and this is
+	// the ONE place that difference matters. A file being finalized has stopped
+	// receiving articles, so a hole in it is permanent — and the walk cannot
+	// see past a hole, because computing a contiguous prefix means halting at
+	// the first one. An overlap above a permanent gap would otherwise never be
+	// reported by anything: no later checkpoint fills the hole, and no later
+	// finalize runs for this file. Run keeps the cheap classification because
+	// its holes are usually temporary.
 	//
 	// Classification is free and repeatable; only admit spends the latch, and
 	// it is called at each return rather than here. See admit.
 	var found []PostAnomaly
-	if pa, ok := overlapFrom(walk, idx, func() string { return t.Path(idx) }); ok {
-		found = append(found, pa)
+	if victim, arrival, ok := overlapAnywhere(facts, durableAt(facts, idx, ext.Durable, t)); ok {
+		found = append(found, overlapAnomaly(idx, t.Path(idx), victim, arrival))
 	}
 
 	if err := b.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {

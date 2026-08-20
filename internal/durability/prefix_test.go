@@ -92,6 +92,139 @@ func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
 	}
 }
 
+// TestOverlapAnywhere_FindsAnOverlapAboveAHole is the case the prefix walk
+// structurally cannot see, and the reason a second classifier exists.
+//
+// A0 [0,100), nothing covering [100,200), then A2 [200,300) and A3 [250,300).
+// A2 and A3 both landed and both claim [250,300). The walk halts at the hole —
+// it must, because a contiguous prefix is what it computes — so it never
+// examines either. For a file being finalized that hole is permanent, and no
+// later checkpoint or finalize ever revisits it, so the walk's silence would be
+// final.
+//
+// The test asserts BOTH: that the walk misses it and that the scan finds it.
+// Asserting only the second would pass just as well if the walk had found it
+// too, and would then say nothing about why this function is needed.
+func TestOverlapAnywhere_FindsAnOverlapAboveAHole(t *testing.T) {
+	all := func(int) bool { return true }
+	facts := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100},
+		{ArtIdx: 2, Offset: 200, Length: 100},
+		{ArtIdx: 3, Offset: 250, Length: 50},
+	}
+
+	if _, _, ok := verifiedPrefix(facts, all).overlap(); ok {
+		t.Error("the prefix walk reported an overlap above a hole — if it can see " +
+			"this, overlapAnywhere is redundant and should be deleted rather than kept")
+	}
+
+	victim, arrival, ok := overlapAnywhere(facts, all)
+	if !ok || victim.ArtIdx != 2 || arrival.ArtIdx != 3 {
+		t.Errorf("overlapAnywhere = (#%d, #%d, %v), want (#2, #3, true) — a file "+
+			"finalized with a permanent gap would never report the overlap above it",
+			victim.ArtIdx, arrival.ArtIdx, ok)
+	}
+}
+
+// TestOverlapAnywhere_Table covers what the sweep must NOT call an overlap, and
+// the containment case that decides how it tracks its predecessor.
+func TestOverlapAnywhere_Table(t *testing.T) {
+	all := func(int) bool { return true }
+	tests := []struct {
+		name          string
+		facts         []ArticleFact
+		verified      func(int) bool
+		wantOK        bool
+		victim, first int32
+	}{
+		{
+			name:     "a tiling file has no overlap",
+			facts:    []ArticleFact{{ArtIdx: 0, Offset: 0, Length: 100}, {ArtIdx: 1, Offset: 100, Length: 100}},
+			verified: all,
+		},
+		{
+			name:     "a hole alone is not an overlap",
+			facts:    []ArticleFact{{ArtIdx: 0, Offset: 0, Length: 100}, {ArtIdx: 1, Offset: 200, Length: 100}},
+			verified: all,
+		},
+		{
+			// The skip must be a skip and not a stop, and only an UNVERIFIED
+			// fact shows that. An offset gap does not exercise it — this sweep
+			// has no gap test to stop on — so a fixture built from a hole alone
+			// passes just as well when the skip is turned into a break.
+			name: "an unverified fact does not end the sweep",
+			facts: []ArticleFact{
+				{ArtIdx: 0, Offset: 0, Length: 100},
+				{ArtIdx: 1, Offset: 100, Length: 100},
+				{ArtIdx: 2, Offset: 200, Length: 100},
+				{ArtIdx: 3, Offset: 250, Length: 50},
+			},
+			verified: func(i int) bool { return i != 1 },
+			wantOK:   true, victim: 2, first: 3,
+		},
+		{
+			// The same, for the other skip.
+			name: "a zero-length fact does not end the sweep",
+			facts: []ArticleFact{
+				{ArtIdx: 0, Offset: 0, Length: 100},
+				{ArtIdx: 1, Offset: 120, Length: 0},
+				{ArtIdx: 2, Offset: 200, Length: 100},
+				{ArtIdx: 3, Offset: 250, Length: 50},
+			},
+			verified: all, wantOK: true, victim: 2, first: 3,
+		},
+		{
+			// The arrival is not durable, so nothing of it is on disk to have
+			// overwritten the sibling it nominally covers.
+			name:     "an unverified arrival is skipped, not reported",
+			facts:    []ArticleFact{{ArtIdx: 0, Offset: 0, Length: 200}, {ArtIdx: 1, Offset: 50, Length: 50}},
+			verified: func(i int) bool { return i == 0 },
+		},
+		{
+			name:     "a zero-length fact inside a range is not an overlap",
+			facts:    []ArticleFact{{ArtIdx: 0, Offset: 0, Length: 200}, {ArtIdx: 1, Offset: 50, Length: 0}},
+			verified: all,
+		},
+		{
+			// A wholly contained article is an overlap, and the FIRST one wins.
+			// #1 and #2 both sit inside #0; the sweep returns at #1 and never
+			// examines #2, which is the same "damage report, not inventory"
+			// rule the prefix walk follows.
+			name: "a contained article is reported, and the lowest one wins",
+			facts: []ArticleFact{
+				{ArtIdx: 0, Offset: 0, Length: 200},
+				{ArtIdx: 1, Offset: 50, Length: 10},
+				{ArtIdx: 2, Offset: 70, Length: 10},
+			},
+			verified: all, wantOK: true, victim: 0, first: 1,
+		},
+		{
+			// The advance path, which the cases above never exercise past the
+			// first pair: three tiling articles must walk to the end and report
+			// nothing, so a broken advance shows up as a spurious finding.
+			name: "three tiling articles advance cleanly to the end",
+			facts: []ArticleFact{
+				{ArtIdx: 0, Offset: 0, Length: 100},
+				{ArtIdx: 1, Offset: 100, Length: 100},
+				{ArtIdx: 2, Offset: 200, Length: 100},
+			},
+			verified: all,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v, a, ok := overlapAnywhere(tc.facts, tc.verified)
+			if ok != tc.wantOK {
+				t.Fatalf("overlapAnywhere ok = %v, want %v (got #%d, #%d)", ok, tc.wantOK, v.ArtIdx, a.ArtIdx)
+			}
+			if ok && (v.ArtIdx != tc.victim || a.ArtIdx != tc.first) {
+				t.Errorf("overlapAnywhere = (#%d, #%d), want (#%d, #%d)",
+					v.ArtIdx, a.ArtIdx, tc.victim, tc.first)
+			}
+		})
+	}
+}
+
 // TestVerifiedPrefix_TheZeroWalkReportsNoOverlap pins the zero value, which
 // buildExtent returns on four error paths. A sentinel rather than an explicit
 // bool would make the zero walk claim an overlap between article 0 and itself.

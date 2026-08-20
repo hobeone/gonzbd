@@ -121,6 +121,57 @@ func (w prefixWalk) wholeFile(size int64) bool {
 	return w.VerifiedTo > 0 && w.consumedAll && w.VerifiedTo == size
 }
 
+// overlapAnywhere finds the first pair of durable articles whose byte ranges
+// intersect, anywhere in the file.
+//
+// The thorough counterpart to prefixWalk.overlap, and deliberately a SECOND
+// function rather than a replacement for it. The walk classifies for free,
+// because it has already stopped on the offending fact — but it can only see
+// what lies inside the contiguous verified prefix, since computing that prefix
+// REQUIRES halting at the first hole. An overlap above a hole is invisible to
+// it. This scan halts at nothing: it skips what the walk would stop on and
+// keeps going.
+//
+// The two must not disagree where both can see, and they cannot: both call an
+// overlap "a durable, non-empty fact starting below a durable article's end".
+// The walk simply runs out of file first. Both feed the same latch, so the
+// finding is reported once whichever of them reaches it.
+//
+// Only FinalizeFile calls this, and that is a cost decision rather than a
+// correctness one. It asks the predicate about EVERY fact — 20,000 ordinal
+// lookups on a large file — where the walk stops early and asks about almost
+// none. Once per file at finalize is affordable; once per file per checkpoint
+// is not. The case that makes it worth paying at all is a file that finalizes
+// with a permanent gap: a still-downloading file's hole fills, and a later
+// checkpoint's walk then reaches the overlap on its own.
+//
+// Tracking the last non-overlapping fact is sufficient, and a draft that
+// tracked the highest END instead was carrying dead logic. The advance happens
+// only when fact.Offset >= top's end, and Length > 0 there, so the fact
+// advanced to always ends strictly later than the one it replaces — the two
+// rules cannot differ. A contained article never reaches the advance at all,
+// because it starts below top's end and is returned as the overlap.
+//
+// That was established by mutation rather than by reading: replacing the
+// highest-end test with an unconditional advance reddened nothing, which is
+// what a redundant branch looks like.
+func overlapAnywhere(facts []ArticleFact, verified func(i int) bool) (victim, arrival ArticleFact, ok bool) {
+	var top ArticleFact
+	var have bool
+	for i, fact := range facts {
+		// A zero-length fact overwrote nothing; an unverified one is not on
+		// disk to be overwritten. Skipped, not stopped on.
+		if fact.Length == 0 || !verified(i) {
+			continue
+		}
+		if have && fact.Offset < top.Offset+int64(top.Length) {
+			return top, fact, true
+		}
+		top, have = fact, true
+	}
+	return ArticleFact{}, ArticleFact{}, false
+}
+
 // verifiedPrefix walks a file's offset-ordered facts from zero, combining the
 // CRC of every fact that both abuts the run so far and satisfies verified.
 //
