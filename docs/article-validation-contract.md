@@ -1,7 +1,9 @@
 # Article Validation Contract
 
 > **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1 and the
-> whole A-block have landed; C5, E3–E5 and F4 remain proposed. §8 is no longer open — what each class of violation
+> whole A-block have landed, and E3's detection half has (#387: the durability
+> layer classifies a range overlap and warns the user); C5, E4, E5 and F4 remain
+> proposed, as does any E3 PREVENTION. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -434,7 +436,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → E5 → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3/E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → E5 → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (detection ~~landed~~; prevention open) / E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -830,7 +832,8 @@ remains advisory everywhere it is already advisory.
 
 | E5 | a UU-decoded body only satisfies a single-segment file | ⚠ **absent** (#346) |
 
-**E3 lands as telemetry, not a hot-path guard** (§8, decision 3), but that
+**E3 lands as an after-the-fact warning, not a hot-path guard** (§8, decision
+3), but that
 decision rests on A7 *plus* E5, not on A7 alone. A7 does not close the UU route,
 and that route is live today:
 
@@ -1080,15 +1083,21 @@ later reader can tell a decision from an oversight.
 2. **A Class 2 disagreement is a job-level warning.** Not telemetry alone —
    the user is the party who can act on "this posting is malformed" by finding
    another one. Not a rejection either: no side is provably wrong. The warning
-   names both claims and the file. This covers D1–D3 and the E3 counter.
+   names both claims and the file. This covers D1–D3 and E3's warning.
 
-3. **Overlap detection is telemetry.** E3 counts and warns; it does not guard
-   the accept path. **Conditional on both A7 and E5**, not A7 alone: the UU
-   fallback writes any segment at offset 0 (#346) and repeats no Message-ID, so
-   A7 cannot see it. With both in place the
-   residual population is unknown and presumed small, and #387's
-   interval-structure design is deferred until the counter justifies it. **If E5
-   is not taken, this decision does not hold** and E3 must be a guard.
+3. **Overlap detection warns; it does not guard.** E3 warns the user and does
+   not gate the accept path. **Conditional on both A7 and E5**, not A7 alone:
+   the UU fallback writes any segment at offset 0 (#346) and repeats no
+   Message-ID, so A7 cannot see it. With both in place the residual population
+   is unknown and presumed small, and #387's interval-structure design is
+   deferred until the warning rate justifies it. **If E5 is not taken, this
+   decision does not hold** and E3 must be a guard.
+
+   As shipped there is **no counter**, which earlier drafts of this section
+   promised twice. What exists is a per-file job warning raised at most once
+   per file per process — enough for a user to act on, and not a rate anyone
+   can aggregate. Deciding whether the design above is justified therefore
+   needs telemetry that does not yet exist.
 
 4. **The NZB's `bytes` gains no authority.** It stays advisory. D3 observes
    disagreement without acting on it, `offsetOutOfRange` keeps its 12.5% slack

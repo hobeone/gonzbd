@@ -26,11 +26,12 @@ func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
 		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcA},
 		{ArtIdx: 2, Offset: 150, Length: 50, CRC32: crcA},
 	}
-	idx, ok := verifiedPrefix(overlapping, all).overlap()
-	if !ok || idx != 2 {
-		t.Errorf("overlap() = (%d, %v), want (2, true) — X starts at 150 inside a "+
-			"run that already reached 200, so two durable articles claim those bytes",
-			idx, ok)
+	victim, arrival, ok := verifiedPrefix(overlapping, all).overlap()
+	if !ok || victim.ArtIdx != 1 || arrival.ArtIdx != 2 {
+		t.Errorf("overlap() = (#%d, #%d, %v), want (#1, #2, true) — X starts at 150 "+
+			"inside a run that already reached 200, so two durable articles claim "+
+			"those bytes, and the sibling it landed inside is A1 rather than A0",
+			victim.ArtIdx, arrival.ArtIdx, ok)
 	}
 
 	// A0 [0,100), then a fact at 200 — a HOLE, not an overlap. Reporting this
@@ -40,9 +41,22 @@ func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
 		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
 		{ArtIdx: 2, Offset: 200, Length: 100, CRC32: crcA},
 	}
-	if _, ok := verifiedPrefix(gapped, all).overlap(); ok {
+	if _, _, ok := verifiedPrefix(gapped, all).overlap(); ok {
 		t.Error("overlap() reported true for a hole — a file waiting on an article " +
 			"would be reported as a malformed post on every checkpoint")
+	}
+
+	// A ZERO-LENGTH fact below the run. It stops the walk, but it overwrote
+	// nothing: the two ranges share no byte, so there is no overlap to report.
+	// Classifying it would name two articles over a range no article claims.
+	empty := []ArticleFact{
+		{ArtIdx: 0, Offset: 0, Length: 100, CRC32: crcA},
+		{ArtIdx: 1, Offset: 100, Length: 100, CRC32: crcA},
+		{ArtIdx: 2, Offset: 150, Length: 0},
+	}
+	if _, _, ok := verifiedPrefix(empty, all).overlap(); ok {
+		t.Error("overlap() reported true for a zero-length fact below the run — it " +
+			"describes no bytes, so nothing of the sibling was overwritten")
 	}
 
 	// An UNVERIFIED fact stops the walk before the offset is ever compared, so
@@ -55,18 +69,19 @@ func TestVerifiedPrefix_DistinguishesAnOverlapFromAHole(t *testing.T) {
 	// cannot fire there under either ordering and the mutation below would be
 	// invisible — a green that reads as evidence and is nothing of the kind.
 	twoOfThree := func(i int) bool { return i < 2 }
-	if _, ok := verifiedPrefix(overlapping, twoOfThree).overlap(); ok {
+	if _, _, ok := verifiedPrefix(overlapping, twoOfThree).overlap(); ok {
 		t.Error("overlap() reported true when the walk stopped on an unverified " +
 			"fact; the assembler's own collisions would be double-reported")
 	}
 }
 
 // TestVerifiedPrefix_TheZeroWalkReportsNoOverlap pins the zero value, which
-// buildExtent returns on four error paths. A sentinel index rather than an
-// explicit bool would make the zero walk claim an overlap at article 0.
+// buildExtent returns on four error paths. A sentinel rather than an explicit
+// bool would make the zero walk claim an overlap between article 0 and itself.
 func TestVerifiedPrefix_TheZeroWalkReportsNoOverlap(t *testing.T) {
-	if idx, ok := (prefixWalk{}).overlap(); ok {
-		t.Errorf("the zero prefixWalk reported an overlap at %d", idx)
+	if v, a, ok := (prefixWalk{}).overlap(); ok {
+		t.Errorf("the zero prefixWalk reported an overlap between #%d and #%d",
+			v.ArtIdx, a.ArtIdx)
 	}
 }
 

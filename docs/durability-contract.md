@@ -1030,9 +1030,17 @@ including every failure path.
   stopped walking a file's Class A facts: a fact that starts BELOW the run means
   two durable articles describe the same bytes. It reports through
   `durability.PostAnomaly` on the barrier's return, and the app routes it to the
-  same `job.Warning`. The two are not redundant — neither sees the other's case
-  — and neither prevents the write; see #387 for what detection here does not
-  cover.
+  same `job.Warning`, at most once per file per process.
+
+  The two are not redundant, though the reason is narrower than "their cases
+  are disjoint". Within one process they are: the assembler resolves its
+  collision's loser permanently failed, so it never earns a durable bit and the
+  walk never reaches it. Across a **restart** `acceptedAt` is empty, so two
+  articles at the same offset can both be written and both become durable, and
+  the barrier does then see an exact-offset pair — still not a double report,
+  because the assembler is blind in exactly that window. What the barrier alone
+  can see, in any window, is a range overlap sharing no start offset. Neither
+  prevents the write; see #387 for what detection here does not cover.
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is

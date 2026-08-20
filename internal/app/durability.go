@@ -169,8 +169,17 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // assembler detects an exact-offset collision at accept time, before either
 // article is written. The barrier detects a RANGE overlap between two articles
 // that are both already durable, from the Class A facts, after both writes
-// landed — see durability.PostAnomaly. They are not redundant: neither sees the
-// other's case.
+// landed — see durability.PostAnomaly.
+//
+// They are not redundant, and the reason is not that their cases are disjoint.
+// Within one process they are: the assembler resolves its collision's loser
+// permanently failed, so it never earns a durable bit and the barrier's walk
+// never reaches it. Across a RESTART the assembler's acceptedAt is empty, so
+// two articles at the same offset can both be written and both become durable,
+// and the barrier does then see an exact-offset pair. It is still not a double
+// report, because the assembler is blind in exactly that window — the window,
+// not the offsets, is what keeps them from overlapping. What the barrier alone
+// can see, in any window, is a RANGE overlap that shares no start offset.
 func (app *Application) handlePostAnomaly(jobID string, fileIdx int, reason string) {
 	app.postAnomaly(jobID, fileIdx, "assembler", reason)
 }

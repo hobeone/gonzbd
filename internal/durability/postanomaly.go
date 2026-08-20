@@ -27,6 +27,30 @@ type PostAnomaly struct {
 	Reason  string
 }
 
+// overlapFrom turns a walk's classification into a finding, or reports none.
+//
+// It takes the pair from the walk rather than indexing a facts slice, so there
+// is no way for the reporter to be handed a different slice than the one the
+// walk ran over. See prefixWalk.overlap for why the pair is derived rather
+// than searched for.
+//
+// The reported range is the INTERSECTION — from where the arrival starts to
+// whichever of the two ends first. Those are not the same span whenever the
+// arrival is contained in the victim: a 10-byte article inside a 200-byte one
+// disputes 10 bytes, and reporting to the victim's end would hand the user a
+// range fifteen times too wide to compare against a par2 repair log.
+func overlapFrom(w prefixWalk, idx int32, path string) (PostAnomaly, bool) {
+	victim, arrival, ok := w.overlap()
+	if !ok {
+		return PostAnomaly{}, false
+	}
+	end := min(victim.Offset+int64(victim.Length), arrival.Offset+int64(arrival.Length))
+	return PostAnomaly{
+		FileIdx: idx,
+		Reason:  overlapReason(path, victim.ArtIdx, arrival.ArtIdx, arrival.Offset, end),
+	}, true
+}
+
 // overlapReason renders an overlap between two durable articles for a human.
 //
 // It says the post is malformed rather than that the download failed, because
@@ -38,28 +62,6 @@ type PostAnomaly struct {
 // Article indices rather than Message-IDs: the barrier holds facts, and a fact
 // carries the manifest index. Reaching for the ID would mean a lookup this
 // package has no path to.
-// overlapFrom turns a walk's classification into a finding, or reports none.
-//
-// The overlapped sibling is facts[i-1] by derivation, not search — see
-// prefixWalk.overlap for why that index is provably the article whose bytes the
-// stopping fact landed inside.
-//
-// The reported range is the intersection: from where the later article starts
-// to where the earlier one ended. That is the span actually in dispute, and it
-// is what a user comparing against a par2 repair log would want.
-func overlapFrom(w prefixWalk, facts []ArticleFact, idx int32, path string) (PostAnomaly, bool) {
-	i, ok := w.overlap()
-	if !ok {
-		return PostAnomaly{}, false
-	}
-	victim, arrival := facts[i-1], facts[i]
-	return PostAnomaly{
-		FileIdx: idx,
-		Reason: overlapReason(path, victim.ArtIdx, arrival.ArtIdx,
-			arrival.Offset, victim.Offset+int64(victim.Length)),
-	}, true
-}
-
 func overlapReason(path string, first, second int32, at, end int64) string {
 	return fmt.Sprintf(
 		"Overlapping segments in %s: articles #%d and #%d both describe bytes "+

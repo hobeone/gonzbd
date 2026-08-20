@@ -85,6 +85,26 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 	return application, job.ID
 }
 
+// addWarnableJob adds a minimal job that can carry a warning. It needs no
+// assembler and no facts: the helpers under test take the finding as an
+// argument rather than deriving it.
+func addWarnableJob(t *testing.T, application *Application) string {
+	t.Helper()
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  "warnable.bin",
+		Bytes:    100,
+		Articles: []nzb.Article{{ID: "w0@t", Bytes: 100, Number: 1}},
+	}}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "warnable"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := application.queue.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return job.ID
+}
+
 // assertOverlapWarned checks the message, not that a warning exists.
 // job.Warning is single-valued with at least four other writers — the stall
 // reason, two durability warnings, the claim-failure note — and both
@@ -106,6 +126,44 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 				route, warning, want)
 		}
 	}
+}
+
+// TestReportPostAnomalies_WritesEveryFinding exercises the routing helper
+// directly, over the shapes the two end-to-end tests above cannot produce.
+//
+// A single Run reports at most one overlap per file but iterates a job's files,
+// so a job with two malformed files yields two findings in one slice — and
+// because Job.Warning is a single string, only the last survives. That is a
+// deliberate accepted cost (see handlePostAnomaly), and pinning it here is what
+// makes it a decision rather than an accident: if the warning ever becomes a
+// list, this test fails and asks the question.
+func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	jobID := addWarnableJob(t, application)
+
+	// Empty first: the overwhelmingly common case must not touch the warning.
+	application.reportPostAnomalies(jobID, nil)
+	if w := application.queue.SnapshotJob(jobID).Warning; w != "" {
+		t.Fatalf("an empty finding list set the warning to %q", w)
+	}
+
+	application.reportPostAnomalies(jobID, []durability.PostAnomaly{
+		{FileIdx: 0, Reason: "first file is malformed"},
+		{FileIdx: 1, Reason: "second file is malformed"},
+	})
+	if w := application.queue.SnapshotJob(jobID).Warning; w != "second file is malformed" {
+		t.Errorf("job warning = %q, want the LAST finding — Job.Warning holds one "+
+			"string, so a second file's report overwrites the first's", w)
+	}
+}
+
+// TestPostAnomaly_SurvivesAJobThatHasLeftTheQueue pins the drop, which is
+// ordinary rather than a defect (A2): a job can be removed between the barrier
+// returning a finding and the report being routed, because the report is
+// deliberately made after the per-job mutex is released.
+func TestPostAnomaly_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	application.postAnomaly("no-such-job", 0, "barrier", "malformed")
 }
 
 func TestCheckpointJob_RoutesAnOverlapToTheJobWarning(t *testing.T) {
