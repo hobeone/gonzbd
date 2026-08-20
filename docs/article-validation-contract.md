@@ -162,6 +162,86 @@ owner, and the persisted `TotalBytes` field stops being read at all.
 > forgetting one is silence. An owner cannot be forgotten, because there is
 > nowhere else to write.
 
+### A bad article costs only its own bytes
+
+The third rule is the newest, and unlike the other two it exists to stop work
+rather than to shape it.
+
+> **No single bad article may degrade the handling of any other byte in the
+> file.** Reject it, charge its bytes to par2, and carry on.
+
+**Why it lives beside the other two rather than inside §2.** This document's §2
+tells you to classify every claim before deciding where to check it. That is
+right, and the taxonomy it produces is the reason the layer ladder works. But a
+table of claim classes has a property nobody designed and everybody feels: an
+unfilled row reads as debt. Someone opening this document to fill one in will
+find, in the row itself, no argument against filling it — which is the precise
+shape of a rule that has to be stated somewhere the work will see it. Hence
+AGENTS.md, and hence here rather than in §2.
+
+> **Classification decides WHERE a check belongs, not WHETHER one is owed.**
+
+**The test.** Before taking on article-validation work, ask what one instance
+costs when we get it wrong:
+
+| The cost of being wrong is… | Then |
+|---|---|
+| that article's own bytes | par2's job. The correct action is usually none. |
+| other bytes, other articles, the file, or the job | A violation of the rule. Real work. |
+
+**Precision stops being load-bearing.** Most of the hard cases in §5.E are about
+telling one kind of bad article from another — a redundant posting from a
+genuine collision, a contained overlap from a partial one. Under the bound,
+misclassifying one costs that article. That does not make the distinctions
+uninteresting; it makes them cheap to get wrong, which is what removes the
+pressure to get them all right first.
+
+**A post with no par2 is the case that needs the bound most, not an exception
+to it.** Its bytes are then unrecoverable — a risk the poster took by not
+posting recovery volumes, and not one this project can retire. The rule is
+unchanged: one bad article still costs only its own bytes. What changes is the
+consequence to the user, which is exactly the argument for capping the blast
+radius rather than relaxing it. Without the bound a no-recovery post loses a
+download; with it, it loses a hole.
+
+**It is not a licence to validate less.** Reject fast and reject cheaply; the
+bound is on the *consequence*, not on the checking. In particular it never
+weakens a check whose absence would let a value reach a protocol, a path, a
+query or a command — the same carve-out the no-backcompat rule takes, and for
+the same reason.
+
+#### The worked example: what it did to this cluster
+
+The rule was written after triaging the 19 open issues touching article
+geometry, yEnc offsets and assembler dispositions against it. The result is the
+argument for the rule, and it is a number rather than an impression:
+
+| Outcome | Count | Issues |
+|---|---|---|
+| **Violations — real work** | 3 | #387 (prevention half), #389, #390 |
+| Real, but throughput only | 1 | #311 |
+| Downgraded — par2's job | 3 | #347 (actionable half), #356, #384 |
+| **Not article-validation at all** | 10 | #344, #353, #377, #380, #381, #382, #388, #404, #407, #408 |
+| Needs re-check | 1 | #346 |
+| Own invariant, not this one | 1 | #349 |
+
+Two findings matter more than the counts.
+
+**Ten of nineteen were never in this category.** They are doc drift, API-surface
+hygiene, a micro-optimisation its own author called marginal, a
+test-infrastructure gate, a latent-unreachable buffer leak, and an `ftruncate`
+bug that belongs to the durability contract's on-disk-corruption class. They were
+counted alongside the rest because they live in the same packages. Package-based
+grouping manufactured most of the apparent size of this backlog.
+
+**The rule must not absorb everything.** In triage, #349 — a resumed file
+reporting a subrange CRC as its whole-file CRC — came back classified as a
+violation, with a justification that opened "this is not about one bad article."
+It is a CRC-ownership defect on entirely good bytes, and it belongs to the
+second rule, not this one. A bound that stretches to cover every real bug is a
+bound that filters nothing, and the first sign of it is a verdict whose reasoning
+contradicts its own label.
+
 ## 1. Threat model — state it before choosing controls
 
 Several existing comments describe article headers as "attacker-controlled" and
@@ -197,6 +277,11 @@ property we can actually settle.
 
 Every field in an NZB or an article is a **claim** by some party. Classify it,
 and the correct handling follows mechanically.
+
+> **Classification decides WHERE a check belongs, not WHETHER one is owed.** A
+> class with no check against it is not a gap by default — see the third ground
+> rule. Ask what one instance costs when we get it wrong; if the answer is "that
+> article's bytes", par2 owns it and the correct action is usually none.
 
 ### Class 1 — Self-verifying
 
