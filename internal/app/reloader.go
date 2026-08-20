@@ -155,11 +155,18 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 
 	_ = oldDownloader.Stop()
 
-	// Wait for the pipeline to drain all buffered results from the old
-	// downloader's (now-closed) completions channel. setCompletions
-	// blocks until the pipeline's run() loop receives the update, which
-	// only happens after the pipeline has finished processing all
-	// buffered results and detected the channel close.
+	// Quiesce the old downloader's output: setCompletions(nil) returns only
+	// once every buffered result has been drained AND written by a pipeline
+	// worker.
+	//
+	// The write half is why this is a quiescence point rather than a
+	// hand-off, and it did not always hold. Draining moves results onto a
+	// buffered work channel; the pwrite happens later, on a worker. The
+	// checkpoint below acks what is on disk, so anything still queued to be
+	// written would be cleared as outstanding by ClearAllEmitted and then
+	// written immediately afterwards — #390 again, with the checkpoint in
+	// place. pipeline.setCompletions now waits for the writes, so this line
+	// is what makes the ordering below sound.
 	app.pipeline.setCompletions(nil)
 
 	// Ack what the assembler has already written, BEFORE the clear below
@@ -182,16 +189,28 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// context.Background() rather than app.ctx, for the reason Shutdown's
 	// checkpoint uses it: a cancellation racing this must not skip the ack
 	// and leave the clear below to run anyway, which is the bug rather than a
-	// milder version of it. The timeout is what bounds it.
+	// milder version of it.
+	//
+	// reloadCheckpointTimeout is the BUDGET, not a wall-clock bound on this
+	// call — see its declaration. checkpointJob takes the per-job barrier
+	// lock before it consults any context, and sync.Mutex is not
+	// context-aware, so a job whose barrier is already running elsewhere is
+	// waited for however long that takes. reloadMu is held across all of it
+	// and stopWorkers acquires reloadMu with no timeout of its own, so a
+	// wedged barrier here delays Shutdown by the same amount. Making that
+	// bound real needs a cancellable acquisition in checkpointJob, which is
+	// its own change.
+	//
+	// No app.barrier nil check: checkpointAllWithBudget and checkpointJob
+	// each already return early on nil, and a third copy here would gate
+	// nothing that they do not.
 	//
 	// The narrower alternative — teach resetForReload to skip an article the
 	// writer still holds — is not expressible at the queue layer, which
 	// cannot see what the writer is holding. Ordering is the fix.
-	if app.barrier != nil {
-		cpCtx, cancel := context.WithTimeout(context.Background(), reloadCheckpointTimeout)
-		app.checkpointAllShare(cpCtx, reloadCheckpointTimeout)
-		cancel()
-	}
+	cpCtx, cancel := context.WithTimeout(context.Background(), reloadCheckpointTimeout)
+	app.checkpointAllShare(cpCtx, reloadCheckpointTimeout)
+	cancel()
 
 	// Now it's safe to clear emitted: no more article resolutions arrive from
 	// old results, so notifyCh won't be consumed between clear and the new

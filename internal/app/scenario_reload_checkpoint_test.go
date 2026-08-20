@@ -1,6 +1,10 @@
 package app_test
 
 import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,9 +22,9 @@ import (
 // That window is real and ordinary. An article becomes Emitted when it is
 // dispatched and only becomes Done when a barrier acks it durable, so
 // everything written since the last checkpoint sits in between. A file's own
-// completion acks it — so to hold an article in the window for the length of a
-// test, the file must NOT complete: article 0 downloads and is written while
-// article 1 is stalled and never arrives.
+// completion acks it — so to hold an article in the window, the file must not
+// complete while the test is looking: article 0 downloads and is written while
+// article 1 is stalled and has not arrived.
 //
 // ReloadDownloader then clears every Emitted bit. Without a checkpoint first,
 // article 0 is offered again, and the ONLY reason it is not lost is that the
@@ -33,11 +37,24 @@ import (
 // is the one observation that cannot be satisfied by an internal bookkeeping
 // change: either the article went back on the wire or it did not.
 func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
-	h := newScenarioHarnessWithConns(t, 2)
+	// Write cache off, so "written" means the bytes are on disk rather than
+	// in the assembler's userspace buffer. That is not a convenience: #390's
+	// damage is precisely that the bytes ARE already on disk when the article
+	// is acked permanently failed, so the cached state is a milder case and
+	// pinning it would understate the bug. It is also the only form of
+	// "written" a test can observe without a barrier — and a barrier is the
+	// thing this test must prove has not run.
+	h := newScenarioHarnessWithConfig(t, 2, func(c *config.Config) {
+		c.Downloads.WriteCacheSize = 0
+	})
 	h.Start()
 
-	// One file, two articles. Article 1 stalls forever, so the file never
-	// completes and article 0 is never acked by a file finalize.
+	// One file, two articles. Article 1 is stalled, so the file cannot
+	// complete while the test sets up, and article 0 is never acked by a file
+	// finalize. nntptest stalls are ONE-SHOT (Scripted.handleBody deletes the
+	// injected failure on use), so after the reload article 1 is served
+	// normally — which is what lets the job finish rather than wedge the
+	// harness on cleanup.
 	writtenID, stalledID := randomMsgID(t), randomMsgID(t)
 	raw := []byte("written article body!!")
 	held := []byte("never arrives here!!!!")
@@ -62,16 +79,64 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 		t.Fatalf("Queue.Add: %v", err)
 	}
 
-	// Wait until article 0 has actually been fetched. Reloading before it has
-	// been written would test nothing: there would be no unacked article in
-	// the window at all, and the test would pass against the unfixed code.
+	// Wait until article 0's bytes are ON DISK.
+	//
+	// NOT the server's fetch count: Scripted increments that when the BODY
+	// command is received, which is before the body is decoded and long
+	// before a pipeline worker pwrites it. Waiting on the fetch count would
+	// let the reload run while the article was still queued for write, and
+	// the test would then fail against FIXED code — the precondition has to
+	// be the thing the fix is about, not a proxy that precedes it.
+	// The filename is re-resolved from the yEnc header once a part decodes,
+	// so it is read fresh on every poll rather than cached on first sight —
+	// caching it pins the subject-derived placeholder and then watches a path
+	// nothing will ever write to.
+	diskPath := func() string {
+		snap := h.app.Queue().SnapshotJob(job.ID)
+		if snap == nil {
+			return ""
+		}
+		name := snap.Progress().FileFilename(0)
+		if name == "" {
+			return ""
+		}
+		return filepath.Join(h.downloadDir, "reload-unacked", name)
+	}
 	if !h.WaitUntil(10*time.Second, func() bool {
-		return h.server.FetchCount(writtenID) >= 1
+		p := diskPath()
+		if p == "" {
+			return false
+		}
+		onDisk, err := os.ReadFile(p) //nolint:gosec // test-controlled path
+		return err == nil && len(onDisk) >= len(raw) && bytes.Equal(onDisk[:len(raw)], raw)
 	}) {
-		t.Fatalf("article was never fetched; fetch count = %d", h.server.FetchCount(writtenID))
+		jobDir := filepath.Join(h.downloadDir, "reload-unacked")
+		ents, rerr := os.ReadDir(jobDir)
+		var names []string
+		for _, e := range ents {
+			if info, ierr := e.Info(); ierr == nil {
+				names = append(names, fmt.Sprintf("%s (%d bytes)", e.Name(), info.Size()))
+			} else {
+				names = append(names, e.Name())
+			}
+		}
+		t.Fatalf("article 0 never reached disk (last path %q); nothing is in the "+
+			"written-but-unacked window and the test would assert nothing.\n"+
+			"job dir %q contains %v (readdir err: %v)", diskPath(), jobDir, names, rerr)
 	}
 	if got := h.server.FetchCount(writtenID); got != 1 {
 		t.Fatalf("setup: fetch count = %d, want exactly 1 before the reload", got)
+	}
+
+	// The article must still be UNACKED, or the window under test does not
+	// exist and a passing assertion below would mean nothing. A periodic
+	// barrier would ack it; at the default 30s cadence none should have run
+	// in the few ms this takes, but "should" is what silent vacuous passes
+	// are made of, so it is checked rather than assumed.
+	if runs := h.app.BarrierRuns(); runs != 0 {
+		t.Fatalf("a barrier ran (%d) before the reload, so article 0 is already "+
+			"acked durable and is no longer in the written-but-unacked window "+
+			"this test exists to cover", runs)
 	}
 
 	// Reload onto the same server set. The server identity is irrelevant —

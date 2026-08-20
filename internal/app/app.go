@@ -55,14 +55,22 @@ const (
 	// follows it, so a wedged mount delays shutdown rather than preventing it.
 	shutdownCheckpointTimeout = 10 * time.Second
 
-	// reloadCheckpointTimeout bounds the barrier ReloadDownloader runs before
-	// it clears the Emitted bits.
+	// reloadCheckpointTimeout is the BUDGET the barrier ReloadDownloader runs
+	// before clearing the Emitted bits divides among resident jobs.
+	//
+	// It is deliberately not called a bound, because it does not bound the
+	// call. checkpointJob acquires the per-job barrier lock before it looks
+	// at any context, and sync.Mutex is not cancellable, so a job whose
+	// barrier is already running under the periodic sweep is waited for
+	// however long that sweep takes — a per-job hold of up to one full
+	// checkpoint interval. The budget governs how the remaining time is
+	// shared out, not when the call returns.
 	//
 	// A SEPARATE constant from shutdownCheckpointTimeout despite the equal
 	// value, because the two bound different things and one is free to move.
 	// Shutdown's sits inside a per-step budget it must not exceed; this one
-	// bounds how long a config change may block, and a user waiting on a
-	// settings save is a different tolerance from a process on its way out.
+	// paces a config change, and a user waiting on a settings save is a
+	// different tolerance from a process on its way out.
 	reloadCheckpointTimeout = 10 * time.Second
 
 	// factAppendTimeout bounds one Class A insert. It exists because the

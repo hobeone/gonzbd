@@ -134,13 +134,24 @@ type pipeline struct {
 	// updateCh receives a swap request with a done channel for ack.
 	updateCh chan completionSwap
 
+	// inFlight counts results the run loop has handed to a worker but that
+	// no worker has finished processing. It is what lets a swap wait for
+	// the WRITES to land rather than only for the channel to empty; see
+	// setCompletions.
+	//
+	// run() is the sole Adder and is also the goroutine that waits, so Add
+	// never races Wait. The zero value is usable, which matters because
+	// pipeline is built as a struct literal at a dozen sites.
+	inFlight sync.WaitGroup
+
 	mu       sync.RWMutex
 	fileInfo map[fileKey]assembler.FileInfo
 }
 
 // completionSwap bundles a new completions channel with a done channel.
 // The run loop closes done after fully switching, letting setCompletions
-// block until the old channel is drained.
+// block until the old channel is drained AND the results it carried have
+// been written.
 type completionSwap struct {
 	ch   <-chan *downloader.ArticleResult
 	done chan struct{}
@@ -162,6 +173,7 @@ func (p *pipeline) run(ctx context.Context) {
 		wg.Go(func() {
 			for res := range work {
 				p.handleResult(ctx, res)
+				p.inFlight.Done()
 			}
 		})
 	}
@@ -188,6 +200,7 @@ func (p *pipeline) run(ctx context.Context) {
 						if !ok {
 							goto drained
 						}
+						p.inFlight.Add(1)
 						work <- res
 					default:
 						goto drained
@@ -195,6 +208,22 @@ func (p *pipeline) run(ctx context.Context) {
 				}
 			}
 		drained:
+			// Emptying the channel is not the same as finishing the
+			// work: the loop above only moved results into `work`, and
+			// the pwrite happens later on a worker. Wait for those
+			// writes, so a caller that swaps to nil gets a quiescence
+			// point rather than a hand-off point. #390 is what the
+			// difference costs — a reload that acked "everything
+			// written" while a bufferful was still queued to be
+			// written, then cleared the Emitted bits over the top.
+			if !p.awaitInFlight(ctx) {
+				// ctx ended mid-wait. Acknowledge the swap so the
+				// caller is not stranded, but do NOT resume the loop:
+				// a later Add racing the abandoned Wait is the one
+				// WaitGroup misuse this design has to avoid.
+				close(swap.done)
+				return
+			}
 			p.completions = swap.ch
 			close(swap.done)
 		case res, ok := <-p.completions:
@@ -205,14 +234,46 @@ func (p *pipeline) run(ctx context.Context) {
 				p.completions = nil
 				continue
 			}
+			p.inFlight.Add(1)
 			work <- res
 		}
 	}
 }
 
+// awaitInFlight blocks until every result handed to a worker has been
+// processed, or ctx ends. Reports whether the wait completed.
+//
+// WaitGroup.Wait is not cancellable, so it runs on its own goroutine and
+// the select provides the cancellation. That goroutine outlives a false
+// return, but only until the writes it is waiting on finish — bounded by
+// the same I/O the caller was already waiting for, not leaked.
+//
+// Only run() may call this: it is the sole Adder, and a concurrent Add
+// would be a WaitGroup misuse rather than merely a lost wakeup.
+func (p *pipeline) awaitInFlight(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		p.inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // setCompletions swaps the source of ArticleResults. Blocks until the
 // pipeline's run loop has drained any remaining results from the old
-// channel and acknowledged the swap.
+// channel, WRITTEN them, and acknowledged the swap.
+//
+// The write half is load-bearing and was once only claimed: draining the
+// channel moves results onto a buffered work channel, so a caller that
+// took "drained" to mean "written" was reading a comment, not a
+// guarantee. setCompletions(nil) is a quiescence point for the old
+// downloader's output, and ReloadDownloader's checkpoint depends on it
+// being one.
 func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 	done := make(chan struct{})
 	select {
