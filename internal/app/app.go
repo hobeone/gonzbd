@@ -55,6 +55,16 @@ const (
 	// follows it, so a wedged mount delays shutdown rather than preventing it.
 	shutdownCheckpointTimeout = 10 * time.Second
 
+	// reloadCheckpointTimeout bounds the barrier ReloadDownloader runs before
+	// it clears the Emitted bits.
+	//
+	// A SEPARATE constant from shutdownCheckpointTimeout despite the equal
+	// value, because the two bound different things and one is free to move.
+	// Shutdown's sits inside a per-step budget it must not exceed; this one
+	// bounds how long a config change may block, and a user waiting on a
+	// settings save is a different tolerance from a process on its way out.
+	reloadCheckpointTimeout = 10 * time.Second
+
 	// factAppendTimeout bounds one Class A insert. It exists because the
 	// append drops the caller's cancellation (see pipeline.appendArticleFacts)
 	// and something must still stop a contended database from holding the
@@ -131,9 +141,9 @@ type Application struct {
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
 	// from mu (which only guards the brief downloader/downloaderStats field
 	// swap) so concurrent reloads queue up instead of interleaving their
-	// Stop/setCompletions/ClearAllEmitted/Start sequences, which would
-	// otherwise risk wiring app.downloader and app.pipeline's completions
-	// source to two different downloader instances.
+	// Stop/setCompletions/checkpoint/ClearAllEmitted/Start sequences, which
+	// would otherwise risk wiring app.downloader and app.pipeline's
+	// completions source to two different downloader instances.
 	reloadMu sync.Mutex
 	config   *config.Config
 	emitter  EventEmitter

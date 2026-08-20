@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"maps"
@@ -130,7 +131,7 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // concurrently with itself internally, but the API layer (modeSetConfig)
 // invokes it once per HTTP request with no serialization of its own, so two
 // concurrent server-config updates could otherwise interleave their
-// Stop/setCompletions/ClearAllEmitted/Start sequences and leave app.downloader
+// Stop/setCompletions/checkpoint/ClearAllEmitted/Start sequences and leave app.downloader
 // and app.pipeline's completions source wired to two different downloader
 // instances (leaking the loser's goroutines and stalling dispatch on the
 // orphaned one). app.mu is only held within that section to snapshot the old
@@ -160,6 +161,37 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// only happens after the pipeline has finished processing all
 	// buffered results and detected the channel close.
 	app.pipeline.setCompletions(nil)
+
+	// Ack what the assembler has already written, BEFORE the clear below
+	// re-offers it.
+	//
+	// An article is Emitted from dispatch until a barrier acks it durable, so
+	// everything written since the last checkpoint sits in that window —
+	// bytes on disk that the queue still calls outstanding. Clearing Emitted
+	// without this offers them again, and #390 is what that costs: the
+	// re-fetch goes out on the wire, and if it fails terminally against the
+	// NEW server set — likeliest precisely when the reload removed the server
+	// that had the article — it is acked permanently failed while its bytes
+	// are already on disk. markDone then early-returns on the next barrier's
+	// durable ack, because done is already set, so the two records disagree
+	// permanently: the extent says durable, the queue says failed. The
+	// inflated failedBytes can reach RepairNoCapacity or
+	// RepairBeyondCapacity, both Hopeless(), and the Early Health Gate aborts
+	// a job whose file was never damaged.
+	//
+	// context.Background() rather than app.ctx, for the reason Shutdown's
+	// checkpoint uses it: a cancellation racing this must not skip the ack
+	// and leave the clear below to run anyway, which is the bug rather than a
+	// milder version of it. The timeout is what bounds it.
+	//
+	// The narrower alternative — teach resetForReload to skip an article the
+	// writer still holds — is not expressible at the queue layer, which
+	// cannot see what the writer is holding. Ordering is the fix.
+	if app.barrier != nil {
+		cpCtx, cancel := context.WithTimeout(context.Background(), reloadCheckpointTimeout)
+		app.checkpointAllShare(cpCtx, reloadCheckpointTimeout)
+		cancel()
+	}
 
 	// Now it's safe to clear emitted: no more article resolutions arrive from
 	// old results, so notifyCh won't be consumed between clear and the new
