@@ -39,11 +39,18 @@ type PostAnomaly struct {
 // arrival is contained in the victim: a 10-byte article inside a 200-byte one
 // disputes 10 bytes, and reporting to the victim's end would hand the user a
 // range fifteen times too wide to compare against a par2 repair log.
-func overlapFrom(w prefixWalk, idx int32, path string) (PostAnomaly, bool) {
+// pathFn is a function rather than a string because resolving a file's path is
+// not free — it takes the pipeline's RLock, looks the file up, and copies a
+// FileInfo — and Go evaluates arguments before the call. Passing the resolved
+// path would pay that on every file of every checkpoint, while almost every
+// call returns false on the line below. The closure is built only when this
+// line is reached and is cheaper than the lock it defers.
+func overlapFrom(w prefixWalk, idx int32, pathFn func() string) (PostAnomaly, bool) {
 	victim, arrival, ok := w.overlap()
 	if !ok {
 		return PostAnomaly{}, false
 	}
+	path := pathFn()
 	end := min(victim.Offset+int64(victim.Length), arrival.Offset+int64(arrival.Length))
 	return PostAnomaly{
 		FileIdx: idx,

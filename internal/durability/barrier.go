@@ -50,12 +50,12 @@ type Barrier struct {
 	// Keyed on job and file because Run's caller serialises per JOB, so two
 	// jobs genuinely do run here at once.
 	//
-	// Entries are never removed. The bound is the number of files that
-	// actually carry an overlap, which is a defect count and not a job count;
-	// a process would have to see malformed posts by the million for this to
-	// be worth reclaiming. It is deliberately per-process: a restart raises
-	// each finding once more, which is what a user who restarted to fix
-	// something would expect.
+	// Entries are removed only by ForgetJob, which a retry calls because it
+	// reuses the job ID. Nothing reclaims them on ordinary completion, and the
+	// bound that makes that acceptable is the number of files carrying an
+	// overlap — a defect count, not a job count. It is deliberately
+	// per-process: a restart raises each finding once more, which is what a
+	// user who restarted to fix something would expect.
 	reported map[overlapKey]struct{}
 }
 
@@ -107,6 +107,26 @@ func (b *Barrier) admit(jobID string, cands []PostAnomaly) []PostAnomaly {
 		out = append(out, pa)
 	}
 	return out
+}
+
+// ForgetJob drops every latched overlap finding for a job, so its next
+// checkpoint may raise them again.
+//
+// Called when a job re-enters the queue under an ID it has already used — a
+// retry reuses the job ID and calls ResetForRetry, and Class A facts are
+// retained across it (Append is INSERT OR IGNORE on (job_id, art_idx)). Without
+// this the retried job's overlaps match the latch from the previous attempt and
+// are dropped, silencing the warning permanently rather than once.
+//
+// Idempotent, and safe for a job that never reported anything.
+func (b *Barrier) ForgetJob(jobID string) {
+	b.reportedMu.Lock()
+	defer b.reportedMu.Unlock()
+	for key := range b.reported {
+		if key.jobID == jobID {
+			delete(b.reported, key)
+		}
+	}
 }
 
 // Run executes one checkpoint for a job:
@@ -237,7 +257,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 		if err != nil {
 			return nil, err
 		}
-		if pa, ok := overlapFrom(walk, idx, t.Path(idx)); ok {
+		if pa, ok := overlapFrom(walk, idx, func() string { return t.Path(idx) }); ok {
 			found = append(found, pa)
 		}
 		exts = append(exts, ext)
@@ -733,7 +753,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// Classification is free and repeatable; only admit spends the latch, and
 	// it is called at each return rather than here. See admit.
 	var found []PostAnomaly
-	if pa, ok := overlapFrom(walk, idx, t.Path(idx)); ok {
+	if pa, ok := overlapFrom(walk, idx, func() string { return t.Path(idx) }); ok {
 		found = append(found, pa)
 	}
 

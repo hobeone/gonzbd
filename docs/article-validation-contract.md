@@ -851,10 +851,16 @@ on `articleRequest`, and a UU decode that satisfies a request for part > 1 is
 refusable on the spot. **Take E5 before relying on decision 3.**
 
 With A7 and E5 both in place, what remains does not justify a range query on
-every accept. Count overlaps, warn on them, and revisit only if the counter
-shows a residual population neither explains. This also defers #387's design
-choice — the interval structure it debates is only worth building if that
-counter says so.
+every accept. Warn on overlaps and revisit only if the residual population is
+one neither explains. This also defers #387's design choice — the interval
+structure it debates is only worth building if that population justifies it.
+
+An earlier version of this paragraph said to **count** overlaps and gated the
+revisit on what "the counter" showed. No counter was built: what shipped is a
+job warning raised at most once per `(jobID, fileIdx)`, which a user can act on
+and nobody can aggregate. §8 decision 3 says the same thing; this paragraph
+contradicted it until #387's detection landed, and the measurement the revisit
+depends on still does not exist.
 
 E4 has an L0 half worth taking first: **a gap in NZB part numbers is decidable
 offline.** A file whose segments are numbered 1, 2, 4 parses today with no

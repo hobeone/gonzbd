@@ -1820,6 +1820,14 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 	job.ResetForRetry()
+	// The job returns under the SAME ID, and its Class A facts survive with it
+	// (Append is INSERT OR IGNORE on (job_id, art_idx)). The barrier latches
+	// overlap warnings per (jobID, fileIdx), so without this the retry's
+	// overlaps match the previous attempt's latch and are dropped — silencing
+	// the warning permanently instead of raising it once per attempt.
+	if app.barrier != nil {
+		app.barrier.ForgetJob(jobID)
+	}
 	if err := app.queue.Add(job); err != nil {
 		return err
 	}

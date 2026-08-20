@@ -127,6 +127,42 @@ func TestAdmit_LatchesPerJobAndFile(t *testing.T) {
 	}
 }
 
+// TestForgetJob_LetsARetryWarnAgain pins the latch reset.
+//
+// A retry re-enters the queue under the SAME job ID and its Class A facts
+// survive with it, so the overlap is re-derived and matches the latch from the
+// previous attempt. Without ForgetJob the second attempt is silent — and
+// silence is indistinguishable from a healthy download, which is the failure
+// mode the warning exists to prevent.
+func TestForgetJob_LetsARetryWarnAgain(t *testing.T) {
+	b := NewBarrier(nil, nil, nil, nil, slog.New(slog.DiscardHandler))
+	one := []PostAnomaly{{FileIdx: 0, Reason: "malformed"}}
+
+	if got := b.admit("job-1", one); len(got) != 1 {
+		t.Fatalf("first admit returned %d, want 1", len(got))
+	}
+	b.ForgetJob("job-1")
+	if got := b.admit("job-1", one); len(got) != 1 {
+		t.Errorf("admit after ForgetJob returned %d, want 1 — a retried job would "+
+			"never warn about an overlap its previous attempt already reported", len(got))
+	}
+
+	// Scoped to the job named. A retry of one job must not un-silence every
+	// other job in the process, which would restore the per-checkpoint spam
+	// the latch exists to stop.
+	if got := b.admit("job-2", one); len(got) != 1 {
+		t.Fatalf("setup: job-2's first admit returned %d, want 1", len(got))
+	}
+	b.ForgetJob("job-1")
+	if got := b.admit("job-2", one); len(got) != 0 {
+		t.Errorf("ForgetJob(job-1) also cleared job-2, returning %d, want 0", len(got))
+	}
+
+	// Idempotent, and harmless for a job that never reported.
+	b.ForgetJob("job-1")
+	b.ForgetJob("never-seen")
+}
+
 // TestRun_ReportsAnOverlapWhenNothingWasAcked pins the return that Run's
 // early exit used to discard.
 //
@@ -217,7 +253,7 @@ func TestOverlapFrom_ReportsTheIntersectionNotTheVictimsEnd(t *testing.T) {
 		{ArtIdx: 1, Offset: 50, Length: 10},
 	}
 	w := verifiedPrefix(facts, func(int) bool { return true })
-	pa, ok := overlapFrom(w, 0, "/downloads/movie/vol042.rar")
+	pa, ok := overlapFrom(w, 0, func() string { return "/downloads/movie/vol042.rar" })
 	if !ok {
 		t.Fatal("overlapFrom found nothing for a contained overlap")
 	}
