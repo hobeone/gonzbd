@@ -148,7 +148,7 @@ changes is the consequence to the user, and that is exactly why the blast radius
 must not be the whole file. Without this bound, a no-recovery post loses a
 download; with it, it loses a hole.
 
-**This rule removes work.** Applied to the 19 open issues in this cluster, four
+**This rule removes work.** Applied to the 19 open issues in this cluster, three
 survived as violations and ten were not article-validation work at all — see the
 contract's Ground rules for the triage.
 

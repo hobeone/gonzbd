@@ -39,21 +39,23 @@ it.
 
 ## Ground rules
 
-Two standing constraints that precede every section below. They are not
-validation policy; they decide which of the options in §4 is even on the table,
-and both have already changed conclusions this document reached without them.
+Three standing constraints that precede every section below. They are not
+validation policy; they decide which of the options in §4 is even on the table.
+The first two have already changed conclusions this document reached without
+them; the third was written to stop work §2 of this document was inviting.
 
-> **These two rules are project-wide, and `AGENTS.md` § "Standing Design Rules"
-> is where they are stated canonically.** They were written here first, which
-> was a placement error: this document is read only before touching
-> `internal/nzb`, `internal/nntp`, `internal/decoder` and the two paths named in
-> its header, while the rules govern constructor design and migration decisions
-> everywhere. Someone working in `internal/queue` or `internal/history` would
-> never have seen them.
+> **These three rules are project-wide, and `AGENTS.md` § "Standing Design
+> Rules" is where they are stated canonically.** The first two were written
+> here first, which was a placement error: this document is read only before
+> touching `internal/nzb`, `internal/nntp`, `internal/decoder` and the two paths
+> named in its header, while the rules govern constructor design and migration
+> decisions everywhere. Someone working in `internal/queue` or
+> `internal/history` would never have seen them. The third was written in
+> `AGENTS.md` from the start, for the same reason.
 >
 > What follows is the **argument** — why each rule holds, what it forbids, and
-> the worked cases. If the two ever disagree, `AGENTS.md` is the rule and this
-> section is out of date.
+> the worked cases. If `AGENTS.md` and this section ever disagree, `AGENTS.md`
+> is the rule and this section is out of date.
 
 ### No backwards compatibility
 
