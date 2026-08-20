@@ -133,10 +133,10 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
    nameable and the switch in `stage_repair.go` exhaustive.
 
-   **Where QuickCheck's CRCs come from, and why there currently are none.**
+   **Where QuickCheck's CRCs come from.**
    The stage compares the par2 index's per-file checksums against
-   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32`.
-   That method **has no production caller**. The assembler used to compute a
+   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32`
+   (see below for its one caller). The assembler used to compute a
    whole-file value by folding the per-article CRCs it happened to see, which
    was #349 — a resumed run is never sent the articles an earlier run
    completed, so its parts do not tile the file — and that writer is gone with
@@ -148,9 +148,12 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    happened to see. Facts persist across restarts, so they name every article
    of the file whichever run fetched it — a *resumed* file supplies a CRC as
    readily as a fresh one, which the old design could not.
-   `Barrier.gaplessPrefix` combines them during the walk it already performs,
-   with no read of the file, and `Application.recordAssembledCRC` threads the
-   result to `Queue.SetFileCRC32` when the file finalizes.
+   `durability.verifiedPrefix` combines them during the walk it already
+   performs, with no read of the file, and `Application.recordAssembledCRC`
+   threads the result to `Queue.SetFileCRC32` when the file finalizes — but
+   only when the walk both reached the file's end and consumed every fact, so
+   a file with an article overlapping a sibling supplies no CRC rather than one
+   describing bytes it may not hold.
 
    A file whose gapless prefix stops short of its end — a permanently failed
    article leaves a hole — still reads as `NoCRC`, which is zero's documented

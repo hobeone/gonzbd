@@ -574,6 +574,27 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 		t.Error("a post anomaly was raised for one article colliding with itself, which " +
 			"tells the user their post is malformed when nothing is wrong with it")
 	}
+
+	// The re-accept replaced a cache entry, and buffer's eviction branch is what
+	// subtracts the superseded copy's bytes and returns its buffer to the pool.
+	// Nothing else observes that accounting, so without this assertion the
+	// branch could be deleted as "dead" — it is not; only its displaced-article
+	// REPORT is unreachable — and the leak would pass every existing test.
+	if got := w.wc.bytesFor(w.key); got != 64 {
+		t.Errorf("cache holds %d bytes for the file, want 64 — the re-accept "+
+			"replaced one 64-byte entry with another, so buffer must subtract the "+
+			"superseded copy. Counting both leaks the superseded buffer instead of "+
+			"pooling it", got)
+	}
+	// Both counters, because they are decremented by separate statements and
+	// bytesFor reads only the per-file one. Dropping the wc.used subtraction
+	// alone would leave the assertion above green while every re-accept
+	// permanently inflated the GLOBAL cache budget, evicting healthy files
+	// early for the process's lifetime.
+	if w.wc.used != 64 {
+		t.Errorf("wc.used = %d, want 64 — the global budget still counts the "+
+			"superseded copy", w.wc.used)
+	}
 }
 
 // TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected pins that detection

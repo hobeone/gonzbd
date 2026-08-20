@@ -535,7 +535,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 	}
 }
 
-// errFactLog fails ForFile so gaplessPrefix's error path can be pinned:
+// errFactLog fails ForFile so the fact-load error path can be pinned:
 // A2 forbids computing a CRC anchor from a fact log that could not be read.
 type errFactLog struct {
 	FactLog
@@ -821,7 +821,7 @@ func (l *loadErrStore) LoadFile(context.Context, string, int32) (FileExtent, boo
 // TestGaplessPrefix pins the walk's stopping conditions individually. The
 // Run-level test covers the two hole shapes; these cover the boundaries a
 // full barrier pass does not produce on its own.
-func TestGaplessPrefix(t *testing.T) {
+func TestVerifiedPrefix_DurableBitmapBoundsTheWalk(t *testing.T) {
 	tests := []struct {
 		name    string
 		facts   []ArticleFact
@@ -885,9 +885,9 @@ func TestGaplessPrefix(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, _ := gaplessPrefix(stored, 0, bm, &fakeTarget{artCount: 4})
+			got := verifiedPrefix(stored, durableAt(stored, 0, bm, &fakeTarget{artCount: 4})).VerifiedTo
 			if got != tt.want {
-				t.Errorf("gaplessPrefix = %d, want %d", got, tt.want)
+				t.Errorf("verifiedPrefix = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -913,9 +913,9 @@ func TestGaplessPrefix_UnplaceableFactStopsTheWalk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := gaplessPrefix(stored, 0, bm, &fakeTarget{artCount: 4, noOrd: true})
+	got := verifiedPrefix(stored, durableAt(stored, 0, bm, &fakeTarget{artCount: 4, noOrd: true})).VerifiedTo
 	if got != 0 {
-		t.Errorf("gaplessPrefix = %d, want 0 — an unplaceable fact proves nothing", got)
+		t.Errorf("verifiedPrefix = %d, want 0 — an unplaceable fact proves nothing", got)
 	}
 }
 
@@ -928,7 +928,7 @@ func TestBuildExtent_ReturnsTheArticlesToAckWithoutCommitting(t *testing.T) {
 	b, _ := newBarrierWithStores(t, es, &recordingAcker{}, &recordingStall{})
 	tgt := &fakeTarget{size: 300, modTime: 11, artCount: 4}
 
-	ext, acked, err := b.buildExtent(ctx, "job-1", 0, []WrittenArticle{
+	ext, _, acked, err := b.buildExtent(ctx, "job-1", 0, []WrittenArticle{
 		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100},
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
 	}, nil, tgt)

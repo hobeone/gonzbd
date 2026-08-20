@@ -135,12 +135,14 @@ func TestFinalizeFile_NoWholeFileCRCWhenAnArticleIsMissing(t *testing.T) {
 // QuickCheck compares exactly this flag's value against par2's hash — turning
 // a job that has merely not started into one reported as damaged.
 //
-// Barrier.buildExtent has always required verified > 0 for the same flag. This
-// is the resume path being brought level with it, not a new rule.
-func TestGaplessPrefixCRC_EmptyFileClaimsNoWholeFileCRC(t *testing.T) {
-	verifiedTo, crc, whole := gaplessPrefixCRC(nil, nil, 0)
+// Both paths now ask verifiedPrefix, so this pins the rule once for the
+// barrier and the resume alike. It used to pin only the resume copy, which is
+// how the two came to disagree about a different clause (#387).
+func TestVerifiedPrefix_EmptyFileClaimsNoWholeFileCRC(t *testing.T) {
+	w := verifiedPrefix(nil, func(int) bool { return true })
+	verifiedTo, crc, whole := w.VerifiedTo, w.PrefixCRC, w.wholeFile(0)
 	if whole {
-		t.Error("gaplessPrefixCRC reported a verified whole-file CRC for a zero-length " +
+		t.Error("verifiedPrefix reported a verified whole-file CRC for a zero-length " +
 			"file with no facts; QuickCheck would compare 0 against par2's real hash " +
 			"and report an untouched job as damaged")
 	}

@@ -1261,10 +1261,21 @@ recorded here so the next reader does not mistake them for design.
    figures and a wasted re-fetch, not corruption or a short file. Recorded and
    unfixed.
 
-4. **A file with a hole reports no whole-file CRC.** `Barrier.gaplessPrefix`
+4. **A file with a hole reports no whole-file CRC.** `durability.verifiedPrefix`
    combines the Class A facts into `FileExtent.PrefixCRC` during the walk it
    already performs, and `HasPrefixCRC` is set when that prefix reaches the
-   file's end; `Application.recordAssembledCRC` threads it to
+   file's end **and the walk consumed every recorded fact**. Both clauses are
+   required, and `verifiedPrefix` is the only place the claim is *created* —
+   the barrier used to derive the flag at its call sites from `VerifiedTo` and
+   `Size` alone, which cannot see a fact the walk never reached, so an article
+   overlapping a sibling without extending the file published a CRC of the
+   bytes that should have been written (#387). One place *narrows* the created
+   claim without re-deriving it: `Resumer`'s cache fast path additionally
+   requires `ext.VerifiedTo == fi.Size()`, because a file whose size changed
+   under a cached extent has invalidated it. Narrowing a claim the guard
+   already allowed cannot manufacture one it refused, which is why that site
+   is safe and the barrier's old call-site derivation was not.
+   `Application.recordAssembledCRC` threads the result to
    `Queue.SetFileCRC32` when the file finalizes. A permanently failed article
    leaves a hole, the prefix stops there, and no whole-file value exists to
    record — `FileProgress.AssembledCRC32` stays zero, which is the documented

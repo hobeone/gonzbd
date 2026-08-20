@@ -31,7 +31,7 @@ func benchFacts(n int, hole int) ([]ArticleFact, Bitmap) {
 	return facts, bm
 }
 
-// BenchmarkGaplessPrefix_WholeFile measures the WORST case for #371's re-walk:
+// BenchmarkVerifiedPrefix_WholeFile measures the WORST case for #371's re-walk:
 // every article durable and every offset abutting, so the loop never breaks
 // and the walk is genuinely O(articles).
 //
@@ -46,14 +46,14 @@ func benchFacts(n int, hole int) ([]ArticleFact, Bitmap) {
 // figure below is that one call, so the loop is not the lever — and the lever
 // that looks obvious there was rejected for depending on article lengths this
 // process does not control.
-func BenchmarkGaplessPrefix_WholeFile(b *testing.B) {
+func BenchmarkVerifiedPrefix_WholeFile(b *testing.B) {
 	for _, n := range []int{100, 1_000, 10_000, 20_000} {
 		facts, bm := benchFacts(n, -1)
 		tgt := &fakeTarget{artCount: n}
 		b.Run(fmt.Sprintf("articles=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				verifiedTo, _ := gaplessPrefix(facts, 0, bm, tgt)
+				verifiedTo := verifiedPrefix(facts, durableAt(facts, 0, bm, tgt)).VerifiedTo
 				if verifiedTo == 0 {
 					b.Fatal("fixture walked nothing, so this measures the break and not the walk")
 				}
@@ -62,7 +62,7 @@ func BenchmarkGaplessPrefix_WholeFile(b *testing.B) {
 	}
 }
 
-// BenchmarkGaplessPrefix_StallsAtFirstHole measures the case a real job spends
+// BenchmarkVerifiedPrefix_StallsAtFirstHole measures the case a real job spends
 // almost all of its life in.
 //
 // Articles do not arrive in order — the dispatcher hands them to whichever
@@ -72,14 +72,14 @@ func BenchmarkGaplessPrefix_WholeFile(b *testing.B) {
 // benchmark above.
 //
 // The hole is at article 10 of n, so this is the ratio the cost actually has.
-func BenchmarkGaplessPrefix_StallsAtFirstHole(b *testing.B) {
+func BenchmarkVerifiedPrefix_StallsAtFirstHole(b *testing.B) {
 	for _, n := range []int{1_000, 20_000} {
 		facts, bm := benchFacts(n, 10)
 		tgt := &fakeTarget{artCount: n}
 		b.Run(fmt.Sprintf("articles=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				gaplessPrefix(facts, 0, bm, tgt)
+				verifiedPrefix(facts, durableAt(facts, 0, bm, tgt))
 			}
 		})
 	}

@@ -99,7 +99,7 @@ func TestSQLiteFactLog_ForFileIsOrderedByOffset(t *testing.T) {
 	// article_facts is WITHOUT ROWID keyed on (job_id, art_idx), so an
 	// unordered scan returns primary-key order. A fixture whose art_idx and
 	// offset both ascend produces the same sequence either way, and the test
-	// passes with ORDER BY deleted — it pins nothing. Task 6's gaplessPrefix
+	// passes with ORDER BY deleted — it pins nothing. verifiedPrefix's
 	// walks this result assuming offset order, so the clause is load-bearing.
 	facts := []ArticleFact{
 		{FileIdx: 0, ArtIdx: 0, Offset: 2000, Length: 500},

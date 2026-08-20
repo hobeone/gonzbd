@@ -140,34 +140,26 @@ func (wc *writeCache) enabled() bool {
 	return wc.limit > 0
 }
 
-// buffer adds an article to the cache. cached reports whether the article was
-// taken; false means caching is disabled and the caller should write
-// immediately.
+// buffer adds an article to the cache. It reports whether the article was
+// taken; false means caching is disabled, or the article is zero-length and
+// was refused, and the caller should write it immediately.
 //
-// displaced carries the identity of an article evicted from the same offset,
-// and is nil in every ordinary case. The caller must settle it rather than
-// dropping it: once an ack waits on a write, an article silently removed from
-// the cache is an article that is never acked at all and never re-dispatched,
-// which is the defect this path exists to close.
+// It no longer reports what it evicted. That return, and FileWriter.Accept's
+// loop over it, were unreachable: Accept calls wc.discardAt the moment its
+// acceptedAt check finds a DIFFERENT article owning the offset, so the only
+// incumbent that survives to here is the same article re-accepting after a
+// rollback, which is not a collision (#406).
 //
-// This is no longer where a collision is DETECTED, and reading it as such is
-// what #383 was. Membership here answers "are these bytes still unwritten",
-// which is a question about caching: buildContiguousRun deletes each article
-// it flushes, so in an in-order download the first article had already left
-// this map before its duplicate arrived, and three paths — flushed, caching
-// disabled, zero-length — reported no collision at all. FileWriter.acceptedAt
-// is the detector now, consulted in Accept before this function, and it sees
-// all three. What remains here is a backstop for the eviction itself, which
-// only this function can observe.
-//
-// Folding the two identities together and letting the winner's write ack both
-// would be wrong. This branch exists for a case upstream dedup should already
-// have caught, so nothing constrains the two articles to the same length, and a
-// shorter winner would ack the displaced article over bytes its write never
-// covered.
-func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, displaced []articleID) {
+// This is not where a collision is DETECTED, and reading it as such is what
+// #383 was. Membership here answers "are these bytes still unwritten", which is
+// a question about caching: buildContiguousRun deletes each article it flushes,
+// so in an in-order download the first article had already left this map before
+// its duplicate arrived, and three paths — flushed, caching disabled,
+// zero-length — reported no collision at all. FileWriter.acceptedAt is the
+// detector, consulted in Accept before this function, and it sees all three.
+func (wc *writeCache) buffer(key fileKey, art bufferedArticle) bool {
 	if !wc.enabled() {
-		return false, nil
+		return false
 	}
 	// A zero-length article is refused so the caller writes it inline. It
 	// occupies no space, so it can neither be coalesced nor advance any
@@ -176,7 +168,7 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 	// entry there never moves and the loop never terminates. The inline path
 	// costs a no-op WriteAt and settles the article.
 	if len(art.data) == 0 {
-		return false, nil
+		return false
 	}
 	fb, ok := wc.perFile[key]
 	if !ok {
@@ -185,49 +177,30 @@ func (wc *writeCache) buffer(key fileKey, art bufferedArticle) (cached bool, dis
 	}
 	// If this offset already exists, replace it and adjust accounting.
 	//
-	// Reaching this with a DIFFERENT article means Accept's acceptedAt check
-	// has already failed the incumbent, and Accept skips the one it failed —
-	// so a second settlement here would charge the same article's bytes to the
-	// job's par2 budget twice. Reaching it with the same article is a re-accept
-	// after a rollback, which is not a collision at all.
+	// Accounting only. This used to also REPORT the evicted article to the
+	// caller as displaced, which was unreachable — Accept discards a different
+	// article's entry through wc.discardAt before buffer is consulted, so the
+	// only incumbent that survives to here is the same article re-accepting
+	// after a rollback, and that is not a collision. The report and Accept's
+	// loop over it are gone (#406); discardAt owns eviction on the collision
+	// path and this owns it on the re-accept path.
+	//
+	// The subtraction is NOT dead with it. A re-accept genuinely replaces a
+	// cache entry, so failing to subtract the superseded copy would inflate
+	// wc.used against the cache budget for the process's lifetime and leak its
+	// buffer instead of returning it to the pool.
 	if existing, dup := fb.articles[art.offset]; dup {
 		wc.used -= int64(len(existing.data))
 		fb.totalBytes -= int64(len(existing.data))
 		if existing.data != nil {
 			decoder.PutBuffer(existing.data)
 		}
-		// Reported ONLY when a different article lost the slot. The buffer is
-		// superseded either way, but "displaced" is a claim about two articles
-		// and the caller settles whoever it names.
-		//
-		// Naming the same article made it displace ITSELF: failDisplaced
-		// recorded it failed, appended a faulted record, raised a warning
-		// naming one article twice, and had routeFaulted resolve it
-		// permanently failed — while the replacement entry written just below
-		// stayed queued to be written and acked. Two terminal dispositions for
-		// one article.
-		//
-		// Not reachable from Accept as it stands, and kept as a backstop rather
-		// than as a detector. Accept calls wc.discardAt the moment its
-		// acceptedAt check finds a different owner, and discardAt deletes the
-		// entry — so by the time buffer runs, the collision case has no
-		// incumbent left here to find. The same-article case is excluded by the
-		// test below instead.
-		//
-		// It stays because this is the only place that knows what buffer
-		// dropped, so a future path that reaches buffer without going through
-		// Accept's check still reports rather than silently overwrites. That is
-		// a weaker justification than "buffer owns the eviction", which is what
-		// this said while discardAt already owned it.
-		if !existing.id.sameArticle(art.id) {
-			displaced = []articleID{existing.id}
-		}
 	}
 	fb.articles[art.offset] = art
 	size := int64(len(art.data))
 	fb.totalBytes += size
 	wc.used += size
-	return true, displaced
+	return true
 }
 
 // discardAt drops whatever is buffered at one offset, pooling its bytes.
