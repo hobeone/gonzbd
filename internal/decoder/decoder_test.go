@@ -501,9 +501,19 @@ func TestDecodeArticle_HugeSizeHint(t *testing.T) {
 	fmt.Fprintf(&buf, "=yend size=%d crc32=%08x\r\n", len(raw), checksum)
 
 	art, err := DecodeArticle(buf.Bytes())
-	// We expect a size mismatch error since trailer size != header size,
-	// but crucially, we should NOT have allocated 999999999 bytes.
-	if err != nil && !errors.Is(err, errSizeMismatch) {
+	// No error: =ybegin size= is unvalidated sender data and is never compared
+	// to anything, so a header claiming 999999999 over a short payload decodes
+	// cleanly (#347, TestTotalSizeIsDeclaredNotValidated). The check that runs
+	// is the TRAILER's size against the decoded length, and this fixture makes
+	// those agree.
+	//
+	// This assertion used to tolerate errSizeMismatch "since trailer size !=
+	// header size", which is the header-validation belief #347 is about. It
+	// passed only because err was already nil.
+	//
+	// What the test is actually for is the allocation: 999999999 bytes must
+	// not be reserved on the strength of the header.
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(art.Data, raw) {
