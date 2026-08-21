@@ -113,8 +113,8 @@ type Article struct {
 	// hint, caps it at min(len(encoded), maxDecodeSize) precisely because it
 	// is attacker-controlled. Callers get no such treatment for free: do not
 	// use it as a length — not to size a buffer, seek, or truncate a file.
-	// Nothing outside this package reads it today, and a caller that starts
-	// to owes a bound of its own (#347).
+	// Nothing outside this package reads it today. A caller that starts to
+	// must bound it itself (#347).
 	TotalSize int64
 
 	// Data is the decoded part body. len(Data) is the size of this part.

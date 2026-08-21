@@ -945,10 +945,14 @@ segment 1 — a **different** article, which A7 cannot touch because no
 Message-ID is repeated.
 
 **The consequence is no longer silent, and that is a change since this section
-was written.** `FileWriter.Accept` detects the offset collision before the
-write cache is consulted (#383, #385) and fails the incumbent, so the file
-completes short rather than completing wrong, and #413 reports the same
-collision from the durability side. That is a strictly better outcome and it is
+was written.** The assembler detects the offset collision (#383, #385) and
+resolves one of the two articles permanently failed, so the file completes
+short rather than completing wrong, and #413 reports the same collision from
+the durability side. Which article loses depends on whether the incumbent has
+been reported written: `acceptArticle` refuses the *arrival* against a settled
+offset, `FileWriter.Accept` displaces the *incumbent* against an unsettled one.
+The accounting is identical either way — see `offsetSettledBy`, which says so —
+and only the disposition differs. That is a strictly better outcome and it is
 not E5: the request is still not refused, the article count is still satisfied
 by a body that answers a different segment, and nothing in the diagnosis names
 UU. Whether the collision path is enough to carry decision 3 on its own has not
