@@ -939,9 +939,20 @@ func decodePayload(body []byte) (decodedPayload, error) {
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
-			// UU carries no offset and no checksum of its own, so the
-			// offset is genuinely 0 (single-part by construction) and the
-			// CRC is computed here rather than read from the article.
+			// UU carries no offset and no checksum of its own. The CRC is
+			// computed here rather than read from the article; the offset is
+			// asserted to be 0, which is CORRECT ONLY FOR A SINGLE-PART FILE
+			// and is not enforced anywhere.
+			//
+			// This comment used to say "single-part by construction". Nothing
+			// constructs that: an NZB with two UU segments yields two articles
+			// that both claim offset 0. They no longer corrupt the file
+			// silently — FileWriter.Accept detects the offset collision before
+			// the write cache is consulted and fails the incumbent — so an
+			// N-part UU file completes short by N-1 parts and reaches par2 as
+			// an ordinary shortfall, with nothing in the diagnosis naming UU
+			// as the cause. That is #346, and it is a gap in this offset, not
+			// in the collision handling that currently absorbs it.
 			//
 			// That is not a weaker guarantee than yEnc's. The yEnc trailer's
 			// crc32 is a transfer check the decoder has already enforced

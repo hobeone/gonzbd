@@ -82,10 +82,13 @@ type yencTrailer struct {
 
 // Article is the result of decoding one yEnc-encoded NNTP article body.
 //
-// For single-part articles Offset is 0 and TotalSize equals len(Data).
-// For multi-part articles (=ypart header present) Offset and TotalSize
-// describe the part's position and the assembled file's size; callers
-// compose the full file by pwriting Data at Offset.
+// For single-part articles Offset is 0. For multi-part articles (=ypart
+// header present) Offset describes the part's position; callers compose the
+// full file by pwriting Data at Offset.
+//
+// TotalSize is the poster's DECLARED figure and is not an invariant — see its
+// field comment. This doc comment used to say it equals len(Data) for a
+// single-part article, which the parser has never checked (#347).
 type Article struct {
 	// Filename is the yEnc name= field declared in =ybegin. May be empty
 	// only on malformed articles, which DecodeArticle would reject earlier.
@@ -95,8 +98,23 @@ type Article struct {
 	// Derived from the =ypart begin-1 field (yEnc uses 1-based indexing).
 	Offset int64
 
-	// TotalSize is the full assembled file's size in bytes, from =ybegin.
-	// The same value is declared on every part of a multi-part upload.
+	// TotalSize is the assembled file's size in bytes as DECLARED by the
+	// poster in =ybegin size=. The same value is declared on every part of a
+	// multi-part upload.
+	//
+	// It is unvalidated sender data. parseHeader keeps whatever
+	// strconv.ParseInt accepts and drops the value silently otherwise, so a
+	// single-part article can declare size=999999 for 46 bytes of payload, or
+	// size=-5, or math.MaxInt64, and still decode with a nil error. The two
+	// checks that DO run — the trailer's declared size against the decoded
+	// length, and the CRC — constrain this PART, never the total.
+	//
+	// The one place this package uses the figure, decodeBody's pre-allocation
+	// hint, caps it at min(len(encoded), maxDecodeSize) precisely because it
+	// is attacker-controlled. Callers get no such treatment for free: do not
+	// use it as a length — not to size a buffer, seek, or truncate a file.
+	// Nothing outside this package reads it today, and a caller that starts
+	// to owes a bound of its own (#347).
 	TotalSize int64
 
 	// Data is the decoded part body. len(Data) is the size of this part.

@@ -935,14 +935,25 @@ remains advisory everywhere it is already advisory.
 decision rests on A7 *plus* E5, not on A7 alone. A7 does not close the UU route,
 and that route is live today:
 
-`decodePayload`'s yEnc-failure fallback returns `offset: 0` unconditionally,
-with a comment reasoning that UU is "single-part by construction". That is a
-true statement about the *format* standing in for a check on *this request*. If
-a server answers segment 5 of a multi-part file with a body that fails yEnc
-parsing but succeeds at UU, those bytes are written at offset 0 — over segment 1,
-a **different** article, which A7 cannot touch because no Message-ID is repeated.
-This is #346, already filed; what is new here is that it is load-bearing for
-decision 3.
+`decodePayload`'s yEnc-failure fallback returns `offset: 0` unconditionally.
+Its comment used to reason that UU is "single-part by construction" — a true
+statement about the *format* standing in for a check on *this request* — and
+now says instead that the offset is asserted rather than enforced, naming #346.
+If a server answers segment 5 of a multi-part file with a body that fails yEnc
+parsing but succeeds at UU, those bytes claim offset 0, which belongs to
+segment 1 — a **different** article, which A7 cannot touch because no
+Message-ID is repeated.
+
+**The consequence is no longer silent, and that is a change since this section
+was written.** `FileWriter.Accept` detects the offset collision before the
+write cache is consulted (#383, #385) and fails the incumbent, so the file
+completes short rather than completing wrong, and #413 reports the same
+collision from the durability side. That is a strictly better outcome and it is
+not E5: the request is still not refused, the article count is still satisfied
+by a body that answers a different segment, and nothing in the diagnosis names
+UU. Whether the collision path is enough to carry decision 3 on its own has not
+been re-argued here; the conclusion below is unchanged, but note that it was
+reached against a silence that no longer exists.
 
 E5 is decidable at L3 with no new data: the requested segment number is already
 on `articleRequest`, and a UU decode that satisfies a request for part > 1 is
