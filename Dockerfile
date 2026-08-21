@@ -52,7 +52,7 @@ RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || ec
 
 # ---- Build par2cmdline-turbo ----
 FROM alpine:${ALPINE_VERSION} AS par2-builder
-ARG PAR2_VERSION=v1.4.0
+ARG PAR2_VERSION=v1.5.0
 # SHA256 of the GitHub-generated source tarball for PAR2_VERSION. Not
 # published by upstream — animetosho ships prebuilt binaries with no
 # checksum file, and this source archive is GitHub's own auto-generated
