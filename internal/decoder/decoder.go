@@ -87,8 +87,9 @@ type yencTrailer struct {
 // full file by pwriting Data at Offset.
 //
 // TotalSize is the poster's DECLARED figure and is not an invariant — see its
-// field comment. This doc comment used to say it equals len(Data) for a
-// single-part article, which the parser has never checked (#347).
+// field comment. In particular it is not "len(Data) for a single-part
+// article": that holds for a well-behaved poster and the parser has never
+// checked it (#347).
 type Article struct {
 	// Filename is the yEnc name= field declared in =ybegin. May be empty
 	// only on malformed articles, which DecodeArticle would reject earlier.

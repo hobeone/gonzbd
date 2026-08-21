@@ -59,7 +59,13 @@ type ArticleResult struct {
 	Data []byte
 
 	// Offset is the byte position within the target file where Data should
-	// be written. Derived from yEnc/UU headers during decoding.
+	// be written.
+	//
+	// For yEnc it is derived from the =ypart begin= field. UU carries no
+	// offset field at all, so the fallback in decodePayload asserts 0 —
+	// correct for a single-part file and wrong for every part but the first
+	// of a multi-part one (#346). Do not read this as "the sender told us
+	// where the bytes go" without knowing which decoder produced it.
 	Offset int64
 
 	// CRC is the CRC32 of the decoded article data. It is recorded as the

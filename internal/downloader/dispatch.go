@@ -944,21 +944,31 @@ func decodePayload(body []byte) (decodedPayload, error) {
 			// asserted to be 0, which is CORRECT ONLY FOR A SINGLE-PART FILE
 			// and is not enforced anywhere.
 			//
-			// This comment used to say "single-part by construction". Nothing
+			// Do not restate this as "single-part by construction". Nothing
 			// constructs that: an NZB with two UU segments yields two articles
-			// that both claim offset 0.
+			// that both claim offset 0, and the belief that UU cannot be
+			// multi-part is the reason this went unnoticed.
 			//
-			// They no longer corrupt the file silently — the assembler detects
-			// the offset collision and resolves one of the two permanently
-			// failed. WHICH one differs: acceptArticle refuses the ARRIVAL if
-			// the incumbent has been reported written, and FileWriter.Accept
-			// displaces the INCUMBENT if it has not (see offsetSettledBy). The
-			// accounting is the same either way, so an N-part UU file completes
-			// short by N-1 parts and reaches par2 as an ordinary shortfall,
-			// with nothing in the diagnosis naming UU as the cause.
+			// WITHIN ONE OPEN-FILE EPISODE the collision is caught: the
+			// assembler resolves one of the two articles permanently failed,
+			// so an N-part UU file completes short by N-1 parts and reaches
+			// par2 as an ordinary shortfall. Which article loses differs —
+			// acceptArticle refuses the ARRIVAL if the incumbent has been
+			// reported written, FileWriter.Accept displaces the INCUMBENT if
+			// it has not (see offsetSettledBy) — and the accounting is the
+			// same either way.
 			//
-			// That is #346, and it is a gap in this offset, not in the
-			// collision handling that currently absorbs it.
+			// ACROSS a restart or a close-handles cycle it is not. FileWriter
+			// .acceptedAt is per-open-episode residency by design, so a later
+			// segment finds offset 0 unowned and overwrites what is there. The
+			// file then completes WRONG rather than short. The durability
+			// layer still reports the overlap from the Class A facts, which
+			// persist (#413), but that is a warning after the fact and no
+			// article is failed for it.
+			//
+			// Either way nothing in the diagnosis names UU as the cause. That
+			// is #346, and it is a gap in this offset, not in the collision
+			// handling that partly absorbs it.
 			//
 			// That is not a weaker guarantee than yEnc's. The yEnc trailer's
 			// crc32 is a transfer check the decoder has already enforced

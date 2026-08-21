@@ -935,29 +935,36 @@ remains advisory everywhere it is already advisory.
 decision rests on A7 *plus* E5, not on A7 alone. A7 does not close the UU route,
 and that route is live today:
 
-`decodePayload`'s yEnc-failure fallback returns `offset: 0` unconditionally.
-Its comment used to reason that UU is "single-part by construction" — a true
-statement about the *format* standing in for a check on *this request* — and
-now says instead that the offset is asserted rather than enforced, naming #346.
-If a server answers segment 5 of a multi-part file with a body that fails yEnc
-parsing but succeeds at UU, those bytes claim offset 0, which belongs to
-segment 1 — a **different** article, which A7 cannot touch because no
-Message-ID is repeated.
+`decodePayload`'s yEnc-failure fallback returns `offset: 0` unconditionally,
+which is a true statement about the *format* standing in for a check on *this
+request*. If a server answers segment 5 of a multi-part file with a body that
+fails yEnc parsing but succeeds at UU, those bytes claim offset 0, which
+belongs to segment 1 — a **different** article, which A7 cannot touch because
+no Message-ID is repeated.
 
-**The consequence is no longer silent, and that is a change since this section
-was written.** The assembler detects the offset collision (#383, #385) and
-resolves one of the two articles permanently failed, so the file completes
-short rather than completing wrong, and #413 reports the same collision from
-the durability side. Which article loses depends on whether the incumbent has
-been reported written: `acceptArticle` refuses the *arrival* against a settled
-offset, `FileWriter.Accept` displaces the *incumbent* against an unsettled one.
-The accounting is identical either way — see `offsetSettledBy`, which says so —
-and only the disposition differs. That is a strictly better outcome and it is
-not E5: the request is still not refused, the article count is still satisfied
-by a body that answers a different segment, and nothing in the diagnosis names
-UU. Whether the collision path is enough to carry decision 3 on its own has not
-been re-argued here; the conclusion below is unchanged, but note that it was
-reached against a silence that no longer exists.
+**Within one open-file episode the consequence is no longer silent, and that is
+a change since this section was written.** The assembler detects the offset
+collision (#383, #385) and resolves one of the two articles permanently failed,
+so the file completes short rather than completing wrong. Which article loses
+depends on whether the incumbent has been reported written: `acceptArticle`
+refuses the *arrival* against a settled offset, `FileWriter.Accept` displaces
+the *incumbent* against an unsettled one. The accounting is identical either
+way — see `offsetSettledBy`, which says so — and only the disposition differs.
+
+**Across a restart or a close-handles cycle it still is silent, in the sense
+that matters.** `FileWriter.acceptedAt` is per-open-episode residency by
+design, so a segment arriving in a later episode finds offset 0 unowned and
+overwrites what is there: the file completes **wrong**, not short, and no
+article is failed for it. E3 does report the overlap from the Class A facts,
+which persist (#413) — but E3 is a warning, which is exactly the property
+decision 3 below is conditional on.
+
+**Neither case is E5.** In both, the request is still not refused, the article
+count is still satisfied by a body that answers a different segment, and
+nothing in the diagnosis names UU. The in-episode collision path narrows the
+damage without touching the claim that causes it, which is why it changes the
+severity of this row and not its status. Decision 3's conditional on E5 has not
+been re-argued here and stands as written.
 
 E5 is decidable at L3 with no new data: the requested segment number is already
 on `articleRequest`, and a UU decode that satisfies a request for part > 1 is
@@ -1206,8 +1213,12 @@ later reader can tell a decision from an oversight.
 
 3. **Overlap detection warns; it does not guard.** E3 warns the user and does
    not gate the accept path. **Conditional on both A7 and E5**, not A7 alone:
-   the UU fallback writes any segment at offset 0 (#346) and repeats no
-   Message-ID, so A7 cannot see it. With both in place the residual population
+   the UU fallback claims offset 0 for any segment (#346) and repeats no
+   Message-ID, so A7 cannot see it. Within one open-file episode the
+   assembler's collision path now resolves that claim rather than letting the
+   bytes land, but across a restart or close-handles cycle it does not, and
+   there E3's warning is all there is — see §5.E. With both in place the
+   residual population
    is unknown and presumed small, and #387's interval-structure design is
    deferred until the warning rate justifies it. **If E5 is not taken, this
    decision does not hold** and E3 must be a guard.
