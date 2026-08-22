@@ -145,10 +145,26 @@ unfinished(art)  ==  !hasRecord(art) && !failed(art)
 not `done == hasRecord`. Getting this backwards leaves every failed article
 outstanding forever and no file ever completes.
 
-`BytesDownloaded` stays persisted. It is derivable by summing record lengths, and
-Standing Rule 2 arguably reaches it, but it feeds the byte-bound checkpoint
-trigger and widening the change into progress accounting buys nothing this issue
-is about.
+**`BytesDownloaded` is already derived, not persisted.** `JobProgress.recompute`
+sums the articles that are `done && !failed` (`internal/queue/progress.go:635`),
+and `job_files.bytes_downloaded` is written *from* that derived value
+(`internal/queue/sqlite_store.go:355`) rather than being its source. So it is not
+a separate decision: once `done` is derived from the records, progress accounting
+becomes a function of the records too, and the `fsync` → commit loss window moves
+with it. A checkpoint lost to an unclean shutdown therefore costs a visible step
+backwards in the reported byte total as well as a re-fetch — the same bytes, told
+to the user twice.
+
+An earlier draft of this section claimed `BytesDownloaded` "stays persisted" and
+treated leaving it alone as a scope decision. That was wrong on the facts. A
+first correction then overshot in the other direction, saying there was nothing
+persisted at all: `job_files.bytes_downloaded` **is** written
+(`internal/queue/sqlite_store.go:789`) and **is** read back as the seed for a
+non-resident job's figures (`internal/queue/persistence.go:152`). What is true is
+that it is written *from* the derived value rather than being its source. Once
+`done` derives from the records, that column becomes a second persisted
+derivation of a record-derived quantity — a Standing Rule 2 concern in its own
+right, recorded here and deliberately left out of scope.
 
 ### 3.4 The assembler's part accounting does not move
 
@@ -176,9 +192,34 @@ and is untouched.
 | Class A asserts | nothing about presence | presence, and the CRC of what is present |
 | S1, S2 | Class B strictly after the `fsync` | unchanged, and now the only claim there is |
 | S4 — recomputation wins over the stored record | the durable bitmap is rebuilt from Class A plus a disk read | unchanged; the record is still what `Resumer` reads |
-| S5 — no second copy to drift | two records, reconciled by two guards | one record; the guards become unreachable |
+| S5 — no second copy to drift | two records, reconciled by two guards | one record; **one** of the two guards becomes unreachable — see below |
 | S6 — truncate only shrinks | unchanged | unchanged |
 | R3 — losing a suffix costs a re-fetch | applies to Class A | applies to the merged record, and is now the *routine* cost after an unclean shutdown rather than a rare one |
+
+### Only one of the two guards dies
+
+An earlier draft of this document claimed both `FinalizeFile` guards become
+unreachable. That is true of one and **false of the other**, and the difference
+is the resumer.
+
+`unrecorded > 0` — *a durable article the record does not name* — does die. Once
+both commit sites write the record in the same transaction that sets the durable
+bit, a durable bit without a record is not expressible.
+
+`missing > 0` — *a recorded article that is not durable* — **survives, and must
+be kept.** `Resumer.verifyRegions` (`internal/durability/resume.go:355-372`) sets
+the durable bit only on a CRC match and `continue`s past a region that is out of
+range or mismatches, leaving the record in place. `writeBack` then commits an
+extent whose bitmap lacks that article. If it subsequently fails permanently on
+re-fetch, it reaches finalize holding a record with no durable bit — and dropping
+the bound to `durableExtent` there destroys bytes above it. That is the #342/#350
+class arriving through the recovery path, which is exactly the path this design's
+failure mode depends on.
+
+So the count is: two records become one, and one guard of two becomes one. The
+change is still worth making — #389 and #421 die with the split, which was always
+the prize — but the guard arithmetic in this table's first draft was wrong and
+the contract must not inherit it.
 
 ### What this costs
 
@@ -256,9 +297,23 @@ articles. That merge is the real work in this file.
 
 `RetryHistoryJob` deletes the durability rows the retry needs. `history.Repository.Delete`
 drops both tables unconditionally (`internal/history/repository.go:358-363`), and
-`RetryHistoryJob` calls it at `internal/app/app.go:1840` — nine lines *after*
-`queue.Add` at `:1831`, so records the re-enqueued job appends in that window die
+`RetryHistoryJob` calls it at `internal/app/app.go:1858` — nine lines *after*
+`queue.Add` at `:1849`, so records the re-enqueued job appends in that window die
 too.
+
+**The function says so itself, twice, and both statements are false today.**
+`app.go:1841-1842` opens with
+
+> The job returns under the SAME ID, and its Class A facts survive with it
+> (`Append` is `INSERT OR IGNORE` on `(job_id, art_idx)`).
+
+seventeen lines above the `Delete` that removes them. And the comment at
+`:1852-1857` justifying `Delete` over `deleteHistoryEntries` enumerates what goes
+and what stays — the NZB backup stays, the per-file progress goes — and does not
+mention the durability rows at all. One comment asserts they survive; the other
+lists what is destroyed and omits them. Neither is a drifted claim about old
+behaviour: both were wrong when written, and the second is what made the first
+easy to keep believing.
 
 This is **not** an instance of the two-record class and is not fixed by anything
 above: with one table the same loop drops that one identically, and the retry's
