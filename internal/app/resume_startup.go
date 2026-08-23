@@ -66,19 +66,22 @@ type fileResumer interface {
 //     Resumer.Resume, which says the same thing from the other side.
 //
 // Running only at startup is nonetheless complete. A job admitted later has no
-// runs to seed from, and a job's runs cannot change while it is not running —
-// only a barrier writes them, and a barrier runs only for a job with open
-// files. So a job promoted hours after startup is still correctly seeded by
-// the sweep that ran before it was promoted.
+// runs to seed from, and a job's runs cannot GAIN content while it is not
+// running — only a barrier puts content into a row, and a barrier runs only
+// for a job with open files. Other paths delete rows, but a delete cannot make
+// a row claim more than it already did. So a job promoted hours after startup
+// is still correctly seeded by the sweep that ran before it was promoted.
 //
 // # What it does NOT do
 //
 // It writes NOTHING to the durability record, and neither does anything under
 // it. Resumer is a reader and a deleter: the one mutation in this whole sweep
 // is discarding the runs of a file that is missing or shorter than they claim.
-// The barrier is the record's sole writer, and that asymmetry is the
-// justification for §3.4 trusting the record without reading a byte of it —
-// nothing but a completed fsync can put a claim INTO it.
+// The barrier is the only thing that INSERTS OR AMENDS run content — several
+// other paths delete rows, and internal/durability's package doc enumerates
+// them — and that asymmetry is the justification for §3.4 trusting the record
+// without reading a byte of it: nothing but a completed fsync can put a claim
+// INTO the record, and a delete only ever takes one away.
 //
 // A non-resident job in a SWEPT phase is hydrated for the duration and evicted
 // again, so the residency budget docs/queue-lifecycle.md exists to bound is

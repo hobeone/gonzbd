@@ -220,10 +220,16 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 }
 
 // TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
-// listing's bytes_durable rests on: on this design the only things that mark an
-// article Done are the barrier's ack and a replay of the committed durable
-// runs, so a downloaded byte IS a durable byte. A second counter would be a
-// second representation of one fact, free to drift.
+// listing's bytes_durable rests on: a downloaded byte IS a durable byte, so a
+// second counter would be a second representation of one fact, free to drift.
+//
+// That is not "only the barrier marks an article Done" — queue.markFailed,
+// queue.applyResolution and queue.newJobProgressSized all set the bit as well.
+// What holds is narrower and is what the identity needs: every path that marks
+// an article Done either stands on a barrier's fsync (the ack, and the replays
+// of the runs a barrier recorded) or marks an article that contributes no
+// downloaded bytes at all (markFailed). Application.JobDurability enumerates
+// them; keep the two in step.
 //
 // The fixture makes articles durable through Queue.SeedFromRuns — the same
 // replay a resume performs — because that is the only route to a NON-ZERO

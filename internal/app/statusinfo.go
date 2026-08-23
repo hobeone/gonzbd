@@ -223,7 +223,10 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // second representation of one fact, free to drift (S5).
 //
 // See queue.jobProgressJSON, which states the markDone-scoped version of this
-// at the bit itself; keep the two in step.
+// at the bit itself, and TestJobDurability_ReportsDownloadedBytesAsDurable,
+// which pins the identity and restates the enumeration above; keep all three
+// in step. A narrowing here that says "only the barrier" belongs in none of
+// them — this list is the reason why.
 //
 // ReplaceFromRuns also UN-marks an article whose run the resume discarded
 // (#362), and this figure follows it down rather than needing a correction of

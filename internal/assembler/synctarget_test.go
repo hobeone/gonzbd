@@ -65,7 +65,7 @@ func TestHandleSyncOp_FilesReportsOnlyTheRequestedJob(t *testing.T) {
 // TestHandleSyncOp_UnknownFileIsAnErrorNotASilentSkip pins A2 for the
 // adapter's disagreement case. A file the barrier believes open but the worker
 // does not is a bookkeeping defect; skipping it silently would let the barrier
-// commit an extent for a file nothing wrote.
+// commit a durable run for a file nothing wrote.
 func TestHandleSyncOp_UnknownFileIsAnErrorNotASilentSkip(t *testing.T) {
 	a, open, _ := newSyncOpFixture(t)
 	for _, kind := range []syncOpKind{opDrain, opSync, opStat, opTruncate} {

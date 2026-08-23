@@ -46,7 +46,7 @@ func fileIdxForArticle(m *queue.Manifest, i int) (int, bool) {
 
 // ackFailedIDs is AckPermanentFailure keyed by message ID, replacing the
 // deleted MarkArticlesFailed. A permanent failure asserts nothing about
-// disk, so unlike done articles it needs no durable-extent proof.
+// disk, so unlike done articles it needs no durable-run proof.
 func ackFailedIDs(t *testing.T, q *queue.Queue, m *queue.Manifest, jobID string, msgIDs []string) {
 	t.Helper()
 	idxs := make([]int32, 0, len(msgIDs))

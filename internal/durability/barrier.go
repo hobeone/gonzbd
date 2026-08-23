@@ -32,10 +32,12 @@ import (
 // outside Commit's own merge — Resumer, RunStore.DeleteJob,
 // queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
 // history.Repository.delete — and none of them can make a row claim anything,
-// which is why the narrower statement is the one the trust argument needs. The queue's seeding entry points, which
-// used to take a fully exported FileExtent and reach markDone with no barrier
-// and no proof, are gone with the type — what installs a resume's answer now
-// carries runs the store produced rather than a bitmap any package could build.
+// which is why the narrower statement is the one the trust argument needs.
+//
+// The queue's seeding entry points, which used to take a fully exported
+// FileExtent and reach markDone with no barrier and no proof, are gone with the
+// type — what installs a resume's answer now carries runs the store produced
+// rather than a bitmap any package could build.
 //
 // Before this design the assembler could ack from six places, and the same
 // defect was refiled twice (#355, #356). One place is the whole point;
