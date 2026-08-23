@@ -114,11 +114,21 @@ completion by comparing the recorded lengths against the file:
 | | Meaning |
 |---|---|
 | `Σ length > stat size` | **definite overlap** — articles wrote over each other |
-| `Σ length == stat size` | complete and cleanly tiled |
+| `Σ length == stat size` | **no evidence of overlap** — not proof of a clean tiling; a hole and an equal-sized overlap cancel here |
 | `Σ length < stat size` | articles are missing or failed, which is the ordinary incomplete case |
 
-Only the first is a positive signal, and that is enough: it is the only case
-that produces a file which *looks* complete while holding a hole.
+Only the first is a positive signal, and it is enough for the case that matters:
+a file which *looks* complete while holding a hole.
+
+It is not a complete overlap detector, and the middle row says why. `Σ length`
+is a sum, so an overlap of N bytes and a hole of N bytes cancel and land on
+equality. The old prefix walk compared adjacent extents structurally and saw the
+overlap regardless; this check cannot. Two things bound the loss. A hole means a
+gap between rows, so such a file has more than one row and §3.5 withholds the
+whole-file CRC on the **row count** — the #387 outcome is closed by a different
+guard, structurally, not by this arithmetic. And the file is incomplete either
+way, so par2 fetches recovery volumes and repairs both defects. What is lost is
+a warning on a file the user is already told is incomplete.
 
 A first draft of this section had overlapping articles **refused** at accept
 time, the way an out-of-range offset is. That was over-engineered, and it was
@@ -155,6 +165,41 @@ is correct by definition and the stored record is never authoritative. After thi
 change the record *is* authoritative, and only its size is checked. That is a
 deliberate trade of an in-place-corruption check for a startup that does no I/O,
 and the contract must state it rather than inherit the old claim.
+
+**It also narrows S7 to size alone, and `ModTimeNs` is deleted outright.** S7's
+validity stamp is today the pair `(size, mtime)` — `synctarget.go:138-142` says
+so, and `resume.go:131` is where it is checked:
+
+```go
+if ok && ext.Size == fi.Size() && ext.ModTimeNs == fi.ModTime().UnixNano() {
+```
+
+The mtime half is not merely redundant after this change; it becomes actively
+harmful, and the reason is what the *response* to a mismatch costs. Today a
+mismatch falls through to `recompute()` — the file is re-read and re-hashed, and
+the records are corrected. The stamp costs **one read**. `recompute()` is
+deleted by this section, so the only response left to a mismatch is to discard
+the file's records and re-fetch. The same stamp would then cost **the whole
+file**.
+
+That inverts the guard's economics. An mtime can change without a byte changing
+— a restore from backup, a copy that does not preserve timestamps, a tool that
+touches the file — and each of those would trigger a full re-download of a file
+that is entirely intact. A size shortfall cannot happen that way: it means bytes
+the records claim are genuinely not there.
+
+So `ModTimeNs` goes from `SyncTarget.Stat` (which becomes `Stat(fileIdx int32)
+(size int64, err error)`), from `ResumeResult`, and from the barrier and resumer
+plumbing that carries it. `FileWriter.Stat`'s second return value has exactly
+one consumer — `assembler/synctarget.go:543`, feeding the interface method above
+— so the whole vertical goes with it.
+
+**What is given up:** in-place corruption that preserves file length is no longer
+detected at startup. par2 detects and repairs it at completion, which is the same
+answer §3.3 gives for an overlap and the same one the *"a bad article costs only
+its own bytes"* rule gives generally. This is a **contract amendment, not a
+cleanup** — S7 is a numbered rule, and it is listed among the escalations
+alongside the S4 inversion rather than buried in an implementation step.
 
 ### 3.5 The whole-file CRC is a query, not a walk
 
@@ -214,7 +259,9 @@ file equals `Σ length`.
 | S1, S2 | Class B strictly after the `fsync` | unchanged, and now the only claim there is |
 | S4 — recomputation beats the stored record | the bitmap is rebuilt from facts plus a disk read | **inverted** — the record is authoritative, gated on one `stat` (§3.4) |
 | S5 — no second copy to drift | two records, two guards | one record; both guards and `file_extents` gone |
+| **Writers to the durability record** | **two** — the barrier's commit, and `Resumer.writeBack` | **one** — the barrier. The resume only *deletes*, and only when the file on disk contradicts the record |
 | S6 — truncate only shrinks | unchanged | unchanged |
+| S7 — validity stamp | `(size, mtime)`, mismatch triggers a recompute | **narrowed to size** — with no recompute left, mtime's only response is a full re-fetch, and mtime moves without bytes moving (§3.4) |
 | R3 — losing a suffix costs a re-fetch | applies to Class A | applies to the run record, and is now the routine cost after an unclean shutdown |
 
 ### What this deletes
@@ -222,7 +269,8 @@ file equals `Σ length`.
 `article_facts`, `file_extents`, `ArticleFact`, `FileExtent`, `verifiedPrefix`,
 `prefixWalk`, `durableAt`, `durableExtent`, `recordedExtent`, `overlapAnywhere`,
 both `FinalizeFile` guards, `PrefixCRC`/`HasPrefixCRC`, `VerifiedTo`,
-`BytesDurable`, `Bitmap` and the whole of `extent.go`, `Resumer.recompute`,
+`BytesDurable`, `ModTimeNs` and the mtime half of S7 (§3.4), `Bitmap` and the
+whole of `extent.go`, `Resumer.recompute`, `Resumer.writeBack`,
 `verifyRegions`, `SeedFromExtents`, `ReplaceFromResume`, the `articles_done`
 blob in both `job_files` and `history_job_files`, and its independent
 reimplementation in `test/crash/harness.go`.

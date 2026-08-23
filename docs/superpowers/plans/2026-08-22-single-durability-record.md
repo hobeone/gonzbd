@@ -36,7 +36,8 @@
 2. **Cross-package coupling in both directions.** `internal/durability` owns and writes `durable_runs`; `internal/queue` **reads** it. `internal/queue` owns and writes `failed_articles`; `internal/durability` never touches it. Both tables are created by one migration, so state the ownership explicitly rather than leaving a Rule 2 reader to infer it.
 3. **A persistence-format change** — two tables dropped, two created.
 4. **S4 is inverted** (spec §3.4). The record becomes authoritative and startup does no reads. A departure from `docs/durability-contract.md`, not an elaboration.
-5. **A public cross-package signature changes: `Assembler.SyncTargetFor`.** Step 13b deletes `ArticleCount` and `FileLocalOrdinal`. Verified against source: those are the *only* two methods on `assembler.ArticleMap` (`synctarget.go:150-159`), so the interface goes to zero methods and the type dies with them — taking its sole implementation, `app.manifestArticleMap` (`app/durability.go:20-60`), and reducing `SyncTargetFor(jobID string, am ArticleMap)` (`synctarget.go:185`) to `SyncTargetFor(jobID string)`. One production caller (`app/durability.go:480`). Listed separately from #3 because AGENTS.md escalates a public interface change between packages on its own terms, and Step 13b reads as a deletion list where a reader skims past it.
+5. **S7 is narrowed to size, and `ModTimeNs` is deleted** (spec §3.4). A numbered contract rule loses half its stamp, so it is escalated beside the S4 inversion rather than carried as a cleanup step. The argument is that the mismatch *response* changes: today it costs one read (`recompute`), after this change it costs the whole file, and an mtime moves without any byte moving.
+6. **Two public cross-package signatures change: `Assembler.SyncTargetFor` and `SyncTarget.Stat`.** `Stat` drops its `modTimeNs` return under escalation 5, which also lets `FileWriter.Stat` drop its second value — verified to have exactly one consumer, `assembler/synctarget.go:543`. `SyncTargetFor` is the larger one: Step 13b deletes `ArticleCount` and `FileLocalOrdinal`. Verified against source: those are the *only* two methods on `assembler.ArticleMap` (`synctarget.go:150-159`), so the interface goes to zero methods and the type dies with them — taking its sole implementation, `app.manifestArticleMap` (`app/durability.go:20-60`), and reducing `SyncTargetFor(jobID string, am ArticleMap)` (`synctarget.go:185`) to `SyncTargetFor(jobID string)`. One production caller (`app/durability.go:480`). Listed separately from #3 because AGENTS.md escalates a public interface change between packages on its own terms, and Step 13b reads as a deletion list where a reader skims past it.
 
 ---
 
@@ -87,7 +88,66 @@ Additive and independently landable — the field is unused until Task 3.
 
 Splitting the migration in two is the point — a single `002` that both creates and drops cannot be half-applied, and would force 3a to carry the deletion.
 
-**Test strategy is this task's largest unwritten piece.** Roughly 4,000 test lines in `internal/durability` assert Class A/Class B behaviour, and 3b deletes the types they name — so they do not fail, they stop compiling, and a package that does not build reports no coverage at all. Before writing 3b, triage them into three piles: *delete* (asserts a mechanism that no longer exists — prefix walks, bitmap seeding), *port* (asserts a behaviour that survives under a new mechanism — the truncate bound, the R23 CRC gate, storage-fault stalls), and *keep as-is*. The middle pile is the one that matters; anything not explicitly ported is a property silently dropped, and a green suite after a 4,000-line deletion proves nothing about it.
+### Test triage — do this before writing 3b
+
+`internal/durability`'s tests total **5,834 lines** across 20 files, and 3b deletes the types most of them name. They do not fail; they stop **compiling**, and a package that does not build reports no coverage at all. A green suite afterwards proves nothing about what was dropped.
+
+Every file and test name below was verified present in the tree. **Four verdicts, not three** — two files carry both obsolete and surviving tests, and a whole-file verdict is exactly what hides the survivors.
+
+**DELETE — the mechanism is gone**
+
+| File | |
+|---|---|
+| `extent_test.go` (121 lines) | `Bitmap`, bit-width padding masks, `FileExtent` |
+| `factlog_sqlite_test.go`, `factlog_bench_test.go` | `article_facts` CRUD, R1 immutability, `INSERT OR IGNORE` |
+| `prefix_test.go`, `verifiedprefix_bench_test.go` | `verifiedPrefix`, `prefixWalk`, `VerifiedTo` contiguity walks |
+| `resume_writeback_test.go` | `recompute()` and the write-back — see Step 12 |
+| `barrier_test.go`, six cases | `TestBarrier_VerifiedToAdvancesOnlyOverAGaplessPrefix`, `…PriorPaddingBitsDoNotInflateTheDurableCount`, `…PriorBitmapWidensToTheArticleCount`, `…UnplaceableArticleIsAnError`, `…FactLogReadFailureAbortsTheBarrier`, `…RecomputesThePrefixCRCRatherThanCarryingIt` |
+
+**PORT — the property survives under a new mechanism.** This is the pile that matters. Anything not explicitly ported is a property silently dropped.
+
+| File | Property to re-assert |
+|---|---|
+| `extentstore_sqlite_test.go` → `durable_runs_sqlite_test.go` | merging when offset **and** art_idx abut; **article-granularity dedup against stored rows before grouping** (Step 4); order-independence and strict left-to-right CRC associativity; transaction rollback; `DeleteJob` |
+| `finalize_test.go` | truncate bound is `max(offset+length)` over stored runs; no truncate when `bound == 0` |
+| `finalize_crc_test.go` | the CRC predicate — **exactly one row, `offset == 0`** — pinned red-green on *both* the holed file (R23) and the overlapped file (#387), per Step 8 |
+| `finalize_overlap_test.go` | `PostAnomaly` raised when `Σ length > stat size`, and **not** when `Σ length < stat size` |
+| `resume_test.go`, `resume_missingfile_test.go` | the size-only gate: `size >= max(offset+length)` adopts; missing or short deletes the file's runs and returns Outstanding |
+| `test/crash/harness.go` | its direct SQLite reads move from `article_facts`/`file_extents`/`articles_done` to `durable_runs`/`failed_articles`. Mandatory gate on Tasks 3, 4 and 5 |
+| `internal/queue/prune_durability_test.go`, `manifest_gate_test.go` | prune and schema assertions retarget the new tables |
+
+**KEEP — untouched by the mechanism change**
+
+`closerace_test.go`, `closerace_phases_test.go` (file-close race, `ErrFileNotOpen`), `proof_test.go` (the unexported `DurableProof` payload against `Queue.AckDurable`), `raise_test.go` (fault classification, `ErrTargetUnavailable`), and from `barrier_test.go`: `TestBarrier_SyncPrecedesCommitAndAck`, `…SyncFailureAcksNothing`, `…CommitFailureAcksNothing`, `…AckFailurePropagates`, `…ConfirmsOnlyAfterTheCommitAndAck`, `…MultipleFilesSyncAllBeforeAnyClaim`, `…PermanentFaultFailsRatherThanStalls`, `TestRouteFault`.
+
+**SPLIT — the file survives, some of its tests do not.** Both were missing from a first triage that assigned verdicts per file; between them they hold **640 lines**, and one is the #413 suite.
+
+`mutation_gaps_test.go` (270 lines)
+
+| Test | |
+|---|---|
+| `TestBitmap_IndexingAcrossAWordBoundary` | delete |
+| `TestResume_FastPathWidensAStoredBitmapNarrowerByAWholeWord` | delete |
+| `TestBarrier_PriorExtentWidensAStoredBitmapNarrowerByAWholeWord` | delete |
+| `TestResume_FactAtExactlyTheArticleCountFailsLoudly` | delete — the A2/R28 loud failure goes with `FileLocalOrdinal` (Step 7, Step 13b) |
+| `TestResume_VerifiesAFactEndingExactlyAtEndOfFile` | **port** — the same boundary against the size gate, `size == max(offset+length)` exactly |
+| `TestFinalizeFile_FactsButNoneDurableDoesNotTruncate` | **port** — this is Task 4's `bound == 0` branch |
+
+`overlap_report_test.go` (370 lines) — **the #413 overlap-reporting suite.** Task 4 reimplements overlap detection on `Σ length`, so these are the properties that must survive a mechanism swap, not tests of a mechanism being removed.
+
+| Test | |
+|---|---|
+| `TestAdmit_LatchesPerJobAndFile` | **keep** — the latch lives in `Barrier.reported`, unchanged |
+| `TestRun_RaisesEachOverlapOnce` | **keep** — same |
+| `TestForgetJob_LetsARetryWarnAgain` | **keep** — same, and PR #422 touches its subject |
+| `TestFinalizeFile_ReportsOverlappingDurableArticles` | **port** to the `Σ length` mechanism |
+| `TestRun_ReportsAnOverlapWhenNothingWasAcked` | **port** |
+| `TestFinalizeFile_DoesNotReportAHoleAsAnOverlap` | **port** — `Σ length < size` must stay silent |
+| `TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole` | **port, and expect it to fail** — see Task 4's cancellation note. Decide there whether it becomes a documented gap |
+| `TestOverlapFrom_ReportsTheIntersectionNotTheVictimsEnd` | delete — `overlapFrom` takes the deleted `prefixWalk`, and `Σ length` yields a total excess, not an intersection |
+| `TestOverlapReason_NamesBothArticlesAndTheFile` | delete — a merged row cannot name two articles. **`PostAnomaly.Reason`'s wording changes**, which Step 17b's `postanomaly.go` row must cover |
+
+`finalize_factgap_test.go` is a third split, and the one a per-file verdict got wrong. `TestFinalizeFile_DoesNotTrimBelowADurableArticleWithNoFact` **deletes** — Class A/Class B divergence is unrepresentable in a single record. But `TestFinalizeFile_PostTruncateStatFaultNamesTheFile` **ports**: it pins the R27 path that names the file on a post-truncate stat fault, that stat survives (Task 4 Step 3 reasons about it at `barrier.go:710`, `:726`), and deleting the file would drop a live storage-fault property along with the obsolete one.
 
 ### Schema (`002_durable_runs.sql`)
 
@@ -160,8 +220,10 @@ enough to be re-raised.
   **Pin both cases red-green:** the holed file (the R23 case, which the span form also passes) *and* the overlapped file (the #387 case, which only the row-count form catches). A pin on the first alone is what let the span form look correct.
 - [ ] **Step 9: Rewire `stall.go`'s seed.** `seedFromCommittedExtents` (`:453-467`) calls `app.extents.Load` and `queue.SeedFromExtents`, both deleted. Its doc says the seed is what stops a job that finalized a file during a stall from re-fetching it, so the behaviour must survive: `ForJob` plus whatever replaces `SeedFromExtents`.
 - [ ] **Step 10: Reconcile `failed_articles`' THREE reversal sites.** Writing is one site (`AckPermanentFailure`, `workset.go:94`). Reversal is not: `resetForReload` (`progress.go:767`) **and** `Job.ResetForRetry` (`job.go:812`), the latter reached from both `Queue.Retry` (`queue.go:658`) and `RetryHistoryJob`. Today these stay consistent because `articles_done` is re-serialised wholesale on the next store update; a separate table has no wholesale rewrite, so stale rows survive a retry and **the next restart marks the retry's re-fetched articles failed.** Batch the delete per job, never per article.
-- [ ] **Step 11: Trim `ResumeResult`.** `Resume`'s **return type changes** — `VerifiedTo`, `PrefixCRC`, `HasPrefixCRC`, `BytesDurable` and the `Durable Bitmap` all go (`resume.go:23-56`). An earlier draft claimed the signature was unchanged, in two places; only the parameter list is. `fileResumer` (`resume_startup.go:27`) and `resumeJobFiles`'s construction (`:325-330`) both change, as does its `recomputed` counter.
-- [ ] **Step 12: Reduce `Resumer` to the `stat` gate.** `recompute`, `verifyRegions` and `writeBack` go; `Resume` compares `stat(path).size >= max(offset+length)`, discards the file's rows on a shortfall, and returns the resume set. **The sweep runs inside `Start` before dispatch** (`resume_startup.go:52-56`), which is what stops the assembler re-creating and pre-allocating a deleted partial so the gate passes over zeros — a property of the sweep's placement, not of the gate. Say so where the gate lives. Log every discard at `Warn`.
+
+  **Scope the batch to exactly the jobs the caller resets.** `ClearAllEmitted` (`queue.go:1513-1520`) loops every article of every job holding both a manifest and progress — that is, **resident jobs only** — and calls `resetForReload` on each, so a job-scoped `DELETE … WHERE job_id = ?` per resident job is exactly equivalent to the per-article clearing it replaces. A delete that swept every job instead would resurrect the permanently-failed articles of every *non-resident* job, and the symptom is a silent re-download storm rather than an error. The equivalence is what makes the batch safe; the scoping is what makes the equivalence true.
+- [ ] **Step 11: Trim `ResumeResult`.** `Resume`'s **return type changes** — `VerifiedTo`, `PrefixCRC`, `HasPrefixCRC`, `BytesDurable`, `ModTimeNs` (escalation 5) and the `Durable Bitmap` all go (`resume.go:23-56`). `Size` stays — it is the one half of the S7 stamp §3.4 keeps. An earlier draft claimed the signature was unchanged, in two places; only the parameter list is. `fileResumer` (`resume_startup.go:27`) and `resumeJobFiles`'s construction (`:325-330`) both change, as does its `recomputed` counter.
+- [ ] **Step 12: Reduce `Resumer` to the `stat` gate — which retires the SECOND WRITER to the durability record.** This is the change's strongest Rule 2 result and neither document previously said it. `writeBack` calls `r.exts.Commit` (`resume.go:274`) and its own doc describes itself as committing "a resume's own answer as the file's Class B record", so `Resumer` is a genuine second writer today. After this step the barrier's commit is the sole writer, and the resume only ever **deletes** — and only when the file on disk contradicts the record. Say so where the gate lives; it is the justification for trusting the record at all. `recompute`, `verifyRegions` and `writeBack` go; `Resume` compares `stat(path).size >= max(offset+length)`, discards the file's rows on a shortfall, and returns the resume set. **The sweep runs inside `Start` before dispatch** (`resume_startup.go:52-56`), which is what stops the assembler re-creating and pre-allocating a deleted partial so the gate passes over zeros — a property of the sweep's placement, not of the gate. Say so where the gate lives. Log every discard at `Warn`.
 - [ ] **Step 13: Delete `prefix.go` and its THREE dependents' uses** — `barrier.go`, `resume.go:309` (inside `recompute`, Step 12), and `postanomaly.go:48`, whose `overlapFrom(w prefixWalk, …)` takes the deleted type. **`PostAnomaly` itself stays** — it is the barrier's public return type, reaching the user through `app.reportPostAnomalies` → `handlePostAnomaly`. Only its producer changes.
 
 - [ ] **Step 13a: Delete `extent.go` outright — all 157 lines, both `FileExtent` and `Bitmap`.** An earlier draft said "most of". It is all of it: every `Bitmap` user is on this task's delete list — `priorExtent` (`barrier.go:527,535`), `durableAt` (`:555`), `durableExtent` (`:797`), `recordedExtent` (`:827`), `ResumeResult.Durable` and `verifyRegions` (`resume.go:26,107,293,341`), `extentstore_sqlite.go` (`:109,142`), and `fileDurableBitmap`/`BitmapFromBytes` in `queue/workset.go:400-421`. Nothing outside those holds one.
@@ -195,7 +257,7 @@ enough to be re-raised.
   | `barrier.go:112-119` | `ForgetJob`'s rationale, keyed on `article_facts` and `INSERT OR IGNORE`. See the note below — this one is already wrong today. |
   | `barrier.go:39-59`, `:225-238`, `:574-597`, `:383-387` | the checkpoint/finalize narration, in terms of Class A walks and Class B extents. |
   | `postanomaly.go:8-24` | *"found while walking a file's Class A facts"* — there is no walk after Step 13. |
-  | `synctarget.go:138-142` | `Stat`'s doc names the **S7 validity stamp** as the `(size, mtime)` pair a resume checks before adopting a Class B value. §3.4 keeps only the size comparison, so **S7 loses its mtime half entirely** — and neither the spec nor Task 5 currently says so. Decide it here: either §3.4 checks mtime too, or S7 is narrowed on the record and this doc says which half survives. Do not let it disappear silently. |
+  | `synctarget.go:138-142` | `Stat`'s doc names the **S7 validity stamp** as the `(size, mtime)` pair. **Decided (escalation 5): S7 narrows to size, `modTimeNs` is deleted from the signature.** Rewrite the doc to name the surviving half and why — not to delete the sentence, which would leave a reader who knows S7 unable to tell a narrowing from an oversight. |
 
 - [ ] **Step 18: Run everything, including the crash suite. Commit** — `refactor(durability): replace two per-article records with durable runs`. Closes #421 and #389.
 
@@ -208,8 +270,19 @@ enough to be re-raised.
 | | Meaning |
 |---|---|
 | `Σ length > stat size` | **definite overlap** — articles wrote over each other |
-| `Σ length == stat size` | complete and cleanly tiled |
+| `Σ length == stat size` | **no evidence of overlap** — not proof of a clean tiling, because a hole and an equal-sized overlap cancel here (see below) |
 | `Σ length < stat size` | articles missing or failed — ordinary, not a finding |
+
+**A hole and an overlap of the same size cancel, and this check cannot see either.** `Σ length` counts recorded bytes; the file's size is `max(offset+length)`. An overlap of N bytes adds N to the sum, a hole of N bytes takes N off the span — so a file carrying both lands on `Σ length == stat size` and is reported *"complete and cleanly tiled"* while holding both defects. The row above says so and is wrong in exactly that case.
+
+This is a **detection gap the old mechanism did not have**: the prefix walk compared adjacent extents structurally, so it saw the overlap regardless of what else was wrong with the file. `TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole` is the existing pin, and it will not survive a straight port — see the triage matrix.
+
+Two things bound it, and they are why this is a documented gap rather than a blocker:
+
+- **It cannot reach #387.** A hole means a gap between rows, so the file has more than one row and Step 8's predicate withholds the whole-file CRC on the row count alone. The dangerous outcome — publishing a CRC over bytes that are not there — is closed by a different guard, and closed structurally.
+- **par2 repairs both.** The file is already incomplete, so recovery volumes are fetched regardless of whether the overlap was also named.
+
+What is lost is a *warning*, on a file the user is already being told is incomplete. Record the gap in the contract, and change the table's middle row from "cleanly tiled" to what it can actually support.
 
 **Nothing is refused at accept time.** `acceptedAt` is `map[int64]offsetOwner` with `offsetOwner{id, written}`, keyed on start offset with no length — it answers #383's exact-collision question, not range intersection. Building an index that could would duplicate a fact this check already covers.
 
@@ -226,7 +299,7 @@ enough to be re-raised.
 **Files:** `docs/durability-contract.md`, `docs/ARCHITECTURE.md`, `docs/queue-lifecycle.md`, `docs/article-validation-contract.md`, `internal/durability/proof.go`, `internal/queue/workset.go`.
 
 - [ ] **Step 1: Read `docs/durability-contract.md` and `docs/ARCHITECTURE.md` in full.** Not grep — the claims that survive a grep are the ones restated in prose sharing no token with the code.
-- [ ] **Step 2: Rewrite the Class A/B table, §4, and the resume section.** R1 and R2 are deleted; **S4 is inverted**, not amended — say so, because a reader who knows the old contract will assume a recomputation still wins.
+- [ ] **Step 2: Rewrite the Class A/B table, §4, and the resume section.** R1 and R2 are deleted; **S4 is inverted**, not amended — say so, because a reader who knows the old contract will assume a recomputation still wins. **S7 is narrowed to size**, and must be stated as a narrowing with its reason, not silently reworded: a reader who knows the `(size, mtime)` stamp cannot otherwise tell a decision from an omission. Record Task 4's `Σ length` cancellation gap here too — it is a bound on what the overlap check detects, which belongs in the contract rather than only in the plan.
 - [ ] **Step 3: Grep every falsified literal from the repository root.**
 
 ```bash
@@ -235,6 +308,8 @@ git grep -n 'asserts nothing about presence'; git grep -n 'Class A'; git grep -n
 git grep -n 'ArticleFact'; git grep -n 'FileExtent'; git grep -n 'verifiedPrefix'
 git grep -n 'PrefixCRC'; git grep -n 'recordedExtent'; git grep -n 'articles_done'
 git grep -n 'articles_done' -- test/
+git grep -n 'ModTimeNs'; git grep -n 'modTimeNs'; git grep -n 'S7'
+git grep -n 'writeBack'; git grep -n 'cleanly tiled'
 ```
 
   Named consumers the earlier sweep list missed: `internal/api/queue.go:184,204,215`, `internal/app/statusinfo.go:233`, `internal/assembler/assembler.go:163,1695`, `internal/history/testdata/schema.golden`.
@@ -306,4 +381,16 @@ Measured totals for the change: roughly **1,850 non-test lines deleted against ~
 19. **`SyncTargetFor`'s signature change was buried in a deletion list.** `ArticleMap`'s only two methods are the ones Step 13b deletes, so the interface dies and the public cross-package signature changes. Now escalation 5.
 20. **Step 17's premise was false.** `p.done` is sized from `Σ FileMeta.ArticleCount`, and the panic compares against `m.NumArticles()` — manifest against manifest, untouched by deleting `articles_done`. The real hazard is the `Done`-gated `Failed` read, which already belonged to Step 14.
 21. **The SQLite-keyword finding was itself wrong.** A round-six finding said `offset`/`length` must be quoted or the migration fails. Probed against `modernc.org/sqlite`: all four statement shapes execute unquoted. Recorded in the Store API section so it is not re-raised.
-22. **Test strategy was the plan's biggest silence.** ~4,000 test lines in `internal/durability` name types 3b deletes, so they stop compiling rather than failing — and a package that does not build reports no coverage. The delete/port/keep triage is now stated where 3b begins.
+22. **Test strategy was the plan's biggest silence.** ~4,000 test lines in `internal/durability` name types 3b deletes, so they stop compiling rather than failing — and a package that does not build reports no coverage. The delete/port/keep triage is now stated where 3b begins. (Measured in round seven: **5,834 lines** across 20 files.)
+
+### Round seven — external review
+
+A different model reviewed both documents against two stated principles: prefer re-downloading to defensive machinery, and one owner per piece of state. Five architectural findings plus a test triage matrix. Every file and test name it cited was verified present in the tree before anything was applied.
+
+23. **S7's mtime half is deleted, not merely narrowed** — round six's one open question, now decided (escalation 5, spec §3.4). What settles it is the *response* to a mismatch, not the stamp. Today a mismatch falls through to `recompute()` and costs one read; with `recompute` deleted the only response left is discard-and-refetch, so the identical stamp costs the whole file. And an mtime moves without a byte moving — a restore, a copy, a touch — where a size shortfall cannot. `ModTimeNs` goes from `SyncTarget.Stat`, `ResumeResult`, and the barrier and resumer plumbing; `FileWriter.Stat`'s second return has exactly one consumer (`assembler/synctarget.go:543`) and goes with it.
+24. **The change retires a second writer to the durability record, and neither document claimed it.** `Resumer.writeBack` calls `exts.Commit` (`resume.go:274`), and its own doc describes committing "a resume's own answer as the file's Class B record". So the record has two writers today; after Step 12 the barrier is the only one and the resume can only delete. Under Rule 2 that is the strongest result in the whole change.
+25. **The `failed_articles` batch delete needs its scope stated, not just its granularity.** `ClearAllEmitted` loops every article of every **resident** job, which is what makes a per-job batch equivalent to the per-article clearing it replaces. A delete swept across all jobs would resurrect every non-resident job's permanently-failed articles, and the symptom is a re-download storm rather than an error.
+26. **The test matrix needed a fourth verdict.** One verdict per file hides survivors inside condemned files. `finalize_factgap_test.go` was marked "delete entirely" while holding `TestFinalizeFile_PostTruncateStatFaultNamesTheFile`, an R27 storage-fault pin on a path Task 4 keeps. `mutation_gaps_test.go` and `overlap_report_test.go` — 640 lines, the latter the entire #413 suite — were in no category at all. All three are now SPLIT, test by test.
+27. **`Σ length` cannot see a hole and an equal-sized overlap.** Found while triaging `TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole` for the port: the overlap adds N to the sum, the hole takes N off the span, and both cancel to `Σ length == stat size`. The old prefix walk compared extents structurally and saw it. Both copies of the table row now read "no evidence of overlap" rather than "cleanly tiled", with the gap documented and bounded — a holed file has more than one row, so §3.5 withholds the CRC on the row count regardless, and par2 repairs both defects anyway. What is lost is a warning on a file already reported incomplete.
+
+Three of the five architectural findings restated the plan back — strict merge (Step 6), completion-only overlap handling (§3.3), batched reversal (Step 10). That is the expected shape when a reviewer argues from principles rather than a diff, and it is cheap to triage. The matrix is where the round did work the plan had not.
