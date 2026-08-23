@@ -126,7 +126,33 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 			CRC32:       a.CRC32,
 		})
 	}
-	sort.Slice(combined, func(i, j int) bool { return combined[i].Offset < combined[j].Offset })
+	// Offset ascending, then Length DESCENDING, then FirstArtIdx ascending.
+	// All three keys are load-bearing and none is a stylistic preference.
+	//
+	// Offset is the fold's precondition. The other two exist because entries
+	// can share an offset — a multi-part UU post asserts offset 0 for every
+	// segment (internal/downloader/dispatch.go's UU block) — and two entries
+	// at one offset never abut, so both survive the fold and both address the
+	// one primary key (job_id, file_idx, offset). Under a bare Offset
+	// comparison sort.Slice is free to order them either way, and INSERT OR
+	// REPLACE then keeps whichever landed last.
+	//
+	// Length descending puts the longer entry first, which is the one
+	// mergeAdjacentRuns keeps. FirstArtIdx breaks the remaining tie when two
+	// entries share an offset AND a length, making the comparator a total
+	// order — without it the accumulator at a shared offset is again
+	// arbitrary, and picking the higher-indexed entry leaves the articles
+	// that would have abutted the lower one unable to fold into it.
+	sort.Slice(combined, func(i, j int) bool {
+		a, b := combined[i], combined[j]
+		if a.Offset != b.Offset {
+			return a.Offset < b.Offset
+		}
+		if a.Length != b.Length {
+			return a.Length > b.Length
+		}
+		return a.FirstArtIdx < b.FirstArtIdx
+	})
 
 	final := mergeAdjacentRuns(combined)
 
@@ -153,10 +179,26 @@ func coveredByAny(stored []Run, artIdx int32) bool {
 	return false
 }
 
-// mergeAdjacentRuns folds a slice of Runs, already sorted by Offset, into
-// maximal runs. Two entries merge only when they abut in BOTH byte offset
-// and article index — offset contiguity or index contiguity alone is not
-// enough (run.go's Commit doc; the design doc's core rule).
+// mergeAdjacentRuns folds a slice of Runs into maximal runs. Two entries
+// merge when they abut in BOTH byte offset and article index — offset
+// contiguity or index contiguity alone is not enough (run.go's Commit doc;
+// the design doc's core rule).
+//
+// It also DROPS an entry that shares an offset with the one before it, which
+// is not a merge and does not pretend to be: the two describe overlapping
+// bytes, so no combined CRC over them would be meaningful. The input must be
+// sorted by Offset ascending then Length DESCENDING (commitFile's sort says
+// why), which puts the longer entry first and so makes the kept one the
+// longer. That choice is deliberate. Both entries' bytes are on disk either
+// way and the record cannot say which won, but FinalizeFile derives its
+// truncate bound from the stored runs — so keeping the shorter would let a
+// LATER finalize truncate the file to it, while keeping the longer leaves the
+// bound conservative in the safe direction.
+//
+// What this does NOT do is report the collision. The exact-offset duplicate
+// currently raises no PostAnomaly: overlapFrom compares Σ length against the
+// file's size, and dropping the duplicate is exactly what stops Σ length from
+// exceeding it. Surfacing it is escalated, not implemented here.
 //
 // The trap this exists to avoid: crc32util.Combine(a, b, lenB) requires lenB
 // to be the WHOLE length of the run being folded in, not one article's
@@ -169,6 +211,11 @@ func mergeAdjacentRuns(sorted []Run) []Run {
 	out := make([]Run, 0, len(sorted))
 	cur := sorted[0]
 	for _, r := range sorted[1:] {
+		// Checked before the fold, because a zero-length cur would satisfy
+		// both predicates and folding an overlapping entry is never right.
+		if r.Offset == cur.Offset {
+			continue
+		}
 		if r.Offset == cur.Offset+cur.Length && r.FirstArtIdx == cur.LastArtIdx+1 {
 			cur.CRC32 = crc32util.Combine(cur.CRC32, r.CRC32, r.Length)
 			cur.Length += r.Length

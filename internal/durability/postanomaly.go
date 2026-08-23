@@ -69,10 +69,20 @@ func overlapFrom(runs []Run, size int64, idx int32, pathFn func() string) (PostA
 // overlapReason renders an overlap for a human.
 //
 // It says the post is malformed rather than that the download failed, because
-// that is what is true: the file is repairable, par2 will run — an overlapped
-// file keeps more than one run and so never publishes a whole-file CRC (§3.5),
-// so QuickCheck reports NoCRC rather than a spurious match — and the user's
-// question is why a healthy-looking job needed repairing.
+// that is what is true: the file is repairable, par2 will run — a file that
+// REACHES this report keeps more than one run and so never publishes a
+// whole-file CRC (§3.5), so QuickCheck reports NoCRC rather than a spurious
+// match — and the user's question is why a healthy-looking job needed
+// repairing.
+//
+// "Reaches this report" rather than "is overlapped", because the two are not
+// the same set and only the narrower one is guaranteed. overlapFrom raises
+// this on Σ length exceeding the file's size, which takes at least two rows
+// tiling past the end — the partial-overlap shape. An EXACT-offset duplicate
+// is a different shape: mergeAdjacentRuns drops the shorter of the two, so it
+// leaves no excess to sum and never gets here at all, and the survivor can be
+// a single row that does publish a CRC. That case is out of this function's
+// reach, not covered by its claim.
 //
 // It names no article, and that is a real loss rather than an omission. A run
 // merges the articles that abut into one row, so once the record is written

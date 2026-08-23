@@ -401,3 +401,87 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 		t.Errorf("merged CRC32 = %#x, want %#x — Combine must use the stored run's WHOLE length (12), not one article's (6)", got[0].CRC32, want)
 	}
 }
+
+// TestSQLiteRunStore_SameOffsetKeepsTheLongerRow pins the exact-offset
+// collision, which merging alone cannot resolve: two entries at the SAME
+// offset never abut (r.Offset == cur.Offset+cur.Length is false for a
+// non-empty cur), so both reach insertRuns, and both address the one primary
+// key (job_id, file_idx, offset). INSERT OR REPLACE then keeps whichever was
+// written last.
+//
+// The case is reachable, and dispatch.go's UU block documents how: a
+// multi-part UU post yields several articles that all assert offset 0.
+// FileWriter.acceptedAt resolves that within one open-file episode, but it is
+// per-open-episode residency, so across a restart or a close-handles cycle a
+// second article at offset 0 reaches the run store beside the stored row.
+//
+// What must not be lost is the LONGER row. FinalizeFile computes its truncate
+// bound from the stored runs, so if the 100-byte row survives and the
+// 1000-byte one is discarded, a LATER finalize — a retry, a re-completion —
+// truncates a 1000-byte file to 100 bytes. (The finalize that commits the
+// collision is itself safe: it computes its bound before the commit.) Keeping
+// the longer row makes the bound conservative in the safe direction.
+//
+// Both commit orders are pinned because they take different paths to the same
+// outcome: with the long row stored first the drop does the work, and with the
+// short row stored first the sort's FirstArtIdx tiebreak decides which of two
+// equal-length entries at offset 0 becomes the fold's accumulator — pick the
+// wrong one and articles 1-9 no longer abut it, leaving two rows.
+func TestSQLiteRunStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
+	const artLen = 100
+
+	// tiling is articles 0-9, each 100 bytes, covering [0,1000) — they merge
+	// into a single stored run of length 1000.
+	tiling := func() []DurableArticle {
+		out := make([]DurableArticle, 0, 10)
+		for i := range int32(10) {
+			out = append(out, DurableArticle{
+				FileIdx: 0, ArtIdx: i, Offset: int64(i) * artLen, Length: artLen,
+				CRC32: crcOf([]byte{byte(i)}),
+			})
+		}
+		return out
+	}
+	// intruder is a second article asserting offset 0, as a multi-part UU
+	// post's later segment does.
+	intruder := []DurableArticle{
+		{FileIdx: 0, ArtIdx: 10, Offset: 0, Length: artLen, CRC32: crcOf([]byte{0xAA})},
+	}
+
+	cases := []struct {
+		name   string
+		first  []DurableArticle
+		second []DurableArticle
+	}{
+		{"long row stored first", tiling(), intruder},
+		{"short row stored first", intruder, tiling()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			rs := NewSQLiteRunStore(openTestDB(t))
+
+			if err := rs.Commit(ctx, "job-1", c.first); err != nil {
+				t.Fatal(err)
+			}
+			if err := rs.Commit(ctx, "job-1", c.second); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := rs.ForFile(ctx, "job-1", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("ForFile returned %d rows, want 1 — two entries share offset 0, so one must be dropped rather than silently REPLACEd: %+v", len(got), got)
+			}
+			r := got[0]
+			if r.Offset != 0 || r.Length != 10*artLen {
+				t.Fatalf("stored row = %+v, want Offset=0 Length=%d — the LONGER row must survive, or a later FinalizeFile truncates a %d-byte file to %d", r, 10*artLen, 10*artLen, r.Length)
+			}
+			if r.FirstArtIdx != 0 || r.LastArtIdx != 9 {
+				t.Errorf("stored row spans art %d..%d, want 0..9: %+v", r.FirstArtIdx, r.LastArtIdx, r)
+			}
+		})
+	}
+}

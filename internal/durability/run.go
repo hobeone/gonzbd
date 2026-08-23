@@ -73,6 +73,22 @@ type RunStore interface {
 	// file whose runs arrive in order collapses toward a single row over
 	// successive commits. The whole call is atomic — every row for this
 	// commit lands, or none do.
+	//
+	// A second kind of drop happens, and it is not a redelivery: where
+	// two entries end up at the SAME Offset — a stored row and an
+	// incoming article, or two incoming articles — the shorter is
+	// dropped, whichever side it is on. Nothing merges at an equal
+	// offset, so both would otherwise be written to the one primary key
+	// (job_id, file_idx, offset) and INSERT OR REPLACE would keep an
+	// arbitrary one. Dropping the shorter deterministically is what keeps
+	// FinalizeFile's truncate bound from shrinking to it on a LATER
+	// finalize. mergeAdjacentRuns carries the argument.
+	//
+	// This is the exact-offset collision internal/downloader/dispatch.go's
+	// UU block describes, and it is silent by design for now: the dropped
+	// row contributes nothing to Σ length, so §3.3's completion check has
+	// no evidence to report. §3.3's "an overlapped file keeps more rows"
+	// is therefore true of PARTIAL overlaps and not of this one.
 	Commit(ctx context.Context, jobID string, arts []DurableArticle) error
 
 	// ForFile returns every stored run for one file, ordered by Offset.
