@@ -557,8 +557,15 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			return nil, b.raise(jobID, "sync", t.Path(idx), err)
 		}
 	}
-	// One stat, after any truncate. R27: a fault here names the file, which is
-	// what makes the stall reason actionable.
+	// One stat, unconditionally — not nested inside `if bound > 0` above. A
+	// bound of 0 means no run, stored or newly acked, claims any bytes, so the
+	// truncate is skipped; nothing here is exempt from needing the file's real
+	// size, though, because it is what §3.3's overlap check below is compared
+	// against. Reading it from `t.Stat` in both branches — rather than falling
+	// back to some zero value when bound == 0 — is what keeps that comparison
+	// honest for a file this call finds already empty. After any truncate,
+	// so the size reflects the trim when one happened. R27: a fault here
+	// names the file, which is what makes the stall reason actionable.
 	size, err := t.Stat(idx)
 	if errors.Is(err, ErrFileNotOpen) {
 		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)
