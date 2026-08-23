@@ -301,11 +301,36 @@ func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error)
 	return count, nil
 }
 
-// Delete removes the entries identified by nzoIDs. It returns the number of
-// rows actually deleted (IDs not present in the database are silently ignored).
-// When multiple IDs are supplied the deletion is atomic. Large batches are
-// chunked to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER limit.
+// Delete removes the entries identified by nzoIDs, and with them everything
+// the entry owned: its retained per-file progress and its durability rows. It
+// returns the number of rows actually deleted (IDs not present in the database
+// are silently ignored). When multiple IDs are supplied the deletion is atomic.
+// Large batches are chunked to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER
+// limit.
+//
+// Use DeleteKeepingDurability when the job is going back into the queue.
 func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) {
+	return r.delete(ctx, true, nzoIDs...)
+}
+
+// DeleteKeepingDurability removes the entries but leaves article_facts and
+// file_extents in place.
+//
+// It exists for exactly one caller: a retry, which re-enqueues the job under
+// the SAME ID. Those rows are what bound the retry's truncate to the whole
+// partial file rather than to the handful of articles it re-fetches, and
+// deleting them is #422 — the retention job_finalizer.go maintains, destroyed
+// by the one path that was supposed to consume it.
+//
+// It is a separate method rather than a bool on Delete because every other
+// caller is deleting an entry that is GONE, and for those the rows must go
+// too or they accumulate one set per download ever performed. A bool would
+// put that decision at each call site; a name puts it in the type.
+func (r *Repository) DeleteKeepingDurability(ctx context.Context, nzoIDs ...string) (int, error) {
+	return r.delete(ctx, false, nzoIDs...)
+}
+
+func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...string) (int, error) {
 	if len(nzoIDs) == 0 {
 		return 0, nil
 	}
@@ -342,23 +367,32 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 			return 0, fmt.Errorf("history: delete retained job files: %w", err)
 		}
 
-		// A failed job's Class A facts and Class B extents are retained for
-		// the same reason and on the same condition as the rows above: a retry
-		// reuses the job ID and needs them to bound its truncate to the whole
-		// partial file rather than to the articles it re-fetched. They are
-		// owned by the history entry from that point on, and share its lack of
-		// a foreign key to cascade from, so they are removed here for the
-		// reason the comment above gives — every deletion path gets the
-		// cleanup without having to remember it.
+		// A failed job's Class A facts and Class B extents are retained so a
+		// retry can bound its truncate to the whole partial file rather than
+		// to the articles it re-fetched. Ownership passes to the history entry
+		// while the job sits there, and they share its lack of a foreign key
+		// to cascade from, so an entry that is going away for good takes them
+		// with it — every such deletion path gets the cleanup without having
+		// to remember it.
 		//
-		// Unconditional rather than failed-only: a completed job's rows are
-		// already gone, so this deletes nothing for it, and making the
-		// condition explicit here would mean this cleanup and the one that
-		// wrote them had to agree about status forever.
-		for _, table := range []string{"article_facts", "file_extents"} {
-			if _, err := tx.ExecContext(ctx,
-				"DELETE FROM "+table+" WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // table is a literal from the slice above; placeholders is only "?,?,?"
-				return 0, fmt.Errorf("history: delete retained durability rows from %s: %w", table, err)
+		// Ownership passes BACK to the job when it re-enters the queue, which
+		// is why this is conditional and why DeleteKeepingDurability exists.
+		// An earlier version deleted unconditionally and justified it with
+		// "a completed job's rows are already gone, so this deletes nothing
+		// for it" — true of the completed case and silent about the failed
+		// one, which is the only case the retention was for. The retry called
+		// straight through here and destroyed the rows it needed (#422).
+		//
+		// Still unconditional on STATUS within this branch: a completed job's
+		// rows are already gone, so making status explicit here would mean
+		// this cleanup and the one that wrote them had to agree about it
+		// forever.
+		if dropDurability {
+			for _, table := range []string{"article_facts", "file_extents"} {
+				if _, err := tx.ExecContext(ctx,
+					"DELETE FROM "+table+" WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // table is a literal from the slice above; placeholders is only "?,?,?"
+					return 0, fmt.Errorf("history: delete retained durability rows from %s: %w", table, err)
+				}
 			}
 		}
 

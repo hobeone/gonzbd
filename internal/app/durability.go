@@ -1215,24 +1215,57 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	return true
 }
 
-// deleteJobDurability drops a departed job's Class A and Class B rows.
+// deleteJobDurability drops a DEPARTED job's Class A and Class B rows, logging
+// a failure rather than reporting it.
 //
 // Both are keyed by job ID with no foreign key to the queue, so nothing
 // removes them implicitly. SQLiteStore.Prune sweeps what escapes this call --
 // the crash window between a job leaving `jobs` and this running -- but it is
 // a backstop on a queue save, and a job that finished or was deleted must not
 // wait for one.
+//
+// Swallowing the error is right HERE and wrong for a retry, which is why the
+// two have separate entry points over one implementation. For a departed job
+// the rows are garbage: leaving them costs disk until Prune runs, and there is
+// no caller left to tell. A retry is the opposite case -- see
+// dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
+	if err := app.dropJobDurability(ctx, jobID); err != nil {
+		app.log.Warn("delete durability rows for a departed job", "job", jobID, "err", err)
+	}
+}
+
+// dropJobDurability is the same deletion for a job that is coming BACK, where
+// a failure must stop the caller.
+//
+// RetryHistoryJob calls this when the re-parsed manifest changed shape, so the
+// retained rows describe articles that are no longer at those indices. They are
+// not garbage there -- they are about to be read, and a stale row bounds
+// FinalizeFile's truncate, which silently destroys the part of the partial file
+// beyond it (#422). That is the exact harm this PR exists to prevent, so a
+// cleanup that fails must abort the retry rather than proceed without it.
+//
+// Prune is no backstop for that case. Its sweep deliberately skips any job_id
+// still present in `jobs`, and a retry is re-added to `jobs` moments later --
+// so a row that survives this call survives for the life of the job.
+//
+// Both deletions are attempted even if the first fails, and both errors are
+// joined: removing one of the two tables is still progress, and a caller
+// deciding whether to abort is better served by the whole picture than by
+// whichever failure came first.
+func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
+	var errs []error
 	if app.factLog != nil {
 		if err := app.factLog.DeleteJob(ctx, jobID); err != nil {
-			app.log.Warn("delete article facts for a departed job", "job", jobID, "err", err)
+			errs = append(errs, fmt.Errorf("article facts: %w", err))
 		}
 	}
 	if app.extents != nil {
 		if err := app.extents.DeleteJob(ctx, jobID); err != nil {
-			app.log.Warn("delete file extents for a departed job", "job", jobID, "err", err)
+			errs = append(errs, fmt.Errorf("file extents: %w", err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 var _ durability.Stallable = (*Application)(nil)
