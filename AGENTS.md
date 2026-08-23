@@ -29,14 +29,16 @@ implementation lives at `../sabnzbd/`.
 
 ## Standing Design Rules
 
-Three constraints that precede any specific design decision. They are stated
+Four constraints that precede any specific design decision. They are stated
 here rather than in a topic doc because each has already been missed by work
 that never had cause to open the doc arguing for it, and each changes what the
 right answer is rather than merely how to write it down.
 
-`docs/article-validation-contract.md` carries the full argument for each, the
-worked examples, and the article-validation consequences. This section is the
-rule.
+`docs/article-validation-contract.md` carries the full argument for rules 1-3,
+the worked examples, and the article-validation consequences. Rule 4 is not
+from that document and has no topic doc: it is about what a comment may claim,
+so it applies to every file in the repository and its evidence is in this
+file's own commit cycle. This section is the rule.
 
 ### 1. No backwards compatibility
 
@@ -159,6 +161,57 @@ download; with it, it loses a hole.
 survived as violations and ten were not article-validation work at all — see the
 contract's Ground rules for the triage.
 
+### 4. Enumerate before asserting
+
+> **A comment that quantifies over a population of code — every writer, every
+> caller, every deleter, every enforcement point — is only allowed to say what
+> an enumeration you actually performed found. Perform it from source, at the
+> moment you write the sentence.**
+
+The words that trigger this are *only*, *sole*, *solely*, *never*, *always*,
+*nothing else*, *the one place*, and every paraphrase of them. They are not
+stylistic. Each is a claim about a set the reader cannot see, offered so that
+they do not have to go and look — which is exactly why a wrong one is worse
+than no comment at all: it does not merely fail to help, it actively stops the
+check it replaced.
+
+This rule exists because the failure is measured, not suspected. The
+durable-runs change shipped **eight** such overclaims. Every one was caught by
+a reviewer. **None** was caught by a gate, and none could have been: comments
+are neither type-checked nor executed, `go vet` cannot read them, and
+`check_dup_comments` finds only copies. One of the eight argued *for* a defect
+that had been fixed hours earlier, and would have been read as the reason to
+undo the fix.
+
+Three things make this specific rather than an exhortation to be careful:
+
+- **The enumeration is a command, not a recollection.** "I believe X is the
+  only writer" and "`git grep -n 'X ='` returns three hits, two of which are
+  tests" are different epistemic acts, and only the second is evidence. Run the
+  grep even when — especially when — you are confident, and prefer
+  grep-**then-read** over grep alone: the population you care about is usually
+  the set of *arguments*, and a paraphrase carries none of your tokens. This is
+  the same blindness `docs/*.md` has to a code identifier, in the other
+  direction.
+- **State the basis in the comment.** "Barrier is the only writer" becomes
+  "Barrier is the only writer — `INSERT` appears once, at
+  `runstore_sqlite.go:233`". The citation is what lets the next reader
+  re-run your check in one command instead of re-deriving your confidence.
+- **Where the population is enumerable by a machine, write the test instead.**
+  A count of call sites, a set of writers of one field, the members of a
+  package-private door — these fail loudly when they move, where a comment
+  fails silently. `queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse`
+  is the worked example: the same enumeration had gone stale twice in two
+  unlinked files, and a grep from either one could not reach the other.
+
+**The narrowing half of this is already stated** under "Two checks on what you
+WROTE" in the commit cycle below — *narrowing a referent must not broaden a
+scope*. That clause governs a sentence a change **falsified**; this rule governs
+a sentence you are **writing for the first time**, which is where the other
+seven came from. When a claim you were about to write turns out to be false,
+the fix is to say what still holds and name what you checked, never to reach
+for a weaker universal.
+
 ## Repository Layout
 
 - `cmd/gonzbd/`: Entry point, flag parsing, and application orchestration.
@@ -198,7 +251,7 @@ design-level change.
 | [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file | Idioms, anti-patterns, concurrency/persistence architecture, library selection, testing standards, the Go backend lessons-learned catalog |
 | [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
-| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind the three Standing Design Rules above |
+| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind Standing Design Rules 1-3 above (rule 4 is not from this document) |
 | [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the `ActiveSet`, the promotion loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
 | [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
 | [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | The `durable_runs` record and what may put content into it, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
