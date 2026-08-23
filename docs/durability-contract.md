@@ -73,7 +73,7 @@ The costs are asymmetric, and that asymmetry is the whole design:
 So every rule below resolves ambiguity toward re-fetching. The one claim that
 can over-claim — "this article is on disk" — is now **written in exactly one
 place**: `durability.Barrier`, after an `fsync` it performed, and nothing else
-writes a `durable_runs` row. Stating the bound precisely, because a looser
+puts content into a `durable_runs` row. Stating the bound precisely, because a looser
 version of this sentence has misled before: what the *compiler* enforces is
 narrower than that, covering `Queue.AckDurable`'s proof payload and that door
 only (§1). Sole authorship of the record is enforced by there being one writer,
@@ -100,7 +100,7 @@ whose `crc32` is the whole-file CRC.
 | Asserts | the bytes at `[Offset, Offset+Length)` **are** present on stable storage, and they hash to `CRC32` |
 | True from | only after a completed `fsync` |
 | Ordering vs. the write | strictly after the `fsync` (S1, S2) |
-| Written by | `durability.Barrier`, and nothing else. `durability.Resumer` may only **delete**. |
+| Written by | `durability.Barrier`, and nothing else **inserts or amends a run's content**. Deletion is a separate, wider set — see below. |
 | Authoritative | **yes** — gated on one `stat` per file at startup (S4, inverted; see §6) |
 | Losing a suffix costs | a re-fetch (R3), which is the routine cost of an unclean shutdown |
 | Stored in | `durable_runs` |
@@ -145,7 +145,7 @@ and one is new. Each change is argued at the section named.
 | **S4** — a recomputation beats the stored record | the done-set was rebuilt from the per-article facts plus a disk read, and the stored record was *never* authoritative | **INVERTED.** The record is authoritative, gated on one `stat`. See §6 — this is the change most likely to be misread. |
 | **S7** — the validity stamp | `(size, mtime)`; a mismatch fell through to a recomputation | **narrowed to size**, and `ModTimeNs` is deleted. See §6 for why the *response* to a mismatch, not the stamp, decides this. |
 | **S5** — no second copy to drift | two records, two `FinalizeFile` guards | **improved.** One record; both guards and `file_extents` gone (§4). |
-| **Writers to the record** | **two** — the barrier's commit, and `Resumer.writeBack` | **one** — the barrier. The resume only *deletes* (§6). |
+| **Writers of record CONTENT** | **two** — the barrier's commit, and `Resumer.writeBack` | **one** — the barrier. The resume only *deletes*, and so do four other paths, none of which can make a row assert anything (§6). |
 | **S1, S2, S6, R3** | — | unchanged. R3 is now the routine cost of an unclean shutdown rather than an edge case. |
 
 ## The state of an article
@@ -480,10 +480,11 @@ is authoritative.** There is no recomputation left to lose to — `Resumer.recom
 is deleted — and a reader who assumes one still wins will misread every
 paragraph below.
 
-What makes trusting it sound is *when* it is written. The barrier is the record's
-only writer and writes only after an `fsync` it performed, over articles a
-completed `Drain` reported, so nothing in the store can assert bytes that were
-never written. That was not true of the record this replaced, which was appended
+What makes trusting it sound is *when* its content is written. The barrier is
+the only thing that puts content there, and it does so only after an `fsync` it
+performed, over articles a completed `Drain` reported, so nothing in the store
+can assert bytes that were never written. (Several paths *delete* rows; none
+can make one claim anything — see below.) That was not true of the record this replaced, which was appended
 at decode with no ordering against the write at all (R2).
 
 But trust needs a floor. If the partial file were deleted or replaced between
@@ -542,11 +543,32 @@ result it produced. It was defensible (the startup sweep completes before the
 downloader can dispatch, so no barrier is running), but it was a second writer,
 and it needed a no-merge rule and a `(0,0)` sentinel stamp to work.
 
-`writeBack` is deleted. `durability.Barrier` is the only thing that writes a
-`durable_runs` row, from `Run` and from `FinalizeFile`, both inside the
-transaction that precedes the ack. `durability.Resumer` can only **delete**, and
-only when the file on disk contradicts the record. That asymmetry is what makes
-the record trustworthy without reading a byte of it back.
+`writeBack` is deleted. `durability.Barrier` is the only thing that **inserts
+or amends the content** of a `durable_runs` row, from `Run` and from
+`FinalizeFile`, both inside the transaction that precedes the ack.
+`durability.Resumer` can only delete, and only when the file on disk
+contradicts the record. That asymmetry is what makes the record trustworthy
+without reading a byte of it back.
+
+**State the bound on CONTENT, not on the table.** Deletion is performed from
+five places, and an earlier wording of this section said "and nothing else
+writes it", which its own document then contradicted where `SQLiteStore.Prune`
+appears in the memory budget:
+
+| Deleter | When |
+|---|---|
+| `durability.Resumer` | a file shorter than its runs claim, or missing (§6) |
+| `RunStore.DeleteJob` | a job leaving the queue, via `app.dropJobDurability` |
+| `queue.SQLiteStore.removeCorrupt` | a job whose manifest is gone, so nothing can interpret the indices |
+| `queue.SQLiteStore.pruneDurabilityRows` | the crash-window backstop on every queue save |
+| `history.Repository.delete` | a history entry going away for good |
+
+None of them can make the record *assert* anything — a delete only ever removes
+a claim, which is S3's safe direction. So the content bound is the whole of
+what §6's trust argument needs, and unlike the wider claim it is true.
+
+This is the fourth `only`/`sole`/`nothing else` overclaim found on this branch.
+**Enumerate before asserting one.**
 
 ### 7. Absence of evidence is absence
 

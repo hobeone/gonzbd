@@ -416,7 +416,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// Gated on needsSeed as well as on files, because the two reach here by
 	// different routes: a retried finalize leaves a file behind, while a
 	// periodic checkpoint whose ack failed leaves nothing but the committed
-	// extent. Without the second the bits sat on stable record while the live
+	// runs. Without the second the bits sat on stable record while the live
 	// work set still called those articles Outstanding, and they were fetched
 	// again.
 	if len(files) > 0 || app.needsSeed(jobID) {

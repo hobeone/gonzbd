@@ -200,13 +200,20 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // goroutine, and safe at any residency.
 //
 // DurableBytes comes from the job's downloaded-byte total rather than from a
-// counter of its own, because on this design they are the same quantity. The
-// only things that mark an article Done are Queue.AckDurable, which takes a
-// DurableProof no path outside a completed barrier can mint, and the two
-// seeding entry points — SeedFromRuns, which replays the runs a barrier
-// recorded, and ReplaceFromRuns, which installs what the startup sweep's stat
-// left standing. A second counter would be a second representation of one
-// fact, free to drift (S5).
+// counter of its own, because on this design they are the same quantity.
+// Everything that marks an article Done ultimately stands on a barrier's
+// fsync: Queue.AckDurable, which takes a DurableProof no path outside a
+// completed barrier can mint; the two seeding entry points — SeedFromRuns,
+// which replays the runs a barrier recorded, and ReplaceFromRuns, which
+// installs what the startup sweep's stat left standing; and
+// queue.applyResolution, which replays the resolution derived from those same
+// records when a job is re-hydrated. queue.markFailed sets the bit too, for an
+// article whose bytes will never arrive and which therefore contributes no
+// downloaded bytes. So the identity holds at every residency, and a second
+// counter would be a second representation of one fact, free to drift (S5).
+//
+// See queue.jobProgressJSON, which states the same enumeration at the bit
+// itself; keep the two in step.
 //
 // ReplaceFromRuns also UN-marks an article whose run the resume discarded
 // (#362), and this figure follows it down rather than needing a correction of

@@ -12,9 +12,14 @@ import (
 )
 
 // Barrier is the single place the Written → Durable → Resolved transition
-// happens (X2). Its two methods Run and FinalizeFile are the only callers of
-// newProof, so no other code path — inside this package or out — can ack an
-// article THROUGH Queue.AckDurable.
+// happens (X2). No package outside internal/durability can ack an article
+// THROUGH Queue.AckDurable, because newProof is unexported and a proof built
+// from outside is necessarily empty.
+//
+// Inside this package the guarantee is package-scoped rather than enforced:
+// newProof is reachable from anywhere here, and Run and FinalizeFile are
+// exactly the two functions that call it. That pair is what review has to
+// hold. See newProof's own doc, which states this bound carefully.
 //
 // It is also, since the durable-runs change, the single WRITER of the
 // durability record itself. RunStore.Commit is called from exactly two places,
@@ -312,7 +317,8 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 //
 // The whole conversion, in one place, so neither commit site can invent a
 // different mapping. WrittenArticle already carries every field a run needs —
-// see its doc for why the vocabularies mirror each other deliberately.
+// see DurableArticle's own doc for why the two vocabularies mirror each other
+// deliberately.
 func durableArticle(fileIdx int32, w WrittenArticle) DurableArticle {
 	return DurableArticle{
 		FileIdx: fileIdx,
@@ -360,33 +366,6 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 	}
 }
 
-// routeFault dispatches a storage fault per A1 and returns it as the error,
-// so a caller that ignores Stallable still cannot mistake a fault for
-// success. f must be non-nil; every call site builds it from a non-nil error
-// via storagefault.Classify, which returns nil only for a nil error.
-//
-// Neither branch marks an article failed. That is the whole distinction A1
-// draws: storage faults resolve against storage, article faults against the
-// article, and conflating them is how a full disk gets recorded as damage.
-//
-// # A coupling any new fault site must honour
-//
-// The returned error carries ErrFaultRouted, which is how the application
-// layer knows this function already dispatched the fault and must not park the
-// job a second time for it.
-//
-// It used to carry nothing, and the caller inferred the same thing from the
-// mere PRESENCE of a *storagefault.Fault in the chain. That inference held
-// only while this function was the one thing that let a fault escape the
-// barrier, and it is not: the SyncTarget boundary mints its own fault when the
-// worker does not answer, filewriter.go and assembler.go both build faults
-// with storagefault.Classify, and any of those reaching the application layer
-// was read as "already handled" and silently swallowed — the job carrying on
-// with a file that was never trimmed.
-//
-// So the marker states the fact rather than leaving it to be deduced. A new
-// fault site inside this package still routes through here; one that does not
-// is now visibly unrouted rather than indistinguishable from a routed one.
 // raise turns one SyncTarget error into the right kind of failure, and it is
 // the single boundary every fault site in this file goes through.
 //
@@ -431,6 +410,33 @@ func (b *Barrier) raise(jobID, op, path string, err error) error {
 	return b.routeFault(jobID, storagefault.Classify(op, path, err))
 }
 
+// routeFault dispatches a storage fault per A1 and returns it as the error,
+// so a caller that ignores Stallable still cannot mistake a fault for
+// success. f must be non-nil; every call site builds it from a non-nil error
+// via storagefault.Classify, which returns nil only for a nil error.
+//
+// Neither branch marks an article failed. That is the whole distinction A1
+// draws: storage faults resolve against storage, article faults against the
+// article, and conflating them is how a full disk gets recorded as damage.
+//
+// # A coupling any new fault site must honour
+//
+// The returned error carries ErrFaultRouted, which is how the application
+// layer knows this function already dispatched the fault and must not park the
+// job a second time for it.
+//
+// It used to carry nothing, and the caller inferred the same thing from the
+// mere PRESENCE of a *storagefault.Fault in the chain. That inference held
+// only while this function was the one thing that let a fault escape the
+// barrier, and it is not: the SyncTarget boundary mints its own fault when the
+// worker does not answer, filewriter.go and assembler.go both build faults
+// with storagefault.Classify, and any of those reaching the application layer
+// was read as "already handled" and silently swallowed — the job carrying on
+// with a file that was never trimmed.
+//
+// So the marker states the fact rather than leaving it to be deduced. A new
+// fault site inside this package still routes through here; one that does not
+// is now visibly unrouted rather than indistinguishable from a routed one.
 func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 	if f.Permanent {
 		b.log.Error("durability barrier hit a permanent storage fault", "job", jobID, "fault", f)

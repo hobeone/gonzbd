@@ -1005,7 +1005,7 @@ func (a *Assembler) dispatchRequest(
 //     a phase neither Stall nor Fail can act on: Verifying → Paused is not a
 //     legal status edge, and maybeFinalize is a no-op once PostProc is set.
 //   - On the opClose path the barrier has already drained, synced, truncated,
-//     committed the extent and acked the articles. A fault from the redundant
+//     committed the runs and acked the articles. A fault from the redundant
 //     second fsync would race the completion it is part of.
 //
 // A permanent fault is preferred over the first one when they differ, because
@@ -1335,11 +1335,12 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		)
 	}
 	// No seeded high-water mark, and no seeded write cursor. Both used to
-	// carry an earlier run's extent into this one so the completion truncate
-	// would not cut away what those runs wrote (#342). The truncate no longer
-	// derives its bound from anything this process measured — it comes from
-	// the durable facts, which describe the FILE rather than the session — so
-	// there is nothing left for a seed to protect.
+	// carry an earlier process's high-water mark into this one so the
+	// completion truncate would not cut away what those runs wrote (#342).
+	// The truncate no longer derives its bound from anything this process
+	// measured — it comes from the durable runs, which describe the FILE
+	// rather than the session — so there is nothing left for a seed to
+	// protect.
 	//
 	// The cursor starts at 0 for the same reason it is safe to: it is a
 	// coalescing hint, not an authority (#311, #353). A resumed file whose

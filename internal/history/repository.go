@@ -369,9 +369,7 @@ func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...
 
 		// A failed job's durable runs are retained so a retry can bound its
 		// truncate to the whole partial file rather than to the articles it
-		// re-fetched, and its failed_articles rows go with them so the retry
-		// does not re-attempt what already failed permanently. Ownership
-		// passes to the history entry
+		// re-fetched. Ownership passes to the history entry
 		// while the job sits there, and they share its lack of a foreign key
 		// to cascade from, so an entry that is going away for good takes them
 		// with it — every such deletion path gets the cleanup without having
@@ -379,6 +377,18 @@ func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...
 		//
 		// Ownership passes BACK to the job when it re-enters the queue, which
 		// is why this is conditional and why DeleteKeepingDurability exists.
+		//
+		// That is what the conditional protects, for BOTH tables, and it is
+		// about ORDERING rather than about preserving any verdict: the retry
+		// path calls queue.Add and only then deletes the history entry
+		// (app.go:1881 and :1911), so an unconditional delete here would drop
+		// rows the re-enqueued job already owns. Do not read the retention as
+		// "a retry keeps what already failed" — it does not.
+		// RetryHistoryJob clears failed_articles on both of its branches
+		// BEFORE that Add (app.go:1843 and :1874), because those rows record a
+		// decision not to fetch and a retry exists to revisit it. A reader who
+		// inverts this reinstates #422's sibling defect.
+		//
 		// An earlier version deleted unconditionally and justified it with
 		// "a completed job's rows are already gone, so this deletes nothing
 		// for it" — true of the completed case and silent about the failed

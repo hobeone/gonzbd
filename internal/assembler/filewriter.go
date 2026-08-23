@@ -708,7 +708,7 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 // confirmed, which is R12's at-least-once delivery. Reading "since the last
 // call" as the contract makes the re-report look redundant, and removing it
 // destroys bytes on a retried finalize: the retry drains nothing, so the
-// durable extent FinalizeFile trims to sits below bytes genuinely on disk. See
+// bound FinalizeFile trims to sits below bytes genuinely on disk. See
 // take() and the FileWriter.reported field doc, which are the authority.
 //
 // It must NOT return an article that is merely buffered. S2 makes acceptance
@@ -794,15 +794,15 @@ func (w *FileWriter) Sync() error {
 		return storagefault.Classify("sync", w.path, err)
 	}
 	// The report is deliberately NOT discarded here. The fsync makes the
-	// bytes durable, but the barrier has not yet built the extent, committed
-	// it, or acked anything, and every one of those can still fail. Clearing
-	// on the fsync covered only the first of the three failures the retention
-	// exists for. Confirm is what releases it.
+	// bytes durable, but the runs are not yet committed and nothing is acked,
+	// and either of those can still fail. Clearing on the fsync covered only
+	// the first of the failures the retention exists for. Confirm is what
+	// releases it.
 	return nil
 }
 
 // Confirm releases the drain report, and is called only once the barrier has
-// committed the extent and acked the articles.
+// committed the runs and acked the articles.
 //
 // It is what bounds the retained set. Drain re-reports across any failure, so
 // without a confirmation the set would grow to every article ever written to

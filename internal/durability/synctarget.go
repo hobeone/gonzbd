@@ -126,7 +126,7 @@ type SyncTarget interface {
 	Sync(ctx context.Context, fileIdx int32) error
 
 	// Confirm releases the file's drain report, and must be called only once
-	// the cycle that consumed it has fully landed: the extent committed and
+	// the cycle that consumed it has fully landed: the runs committed and
 	// the articles acked.
 	//
 	// It exists because a successful fsync is not the end of a barrier. The

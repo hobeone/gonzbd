@@ -373,7 +373,7 @@ func (app *Application) forgetJobBarrierState(jobID string) {
 	delete(app.lastBarrier, jobID)
 	// The mutex is NOT dropped while anyone holds it. Dropping it let the next
 	// caller mint a second mutex for the same job, so two barriers could
-	// interleave one job's extent read-modify-write — and the delete is
+	// split one job's destructive Drain between them — and the delete is
 	// reachable from inside a live barrier, through
 	// routeFault → Fail → maybeFinalize → enqueuePostProc. Marked instead, and
 	// the last holder completes it. See releaseJobBarrierLock.
@@ -1149,9 +1149,17 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 //
 // The two tables are durable_runs and failed_articles, and they are deleted
 // through different owners on purpose. durability.RunStore owns the first and
-// is the only thing that writes it; queue.Store owns the second, which is why
-// a job's failed articles are dropped through the queue's own entry point
-// rather than by reaching into the table from here.
+// is the only thing that INSERTS OR AMENDS a run's content; queue.Store owns
+// the second, which is why a job's failed articles are dropped through the
+// queue's own entry point rather than by reaching into the table from here.
+//
+// The write bound is on content, not on deletion, and the distinction is not
+// pedantry: durable_runs rows are also deleted by durability.Resumer, by
+// RunStore.DeleteJob (below), by queue.SQLiteStore.removeCorrupt and
+// pruneDurabilityRows, and by history.Repository.delete. Content-only is still
+// exactly the property the trust argument needs — nothing can make the record
+// ASSERT bytes an fsync did not cover — and unlike "nothing else writes it",
+// it is true.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
 	var errs []error
 	if app.runs != nil {

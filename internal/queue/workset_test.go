@@ -188,8 +188,18 @@ func TestAckDurable_OutOfRangeArticleDoesNotAbortTheBatch(t *testing.T) {
 	}
 }
 
-// TestQueue_HasNoNonBarrierAckPath pins X2 structurally. If a future change
-// reintroduces a public ack that does not require a DurableProof, this fails.
+// TestQueue_HasNoNonBarrierAckPath pins that the NAMED pre-barrier ack methods
+// below stay deleted. It compares Queue's method set against a fixed list, so
+// that is the whole of what it can detect: a NEW proof-less entry point under a
+// name not on the list is invisible to it.
+//
+// It deliberately does not pin "nothing resolves an article without a proof",
+// because that is not true and is not meant to be. Queue.SeedFromRuns and
+// Queue.ReplaceFromRuns are public, require no DurableProof, and exist on
+// purpose — their evidence is the runs a barrier's fsync already recorded,
+// which a proof cannot represent. See docs/durability-contract.md §1, which
+// states the bound and why the seeding doors are held by their contracts and
+// their own tests rather than by the compiler.
 func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
 	forbidden := []string{
 		"MarkArticleDone", "MarkArticleFailed",
@@ -201,7 +211,8 @@ func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
 	for method := range qt.Methods() {
 		name := method.Name
 		if slices.Contains(forbidden, name) {
-			t.Errorf("Queue.%s still exists — X2 requires the barrier to be the only ack path", name)
+			t.Errorf("Queue.%s is back — X2 deleted it because it resolved articles on the "+
+				"assembler's say-so, with no fsync behind the claim", name)
 		}
 	}
 }
@@ -311,7 +322,7 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 	}
 }
 
-// TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify is #362's core
+// TestReplaceFromRuns_ClearsArticlesNoSurvivingRunCovers is #362's core
 // claim: a bit restored from the durable runs loses to a resume whose stat
 // found the file shorter than they claim.
 //
@@ -320,7 +331,7 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 // 2). Both
 // halves are load-bearing: with nothing surviving, a clear-everything mutation
 // would pass; with nothing cleared, a no-op would.
-func TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
+func TestReplaceFromRuns_ClearsArticlesNoSurvivingRunCovers(t *testing.T) {
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)
 	restoreDone(t, q, "job-1", nArts, 0, 1, 2)

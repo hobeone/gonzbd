@@ -234,8 +234,8 @@ is one read of each file during verification.
 course of correcting a different error.** That draft was right that
 `par2.QuickCheck` — the *function* — never consumes our value, and wrong to
 conclude from this that "par2 still runs". The chain is:
-`stage_quickcheck.go:126-131` feeds `p.FileAssembledCRC32(fi)` into
-`par2.VerifyCRCsWithOptions` (`:140`); `Checked > 0` with nothing unverifiable
+`stage_quickcheck.go:136` feeds `p.FileAssembledCRC32(fi)` into
+`par2.VerifyCRCsWithOptions` (`:141`); `Checked > 0` with nothing unverifiable
 sets `QuickCheckClean` (`:194`); and `stage_repair.go:111-117` returns `nil` on
 `QuickCheckClean`, skipping the par2 verify+repair subprocess entirely. The
 same value also lets `app.par2NeedsRecovery` return false, leaving the deferred

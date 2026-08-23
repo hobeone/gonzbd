@@ -180,8 +180,9 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// NEW server set — likeliest precisely when the reload removed the server
 	// that had the article — it is acked permanently failed while its bytes
 	// are already on disk. markDone then early-returns on the next barrier's
-	// durable ack, because done is already set, so the two records disagree
-	// permanently: the extent says durable, the queue says failed. The
+	// durable ack, because done is already set, so the two disagree
+	// permanently: a durable_runs row covers the article while a
+	// failed_articles row calls it permanently failed. The
 	// inflated failedBytes can reach RepairNoCapacity or
 	// RepairBeyondCapacity, both Hopeless(), and the Early Health Gate aborts
 	// a job whose file was never damaged.

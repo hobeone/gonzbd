@@ -467,8 +467,8 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		StallReason:       cp.StallReason,
 		// From the job's own progress rather than a second snapshot: on this
 		// design a downloaded byte IS a durable byte, because the only things
-		// that mark an article Done are the barrier's ack and a replay of a
-		// committed extent cache. That also fixes its unit as the encoded one
+		// that mark an article Done are the barrier's ack and a replay of the
+		// recorded runs. That also fixes its unit as the encoded one
 		// -- see the field doc for why it is not the same unit as
 		// BytesPending below, and why neither can move.
 		BytesDurable:    app.DurableBytesOf(p),

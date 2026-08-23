@@ -506,7 +506,7 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			//
 			// The callers still only LOG it, deliberately. By the time the
 			// barrier closes a file it has drained, synced, truncated,
-			// committed the extent and acked the articles, so a fault from
+			// committed the runs and acked the articles, so a fault from
 			// this redundant second fsync is post-hoc: acting on it would race
 			// the completion it is part of. Reporting it is what makes it
 			// visible; deciding what it means belongs to the caller.
