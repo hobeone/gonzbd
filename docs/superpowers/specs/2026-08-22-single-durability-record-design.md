@@ -105,17 +105,37 @@ implausible position, and another server asked for the same Message-ID will
 answer the same way. Spending the whole try-list on it costs connections to
 reach a conclusion already reached.
 
-### 3.3 Overlaps are refused, not tolerated
+### 3.3 Overlaps are detected at completion, not refused at accept
 
-A run is built only from articles that abut exactly. An article that overlaps an
-existing run does not merge and does not extend it, so it is refused the way an
-out-of-range offset is: recorded failed, its bytes charged to `failedBytes`, and
-left for par2.
+A run is built only from articles that abut exactly, so an overlapping article
+never merges into one. It is still **written**, and the overlap is caught at
+completion by comparing the recorded lengths against the file:
 
-This is stricter than today, and it is what keeps the arithmetic exact.
-`Σ length == stat size` is then a complete integrity statement for the file, and
-it is the *only* one needed — it catches a hole, an overlap, and a stretched
-file, in one comparison at completion.
+| | Meaning |
+|---|---|
+| `Σ length > stat size` | **definite overlap** — articles wrote over each other |
+| `Σ length == stat size` | complete and cleanly tiled |
+| `Σ length < stat size` | articles are missing or failed, which is the ordinary incomplete case |
+
+Only the first is a positive signal, and that is enough: it is the only case
+that produces a file which *looks* complete while holding a hole.
+
+A first draft of this section had overlapping articles **refused** at accept
+time, the way an out-of-range offset is. That was over-engineered, and it was
+also not buildable as described. `acceptedAt` — the existing collision index —
+is `map[int64]offsetOwner` with `offsetOwner{id, written}`, keyed on **start
+offset** and carrying no length. It answers "does another article already own
+this exact offset", which is #383's question, and cannot answer "does
+`[off, off+len)` intersect anything already written". Refusing partial overlaps
+would need a second, range-shaped index of the same fact — a second source of
+truth for a case the completion check already catches.
+
+So the existing exact-offset collision handling stays exactly as it is, and
+nothing new is added at accept time.
+
+The consequence of *not* refusing is contained: an overlapped file keeps more
+rows, never collapses to one, and so never publishes a whole-file CRC. That is
+the correct outcome for a file whose bytes are in doubt.
 
 ### 3.4 The resume trusts the record, gated on one `stat`
 
@@ -201,9 +221,12 @@ prices this as R3.
 **Diagnosis gets coarser.** A merged row says the file is wrong, not which
 article. par2 repairs at block level and does not consume that distinction.
 
-**Overlapping articles are now refused** rather than written, so a release whose
-NZB describes overlapping parts loses those articles to par2 instead of writing
-them and hoping.
+**An overlapped file is detected but not prevented.** Its bytes are written, the
+overlap surfaces at completion as `Σ length > stat size`, and it never publishes
+a whole-file CRC. par2 repairs it. Nothing refuses the write, because the index
+that would have to answer "does this range intersect anything written" does not
+exist and building it would duplicate a fact the completion check already
+covers.
 
 ## 5. Why the storage-fault objection does not apply
 

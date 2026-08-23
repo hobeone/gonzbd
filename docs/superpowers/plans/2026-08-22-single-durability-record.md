@@ -80,7 +80,9 @@ Two tables, and that is not a Rule 2 violation: they describe different facts wi
 - [ ] **Step 1: Write the migration**, dropping `article_facts` and `file_extents`. Its comment block must supersede `001_initial.sql:150-152` and `:329`.
 - [ ] **Step 2: Write the merge tests before the merge.** At minimum: two runs that abut in both offset and index merge into one with the combined CRC; two that abut in offset but **not** index do not merge; two that abut in index but not offset do not merge; an overlapping run does not merge and does not extend; merging is order-independent (insert A then B, and B then A, produce the same row).
 - [ ] **Step 3: Run them; confirm they fail.** Record the messages.
-- [ ] **Step 4: Implement `Commit(ctx, jobID, runs []Run) error`** — one transaction: load the file's existing rows, insert the new ones, merge adjacent pairs repeatedly, write the result. Merge condition is **both** `a.offset+a.length == b.offset` **and** `a.last_art_idx+1 == b.first_art_idx`. CRC combines as `crc32util.Combine(a.crc32, b.crc32, b.length)`.
+- [ ] **Step 4: Implement `Commit(ctx, jobID, runs []Run) error`** — one transaction: read the rows that could merge, insert the new ones, merge adjacent pairs repeatedly, write the result. Merge condition is **both** `a.offset+a.length == b.offset` **and** `a.last_art_idx+1 == b.first_art_idx`. CRC combines as `crc32util.Combine(a.crc32, b.crc32, b.length)`.
+
+  **Range-scope the read; do not load the file's rows.** Only rows bracketing the new runs' offset span can merge, and `PRIMARY KEY (job_id, file_idx, offset)` supports that query directly. The merge is cheap — the barrier fires at 64 MiB and an article is roughly 700 KB, so at most ~90 new articles arrive per cycle — but a full-file read is fine at one row and wasteful at twenty thousand.
 - [ ] **Step 5: Pin associativity against the old path.** For a file of N articles, the merged row's CRC must equal `crc32.ChecksumIEEE` of the concatenated bytes. This is the one property the whole design rests on; test it with real bytes, not with combined values compared to each other.
 - [ ] **Step 6: Update `deleteJobDurability` and `pruneDurabilityRows`** — two tables still, different two.
 - [ ] **Step 7: `go test -race ./...`. Commit** — `feat(durability): add the durable-run store`.
@@ -118,22 +120,32 @@ There are **two** drains — `:162` (`Run`) and `:599` (`FinalizeFile`) — and 
 
 ---
 
-## Task 5: Refuse overlapping articles
+## Task 5: Check the recorded lengths against the file at completion
 
-**Files:** `internal/assembler/assembler.go` (beside `offsetOutOfRange`). Test: `internal/assembler/assembler_test.go`.
+**Files:** `internal/durability/barrier.go` (`FinalizeFile`). Test: `internal/durability/barrier_test.go`.
 
-Spec §3.3. An article that overlaps an already-written range is refused the way an out-of-range offset is: counted toward `TotalParts`, recorded failed, bytes charged to `failedBytes`, left for par2. This is what keeps `Σ length == stat size` exact.
+Spec §3.3. One comparison, at completion, over values already in hand:
 
-- [ ] **Step 1: Write the failing test** — an article whose range overlaps a written one is refused, and the file's byte accounting still balances.
-- [ ] **Step 2: Run it; confirm it fails** with the overlap written. Record the message.
-- [ ] **Step 3: Implement.** Reuse the existing per-file written-range knowledge rather than adding a second source; if none is usable, say so and stop rather than adding one.
-- [ ] **Step 4: `go test -race ./internal/assembler/`. Commit** — `fix(assembler): refuse an article that overlaps a written range`.
+| | Meaning |
+|---|---|
+| `Σ length > stat size` | **definite overlap** — articles wrote over each other; log at `Warn` |
+| `Σ length == stat size` | complete and cleanly tiled |
+| `Σ length < stat size` | articles missing or failed — the ordinary incomplete case, not a finding |
+
+**Nothing is refused at accept time**, and an earlier draft of this task that did so was wrong on two counts. It would have needed a range-shaped index that does not exist — `acceptedAt` is `map[int64]offsetOwner` with `offsetOwner{id, written}`, keyed on **start offset** with no length, so it answers #383's exact-collision question and not a range-intersection one — and building that index would duplicate a fact this check already covers.
+
+- [ ] **Step 1: Write the failing test** — a file whose articles overlap is flagged at completion, and a file with a permanently failed article is **not** (its `Σ length < size` legitimately).
+- [ ] **Step 2: Run it; confirm it fails.** Record the message.
+- [ ] **Step 3: Implement** in `FinalizeFile`, after the truncate, where the stat is already taken.
+- [ ] **Step 4: `go test -race ./internal/durability/`. Commit** — `feat(durability): flag a file whose recorded lengths exceed its size`.
 
 ---
 
 ## Task 6: Resume from the record, gated on one `stat`
 
 **Files:** `internal/durability/resume.go` — delete `recompute`, `verifyRegions`, `writeBack`; `internal/app/app.go` (the startup sweep). Test: `internal/durability/resume_test.go`, plus the crash suite.
+
+**`Resumer` is reduced, not deleted.** An earlier draft assumed it could go outright. `app.resumer.Resume(...)` is called at `internal/app/resume_startup.go:314` behind the one-method `fileResumer` interface (`:27`), which exists so the sweep can be counted in tests. **Both stay, and `Resume`'s signature is unchanged.** What goes is what is inside it: `Resume` becomes the `stat` gate — compare the file's size against `max(offset+length)`, discard the file's rows on a shortfall, return the resume set.
 
 Spec §3.4. The resume set is the complement of the runs' index ranges, minus `failed_articles`. The only check is `stat(path).size >= max(offset+length)`; a missing or short file discards that file's rows.
 
@@ -220,17 +232,33 @@ git grep -n 'articles_done' -- test/
 
    The one open link is whether an NZB's segment `number` equals the yEnc part number in the body. Nothing in an NZB establishes that — **an NZB carries segment numbers and encoded byte counts; the offset lives in the article body** — so it cannot be probed from NZBs at all. An earlier draft of this item said to check offsets "across a sample of real NZBs", which is not a thing that can be done. Our own fixtures are circular: they are generated by our encoder, which numbers parts to match segments by construction.
 
+   *Confirmed unanswerable in-repo:* the only two places that emit `=ypart` are `test/mocknntp/articles.go` and `test/integration/testhelpers_test.go`, both our own generators. There are no captured real article bodies to check against.
+
    *Probe:* instrument the decoder, which already parses `=ypart begin=`. When article `art_idx N` decodes, compare its offset against `N-1`'s `offset+length` and count disagreements. Ten lines, answers the question against real traffic, ships independently of this change.
+
+   **This is the only item left open, and it gates nothing.** It is an observability follow-up, not a prerequisite for any task.
 
    *Branches:* (a) they agree normally → runs collapse and a complete file is one row; (b) they often disagree → more rows, and those files never yield a whole-file CRC. **(b) is not a stop and does not block any task.** The truncate bound (`max(offset+length)`) and the integrity check (`Σ length == stat size`) do not reference `art_idx`, so both are unaffected; the only cost is one par2 read for the affected files. This is a question about how often an optimisation fires, not about whether the design holds.
 
-2. **Merge cost per barrier.** Read-modify-write over a file's rows on every checkpoint.
-   *Probe:* benchmark `Commit` against a file at 20k articles across 1, 10 and 10,000 rows.
-   *Branches:* (a) small → proceed; (b) large at high row counts → the merge needs an index or a bound on rows per commit.
+### Resolved: merge cost is a query-shape choice, not an open risk
 
-3. **Can `Resumer` be deleted outright,** or does the `stat` gate need a home that survives it? Task 6 assumes the former.
+The merge itself is bounded and small. The barrier fires at 64 MiB, and a Usenet article is roughly 700 KB, so **at most ~90 new articles arrive per barrier per job** — sorted and grouped, that is a handful of new runs. Merging them into an offset-ordered list is a linear scan.
 
-4. **Where the assembler's written-range knowledge lives** (Task 5). Refusing an overlap needs to know what has been written. If no existing per-file structure carries it, adding one is a second source of truth about the same fact and Task 5 should stop rather than introduce it.
+The cost that could bite is the **load**, not the merge: reading a file's rows on every checkpoint is fine at one row and wasteful at twenty thousand.
+
+So it becomes a requirement on Task 2 rather than an open question: **`Commit` must range-scope its read to the rows that could merge** — those bracketing the new runs' offset span — rather than loading the file. `PRIMARY KEY (job_id, file_idx, offset)` supports exactly that query. Task 2 Step 4 should say so, and its benchmark exists to confirm the shape, not to discover whether one is needed.
+
+### Resolved: `Resumer` is gutted, not deleted
+
+Task 6 assumed it could go entirely. It cannot, and it does not need to. `app.resumer.Resume(...)` is called at `internal/app/resume_startup.go:314`, behind the one-method `fileResumer` interface (`:27`) that exists so the sweep can be counted in tests. Both stay, and the signature is unchanged.
+
+What goes is what is *inside* it: `recompute`, `verifyRegions`, `writeBack`, and the CRC machinery. `Resume` becomes the `stat` gate of spec §3.4 — compare the file's size against `max(offset+length)`, discard the file's rows on a shortfall, return the resume set. Task 6's wording should say "reduce", not "delete".
+
+### Resolved: nothing needs range knowledge at accept time
+
+`acceptedAt` is `map[int64]offsetOwner` and `offsetOwner` is `{id articleID; written bool}` — keyed on **start offset**, carrying no length. It answers #383's exact-collision question and cannot answer range intersection.
+
+That closed the question by removing it: refusing partial overlaps would need a second, range-shaped index of a fact the completion check in Task 5 already covers. Task 5 is now that check, and the accept path is untouched.
 
 ### Resolved: coalesced-run partial writes — branch (a), the stop does not fire
 
