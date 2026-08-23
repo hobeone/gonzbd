@@ -254,8 +254,8 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	f := newResumeUnitFixture(t)
 
 	// A second job, paused so the queue evicts its manifest — and so the
-	// phase bound skips it. It carries a committed extent of its own; nothing
-	// may reach it.
+	// phase bound skips it. It carries committed runs of its own; nothing
+	// may reach them.
 	other, err := queue.NewJob(&nzb.NZB{Files: []nzb.File{{
 		Subject:  "B.bin",
 		Bytes:    unitArtLen,
@@ -458,7 +458,7 @@ func (c *cancelledDuringResume) Resume(_ context.Context, jobID string, fileIdx 
 // runs at startup. So misreading a shutdown as a storage fault costs that job
 // its seed permanently, and persists a "Stalled: context canceled" reason
 // describing a condition that never existed. It is the same
-// permanent-L3-regression loop as discarding the partial extents, reached by
+// permanent-L3-regression loop as discarding the runs already gathered, reached by
 // an ordinary Ctrl-C during startup rather than by a flaking mount.
 //
 // The assertions are on the distinction, not on the existence of an error:

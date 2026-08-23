@@ -51,8 +51,10 @@ type Run struct {
 // One record, written only after the fsync that makes it true (S1, S2), and
 // grouped into runs rather than kept per article. It replaced a pairing of two
 // per-article records with independent writers, which could disagree — and
-// every disagreement was a defect (#389, #421). Barrier is its sole writer;
-// Resumer only ever deletes.
+// every disagreement was a defect (#389, #421). Barrier is the only thing that
+// puts CONTENT into a row; Resumer only ever deletes, as do the four other
+// deletion paths listed in this package's doc comment. None of them can make a
+// row assert anything, which is the bound §3.4's trust argument rests on.
 type RunStore interface {
 	// Commit takes ARTICLES, not runs — the caller hands over what a
 	// completed Drain reported, and the store is the one place a run is

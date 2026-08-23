@@ -391,8 +391,8 @@ func TestBufferedReportsUnknownKey(t *testing.T) {
 // article appeared once and never again. That was the wrong boundary. A
 // barrier that drains and then fails its Sync has claimed nothing, so an
 // article dropped at that point is never acked by anyone; for a COMPLETED
-// file the retry then drains nothing and FinalizeFile trims to a durable
-// extent that sits below bytes genuinely on disk. R12 makes at-least-once the
+// file the retry then drains nothing and FinalizeFile trims to a bound that
+// sits below bytes genuinely on disk. R12 makes at-least-once the
 // contract precisely so the report can survive that.
 func TestSyncTargetDrainReportsUntilTheCycleIsConfirmed(t *testing.T) {
 	dir := t.TempDir()

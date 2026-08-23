@@ -25,7 +25,7 @@ func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
 // partially downloaded, one file deferred), persists it, then reconstructs
 // progress the non-resident way via ArticleCountsByJob and
 // newJobProgressSized. It asserts the reconstruction's per-file
-// BytesDownloaded/Complete/Deferred match what the durable extents/
+// BytesDownloaded/Complete/Deferred match what the durable runs/
 // MarkFileComplete/the direct Deferred write actually stored, and that
 // TotalRemainingBytes still agrees with the residency-parity guarantee
 // TestTotalRemainingBytes_RestartReconstructsNonResident pins.
@@ -70,7 +70,7 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 		t.Errorf("file 2 Fetch = %v, want %v", got, want)
 	}
 	// The per-file downloaded bytes must survive the round trip, which is the
-	// half of this test that the durable extents restore. File 1's first
+	// half of this test that the durable runs restore. File 1's first
 	// article is on disk, so its BytesDownloaded is that article's size and
 	// not zero.
 	if got, want := sized.files[1].BytesDownloaded, int64(100_000); got != want {

@@ -227,9 +227,10 @@ func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T
 	again := application.jobBarrierLock("job-a")
 	if again != held {
 		t.Fatal("a second mutex was minted for a job whose first one is still held. " +
-			"Two barriers can now run concurrently over one job's extents, and the " +
-			"second commit overwrites the first: the articles the loser acked are " +
-			"durable with no bit to say so")
+			"Two barriers can now run concurrently over one job, and Drain is " +
+			"destructive: they split the file's articles, each acks only its half, " +
+			"and whichever calls Confirm releases the reports the other never saw — " +
+			"so those articles are neither acked nor re-reported")
 	}
 	held.Unlock()
 	application.releaseJobBarrierLock("job-a")

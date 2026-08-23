@@ -32,10 +32,13 @@ type ResumeResult struct {
 //
 // It is a READER and a DELETER, never a writer. That asymmetry is the whole
 // justification for §3.4's decision to trust the record without verifying a
-// byte of it: the barrier is the sole writer, and it writes only after an fsync
-// it performed, so nothing in the store can assert bytes that were never
-// written. The one thing this type may do is take a claim AWAY when the file on
-// disk contradicts it.
+// byte of it: the barrier is the only thing that puts content into the record,
+// and it does so only after an fsync it performed, so nothing in the store can
+// assert bytes that were never written. Other paths DELETE rows — see this
+// package's doc comment for the list — but a delete only ever takes a claim
+// away, which is why the content bound is the whole of what this argument
+// needs. Taking a claim away is also the one thing this type may do, when the
+// file on disk contradicts it.
 //
 // Until this change it was a second writer — recompute() re-derived a file's
 // state from its bytes and writeBack() committed that answer as the file's

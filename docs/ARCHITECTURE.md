@@ -26,7 +26,7 @@ The project follows a standard Go project layout:
     - `deobfuscate/`: Renames obfuscated filenames using NZB subject hints, PAR2 filenames, and extension detection.
     - `directunpack/`: In-flight RAR extraction that runs in parallel with downloading.
     - `dirscanner/`: Watches a folder for new NZB files.
-    - `durability/`: The checkpoint barrier, the `durable_runs` record it is the sole writer of, `DurableProof`, and the restart resumer. See [`docs/durability-contract.md`](durability-contract.md).
+    - `durability/`: The checkpoint barrier, the `durable_runs` record it is the only thing to put content into (several paths delete rows; none can make one assert anything), `DurableProof`, and the restart resumer. See [`docs/durability-contract.md`](durability-contract.md).
     - `downloader/`: The NNTP engine, handling server pools, connection management, and article dispatch with O(1) pending-article tracking.
     - `fsutil/`: File system utilities: path sanitization, atomic writes (temp+fsync+rename), symlink-safe containment checks, and cross-device move.
     - `history/`: Persistence layer for completed jobs using SQLite and `goose` migrations.

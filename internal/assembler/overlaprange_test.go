@@ -86,8 +86,8 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 }
 
 // TestOverlap_ContainedOverlapStillCompletesTheFile is the variant that matters
-// more than the one above. The overlapping article ends at or before the file's
-// durable extent, so the file does NOT grow — every byte is covered, the part
+// more than the one above. The overlapping article ends at or before the top of
+// the file's recorded runs, so the file does NOT grow — every byte is covered, the part
 // count reaches TotalParts, and the file finalizes as healthy.
 //
 // A0 [0,100), A1 [100,200), X [150,200). X overlaps A1 without sharing its

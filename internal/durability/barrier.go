@@ -21,11 +21,18 @@ import (
 // exactly the two functions that call it. That pair is what review has to
 // hold. See newProof's own doc, which states this bound carefully.
 //
-// It is also, since the durable-runs change, the single WRITER of the
-// durability record itself. RunStore.Commit is called from exactly two places,
-// both below, both inside the transaction that precedes the ack. Resumer no
-// longer writes anything: it deletes a file's runs when the file on disk
-// contradicts them and otherwise reads. The queue's seeding entry points, which
+// It is also, since the durable-runs change, the only thing that puts CONTENT
+// into the durability record — the only path by which a durable_runs row comes
+// to assert anything. RunStore.Commit is called from exactly two places, both
+// below, both inside the transaction that precedes the ack. Resumer no longer
+// writes anything: it deletes a file's runs when the file on disk contradicts
+// them and otherwise reads.
+//
+// The bound is on content, not on the table. Rows are DELETED from five places
+// outside Commit's own merge — Resumer, RunStore.DeleteJob,
+// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
+// history.Repository.delete — and none of them can make a row claim anything,
+// which is why the narrower statement is the one the trust argument needs. The queue's seeding entry points, which
 // used to take a fully exported FileExtent and reach markDone with no barrier
 // and no proof, are gone with the type — what installs a resume's answer now
 // carries runs the store produced rather than a bitmap any package could build.

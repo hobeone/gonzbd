@@ -24,7 +24,7 @@ import (
 // test hook. The property is not "some code sets the bit in the right place";
 // it is "by the time the bit is set, a completed fsync covers the bytes", and
 // only the real chain — assembler write cache, barrier drain, fsync,
-// ExtentStore commit, AckDurable — can demonstrate that. The previous version
+// RunStore commit, AckDurable — can demonstrate that. The previous version
 // of this test replaced the whole ack path with a hook it supplied itself,
 // which meant it pinned its own fixture.
 //

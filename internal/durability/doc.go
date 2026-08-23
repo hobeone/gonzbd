@@ -1,7 +1,7 @@
 // Package durability owns the persistence of download progress.
 //
-// It records ONE fact about a download, in one table, written by one writer
-// at one moment, per
+// It records ONE fact about a download, in one table, whose content is put
+// there by one writer at one moment, per
 // docs/superpowers/specs/2026-08-22-single-durability-record-design.md:
 //
 //	durable_runs(job_id, file_idx, first_art_idx, last_art_idx,
@@ -42,12 +42,21 @@
 //     file's size means articles wrote over each other (§3.3), and any file
 //     holding more than one row is refused a whole-file CRC (§3.5).
 //
-// # One writer, and one reader that only deletes
+// # One writer of content, and several deleters
 //
-// Barrier is the sole writer: RunStore.Commit is called from Run and from
-// FinalizeFile, both inside the transaction that precedes the ack, and
-// nowhere else. Resumer never writes. Its whole job at startup is one stat
-// per file — if the file on disk is shorter than its runs claim, it DELETES
-// those runs and the articles are fetched again (§3.4). That asymmetry is
-// what makes the record trustworthy without reading a byte of it back.
+// Barrier is the only thing that puts CONTENT into a row: RunStore.Commit is
+// called from Run and from FinalizeFile, both inside the transaction that
+// precedes the ack, and nowhere else. Resumer never writes. Its whole job at
+// startup is one stat per file — if the file on disk is shorter than its runs
+// claim, it DELETES those runs and the articles are fetched again (§3.4). That
+// asymmetry is what makes the record trustworthy without reading a byte of it
+// back.
+//
+// Do not read that as "only these two touch the table". Rows are deleted from
+// five places outside Commit's own merge: Resumer, RunStore.DeleteJob (a job
+// leaving the queue, or a retry re-parsing a changed manifest),
+// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
+// history.Repository.delete. The bound that actually holds — and the only one
+// the trust argument needs — is on CONTENT: a delete can only ever take a
+// claim away, which is S3's safe direction.
 package durability

@@ -1335,12 +1335,12 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		)
 	}
 	// No seeded high-water mark, and no seeded write cursor. Both used to
-	// carry an earlier process's high-water mark into this one so the
-	// completion truncate would not cut away what those runs wrote (#342).
-	// The truncate no longer derives its bound from anything this process
-	// measured — it comes from the durable runs, which describe the FILE
-	// rather than the session — so there is nothing left for a seed to
-	// protect.
+	// carry forward how far EARLIER RUNS OF THE DAEMON had written this file,
+	// so the completion truncate would not cut away the bytes those earlier
+	// processes put there (#342). The truncate no longer derives its bound
+	// from anything this process measured — it comes from the file's durable
+	// runs, which describe the FILE rather than the session — so there is
+	// nothing left for a seed to protect.
 	//
 	// The cursor starts at 0 for the same reason it is safe to: it is a
 	// coalescing hint, not an authority (#311, #353). A resumed file whose

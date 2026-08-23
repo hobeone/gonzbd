@@ -76,13 +76,14 @@ place**: `durability.Barrier`, after an `fsync` it performed, and nothing else
 puts content into a `durable_runs` row. Stating the bound precisely, because a looser
 version of this sentence has misled before: what the *compiler* enforces is
 narrower than that, covering `Queue.AckDurable`'s proof payload and that door
-only (§1). Sole authorship of the record is enforced by there being one writer,
-not by the type system.
+only (§1). That nothing else puts content into the record is enforced by there
+being one such writer, not by the type system — and it is a claim about
+CONTENT, not about the table, which several paths delete from (§6).
 
 ## One record
 
 Everything persisted about download progress that concerns *bytes on disk* is
-one record, in one table, with one writer.
+one record, in one table, and exactly one thing can put content into it.
 
 ```
 durable_runs(job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32)
@@ -531,7 +532,7 @@ no longer detected at startup. par2 detects and repairs it at completion, which
 is the same answer §4 gives for an overlap and the same one the *"a bad article
 costs only its own bytes"* rule gives generally.
 
-#### The barrier is the record's SOLE writer
+#### The barrier is the only thing that puts CONTENT into the record
 
 Under Standing Rule 2 this is the strongest result in the change, and it is
 worth stating as an invariant rather than as a consequence.
@@ -551,24 +552,32 @@ contradicts the record. That asymmetry is what makes the record trustworthy
 without reading a byte of it back.
 
 **State the bound on CONTENT, not on the table.** Deletion is performed from
-five places, and an earlier wording of this section said "and nothing else
-writes it", which its own document then contradicted where `SQLiteStore.Prune`
-appears in the memory budget:
+**five places outside the barrier's own merge**, and an earlier wording of this
+section said "and nothing else writes it", which its own document then
+contradicted where `SQLiteStore.Prune` appears in the memory budget:
 
 | Deleter | When |
 |---|---|
 | `durability.Resumer` | a file shorter than its runs claim, or missing (§6) |
-| `RunStore.DeleteJob` | a job leaving the queue, via `app.dropJobDurability` |
+| `RunStore.DeleteJob` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
 | `queue.SQLiteStore.removeCorrupt` | a job whose manifest is gone, so nothing can interpret the indices |
 | `queue.SQLiteStore.pruneDurabilityRows` | the crash-window backstop on every queue save |
 | `history.Repository.delete` | a history entry going away for good |
 
-None of them can make the record *assert* anything — a delete only ever removes
-a claim, which is S3's safe direction. So the content bound is the whole of
-what §6's trust argument needs, and unlike the wider claim it is true.
+A sixth deletes and is deliberately excluded from that count: `Commit`'s own
+`deleteRows` removes exactly the rows it just read, inside the merge's
+read-modify-write and inside the same transaction as the insert that replaces
+them. It is part of writing content rather than a separate deleter, which is
+why the count is stated as *outside the barrier's own merge* rather than bare.
 
-This is the fourth `only`/`sole`/`nothing else` overclaim found on this branch.
-**Enumerate before asserting one.**
+None of the five can make the record *assert* anything — a delete only ever
+removes a claim, which is S3's safe direction. So the content bound is the whole
+of what §6's trust argument needs, and unlike the wider claim it is true.
+
+This is the fifth `only`/`sole`/`nothing else` overclaim found on this branch,
+and it survived four sweeps because it is phrased differently in every file.
+**Enumerate before asserting one, and grep the CONCEPT rather than the wording
+you happen to have used here.**
 
 ### 7. Absence of evidence is absence
 
@@ -956,7 +965,7 @@ break by accident — see §6.
 
 **There is no resume write-back.** `Resumer.writeBack` and `Resumer.recompute`
 are both deleted, and the `Resumer` is no longer a second writer of the
-durability record. See §6, which states the sole-writer invariant; this section
+durability record. See §6, which states the content-writer invariant; this section
 records what the resume may do instead, and why the machinery the write-back
 needed is gone with it.
 

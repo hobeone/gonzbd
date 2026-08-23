@@ -8,7 +8,7 @@ import (
 // record for the wedge in finding 10.
 //
 // By the time completeFinalizedFile runs, FinalizeFile has committed the
-// extent, acked every one of the file's articles and released the handle, and
+// runs, acked every one of the file's articles and released the handle, and
 // the assembler's completed tombstone guarantees OnFileComplete will never
 // fire again for that file. MarkFileComplete needs the LIVE job resident and
 // answers ErrJobNotResident if the job was paused in the interval — and the

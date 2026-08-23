@@ -105,7 +105,7 @@ func TestDrainReport_IsReleasedOnceTheCycleIsConfirmed(t *testing.T) {
 // TestJobSyncTargetConfirm_SwallowsAStoppedAssembler pins that a Confirm which
 // cannot reach the worker is not an error anyone has to handle.
 //
-// It records work that already succeeded — the extent is committed and the
+// It records work that already succeeded — the runs are committed and the
 // articles are acked — so there is no recovery a caller could perform. What a
 // missed Confirm actually costs is one redundant re-report on the next Drain,
 // which R12 requires the apply to absorb. Returning an error here would invent

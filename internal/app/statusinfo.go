@@ -209,11 +209,21 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // queue.applyResolution, which replays the resolution derived from those same
 // records when a job is re-hydrated. queue.markFailed sets the bit too, for an
 // article whose bytes will never arrive and which therefore contributes no
-// downloaded bytes. So the identity holds at every residency, and a second
-// counter would be a second representation of one fact, free to drift (S5).
+// downloaded bytes.
 //
-// See queue.jobProgressJSON, which states the same enumeration at the bit
-// itself; keep the two in step.
+// One path sets the bit WITHOUT going through markDone at all, and it is named
+// here rather than left to the word "ultimately": queue.newJobProgressSized
+// writes p.done directly when sizing a non-resident job's progress, because
+// markDone needs a manifest for byte arithmetic that has already been seeded
+// from job_files. Its input is the same derived resolution — done means
+// covered by a durable run — so the identity survives it, but a reader
+// grepping for markDone will not find it.
+//
+// So the identity holds at every residency, and a second counter would be a
+// second representation of one fact, free to drift (S5).
+//
+// See queue.jobProgressJSON, which states the markDone-scoped version of this
+// at the bit itself; keep the two in step.
 //
 // ReplaceFromRuns also UN-marks an article whose run the resume discarded
 // (#362), and this figure follows it down rather than needing a correction of

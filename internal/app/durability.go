@@ -377,6 +377,17 @@ func (app *Application) forgetJobBarrierState(jobID string) {
 	// reachable from inside a live barrier, through
 	// routeFault → Fail → maybeFinalize → enqueuePostProc. Marked instead, and
 	// the last holder completes it. See releaseJobBarrierLock.
+	//
+	// The HAZARD CHANGED with the durable-runs design; this is not a
+	// re-wording of the old one. The mutex used to guard a read-modify-write
+	// of the file's extent, where the second commit overwrote the first and
+	// the loser's acked articles were durable with no bit to say so. That is
+	// closed structurally now: RunStore.Commit does its whole read-merge-write
+	// inside ONE SQLite transaction, so two of them serialise rather than
+	// interleave. What the mutex still guards is upstream of the store — Drain
+	// hands each article to exactly one caller, so two concurrent barriers
+	// split a file's articles and each acks only its half, while whichever
+	// calls Confirm releases the reports the other never saw.
 	e, ok := app.jobBarrierMu[jobID]
 	if !ok {
 		return
@@ -1154,12 +1165,14 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // queue's own entry point rather than by reaching into the table from here.
 //
 // The write bound is on content, not on deletion, and the distinction is not
-// pedantry: durable_runs rows are also deleted by durability.Resumer, by
-// RunStore.DeleteJob (below), by queue.SQLiteStore.removeCorrupt and
-// pruneDurabilityRows, and by history.Repository.delete. Content-only is still
-// exactly the property the trust argument needs — nothing can make the record
-// ASSERT bytes an fsync did not cover — and unlike "nothing else writes it",
-// it is true.
+// pedantry: durable_runs rows are deleted from five places outside the
+// barrier's own merge — durability.Resumer, RunStore.DeleteJob (below),
+// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
+// history.Repository.delete. (A sixth, Commit's deleteRows, is part of the
+// merge's read-modify-write rather than a separate deleter.) Content-only is
+// still exactly the property the trust argument needs — nothing can make the
+// record ASSERT bytes an fsync did not cover — and unlike "nothing else writes
+// it", it is true.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
 	var errs []error
 	if app.runs != nil {
