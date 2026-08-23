@@ -192,15 +192,23 @@ and is untouched.
 | Class A asserts | nothing about presence | presence, and the CRC of what is present |
 | S1, S2 | Class B strictly after the `fsync` | unchanged, and now the only claim there is |
 | S4 — recomputation wins over the stored record | the durable bitmap is rebuilt from Class A plus a disk read | unchanged; the record is still what `Resumer` reads |
-| S5 — no second copy to drift | two records, reconciled by two guards | one record; **one** of the two guards becomes unreachable — see below |
+| S5 — no second copy to drift | two records, reconciled by two guards | one record; **both** guards become unreachable, once the resumer deletes what it cannot verify — see below |
 | S6 — truncate only shrinks | unchanged | unchanged |
 | R3 — losing a suffix costs a re-fetch | applies to Class A | applies to the merged record, and is now the *routine* cost after an unclean shutdown rather than a rare one |
 
-### Only one of the two guards dies
+### Both guards die — but only with a change in the resumer
 
-An earlier draft of this document claimed both `FinalizeFile` guards become
-unreachable. That is true of one and **false of the other**, and the difference
-is the resumer.
+This section has been wrong twice, in opposite directions, and the history is
+worth keeping because the second error was caused by fixing the first.
+
+A first draft claimed both `FinalizeFile` guards become unreachable, and named
+no mechanism. A correction then established that one survives — and stopped
+there, treating the surviving producer as a fact of the world rather than as a
+thing that could itself be removed. It is removable, and removing it is cheaper
+than the guard it justifies.
+
+The reasoning below is that correction, kept because it identifies the producer.
+What follows it is what to do about it.
 
 `unrecorded > 0` — *a durable article the record does not name* — does die. Once
 both commit sites write the record in the same transaction that sets the durable
@@ -216,10 +224,26 @@ the bound to `durableExtent` there destroys bytes above it. That is the #342/#35
 class arriving through the recovery path, which is exactly the path this design's
 failure mode depends on.
 
-So the count is: two records become one, and one guard of two becomes one. The
-change is still worth making — #389 and #421 die with the split, which was always
-the prize — but the guard arithmetic in this table's first draft was wrong and
-the contract must not inherit it.
+**So make the resumer delete what it cannot verify.** An unverifiable record
+describes bytes that are not there — the region falls outside the file, or the
+bytes differ from what the record claims. Preserving a truncate bound over them
+protects garbage; where the region was overwritten by an overlapping neighbour,
+that neighbour's own record covers the bytes and the bound does not drop. Once
+the resumer deletes rather than skips, *recorded but not durable* has no producer
+left that this design does not already close, and **both** guards go, along with
+`recordedExtent` itself.
+
+The price is real and belongs in this document rather than only in the plan:
+**the startup sweep becomes destructive.** `Resumer` has never deleted a record —
+it writes extents back and nothing else. After this change a verification bug
+deletes real records. The blast radius is bounded, because a deleted record
+returns its article to Outstanding and the file cannot finalize until it
+resolves, so the cost is a re-fetch rather than lost data. But a startup path
+that can now delete durability state is a different kind of path, and calling it
+free would be the same overreach that produced this section's first draft.
+
+So the count is: two records become one, two guards become none, and one
+startup path becomes destructive.
 
 ### What this costs
 
