@@ -83,7 +83,9 @@ There are **two** drains — `barrier.go:162` (`Run`) and `:599` (`FinalizeFile`
 
   **(c) The union is per-file, not per-cycle.** `Run` loads `facts` inside phase 3's per-file loop (`barrier.go:241`). And the records committed at `:272` must come from `drained` **restricted to `built`** — phase 3 drops closed files with `delete(drained, idx)` at `:254`, and a record for a dropped file must not be committed. `FinalizeFile`'s `written` (`:599`) needs no analogue — it handles one file, and every path that could drop it returns before the commit at `:769`.
 
-  **(d) `durableAt` is the fifth consumer, and it is index-parallel.** `durableAt(facts, idx, ext.Durable, t)` (`barrier.go:555`) returns a closure that indexes `facts[i]`, and it is what `verifiedPrefix` and `overlapAnywhere` are *given* (`:389`, `:765`). Passing the union to `verifiedPrefix` while `durableAt` still closes over the stored slice makes the predicate read a different slice than the walk — out of range when the union is longer, wrong article when it is not. **Both** call sites take it.
+  **(d) `durableAt` is the fifth consumer, and it is index-parallel.** `durableAt(facts, idx, ext.Durable, t)` (`barrier.go:555`) returns a closure that indexes `facts[i]`, and it is what `verifiedPrefix` and `overlapAnywhere` are *given* (`:389`, `:765`). Passing the union to `verifiedPrefix` while `durableAt` still closes over the stored slice makes the predicate read a different slice than the walk — out of range when the union is longer, wrong article when it is not.
+
+  **Build the union at `Run:241` and `FinalizeFile:629` and pass it through `buildExtent`'s `facts` parameter** — that parameter is the carrier, and `:389` is reached by both callers. Wiring the union in at `:389` alone leaves `FinalizeFile`'s own `durableExtent(facts,…)` at `:640` and `recordedExtent(facts,…)` at `:671` reading the raw stored slice off its local, which is this defect's whole shape one level down.
 
   Then pass the union to *all five* consumers — `verifiedPrefix`, `durableAt`, `durableExtent`, `recordedExtent`, `overlapAnywhere` — and widen **both** commit calls. Delete the comment at `barrier.go:383-387` asserting the barrier does not write facts; replace it with why it now does.
 
@@ -118,7 +120,7 @@ There are **two** drains — `barrier.go:162` (`Run`) and `:599` (`FinalizeFile`
 
 An earlier draft of this task said both guards go. Deleting `missing > 0` would have re-created, through the resume path, the exact silent data loss this whole change exists to remove.
 
-> **Depends on Task 7 Step 7.** The unreachability proof below is valid when performed and is *falsified by Task 7* unless Task 7 adds the manifest-alignment check to the retained records. A retry that re-derives a shifted numbering maps a surviving extent's durable ordinal onto an `art_idx` whose record `ForFile` no longer returns — which is exactly `unrecorded > 0`, arriving after this guard has been deleted. **Do not run Task 5 until Task 7 Step 7 has landed.**
+> **Runs after Task 7** — see *Execution order*. The unreachability proof below is falsified unless Task 7 Step 7's alignment gate has landed: a retry that re-derives a shifted numbering maps a surviving extent's durable ordinal onto an `art_idx` whose record `ForFile` no longer returns, which is exactly `unrecorded > 0`, arriving after this guard has been deleted.
 
 - [ ] **Step 1: Prove `unrecorded > 0` is unreachable before deleting it.** Construct the state it fires on and show it cannot occur once both commit sites carry records. The paths to close: `pruneDurabilityRows` (`sqlite_store.go:1294`) and `history.Repository.Delete` (`repository.go:347-364`) each drop both tables together, so records cannot vanish under surviving extents; `Resumer.recompute`/`verifyRegions` derive the bitmap *from* the records, so `writeBack` cannot commit a durable bit with no record; `SeedFromExtents` writes the queue's bits, not the durability bitmap. If any path *can* still fire, **stop** and correct the spec instead of the code.
 - [ ] **Step 2: Write a test pinning that `missing > 0` still fires** on the resumer path — a record whose region fails CRC verification, then permanently fails on re-fetch, must still trim to the recorded bound rather than the durable one. This is the guard that stays; nothing currently pins *why* it stays.
@@ -130,7 +132,7 @@ An earlier draft of this task said both guards go. Deleting `missing > 0` would 
 
 ## Task 6: Derive `done` from the records
 
-> **Run Task 7 before this task.** Task 6 strips the retry's only source of "already succeeded" (`decodeArticlesDone` at `sqlite_store.go:1063`); if Task 7's record retention has not landed, there is one commit in which every retry re-downloads from scratch. Swapping them removes the window at no cost.
+> **Runs after Task 7** — see *Execution order*. Task 6 strips the retry's only source of "already succeeded" (`decodeArticlesDone` at `sqlite_store.go:1063`); if Task 7's record retention has not landed, there is one commit in which every retry re-downloads from scratch.
 
 **Files:** `internal/queue/sqlite_store.go` (`encodeArticlesDone` `:116`, `decodeArticleFlags` `:157`, `decodeArticlesDone` `:192`, `RestoreJobProgress`'s `qFiles` `:503`, `ArticleCountsByJob` `:655`, `MoveToHistory`'s `qRetain` `:933-934`), **`internal/queue/persistence.go`** (`newJobProgressSized` `:130`, its bit-applying loop `:150-183`), `internal/queue/progress.go` (`resetForReload` `:770-779`), **`test/crash/harness.go`** (`decodeArticlesDone` `:983`) and **`test/crash/crash_test.go`** (`:78`, `:112`). Test: `internal/queue/sqlite_store_test.go`, `internal/queue/persistence_test.go`, and the crash suite.
 
@@ -180,7 +182,13 @@ if i < len(f.Failed) && f.Failed[i] {
 - [ ] **Step 6: Reconcile the two ownership comments** — `job_finalizer.go:104-110` says a failed job's rows are kept for the retry; `repository.go:348-357` says the history entry owns them. One must say what owns them now.
 - [ ] **Step 7: Add the manifest-alignment check to the retained records. This is required, not a position to write down.** `RestoreRetryProgress` guards its bitmap overlay with `retainedMatchesManifest` (`sqlite_store.go:1022`, `:1118`) because that bitmap is *positionally* indexed. After Step 3 the records survive a retry with no equivalent guard, and a retry re-parses the NZB backup, so the numbering is re-derived rather than carried.
 
-  An earlier draft left this open. It cannot be left open, because **Task 5 depends on it.** If the numbering shifts, a surviving extent's durable ordinal maps to an `art_idx` whose record `ForFile` no longer returns — which is `durable.Count() - len(covered) > 0`, the `unrecorded > 0` state Task 5 deletes the guard for. Leaving the alignment unguarded falsifies Task 5's unreachability proof *after* Task 5 has already run.
+  An earlier draft left this open. It cannot be left open, because **Task 5 depends on it.** If the numbering shifts, a surviving extent's durable ordinal maps to an `art_idx` whose record `ForFile` no longer returns — which is `durable.Count() - len(covered) > 0`, the `unrecorded > 0` state Task 5 deletes the guard for.
+
+  **Naming the check is not enough — a second draft did that and narrowed nothing.** `retainedMatchesManifest` is the right predicate (it compares `NumFiles`, index order and per-file article count, and because `art_idx` derives from cumulative `FileRange`, a shape match implies identical numbering). But on mismatch `RestoreRetryProgress` only declines the bitmap overlay and returns `false` (`sqlite_store.go:1041-1046`) — **it deletes nothing.** So a mismatch would leave misaligned records and extents in the database for the barrier and the resumer to read.
+
+  The gate must act, and the seam already exists: `applied` is returned at `app.go:1831`, above the `queue.Add` at `:1849`. Hoist it out of its `if store := …` block and branch the deletion on it — **`applied == false` takes the full `Delete` and the durability rows go; only `applied == true` takes Step 3's preserving variant.**
+
+  Two consequences to write down rather than discover: `applied == false` also covers `len(retained) == 0` and `job.manifest == nil`, so those discard the durability rows too — acceptable, but say so. And the shape check inherits `RestoreRetryProgress`'s existing assumption that the same NZB bytes re-parse deterministically, so it does not close a segment reordering *within* a file. That exposure is pre-existing for the bitmap and is not widened here.
 - [ ] **Step 8: Run `go test -race ./internal/app/ ./internal/history/ ./internal/queue/`. Commit** — `fix(app): stop the retry deleting the durability rows it needs`. Closes #422.
 
 ---
@@ -260,6 +268,14 @@ Three blocking, and the same shape a third time — a seam identified correctly 
 
 15. **The crash-consistency suite reimplements the blob format, and no gate ran it.** `test/crash/harness.go:983` decodes `articles_done` independently and `t.Fatalf`s on a length mismatch (`:997`); `crash_test.go:78,112` builds the suite's central invariant on `Done[i] && !Failed[i]`. `run_tests.sh:140-148` deliberately excludes `-tags=crash`, so Task 6 would have broken the repository's most durability-relevant suite while every gate in this plan stayed green. Added to the gate list, to Task 6's files, and to Task 8's greps.
 16. **`durableAt` is the fifth union consumer.** Rounds one and two converged on "four walks". `durableAt` (`barrier.go:555`) returns a closure that indexes `facts[i]` and is what `verifiedPrefix` and `overlapAnywhere` are *given* — so passing the union to the walk while the predicate closes over the stored slice reads two different slices.
-17. **Task 5's proof is valid when performed and falsified by Task 7.** Under the corrected 1-2-3-4-5-7-6-8 order, Task 7 makes both tables survive a retry while leaving the records' manifest alignment unguarded — re-creating `unrecorded > 0` after Task 5 has deleted the guard for it. Task 7 Step 7 is now mandatory rather than a position to record, and Task 5 declares the dependency.
+17. **Task 5's proof is valid when performed and falsified by Task 7.** Task 7 makes both tables survive a retry while leaving the records' manifest alignment unguarded — re-creating `unrecorded > 0` after Task 5 has deleted the guard for it. Task 7 Step 7 is now mandatory rather than a position to record, and Task 5 declares the dependency.
+
+## Execution order
+
+**1 → 2 → 3 → 4 → 7 → 5 → 6 → 8.**
+
+Task 7 moves ahead of both 5 and 6, for two independent reasons: Task 5's unreachability proof is falsified unless Task 7 Step 7's alignment gate has landed, and Task 6 strips the retry's only source of "already succeeded" before Task 7's record retention would replace it.
+
+This is stated once, here, and nowhere else. An earlier draft expressed the ordering constraint in two places — a note claiming `1-2-3-4-5-7-6-8` and a dependency line on Task 5 saying the opposite — which is the same "one constraint, N places" shape that caused the worst finding of every prior round, applied to the fix for it.
 
 Also corrected: six line numbers and one signature — including, in the very step warning that `Accept`'s signature must be read before writing a test against it, a copy of that signature with its return value dropped.
