@@ -146,8 +146,12 @@ type Store interface {
 	// ClearFailedArticles removes every failed-article row for ONE job.
 	//
 	// It is the reversal of the above and there is no per-article form,
-	// because both reversal sites in the queue clear exactly the articles
-	// whose failed bit is set — which is exactly this job's stored set. It
+	// because all THREE reversal sites clear exactly the articles whose
+	// failed bit is set — which is exactly this job's stored set. Two are
+	// in this package (Queue.ClearAllEmitted via JobProgress.resetForReload,
+	// and Queue.Retry via Job.ResetForRetry); the third is
+	// Application.RetryHistoryJob, which resets a rebuilt job outside the
+	// queue and so has to reach this method itself. It
 	// must be scoped to a job the caller is actually resetting: a sweep
 	// over every job would resurrect the permanently failed articles of
 	// every non-resident one as fetchable work.

@@ -250,10 +250,17 @@ func (s *SQLiteStore) RecordFailedArticles(ctx context.Context, jobID string, ar
 // ClearFailedArticles removes every failed-article row for ONE job.
 //
 // A whole-job delete rather than a per-article one, because that is what the
-// two reversal sites actually do: Job.ResetForRetry and
+// THREE reversal sites actually do: Job.ResetForRetry and
 // JobProgress.resetForReload each clear precisely the articles whose failed
 // bit is set, which is precisely the set stored here. Batching is therefore
 // exact rather than approximate.
+//
+// Two of the three are in this package — Queue.ClearAllEmitted and
+// Queue.Retry. The third is Application.RetryHistoryJob, which calls
+// ResetForRetry on a job rebuilt from its NZB backup, outside the queue and
+// before Queue.Add; it calls this method directly for that reason. Its sibling
+// branch drops the rows through Application.dropJobDurability instead, so both
+// of its paths are covered but by different routes.
 //
 // The SCOPE is what makes that equivalence true. Queue.ClearAllEmitted loops
 // every article of every job holding both a manifest and progress — RESIDENT

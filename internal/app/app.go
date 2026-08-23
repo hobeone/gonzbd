@@ -1845,6 +1845,38 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 				"stale durability rows could not be dropped; refusing to requeue, because a "+
 				"stale row would bound the completion truncate to the wrong articles: %w", jobID, err)
 		}
+	} else if store := app.queue.Store(); store != nil {
+		// The THIRD of Step 10's reversal sites, and the only one outside
+		// internal/queue. ResetForRetry above cleared every failed bit in
+		// memory; on this branch nothing else clears the rows behind them.
+		//
+		// The two tables part company here, and they are retained together by
+		// job_finalizer.go for opposite-facing reasons. durable_runs describes
+		// bytes still on disk, so DeleteKeepingDurability below deliberately
+		// keeps them (#422). failed_articles describes a DECISION not to
+		// fetch, and a retry exists to revisit that decision — so the rows go.
+		//
+		// The undo would be immediate, not restart-only: Add writes no
+		// resolution, and PromoteNext unconditionally calls
+		// Store.RestoreJobProgress, which re-derives per-article state from
+		// these two tables and re-marks exactly these articles Failed+Done. A
+		// user retrying a failed job would never re-attempt the articles that
+		// made it fail. It is a regression rather than a latent gap: the
+		// articles_done blob this table replaced was re-serialised wholesale
+		// by Add's own insert, so the reset corrected the stored copy as a
+		// side effect. A separate table has no wholesale rewrite.
+		//
+		// Fatal, for the same reason the sibling branch above gives: nothing
+		// has been committed at this point — the history entry is untouched
+		// and no job has entered the queue — so the abort is free and the
+		// retry stays retryable. Proceeding instead would requeue a job whose
+		// stored state contradicts the reset that was just performed on it.
+		if err := store.ClearFailedArticles(ctx, jobID); err != nil {
+			return fmt.Errorf("app: retry %s: the reset cleared the job's failed "+
+				"articles in memory but their stored rows could not be dropped; refusing "+
+				"to requeue, because the next promotion would restore them and the retry "+
+				"would skip the very articles it exists to re-attempt: %w", jobID, err)
+		}
 	}
 	if err := app.queue.Add(job); err != nil {
 		return err
