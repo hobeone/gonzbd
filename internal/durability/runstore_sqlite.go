@@ -186,6 +186,22 @@ func mergeAdjacentRuns(sorted []Run) []Run {
 // is at or before maxEnd, ordered by Offset. A stored row starting after
 // maxEnd cannot overlap or abut the incoming articles' offset span, so it is
 // excluded from the read.
+//
+// The absence of a LOWER bound is deliberate, and it is load-bearing rather
+// than an oversight. The read is one-sided on purpose: a stored run that
+// STARTS far below the incoming articles' offsets may still cover their
+// article indices, because a run grows leftward across commits. A batch
+// redelivering article 9 at offset 900 has to find the stored run [0,9],
+// which starts at offset 0. An `offset >= minOffset` clause would hide that
+// row, coveredByAny would report false, the redelivered article would be
+// inserted as a second row, and Σ length would then exceed the file's real
+// size — a false overlap on a healthy file, which is exactly what
+// TestSQLiteRunStore_RedeliveredAdjacentToNewIsNotAFalseOverlap exists to
+// prevent.
+//
+// So do not optimise this into a two-sided range. The upper bound is safe
+// because a row starting past maxEnd can neither be covered by nor abut the
+// incoming span; no symmetric argument holds at the low end.
 func (s *SQLiteRunStore) queryBracketing(ctx context.Context, tx *sql.Tx, jobID string, fileIdx int32, maxEnd int64) ([]Run, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT file_idx, first_art_idx, last_art_idx, offset, length, crc32
