@@ -228,14 +228,31 @@ git grep -n 'articles_done' -- test/
    *Probe:* benchmark `Commit` against a file at 20k articles across 1, 10 and 10,000 rows.
    *Branches:* (a) small → proceed; (b) large at high row counts → the merge needs an index or a bound on rows per commit.
 
-3. **Coalesced-run partial writes.** `flushRun` fails every article in a run on any write error, and `WriteAt` can return `io.ErrShortWrite` having written leading bytes — bytes on disk with no record.
-   *Narrowed:* both callers discard `n` and fail every part, so it arises only through the injectable `w.writeAt` seam.
-   *Probe:* inject a short write inside `flushRun`; observe whether the leading article's bytes are fully written. **Run before Task 3.**
-   *Branches:* (a) those bytes sit above every recorded run and a `max` bound never drops below good content → accept under Standing Design Rule 3; (b) the bound can drop below good bytes → **stop**.
+3. **Can `Resumer` be deleted outright,** or does the `stat` gate need a home that survives it? Task 6 assumes the former.
 
-4. **Can `Resumer` be deleted outright,** or does the `stat` gate need a home that survives it? Task 6 assumes the former.
+4. **Where the assembler's written-range knowledge lives** (Task 5). Refusing an overlap needs to know what has been written. If no existing per-file structure carries it, adding one is a second source of truth about the same fact and Task 5 should stop rather than introduce it.
 
-5. **Where the assembler's written-range knowledge lives** (Task 5). Refusing an overlap needs to know what has been written. If no existing per-file structure carries it, adding one is a second source of truth about the same fact and Task 5 should stop rather than introduce it.
+### Resolved: coalesced-run partial writes — branch (a), the stop does not fire
+
+This was the one item that could have refuted the design. **It does not.**
+
+`flushRun` discards the byte count (`if _, err := w.writeAt(...)`), so it cannot distinguish a short write from a total one and rolls the whole run back. A short write therefore leaves real bytes on disk that no record describes. That premise is confirmed, not theoretical — the probe wrote 50 of 200 bytes and read them back.
+
+What bounds it is the third fact, and it is why `TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes` now exists:
+
+```
+Drain returned 0 articles, err=storage retryable fault on write: short write
+takeFaulted returned 2 articles
+file is 50 bytes, 50 non-zero
+```
+
+`fail` routes the run's articles to **Outstanding**, not to permanently failed — A1 forbids a storage fault from resolving an article, and `fail`'s own doc says "the article is coming back". So the file cannot reach `TotalParts`, `OnFileComplete` cannot fire, and **no truncate runs while the unrecorded partial bytes exist**. By the time the file can finalize, those articles have either been re-fetched — writing the full correct bytes at the same offset, overwriting the partial — or failed through server exhaustion, which is a different path that writes nothing.
+
+The truncate bound can therefore only drop below bytes belonging to articles that are failed anyway, whose regions par2 must repair regardless. Blast radius is the article's own bytes: Standing Design Rule 3.
+
+The pin was mutation-checked. Changing `fail` to resolve permanently instead of routing to Outstanding produces:
+
+> `takeFaulted returned 0 articles, want 2 routed back to Outstanding: a storage fault must never resolve an article (A1), or the file can finalize over the partial bytes this write left behind`
 
 ### Answered from the code
 
