@@ -203,10 +203,26 @@ file equals `Σ length`.
 `article_facts`, `file_extents`, `ArticleFact`, `FileExtent`, `verifiedPrefix`,
 `prefixWalk`, `durableAt`, `durableExtent`, `recordedExtent`, `overlapAnywhere`,
 both `FinalizeFile` guards, `PrefixCRC`/`HasPrefixCRC`, `VerifiedTo`,
-`BytesDurable`, the durable bitmap, `Resumer.recompute`, `verifyRegions`,
-`SeedFromExtents`, `ReplaceFromResume`, the `articles_done` blob in both
-`job_files` and `history_job_files`, and its independent reimplementation in
-`test/crash/harness.go`.
+`BytesDurable`, `Bitmap` and the whole of `extent.go`, `Resumer.recompute`,
+`verifyRegions`, `SeedFromExtents`, `ReplaceFromResume`, the `articles_done`
+blob in both `job_files` and `history_job_files`, and its independent
+reimplementation in `test/crash/harness.go`.
+
+**`SyncTarget` also loses two methods**, which is an interface change rather
+than a deletion of dead code. `FileLocalOrdinal` maps a global article index to
+a per-file bitmap bit and `ArticleCount` sizes that bitmap; a run carries
+`first_art_idx` and `last_art_idx` directly, so neither conversion has anywhere
+to happen. The slice reaches both interface declarations, `jobSyncTarget`'s
+implementations, and `manifestArticleMap`, which exists only to back them.
+`Truncator` embeds `SyncTarget`, so both shrink together.
+
+Roughly **1,850 non-test lines are deleted against ~360 written.**
+
+**The write cache is deliberately kept.** It was surveyed as a candidate — it
+coalesces contiguous articles into fewer `WriteAt` calls, is not needed for run
+formation, and its disabled path already exists and is exercised — and the
+decision was to retain it. Recorded so it is not later mistaken for an
+oversight.
 
 ### What this costs
 

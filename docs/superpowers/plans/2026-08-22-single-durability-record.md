@@ -127,6 +127,25 @@ CREATE TABLE failed_articles (
 - [ ] **Step 11: Trim `ResumeResult`.** `Resume`'s **return type changes** — `VerifiedTo`, `PrefixCRC`, `HasPrefixCRC`, `BytesDurable` and the `Durable Bitmap` all go (`resume.go:23-56`). An earlier draft claimed the signature was unchanged, in two places; only the parameter list is. `fileResumer` (`resume_startup.go:27`) and `resumeJobFiles`'s construction (`:325-330`) both change, as does its `recomputed` counter.
 - [ ] **Step 12: Reduce `Resumer` to the `stat` gate.** `recompute`, `verifyRegions` and `writeBack` go; `Resume` compares `stat(path).size >= max(offset+length)`, discards the file's rows on a shortfall, and returns the resume set. **The sweep runs inside `Start` before dispatch** (`resume_startup.go:52-56`), which is what stops the assembler re-creating and pre-allocating a deleted partial so the gate passes over zeros — a property of the sweep's placement, not of the gate. Say so where the gate lives. Log every discard at `Warn`.
 - [ ] **Step 13: Delete `prefix.go` and its THREE dependents' uses** — `barrier.go`, `resume.go:309` (inside `recompute`, Step 12), and `postanomaly.go:48`, whose `overlapFrom(w prefixWalk, …)` takes the deleted type. **`PostAnomaly` itself stays** — it is the barrier's public return type, reaching the user through `app.reportPostAnomalies` → `handlePostAnomaly`. Only its producer changes.
+
+- [ ] **Step 13a: Delete `extent.go` outright — all 157 lines, both `FileExtent` and `Bitmap`.** An earlier draft said "most of". It is all of it: every `Bitmap` user is on this task's delete list — `priorExtent` (`barrier.go:527,535`), `durableAt` (`:555`), `durableExtent` (`:797`), `recordedExtent` (`:827`), `ResumeResult.Durable` and `verifyRegions` (`resume.go:26,107,293,341`), `extentstore_sqlite.go` (`:109,142`), and `fileDurableBitmap`/`BitmapFromBytes` in `queue/workset.go:400-421`. Nothing outside those holds one.
+
+- [ ] **Step 13b: Delete `SyncTarget.FileLocalOrdinal` and `SyncTarget.ArticleCount`, and everything behind them.** A run carries `first_art_idx`/`last_art_idx` directly, so no global-index-to-file-bit conversion exists to perform. Their own docs name the reason they existed — *"the barrier needs it to size the durable bitmap"*, *"maps a global article index to this file's bit position"* — and this task deletes the bitmap.
+
+  Every caller is inside code already being deleted: `buildExtent` (`barrier.go:341,362`), `durableAt` (`:557`), `durableExtent` (`:800`), `recordedExtent` (`:836`). Nothing else calls either.
+
+  The slice spans three packages, and `Truncator` embeds `SyncTarget` so both interfaces shrink together:
+
+  | | |
+  |---|---|
+  | `internal/durability/synctarget.go:163,169` | the interface declaration |
+  | `internal/assembler/synctarget.go:154,159` | the second declaration |
+  | `internal/assembler/synctarget.go:401,408` | `jobSyncTarget`'s implementations |
+  | `internal/app/durability.go:37-60` | `manifestArticleMap`, which exists only to back them |
+
+  Small in lines, but it is a **concept** leaving an interface, so it is listed as its own step rather than folded into a deletion list where a reader would skim past it.
+
+  **The write cache stays** — it was surveyed as a candidate and deliberately kept.
 - [ ] **Step 14: Derive article resolution in the queue.** `done` = covered by a run; `failed` = a `failed_articles` row; `unfinished` = neither. Delete `encodeArticlesDone`, `decodeArticlesDone`, `decodeArticleFlags`, the column from `job_files` and `history_job_files`, `SeedFromExtents`, `ReplaceFromResume`, and the crash harness's copy. **The consumer is `newJobProgressSized` (`persistence.go:130`, loop `:150-183`), not `sqlite_store.go`** — it applies `f.Failed[i]` only inside the `f.Done[i]` branch, so anything leaving `Done` empty makes every article of every non-resident job read as Pending.
 - [ ] **Step 15: Solve the boot cost.** `ArticleCountsByJob` derives Pending for every non-resident job at startup without a manifest (`sqlite_store.go:648-651`). Runs make this far cheaper than per-article rows, but establish the query shape. **If none is cheap enough, stop and re-scope.**
 - [ ] **Step 16: Check the gates that fail on stale entries.** `manifest_gate_test.go`'s allow-list is keyed on method names and fails on stale entries as well as missing ones. `internal/history/testdata/schema.golden` and `schema_guard_test.go` both move with the migration.
@@ -219,3 +238,13 @@ Twenty findings. Most concerned machinery this shape does not have — the five-
 8. **`ResumeResult`'s dead fields** were listed as deleted in the spec and by no task.
 9. **"`Resume`'s signature is unchanged" was false in two places** — the return type changes.
 10. Also: `resetForReload` is at `:767`; the sweep is `resume_startup.go`, not `app.go`; `schema.golden` and `schema_guard_test.go` move with the migration; Task 4's stat sits inside `if bound > 0`; `Combine`'s second length argument is the whole run's; index-abutment is conservative, not necessary; deleting `buildExtent` also deletes two guards worth naming.
+
+### Deletion survey
+
+After the round-five rewrite, the surrounding code was surveyed for machinery this design makes purposeless, rather than only for what the plan already named.
+
+11. **`extent.go` goes entirely, not partly.** Every `Bitmap` holder is on the delete list, so `Bitmap` and `FileExtent` both lose their last consumer — 157 lines, where the plan had said "most of".
+12. **`SyncTarget` loses two methods and the concept behind them.** `FileLocalOrdinal` and `ArticleCount` exist to size and index a per-file durable bitmap. Runs carry their own article-index range, so the conversion has nowhere to happen. The slice reaches three packages and both interface declarations.
+13. **The write cache was surveyed and deliberately kept.** `writeCache` is ~448 non-test lines plus ~680 of tests and a `write_cache_size` config key, it coalesces contiguous articles into fewer `WriteAt` calls, and the no-cache path already exists and is exercised (`withCacheBytes(0)`). It is not needed for run formation — runs are grouped from the drained set's offsets, not from how the bytes reached disk — so it was a genuine candidate. **Decision: keep it.** Recorded here so a later reader does not re-litigate it as an oversight.
+
+Measured totals for the change: roughly **1,850 non-test lines deleted against ~360 written**, before tests.
