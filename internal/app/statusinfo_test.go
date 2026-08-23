@@ -239,21 +239,19 @@ func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
 	}
 	application.noteJobBytes(job.ID, 999)
 
-	// Two of the file's three 100-byte articles are on stable storage.
-	durable := durability.NewBitmap(3)
-	durable.Set(0)
-	durable.Set(1)
-	if err := application.queue.SeedFromExtents(job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: durable},
+	// Two of the file's three 100-byte articles are on stable storage, as one
+	// merged run.
+	if err := application.queue.SeedFromRuns(job.ID, []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 200},
 	}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
 	got := application.JobDurability(job.ID)
 
 	if got.DurableBytes != 200 {
 		t.Errorf("DurableBytes = %d, want 200 — two 100-byte articles are covered by a "+
-			"committed extent and the figure does not report them", got.DurableBytes)
+			"recorded run and the figure does not report them", got.DurableBytes)
 	}
 	if got.PendingBytes != 999 {
 		t.Errorf("PendingBytes = %d, want 999 — the written-but-not-fsynced window is being "+

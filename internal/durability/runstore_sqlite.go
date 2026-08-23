@@ -10,14 +10,16 @@ import (
 	"github.com/hobeone/gonzbd/internal/crc32util"
 )
 
-// SQLiteRunStore persists the merged Class A + Class B durable_runs record.
+// SQLiteRunStore persists the durable_runs record.
 //
-// Unlike SQLiteFactLog's append-only INSERT OR IGNORE, this store REPLACEs:
-// merging is read-modify-write by construction (§3.1 of the design doc), so
-// a commit may delete and re-insert rows it owns. That is safe because a row
-// is only ever written after a completed fsync — a later commit can only
-// describe MORE durable bytes than an earlier one, never different ones for
-// the same article.
+// It REPLACEs rather than appending, which is what retired R1's immutability:
+// merging is read-modify-write by construction (§3.1 of the design doc), so a
+// commit may delete and re-insert rows it owns. That is safe because a row is
+// only ever written after a completed fsync — a later commit can only describe
+// MORE durable bytes than an earlier one, never different ones for the same
+// article. The append-only store this replaced needed immutability precisely
+// because it wrote BEFORE the write, where a row could describe bytes that
+// were never written.
 type SQLiteRunStore struct{ db *sql.DB }
 
 // NewSQLiteRunStore wraps db as a RunStore. The caller owns db's lifecycle.
@@ -284,6 +286,16 @@ func (s *SQLiteRunStore) ForJob(ctx context.Context, jobID string) ([]Run, error
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// DeleteFile removes every run for one file of a job. See RunStore.DeleteFile
+// for why the resume needs a file-scoped deletion rather than a job-scoped one.
+func (s *SQLiteRunStore) DeleteFile(ctx context.Context, jobID string, fileIdx int32) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM durable_runs WHERE job_id = ? AND file_idx = ?`, jobID, fileIdx); err != nil {
+		return fmt.Errorf("durability: delete runs job=%s file=%d: %w", jobID, fileIdx, err)
+	}
+	return nil
 }
 
 // DeleteJob removes every run for a job that has left the queue. It touches

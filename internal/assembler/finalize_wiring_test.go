@@ -13,18 +13,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// oneFileMap is an ArticleMap for a single file whose articles are numbered
-// from zero, which is what the fixtures below build.
-type oneFileMap struct{ n int }
-
-func (m oneFileMap) ArticleCount(int32) int { return m.n }
-func (m oneFileMap) FileLocalOrdinal(_ int32, artIdx int32) (int, bool) {
-	if int(artIdx) >= m.n || artIdx < 0 {
-		return 0, false
-	}
-	return int(artIdx), true
-}
-
 type noopAcker struct{ acked []int32 }
 
 func (a *noopAcker) AckDurable(p durability.DurableProof) error {
@@ -86,19 +74,11 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 	t.Cleanup(func() { _ = hdb.Close() })
 	db := history.NewRepository(hdb).DB()
 
-	facts := durability.NewSQLiteFactLog(db)
-	if err := facts.Append(ctx, "job1", []durability.ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100},
-	}); err != nil {
-		t.Fatalf("Append facts: %v", err)
-	}
-
+	runs := durability.NewSQLiteRunStore(db)
 	ack := &noopAcker{}
-	b := durability.NewBarrier(facts, durability.NewSQLiteExtentStore(db), ack, noopStall{},
-		slog.New(slog.DiscardHandler))
+	b := durability.NewBarrier(runs, ack, noopStall{}, slog.New(slog.DiscardHandler))
 
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 3})
+	tgt := a.SyncTargetFor("job1")
 	trunc, ok := tgt.(durability.Truncator)
 	if !ok {
 		t.Fatal("the per-job adapter does not implement durability.Truncator, so no barrier can trim a completed file")
@@ -138,7 +118,7 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 	}
 	if st.Size() != 300 {
 		t.Errorf("file is %d bytes after FinalizeFile, want 300 — the highest end "+
-			"offset among durable facts. 100 would mean the gapless prefix was used "+
+			"offset the record holds. 100 would mean the bound stopped at the hole "+
 			"and article 2's bytes were destroyed; 8192 would mean no truncate was "+
 			"delivered and pre-allocation's zeros survive as par2 damage", st.Size())
 	}
@@ -146,19 +126,20 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 		t.Error("FinalizeFile acked nothing; the articles it just fsynced stay Outstanding forever")
 	}
 
-	// The committed stamp must describe the file AFTER the trim, or the next
-	// resume's S7 validity check fails and discards a valid cache.
-	exts, err := durability.NewSQLiteExtentStore(db).Load(ctx, "job1")
+	// The recorded runs must describe the file the truncate left behind. A
+	// hole means two rows, and the top one must reach the file's new end — a
+	// record claiming more than the file holds is exactly what the next
+	// resume's size gate discards the whole file for.
+	stored, err := runs.ForFile(ctx, "job1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exts) != 1 {
-		t.Fatalf("Load returned %d extents, want 1", len(exts))
+	if len(stored) != 2 {
+		t.Fatalf("ForFile returned %d runs, want 2 — one either side of article 1's hole", len(stored))
 	}
-	if exts[0].Size != 300 {
-		t.Errorf("committed Size = %d, want 300 — the stamp describes the file before "+
-			"the truncate, so the next resume sees a size mismatch and throws the cache away",
-			exts[0].Size)
+	if end := stored[1].Offset + stored[1].Length; end != 300 {
+		t.Errorf("the top run ends at %d, want 300 — the record and the trimmed file "+
+			"must agree, or the next resume discards this file and re-downloads it", end)
 	}
 }
 
@@ -219,7 +200,7 @@ func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
 		t.Fatal("the file never completed; the fixture is not exercising finalizeFile")
 	}
 
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 1})
+	tgt := a.SyncTargetFor("job1")
 	if got := tgt.Files(); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("Files() = %v after completion, want [0] — the handle was closed "+
 			"before the barrier could finalize the file, so it keeps pre-allocation's "+
@@ -236,14 +217,8 @@ func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = hdb.Close() })
 	db := history.NewRepository(hdb).DB()
-	facts := durability.NewSQLiteFactLog(db)
-	if err := facts.Append(ctx, "job1", []durability.ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
 	ack := &noopAcker{}
-	b := durability.NewBarrier(facts, durability.NewSQLiteExtentStore(db), ack, noopStall{},
+	b := durability.NewBarrier(durability.NewSQLiteRunStore(db), ack, noopStall{},
 		slog.New(slog.DiscardHandler))
 
 	trunc, ok := tgt.(durability.Truncator)
@@ -287,7 +262,7 @@ func TestSyncTargetPath_ReportsTheResolvedTargetPath(t *testing.T) {
 	path := registerFile(t, dir, files, "job1", 0, 2)
 	a := New(makeOpts(dir, files), slog.New(slog.DiscardHandler))
 
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 2})
+	tgt := a.SyncTargetFor("job1")
 	if got := tgt.Path(0); got != path {
 		t.Errorf("Path(0) = %q, want %q", got, path)
 	}

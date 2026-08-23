@@ -119,14 +119,14 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	// job_files.failed_bytes is the one cached figure that cannot live in
-	// file_extents: every column there is recomputable from article_facts plus
-	// the file's bytes, and a permanently failed article never decodes, so it
-	// writes no article_facts row for a recomputation to read. Both halves are
-	// asserted — present here, absent there — because the pair is the decision.
-	// Checking only one half would let a future change satisfy it by adding the
-	// column back to file_extents as well, which is the two-writer shape S5
-	// forbids and the reason this figure moved in the first place.
+	// job_files.failed_bytes is the one cached figure the durability record
+	// cannot supply. failed_articles records WHICH articles failed and never
+	// how many bytes they were, and a permanently failed article never decodes
+	// so no run covers it either. Both halves are asserted — present here,
+	// absent from the record's own tables below — because the pair is the
+	// decision. Checking only one half would let a future change satisfy it by
+	// adding a byte column to the record as well, which is the two-writer
+	// shape S5 forbids and the reason this figure lives here at all.
 	t.Run("job_files caches failed_bytes beside its authority", func(t *testing.T) {
 		var n int
 		if err := db.QueryRow(
@@ -136,17 +136,18 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 		if n != 1 {
 			t.Error("job_files.failed_bytes is missing — a non-resident job cannot report " +
-				"failed bytes without it, and no recomputation from Class A can supply them")
+				"failed bytes without it, and failed_articles records only WHICH articles " +
+				"failed, never how many bytes they were")
 		}
 	})
 
 	// job_files.bytes_downloaded is the sibling cache, and it is here for a
-	// different reason than failed_bytes: the figure IS recomputable from
-	// Class A, but only in decoded bytes. This one counts encoded bytes,
-	// because it is subtracted from job_files.bytes to get a job's remaining
-	// figure and that column is the encoded NZB total. Reading
-	// file_extents.bytes_durable instead made every non-resident job overstate
-	// its remaining bytes by the encoding overhead.
+	// different reason than failed_bytes: the figure IS derivable from the
+	// durability record, but only in decoded bytes. This one counts ENCODED
+	// bytes, because it is subtracted from job_files.bytes to get a job's
+	// remaining figure and that column is the encoded NZB total. Deriving it
+	// from the record's lengths instead made every non-resident job overstate
+	// its remaining bytes by the encoding overhead (#365).
 	//
 	// Asserted here rather than only in the queue package because the column's
 	// existence is the decision — a queue-level test would go green again the
@@ -160,68 +161,100 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 		if n != 1 {
 			t.Error("job_files.bytes_downloaded is missing — a non-resident job has no " +
-				"manifest to sum encoded article bytes from, and file_extents.bytes_durable " +
-				"is the decoded quantity, not this one")
+				"manifest to sum encoded article bytes from, and the durability record's " +
+				"lengths are the decoded quantity, not this one")
 		}
 	})
 
-	t.Run("file_extents has no failed-byte column", func(t *testing.T) {
-		var n int
-		if err := db.QueryRow(
-			`SELECT COUNT(*) FROM pragma_table_info('file_extents') WHERE name = 'bytes_failed'`,
-		).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 0 {
-			t.Error("file_extents.bytes_failed is back — it had no writer, because the " +
-				"barrier commits only what its fsync made true and a failed article " +
-				"never decodes. Its cache is job_files.failed_bytes")
+	// The two-record store 002 replaced and 003 dropped. Asserted absent
+	// rather than merely unused: while either table exists, a change can
+	// reintroduce a writer for it, and the whole point of the durable-runs
+	// design is that one download is described once.
+	t.Run("the two-record tables are gone", func(t *testing.T) {
+		for _, table := range []string{"article_facts", "file_extents"} {
+			var n int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+			).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Errorf("%s is still present — one download must be described once, and "+
+					"a surviving table is a place for a second writer to reappear", table)
+			}
 		}
 	})
 
-	t.Run("article_facts is keyed for idempotent append", func(t *testing.T) {
+	// And the queue's own third copy. Article resolution is DERIVED from
+	// durable_runs and failed_articles; a column here would be re-serialised
+	// wholesale on every job update and free to disagree with both.
+	t.Run("neither job_files table carries articles_done", func(t *testing.T) {
+		for _, table := range []string{"job_files", "history_job_files"} {
+			var n int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'articles_done'`, table,
+			).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Errorf("%s.articles_done is back — it is a third copy of what "+
+					"durable_runs and failed_articles already hold between them", table)
+			}
+		}
+	})
+
+	t.Run("durable_runs is keyed per file and offset", func(t *testing.T) {
 		// Asserted through pragma_table_info's pk ordinals rather than a
 		// "PRIMARY KEY" substring of the DDL. The substring is satisfied by a
 		// key on any columns at all, including the wrong ones, while the
-		// failure message names (job_id, art_idx) — a check that cannot fail
-		// for the reason it reports. Append's INSERT OR IGNORE is idempotent
-		// only if the key is on exactly this pair, in this order.
-		want := map[string]int{"job_id": 1, "art_idx": 2}
-		got := primaryKeyOrdinals(t, db, "article_facts")
+		// failure message names the columns — a check that cannot fail for the
+		// reason it reports.
+		//
+		// Offset is the third column and that ordering is load-bearing:
+		// SQLiteRunStore.queryBracketing scans the key range by offset within
+		// a (job_id, file_idx) prefix, so a key that put offset anywhere else
+		// would turn every commit into a full-file read.
+		want := map[string]int{"job_id": 1, "file_idx": 2, "offset": 3}
+		got := primaryKeyOrdinals(t, db, "durable_runs")
 		if !maps.Equal(got, want) {
-			t.Errorf("article_facts primary key = %v, want %v — INSERT OR IGNORE "+
+			t.Errorf("durable_runs primary key = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("failed_articles is keyed for an idempotent record", func(t *testing.T) {
+		// RecordFailedArticles uses INSERT OR IGNORE, which is idempotent only
+		// against a key on exactly this pair.
+		want := map[string]int{"job_id": 1, "art_idx": 2}
+		got := primaryKeyOrdinals(t, db, "failed_articles")
+		if !maps.Equal(got, want) {
+			t.Errorf("failed_articles primary key = %v, want %v — INSERT OR IGNORE "+
 				"is only idempotent against a key on (job_id, art_idx)", got, want)
 		}
 	})
 
-	t.Run("file_extents is keyed per file", func(t *testing.T) {
-		want := map[string]int{"job_id": 1, "file_idx": 2}
-		got := primaryKeyOrdinals(t, db, "file_extents")
-		if !maps.Equal(got, want) {
-			t.Errorf("file_extents primary key = %v, want %v", got, want)
-		}
-	})
-
-	t.Run("file_extents exists with the validity stamp", func(t *testing.T) {
-		for _, col := range []string{"durable_bitmap", "verified_to", "prefix_crc", "has_prefix_crc", "bytes_durable", "size", "mod_time_ns"} {
+	t.Run("durable_runs carries what the three consumers need", func(t *testing.T) {
+		// One column per question the record answers: the article range is the
+		// resume set's complement, offset+length give the truncate bound and
+		// the overlap check, and crc32 IS the whole-file CRC when a file
+		// collapses to one row.
+		for _, col := range []string{"first_art_idx", "last_art_idx", "offset", "length", "crc32"} {
 			var n int
-			err := db.QueryRow(
-				`SELECT COUNT(*) FROM pragma_table_info('file_extents') WHERE name = ?`, col,
-			).Scan(&n)
-			if err != nil {
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('durable_runs') WHERE name = ?`, col,
+			).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
 			if n != 1 {
-				t.Errorf("file_extents missing column %q", col)
+				t.Errorf("durable_runs missing column %q", col)
 			}
 		}
 	})
 
 	t.Run("no stray migration files", func(t *testing.T) {
-		// This guarded a single 001_initial.sql until durable_runs added
-		// 002_durable_runs.sql (purely additive — see that file's header).
-		// It still exists to catch an accidental extra file, just against
-		// the now-two-file list rather than one.
+		// This guarded a single 001_initial.sql until 002_durable_runs.sql
+		// added the replacement record and 003_drop_legacy_durability.sql
+		// dropped what it replaced. It still exists to catch an accidental
+		// extra file, just against a longer list.
 		entries, err := os.ReadDir("migrations")
 		if err != nil {
 			t.Fatal(err)
@@ -232,7 +265,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 				sqls = append(sqls, e.Name())
 			}
 		}
-		want := []string{"001_initial.sql", "002_durable_runs.sql"}
+		want := []string{"001_initial.sql", "002_durable_runs.sql", "003_drop_legacy_durability.sql"}
 		if !slices.Equal(sqls, want) {
 			t.Errorf("migrations = %v, want exactly %v", sqls, want)
 		}

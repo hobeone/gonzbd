@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -24,10 +25,10 @@ import (
 // would leave whichever one was forgotten unprotected by the very argument that
 // justified the design.
 
-// overlapFixture builds a job whose facts describe A0 [0,100), A1 [100,200) and
-// X [150,200) — X inside A1's range, sharing no start offset, which is what the
-// assembler cannot see. All three are written and therefore drainable, so the
-// barrier's durable predicate accepts them and the walk reaches the overlap.
+// overlapFixture builds a job that WRITES A0 [0,100), A1 [100,200) and X
+// [150,300) — X starting inside A1's range and sharing no start offset, which
+// is what the assembler's collision index cannot see. All three are drainable,
+// so the barrier records all three and Σ Length exceeds the file by 50 bytes.
 func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 	t.Helper()
 	application, repo, _ := newLifecycleTestApp(t)
@@ -57,37 +58,41 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 		t.Fatalf("registerFile: %v", err)
 	}
 
-	// Written through the assembler so the barrier can drain them, at offsets
-	// that tile: the OVERLAP lives in the facts, which is where the barrier
-	// looks. Driving a real overlapping write here would exercise the
-	// assembler's blindness rather than this routing.
-	for i := range 3 {
-		ref, req := assemblerWrite(job.ID, 0, i, int64(i)*100)
+	// Written through the assembler so the barrier can drain them, and the
+	// OVERLAP is now in the WRITES rather than in a separate record — which
+	// is the whole of what the durable-runs change did to this fixture. The
+	// barrier records what the drain reports, so there is no longer a second
+	// place for an overlap to live.
+	//
+	// Articles 0 and 1 tile [0,200). Article 2 spans [150,300): it overlaps
+	// article 1 without sharing a start offset, which is #387's shape and
+	// which the assembler's exact-offset collision index cannot see, AND it
+	// ends where the file does. That last part is load-bearing — FinalizeFile
+	// derives its truncate bound from max(offset+length), so an article set
+	// stopping at 200 would trim article 2's bytes away and the fixture would
+	// quietly exercise a destructive truncate while the test still saw its
+	// warning.
+	//
+	// Σ Length is then 350 against a 300-byte file, so §3.3's check reports a
+	// 50-byte excess.
+	for _, w := range []struct {
+		art    int
+		offset int64
+		size   int
+	}{{0, 0, 100}, {1, 100, 100}, {2, 150, 150}} {
+		ref := assembler.ArticleRef{
+			JobID: job.ID, FileIdx: 0,
+			ArtIdx:    int32(w.art), //nolint:gosec // G115: test article counts are tiny
+			MessageID: string(rune('a'+w.art)) + "@t",
+		}
+		req := assembler.WriteRequest{Offset: w.offset, Data: make([]byte, w.size)}
 		if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
-			t.Fatalf("WriteArticle %d: %v", i, err)
+			t.Fatalf("WriteArticle %d: %v", w.art, err)
 		}
 	}
 
-	// Facts by hand: this fixture writes through the assembler directly and so
-	// never passes through pipeline.appendArticleFacts, which is what would
-	// normally record them.
-	//
-	// The facts must reach the file's real end, 300. FinalizeFile derives its
-	// truncate bound from them, so a fact set stopping at 200 would trim away
-	// article 2's bytes — the test would still see its warning, while the
-	// fixture quietly exercised a destructive truncate. Article 2's fact
-	// therefore spans [150,300): it overlaps article 1 without sharing a start
-	// offset, which is #387's shape, AND ends where the file does.
-	facts := durability.NewSQLiteFactLog(repo.DB())
-	if err := facts.Append(ctx, job.ID, []durability.ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
-		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 150},
-	}); err != nil {
-		t.Fatalf("Append facts: %v", err)
-	}
 	application.barrier = durability.NewBarrier(
-		facts, durability.NewSQLiteExtentStore(repo.DB()),
+		durability.NewSQLiteRunStore(repo.DB()),
 		application.queue, application, slog.New(slog.DiscardHandler))
 
 	return application, job.ID
@@ -105,12 +110,15 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 	if j := application.queue.SnapshotJob(jobID); j != nil {
 		warning = j.Warning
 	}
-	// The base name and both article indices. Not the file index: it reaches
-	// the log line only, never the warning.
-	for _, want := range []string{"overlap.bin", "#1", "#2"} {
+	// The base name and the excess. Not the article indices: a run merges the
+	// articles that abut into one row, so by the time the record is written
+	// there is no pair left to name — the byte count is the diagnosis that
+	// survives. Not the file index either: it reaches the log line only.
+	for _, want := range []string{"overlap.bin", "50 bytes"} {
 		if !strings.Contains(warning, want) {
-			t.Errorf("%s route: job warning = %q, want it to name %q — two durable "+
-				"articles describe the same bytes and the user is told nothing",
+			t.Errorf("%s route: job warning = %q, want it to name %q — the file's "+
+				"recorded articles account for more bytes than the file holds, so some "+
+				"of them wrote over each other and the user is told nothing",
 				route, warning, want)
 		}
 	}
@@ -169,21 +177,18 @@ func TestFinalizeFile_RoutesAnOverlapToTheJobWarning(t *testing.T) {
 	}
 	assertOverlapWarned(t, application, jobID, "FinalizeFile")
 
-	// The finalize must not have trimmed the file. Asserted because this
-	// fixture supplies its facts by hand, so nothing else keeps them
-	// consistent with what was written: a fact set stopping short of the
-	// file's end produces a truncate that destroys real bytes, and the warning
-	// assertion above would pass anyway. Checking the warning alone cannot
-	// tell a healthy route from one that reported correctly while eating the
-	// last article.
+	// The finalize must not have trimmed the file. Checking the warning alone
+	// cannot tell a healthy route from one that reported correctly while
+	// eating the last article: an overlapped file is exactly the shape where
+	// a bound taken over the wrong set stops short of the real end, and a
+	// truncate to it destroys bytes that are on disk.
 	st, err := os.Stat(application.filePathFor(jobID, 0))
 	if err != nil {
 		t.Fatalf("stat the finalized file: %v", err)
 	}
 	if st.Size() != 300 {
-		t.Errorf("file is %d bytes after finalize, want 300 — three 100-byte "+
-			"articles were written at 0, 100 and 200, so a smaller file means the "+
-			"truncate bound was derived from facts that do not reach the end",
-			st.Size())
+		t.Errorf("file is %d bytes after finalize, want 300 — the top article spans "+
+			"[150,300), so a smaller file means the truncate bound did not reach the "+
+			"highest recorded end", st.Size())
 	}
 }

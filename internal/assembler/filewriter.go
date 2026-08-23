@@ -359,10 +359,10 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // This is only correct for an article that made no durability claim. One that
 // reached noteWritten is in w.written, or in w.reported after a Drain, or
 // already acked and gone from both after a Confirm — and in every one of those
-// the barrier will assert it durable. Rolling it back here as well gives one
-// article two terminal dispositions, and lets the displacer overwrite bytes
-// whose Class A fact names the incumbent's CRC at that offset, so a restart
-// verifies the range and cannot match it.
+// the barrier will record it. Rolling it back here as well gives one article
+// two terminal dispositions, and lets the displacer overwrite bytes a run
+// records the incumbent's CRC over, so the record describes a range the file
+// no longer holds.
 //
 // acceptArticle enforces the precondition by refusing the ARRIVAL when the
 // offset is settled, so this is reached only from the cache-eviction case it
@@ -488,10 +488,10 @@ func (w *FileWriter) parts() int { return w.partsWritten }
 //
 // Failing it there gives one article two terminal dispositions at once —
 // routeFaulted resolves it permanently failed while the barrier still holds it
-// as evidence and acks it durable. And the ack would be a lie: the pipeline
-// appended a Class A fact naming this article's CRC at this offset when it
-// decoded, independent of any write, so letting the arrival overwrite the
-// range leaves a durable fact that a restart cannot verify.
+// as evidence and acks it durable. And the ack would be a lie: the drain
+// reports this article's CRC at this offset, and the barrier records a run
+// over exactly that range, so letting the arrival overwrite it leaves a
+// record describing bytes the file no longer holds.
 //
 // So an offset whose owner has been reported Written is SETTLED, and the later
 // article loses. That is the opposite of the cache-resident case, deliberately:
@@ -816,15 +816,20 @@ func (w *FileWriter) Confirm() {
 	w.reported = nil
 }
 
-// Stat returns the file's size and modification time as they are now. The pair
-// is the S7 validity stamp a later resume checks the file against, so it must
-// be read after the Sync it describes.
-func (w *FileWriter) Stat() (size, modTimeNs int64, err error) {
+// Stat returns the file's size as it is now. It is S7's validity stamp — which
+// a resume checks the file against, and which the barrier compares Σ Length to
+// — so it must be read after the Sync it describes.
+//
+// It used to return the modification time as the stamp's second half. See
+// durability.SyncTarget.Stat for why that half was deleted rather than left
+// unread: with no recomputation left, an mtime mismatch's only remaining
+// response would be a full re-download of an intact file.
+func (w *FileWriter) Stat() (size int64, err error) {
 	fi, err := w.handle.Stat()
 	if err != nil {
-		return 0, 0, storagefault.Classify("stat", w.path, err)
+		return 0, storagefault.Classify("stat", w.path, err)
 	}
-	return fi.Size(), fi.ModTime().UnixNano(), nil
+	return fi.Size(), nil
 }
 
 // Truncate trims the file to n bytes.

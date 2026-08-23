@@ -1,86 +1,95 @@
 package durability
 
 import (
-	"bytes"
-	"context"
-	"hash/crc32"
-	"log/slog"
+	"strings"
 	"testing"
 )
 
-// TestFinalizeFile_AnOverlappingFactWithholdsTheWholeFileCRC is the
-// barrier-level pin for #387, and it is the one verifiedPrefix's own unit tests
-// cannot give: those prove the function is right, not that FinalizeFile asks it.
+// TestOverlapFrom_OnlyASurplusIsAFinding pins §3.3's three-way rule directly
+// on the classifier, so the arithmetic is fixed by something other than the
+// barrier tests that reach it through a fixture.
 //
-// The facts tile [0,200) from A0 and A1, and X claims [150,200) — inside A1's
-// range, sharing no start offset, so the assembler does not detect it and X's
-// bytes overwrite A1's on disk. The file does not grow, so VerifiedTo reaches
-// Size and the old rule — VerifiedTo > 0 && VerifiedTo == Size, recomputed at
-// the call site — reported a whole-file CRC.
+// Only ONE of the three comparisons is a positive signal:
 //
-// That CRC is combined from the facts, and facts are built from each article's
-// own decoded bytes before the write. So it describes the file that SHOULD have
-// been written, which is exactly what par2 describes. QuickCheck matched it,
-// the repair stage skipped par2 entirely, and on-demand par2 declined to
-// download the recovery volumes. The corruption was not merely undetected; it
-// was unrepairable.
+//	Σ Length >  size  definite overlap — articles wrote over each other
+//	Σ Length == size  no evidence, which is not proof of absence
+//	Σ Length <  size  articles are missing: the ordinary incomplete case
 //
-// Withholding the claim restores the loud path: app.durability records no CRC,
-// QuickCheck reports NoCRC rather than a match, and repair runs.
-func TestFinalizeFile_AnOverlappingFactWithholdsTheWholeFileCRC(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	facts := NewSQLiteFactLog(db)
-	exts := NewSQLiteExtentStore(db)
-
-	a0 := bytes.Repeat([]byte{0x01}, 100)
-	a1 := bytes.Repeat([]byte{0x02}, 100)
-	x := bytes.Repeat([]byte{0x03}, 50)
-
-	if err := facts.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
-		{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50, CRC32: crc32.ChecksumIEEE(x)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	tgt := &factGapTarget{
-		artCount: 3,
-		size:     200,
-		drained: []WrittenArticle{
-			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
-			{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50},
+// The equality row is the one worth pinning explicitly rather than folding
+// into "not greater". It is deliberately silent, and a reader who expects a
+// complete overlap detector has to be able to see that it is not one: a hole
+// of N bytes and an overlap of N bytes cancel and land exactly here.
+func TestOverlapFrom_OnlyASurplusIsAFinding(t *testing.T) {
+	tests := []struct {
+		name     string
+		runs     []Run
+		size     int64
+		wantFind bool
+	}{
+		{
+			name: "surplus is an overlap",
+			runs: []Run{{Offset: 0, Length: 200}, {Offset: 150, Length: 50}},
+			size: 200, wantFind: true,
+		},
+		{
+			name: "equality is silent",
+			runs: []Run{{Offset: 0, Length: 100}, {Offset: 200, Length: 100}},
+			size: 200, wantFind: false,
+		},
+		{
+			name: "shortfall is the ordinary incomplete file",
+			runs: []Run{{Offset: 0, Length: 100}},
+			size: 300, wantFind: false,
+		},
+		{
+			name: "no runs at all is silent",
+			runs: nil,
+			size: 300, wantFind: false,
 		},
 	}
-	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
-		t.Fatalf("FinalizeFile: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pa, ok := overlapFrom(tt.runs, tt.size, 3, func() string { return "/d/vol042.rar" })
+			if ok != tt.wantFind {
+				t.Fatalf("overlapFrom found=%v, want %v", ok, tt.wantFind)
+			}
+			if !ok {
+				return
+			}
+			if pa.FileIdx != 3 {
+				t.Errorf("FileIdx = %d, want 3 — Run iterates a job's files internally, "+
+					"so its caller cannot tell which file a finding belongs to", pa.FileIdx)
+			}
+			if !strings.Contains(pa.Reason, "vol042.rar") {
+				t.Errorf("Reason = %q, want it to name the file", pa.Reason)
+			}
+		})
+	}
+}
+
+// TestOverlapFrom_ResolvesThePathOnlyWhenItReports pins the reason
+// overlapFrom takes a closure rather than a string.
+//
+// Resolving a file's path takes the pipeline's RLock, looks the file up and
+// copies a FileInfo, and Go evaluates arguments before the call — so a
+// resolved string would pay that on every file of every checkpoint while
+// almost every call returns false.
+func TestOverlapFrom_ResolvesThePathOnlyWhenItReports(t *testing.T) {
+	calls := 0
+	pathFn := func() string { calls++; return "/d/f.bin" }
+
+	if _, ok := overlapFrom([]Run{{Offset: 0, Length: 10}}, 100, 0, pathFn); ok {
+		t.Fatal("a file with room to spare reported an overlap")
+	}
+	if calls != 0 {
+		t.Errorf("the path was resolved %d times for a file with no finding, want 0 — "+
+			"that lock is taken on every file of every checkpoint", calls)
 	}
 
-	stored, err := exts.Load(ctx, "job-1")
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := overlapFrom([]Run{{Offset: 0, Length: 200}}, 100, 0, pathFn); !ok {
+		t.Fatal("a surplus did not report")
 	}
-	if len(stored) != 1 {
-		t.Fatalf("Load returned %d extents, want 1", len(stored))
-	}
-	got := stored[0]
-
-	// Grounding: without this, the assertion below could pass because the walk
-	// stopped early for some unrelated reason, which would prove nothing about
-	// the overlap.
-	if got.VerifiedTo != 200 {
-		t.Fatalf("VerifiedTo = %d, want 200 — A0 and A1 must tile the file for this "+
-			"fixture to exercise the case where the prefix reaches Size and a fact "+
-			"is still left over", got.VerifiedTo)
-	}
-	if got.HasPrefixCRC {
-		t.Errorf("HasPrefixCRC = true with X's fact unconsumed: the barrier published "+
-			"a whole-file CRC (%#x) combined only from A0 and A1, describing the bytes "+
-			"that SHOULD be on disk. That value matches par2's, so QuickCheck reports "+
-			"clean, repair is skipped and the recovery volumes are never fetched (#387)",
-			got.PrefixCRC)
+	if calls != 1 {
+		t.Errorf("the path was resolved %d times for one finding, want 1", calls)
 	}
 }

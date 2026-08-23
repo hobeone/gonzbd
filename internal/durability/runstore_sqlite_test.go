@@ -241,6 +241,54 @@ func TestSQLiteRunStore_DeleteJobErrorsOnClosedDB(t *testing.T) {
 	}
 }
 
+// TestSQLiteRunStore_DeleteFileIsScopedAndReportsAFailure covers the file-
+// scoped deletion Resumer's gate performs.
+//
+// Both halves are the point. The SCOPE is what stops one disproved partial
+// from costing a job its other files' records; the ERROR is what stops the
+// sweep reporting a discard that did not reach the store, which would leave
+// the next start adopting runs the file has already contradicted.
+func TestSQLiteRunStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	rs := NewSQLiteRunStore(db)
+	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+		{FileIdx: 1, ArtIdx: 5, Offset: 0, Length: 100, CRC32: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Another job's file 0, so the delete's job scoping is exercised too.
+	if err := rs.Commit(ctx, "job-2", []DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rs.DeleteFile(ctx, "job-1", 0); err != nil {
+		t.Fatalf("DeleteFile: %v", err)
+	}
+	if got, err := rs.ForFile(ctx, "job-1", 0); err != nil || len(got) != 0 {
+		t.Errorf("job-1 file 0 holds %d runs (err %v), want none", len(got), err)
+	}
+	if got, err := rs.ForFile(ctx, "job-1", 1); err != nil || len(got) != 1 {
+		t.Errorf("job-1 file 1 holds %d runs (err %v), want 1 — a resume stat'ed one "+
+			"path and proved nothing about the others", len(got), err)
+	}
+	if got, err := rs.ForFile(ctx, "job-2", 0); err != nil || len(got) != 1 {
+		t.Errorf("job-2 file 0 holds %d runs (err %v), want 1", len(got), err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.DeleteFile(ctx, "job-1", 1); err == nil {
+		t.Fatal("DeleteFile on a closed DB returned nil; the sweep would report a discard " +
+			"that never reached the store, and the next start adopts the runs the file " +
+			"has already contradicted")
+	}
+}
+
 // TestSQLiteRunStore_InsertFailureMidBatchRollsBack pins insertRuns' error
 // path and the transaction's atomicity together: a trigger fails the second
 // insert, and the first file's already-computed merge must not survive

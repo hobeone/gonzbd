@@ -22,6 +22,14 @@ import (
 // per-file progress only for a job in a resident status. A job left at the
 // NewJob default of StatusQueued comes back with zeroed progress and every
 // assertion about article state then passes or fails for the wrong reason.
+//
+// The durability record is written explicitly, because Save does not write it.
+// Article resolution is DERIVED from durable_runs and failed_articles rather
+// than re-serialised into a queue column on every update, so a job whose
+// progress was only ever mutated in memory persists no resolution at all —
+// which is exactly what production does when no barrier has run. Callers
+// arrive here having marked articles on a store-less queue, so this is the
+// first point at which there is a store to record against.
 func storeRoundTrip(t *testing.T, j *Job) *Job {
 	t.Helper()
 
@@ -40,6 +48,7 @@ func storeRoundTrip(t *testing.T, j *Job) *Job {
 	if err := q.Add(j); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	recordDurability(t, store, j)
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

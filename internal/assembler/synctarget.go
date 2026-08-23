@@ -127,69 +127,40 @@ const barrierOpTimeout = 5 * time.Second
 
 // syncReply carries a worker answer back to the barrier's goroutine.
 type syncReply struct {
-	files     []int32
-	jobs      []string
-	written   []durability.WrittenArticle
-	size      int64
-	modTimeNs int64
-	err       error
+	files   []int32
+	jobs    []string
+	written []durability.WrittenArticle
+	size    int64
+	err     error
 }
 
 // ErrAssemblerStopped reports a barrier operation submitted after Stop.
 var ErrAssemblerStopped = errors.New("assembler: stopped before the barrier operation ran")
-
-// ArticleMap supplies the two manifest facts the assembler does not have and
-// cannot derive: how many articles a file holds, and where a global article
-// index sits within it.
-//
-// The assembler deliberately never learns them. It is fed one article at a
-// time and has no view of the job's manifest, so any answer it invented would
-// be a guess — and the barrier uses these to place bits in a durable bitmap,
-// where a wrong ordinal marks the wrong article durable and costs a silently
-// short file. The caller that owns the manifest supplies them instead.
-type ArticleMap interface {
-	// ArticleCount returns how many articles the file holds in total. The
-	// barrier needs it to size the durable bitmap at its true width rather
-	// than the byte width persistence rounds it up to.
-	ArticleCount(fileIdx int32) int
-	// FileLocalOrdinal maps a global article index to the file's bit
-	// position. False means the article does not belong to the file, which
-	// the barrier treats as a bookkeeping defect and fails loudly on rather
-	// than skipping the article (A2).
-	FileLocalOrdinal(fileIdx, artIdx int32) (int, bool)
-}
 
 // SyncTargetFor returns a durability.SyncTarget scoped to one job.
 //
 // The assembler itself cannot implement SyncTarget: the interface is per-job —
 // Files() returns one job's files — while the assembler is keyed on
 // fileKey{jobID, fileIdx} and serves every job at once. This adapter supplies
-// the missing dimension, and am supplies the manifest facts.
+// the missing dimension.
 //
-// A nil am makes the target report NO FILES, so Barrier.Run over it iterates
-// nothing. Note the scope of that claim: Run is the only entry point that asks
-// for the file set. Barrier.FinalizeFile takes an explicit file index and never
-// calls Files(), so this alone does NOT make a nil-am target inert — an earlier
-// version of this comment said it did, which was a true statement about one
-// path generalised to a path it did not cover.
-//
-// What actually closes the hole is Barrier.buildExtent refusing to build an
-// extent for a target reporting no articles. That is the chokepoint both entry
-// points pass through, and its doc explains the erasure it prevents. This guard
-// remains as the cheaper outer layer, not as the guarantee.
-//
-// Nil is for a caller that has no manifest and therefore has no business
-// running a barrier; it is not a usable mode.
+// It used to take an ArticleMap as well, supplying the two manifest facts the
+// assembler has no view of: how many articles a file holds, and where a global
+// article index sits within it. Both existed to place bits in a per-file
+// durable bitmap. A durable run carries FirstArtIdx and LastArtIdx directly,
+// so there is no bitmap and no ordinal conversion, and the interface, the
+// adapter that backed it from the queue's manifest, and the nil-am inertness
+// rule that guarded a caller with no manifest all went with them. A caller
+// with no manifest now simply has nothing to supply.
 //
 //nolint:ireturn // the adapter's whole purpose is to return the interface
-func (a *Assembler) SyncTargetFor(jobID string, am ArticleMap) durability.SyncTarget {
-	return &jobSyncTarget{a: a, jobID: jobID, am: am}
+func (a *Assembler) SyncTargetFor(jobID string) durability.SyncTarget {
+	return &jobSyncTarget{a: a, jobID: jobID}
 }
 
 type jobSyncTarget struct {
 	a     *Assembler
 	jobID string
-	am    ArticleMap
 }
 
 var _ durability.SyncTarget = (*jobSyncTarget)(nil)
@@ -295,11 +266,6 @@ func (t *jobSyncTarget) waitEnded(caller context.Context, op syncOp) error {
 // Files returns the job's currently open files. R8 bounds barrier cost by this
 // set rather than by job size.
 func (t *jobSyncTarget) Files() []int32 {
-	// No manifest, no files. See SyncTargetFor: this is what keeps a nil
-	// ArticleMap inert instead of destructive.
-	if t.am == nil {
-		return nil
-	}
 	files, err := t.a.OpenFiles(context.Background(), t.jobID)
 	if err != nil {
 		// Reporting no files makes the barrier a no-op, which is safe — it
@@ -378,11 +344,15 @@ func (t *jobSyncTarget) Sync(ctx context.Context, fileIdx int32) error {
 	return err
 }
 
-// Stat reads the file's size and mtime, bounded by barrierOpTimeout because
-// the interface hands it no context to bound it with. See that constant.
-func (t *jobSyncTarget) Stat(fileIdx int32) (size, modTimeNs int64, err error) {
+// Stat reads the file's size, bounded by barrierOpTimeout because the
+// interface hands it no context to bound it with. See that constant.
+//
+// It used to return the mtime as well, as the second half of S7's validity
+// stamp. durability.SyncTarget.Stat says why that half was deleted rather than
+// left unread.
+func (t *jobSyncTarget) Stat(fileIdx int32) (size int64, err error) {
 	r, e := t.submit(context.Background(), syncOp{kind: opStat, fileIdx: fileIdx})
-	return r.size, r.modTimeNs, e
+	return r.size, e
 }
 
 // Truncate trims a completed file to bound.
@@ -393,23 +363,6 @@ func (t *jobSyncTarget) Stat(fileIdx int32) (size, modTimeNs int64, err error) {
 func (t *jobSyncTarget) Truncate(ctx context.Context, fileIdx int32, bound int64) error {
 	_, err := t.submit(ctx, syncOp{kind: opTruncate, fileIdx: fileIdx, bound: bound})
 	return err
-}
-
-// ArticleCount and FileLocalOrdinal come from the manifest, not the worker, so
-// they do not go through the control channel at all — they are pure lookups
-// against the ArticleMap the caller supplied.
-func (t *jobSyncTarget) ArticleCount(fileIdx int32) int {
-	if t.am == nil {
-		return 0
-	}
-	return t.am.ArticleCount(fileIdx)
-}
-
-func (t *jobSyncTarget) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
-	if t.am == nil {
-		return 0, false
-	}
-	return t.am.FileLocalOrdinal(fileIdx, artIdx)
 }
 
 // CloseFile drains, fsyncs, and closes one completed file's handle, and blocks
@@ -540,7 +493,7 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 		case opConfirm:
 			f.w.Confirm()
 		case opStat:
-			r.size, r.modTimeNs, r.err = f.w.Stat()
+			r.size, r.err = f.w.Stat()
 		case opTruncate:
 			r.err = f.w.Truncate(op.bound)
 		case opClose:

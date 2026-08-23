@@ -80,7 +80,7 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 
 			opts := makeOpts(dir, files)
 			a := startAssembler(t, opts)
-			target := a.SyncTargetFor("job1", oneFileMap{n: 8})
+			target := a.SyncTargetFor("job1")
 
 			const msgID = "under-test"
 			_ = writeArticle(t.Context(), a, WriteRequest{

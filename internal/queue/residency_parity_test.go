@@ -8,28 +8,25 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// commitBarrierExtents writes the Class B extents a durability.Barrier would
-// have committed for job's currently-durable articles.
+// This file's fixture writes the durable runs a durability.Barrier would have
+// recorded for a job's currently-done articles — see commitBarrierRuns below.
 //
 // It stands in for the application's barrier cadence rather than starting one,
-// and it goes through the real durability.SQLiteExtentStore rather than writing
-// rows by hand — so what the non-resident read path reads back is what production
-// will actually have written, not a shape invented by the test.
+// and it goes through the real durability.SQLiteRunStore rather than writing
+// rows by hand — so what the non-resident read path reads back is what
+// production will actually have written, not a shape invented by the test.
 //
-// A file's durable bits are its articles that are done and not failed, which
-// is exactly what Barrier.buildExtent sets: it charges bytes on the 0->1
-// transition of an article the fsync covered, and a failed article never
-// reaches a Drain. BytesDurable is the sum over those same articles, so the
-// bitmap and the aggregate cannot disagree here for the same reason they
-// cannot in the barrier.
+// A run covers an article that is done and not failed, which is exactly what
+// the barrier records: it hands Commit the articles a completed fsync covered,
+// and a failed article never reaches a Drain.
 //
-// The aggregate is seeded in DECODED bytes, via decodedBytesOf, because that
-// is the unit Barrier.buildExtent charges: it adds WrittenArticle.Length, the
-// length of the payload written to disk. Manifest.ArticleBytes is the NZB
-// `bytes` attribute, which counts the ENCODED article and runs a few percent
-// higher. Seeding the encoded figure here would make this fixture agree with
-// the resident path by construction and hide any consumer that confuses the
-// two — which is exactly what it did until #365.
+// Lengths are in DECODED bytes, via decodedBytesOf, because that is the unit
+// the barrier records: WrittenArticle.Length is the payload written to disk.
+// Manifest.ArticleBytes is the NZB `bytes` attribute, which counts the ENCODED
+// article and runs a few percent higher. Using the encoded figure here would
+// make this fixture agree with the resident path by construction and hide any
+// consumer that confuses the two — which is exactly what it did until #365.
+//
 // decodedBytesOf models the yEnc overhead that separates an article's encoded
 // size from the payload the assembler writes: escapes and line endings put the
 // encoded form roughly 2% above the decoded one. The exact ratio does not
@@ -39,32 +36,74 @@ func decodedBytesOf(encoded int) int64 {
 	return int64(encoded) * 100 / 102
 }
 
-func commitBarrierExtents(t *testing.T, db *sql.DB, job *Job) {
+// commitBarrierRuns records what a barrier would have recorded for the job's
+// currently-done articles, so a non-resident reload derives the same
+// per-article state a resident job holds.
+//
+// Offsets are synthesised from the articles' decoded sizes in index order,
+// which is what makes contiguous articles merge the way real ones do.
+func commitBarrierRuns(t *testing.T, db *sql.DB, job *Job) {
 	t.Helper()
 	m, err := job.Manifest()
 	if err != nil {
-		t.Fatalf("commitBarrierExtents: manifest: %v", err)
+		t.Fatalf("commitBarrierRuns: manifest: %v", err)
 	}
 	p := job.Progress()
-	exts := make([]durability.FileExtent, 0, m.NumFiles())
+	var arts []durability.DurableArticle
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
-		bm := durability.NewBitmap(hi - lo)
-		var bytesDurable int64
+		var off int64
 		for i := lo; i < hi; i++ {
+			n := decodedBytesOf(m.ArticleBytes(i))
 			if p.ArticleDone(i) && !p.ArticleFailed(i) {
-				bm.Set(i - lo)
-				bytesDurable += decodedBytesOf(m.ArticleBytes(i))
+				arts = append(arts, durability.DurableArticle{
+					FileIdx: int32(fi), //nolint:gosec // G115: file counts are far below int32
+					ArtIdx:  int32(i),  //nolint:gosec // G115: article counts are far below int32
+					Offset:  off,
+					Length:  int32(n), //nolint:gosec // G115: a decoded article is far below int32 bytes
+				})
 			}
+			off += n
 		}
-		exts = append(exts, durability.FileExtent{
-			FileIdx:      int32(fi), //nolint:gosec // G115: file counts are far below int32
-			Durable:      bm,
-			BytesDurable: bytesDurable,
-		})
 	}
-	if err := durability.NewSQLiteExtentStore(db).Commit(context.Background(), job.ID, exts); err != nil {
-		t.Fatalf("commitBarrierExtents: commit: %v", err)
+	if err := durability.NewSQLiteRunStore(db).Commit(context.Background(), job.ID, arts); err != nil {
+		t.Fatalf("commitBarrierRuns: commit: %v", err)
+	}
+}
+
+// recordDurability persists the WHOLE of a job's per-article state the way
+// production does: the durable runs a barrier would have recorded for its
+// successful articles, and a failed_articles row for each permanently failed
+// one.
+//
+// Every fixture that mutates progress in memory and then expects a reload to
+// see it needs this, and that is a real consequence of the durable-runs
+// design rather than test scaffolding. Article resolution is no longer a
+// column the queue re-serialises on Update — it is DERIVED from two records
+// with different owners, and only one of them (failed_articles) belongs to the
+// queue at all. A fixture that calls Update alone persists no resolution,
+// which is exactly what production does when no barrier has run.
+//
+// It reaches through the queue's own store for the failed half rather than
+// writing rows by hand, so the fixture cannot drift from what
+// AckPermanentFailure actually writes.
+func recordDurability(t *testing.T, store *SQLiteStore, job *Job) {
+	t.Helper()
+	commitBarrierRuns(t, store.db, job)
+
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("recordDurability: manifest: %v", err)
+	}
+	p := job.Progress()
+	var failed []int32
+	for i := range m.NumArticles() {
+		if p.ArticleFailed(i) {
+			failed = append(failed, int32(i)) //nolint:gosec // G115: article counts are far below int32
+		}
+	}
+	if err := store.RecordFailedArticles(context.Background(), job.ID, failed); err != nil {
+		t.Fatalf("recordDurability: failed articles: %v", err)
 	}
 }
 
@@ -92,16 +131,15 @@ func commitBarrierExtents(t *testing.T, db *sql.DB, job *Job) {
 // A test that poked BytesDownloaded/FailedBytes itself would prove nothing
 // about production — this reads back only what the store actually persisted.
 //
-// Both byte figures come from job_files, each cached beside the articles_done
-// bits it sums, and the fixture commits Class B extents anyway — seeded in
-// DECODED bytes, the unit the barrier actually charges. That is the point of
-// the fixture rather than an accident of it: a consumer that reached back into
-// file_extents.bytes_durable for the downloaded figure would find a number in
-// the wrong unit, and diverge here. It read exactly that way until #365, and
-// this test could not see it while the fixture seeded encoded bytes into a
-// decoded column.
+// Both byte figures come from job_files, each caching a sum over the article
+// resolution the durable runs carry, and the fixture records those runs in
+// DECODED bytes — the unit the barrier actually records. That is the point of
+// the fixture rather than an accident of it: a consumer that reached into the
+// record for the downloaded figure would find a number in the wrong unit, and
+// diverge here. It read exactly that way until #365, and this test could not
+// see it while the fixture seeded encoded bytes into a decoded column.
 func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
-	store, dir, db := setupResidencyTestStoreWithDB(t)
+	store, dir, _ := setupResidencyTestStoreWithDB(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "residency-parity", 4, 2)
 	if err := q.Add(job); err != nil {
@@ -138,7 +176,7 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	if err := store.Update(t.Context(), job); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	commitBarrierExtents(t, db, job)
+	recordDurability(t, store, job)
 
 	resident := job.Progress()
 
@@ -227,9 +265,9 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 // barrier commits only what its fsync made true, and a permanently failed
 // article never decodes, so it has no Class A record for the barrier to
 // derive one from. The figure now caches in job_files.failed_bytes, beside
-// the articles_done bits it sums and written by the same statement.
+// the article resolution it sums and written by the same statement.
 func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
-	store, dir, db := setupResidencyTestStoreWithDB(t)
+	store, dir, _ := setupResidencyTestStoreWithDB(t)
 	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)
 	m, err := job.Manifest()
 	if err != nil {
@@ -249,7 +287,7 @@ func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
 	if err := store.Add(context.Background(), job); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	commitBarrierExtents(t, db, job)
+	recordDurability(t, store, job)
 
 	reloaded, err := Load(dir, WithStore(store))
 	if err != nil {

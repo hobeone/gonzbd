@@ -1543,7 +1543,7 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 	}
 
-	written, err := a.SyncTargetFor("real-job", oneFileMap{n: 2}).Drain(t.Context(), 0)
+	written, err := a.SyncTargetFor("real-job").Drain(t.Context(), 0)
 	if err != nil {
 		t.Fatalf("Drain: %v — an out-of-range ArtIdx fails the barrier's "+
 			"file-local ordinal lookup, which is what the request's 99 would be", err)

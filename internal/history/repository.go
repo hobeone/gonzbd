@@ -313,8 +313,8 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 	return r.delete(ctx, true, nzoIDs...)
 }
 
-// DeleteKeepingDurability removes the entries but leaves article_facts and
-// file_extents in place.
+// DeleteKeepingDurability removes the entries but leaves durable_runs and
+// failed_articles in place.
 //
 // It exists for exactly one caller: a retry, which re-enqueues the job under
 // the SAME ID. Those rows are what bound the retry's truncate to the whole
@@ -367,9 +367,11 @@ func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...
 			return 0, fmt.Errorf("history: delete retained job files: %w", err)
 		}
 
-		// A failed job's Class A facts and Class B extents are retained so a
-		// retry can bound its truncate to the whole partial file rather than
-		// to the articles it re-fetched. Ownership passes to the history entry
+		// A failed job's durable runs are retained so a retry can bound its
+		// truncate to the whole partial file rather than to the articles it
+		// re-fetched, and its failed_articles rows go with them so the retry
+		// does not re-attempt what already failed permanently. Ownership
+		// passes to the history entry
 		// while the job sits there, and they share its lack of a foreign key
 		// to cascade from, so an entry that is going away for good takes them
 		// with it — every such deletion path gets the cleanup without having
@@ -388,7 +390,7 @@ func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...
 		// this cleanup and the one that wrote them had to agree about it
 		// forever.
 		if dropDurability {
-			for _, table := range []string{"article_facts", "file_extents"} {
+			for _, table := range []string{"durable_runs", "failed_articles"} {
 				if _, err := tx.ExecContext(ctx,
 					"DELETE FROM "+table+" WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // table is a literal from the slice above; placeholders is only "?,?,?"
 					return 0, fmt.Errorf("history: delete retained durability rows from %s: %w", table, err)

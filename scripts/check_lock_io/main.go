@@ -105,6 +105,8 @@ var storeMethods = map[string]bool{
 	"RestoreRetryProgress": true,
 	"DeleteJobArtifacts":   true,
 	"ArticleCountsByJob":   true,
+	"RecordFailedArticles": true,
+	"ClearFailedArticles":  true,
 	"Save":                 true,
 }
 

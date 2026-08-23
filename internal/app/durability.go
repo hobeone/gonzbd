@@ -17,51 +17,15 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// manifestArticleMap answers the two manifest questions the assembler cannot:
-// how many articles a file holds, and where a global article index sits
-// within it.
+// This file used to open with manifestArticleMap, an adapter that answered
+// the two manifest questions the assembler cannot: how many articles a file
+// holds, and where a global article index sits within it. Both existed
+// exclusively to place bits in a per-file durable bitmap.
 //
-// The assembler is fed one article at a time and never sees the job's
-// manifest, so any answer it invented would be a guess — and the barrier
-// places durable bits by these ordinals, where a wrong one marks the wrong
-// article durable and costs a silently short file. The queue owns the
-// manifest, so the answer comes from here.
-//
-// queue.Manifest.FileRange indexes the manifest's slices directly and panics
-// on an out-of-range file, so every method bounds fileIdx against NumFiles
-// first. A file index the manifest does not have is a bookkeeping defect, and
-// the honest answers (0 / false) make the barrier refuse to build an extent
-// rather than crash the process.
-type manifestArticleMap struct{ m *queue.Manifest }
-
-func (a manifestArticleMap) rangeOf(fileIdx int32) (lo, hi int, ok bool) {
-	i := int(fileIdx)
-	if a.m == nil || i < 0 || i >= a.m.NumFiles() {
-		return 0, 0, false
-	}
-	lo, hi = a.m.FileRange(i)
-	return lo, hi, true
-}
-
-func (a manifestArticleMap) ArticleCount(fileIdx int32) int {
-	lo, hi, ok := a.rangeOf(fileIdx)
-	if !ok {
-		return 0
-	}
-	return hi - lo
-}
-
-func (a manifestArticleMap) FileLocalOrdinal(fileIdx, artIdx int32) (int, bool) {
-	lo, hi, ok := a.rangeOf(fileIdx)
-	if !ok {
-		return 0, false
-	}
-	i := int(artIdx)
-	if i < lo || i >= hi {
-		return 0, false
-	}
-	return i - lo, true
-}
+// A durable run carries FirstArtIdx and LastArtIdx directly, so there is no
+// bitmap to size and no ordinal to convert, and the whole vertical went with
+// them — the adapter, assembler.ArticleMap, and the two SyncTarget methods
+// they backed. syncTargetFor below is what is left of it.
 
 // handleArticlesUnwritten returns every article a failed write rolled back to
 // Outstanding.
@@ -167,19 +131,19 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 //
 // There are TWO sources, which the log line names rather than assumes. The
 // assembler detects an exact-offset collision at accept time, before either
-// article is written. The barrier detects a RANGE overlap between two articles
-// that are both already durable, from the Class A facts, after both writes
-// landed — see durability.PostAnomaly.
+// article is written. The barrier detects it at COMPLETION, by comparing the
+// bytes its recorded runs account for against the file's real size — see
+// durability.PostAnomaly.
 //
 // They are not redundant, and the reason is not that their cases are disjoint.
 // Within one process they are: the assembler resolves its collision's loser
-// permanently failed, so it never earns a durable bit and the barrier's walk
-// never reaches it. Across a RESTART the assembler's acceptedAt is empty, so
-// two articles at the same offset can both be written and both become durable,
-// and the barrier does then see an exact-offset pair. It is still not a double
-// report, because the assembler is blind in exactly that window — the window,
-// not the offsets, is what keeps them from overlapping. What the barrier alone
-// can see, in any window, is a RANGE overlap that shares no start offset.
+// permanently failed, so nothing writes its bytes and no run records it.
+// Across a RESTART the assembler's acceptedAt is empty, so two articles at the
+// same offset can both be written and both recorded, and the barrier's sum
+// then exceeds the file. It is still not a double report, because the
+// assembler is blind in exactly that window — the window, not the offsets, is
+// what keeps them from overlapping. What the barrier alone can see, in any
+// window, is a RANGE overlap that shares no start offset.
 func (app *Application) handlePostAnomaly(jobID string, fileIdx int, reason string) {
 	app.postAnomaly(jobID, fileIdx, "assembler", reason)
 }
@@ -337,18 +301,18 @@ type barrierLock struct {
 //
 // Barrier.Run holds no lock of its own — it does I/O throughout, and this
 // project bans I/O under a lock — so the cadence owner has to guarantee at
-// most one barrier in flight per job. Two concurrent barriers over one job
-// would interleave the read-modify-write of its FileExtent: both load the
-// same stored bitmap, each adds its own bits, and the second commit
-// overwrites the first, so the committed cache describes neither run and the
-// articles the loser acked are durable with no bit to say so.
+// most one barrier in flight per job. Drain is DESTRUCTIVE, so two concurrent
+// barriers over one file split its articles between them: one gets what the
+// writer was holding and the other gets none. Each then acks only its own
+// half while both believe they checkpointed the file, and whichever confirms
+// releases the reports the other never saw — so those articles are neither
+// acked nor re-reported, and only a restart recovers them.
 //
 // The lock is per job, not global, because a barrier is a few dozen fsyncs
 // and one job's slow mount must not park every other job's checkpoint.
 //
-// FinalizeFile takes it too. It is a barrier by another name — same
-// buildExtent, same ExtentStore.Commit — so it races Run for exactly the same
-// reason.
+// FinalizeFile takes it too. It is a barrier by another name — same drain,
+// same RunStore.Commit — so it races Run for exactly the same reason.
 func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
@@ -368,11 +332,10 @@ func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
 //
 // It exists because forgetJobBarrierState could delete a mutex a barrier was
 // standing on. The next jobBarrierLock then minted a SECOND mutex for the same
-// job, and two barriers ran concurrently over one job's extents — interleaving
-// the unprotected priorExtent → Set → Commit read-modify-write, where Commit is
-// an INSERT OR REPLACE with no transaction spanning the load, so the second
-// overwrites the first and the articles the loser acked are durable with no bit
-// to say so.
+// job, and two barriers ran concurrently over it — each draining half the
+// file's articles and acking only its own half, with the loser's reports
+// released by whichever cycle confirmed. Those articles are then neither
+// acked nor re-reported, and only a restart recovers them.
 //
 // The delete is reachable from INSIDE a live barrier, which is what makes this
 // more than hygiene: routeFault → stall.Fail → Application.Fail →
@@ -459,11 +422,13 @@ func (app *Application) noteJobBytes(jobID string, n int) {
 // syncTargetFor builds the barrier's view of one job's open files, or nil when
 // the job has no resident manifest.
 //
-// Nil rather than a target with a nil ArticleMap: the adapter answers
-// "unknown" for every ordinal in that case, which makes the barrier refuse the
-// job loudly. That refusal is correct and is deliberately not exercised here —
-// a job whose manifest has been evicted is an ordinary event, not a defect,
-// and it has nothing open to checkpoint anyway.
+// The manifest is no longer READ here — the target it builds needs nothing
+// from it — but the residency check stays, because it is the thing that
+// decides whether a checkpoint should run at all. A job whose manifest has
+// been evicted is not downloading, so it has nothing open to checkpoint; the
+// barrier's own ack would fail on a non-resident job anyway (Queue.AckDurable
+// requires residency), and reaching it only to fail there would turn an
+// ordinary event into a logged error.
 //
 //nolint:ireturn // the barrier takes this interface; there is no concrete type to return
 func (app *Application) syncTargetFor(jobID string) durability.SyncTarget {
@@ -471,13 +436,12 @@ func (app *Application) syncTargetFor(jobID string) durability.SyncTarget {
 	if snap == nil {
 		return nil
 	}
-	m, err := snap.Manifest()
-	if err != nil {
+	if _, err := snap.Manifest(); err != nil {
 		app.log.Debug("checkpoint skipped, job has no resident manifest",
 			"job", jobID, "err", err)
 		return nil
 	}
-	return app.assembler.SyncTargetFor(jobID, manifestArticleMap{m: m})
+	return app.assembler.SyncTargetFor(jobID)
 }
 
 // checkpointJob runs one barrier for one job.
@@ -583,15 +547,15 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 		// beside a last_barrier that did not move.
 		app.restoreJobBytes(jobID, pending)
 		// A failed ack is the one failure that DOES claim something. Run
-		// commits Class B and then acks, so ErrJobNotResident means the bits
-		// are on stable record while the live work set still calls those
-		// articles Outstanding — and nothing replayed them, because this
+		// commits the runs and then acks, so ErrJobNotResident means the
+		// articles are on stable record while the live work set still calls
+		// them Outstanding — and nothing replayed them, because this
 		// failure never went through routeFault and so never put the job on
 		// the stall list. retryFinalize treats the identical error as
 		// recoverable and documents the replay; this path did not.
 		if errors.Is(err, queue.ErrJobNotResident) {
-			app.log.Info("checkpoint committed its extents but could not ack a non-resident job; "+
-				"recorded for replay from Class B", "job", jobID)
+			app.log.Info("checkpoint recorded its durable runs but could not ack a non-resident job; "+
+				"recorded for replay from the durability record", "job", jobID)
 			app.noteNeedsSeed(jobID)
 			return
 		}
@@ -945,36 +909,56 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // bit-perfect download, and QuickCheck can never bypass the full par2 verify.
 // That is safe but it is not free, and it was the state of every download.
 //
-// The value comes from Class A, combined over the facts that tile the file.
-// That is the source #349's combine lacked: the assembler could only see the
+// The value comes from the file's durable runs, and it is a QUERY rather than
+// a walk. A run's CRC32 is combined left-to-right over the articles it covers
+// as they join it, so when a file collapses to a single run at offset 0, that
+// run's CRC32 IS the whole-file CRC — already computed, on stable storage,
+// with no prefix state to maintain.
+//
+// That source is what #349's combine lacked: the assembler could only see the
 // articles THIS run fetched, so a resumed file's parts did not tile and the
-// figure described a fragment. Facts persist, so they name every article of
-// the file whichever run fetched it.
+// figure described a fragment. Runs persist, so they account for every article
+// of the file whichever process fetched it.
+//
+// # The predicate is EXACTLY ONE ROW at offset 0 — a row COUNT, not a span
+//
+// The tempting alternative is "some row starts at 0 and its length equals
+// max(offset+length)". It reads as the same rule and it republishes #387. An
+// overlapping article is WRITTEN rather than refused (§3.3) and gets a run of
+// its own, so a file whose articles tile [0,1000) into one merged run, PLUS a
+// displaced article sitting at [450,550) in a second run, satisfies the span
+// form: a row does start at 0, and its length does equal the maximum. Under
+// that predicate the CRC is published — combined from the ORIGINAL articles,
+// while foreign bytes occupy 450-550. par2 then matches a manifest whose bytes
+// are not what is on disk, and the recovery volumes that would have repaired
+// it are never fetched.
+//
+// A second row means bytes this record cannot account for, whatever its span.
+// That is what carries #387's guarantee across from prefixWalk.consumedAll,
+// which used to catch it and which the durable-runs change deletes.
+//
+// The same form preserves R23's "unavailable is not zero": a file with a
+// permanently failed article has a hole, a hole is a gap between rows, so such
+// a file keeps more than one row and publishes nothing. Correct — that file is
+// merely incomplete, and a CRC over it would report a false mismatch against
+// par2.
 //
 // Best effort by design. A missing CRC costs a full verify, which is exactly
 // today's behaviour, so a failure here must not fail the finalize that has
-// already committed the extent and acked the articles.
+// already committed the runs and acked the articles.
 func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fileIdx int) {
-	if app.extents == nil {
+	if app.runs == nil {
 		return
 	}
-	// One row, by primary key. This ran once per completed file over the
-	// WHOLE job's extents and discarded all but one, which is the O(files²)
-	// shape LoadFile was added to remove — and it runs on the completion path,
-	// where every file of every job passes through it.
-	e, ok, err := app.extents.LoadFile(ctx, jobID, int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
+	runs, err := app.runs.ForFile(ctx, jobID, int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
 	if err != nil {
-		app.log.Debug("load the extent to record the assembled CRC", "job", jobID, "err", err)
+		app.log.Debug("load the durable runs to record the assembled CRC", "job", jobID, "err", err)
 		return
 	}
-	// HasPrefixCRC is the R23 distinction between "unavailable" and "zero". A
-	// file with a permanently failed article has a prefix that stops at the
-	// hole, and recording that as the file's CRC would report a mismatch
-	// against par2 for a file that is merely incomplete.
-	if !ok || !e.HasPrefixCRC {
+	if len(runs) != 1 || runs[0].Offset != 0 {
 		return
 	}
-	if err := app.queue.SetFileCRC32(jobID, fileIdx, e.PrefixCRC); err != nil {
+	if err := app.queue.SetFileCRC32(jobID, fileIdx, runs[0].CRC32); err != nil {
 		app.log.Debug("record the assembled CRC", "job", jobID, "fileidx", fileIdx, "err", err)
 	}
 }
@@ -1077,102 +1061,6 @@ func (app *Application) shutdownCheckpoint() {
 	app.saveQueueIfDirty()
 }
 
-// appendArticleFacts records Class A for one decoded article.
-//
-// Deliberately not ordered against the write. A Class A fact says only "if the
-// bytes at [Offset, Offset+Length) are present, they hash to CRC32", which is
-// true the instant the article is decoded and stays true whether the write
-// succeeded, failed, or was never attempted. That independence is the whole
-// reason Class A needs no barrier (R2), and adding an ordering here would
-// quietly destroy it.
-//
-// # Why the caller's cancellation is dropped
-//
-// The append runs on a context.WithoutCancel copy of the caller's, bounded by
-// its own timeout. Shutdown cancels the pipeline's context while an article is
-// still being applied, and the write below it can still land — the assembler
-// takes the buffer, the shutdown checkpoint fsyncs it and acks it. On the
-// caller's context the fact insert loses that race and fails with "context
-// canceled", so the committed extent claims an article durable that Class A
-// cannot prove. The next resume reads the file, finds no recorded region for
-// it, and re-fetches bytes that are sitting on disk.
-//
-// Measured before this change, on the crash harness's clean stop-restart: one
-// article in roughly one run in ten, always the last one applied, which is the
-// only one that can still be in flight when the cancel arrives. It is bounded
-// rework rather than a correctness fault — that is R3, and the fallback below
-// still holds — but it is rework a clean shutdown should not be paying at all,
-// and it was invisible until the startup sweep became authoritative over
-// job_files.articles_done (#362).
-//
-// Dropping the cancellation is safe in the direction that matters. A fact is
-// unconditionally true when it is minted and asserts nothing about presence,
-// so recording one can never over-claim; the worst case is a fact for bytes
-// that never reached disk, which a resume then fails to verify and leaves
-// Outstanding. The timeout is what keeps this bounded: it must not turn a
-// shutdown into an unbounded wait on a contended database.
-//
-// # Why the apply loop is NOT also stopped, which Task 12b left open
-//
-// The paragraph above describes a race, and it is worth being exact about it
-// rather than reading "the checkpoint acks it" as a guarantee. On a signal,
-// signal.NotifyContext cancels the root context BEFORE Application.Shutdown
-// runs, so pipeline.run returns at once, and its deferred close(work) +
-// wg.Wait() lets the workers finish the results already buffered in `work` —
-// up to 2*numWorkers of them — each with an already-cancelled ctx. Those
-// applies run CONCURRENTLY with the shutdown checkpoint.
-//
-// Task 12b bounded Class A here and explicitly did not decide whether the
-// apply loop should stop instead. It should not, for three reasons:
-//
-//   - Stopping it moves the wrong way. Those articles are already downloaded
-//     and decoded; dropping them guarantees a re-fetch, where letting them
-//     apply usually converts them into bytes on disk. The proposal costs
-//     strictly more rework than the status quo.
-//   - It cannot over-claim. The ack set is exactly what SyncTarget.Drain
-//     returned, and Drain is a syncOp on the assembler's single worker
-//     goroutine — the same goroutine and the same channel that serve
-//     WriteArticle (X1). A late write therefore lands wholly inside the
-//     drained set or wholly outside it; there is no interleaving that could
-//     ack an article whose bytes are not covered by the fsync.
-//   - Losing the ack is not losing the bytes. An article written after the
-//     checkpoint's Drain is on disk with a Class A fact and no durable bit.
-//     The write moved the file's mtime, so the next start fails Resume's
-//     stat fast path, recomputes from the bytes, verifies the region against
-//     its recorded CRC, and sets the bit. The article is recovered, not
-//     re-fetched.
-//
-// So all three of "the write lands", "the fact records it" and "the
-// checkpoint acks it" are wanted, but only the first two are ordered. The
-// third is a race whose loss costs one recomputation on the next start,
-// which is R3's bounded rework. This is correct by design, not a defect.
-//
-// A failure is bounded, but "a re-fetch and nothing else" is NOT the bound,
-// and this comment claimed it was. The missing fact also makes the article
-// invisible to every walk over Class A — including the two that derive the
-// truncate bound in Barrier.FinalizeFile. The article is still drained,
-// fsynced and given a truthful durable bit, so if it holds a completing
-// file's top offset the fact-derived bound sits below its bytes and the
-// truncate destroys them, while the same call acks it Done.
-//
-// FinalizeFile now counts durable articles the fact log does not name and
-// declines to truncate at all when there are any, so the real cost of a
-// failure here is: pre-allocation's trailing zeros survive on that file, and
-// the article is re-fetched only if a later resume has to recompute (a
-// mismatched size/mtime stamp), where unprovable resolves to Outstanding
-// under S3.
-func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durability.ArticleFact) {
-	if p.factLog == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), factAppendTimeout)
-	defer cancel()
-	if err := p.factLog.Append(ctx, jobID, []durability.ArticleFact{f}); err != nil {
-		p.log.Warn("append article fact; the article will be re-fetched after a restart",
-			"job", jobID, "artidx", f.ArtIdx, "err", err)
-	}
-}
-
 // dropJobAlreadyInHistory removes a queue job that has already been filed in
 // history, reporting whether it did.
 //
@@ -1187,8 +1075,8 @@ func (p *pipeline) appendArticleFacts(ctx context.Context, jobID string, f durab
 //
 // This used to remove the queue row and stop. The history entry it fetched was
 // discarded — the call read `_, err := ...Get(...)` — so the rule could not be
-// applied, and article_facts and file_extents stayed behind. They are keyed by
-// job ID with no foreign key to jobs. SQLiteStore.Prune now sweeps rows whose
+// applied, and durable_runs and failed_articles stayed behind. They are keyed
+// by job ID with no foreign key to jobs. SQLiteStore.Prune now sweeps rows whose
 // job is in neither the queue nor history-as-FAILED, so they no longer survive
 // for the life of the installation -- but Prune is a backstop that runs on a
 // queue save, not a substitute for removing them on the way out.
@@ -1215,8 +1103,8 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	return true
 }
 
-// deleteJobDurability drops a DEPARTED job's Class A and Class B rows, logging
-// a failure rather than reporting it.
+// deleteJobDurability drops a DEPARTED job's durable runs and failed-article
+// rows, logging a failure rather than reporting it.
 //
 // Both are keyed by job ID with no foreign key to the queue, so nothing
 // removes them implicitly. SQLiteStore.Prune sweeps what escapes this call --
@@ -1253,16 +1141,28 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // joined: removing one of the two tables is still progress, and a caller
 // deciding whether to abort is better served by the whole picture than by
 // whichever failure came first.
+//
+// The two tables are durable_runs and failed_articles, and they are deleted
+// through different owners on purpose. durability.RunStore owns the first and
+// is the only thing that writes it; queue.Store owns the second, which is why
+// a job's failed articles are dropped through the queue's own entry point
+// rather than by reaching into the table from here.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
 	var errs []error
-	if app.factLog != nil {
-		if err := app.factLog.DeleteJob(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("article facts: %w", err))
+	if app.runs != nil {
+		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
+			errs = append(errs, fmt.Errorf("durable runs: %w", err))
 		}
 	}
-	if app.extents != nil {
-		if err := app.extents.DeleteJob(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("file extents: %w", err))
+	// app.queue is nil only in the degraded no-history-database mode, where
+	// there is no store to clear either. Guarded rather than assumed because
+	// this is a cleanup path: it runs on a job's way out, when the rest of
+	// the application may already be half torn down.
+	if app.queue != nil {
+		if store := app.queue.Store(); store != nil {
+			if err := store.ClearFailedArticles(ctx, jobID); err != nil {
+				errs = append(errs, fmt.Errorf("failed articles: %w", err))
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -1276,18 +1176,18 @@ var _ durability.Stallable = (*Application)(nil)
 // Neither can be disabled, and it is worth stating the reason accurately
 // because the obvious version of it is wrong.
 //
-// A barrier is the only thing that acks a downloaded article WHILE THE JOB IS
-// RUNNING, so with checkpoints off a job makes no visible progress and holds
-// every article Outstanding until it stops. It does NOT follow that the work
-// is re-fetched: Resume falls through to recompute when no committed extent
-// exists, and recompute re-derives the done-set from Class A facts and the
-// bytes on disk. What is actually lost is (a) the whole point of Class B,
-// which exists so a restart does not have to re-read every partial file, and
-// (b) anything the write cache had not flushed when the process died, which
-// has no fact-plus-bytes pair to recover from.
+// A barrier is the only thing that RECORDS a downloaded article, and the only
+// thing that acks one while the job is running. With checkpoints off a job
+// makes no visible progress and holds every article Outstanding until it
+// stops — and, unlike before, that is also exactly what a restart finds.
 //
-// So "off" is not a faster mode, it is a mode that trades a bounded fsync
-// cadence for an unbounded startup read plus real re-fetch.
+// The reason is worth stating plainly because it changed. There used to be a
+// second, unordered record of every decoded article, so a resume could re-read
+// the file and prove articles the barrier had never claimed. That record is
+// gone: nothing is written before the fsync, so what no barrier recorded was
+// never recorded at all and is genuinely re-fetched. Turning checkpoints off
+// no longer trades a fast start for a slow one; it trades a bounded fsync
+// cadence for re-downloading everything since the last one.
 func checkpointSettings(interval time.Duration, bytes int64) (resolvedInterval time.Duration, resolvedBytes int64) {
 	if interval <= 0 {
 		interval = defaultCheckpointInterval
@@ -1342,8 +1242,8 @@ func (app *Application) filePathFor(jobID string, fileIdx int) string {
 // So: if a *storagefault.Fault is anywhere in the chain, the barrier has
 // already decided and acted, and there is nothing left to do but stop the
 // completion. Everything else — an OpenFiles timeout, a target that cannot
-// truncate, a bookkeeping error out of buildExtent — never reached routeFault
-// and would otherwise halt the job with no reason attached at all.
+// truncate, a failed commit — never reached routeFault and would otherwise
+// halt the job with no reason attached at all.
 func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path string, err error) {
 	app.log.Error("completed file was not finalized; the job is halted rather than "+
 		"shipping a file whose bytes are not known to be correct",
@@ -1365,12 +1265,12 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 	}
 	//
 	// A non-resident job is a queue-residency condition. retryFinalize already
-	// treats this as landed and says why — the extent is committed, so the
-	// bits are replayed from Class B once the job resumes — and the first
-	// attempt has no reason to answer differently.
+	// treats this as landed and says why — the runs are recorded, so the
+	// articles are replayed from the record once the job resumes — and the
+	// first attempt has no reason to answer differently.
 	if errors.Is(err, queue.ErrJobNotResident) {
-		app.log.Debug("finalize committed its extent but could not ack a non-resident job; "+
-			"the bits are replayed from Class B after the resume",
+		app.log.Debug("finalize recorded its durable runs but could not ack a non-resident job; "+
+			"the articles are replayed from the record after the resume",
 			"job", jobID, "fileidx", fileIdx)
 		app.notePendingFinalize(jobID, fileIdx)
 		return

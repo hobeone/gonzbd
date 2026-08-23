@@ -43,8 +43,8 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 		name string
 		call func(q *Queue, id string) error
 	}{
-		{"SeedFromExtents", func(q *Queue, id string) error {
-			return q.SeedFromExtents(id, []durability.FileExtent{{FileIdx: 0, Durable: durability.NewBitmap(2)}})
+		{"SeedFromRuns", func(q *Queue, id string) error {
+			return q.SeedFromRuns(id, []durability.Run{{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Length: 1}})
 		}},
 		{"AckPermanentFailure", func(q *Queue, id string) error {
 			return q.AckPermanentFailure(id, []int32{0})

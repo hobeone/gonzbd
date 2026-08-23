@@ -37,7 +37,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -786,34 +785,69 @@ func (h *harness) openDB() *sql.DB {
 	return db
 }
 
-// articleFact mirrors one Class A row.
-type articleFact struct {
-	ArtIdx  int32
-	FileIdx int32
-	Offset  int64
-	Length  int32
-	CRC32   uint32
+// durableRun mirrors one durable_runs row: a maximal span of articles that
+// abut in both byte offset and article index and were made durable together.
+//
+// It replaced a pair of rows — a per-article Class A fact and a per-file Class
+// B durable bitmap — with one record written only after the fsync that makes
+// it true. The consequence for this harness is that the unit of assertion is
+// now a RUN rather than an article: a run's CRC32 is combined over the
+// articles it covers, so its bytes are checked in one read instead of one per
+// article. Which ARTICLES are durable is still recoverable, from
+// [FirstArtIdx, LastArtIdx].
+type durableRun struct {
+	FileIdx     int32
+	FirstArtIdx int32
+	LastArtIdx  int32
+	Offset      int64
+	Length      int64
+	CRC32       uint32
 }
 
-// Facts reads every Class A fact for a job from stable storage.
-func (h *harness) Facts(db *sql.DB, jobID string) map[int32]articleFact {
+// Runs reads every durable run for a job from stable storage, keyed by file
+// index and ordered by offset within each file.
+func (h *harness) Runs(db *sql.DB, jobID string) map[int32][]durableRun {
 	h.t.Helper()
 	rows, err := db.Query(
-		`SELECT art_idx, file_idx, offset, length, crc32 FROM article_facts WHERE job_id = ?`, jobID)
+		`SELECT file_idx, first_art_idx, last_art_idx, offset, length, crc32
+		   FROM durable_runs WHERE job_id = ? ORDER BY file_idx, offset`, jobID)
 	if err != nil {
-		h.t.Fatalf("query article_facts: %v", err)
+		h.t.Fatalf("query durable_runs: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := map[int32]articleFact{}
+	out := map[int32][]durableRun{}
 	for rows.Next() {
-		var f articleFact
-		if err := rows.Scan(&f.ArtIdx, &f.FileIdx, &f.Offset, &f.Length, &f.CRC32); err != nil {
-			h.t.Fatalf("scan article_facts: %v", err)
+		var r durableRun
+		if err := rows.Scan(&r.FileIdx, &r.FirstArtIdx, &r.LastArtIdx,
+			&r.Offset, &r.Length, &r.CRC32); err != nil {
+			h.t.Fatalf("scan durable_runs: %v", err)
 		}
-		out[f.ArtIdx] = f
+		out[r.FileIdx] = append(out[r.FileIdx], r)
 	}
 	if err := rows.Err(); err != nil {
-		h.t.Fatalf("article_facts rows: %v", err)
+		h.t.Fatalf("durable_runs rows: %v", err)
+	}
+	return out
+}
+
+// FailedArticles reads a job's permanently failed article indices.
+func (h *harness) FailedArticles(db *sql.DB, jobID string) map[int32]bool {
+	h.t.Helper()
+	rows, err := db.Query(`SELECT art_idx FROM failed_articles WHERE job_id = ?`, jobID)
+	if err != nil {
+		h.t.Fatalf("query failed_articles: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[int32]bool{}
+	for rows.Next() {
+		var idx int32
+		if err := rows.Scan(&idx); err != nil {
+			h.t.Fatalf("scan failed_articles: %v", err)
+		}
+		out[idx] = true
+	}
+	if err := rows.Err(); err != nil {
+		h.t.Fatalf("failed_articles rows: %v", err)
 	}
 	return out
 }
@@ -824,17 +858,21 @@ type jobFile struct {
 	Filename     string
 	ArticleCount int
 	Complete     bool
-	// Done and Failed are the per-article bits decoded from articles_done,
-	// in FILE-LOCAL ordinal order.
+	// Done and Failed are the per-article resolution the daemon derives, in
+	// FILE-LOCAL ordinal order: done means covered by a durable run, failed
+	// means a failed_articles row. They used to be decoded from a
+	// job_files.articles_done blob, which was a third copy of the same state
+	// and is gone.
 	Done   []bool
 	Failed []bool
 }
 
-// JobFiles reads the queue's own per-file state from stable storage.
+// JobFiles reads the queue's own per-file state from stable storage, with each
+// file's article resolution derived the same way the daemon derives it.
 func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	h.t.Helper()
 	rows, err := db.Query(
-		`SELECT file_index, COALESCE(filename,''), article_count, complete, COALESCE(articles_done,'')
+		`SELECT file_index, COALESCE(filename,''), article_count, complete
 		   FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
 	if err != nil {
 		h.t.Fatalf("query job_files: %v", err)
@@ -844,79 +882,75 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	for rows.Next() {
 		var jf jobFile
 		var complete int
-		var doneHex string
-		if err := rows.Scan(&jf.FileIdx, &jf.Filename, &jf.ArticleCount, &complete, &doneHex); err != nil {
+		if err := rows.Scan(&jf.FileIdx, &jf.Filename, &jf.ArticleCount, &complete); err != nil {
 			h.t.Fatalf("scan job_files: %v", err)
 		}
 		jf.Complete = complete != 0
-		jf.Done, jf.Failed = decodeArticlesDone(h.t, doneHex, jf.ArticleCount)
 		out = append(out, jf)
 	}
 	if err := rows.Err(); err != nil {
 		h.t.Fatalf("job_files rows: %v", err)
 	}
-	return out
-}
 
-// DurableBits reads the committed Class B durable bitmaps, keyed by file
-// index, in file-local ordinal order.
-func (h *harness) DurableBits(db *sql.DB, jobID string, counts map[int32]int) map[int32][]bool {
-	h.t.Helper()
-	rows, err := db.Query(
-		`SELECT file_idx, durable_bitmap FROM file_extents WHERE job_id = ?`, jobID)
-	if err != nil {
-		h.t.Fatalf("query file_extents: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[int32][]bool{}
-	for rows.Next() {
-		var idx int32
-		var raw []byte
-		if err := rows.Scan(&idx, &raw); err != nil {
-			h.t.Fatalf("scan file_extents: %v", err)
-		}
-		n := counts[idx]
-		bits := make([]bool, n)
-		for i := range n {
-			if i/8 < len(raw) {
-				bits[i] = raw[i/8]&(1<<(i%8)) != 0
+	// Derived here rather than read, because that is what the daemon does now.
+	// Deliberately re-implemented against the raw rows instead of calling into
+	// internal/queue: this harness reads stable storage with the daemon dead,
+	// and borrowing the daemon's own decoder would let one bug hide itself in
+	// both places.
+	runs := h.Runs(db, jobID)
+	failed := h.FailedArticles(db, jobID)
+	bases := FileRanges(out)
+	for i := range out {
+		f := &out[i]
+		f.Done = make([]bool, f.ArticleCount)
+		f.Failed = make([]bool, f.ArticleCount)
+		base := bases[f.FileIdx]
+		for _, r := range runs[f.FileIdx] {
+			for a := r.FirstArtIdx; a <= r.LastArtIdx; a++ {
+				if ord := int(a - base); ord >= 0 && ord < f.ArticleCount {
+					f.Done[ord] = true
+				}
 			}
 		}
-		out[idx] = bits
-	}
-	if err := rows.Err(); err != nil {
-		h.t.Fatalf("file_extents rows: %v", err)
+		for ord := range f.ArticleCount {
+			if failed[base+int32(ord)] { //nolint:gosec // fixture article counts are tiny
+				// failed implies done, matching the daemon's own derivation:
+				// both its consumers read Failed only inside the Done branch.
+				f.Done[ord], f.Failed[ord] = true, true
+			}
+		}
 	}
 	return out
 }
 
-// DurableOrdinals reads the committed Class B bitmaps and returns, per file
-// index, one bool per FILE-LOCAL article ordinal: true where a completed fsync
-// covered that article's bytes.
+// DurableOrdinals returns, per file index, one bool per FILE-LOCAL article
+// ordinal: true where a completed fsync covered that article's bytes.
 //
 // The daemon must already be stopped; see openDB.
 func (h *harness) DurableOrdinals(jobID string) map[int32][]bool {
 	h.t.Helper()
 	db := h.openDB()
 	files := h.JobFiles(db, jobID)
-	counts := map[int32]int{}
-	for _, f := range files {
-		counts[f.FileIdx] = f.ArticleCount
-	}
-	stored := h.DurableBits(db, jobID, counts)
+	runs := h.Runs(db, jobID)
+	bases := FileRanges(files)
 	out := map[int32][]bool{}
 	for _, f := range files {
 		bits := make([]bool, f.ArticleCount)
-		for i := range f.ArticleCount {
-			bits[i] = i < len(stored[f.FileIdx]) && stored[f.FileIdx][i]
+		base := bases[f.FileIdx]
+		for _, r := range runs[f.FileIdx] {
+			for a := r.FirstArtIdx; a <= r.LastArtIdx; a++ {
+				if ord := int(a - base); ord >= 0 && ord < f.ArticleCount {
+					bits[ord] = true
+				}
+			}
 		}
 		out[f.FileIdx] = bits
 	}
 	return out
 }
 
-// DurableMessageIDs reads the committed Class B bitmaps and returns the
-// Message-ID of every article a completed fsync covered.
+// DurableMessageIDs returns the Message-ID of every article a completed fsync
+// covered, per the recorded runs.
 //
 // This — not the set of articles the mock server delivered — is what "must not
 // be fetched again" is a claim about. An article can be served and never
@@ -954,55 +988,27 @@ func FileRanges(files []jobFile) map[int32]int32 {
 	return out
 }
 
-// ReadRegionCRC reads [Offset, Offset+Length) of the file the fact belongs to
-// and returns its CRC32, or ok=false when the file is shorter than the range.
-func (h *harness) ReadRegionCRC(path string, f articleFact) (uint32, bool) {
+// ReadRegionCRC reads [off, off+length) of path and returns its CRC32, or
+// ok=false when the file is shorter than the range.
+func (h *harness) ReadRegionCRC(path string, off, length int64) (uint32, bool) {
 	h.t.Helper()
 	fh, err := os.Open(path) //nolint:gosec // harness-owned temp path
 	if err != nil {
 		h.t.Fatalf("open %s: %v", path, err)
 	}
 	defer func() { _ = fh.Close() }()
-	buf := make([]byte, f.Length)
-	n, err := fh.ReadAt(buf, f.Offset)
+	buf := make([]byte, length)
+	n, err := fh.ReadAt(buf, off)
 	if err != nil && !errors.Is(err, io.EOF) {
-		h.t.Fatalf("read %s at %d: %v", path, f.Offset, err)
+		h.t.Fatalf("read %s at %d: %v", path, off, err)
 	}
-	if n < int(f.Length) {
+	if int64(n) < length {
 		return 0, false
 	}
 	return crc32.ChecksumIEEE(buf), true
 }
 
 // ---------- helpers ----------
-
-// decodeArticlesDone unpacks job_files.articles_done, which is two
-// equal-length bitmaps concatenated as hex: [done bits][failed bits]. A short
-// or malformed value is fatal rather than treated as "nothing done", since
-// that would make every assertion over the done set vacuously true.
-func decodeArticlesDone(t *testing.T, s string, n int) (done, failed []bool) {
-	t.Helper()
-	done, failed = make([]bool, n), make([]bool, n)
-	if n == 0 {
-		return done, failed
-	}
-	if s == "" {
-		return done, failed
-	}
-	buf, err := hex.DecodeString(s)
-	if err != nil {
-		t.Fatalf("articles_done %q is not hex: %v", s, err)
-	}
-	numBytes := (n + 7) / 8
-	if len(buf) != numBytes*2 {
-		t.Fatalf("articles_done is %d bytes, want %d for %d articles", len(buf), numBytes*2, n)
-	}
-	for i := range n {
-		done[i] = buf[i/8]&(1<<(i%8)) != 0
-		failed[i] = buf[numBytes+i/8]&(1<<(i%8)) != 0
-	}
-	return done, failed
-}
 
 // deterministicPayload builds reproducible pseudo-random bytes for a file.
 // Not compressible and not all-zero: a sparse-file bug that left a hole would

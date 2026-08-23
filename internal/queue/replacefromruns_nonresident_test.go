@@ -6,33 +6,27 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// TestReplaceFromResume_CorrectsANonResidentJob pins the residency handling
+// TestReplaceFromRuns_CorrectsANonResidentJob pins the residency handling
 // the startup sweep depends on.
 //
 // A PAUSED job is not resident, and it is exactly the job that needs this:
 // Application.Stall leaves jobs Paused, and the sweep skipping them let #362
-// survive in that branch — the disproven Done bits were never corrected,
-// priorExtent ORs the stored bitmap as its base, so the next checkpoint
-// re-committed them with a fresh matching stamp and the file finalized over a
-// hole.
+// survive in that branch — the disproven Done bits were never corrected, so
+// the next checkpoint re-recorded them and the file finalized over a hole.
 //
 // Both halves are asserted: the correction lands, and the job's residency is
 // unchanged afterwards. Leaving it hydrated would put a job the active set does
 // not account for into the residency budget docs/queue-lifecycle.md exists to
 // bound.
-func TestReplaceFromResume_CorrectsANonResidentJob(t *testing.T) {
+func TestReplaceFromRuns_CorrectsANonResidentJob(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 2)
 	job := q.byID["job-1"]
 
 	// Both articles believed done, as a previous process recorded them.
-	both := durability.NewBitmap(2)
-	both.Set(0)
-	both.Set(1)
-	if err := q.SeedFromExtents(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: both}}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+	if err := q.SeedFromRuns(job.ID, runsOf(0, 1)); err != nil {
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -51,11 +45,9 @@ func TestReplaceFromResume_CorrectsANonResidentJob(t *testing.T) {
 		t.Fatal("the fixture is not paused")
 	}
 
-	// A resume that proved only article 0.
-	proved := durability.NewBitmap(2)
-	proved.Set(0)
-	if err := q.ReplaceFromResume(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: proved}}); err != nil {
-		t.Fatalf("ReplaceFromResume: %v", err)
+	// A resume whose gate left only article 0's run standing.
+	if err := q.ReplaceFromRuns(job.ID, []int32{0}, runsOf(0)); err != nil {
+		t.Fatalf("ReplaceFromRuns: %v", err)
 	}
 
 	p := q.SnapshotJob(job.ID).Progress()
@@ -63,9 +55,9 @@ func TestReplaceFromResume_CorrectsANonResidentJob(t *testing.T) {
 		t.Error("the article the resume PROVED was cleared; only what it disproved may be")
 	}
 	if p.ArticleDone(1) {
-		t.Error("the disproven article is still Done. Nothing clears a bit in the extent " +
-			"store, so the next checkpoint re-commits it with a fresh matching stamp and " +
-			"the file finalizes over a hole (#362)")
+		t.Error("the article whose run the resume discarded is still Done. Nothing else " +
+			"corrects it, so the next checkpoint re-records it and the file finalizes " +
+			"over a hole (#362)")
 	}
 
 	// Residency restored: hydrating for the correction must not leave the job
@@ -81,31 +73,30 @@ func TestReplaceFromResume_CorrectsANonResidentJob(t *testing.T) {
 	}
 }
 
-// TestReplaceFromResume_RefusesWhatItCannotHydrate covers the two ways the
+// TestReplaceFromRuns_RefusesWhatItCannotHydrate covers the two ways the
 // hydration can fail to produce a job to correct.
 //
 // Both must return an error rather than silently doing nothing. The caller —
 // the startup sweep — treats a failure as "the job re-fetches what it could not
 // be told it has", which is the safe direction; reporting success would let it
 // move on believing a correction landed that did not.
-func TestReplaceFromResume_RefusesWhatItCannotHydrate(t *testing.T) {
+func TestReplaceFromRuns_RefusesWhatItCannotHydrate(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 2)
 
-	bm := durability.NewBitmap(2)
-	bm.Set(0)
-	exts := []durability.FileExtent{{FileIdx: 0, Durable: bm}}
+	swept := []int32{0}
+	proved := runsOf(0)
 
 	t.Run("no such job", func(t *testing.T) {
-		if err := q.ReplaceFromResume("never-added", exts); err == nil {
+		if err := q.ReplaceFromRuns("never-added", swept, proved); err == nil {
 			t.Error("a correction for a job that is not in the queue reported success")
 		}
 	})
 
-	t.Run("no extents is not an error", func(t *testing.T) {
+	t.Run("no swept files is not an error", func(t *testing.T) {
 		// The sweep omits a file it never resumed, and a job whose files were
 		// all omitted yields an empty slice. That is silence, not a finding of
 		// absence, and must not be reported as a failure.
-		if err := q.ReplaceFromResume("job-1", nil); err != nil {
+		if err := q.ReplaceFromRuns("job-1", nil, nil); err != nil {
 			t.Errorf("an empty correction was reported as a failure: %v", err)
 		}
 	})
@@ -119,7 +110,7 @@ func TestReplaceFromResume_RefusesWhatItCannotHydrate(t *testing.T) {
 		if err := os.RemoveAll(filepath.Join(q.stateDir, "manifests")); err != nil {
 			t.Fatal(err)
 		}
-		if err := q.ReplaceFromResume("job-1", exts); err == nil {
+		if err := q.ReplaceFromRuns("job-1", swept, proved); err == nil {
 			t.Error("a correction for a job whose manifest cannot be read reported " +
 				"success; the sweep would move on believing it landed")
 		}

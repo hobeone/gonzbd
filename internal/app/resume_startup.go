@@ -20,12 +20,12 @@ import (
 // interruptible BETWEEN FILES, not merely between jobs, and that is a claim
 // about how many files were processed — which is unobservable from outside
 // unless the calls can be counted. A test that asserted only "an error came
-// back" was satisfied by the extent store failing on the cancelled context,
-// and so passed with both checks deleted.
+// back" was satisfied by the store's own read failing on the cancelled
+// context, and so passed with both checks deleted.
 //
-// durability.Resumer satisfies this and its signature is unchanged.
+// durability.Resumer satisfies this.
 type fileResumer interface {
-	Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (durability.ResumeResult, error)
+	Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error)
 }
 
 // resumeAllJobs re-derives every DOWNLOADING job's work set from what is
@@ -40,44 +40,45 @@ type fileResumer interface {
 // tested with nothing calling either, so a restart re-downloaded every byte an
 // earlier run had already fsynced. This is where the two meet.
 //
-// It seeds through Queue.ReplaceFromResume rather than Queue.SeedFromExtents,
-// and that is the whole of #362's fix. This is the ONLY caller that has just
-// read the files' bytes, so it is the only one entitled to contradict what
-// Store.RestoreJobProgress restored from job_files.articles_done. Every other
-// seeding path is replaying an ack that already landed and must stay additive;
-// see SeedFromExtents' doc for why merging the two is a silent regression in
-// one direction or the other.
+// It seeds through Queue.ReplaceFromRuns rather than Queue.SeedFromRuns, and
+// that is the whole of #362's fix. This is the ONLY caller that has stat'ed
+// the files, so it is the only one entitled to contradict what
+// Store.RestoreJobProgress derived — which it does by having had
+// durability.Resumer DELETE the runs of a file shorter than they claim. Every
+// other seeding path is replaying an ack that already landed and must stay
+// additive; see SeedFromRuns' doc for why merging the two is a silent
+// regression in one direction or the other.
 //
 // # Why a startup sweep, and why that is complete
 //
 // It runs once, synchronously, inside Start — after queue.Load has produced
-// app.queue and BEFORE the downloader begins dispatching. The ordering is the
-// whole point: a seed that lands after dispatch has begun still marks the
-// right articles Done, but the request for them is already on the wire, which
-// is exactly the re-fetch this exists to prevent.
+// app.queue and BEFORE the downloader begins dispatching. The ordering is
+// load-bearing TWICE over, and only the first half is about re-fetching:
+//
+//   - A seed that lands after dispatch has begun still marks the right
+//     articles Done, but the request for them is already on the wire, which is
+//     exactly the re-fetch this exists to prevent.
+//   - The gate itself depends on it. durability.Resumer compares the file's
+//     size against what its runs claim; if the assembler had already
+//     re-created and pre-allocated a deleted partial, that comparison would
+//     run against a file of zeros and pass. Nothing inside Resumer can notice
+//     that, so moving this sweep later breaks the guarantee silently. See
+//     Resumer.Resume, which says the same thing from the other side.
 //
 // Running only at startup is nonetheless complete. A job admitted later has no
-// committed extents to seed from, and a job's extents cannot change while it
-// is not running — only a barrier commits Class B, and a barrier runs only for
-// a job with open files. So a job promoted hours after startup is still
-// correctly seeded by the sweep that ran before it was promoted.
+// runs to seed from, and a job's runs cannot change while it is not running —
+// only a barrier writes them, and a barrier runs only for a job with open
+// files. So a job promoted hours after startup is still correctly seeded by
+// the sweep that ran before it was promoted.
 //
 // # What it does NOT do
 //
-// It commits no extent ITSELF, but it is no longer true that the barrier is
-// the only writer of Class B: durability.Resumer writes a RECOMPUTED result
-// back over the record it disproved, from inside Resume.
-//
-// The rule that used to sit here — a resume "has no licence to mint" a
-// committed extent without performing the fsync — mis-stated the cost of
-// omission as "paying the verification again on the next restart". There is no
-// second verification. Nothing clears a bit in the store, priorExtent ORs the
-// stored bitmap as its base, so the next checkpoint re-commits a disproven bit
-// with a fresh stamp that validates, and the next start's fast path adopts it
-// without reading a byte. The bit does not cost rework; it comes back.
-//
-// An ADOPTED result still writes nothing, because it came from the stored row
-// in the first place.
+// It writes NOTHING to the durability record, and neither does anything under
+// it. Resumer is a reader and a deleter: the one mutation in this whole sweep
+// is discarding the runs of a file that is missing or shorter than they claim.
+// The barrier is the record's sole writer, and that asymmetry is the
+// justification for §3.4 trusting the record without reading a byte of it —
+// nothing but a completed fsync can put a claim INTO it.
 //
 // A non-resident job in a SWEPT phase is hydrated for the duration and evicted
 // again, so the residency budget docs/queue-lifecycle.md exists to bound is
@@ -94,23 +95,23 @@ type fileResumer interface {
 // QuickCheck, Repairing, Extracting, Moving — and in those phases something
 // other than the assembler owns the job's files. par2 repairs a file IN PLACE,
 // unpack reads it, and the move relocates it out of the download directory
-// altogether. Those bytes are correct, and they are not the bytes the fact log
-// recorded at download time, so a recomputation over them proves nothing: it
-// would clear real progress, drop Complete and discard the assembled CRC on a
-// file that is fine. A repaired file is the clear case; a moved one is the
-// blunt one — the path no longer exists, Resume reports Restart, and every
-// article of a fully downloaded job goes back to Outstanding.
+// altogether. Those bytes are correct, and they are not the bytes the runs
+// recorded at download time, so re-deriving over them proves nothing: it would
+// clear real progress, drop Complete and discard the assembled CRC on a file
+// that is fine. A repaired file is the clear case; a moved one is the blunt
+// one — the path no longer exists, Resume reports Restart, and every article
+// of a fully downloaded job goes back to Outstanding.
 //
 // The direction is pessimistic rather than corrupting, which is why it was
 // harmless while seeding was additive and stopped being harmless the moment it
 // was not.
 //
-// It has since stopped being merely in-memory, too. Resumer.Resume now clears
-// the file's Class B row on the missing-file branch, so widening this bound to
-// cover a Moving job would not just return its articles to Outstanding for the
-// life of the process — it would erase the committed extent that says those
-// bytes were ever proved, and the erasure survives the restart the seed exists
-// to survive.
+// It has since stopped being merely in-memory, too. Resumer.Resume DELETES the
+// file's runs on the missing-file branch, so widening this bound to cover a
+// Moving job would not just return its articles to Outstanding for the life of
+// the process — it would erase the record that says those bytes were ever
+// made durable, and the erasure survives the restart the seed exists to
+// survive.
 //
 // Skipping those phases costs nothing this exists to buy. The seed prevents a
 // re-fetch, and a job in post-processing dispatches no articles; if par2 sends
@@ -155,7 +156,7 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		// A Paused job is not resident, so its clone carries no manifest.
 		// SnapshotJob hydrates one onto a clone, which is read-only and does
 		// not change the live job's residency; the write-back below goes
-		// through Queue.ReplaceFromResume, which hydrates the live job itself
+		// through Queue.ReplaceFromRuns, which hydrates the live job itself
 		// for the duration.
 		if hydrated := app.queue.SnapshotJob(snap.ID); hydrated != nil {
 			snap = hydrated
@@ -189,7 +190,7 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 				"job", snap.ID, "status", snap.Status, "err", err)
 			continue
 		}
-		exts, fault, err := app.resumeJobFiles(ctx, snap, m)
+		swept, runs, fault, err := app.resumeJobFiles(ctx, snap, m)
 		if err != nil {
 			return err
 		}
@@ -206,22 +207,28 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		// prevent.
 		//
 		// The order is load-bearing the other way too: Stall pauses the job,
-		// which evicts its manifest, and ReplaceFromResume needs a resident one.
+		// which evicts its manifest, and ReplaceFromRuns needs a resident one.
 		//
-		// That eviction used to strand the correction. ReplaceFromResume only
+		// That eviction used to strand the correction. The replace only
 		// mutated the in-memory JobProgress and set a dirty flag, so a Stall
 		// here discarded a cleared bit before any save, and the next promotion
-		// re-read the pre-correction row. ReplaceFromResume now persists a
+		// re-read the pre-correction row. ReplaceFromRuns now persists a
 		// clearing correction before it returns, which is what makes this
 		// ordering safe rather than merely necessary.
 		//
-		// A fault also bounds what "authoritative" may mean here. exts holds
-		// only the files this sweep actually resumed, and ReplaceFromResume
-		// touches only those — a file the fault stopped it from reaching is
-		// omitted, and omission is silence rather than a finding of absence.
-		// Clearing on behalf of a file nobody read would turn one unreadable
-		// mount into a full re-download of the job.
-		if err := app.queue.ReplaceFromResume(snap.ID, exts); err != nil {
+		// A fault also bounds what "authoritative" may mean here, and `swept`
+		// is what carries that bound: it names only the files this sweep
+		// actually stat'ed, and ReplaceFromRuns touches only those. A file the
+		// fault stopped it from reaching is omitted, and omission is silence
+		// rather than a finding of absence — clearing on behalf of a file
+		// nobody read would turn one unreadable mount into a full re-download
+		// of the job.
+		//
+		// The file list has to travel SEPARATELY from the runs, and this is
+		// why: a file whose runs the gate discarded contributes no run at all,
+		// so the runs alone cannot distinguish "I looked and found nothing"
+		// from "I never looked".
+		if err := app.queue.ReplaceFromRuns(snap.ID, swept, runs); err != nil {
 			// Not fatal to startup, but the two failures behind this differ
 			// and the message must not flatten them.
 			//
@@ -262,44 +269,44 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 	return nil
 }
 
-// resumeJobFiles resumes each of one job's files and converts the results into
-// the extents ReplaceFromResume consumes.
+// resumeJobFiles resumes each of one job's files and returns two things
+// ReplaceFromRuns needs separately: WHICH files this sweep actually stat'ed,
+// and the runs those files still hold afterwards.
 //
-// Only FileIdx and Durable are set, because those are the only two fields
-// ReplaceFromResume reads. ResumeResult carries no Size or ModTimeNs, so filling
-// the rest would manufacture a record asserting a stat nobody performed — and
-// the value never reaches ExtentStore in any case (see resumeAllJobs).
+// The two cannot be one value, and the reason is the case this sweep exists
+// for. A file the gate DISCARDED contributes no run — that is what a discard
+// means — and so is indistinguishable from a file the sweep never looked at if
+// only the runs travel. The first must return every one of its articles to
+// Outstanding; the second must be left exactly as it was found.
 //
-// ResumeResult.Restart needs no branch of its own: Resume returns an empty
-// bitmap alongside it, and an empty bitmap proves nothing — which under
-// ReplaceFromResume returns every one of the file's articles to Outstanding,
-// exactly what a missing file means. A guard here would be a branch whose two
-// arms produce the same result, which is untestable by construction and
-// precisely the kind of inert code this branch keeps finding.
+// ResumeResult.Restart therefore needs no branch of its own: a discarded file
+// is already in `swept` with no runs beside it, which is precisely what
+// ReplaceFromRuns reads as "nothing here is recorded". A guard here would be a
+// branch whose two arms produce the same result.
 //
-// A file whose filename was never resolved is skipped and so contributes no
-// extent at all, which is deliberately NOT the same thing: no process ever
-// opened a path for it, so there is nothing to have proved absent, and
-// ReplaceFromResume leaves a file it is not given alone.
+// A file whose filename was never resolved is skipped and appears in NEITHER
+// return. No process ever opened a path for it, so there is nothing to have
+// found absent.
 //
-// The three returns are distinct outcomes and are deliberately not collapsed
-// into one error: a storage fault stalls this job and the sweep continues, a
-// context error aborts the sweep entirely, and neither is the other.
+// The three failure-shaped returns are distinct outcomes and are deliberately
+// not collapsed into one error: a storage fault stalls this job and the sweep
+// continues, a context error aborts the sweep entirely, and neither is the
+// other.
 //
-// A fault returns the extents gathered from the files BEFORE it, not nil. Its
+// A fault returns what was gathered from the files BEFORE it, not nil. Its
 // caller seeds them and then stalls; see the note there for why discarding
 // them turned a transient fault into a permanent loss of ground.
-func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *queue.Manifest) ([]durability.FileExtent, *storagefault.Fault, error) {
+func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *queue.Manifest) (swept []int32, runs []durability.Run, fault *storagefault.Fault, err error) {
 	nFiles := m.NumFiles()
-	exts := make([]durability.FileExtent, 0, nFiles)
+	swept = make([]int32, 0, nFiles)
 	progress := snap.Progress()
-	var recomputed, seeded int
+	var restarted int
 	for f := range nFiles {
-		// R15: checked per file rather than per job, because one file's
-		// recomputation is the long operation — a shutdown arriving during a
-		// multi-gigabyte CRC walk must not wait for it to finish.
+		// R15: checked per file rather than per job. One file's gate is a
+		// single stat, so this is cheap insurance rather than the long-poll it
+		// was when the fallback re-read the whole file.
 		if err := ctx.Err(); err != nil {
-			return nil, nil, fmt.Errorf("app: resume sweep aborted: %w", err)
+			return nil, nil, nil, fmt.Errorf("app: resume sweep aborted: %w", err)
 		}
 		// A file with no resolved filename was never registered, so no
 		// process ever opened a path for it and there is nothing on disk to
@@ -309,28 +316,24 @@ func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *
 			continue
 		}
 		path := app.pipeline.jobFilePath(snap.Name, filename)
-		lo, hi := m.FileRange(f)
 		//nolint:gosec // G115: file counts are far below int32
-		res, err := app.resumer.Resume(ctx, snap.ID, int32(f), path, int32(lo), hi-lo)
-		if err != nil {
+		res, rErr := app.resumer.Resume(ctx, snap.ID, int32(f), path)
+		if rErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, nil, fmt.Errorf("app: resume sweep aborted: %w", ctxErr)
+				return nil, nil, nil, fmt.Errorf("app: resume sweep aborted: %w", ctxErr)
 			}
-			return exts, storagefault.Classify("resume", path, err), nil
+			return swept, runs, storagefault.Classify("resume", path, rErr), nil
 		}
-		if res.Recomputed {
-			recomputed++
+		if res.Restart {
+			restarted++
 		}
-		seeded += res.Durable.Count()
-		exts = append(exts, durability.FileExtent{
-			FileIdx: int32(f), //nolint:gosec // G115: file counts are far below int32
-			Durable: res.Durable,
-		})
+		swept = append(swept, int32(f)) //nolint:gosec // G115: file counts are far below int32
+		runs = append(runs, res.Runs...)
 	}
 	app.log.Info("resumed a job's work set from stable storage",
-		"job", snap.ID, "files", len(exts), "articles_seeded", seeded,
-		"files_recomputed", recomputed)
-	return exts, nil, nil
+		"job", snap.ID, "files", len(swept), "runs", len(runs),
+		"files_restarted", restarted)
+	return swept, runs, nil, nil
 }
 
 // jobFilePath resolves the on-disk path the assembler would have used for one
@@ -353,18 +356,17 @@ func (p *pipeline) jobFilePath(jobName, filename string) string {
 // progress from its bytes.
 //
 // Downloading and Fetching are PhaseActive: the assembler is the only writer,
-// so the file on disk is exactly what Class A described and a recomputation is
-// authoritative over it.
+// so the file on disk is exactly what the record describes and a size that
+// falls short of it really means bytes were lost.
 //
 // PAUSED is here for the same reason and was missing. A paused job is
 // mid-download — nothing else owns its files, and the assembler wrote every
 // byte in them — but it is not PhaseActive, so the sweep skipped it and #362
 // survived in that branch: its disproven Done bits were never corrected, the
-// next checkpoint re-committed them from the stored bitmap priorExtent ORs
-// into, and the file finalized over a hole. It is also the branch
-// Application.Stall leaves jobs in, which is what made stallLost's own
-// "restart gonzbd to resume this job from its committed extents" instruction
-// unable to work.
+// next checkpoint re-recorded them, and the file finalized over a hole. It is
+// also the branch Application.Stall leaves jobs in, which is what made
+// stallLost's own "restart gonzbd to resume this job from its recorded runs"
+// instruction unable to work.
 //
 // Everything else is excluded, and the phase note on resumeAllJobs says why at
 // length: in PhaseProcessing something other than the assembler owns the files

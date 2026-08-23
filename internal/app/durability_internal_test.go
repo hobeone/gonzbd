@@ -88,74 +88,6 @@ func writeFixtureArticle(t *testing.T, application *Application, jobID string, f
 	t.Fatalf("file %d never opened after WriteArticle", fileIdx)
 }
 
-// ---------- manifestArticleMap ----------
-
-// TestManifestArticleMap_TranslatesGlobalIndicesToFileLocalOrdinals pins the
-// mapping the barrier places durable bits by. A wrong ordinal marks the wrong
-// article durable, which costs a silently short file on the next resume — so
-// both the in-range translation and every out-of-range rejection matter.
-func TestManifestArticleMap_TranslatesGlobalIndicesToFileLocalOrdinals(t *testing.T) {
-	application, job := newDurabilityTestApp(t, 2, 3)
-	m, err := application.queue.SnapshotJob(job.ID).Manifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	am := manifestArticleMap{m: m}
-
-	if got := am.ArticleCount(0); got != 3 {
-		t.Errorf("ArticleCount(0) = %d, want 3", got)
-	}
-	if got := am.ArticleCount(1); got != 3 {
-		t.Errorf("ArticleCount(1) = %d, want 3", got)
-	}
-	// File 1 owns global articles 3..5, so its local ordinals are 0..2. An
-	// implementation that returned the global index would pass a file-0 test
-	// and place file 1's bits three positions too high.
-	for global, wantOrd := range map[int32]int{3: 0, 4: 1, 5: 2} {
-		got, ok := am.FileLocalOrdinal(1, global)
-		if !ok || got != wantOrd {
-			t.Errorf("FileLocalOrdinal(1, %d) = (%d, %v), want (%d, true)", global, got, ok, wantOrd)
-		}
-	}
-	// An article belonging to another file must be rejected, not translated.
-	if _, ok := am.FileLocalOrdinal(1, 0); ok {
-		t.Error("FileLocalOrdinal(1, 0) reported an ordinal for an article file 0 owns")
-	}
-	if _, ok := am.FileLocalOrdinal(0, 5); ok {
-		t.Error("FileLocalOrdinal(0, 5) reported an ordinal for an article file 1 owns")
-	}
-}
-
-// TestManifestArticleMap_RejectsUnknownFilesWithoutPanicking pins the bound on
-// fileIdx. queue.Manifest.FileRange indexes its slices directly and panics on
-// an out-of-range file, so the guard is what keeps a bookkeeping defect from
-// taking the process down.
-func TestManifestArticleMap_RejectsUnknownFilesWithoutPanicking(t *testing.T) {
-	application, job := newDurabilityTestApp(t, 1, 2)
-	m, err := application.queue.SnapshotJob(job.ID).Manifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, am := range []manifestArticleMap{{m: m}, {m: nil}} {
-		for _, idx := range []int32{-1, 7} {
-			if _, _, ok := am.rangeOf(idx); ok {
-				t.Errorf("rangeOf(%d) reported a usable range for a file the manifest does not have", idx)
-			}
-			if got := am.ArticleCount(idx); got != 0 {
-				t.Errorf("ArticleCount(%d) = %d, want 0", idx, got)
-			}
-			if _, ok := am.FileLocalOrdinal(idx, 0); ok {
-				t.Errorf("FileLocalOrdinal(%d, 0) reported an ordinal", idx)
-			}
-		}
-	}
-	// The nil-manifest map must also reject a file index that WOULD be valid
-	// for a real manifest, or the guard is only bounding the index.
-	if got := (manifestArticleMap{m: nil}).ArticleCount(0); got != 0 {
-		t.Errorf("ArticleCount(0) with no manifest = %d, want 0", got)
-	}
-}
-
 // ---------- Stall / Fail ----------
 
 // TestStall_PausesTheJobAndSurfacesTheReason pins A1's storage half and R27.
@@ -397,11 +329,15 @@ func TestForgetJobBarrierState_DropsBothMaps(t *testing.T) {
 
 // ---------- target construction ----------
 
-// TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe pins the guard that
-// keeps a manifest-less job away from the barrier. The adapter answers
-// "unknown" for every ordinal without a manifest, and a barrier over such a
-// target refuses the job loudly — correct, but noise for the ordinary case of
-// a job that has already left.
+// TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe pins the residency
+// check that keeps a job with no resident manifest away from the barrier.
+//
+// The target itself no longer needs the manifest for anything — a run carries
+// its own article indices — but "has a resident manifest" is still what
+// decides whether a checkpoint should run at all. A job whose manifest has
+// been evicted is not downloading, and Queue.AckDurable would refuse its ack
+// anyway, so reaching the barrier only to fail there would turn an ordinary
+// event into a logged error.
 func TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
@@ -412,8 +348,8 @@ func TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe(t *testing.T) {
 	if tgt == nil {
 		t.Fatal("no sync target for a resident job; nothing would ever be checkpointed")
 	}
-	if got := tgt.ArticleCount(0); got != 2 {
-		t.Errorf("target ArticleCount(0) = %d, want 2 — the manifest was not threaded through", got)
+	if got := tgt.Files(); got != nil {
+		t.Errorf("Files() = %v for a job with nothing open, want none", got)
 	}
 }
 
@@ -595,14 +531,10 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 	ctx := t.Context()
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
-	// The Class A fact the truncate bound is derived from. The pipeline
-	// appends this in production; here the article was handed to the
-	// assembler directly.
-	if err := application.factLog.Append(ctx, job.ID, []durability.ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
+	// No durability record is seeded. The barrier's own drain reports the
+	// article this fixture wrote, and the truncate bound is taken over the
+	// stored runs PLUS that drain — which is what lets a file be trimmed on
+	// the very first finalize, before anything has been recorded for it.
 
 	info, err := application.pipeline.resolveFileInfo(job.ID, 0)
 	if err != nil {
@@ -645,144 +577,43 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 	}
 }
 
-// ---------- Class A ----------
-
-// TestAppendArticleFacts_RecordsTheDecodedRange pins the Class A write. The
-// decoded offset and length come from the yEnc =ypart header inside the
-// article body, so this map is itself downloaded data and nothing else can
-// reconstruct it.
-func TestAppendArticleFacts_RecordsTheDecodedRange(t *testing.T) {
-	application, job := newDurabilityTestApp(t, 1, 1)
-	ctx := t.Context()
-
-	application.pipeline.appendArticleFacts(ctx, job.ID, durability.ArticleFact{
-		FileIdx: 0, ArtIdx: 0, Offset: 512, Length: 100, CRC32: 0xABCD,
-	})
-
-	got, err := application.factLog.ForFile(ctx, job.ID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("recorded %d facts, want 1 — without Class A the completion truncate "+
-			"has no bound and a resume can verify nothing", len(got))
-	}
-	if got[0].Offset != 512 || got[0].Length != 100 || got[0].CRC32 != 0xABCD {
-		t.Errorf("fact = %+v, want offset 512, length 100, crc 0xABCD", got[0])
-	}
-}
-
-// TestAppendArticleFacts_SurvivesTheCallersCancellation pins the shutdown
-// case, which is not hypothetical: the daemon cancels the pipeline's context
-// while an article is still being applied, and the write that follows this
-// call can still land — the assembler takes the buffer, the shutdown
-// checkpoint fsyncs it and acks it. On the caller's context the insert loses
-// that race, so the committed extent claims an article durable that Class A
-// cannot prove, and the next resume re-fetches bytes sitting on disk.
-//
-// Measured on the crash harness before the fix: one article in roughly one run
-// in ten, always the last applied, with
-// `err="durability: append fact job=... art=18: context canceled"` in the log.
-//
-// Dropping the cancellation cannot over-claim: a fact is true when it is
-// minted and asserts nothing about presence, so the worst case is a fact for
-// bytes that never reached disk, which a resume fails to verify and leaves
-// Outstanding.
-func TestAppendArticleFacts_SurvivesTheCallersCancellation(t *testing.T) {
-	application, job := newDurabilityTestApp(t, 1, 1)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if ctx.Err() == nil {
-		t.Fatal("the context is not cancelled, so this asserts against the ordinary path")
-	}
-
-	application.pipeline.appendArticleFacts(ctx, job.ID, durability.ArticleFact{
-		FileIdx: 0, ArtIdx: 0, Offset: 512, Length: 100, CRC32: 0xABCD,
-	})
-
-	got, err := application.factLog.ForFile(t.Context(), job.ID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("recorded %d facts, want 1 — the article's Class A fact was lost to a "+
-			"cancellation that did not stop its bytes reaching disk, so a resume cannot "+
-			"prove them and re-fetches them", len(got))
-	}
-	if got[0].Offset != 512 || got[0].CRC32 != 0xABCD {
-		t.Errorf("fact = %+v, want offset 512 and crc 0xABCD", got[0])
-	}
-}
-
-// TestAppendArticleFacts_IsInertWithoutAFactLog pins the degraded mode: no
-// history database means no Class A, and the write path must not dereference
-// nil for every article it decodes.
-func TestAppendArticleFacts_IsInertWithoutAFactLog(t *testing.T) {
-	p := &pipeline{log: slog.New(slog.DiscardHandler)}
-	p.appendArticleFacts(context.Background(), "job-a", durability.ArticleFact{ArtIdx: 1})
-}
-
 // ---------- job departure ----------
 
-// TestDeleteJobDurability_RemovesBothClasses pins the removal that runs on a
+// TestDeleteJobDurability_RemovesBothTables pins the removal that runs on a
 // job's way out. Both tables are keyed by job ID with no foreign key to the
 // queue, so without this a database accumulates one set of rows per job ever
 // downloaded until SQLiteStore.Prune's backstop happens to run -- and that
 // backstop deliberately spares history-as-FAILED, so it is not equivalent.
-func TestDeleteJobDurability_RemovesBothClasses(t *testing.T) {
+//
+// Both, and through their own OWNERS: durability.RunStore owns durable_runs
+// and the queue owns failed_articles. A cleanup that reached only one of them
+// would leave half a departed job's rows behind.
+func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
 
-	if err := application.factLog.Append(ctx, job.ID, []durability.ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := application.factLog.Append(ctx, "other-job", []durability.ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	bm := durability.NewBitmap(1)
-	bm.Set(0)
-	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{{FileIdx: 0, Durable: bm}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := application.extents.Commit(ctx, "other-job", []durability.FileExtent{{FileIdx: 0, Durable: bm}}); err != nil {
-		t.Fatal(err)
+	store := application.queue.Store()
+	for _, id := range []string{job.ID, "other-job"} {
+		if err := application.runs.Commit(ctx, id, []durability.DurableArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordFailedArticles(ctx, id, []int32{1}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	application.deleteJobDurability(ctx, job.ID)
 
-	facts, err := application.factLog.ForFile(ctx, job.ID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(facts) != 0 {
-		t.Errorf("%d Class A facts survive the job's departure", len(facts))
-	}
-	exts, err := application.extents.Load(ctx, job.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(exts) != 0 {
-		t.Errorf("%d Class B extents survive the job's departure", len(exts))
+	if nr, nf := durabilityRowCounts(t, application, job.ID); nr != 0 || nf != 0 {
+		t.Errorf("%d runs and %d failed rows survive the job's departure", nr, nf)
 	}
 	// Scoped to the departing job: deleting every job's rows would throw away
-	// a live download's durable bits.
-	otherFacts, err := application.factLog.ForFile(ctx, "other-job", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(otherFacts) != 1 {
-		t.Errorf("another job's facts = %d, want 1 — the delete was not scoped", len(otherFacts))
-	}
-	otherExts, err := application.extents.Load(ctx, "other-job")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(otherExts) != 1 {
-		t.Errorf("another job's extents = %d, want 1 — the delete was not scoped", len(otherExts))
+	// a live download's recorded ground.
+	if nr, nf := durabilityRowCounts(t, application, "other-job"); nr != 1 || nf != 1 {
+		t.Errorf("another job has %d runs and %d failed rows, want 1 and 1 — the "+
+			"delete was not scoped", nr, nf)
 	}
 }
 
@@ -842,76 +673,46 @@ func TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds(t *testing.T) {
 
 // ---------- error paths ----------
 
-// failingFactLog is a FactLog whose every operation fails, for the paths that
-// must degrade to a re-fetch rather than to a wrong answer.
-type failingFactLog struct{ err error }
+// failingRunStore is a RunStore whose every operation fails, for the paths
+// that must degrade to a re-fetch rather than to a wrong answer.
+type failingRunStore struct{ err error }
 
-func (f failingFactLog) Append(context.Context, string, []durability.ArticleFact) error { return f.err }
-func (f failingFactLog) ForFile(context.Context, string, int32) ([]durability.ArticleFact, error) {
-	return nil, f.err
-}
-func (f failingFactLog) DeleteJob(context.Context, string) error { return f.err }
-
-// failingExtentStore is an ExtentStore whose every operation fails.
-type failingExtentStore struct{ err error }
-
-func (f failingExtentStore) Commit(context.Context, string, []durability.FileExtent) error {
+func (f failingRunStore) Commit(context.Context, string, []durability.DurableArticle) error {
 	return f.err
 }
-func (f failingExtentStore) Load(context.Context, string) ([]durability.FileExtent, error) {
+
+func (f failingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
 	return nil, f.err
 }
-func (f failingExtentStore) LoadFile(context.Context, string, int32) (durability.FileExtent, bool, error) {
-	return durability.FileExtent{}, false, f.err
+
+func (f failingRunStore) ForJob(context.Context, string) ([]durability.Run, error) {
+	return nil, f.err
 }
-func (f failingExtentStore) DeleteJob(context.Context, string) error { return f.err }
+func (f failingRunStore) DeleteFile(context.Context, string, int32) error { return f.err }
+func (f failingRunStore) DeleteJob(context.Context, string) error         { return f.err }
 
-// recordingExtentStore notes whether DeleteJob was reached. The alternative —
-// comparing application.extents to a copy of itself taken two lines earlier —
-// is a tautology, which is what this replaces.
-type recordingExtentStore struct{ deleted []string }
+// recordingRunStore notes whether DeleteJob was reached. The alternative —
+// comparing application.runs to a copy of itself taken two lines earlier — is
+// a tautology, which is what this replaces.
+type recordingRunStore struct{ deleted []string }
 
-func (r *recordingExtentStore) Commit(context.Context, string, []durability.FileExtent) error {
+func (r *recordingRunStore) Commit(context.Context, string, []durability.DurableArticle) error {
 	return nil
 }
 
-func (r *recordingExtentStore) Load(context.Context, string) ([]durability.FileExtent, error) {
+func (r *recordingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
 	return nil, nil
 }
 
-func (r *recordingExtentStore) LoadFile(context.Context, string, int32) (durability.FileExtent, bool, error) {
-	return durability.FileExtent{}, false, nil
+func (r *recordingRunStore) ForJob(context.Context, string) ([]durability.Run, error) {
+	return nil, nil
 }
 
-func (r *recordingExtentStore) DeleteJob(_ context.Context, jobID string) error {
+func (r *recordingRunStore) DeleteFile(context.Context, string, int32) error { return nil }
+
+func (r *recordingRunStore) DeleteJob(_ context.Context, jobID string) error {
 	r.deleted = append(r.deleted, jobID)
 	return nil
-}
-
-// TestAppendArticleFacts_SurvivesAFailedWrite pins R2: losing a Class A record
-// must not abort the write path.
-//
-// The article is still handed to the assembler and still written. What it
-// costs is NOT "a re-fetch and nothing else" — see pipeline.appendArticleFacts
-// and Barrier.FinalizeFile's unrecorded guard, since a fact the log never
-// received also hides the article from the walks that bound the truncate.
-// This test pins only the half stated above: the write proceeds.
-func TestAppendArticleFacts_SurvivesAFailedWrite(t *testing.T) {
-	application, job := newDurabilityTestApp(t, 1, 1)
-	application.pipeline.factLog = failingFactLog{err: errors.New("disk on fire")}
-
-	application.pipeline.appendArticleFacts(t.Context(), job.ID, durability.ArticleFact{
-		FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100,
-	})
-
-	// The real log is untouched: the failure did not half-write anything.
-	got, err := application.factLog.ForFile(t.Context(), job.ID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Errorf("recorded %d facts through a failing log", len(got))
-	}
 }
 
 // TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft pins the case a storage
@@ -961,31 +762,35 @@ func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
 // the other from being tried — leaving half a job's rows behind is worse than
 // leaving all of them, because the surviving half describes a job that no
 // longer exists.
+//
+// The two stores have different OWNERS, which is why the "one must not stop
+// the other" half matters here rather than being a tidiness rule:
+// durability.RunStore owns durable_runs and the queue owns failed_articles, so
+// a single early return would leave one owner's rows for a departed job while
+// the other's were collected.
 func TestDeleteJobDurability_ReportsAFailedDelete(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	boom := errors.New("database is locked")
-	application.factLog = failingFactLog{err: boom}
 
-	rec := &recordingExtentStore{}
-	application.extents = rec
+	rec := &recordingRunStore{}
+	application.runs = rec
 	application.deleteJobDurability(t.Context(), "job-a")
 
-	// The load-bearing assertion: the extent store still ran even though the
-	// fact log failed FIRST. An early return on the fact log's error would
-	// leave half a job's rows behind, which is worse than leaving all of them
-	// — the surviving half describes a job that no longer exists.
-	//
-	// This replaces `if application.extents != realExtents`, which compared
-	// the field to a copy of itself taken two lines earlier with nothing in
-	// between that could change it. It could not fail.
+	// The load-bearing assertion: the run store's DeleteJob really ran. This
+	// replaces a comparison of the field to a copy of itself taken two lines
+	// earlier, with nothing in between that could change it. It could not
+	// fail.
 	if !slices.Equal(rec.deleted, []string{"job-a"}) {
-		t.Fatalf("extent store DeleteJob calls = %v, want [job-a]; a failing fact log "+
-			"must not stop the extent store from being tried", rec.deleted)
+		t.Fatalf("run store DeleteJob calls = %v, want [job-a]", rec.deleted)
 	}
 
-	// The mirror case: the extent store failing must not panic or abort either.
-	application.factLog = nil
-	application.extents = failingExtentStore{err: boom}
+	// A failing run store must not panic, must not abort, and must not stop
+	// the queue-owned half from being cleared either.
+	application.runs = failingRunStore{err: boom}
+	application.deleteJobDurability(t.Context(), "job-a")
+
+	// And with no run store at all — the degraded no-history-database mode.
+	application.runs = nil
 	application.deleteJobDurability(t.Context(), "job-a")
 }
 
@@ -1645,7 +1450,7 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 // This path is reached by a job that crashed between MoveToHistory and the
 // queue removal that follows it, so it is the ONE removal that runs without
 // finalizeJob. It fetched the history entry, discarded it, removed the queue
-// row and stopped — leaving article_facts and file_extents behind, keyed by
+// row and stopped — leaving durable_runs and failed_articles behind, keyed by
 // job ID with no foreign key to jobs. SQLiteStore.Prune now collects what
 // escapes this path, but only for a job that is not in history as FAILED,
 // which is exactly the case the retention rule below is about.
@@ -1653,11 +1458,9 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 // Both directions matter and they fail differently. Retaining the rows for a
 // succeeded job leaks one set per crash, forever. Dropping them for a FAILED
 // one is worse than a leak: the retry reuses the job ID over the same partial
-// file, and those facts are what bound FinalizeFile's truncate to the whole
-// file. Without them durableExtent returns the end offset of the re-fetched
-// articles alone and the rest of the partial is destroyed silently, because
-// every article the fact log then knows about IS durable, so neither #342
-// guard fires.
+// file, and those runs are what bound FinalizeFile's truncate to the whole
+// file. Without them the bound is the end offset of the re-fetched articles
+// alone and the rest of the partial is destroyed silently.
 func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1670,17 +1473,10 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			application, job := newDurabilityTestApp(t, 1, 2)
 
-			if err := application.factLog.Append(t.Context(), job.ID, []durability.ArticleFact{
-				{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			got, err := application.factLog.ForFile(t.Context(), job.ID, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(got) != 1 {
-				t.Fatalf("fixture recorded %d facts, want 1; the test would pass vacuously", len(got))
+			seedDurability(t, application, job.ID)
+			if nr, nf := durabilityRowCounts(t, application, job.ID); nr != 1 || nf != 1 {
+				t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+					"the test would pass vacuously", nr, nf)
 			}
 
 			if err := application.historyRepo.Add(t.Context(), history.Entry{
@@ -1693,18 +1489,15 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 				t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
 			}
 
-			after, err := application.factLog.ForFile(t.Context(), job.ID, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if kept := len(after) > 0; kept != tc.wantKept {
+			nr, nf := durabilityRowCounts(t, application, job.ID)
+			if kept := nr > 0 || nf > 0; kept != tc.wantKept {
 				if tc.wantKept {
-					t.Error("a FAILED job's Class A facts were dropped; its retry re-fetches a " +
-						"few articles, FinalizeFile trims to their end offset, and the rest of " +
-						"the partial file is destroyed with no guard firing")
+					t.Error("a FAILED job's durability rows were dropped; its retry re-fetches " +
+						"a few articles, FinalizeFile trims to their end offset, and the rest " +
+						"of the partial file is destroyed silently")
 				} else {
-					t.Error("a finished job's Class A facts survived its removal; nothing else " +
-						"collects them, so they accumulate one set per crash of this kind")
+					t.Error("a finished job's durability rows survived its removal; nothing " +
+						"else collects them, so they accumulate one set per crash of this kind")
 				}
 			}
 		})

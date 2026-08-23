@@ -15,8 +15,10 @@ const poly = uint32(0xEDB88320)
 // (0xEDB88320) is used, matching Go's hash/crc32.IEEE.
 //
 // Time complexity: O(log(len2)) matrix multiplications — measured at 7.47 us
-// for len2 = 1e6 on a Ryzen 9 9950X3D, which makes this the dominant cost of
-// durability.verifiedPrefix (~89% of it at 20 000 articles).
+// for len2 = 1e6 on a Ryzen 9 9950X3D. It used to dominate a whole-file prefix
+// walk (~89% of it at 20 000 articles); a durable run folds one Combine in per
+// article as the article joins it, so the same total is paid incrementally
+// rather than re-derived on every checkpoint.
 //
 // # Do not hoist the shift matrix out across calls
 //
@@ -26,8 +28,9 @@ const poly = uint32(0xEDB88320)
 // per apply against 7473 ns per Combine, with a 10.2 us build. It was rejected.
 //
 // The win exists only while the lengths are uniform, and they are not ours to
-// assume. ArticleFact.Length is len(res.Data) — the DECODED size of whatever
-// the news server actually returned, not even the NZB's declared segment size.
+// assume. A run's length is the sum of len(res.Data) over its articles — the
+// DECODED size of whatever the news server actually returned, not even the
+// NZB's declared segment size.
 // A file whose articles all differ in length rebuilds the matrix per article,
 // which is 36% SLOWER than calling this function, and a cache keyed on length
 // is an unbounded allocation driven by the same input. Uniform article sizes

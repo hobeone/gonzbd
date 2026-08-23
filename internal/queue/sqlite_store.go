@@ -3,7 +3,6 @@ package queue
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,121 +104,197 @@ func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-// encodeArticlesDone packs file fileIdx's per-article done+failed state into
-// a hex bitmap for job_files.articles_done. The encoding is two
-// equal-length bitmaps concatenated — [done bits][failed bits], each
-// ceil(N/8) bytes for N articles in the file — so a failed article (done &&
-// failed) round-trips distinctly from a plain successful one (done &&
-// !failed). This widens the historical done-only format (see
-// decodeArticlesDone for the backward-compat read path); the column stays
-// an opaque hex string with no schema change.
-func encodeArticlesDone(job *Job, fileIdx int) string {
-	if job == nil || job.Progress() == nil {
-		return ""
-	}
-	m, err := job.Manifest()
-	if err != nil || fileIdx < 0 || fileIdx >= m.NumFiles() {
-		return ""
-	}
-	lo, hi := m.FileRange(fileIdx)
-	if hi <= lo {
-		return ""
-	}
-	n := hi - lo
-	numBytes := (n + 7) / 8
-	buf := make([]byte, numBytes*2)
-	for i := range n {
-		if job.Progress().ArticleDone(lo + i) {
-			buf[i/8] |= 1 << (i % 8)
+// artRange is one durable_runs row's article span, [First, Last] inclusive
+// and indexed GLOBALLY within the job's manifest.
+//
+// Only the two index columns, because that is all article resolution needs: a
+// run's offset, length and CRC answer the truncate bound, the overlap check
+// and the whole-file CRC, and none of those questions is asked here.
+type artRange struct{ First, Last int32 }
+
+// resolveArticles derives one job's per-article done/failed state from its
+// durable runs and its permanently-failed articles.
+//
+// This is what replaced job_files.articles_done, and the shape of the
+// replacement is the point: resolution is DERIVED from the two records that
+// already hold it, rather than re-serialised into a third copy on every job
+// update. done means "covered by a run", failed means "has a failed_articles
+// row", and neither means the article is still outstanding.
+//
+// failed implies done, and both callers depend on it. Each reads Failed only
+// inside the Done branch — JobProgress.markFailed early-returns once done is
+// set, and newJobProgressSized nests the two the same way — so a failed
+// article that did not also read as done would come back Pending and be
+// fetched again on every restart.
+//
+// A failed article is never covered by a run: it never decoded, so nothing was
+// ever written for it and no fsync could have recorded it. The done bit it
+// gets here is this function's, not a run's.
+//
+// Both returned slices are indexed globally and are numArticles long.
+func resolveArticles(runs []artRange, failed []int32, numArticles int) (done, failedOut []bool) {
+	done = make([]bool, numArticles)
+	failedOut = make([]bool, numArticles)
+	for _, r := range runs {
+		// A row naming an article outside the manifest is clamped rather than
+		// trusted. It means the manifest was rebuilt to a different shape
+		// under rows keyed on the old numbering — the condition
+		// RetryHistoryJob decides and drops the rows for, loudly. Clamping
+		// here keeps a row that escaped that from indexing out of bounds.
+		lo, hi := max(int(r.First), 0), min(int(r.Last), numArticles-1)
+		for i := lo; i <= hi; i++ {
+			done[i] = true
 		}
-		if job.Progress().ArticleFailed(lo + i) {
-			buf[numBytes+i/8] |= 1 << (i % 8)
-		}
 	}
-	return hex.EncodeToString(buf)
+	for _, idx := range failed {
+		i := int(idx)
+		if i < 0 || i >= numArticles {
+			continue
+		}
+		done[i] = true
+		failedOut[i] = true
+	}
+	return done, failedOut
 }
 
-// decodeArticleFlags unpacks one file's articles_done bitmap into per-article
-// done and failed flags, WITHOUT a manifest.
-//
-// decodeArticlesDone does the same unpacking against a live job, taking the
-// file's width from the manifest's FileRange. This one is for the non-resident
-// path, where there is no manifest and the width comes from
-// job_files.article_count — the same number, written by the same statement.
-// The two share the format and nothing else; folding them together would mean
-// giving the resident path a width it does not need and the boot path a
-// manifest it does not have.
-//
-// Returns nil, nil for an empty or malformed value, which reads as "nothing
-// resolved". That is the safe direction under S3 and matches what an absent
-// column already produced: the articles come back Outstanding and are
-// re-derived on hydration.
-func decodeArticleFlags(encoded string, articleCount int) (done, failed []bool) {
-	if encoded == "" || articleCount <= 0 {
-		return nil, nil
-	}
-	buf, err := hex.DecodeString(encoded)
+// runRangesForJob reads one job's durable_runs article spans.
+func (s *SQLiteStore) runRangesForJob(ctx context.Context, jobID string) ([]artRange, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT first_art_idx, last_art_idx FROM durable_runs WHERE job_id = ?`, jobID)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("sqlite store durable runs %s: %w", jobID, err)
 	}
-	numBytes := (articleCount + 7) / 8
-	if len(buf) != numBytes*2 {
-		// Not written by encodeArticlesDone for THIS file. Guessing which
-		// prefix is the done bitmap would resolve the wrong articles rather
-		// than none, which is the reason decodeArticlesDone refuses too.
-		return nil, nil
+	defer func() { _ = rows.Close() }()
+	var out []artRange
+	for rows.Next() {
+		var r artRange
+		if err := rows.Scan(&r.First, &r.Last); err != nil {
+			return nil, fmt.Errorf("sqlite store scan durable run %s: %w", jobID, err)
+		}
+		out = append(out, r)
 	}
-	doneBuf, failedBuf := buf[:numBytes], buf[numBytes:]
-	done = make([]bool, articleCount)
-	failed = make([]bool, articleCount)
-	for i := range articleCount {
-		done[i] = doneBuf[i/8]&(1<<(i%8)) != 0
-		failed[i] = failedBuf[i/8]&(1<<(i%8)) != 0
-	}
-	return done, failed
+	return out, rows.Err()
 }
 
-// decodeArticlesDone restores file fileIdx's per-article done/failed state
-// from a hex bitmap written by encodeArticlesDone: [done bits][failed bits],
-// each ceil(N/8) bytes. An article with its failed bit set is restored via
-// markFailed, a plain done article via markDone — never both, since
-// markFailed early-returns once done[i] is already true.
-//
-// Any other length is corrupt and restores nothing. Sizes are fixed by the
-// file's article count, so a mismatch means the value did not come from
-// encodeArticlesDone for this file, and guessing which prefix is the done
-// bitmap would restore the wrong articles rather than none.
-func (s *SQLiteStore) decodeArticlesDone(encoded string, job *Job, fileIdx int) {
-	if job == nil || job.Progress() == nil || encoded == "" {
-		return
-	}
-	m, mErr := job.Manifest()
-	if mErr != nil || fileIdx < 0 || fileIdx >= m.NumFiles() {
-		return
-	}
-	buf, err := hex.DecodeString(encoded)
+// failedArticlesForJob reads one job's permanently-failed article indices.
+func (s *SQLiteStore) failedArticlesForJob(ctx context.Context, jobID string) ([]int32, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT art_idx FROM failed_articles WHERE job_id = ?`, jobID)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("sqlite store failed articles %s: %w", jobID, err)
 	}
-	lo, hi := m.FileRange(fileIdx)
-	if hi <= lo {
-		return
+	defer func() { _ = rows.Close() }()
+	var out []int32
+	for rows.Next() {
+		var idx int32
+		if err := rows.Scan(&idx); err != nil {
+			return nil, fmt.Errorf("sqlite store scan failed article %s: %w", jobID, err)
+		}
+		out = append(out, idx)
 	}
-	n := hi - lo
-	numBytes := (n + 7) / 8
-	if len(buf) != numBytes*2 {
-		s.log.Warn("articles_done bitmap has an unexpected length, per-article state not restored",
-			"job_id", job.ID, "file_index", fileIdx, "want_bytes", numBytes*2, "got_bytes", len(buf))
-		return
-	}
-	doneBuf, failedBuf := buf[:numBytes], buf[numBytes:]
+	return out, rows.Err()
+}
 
-	for i := range n {
+// resolutionForJob derives one job's global done/failed slices from stable
+// storage.
+//
+// numArticles comes from the caller because the two callers know it
+// differently: a resident job asks its manifest, and the boot path sums
+// job_files.article_count.
+func (s *SQLiteStore) resolutionForJob(ctx context.Context, jobID string, numArticles int) (done, failed []bool, err error) {
+	runs, err := s.runRangesForJob(ctx, jobID)
+	if err != nil {
+		return nil, nil, err
+	}
+	failedIdx, err := s.failedArticlesForJob(ctx, jobID)
+	if err != nil {
+		return nil, nil, err
+	}
+	d, f := resolveArticles(runs, failedIdx, numArticles)
+	return d, f, nil
+}
+
+// RecordFailedArticles persists articles that will never be fetched.
+//
+// INSERT OR IGNORE because AckPermanentFailure is reachable more than once for
+// the same article and a repeat is a no-op rather than an update — the row
+// carries no value beyond its own existence.
+//
+// Its reversal is deliberately NOT per-article; see ClearFailedArticles.
+func (s *SQLiteStore) RecordFailedArticles(ctx context.Context, jobID string, artIdxs []int32) error {
+	if len(artIdxs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin failed articles %s: %w", jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO failed_articles (job_id, art_idx) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("sqlite store prepare failed articles %s: %w", jobID, err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, idx := range artIdxs {
+		if _, err := stmt.ExecContext(ctx, jobID, idx); err != nil {
+			return fmt.Errorf("sqlite store record failed article %s/%d: %w", jobID, idx, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite store commit failed articles %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// ClearFailedArticles removes every failed-article row for ONE job.
+//
+// A whole-job delete rather than a per-article one, because that is what the
+// two reversal sites actually do: Job.ResetForRetry and
+// JobProgress.resetForReload each clear precisely the articles whose failed
+// bit is set, which is precisely the set stored here. Batching is therefore
+// exact rather than approximate.
+//
+// The SCOPE is what makes that equivalence true. Queue.ClearAllEmitted loops
+// every article of every job holding both a manifest and progress — RESIDENT
+// jobs only — so one job-scoped delete per resident job replaces exactly the
+// per-article clearing it performed. A delete that swept every job would
+// resurrect the permanently failed articles of every NON-resident job as
+// fetchable work, and the symptom is a silent re-download storm rather than an
+// error.
+//
+// This reversal has to exist at all only because the record is now a table.
+// job_files.articles_done was re-serialised wholesale on the next store
+// update, so a cleared bit corrected itself; a separate table has no wholesale
+// rewrite, and a stale row would survive a retry and make the next restart
+// mark the retry's re-fetched articles failed.
+func (s *SQLiteStore) ClearFailedArticles(ctx context.Context, jobID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("sqlite store clear failed articles %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// applyResolution installs a derived done/failed pair onto a resident job's
+// progress, over one file's global article range [lo, hi).
+//
+// markFailed before markDone, and never both: markFailed early-returns once
+// the article is already done, so the ORDER is what keeps a permanently failed
+// article from being restored as a successful one. That inversion is #300 — a
+// restart rewrote failed articles as successful, JobProgress.recompute derived
+// failedBytes from the bits, and the job came back reporting full health while
+// a retry found nothing to refetch.
+//
+// There is deliberately no fallback for an empty resolution. Defaulting to
+// "all done" is the same override in miniature, and in the safe direction an
+// unknown article is one to fetch again, not one to skip.
+func applyResolution(job *Job, done, failed []bool, lo, hi int) {
+	for i := lo; i < hi; i++ {
 		switch {
-		case failedBuf[i/8]&(1<<(i%8)) != 0:
-			job.progress.markFailed(job.manifest, lo+i)
-		case doneBuf[i/8]&(1<<(i%8)) != 0:
-			job.progress.markDone(job.manifest, lo+i)
+		case i < len(failed) && failed[i]:
+			job.progress.markFailed(job.manifest, i)
+		case i < len(done) && done[i]:
+			job.progress.markDone(job.manifest, i)
 		}
 	}
 }
@@ -322,8 +397,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
 	const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count, failed_bytes, bytes_downloaded)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, article_count, failed_bytes, bytes_downloaded)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	p := job.Progress()
 	for i := range m.NumFiles() {
 		isPar2 := 0
@@ -340,18 +415,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		// JobProgress, the INSERT wrote 0, and the first promotion read that
 		// back over the live value.
 		fetch := int(p.FileFetchPolicy(i))
-		artDoneStr := encodeArticlesDone(job, i)
 		lo, hi := m.FileRange(i)
 		_, err := tx.ExecContext(ctx, qFiles,
 			job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2,
 			complete, fetch,
 			p.FileFilename(i), p.FileAssembledCRC32(i),
-			artDoneStr, hi-lo,
-			// Both written in the same statement as articles_done, whose
-			// failed and resolved halves they sum. One writer, one
-			// transaction: neither column can drift from the bits it caches,
-			// which is the property that distinguishes them from the derived
-			// columns removed in #306.
+			hi-lo,
+			// Caches of a sum over the file's article resolution, which now
+			// lives in durable_runs and failed_articles rather than in a
+			// column on this row. Still written by the single statement that
+			// writes the rest of the row, and still superseded wholesale by
+			// JobProgress.recompute on promotion — which is what
+			// distinguishes them from the derived columns removed in #306.
 			p.FileFailedBytes(i), p.FileBytesDownloaded(i),
 		)
 		if err != nil {
@@ -499,8 +574,17 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	// The write cursor and high-water mark are gone entirely: the completion
 	// truncate derives its bound from the durable facts rather than from a
 	// seed, and the coalescing cursor is local to the assembler's cache.
+	// The job's article resolution, derived once for the whole job from
+	// durable_runs and failed_articles. It replaces the per-file
+	// job_files.articles_done blob this loop used to unpack, and it is read
+	// before the row scan so a failure here surfaces before any bit is
+	// installed.
+	done, failed, err := s.resolutionForJob(ctx, job.ID, job.manifest.NumArticles())
+	if err != nil {
+		return err
+	}
 	const qFiles = `
-SELECT file_index, complete, fetch_policy, assembled_crc32, COALESCE(articles_done, ''),
+SELECT file_index, complete, fetch_policy, assembled_crc32,
        COALESCE(filename, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
@@ -511,8 +595,8 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	for rows.Next() {
 		var idx, complete, fetch int
 		var crc32Val uint32
-		var artDoneStr, filename string
-		if err := rows.Scan(&idx, &complete, &fetch, &crc32Val, &artDoneStr, &filename); err != nil {
+		var filename string
+		if err := rows.Scan(&idx, &complete, &fetch, &crc32Val, &filename); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
@@ -539,25 +623,24 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// is written by SetFileFilename and read here, and a file that was
 			// never registered still restores as empty.
 			fp.Filename = filename
-			// articles_done is the only source of per-article state THIS
-			// FUNCTION reads; Complete is just a flag alongside it.
+			// The derived article resolution is the only source of
+			// per-article state THIS FUNCTION reads; Complete is just a flag
+			// alongside it.
 			//
 			// It is not the last word in the process, and must not be read as
 			// one. The startup resume sweep (internal/app/resume_startup.go)
-			// verifies each file's bytes against the Class A fact log and
-			// installs its result through Queue.ReplaceFromResume, which
-			// OVERWRITES the per-article bits restored here for every file it
-			// resumed — including clearing one. The design's S4 is why: "where
-			// it disagrees with a recomputation, the recomputation is correct
-			// by definition". What this function restores is a belief a
-			// previous process wrote; what the sweep installs is what the
-			// bytes on disk support.
+			// stats each file against the runs recorded for it and installs
+			// its answer through Queue.ReplaceFromRuns, which OVERWRITES the
+			// per-article bits restored here for every file it resumed —
+			// including clearing one. What this function restores is what the
+			// record says; what the sweep installs is what the record says
+			// AFTER a file shorter than its runs claim has had them discarded.
 			//
 			// The precedence used to run the other way, and that was #362: the
-			// sweep seeded through the additive Queue.SeedFromExtents, which
-			// never clears a bit, so an article this restore marked done stayed
-			// done even after the recomputation proved its bytes were gone, and
-			// the job completed a file with a zero-filled hole in it.
+			// sweep seeded through an additive entry point that never cleared
+			// a bit, so an article this restore marked done stayed done even
+			// after the file was shown to be missing, and the job completed a
+			// file with a zero-filled hole in it.
 			//
 			// The sweep's authority is bounded to the files it actually read.
 			// A file it never resumed — a job that is not downloading or not
@@ -566,13 +649,13 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// restored, because an omission is silence rather than a finding of
 			// absence. The phase bound is the load-bearing one: past
 			// downloading, par2 and the move rewrite these files, so the
-			// download-time fact log no longer describes them and a
-			// recomputation over them would clear correct state. A permanently failed
+			// download-time record no longer describes them and re-deriving
+			// over them would clear correct state. A permanently failed
 			// article keeps its bits for the same reason: its bytes were never
 			// on disk, so their absence is the outcome recorded below and not
 			// new evidence.
 			//
-			// Complete used to short-circuit the decode and mark every
+			// Complete used to short-circuit the restore and mark every
 			// article of the file done. That is wrong because Complete means
 			// "the assembler is finished with this file", not "every article
 			// arrived" — internal/app/pipeline.go hands a permanently failed
@@ -582,21 +665,6 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// bits the job came back reporting full health while a retry
 			// found nothing to refetch (#300).
 			//
-			// There is deliberately no fallback for an empty bitmap.
-			// Defaulting to "all done" is the same override in miniature,
-			// and in the safe direction an unknown article is one to fetch
-			// again, not one to skip.
-			//
-			// Nor is one needed. encodeArticlesDone returns "" on four
-			// branches — nil job, nil Progress, a Manifest() error, and a
-			// zero-article file — but the first three cannot occur, because
-			// neither write path calls it without residency: addTx encodes
-			// under `if hasManifest`, and updateTx under
-			// `job.Progress() != nil && mErr == nil`. Those guards, not
-			// anything inside the encoder, are what establish the invariant.
-			// The fourth is real and harmless: a file with no articles has
-			// nothing for the removed loop to have marked.
-			//
 			// One coupling did go with the old branch. Force-marking every
 			// article done meant recompute always derived Pending == 0 for a
 			// complete file; recompute never consults Complete, so that no
@@ -604,7 +672,8 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// on Complete before reading Pending, and IsComplete drives
 			// post-processing off the flags — but do not assume the
 			// implication still exists.
-			s.decodeArticlesDone(artDoneStr, job, idx)
+			lo, hi := job.manifest.FileRange(idx)
+			applyResolution(job, done, failed, lo, hi)
 			if complete != 0 {
 				fp.Complete = true
 			}
@@ -613,7 +682,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	}
 	// Sole source of per-file byte state on this path: Bytes from the
 	// manifest, BytesDownloaded and FailedBytes from the article bitmaps
-	// decodeArticlesDone just restored. Removing this call does not fall back
+	// applyResolution just installed. Removing this call does not fall back
 	// on the columns — they are not read above — it leaves every figure at
 	// zero, and RemainingBytes would report a fully downloaded job.
 	job.progress.recompute(job.manifest)
@@ -633,26 +702,25 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // delete) still gets each entry attributed to the right file instead of
 // shifted by position.
 func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
-	// Every column comes from job_files, including both byte figures. It used
-	// to LEFT JOIN file_extents for bytes_durable, which was the wrong
-	// quantity: that column counts DECODED payload bytes, while the remaining
-	// figure this feeds subtracts from jf.bytes, an ENCODED NZB total. The
-	// skew is the encoding overhead, a few percent, and it made a non-resident
-	// job report more bytes outstanding than the same job resident — the exact
-	// divergence TestRemainingBytes_IdenticalResidentAndNonResident forbids.
+	// Every column comes from job_files, including both byte figures. The
+	// downloaded figure used to be read from the durability record instead,
+	// which was the wrong quantity: the record's lengths are DECODED payload
+	// bytes, while the remaining figure this feeds subtracts from jf.bytes, an
+	// ENCODED NZB total. The skew is the encoding overhead, a few percent, and
+	// it made a non-resident job report more bytes outstanding than the same
+	// job resident — the exact divergence
+	// TestRemainingBytes_IdenticalResidentAndNonResident forbids.
 	// jf.bytes_downloaded sums the same articles in the same unit as jf.bytes.
 	//
 	// One grouped query for the whole queue, which is what keeps restart at
 	// B3's O(incomplete files) bound. Reading per job instead would be N
 	// queries at startup.
-	// articles_done comes along too, and needs no schema change: it has always
-	// been on this table, and article_count gives the width the blob is keyed
-	// by, so it decodes here without a manifest. Without it a non-resident
-	// job's every article read as Pending.
+	// Per-article resolution is no longer a column here; it is derived from
+	// durable_runs and failed_articles by the two whole-table sweeps below.
+	// Without it a non-resident job's every article reads as Pending.
 	const q = `
 SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
-       jf.fetch_policy, jf.subject, jf.failed_bytes, jf.bytes_downloaded,
-       COALESCE(jf.articles_done, '')
+       jf.fetch_policy, jf.subject, jf.failed_bytes, jf.bytes_downloaded
   FROM job_files jf
  ORDER BY jf.job_id ASC, jf.file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -663,12 +731,12 @@ SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
 
 	result := make(map[string][]FileMeta)
 	for rows.Next() {
-		var jobID, subject, artDone string
+		var jobID, subject string
 		var idx, count int
 		var fileBytes, failedBytes, bytesDownloaded int64
 		var complete, fetch int
 		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &complete, &fetch, &subject,
-			&failedBytes, &bytesDownloaded, &artDone); err != nil {
+			&failedBytes, &bytesDownloaded); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -696,13 +764,128 @@ SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
 			BytesDownloaded: bytesDownloaded,
 			FailedBytes:     failedBytes,
 		}
-		counts[idx].Done, counts[idx].Failed = decodeArticleFlags(artDone, count)
 		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
 	}
+	if err := s.fillResolution(ctx, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// fillResolution derives every job's per-file Done/Failed flags from
+// durable_runs and failed_articles, in TWO whole-table sweeps rather than a
+// pair of queries per job.
+//
+// # The boot cost, and why this shape
+//
+// The rule this replaces was a blob on job_files, so it arrived free with the
+// row. Runs and failed articles live in their own tables, and the question
+// "what does every non-resident job still have to fetch" has to be answered
+// for the whole queue at startup — B3 bounds that at O(incomplete files), and
+// a per-job pair of queries would make it O(jobs) round trips instead.
+//
+// Two ungrouped SELECTs over the two tables, ordered by job_id, is the cheapest
+// shape available and is strictly cheaper than what it replaces: a run covers
+// a whole span of articles in one row, where the old blob carried two bits per
+// article. A job that downloaded in order has ONE run row. The failed table is
+// bounded by the defect count, not the article count.
+//
+// Neither sweep is bounded to the jobs in `result`, and that is deliberate
+// rather than sloppy: a WHERE ... IN over every queued job ID is a bigger
+// statement than the scan it saves, and SQLiteStore.Prune already keeps both
+// tables free of rows whose job is in neither the queue nor history-as-FAILED.
+// Rows for a job not in `result` are simply skipped below.
+//
+// # Deriving the file-local index without a manifest
+//
+// FileMeta.Done and .Failed are indexed FILE-LOCALLY, while a run and a failed
+// row both name articles GLOBALLY. The conversion needs each file's first
+// global index, which the manifest derives by accumulating article counts in
+// file order (Manifest.fileArticleOffsets) — and `result` holds exactly those
+// counts, placed by file_index. So the running sum reproduces it, which is the
+// same derivation newJobProgressSized already makes for the same reason.
+func (s *SQLiteStore) fillResolution(ctx context.Context, result map[string][]FileMeta) error {
+	if len(result) == 0 {
+		return nil
+	}
+	runsByJob := make(map[string][]artRange)
+	if err := s.scanAll(ctx,
+		`SELECT job_id, first_art_idx, last_art_idx FROM durable_runs ORDER BY job_id`,
+		"durable runs",
+		func(rows *sql.Rows) error {
+			var jobID string
+			var r artRange
+			if err := rows.Scan(&jobID, &r.First, &r.Last); err != nil {
+				return err
+			}
+			if _, ok := result[jobID]; ok {
+				runsByJob[jobID] = append(runsByJob[jobID], r)
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	failedByJob := make(map[string][]int32)
+	if err := s.scanAll(ctx,
+		`SELECT job_id, art_idx FROM failed_articles ORDER BY job_id`,
+		"failed articles",
+		func(rows *sql.Rows) error {
+			var jobID string
+			var idx int32
+			if err := rows.Scan(&jobID, &idx); err != nil {
+				return err
+			}
+			if _, ok := result[jobID]; ok {
+				failedByJob[jobID] = append(failedByJob[jobID], idx)
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+
+	for jobID, files := range result {
+		total := 0
+		for _, f := range files {
+			total += f.ArticleCount
+		}
+		if total == 0 {
+			continue
+		}
+		done, failed := resolveArticles(runsByJob[jobID], failedByJob[jobID], total)
+		base := 0
+		for i := range files {
+			n := files[i].ArticleCount
+			files[i].Done = done[base : base+n]
+			files[i].Failed = failed[base : base+n]
+			base += n
+		}
+	}
+	return nil
+}
+
+// scanAll runs one whole-table query and hands each row to fn.
+//
+// Shared by fillResolution's two sweeps, which differ only in their statement
+// and their row shape. The `what` string names the table in both error paths,
+// so a failure says which sweep failed rather than only that one did.
+func (s *SQLiteStore) scanAll(ctx context.Context, query, what string, fn func(*sql.Rows) error) error {
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("sqlite store %s sweep: %w", what, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if err := fn(rows); err != nil {
+			return fmt.Errorf("sqlite store scan %s: %w", what, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite store %s sweep: %w", what, err)
+	}
+	return nil
 }
 
 // List returns all active jobs ordered by sort_key ASC, time_added ASC.
@@ -782,21 +965,20 @@ WHERE id = ?`
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and
 		// its manifest is available, rather than staying 0 forever.
-		// failed_bytes and bytes_downloaded travel with articles_done for the
-		// same reason they do in insertJobFilesTx: each is a cache of one half
-		// of that column, and a sum is only guaranteed to agree with the bits
-		// it sums if one statement writes both.
-		const qF = `UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ?, failed_bytes = ?, bytes_downloaded = ? WHERE job_id = ? AND file_index = ?`
+		// failed_bytes and bytes_downloaded are written here for the same
+		// reason they are in insertJobFilesTx: each caches a sum over the
+		// file's article resolution, and both are superseded wholesale by
+		// JobProgress.recompute on promotion.
+		const qF = `UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, article_count = ?, failed_bytes = ?, bytes_downloaded = ? WHERE job_id = ? AND file_index = ?`
 		for i := range m.NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
 				complete = 1
 			}
 			fetch := int(job.Progress().FileFetchPolicy(i))
-			artDoneStr := encodeArticlesDone(job, i)
 			lo, hi := m.FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
-				complete, fetch, job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
+				complete, fetch, job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), hi-lo,
 				job.Progress().FileFailedBytes(i), job.Progress().FileBytesDownloaded(i),
 				job.ID, i,
 			); err != nil {
@@ -843,23 +1025,23 @@ func (s *SQLiteStore) UpdateBatch(ctx context.Context, jobs []*Job) error {
 // not be read — and takes its durability rows with it.
 //
 // Ordinary removal deliberately does NOT do that. Queue.Remove runs on the
-// queue-to-history transition as well, where a FAILED job's Class A facts are
+// queue-to-history transition as well, where a FAILED job's durable runs are
 // retained on purpose: a retry reuses the job ID and the same partial file,
-// and those facts are what bound FinalizeFile's truncate to the whole file
+// and those runs are what bound FinalizeFile's truncate to the whole file
 // rather than to the few articles the retry re-fetches. Sweeping them in
 // Remove would destroy that.
 //
 // This path is different in the way that matters. It is reached only when the
-// job's own manifest is gone or unreadable, and every Class A fact is keyed by
-// a global article index that only a manifest can interpret. There is nothing
-// left to read them against, and no queue row and no history entry will arrive
-// to collect them, so retaining them is not caution — it is a leak of rows
-// nothing can use.
+// job's own manifest is gone or unreadable, and every run and every failed
+// article is keyed by a global article index that only a manifest can
+// interpret. There is nothing left to read them against, and no queue row and
+// no history entry will arrive to collect them, so retaining them is not
+// caution — it is a leak of rows nothing can use.
 func (s *SQLiteStore) removeCorrupt(ctx context.Context, id string) {
 	_ = s.Remove(ctx, id)
 	for _, q := range []string{
-		"DELETE FROM article_facts WHERE job_id = ?",
-		"DELETE FROM file_extents WHERE job_id = ?",
+		"DELETE FROM durable_runs WHERE job_id = ?",
+		"DELETE FROM failed_articles WHERE job_id = ?",
 	} {
 		if _, err := s.db.ExecContext(ctx, q, id); err != nil {
 			// Not fatal: the caller is already returning an error about the
@@ -930,8 +1112,8 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 	if entry.Status == string(constants.StatusFailed) {
 		const qRetain = `
 INSERT INTO history_job_files
-  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count)
-SELECT job_id, file_index, complete, fetch_policy, filename, assembled_crc32, articles_done, article_count
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
+SELECT job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count
 FROM job_files WHERE job_id = ?`
 		if _, err := tx.ExecContext(ctx, qRetain, job.ID); err != nil {
 			return fmt.Errorf("sqlite store retain job_files %s: %w", job.ID, err)
@@ -962,18 +1144,24 @@ FROM job_files WHERE job_id = ?`
 // retry can skip the articles that already succeeded.
 //
 // ArticleCount is not part of that progress. It is the alignment check: a
-// retry rebuilds the manifest by re-parsing the NZB, and ArticlesDone is a
-// bitmap indexed against the manifest that produced it. Applying it to a
-// manifest with a different shape would mark the wrong articles done and
-// silently skip real downloads, so the counts must match before the overlay
-// is used.
+// retry rebuilds the manifest by re-parsing the NZB, and the durable runs and
+// failed-article rows the retry reads are indexed against the manifest that
+// produced them. Applying them to a manifest with a different shape would mark
+// the wrong articles done and silently skip real downloads, so the counts must
+// match before the overlay is used.
+//
+// The per-article state itself is no longer carried here. It used to be an
+// ArticlesDone bitmap copied from job_files at MoveToHistory; it now stays in
+// durable_runs and failed_articles, which are retained for a FAILED job by the
+// same rule and dropped by the same history.Delete. This row carries what
+// those two tables cannot: the file's resolved on-disk name, its complete
+// flag, its assembled CRC, and the alignment count.
 type RetainedFile struct {
 	FileIndex      int
 	Complete       bool
 	Fetch          FetchPolicy
 	Filename       string
 	AssembledCRC32 uint32
-	ArticlesDone   string
 	ArticleCount   int
 }
 
@@ -984,7 +1172,7 @@ type RetainedFile struct {
 func (s *SQLiteStore) HistoryFileProgress(ctx context.Context, jobID string) ([]RetainedFile, error) {
 	const q = `
 SELECT file_index, complete, fetch_policy,
-       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), COALESCE(articles_done, ''), article_count
+       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
 FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q, jobID)
 	if err != nil {
@@ -997,7 +1185,7 @@ FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 		var f RetainedFile
 		var complete, fetch int
 		if err := rows.Scan(&f.FileIndex, &complete, &fetch,
-			&f.Filename, &f.AssembledCRC32, &f.ArticlesDone, &f.ArticleCount); err != nil {
+			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
 			return nil, fmt.Errorf("sqlite store scan history_job_file %s: %w", jobID, err)
 		}
 		f.Complete = complete != 0
@@ -1016,14 +1204,15 @@ FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 //
 // Not applied is an ordinary outcome, not an error: nothing was retained
 // (the job completed, or its entry predates retention), or the rebuilt
-// manifest does not match the shape the bitmap was written against. Both
-// mean "download this job from scratch", which is correct if wasteful.
+// manifest does not match the shape the retained rows were written against.
+// Both mean "download this job from scratch", which is correct if wasteful.
 //
-// The alignment check exists because articles_done is indexed positionally
-// against the manifest that produced it. Re-parsing the same NZB bytes is
-// deterministic and yields the same shape, so a mismatch means the recorded
-// backup is not the NZB this job was built from. Applying the bitmap anyway
-// would mark the wrong articles done — and a done article is never
+// The alignment check exists because a durable run and a failed-article row
+// both name articles by an index into the manifest that produced them.
+// Re-parsing the same NZB bytes is deterministic and yields the same shape, so
+// a mismatch means the recorded backup is not the NZB this job was built from.
+// Applying the rows anyway would mark the wrong articles done — and a done
+// article is never
 // requested, so the job would finish "successfully" with missing data. The
 // cost of refusing is bounded and visible; the cost of applying is silent
 // corruption.
@@ -1043,6 +1232,12 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 			"job_id", job.ID, "retained_files", len(retained), "manifest_files", job.manifest.NumFiles())
 		return false, nil
 	}
+	// Read only after the alignment check has passed, because that check is
+	// what makes the article indices in these rows interpretable at all.
+	done, failed, err := s.resolutionForJob(ctx, job.ID, job.manifest.NumArticles())
+	if err != nil {
+		return false, err
+	}
 
 	for _, f := range retained {
 		fp := &job.progress.files[f.FileIndex]
@@ -1060,7 +1255,8 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		// nothing to reset: the rebuilt job looks fully downloaded and goes
 		// straight back to post-processing, where it fails identically.
 		// Retry would appear to run and change nothing (#300).
-		s.decodeArticlesDone(f.ArticlesDone, job, f.FileIndex)
+		lo, hi := job.manifest.FileRange(f.FileIndex)
+		applyResolution(job, done, failed, lo, hi)
 		if f.Complete {
 			fp.Complete = true
 		}
@@ -1255,8 +1451,8 @@ func (s *SQLiteStore) Prune(ctx context.Context) error {
 	return s.pruneDurabilityRows(ctx)
 }
 
-// pruneDurabilityRows is the backstop for Class A facts and Class B extents a
-// departed job left behind. Neither table has a foreign key to jobs, so
+// pruneDurabilityRows is the backstop for the durable runs and failed-article
+// rows a departed job left behind. Neither table has a foreign key to jobs, so
 // nothing collects them implicitly.
 //
 // The ordinary paths already cover this — Application.deleteJobDurability on
@@ -1292,21 +1488,21 @@ func (s *SQLiteStore) Prune(ctx context.Context) error {
 // form needs SQL string concatenation for a value that is a compile-time
 // constant either way -- all cost, no reuse.
 func (s *SQLiteStore) pruneDurabilityRows(ctx context.Context) error {
-	const facts = `
-		DELETE FROM article_facts
-		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = article_facts.job_id)
+	const runs = `
+		DELETE FROM durable_runs
+		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = durable_runs.job_id)
 		   AND NOT EXISTS (SELECT 1 FROM history h
-		                    WHERE h.nzo_id = article_facts.job_id AND h.status = ?)`
-	const extents = `
-		DELETE FROM file_extents
-		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = file_extents.job_id)
+		                    WHERE h.nzo_id = durable_runs.job_id AND h.status = ?)`
+	const failed = `
+		DELETE FROM failed_articles
+		 WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = failed_articles.job_id)
 		   AND NOT EXISTS (SELECT 1 FROM history h
-		                    WHERE h.nzo_id = file_extents.job_id AND h.status = ?)`
+		                    WHERE h.nzo_id = failed_articles.job_id AND h.status = ?)`
 	// Errors are RETURNED, unlike the cleanDir calls above, which ignore
 	// theirs. A missing file is one orphan; a failing DELETE is the sweep not
 	// running at all, and Queue.persist propagates it so the next save retries
 	// rather than reporting a prune that did not happen.
-	for _, q := range []string{facts, extents} {
+	for _, q := range []string{runs, failed} {
 		if _, err := s.db.ExecContext(ctx, q, string(constants.StatusFailed)); err != nil {
 			return fmt.Errorf("sqlite store prune durability rows: %w", err)
 		}

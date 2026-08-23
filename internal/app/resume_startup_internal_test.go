@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -39,10 +38,12 @@ type resumeUnitFixture struct {
 }
 
 // newResumeUnitFixture builds a job whose FIRST file has a resolved on-disk
-// name, a partially written file, Class A facts for both its articles and a
-// Class B extent claiming only the first durable — and whose SECOND file has
-// a committed extent but no resolved name, so nothing ever opened a path for
-// it.
+// name, a file long enough to satisfy the size gate, and one recorded durable
+// run covering only its first article — and whose SECOND file has a recorded
+// run but no resolved name, so nothing ever opened a path for it.
+//
+// One article recorded and one not, deliberately: a fixture whose articles are
+// all in one state cannot distinguish the seeding logic from its absence.
 func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	t.Helper()
 	application, repo, _ := newLifecycleTestApp(t)
@@ -78,47 +79,27 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	if err := os.MkdirAll(f.dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Article 1's region is left zero — the sparse hole an article that never
-	// landed leaves behind — so its recorded CRC cannot match.
+	// Pre-allocated to the file's full decoded size, with article 1's region
+	// still zero — the hole an article that never landed leaves behind. The
+	// gate is a size comparison, so what matters is that the file is at least
+	// as long as the recorded run claims.
 	onDisk := make([]byte, 2*unitArtLen)
 	copy(onDisk, f.articles[0])
 	if err := os.WriteFile(f.path, onDisk, 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	facts := make([]durability.ArticleFact, 0, 2)
-	for a := range 2 {
-		facts = append(facts, durability.ArticleFact{
-			FileIdx: 0,
-			ArtIdx:  int32(a),
-			Offset:  int64(a * unitArtLen),
-			Length:  unitArtLen,
-			CRC32:   crc32.ChecksumIEEE(f.articles[a]),
-		})
-	}
-	if err := durability.NewSQLiteFactLog(repo.DB()).Append(t.Context(), job.ID, facts); err != nil {
-		t.Fatalf("FactLog.Append: %v", err)
-	}
-
-	fi, err := os.Stat(f.path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	first := durability.NewBitmap(2)
-	first.Set(0)
-	// File 1's extent claims a durable article too. It must not reach the
-	// work set: with no resolved name there is no path to have verified it
-	// against, and adopting it would mark an article Done on the strength of
-	// a cache alone.
-	second := durability.NewBitmap(2)
-	second.Set(0)
-	err = durability.NewSQLiteExtentStore(repo.DB()).Commit(t.Context(), job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: first, VerifiedTo: unitArtLen, BytesDurable: unitArtLen,
-			Size: fi.Size(), ModTimeNs: fi.ModTime().UnixNano()},
-		{FileIdx: 1, Durable: second, BytesDurable: unitArtLen, Size: 2 * unitArtLen},
-	})
-	if err != nil {
-		t.Fatalf("ExtentStore.Commit: %v", err)
+	// Only article 0 is recorded, because only article 0 was ever written.
+	// File 1 has a run of its own that must NOT reach the work set: with no
+	// resolved name there is no path the gate could have stat'ed, and adopting
+	// it would mark an article Done on the strength of the record alone.
+	if err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), job.ID,
+		[]durability.DurableArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
+				CRC32: crc32.ChecksumIEEE(f.articles[0])},
+			{FileIdx: 1, ArtIdx: 2, Offset: 0, Length: unitArtLen, CRC32: 7},
+		}); err != nil {
+		t.Fatalf("RunStore.Commit: %v", err)
 	}
 	return f
 }
@@ -168,6 +149,28 @@ func (f *resumeUnitFixture) faultOnSecondFile(t *testing.T) {
 	}
 }
 
+// liveProgress reads a job's in-memory progress WITHOUT hydrating it.
+//
+// SnapshotJob hydrates the clone it returns, and hydration re-derives every
+// article's state from the durability record — which is the same record a seed
+// installs from. So a SnapshotJob-based assertion cannot tell "the sweep
+// seeded this job" from "the store derived the same answer on its own", and
+// every "it was not seeded" guard read through it is unfalsifiable.
+//
+// Queue.Snapshot does not hydrate, so a non-resident job's clone carries the
+// live JobProgress as it actually stands. It is also the exact list
+// resumeAllJobs walks.
+func liveProgress(t *testing.T, app *Application, jobID string) *queue.JobProgress {
+	t.Helper()
+	for _, snap := range app.queue.Snapshot() {
+		if snap.ID == jobID {
+			return snap.Progress()
+		}
+	}
+	t.Fatalf("liveProgress: job %s is not in the queue", jobID)
+	return nil
+}
+
 func (f *resumeUnitFixture) snapshot(t *testing.T) (*queue.Job, *queue.Manifest) {
 	t.Helper()
 	snap := f.app.queue.SnapshotJob(f.job.ID)
@@ -182,38 +185,48 @@ func (f *resumeUnitFixture) snapshot(t *testing.T) (*queue.Job, *queue.Manifest)
 }
 
 // TestResumeJobFiles_SkipsFilesWithNoResolvedName pins both halves of the
-// conversion: the file that has a name on disk contributes exactly the
-// articles its bytes prove, and the file that never resolved a name
-// contributes nothing at all despite having a committed extent.
+// sweep's authority bound: the file that has a name on disk is swept and
+// contributes the runs it still holds, and the file that never resolved a name
+// appears in NEITHER return despite having a run of its own.
+//
+// The two returns are separate for exactly this reason. A file whose runs the
+// gate discarded also contributes no run, so the runs alone cannot distinguish
+// "I looked and found nothing" — which must return its articles to Outstanding
+// — from "I never looked", which must leave them alone.
 func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 	f := newResumeUnitFixture(t)
 	snap, m := f.snapshot(t)
 
-	exts, fault, err := f.app.resumeJobFiles(t.Context(), snap, m)
+	swept, runs, fault, err := f.app.resumeJobFiles(t.Context(), snap, m)
 	if err != nil {
 		t.Fatalf("resumeJobFiles: %v", err)
 	}
 	if fault != nil {
 		t.Fatalf("fault = %v, want none", fault)
 	}
-	if len(exts) != 1 {
-		t.Fatalf("got %d extents, want 1 — file 1 has no resolved on-disk name, so nothing "+
-			"verified it and its committed extent must not be adopted", len(exts))
+	if len(swept) != 1 || swept[0] != 0 {
+		t.Fatalf("swept = %v, want [0] — file 1 has no resolved on-disk name, so nothing "+
+			"stat'ed it and it must not be named as looked at", swept)
 	}
-	if exts[0].FileIdx != 0 {
-		t.Errorf("FileIdx = %d, want 0", exts[0].FileIdx)
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1 — file 1's run must not be adopted", len(runs))
 	}
-	if !exts[0].Durable.Get(0) {
-		t.Error("article 0's bytes are on disk and hash to their recorded CRC, but it is not durable")
+	if runs[0].FileIdx != 0 {
+		t.Errorf("FileIdx = %d, want 0", runs[0].FileIdx)
 	}
-	if exts[0].Durable.Get(1) {
-		t.Error("article 1's region on disk is a hole, but it came back durable")
+	if runs[0].FirstArtIdx != 0 || runs[0].LastArtIdx != 0 {
+		t.Errorf("adopted run covers [%d,%d], want [0,0] — article 1 was never written "+
+			"and nothing recorded it", runs[0].FirstArtIdx, runs[0].LastArtIdx)
 	}
-	// Only FileIdx and Durable may be set: SeedFromExtents reads nothing else,
-	// and ResumeResult carries no stat for the rest to have come from.
-	if exts[0].Size != 0 || exts[0].ModTimeNs != 0 || exts[0].BytesDurable != 0 ||
-		exts[0].VerifiedTo != 0 || exts[0].PrefixCRC != 0 || exts[0].HasPrefixCRC {
-		t.Errorf("converted extent carries fields no resume established: %+v", exts[0])
+	// File 1's run is still on stable storage: the sweep neither adopted it
+	// nor discarded it, because it never looked.
+	stored, err := f.app.runs.ForFile(t.Context(), f.job.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 {
+		t.Errorf("file 1 holds %d runs, want 1 — an unswept file must be left exactly "+
+			"as it was found", len(stored))
 	}
 }
 
@@ -257,7 +270,7 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := f.app.queue.SetFileFilename(other.ID, 0, "B.bin"); err != nil {
 		t.Fatalf("SetFileFilename(other): %v", err)
 	}
-	// Its file, facts and extent are all real and all consistent, so the only
+	// Its file and its recorded run are both real and consistent, so the only
 	// thing standing between it and a Done bit is its residency. Without them
 	// the assertion below would hold for a sweep that tried to seed it and
 	// merely found nothing.
@@ -270,21 +283,10 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := os.WriteFile(otherPath, otherBytes, 0o600); err != nil {
 		t.Fatalf("write(other): %v", err)
 	}
-	if err := durability.NewSQLiteFactLog(f.repo.DB()).Append(t.Context(), other.ID,
-		[]durability.ArticleFact{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
+	if err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(t.Context(), other.ID,
+		[]durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(otherBytes)}}); err != nil {
-		t.Fatalf("FactLog.Append(other): %v", err)
-	}
-	otherFI, err := os.Stat(otherPath)
-	if err != nil {
-		t.Fatalf("stat(other): %v", err)
-	}
-	otherBM := durability.NewBitmap(1)
-	otherBM.Set(0)
-	if err := durability.NewSQLiteExtentStore(f.repo.DB()).Commit(t.Context(), other.ID,
-		[]durability.FileExtent{{FileIdx: 0, Durable: otherBM, VerifiedTo: unitArtLen,
-			BytesDurable: unitArtLen, Size: otherFI.Size(), ModTimeNs: otherFI.ModTime().UnixNano()}}); err != nil {
-		t.Fatalf("ExtentStore.Commit(other): %v", err)
+		t.Fatalf("RunStore.Commit(other): %v", err)
 	}
 	if err := f.app.queue.SetStatus(other.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(other, Paused): %v", err)
@@ -325,13 +327,18 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 			t.Errorf("article %d belongs to the file with no resolved name and must stay Outstanding", i)
 		}
 	}
-	// A guard rather than a pin on today's code: the sweep steps over a job
-	// it cannot read a manifest for, so nothing currently reachable could set
+	// A guard rather than a pin on today's code: the sweep steps over a job it
+	// cannot read a manifest for, so nothing currently reachable could set
 	// this bit. It is here for the change that would — hydrating the queue at
 	// startup to widen the sweep's coverage — because that change must bring
-	// a verified path with it, not adopt the cache on residency alone.
-	if got := f.app.queue.SnapshotJob(other.ID); got.Progress().ArticleDone(0) {
-		t.Error("a non-resident job was seeded from a cache nothing verified")
+	// the stat gate with it rather than installing the record on residency
+	// alone.
+	//
+	// Read through liveProgress, not SnapshotJob: hydration re-derives the
+	// article state from the same record, so a hydrated clone reports the bit
+	// set whether or not anything seeded it.
+	if liveProgress(t, f.app, other.ID).ArticleDone(0) {
+		t.Error("a non-resident job was seeded although nothing stat'ed its file")
 	}
 }
 
@@ -341,7 +348,7 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 // It exists because R15's "interruptible between FILES, not merely between
 // jobs" is a claim about how many files were processed, and nothing outside
 // the sweep can observe that otherwise. The previous version of the test
-// below asserted only that an error came back, which ExtentStore.Load
+// below asserted only that an error came back, which the store's own read
 // produces on its own when the context is already dead — so it passed with
 // both context checks deleted.
 type countingResumer struct {
@@ -350,9 +357,9 @@ type countingResumer struct {
 	onCall func(fileIdx int32)
 }
 
-func (c *countingResumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (durability.ResumeResult, error) {
+func (c *countingResumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error) {
 	c.calls = append(c.calls, fileIdx)
-	res, err := c.inner.Resume(ctx, jobID, fileIdx, path, firstArtIdx, artCount)
+	res, err := c.inner.Resume(ctx, jobID, fileIdx, path)
 	// AFTER the inner call, not before. Cancelling first makes the inner
 	// Resume fail on the dead context, and the sweep's own error branch then
 	// aborts — so the count would be 1 whether or not the per-file check
@@ -419,7 +426,10 @@ func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
 	if len(counter.calls) != 0 {
 		t.Errorf("resumed %d files on a cancelled context, want 0", len(counter.calls))
 	}
-	if f.app.queue.SnapshotJob(f.job.ID).Progress().ArticleDone(0) {
+	// liveProgress rather than SnapshotJob, for the reason its doc gives: a
+	// hydrated clone re-derives the article state from the record and would
+	// report this bit set whether or not the sweep ran.
+	if liveProgress(t, f.app, f.job.ID).ArticleDone(0) {
 		t.Error("an aborted sweep still seeded; the abort must leave the work set untouched")
 	}
 }
@@ -434,7 +444,7 @@ func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
 // and a real race would make which of the two arrived first non-deterministic.
 type cancelledDuringResume struct{ cancel context.CancelFunc }
 
-func (c *cancelledDuringResume) Resume(_ context.Context, jobID string, fileIdx int32, _ string, _ int32, _ int) (durability.ResumeResult, error) {
+func (c *cancelledDuringResume) Resume(_ context.Context, jobID string, fileIdx int32, _ string) (durability.ResumeResult, error) {
 	c.cancel()
 	return durability.ResumeResult{}, fmt.Errorf(
 		"durability: resume stat job=%s file=%d: %w", jobID, fileIdx, context.Canceled)
@@ -544,23 +554,33 @@ func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
 	}
 }
 
-// repairedInPlace makes file 0 look like par2 repaired it: the bytes on disk
-// are correct output but they are not the bytes the fact log recorded at
-// download time, and the extent's stamp no longer matches, so the fast path is
-// refused and a recomputation can prove nothing about the file.
+// replacedUnderneath makes file 0 look like something outside the assembler
+// rewrote it: the file on disk is now SHORTER than the runs recorded for it,
+// which is the one thing §3.4's gate treats as a disproof.
+//
+// par2 repairing a file in place is the case this stands in for. The repaired
+// bytes are correct output, but they are not what the download recorded, and a
+// sweep that ran over a job in post-processing would discard the record for a
+// file that is fine.
 //
 // It also records the state a fully downloaded job carries into
 // post-processing — both articles Done, the file Complete, an assembled CRC —
 // because that is what the sweep would destroy.
-func (f *resumeUnitFixture) repairedInPlace(t *testing.T) {
+func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 	t.Helper()
-	both := durability.NewBitmap(2)
-	both.Set(0)
-	both.Set(1)
-	if err := f.app.queue.SeedFromExtents(f.job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: both},
+	// Both articles recorded and both installed, so the state the sweep would
+	// destroy is a complete one. The fixture's own commit covers article 0
+	// only; this adds article 1.
+	if err := f.app.runs.Commit(t.Context(), f.job.ID, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 1, Offset: unitArtLen, Length: unitArtLen,
+			CRC32: crc32.ChecksumIEEE(f.articles[1])},
 	}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+		t.Fatalf("RunStore.Commit: %v", err)
+	}
+	if err := f.app.queue.SeedFromRuns(f.job.ID, []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 2 * unitArtLen},
+	}); err != nil {
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 	if err := f.app.queue.MarkFileComplete(f.job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
@@ -568,16 +588,9 @@ func (f *resumeUnitFixture) repairedInPlace(t *testing.T) {
 	if err := f.app.queue.SetFileCRC32(f.job.ID, 0, 0xC0FFEE); err != nil {
 		t.Fatalf("SetFileCRC32: %v", err)
 	}
-	repaired := bytes.Repeat([]byte{'r'}, 2*unitArtLen)
-	if err := os.WriteFile(f.path, repaired, 0o600); err != nil {
-		t.Fatalf("rewrite repaired file: %v", err)
-	}
-	// Explicit rather than relying on the write moving it: a coarse timestamp
-	// granularity could leave the stamp matching, the fast path would adopt
-	// the cached bitmap, and both cases below would pass for the wrong reason.
-	stamp := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(f.path, stamp, stamp); err != nil {
-		t.Fatalf("chtimes: %v", err)
+	// Shorter than the 200 bytes the runs claim, so the gate discards them.
+	if err := os.WriteFile(f.path, bytes.Repeat([]byte{'r'}, 50), 0o600); err != nil {
+		t.Fatalf("rewrite the replaced file: %v", err)
 	}
 	p := f.app.queue.SnapshotJob(f.job.ID).Progress()
 	if !p.ArticleDone(0) || !p.ArticleDone(1) || !p.FileComplete(0) {
@@ -592,10 +605,10 @@ func (f *resumeUnitFixture) repairedInPlace(t *testing.T) {
 //
 // JobPhase.IsResident is true for the post-processing statuses too, so
 // residency is not the bound this sweep needs now that it is authoritative.
-// par2 repairs a file in place, and the repaired bytes will not match the CRCs
-// the fact log recorded at download time — so a recomputation over them proves
-// nothing and would clear real progress, drop Complete and discard the
-// assembled CRC on a file that is fine.
+// par2 repairs a file in place and the move relocates it, so the file the
+// sweep would stat is no longer the file the download recorded — and the gate
+// would discard its runs, clear real progress, drop Complete and throw away
+// the assembled CRC on a file that is fine.
 func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 	tests := []struct {
 		name string
@@ -609,8 +622,8 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 		// The control, and it is what stops the two cases below from passing
 		// against a sweep that does nothing at all: the SAME on-disk state
 		// must be cleared here. Downloading is the phase where the assembler
-		// is the only writer, so a file whose bytes stopped matching its facts
-		// really did lose them.
+		// is the only writer, so a file shorter than its runs claim really did
+		// lose those bytes.
 		name:       "downloading is still swept",
 		walk:       nil,
 		wantSwept:  true,
@@ -645,7 +658,7 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newResumeUnitFixture(t)
-			f.repairedInPlace(t)
+			f.replacedUnderneath(t)
 			// Persisted before the status walk. A non-resident job's progress
 			// is re-read from the store on hydration, so a filename that only
 			// ever lived in memory is gone by the time the sweep looks — and

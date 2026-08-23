@@ -30,7 +30,7 @@ func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
 // TotalRemainingBytes still agrees with the residency-parity guarantee
 // TestTotalRemainingBytes_RestartReconstructsNonResident pins.
 func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
-	store, dir, db := setupResidencyTestStoreWithDB(t)
+	store, dir, _ := setupResidencyTestStoreWithDB(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "sized-roundtrip", 3, 2)
 	if err := q.Add(job); err != nil {
@@ -52,7 +52,7 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	if err := store.Update(t.Context(), job); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	commitBarrierExtents(t, db, job)
+	recordDurability(t, store, job)
 
 	metas, err := store.ArticleCountsByJob(t.Context())
 	if err != nil {
@@ -224,6 +224,10 @@ func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 	if err := store.Add(context.Background(), job); err != nil {
 		t.Fatalf("add: %v", err)
 	}
+	// The hydration replays what the durability record says, so the record has
+	// to say it. Without this the reload derives every article as outstanding
+	// and the assertion below would be about an empty job.
+	recordDurability(t, store, job)
 
 	reloaded, err := Load(dir, WithStore(store))
 	if err != nil {

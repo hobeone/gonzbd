@@ -76,8 +76,8 @@ type stallRecord struct {
 	// Only a record this application parked may be resumed by it.
 	parked bool
 
-	// needsSeed marks a job whose barrier COMMITTED its Class B cache but
-	// could not ack it, because the job was evicted between checkpointAll's
+	// needsSeed marks a job whose barrier RECORDED its durable runs but could
+	// not ack them, because the job was evicted between checkpointAll's
 	// listing and the call.
 	//
 	// It is separate from files, and must stay separate. A file in that map
@@ -307,11 +307,11 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // interval, forever — contradicting the reason Stall pauses at all.
 //
 // The ack is the ONLY part that needs residency, and it is also the only part
-// that is recoverable afterwards: ExtentStore.Commit runs before it, so a
-// finalize that fails at the ack has already put the durable bits on stable
-// record. Phase 3 replays them with SeedFromExtents, exactly as the startup
-// sweep does. So a residency error is treated as the finalize having landed,
-// and everything else keeps the job parked without it ever dispatching.
+// that is recoverable afterwards: RunStore.Commit runs before it, so a
+// finalize that fails at the ack has already put those articles on stable
+// record. Phase 3 replays them with SeedFromRuns, exactly as the startup sweep
+// does. So a residency error is treated as the finalize having landed, and
+// everything else keeps the job parked without it ever dispatching.
 //
 // That last claim is about THIS function, not about the whole system. A user
 // Resume is outside it by design: the API's queue resume handlers unpause the
@@ -420,7 +420,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// work set still called those articles Outstanding, and they were fetched
 	// again.
 	if len(files) > 0 || app.needsSeed(jobID) {
-		app.seedFromCommittedExtents(ctx, jobID)
+		app.seedFromCommittedRuns(ctx, jobID)
 	}
 
 	// Phase 4 — deliver the completions the stall interrupted. Each needs the
@@ -441,26 +441,31 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }
 
-// seedFromCommittedExtents installs a job's committed Class B bits into its
-// live work set, so a retry that finalized a file while the job was paused
-// does not leave that file's articles Outstanding.
+// seedFromCommittedRuns installs a job's committed durable runs into its live
+// work set, so a retry that finalized a file while the job was paused does not
+// leave that file's articles Outstanding.
 //
-// It is the same move the startup sweep makes, for the same reason: the extent
-// is what a completed fsync stands behind, and SeedFromExtents is how that
-// becomes the running job's belief about what is left to fetch. A failure here
-// costs a re-fetch and nothing else, which is why it is logged rather than
-// returned.
-func (app *Application) seedFromCommittedExtents(ctx context.Context, jobID string) {
-	if app.extents == nil {
+// It is the same move the startup sweep makes, for the same reason: a run is
+// what a completed fsync stands behind, and SeedFromRuns is how that becomes
+// the running job's belief about what is left to fetch. A failure here costs a
+// re-fetch and nothing else, which is why it is logged rather than returned.
+//
+// ADDITIVE, and that is the difference from the startup sweep rather than an
+// oversight. This path has stat'ed nothing — it is re-delivering an ack whose
+// fsync already landed — so it has no standing to clear a bit. A clear here
+// would discard every ack this process made since the last commit, which is
+// exactly the ground the phase exists to preserve. See SeedFromRuns.
+func (app *Application) seedFromCommittedRuns(ctx context.Context, jobID string) {
+	if app.runs == nil {
 		return
 	}
-	exts, err := app.extents.Load(ctx, jobID)
+	runs, err := app.runs.ForJob(ctx, jobID)
 	if err != nil {
-		app.log.Warn("stall re-evaluation: could not load committed extents; the job will re-fetch",
+		app.log.Warn("stall re-evaluation: could not load the committed durable runs; the job will re-fetch",
 			"job", jobID, "err", err)
 		return
 	}
-	if err := app.queue.SeedFromExtents(jobID, exts); err != nil {
+	if err := app.queue.SeedFromRuns(jobID, runs); err != nil {
 		app.log.Warn("stall re-evaluation: could not seed the work set; the job will re-fetch",
 			"job", jobID, "err", err)
 	}
@@ -496,8 +501,8 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // instruction that helps.
 //
 // A residency error is the one failure treated as success, and the ordering
-// inside FinalizeFile is why: ExtentStore.Commit runs before AckDurable, so an
-// ack that could not reach a non-resident job left the durable bits on stable
+// inside FinalizeFile is why: RunStore.Commit runs before AckDurable, so an
+// ack that could not reach a non-resident job left those articles on stable
 // record anyway. The caller replays them. The handle is released here rather
 // than by finalizeCompletedFile's own defer, which sees only a non-nil error
 // and keeps it for a retry that is no longer needed.
@@ -531,8 +536,9 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 	}
 	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
 	if errors.Is(err, queue.ErrJobNotResident) {
-		app.log.Debug("retried finalize committed its extent but could not ack a non-resident job; "+
-			"the bits are replayed from Class B after the resume", "job", jobID, "fileidx", fileIdx)
+		app.log.Debug("retried finalize recorded its durable runs but could not ack a "+
+			"non-resident job; the articles are replayed from the record after the resume",
+			"job", jobID, "fileidx", fileIdx)
 		if cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); cerr != nil { //nolint:gosec // G115: file counts are far below int32
 			app.log.Debug("close finalized file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
 		}
@@ -545,22 +551,22 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 // process, with the one action left.
 //
 // A2: the condition has a subject (this file) and a disposition (the job stays
-// parked until a restart, which re-derives its outstanding work from committed
-// extents). Leaving the storage reason in place would tell the operator to fix
+// parked until a restart, which re-derives its outstanding work from the
+// durability record). Leaving the storage reason in place would tell the operator to fix
 // a mount they have already fixed; dressing this up as a retryable storage
 // fault told them to wait for a condition that cannot clear.
 //
 // # Why a restart, when the same work happens in-process at every startup
 //
-// Resumer.Resume reopens a file, verifies its regions against Class A and
-// rebuilds the extent — exactly what this file needs — and it needs no restart
-// to do it. So the restart is a scope limit, not a necessity, and it should
-// not be read as one.
+// Resumer.Resume stats a file against the runs recorded for it and adopts or
+// discards them — exactly what this file needs — and it needs no restart to do
+// it. So the restart is a scope limit, not a necessity, and it should not be
+// read as one.
 //
 // What stands in the way is ownership rather than capability. The assembler's
 // single worker owns every open handle (X1), and this path is reached
 // precisely because that worker has already closed this one; re-resuming in
-// place means reopening a file outside the writer that owns it, while the job
+// place means stat-ing a file outside the writer that owns it, while the job
 // may still be dispatching articles to the same file through the writer that
 // would be created next. Startup is the one moment nothing else holds a
 // handle, which is why Resume runs there and only there.

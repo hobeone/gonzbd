@@ -104,11 +104,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	//
 	// The 001-011 chain was collapsed into one migration, so goose sees a
 	// pre-existing database as already at version 1 and Up() applies nothing
-	// and returns nil. The daemon then came up clean with no article_facts and
-	// no file_extents: every barrier failed in priorExtent with a plain error
-	// rather than a *storagefault.Fault, so checkpointJob logged one Warn and
-	// did not stall, nothing was ever acked, no job completed, and the only
-	// signal was a last_barrier_unix that never advanced.
+	// and returns nil. The daemon then came up clean with no durability tables
+	// at all: every barrier failed on its commit with a plain error rather
+	// than a *storagefault.Fault, so checkpointJob logged one Warn and did not
+	// stall, nothing was ever acked, no job completed, and the only signal was
+	// a last_barrier_unix that never advanced.
 	//
 	// Checked before Up rather than by looking for the tables afterwards,
 	// because this names the cause: the operator is told their database

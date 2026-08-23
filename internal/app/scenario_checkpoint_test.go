@@ -81,7 +81,25 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		t.Fatalf("a1.Queue().Add: %v", err)
 	}
 
-	// Wait until stall has fired and checkpoint on disk captures Articles 0 and 2 complete.
+	// Wait until stall has fired and the state ON DISK is the one this test
+	// means to crash into: files 0 and 2 finished and marked complete, file 1
+	// still outstanding.
+	//
+	// The Complete flags are part of the condition, and they have to be
+	// checked separately from the article bits because the two are no longer
+	// written by one statement. Article resolution is DERIVED from
+	// durable_runs, which the barrier writes inside the finalize; the Complete
+	// flag lives on job_files, which the queue save writes afterwards. So a
+	// probe that watched only the article bits would fire one write earlier
+	// than it used to and pick a crash point where a file has every article
+	// resolved and no Complete flag — a file nothing can re-complete, because
+	// the assembler only fires OnFileComplete for a file it was given
+	// articles to write.
+	//
+	// That window is not new: the old shape committed the same claim in
+	// file_extents inside the same finalize, and the startup sweep adopted it.
+	// What is new is that the article bits reach disk through it, so the probe
+	// can now see the window from outside.
 	if !waitUntil(5*time.Second, func() bool {
 		if server.StallCount() < 1 {
 			return false
@@ -96,7 +114,8 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 			return false
 		}
 		p := snap.Progress()
-		return p.ArticleDone(0) && !p.ArticleDone(1) && p.ArticleDone(2)
+		return p.ArticleDone(0) && !p.ArticleDone(1) && p.ArticleDone(2) &&
+			p.FileComplete(0) && p.FileComplete(2) && !p.FileComplete(1)
 	}) {
 		t.Fatal("timed out waiting for checkpoint on disk to capture mid-download state")
 	}

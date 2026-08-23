@@ -9,13 +9,13 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// failingCommitStore is an ExtentStore whose Commit always fails, so a barrier
+// failingCommitStore is a RunStore whose Commit always fails, so a barrier
 // over real open files reaches phase 4 and returns an error.
 type failingCommitStore struct {
-	durability.ExtentStore
+	durability.RunStore
 }
 
-func (failingCommitStore) Commit(context.Context, string, []durability.FileExtent) error {
+func (failingCommitStore) Commit(context.Context, string, []durability.DurableArticle) error {
 	return errors.New("database is locked")
 }
 
@@ -111,8 +111,7 @@ func TestCheckpointJob_RestoresThePendingBytesWhenTheRunFails(t *testing.T) {
 	}
 
 	application.barrier = durability.NewBarrier(
-		application.factLog,
-		failingCommitStore{ExtentStore: application.extents},
+		failingCommitStore{RunStore: application.runs},
 		application.queue, application, slog.New(slog.DiscardHandler),
 	)
 

@@ -166,8 +166,8 @@ type Options struct {
 	// It no longer reports a whole-file CRC. The assembler cannot compute one
 	// honestly: a resumed run is not sent the articles an earlier run
 	// completed, so the parts it sees never tile the file (#349). The verified
-	// figure is durability.FileExtent.PrefixCRC, guarded by HasPrefixCRC,
-	// which the resumer derives from Class A over the file's real extent.
+	// figure is the crc32 of a file's single durable run, which the barrier
+	// builds by combining the CRCs of the articles that abut as they join it.
 	//
 	// The callback should be cheap; expensive work should be dispatched
 	// asynchronously.
@@ -1429,10 +1429,10 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// what handleFatalArticle already does for a permanent failure, which
 		// is the same fact arriving from the other side of the pipeline.
 		//
-		// Counting it claims nothing about its bytes: it decoded no Class A
-		// fact and earns no durable bit, so no fact-derived truncate bound
-		// reaches past it, and its bytes are charged to failedBytes for par2
-		// to repair from.
+		// Counting it claims nothing about its bytes: nothing wrote them, so
+		// no durable run covers it and the truncate bound never reaches past
+		// it, and its bytes are charged to failedBytes for par2 to repair
+		// from.
 		return a.routeAcceptFailure(f, req, err)
 	}
 	return true
@@ -1696,11 +1696,11 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 // finalizeFile records that a file's parts have all arrived and reports it.
 //
 // It no longer truncates and no longer computes a CRC. Both decisions moved to
-// durability.Barrier: the truncate bound is the highest end offset among the
-// file's DURABLE articles, which only the fact log knows, and the whole-file
-// CRC is FileExtent.PrefixCRC guarded by HasPrefixCRC. Doing either here would
-// be this package asserting something about bytes on disk that it cannot check
-// — the shape behind #342, #349 and #350.
+// durability.Barrier: the truncate bound is the highest end offset the file's
+// durable runs reach, which spans what earlier processes wrote and this one
+// never saw, and the whole-file CRC is the crc32 of a file's single run. Doing
+// either here would be this package asserting something about bytes on disk
+// that it cannot check — the shape behind #342, #349 and #350.
 //
 // It no longer CLOSES the file either, and that is the load-bearing part. The
 // barrier's FinalizeFile must Drain, Sync, Truncate and Stat this file, and

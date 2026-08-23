@@ -416,7 +416,7 @@ func TestSyncTargetDrainReportsUntilTheCycleIsConfirmed(t *testing.T) {
 		}
 	}
 
-	target := a.SyncTargetFor("job1", oneFileMap{n: 8})
+	target := a.SyncTargetFor("job1")
 	waitUntil(t, func() bool { return len(target.Files()) == 1 }, 2*time.Second, "file 0 to open")
 
 	first, err := target.Drain(t.Context(), 0)
@@ -608,7 +608,7 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	written, err := a.SyncTargetFor("job1", oneFileMap{n: 1}).Drain(t.Context(), 0)
+	written, err := a.SyncTargetFor("job1").Drain(t.Context(), 0)
 	if err != nil {
 		t.Fatalf("Drain: %v", err)
 	}

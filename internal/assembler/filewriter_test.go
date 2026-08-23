@@ -443,14 +443,14 @@ func TestFileWriter_TruncateIgnoresANegativeBound(t *testing.T) {
 // the other way an article can be in the cache and not on disk.
 
 // TestFileWriter_StatOnAClosedHandleIsAStorageFault pins Stat's failure branch.
-// The barrier reads this pair as the S7 validity stamp, so a failure must come
+// The barrier reads the size as the S7 validity stamp, so a failure must come
 // back classified rather than as a zero size that would look like an empty file.
 func TestFileWriter_StatOnAClosedHandleIsAStorageFault(t *testing.T) {
 	w := newTestFileWriter(t)
 	if err := w.handle.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := w.Stat()
+	_, err := w.Stat()
 	if err == nil {
 		t.Fatal("Stat on a closed handle returned nil error; a zero size would read as an empty file")
 	}

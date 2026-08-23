@@ -22,10 +22,10 @@ type WrittenArticle struct {
 	// Length is the decoded byte length.
 	Length int32
 	// CRC32 is the decoded article's CRC32, the same value the decoder
-	// validated against the yEnc trailer. It is carried here so a later
-	// durable-run record can be built from confirmed-written articles without
-	// re-deriving the checksum. Nothing reads it yet — a later task groups
-	// articles into contiguous runs and combines their CRCs.
+	// validated against the yEnc trailer. It is carried here so the durable
+	// run record is built from confirmed-written articles without re-deriving
+	// the checksum: Barrier hands it to RunStore.Commit, which combines the
+	// CRCs of the articles that abut into the run's own.
 	CRC32 uint32
 }
 
@@ -141,11 +141,21 @@ type SyncTarget interface {
 	// redundant re-report, which R12 requires the apply to absorb anyway.
 	Confirm(ctx context.Context, fileIdx int32)
 
-	// Stat returns the file's size and modification time as they are now.
-	// The pair is the S7 validity stamp a later resume checks the file
-	// against before adopting any Class B value, so it must be read after
-	// the Sync it describes.
-	Stat(fileIdx int32) (size int64, modTimeNs int64, err error)
+	// Stat returns the file's size as it is now. It must be read after the
+	// Sync it describes.
+	//
+	// The size is S7's validity stamp. S7 used to be the PAIR (size, mtime),
+	// and the mtime half was deleted rather than merely left unread — the
+	// reason is what a mismatch now costs. It used to fall through to a
+	// recomputation from the file's bytes, so the stamp cost one read; with
+	// recompute gone the only response left is to discard the file's runs
+	// and re-fetch it, so the same stamp would cost the whole file. An mtime
+	// moves without a byte moving (a restore, a copy, a touch), where a size
+	// shortfall means bytes the record claims are genuinely absent. See
+	// Resumer.Resume and the design doc's §3.4.
+	//
+	// It is also what §3.3's overlap check compares Σ Length against.
+	Stat(fileIdx int32) (size int64, err error)
 
 	// Path returns the file's path on disk, for a stall reason a user can
 	// act on (R27).
@@ -162,17 +172,13 @@ type SyncTarget interface {
 	// diagnostic only.
 	Path(fileIdx int32) string
 
-	// ArticleCount returns how many articles this file has in total. The
-	// barrier needs it to size the durable bitmap, and to re-derive a
-	// loaded one at its true width rather than the byte width persistence
-	// rounded it up to.
-	ArticleCount(fileIdx int32) int
-
-	// FileLocalOrdinal maps a global article index to this file's
-	// bit position. The second result is false when the article does not
-	// belong to the file; the barrier treats that as a bookkeeping defect
-	// and fails loudly (A2, R28) rather than skipping the article.
-	FileLocalOrdinal(fileIdx int32, artIdx int32) (int, bool)
+	// This interface deliberately holds no manifest question. It used to
+	// carry two — ArticleCount, to size a per-file durable bitmap, and
+	// FileLocalOrdinal, to convert a global article index into a bit
+	// position in it. A Run carries FirstArtIdx and LastArtIdx directly, so
+	// there is no bitmap to size and no conversion to perform, and the whole
+	// vertical behind them went with the methods: the assembler's ArticleMap
+	// and the queue-backed adapter that implemented it.
 }
 
 // Acker receives the barrier's download-success acks.

@@ -130,6 +130,6 @@ func TestJobSyncTargetConfirm_SwallowsAStoppedAssembler(t *testing.T) {
 	// A stopped assembler answers ErrAssemblerStopped to every submit. The
 	// requirement is that this returns quietly rather than panicking or
 	// blocking — it has no error to return by design.
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 1})
+	tgt := a.SyncTargetFor("job1")
 	tgt.Confirm(t.Context(), 0)
 }

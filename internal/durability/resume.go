@@ -4,377 +4,146 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io/fs"
 	"log/slog"
 	"os"
 )
 
-// ErrArticleOutOfRange reports a recorded fact whose article index cannot be a
-// bit position in a file of the given article count. See Resumer's type doc
-// for why Resume has to make that identification at all.
-var ErrArticleOutOfRange = errors.New("durability: article index outside the file's article count")
-
 // ResumeResult is what one file's resume established from stable storage.
-//
-// Durable is indexed like FileExtent.Durable and is the only field resume
-// decisions may read: an article whose bit is clear is Outstanding (R17), and
-// a hole below a set bit costs a CRC anchor, not a re-fetch (#311, #353).
 type ResumeResult struct {
-	// Durable has one bit per article, set only where this resume proved the
-	// article's bytes are on disk.
-	Durable Bitmap
-	// VerifiedTo is the length of the gapless, verified prefix from byte 0.
-	VerifiedTo int64
-	// PrefixCRC is the CRC32 of exactly [0, VerifiedTo), whether or not
-	// HasPrefixCRC is set.
-	PrefixCRC uint32
-	// HasPrefixCRC means PrefixCRC is a verified whole-file CRC: the run
-	// consumed every recorded fact AND reached the file's end. Anything less
-	// is unavailable, which is an honest answer and must stay distinguishable
-	// from a CRC of zero (R23).
-	HasPrefixCRC bool
-	// Recomputed reports that the committed cache was not adopted and the
-	// answer came from the file's bytes. It is observability, not a claim:
-	// both paths return an equally usable result.
-	Recomputed bool
-	// Restart reports that the file is gone, so nothing can be resumed
-	// against it and every article is Outstanding. Resume also clears the
-	// file's committed extent before returning it, so the absence is
-	// recorded rather than only reported — see clearCommitted.
+	// Runs are the file's stored runs, adopted as they are. Their article
+	// ranges are what a resume may skip; everything else in the file is
+	// Outstanding (R17). Empty when the gate discarded them, or when the
+	// file never had any.
+	Runs []Run
+	// Restart reports that nothing could be resumed against this file, so
+	// every one of its articles is Outstanding. Resume has already deleted
+	// the file's rows before returning it, so the disproof is recorded
+	// rather than only reported.
 	Restart bool
-	// BytesDurable is the summed Length of the facts this result proved
-	// durable. It is carried rather than re-derived because committing an
-	// extent without it would zero the figure the API reports for the file.
-	BytesDurable int64
-	// Size and ModTimeNs are the file's stat at the moment this result was
-	// produced. They are R13's validity stamp, and a written-back extent
-	// carrying anything else fails S7 on the next start and throws away a
-	// cache that is actually valid.
-	Size      int64
-	ModTimeNs int64
+	// Size is the file's size at the moment the gate ran. It is the
+	// surviving half of S7's validity stamp — see SyncTarget.Stat for why
+	// the mtime half was deleted rather than merely unused.
+	Size int64
 }
 
 // Resumer answers, from stable storage alone, which of a file's articles still
 // need fetching.
+//
+// It is a READER and a DELETER, never a writer. That asymmetry is the whole
+// justification for §3.4's decision to trust the record without verifying a
+// byte of it: the barrier is the sole writer, and it writes only after an fsync
+// it performed, so nothing in the store can assert bytes that were never
+// written. The one thing this type may do is take a claim AWAY when the file on
+// disk contradicts it.
+//
+// Until this change it was a second writer — recompute() re-derived a file's
+// state from its bytes and writeBack() committed that answer as the file's
+// record. Both are gone with the two-record design; see Resume for what
+// replaced them and what that trade gives up.
 type Resumer struct {
-	facts FactLog
-	exts  ExtentStore
-	log   *slog.Logger
+	runs RunStore
+	log  *slog.Logger
 }
 
 // NewResumer wires a resumer. It owns none of its collaborators' lifecycles
 // and holds no lock: Resume does I/O throughout, is per-file, and shares no
 // state between calls, which is how it stays off other jobs' way (R15).
-func NewResumer(fl FactLog, es ExtentStore, log *slog.Logger) *Resumer {
-	return &Resumer{facts: fl, exts: es, log: log}
+func NewResumer(rs RunStore, log *slog.Logger) *Resumer {
+	return &Resumer{runs: rs, log: log}
 }
 
 // Resume establishes what is actually on disk for one file.
 //
-// The fast path is a stat: if the committed extent's size and mtime still
-// match the file, the cache is adopted without reading a byte. Correctness
-// never depends on the fast path being right — a mismatch falls through to
-// recomputation, and recomputation is correct by definition (S4).
+// It is one stat and no reads. The record is authoritative (§3.4) — this
+// INVERTS S4, which used to say a recomputation from the bytes beats the
+// stored record and that the record is never authoritative. Believing it
+// absolutely would be wrong, though: if the partial file were deleted or
+// replaced between runs, the record would report most articles complete and
+// only the remainder would be fetched, producing a file with holes exactly
+// where the "done" articles were.
 //
-// Recomputation reads each recorded region and checks it against the CRC the
-// fact log recorded when the article was decoded. That single read produces
-// both the verified done-set and the gapless-prefix CRC: verification and CRC
-// recovery are the same operation, which is why a resumed file can report a
-// real whole-file CRC (R24) rather than the honest absence of one.
+// So trust gets a floor, and it is a size comparison:
 //
-// An article whose bytes do not hash to the CRC recorded for them is left
-// Outstanding. Re-fetching it is cheap; assuming it is correct is exactly the
-// optimism the design forbids (S3). Every fact carries a CRC, so a failure to
-// verify always means a mismatch or a region outside the file — never a
-// missing checksum.
-// firstArtIdx is the file's first global article index — lo from the
-// manifest's FileRange(fileIdx). FileExtent.Durable is indexed by file-local
-// ordinal, so a fact's bit is fact.ArtIdx - firstArtIdx. The barrier gets that
-// mapping from SyncTarget.FileLocalOrdinal; this signature has no equivalent,
-// so the caller supplies the offset. An index outside [0, artCount) is
-// ErrArticleOutOfRange, never a silently clear bit: a clear bit is
-// indistinguishable from "those bytes are not on disk" and would re-fetch an
-// intact file without saying so (A2, R28).
-func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string, firstArtIdx int32, artCount int) (ResumeResult, error) {
+//	stat(path).size >= max(Offset+Length) over the file's runs
+//
+// A file that satisfies it is adopted whole. A missing file, or one shorter
+// than its runs claim, has those runs DELETED and is downloaded again. A file
+// that is merely LONGER is the ordinary pre-allocated case and is adopted.
+//
+// # Why size alone, and not (size, mtime)
+//
+// S7's stamp used to be the pair, and the mtime half is not merely redundant
+// now — it is actively harmful, because of what the RESPONSE to a mismatch
+// costs. It used to fall through to a recomputation: the file was re-read, the
+// records corrected, and the stamp cost one read. With recompute deleted the
+// only response left is discard-and-refetch, so the same stamp would cost the
+// whole file. An mtime moves without a byte moving — a restore from backup, a
+// copy that does not preserve timestamps, a tool that touches the file — and
+// each of those would trigger a full re-download of an intact file. A size
+// shortfall cannot happen that way: it means bytes the record claims are
+// genuinely not there.
+//
+// # What this gives up
+//
+// In-place corruption that preserves the file's length is no longer detected
+// at startup. par2 detects and repairs it at completion, which is the same
+// answer §3.3 gives for an overlap.
+//
+// # The gate depends on WHERE the sweep runs, not only on what it compares
+//
+// The sweep calling this must complete inside Start BEFORE the downloader can
+// dispatch. That is what stops the assembler re-creating and pre-allocating a
+// deleted partial underneath the gate, which would make a file of zeros pass a
+// comparison the real file would have failed. It is a property of the sweep's
+// PLACEMENT rather than of this function, and it is written down here because
+// a refactor that moves the sweep later breaks the guarantee silently.
+func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path string) (ResumeResult, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// Nothing to validate against. Every article is Outstanding,
-			// which is S3's safe default rather than a failure.
-			r.log.Info("durability resume found no partial file",
+			// A missing file is the strongest possible disproof of every run
+			// the record holds for it. Every article is Outstanding, which is
+			// S3's safe default rather than a failure.
+			r.log.Warn("durability resume found no partial file; discarding its durable runs",
 				"job", jobID, "file", fileIdx, "path", path)
-			res := ResumeResult{Durable: NewBitmap(artCount), Restart: true}
-			// The empty result has to reach the STORE, not only the caller.
-			// A missing file is the strongest possible disproof of every bit
-			// the stored row claims, and the resurrection chain the write-back
-			// below documents does not care how the row was disproved: the
-			// assembler recreates the file, priorExtent ORs the stale bitmap
-			// as its base, buildExtent stamps a fresh Size/ModTimeNs from its
-			// own Stat, and the next start's fast path adopts articles that
-			// this process never wrote. Returning Restart alone leaves that
-			// chain fully armed.
-			if err := r.clearCommitted(ctx, jobID, fileIdx, res); err != nil {
+			if err := r.discard(ctx, jobID, fileIdx); err != nil {
 				return ResumeResult{}, err
 			}
-			return res, nil
+			return ResumeResult{Restart: true}, nil
 		}
 		// Any other stat failure is surfaced. Reading it as absence would
 		// restart a file whose bytes are still there (A2).
 		return ResumeResult{}, fmt.Errorf("durability: resume stat job=%s file=%d: %w", jobID, fileIdx, err)
 	}
 
-	ext, ok, err := r.committedExtent(ctx, jobID, fileIdx, artCount)
+	runs, err := r.runs.ForFile(ctx, jobID, fileIdx)
 	if err != nil {
-		return ResumeResult{}, err
+		return ResumeResult{}, fmt.Errorf("durability: resume runs job=%s file=%d: %w", jobID, fileIdx, err)
 	}
-	if ok && ext.Size == fi.Size() && ext.ModTimeNs == fi.ModTime().UnixNano() {
-		// R13's cheap validity check passed. Both halves are load-bearing:
-		// a truncation moves the size, an in-place edit of the same length
-		// moves only the mtime.
-		//
-		// HasPrefixCRC is re-checked against the strict rule rather than
-		// adopted, because the flag can outlive the condition it asserts. A
-		// resume commits it true for a whole file; an article then lands
-		// beyond a hole, so the file grows while VerifiedTo does not move;
-		// the barrier only clears the flag when VerifiedTo *changes*, so it
-		// survives. The next restart's stamp matches, and a partial extent's
-		// CRC would be adopted as the file's — #349's misuse re-entering
-		// through the cache instead of the walk. The re-check costs one
-		// comparison against a stat this path already made, so B3 is intact.
-		return ResumeResult{
-			Durable:      ext.Durable,
-			VerifiedTo:   ext.VerifiedTo,
-			PrefixCRC:    ext.PrefixCRC,
-			HasPrefixCRC: ext.HasPrefixCRC && ext.VerifiedTo == fi.Size(),
-			BytesDurable: ext.BytesDurable,
-			Size:         ext.Size,
-			ModTimeNs:    ext.ModTimeNs,
-		}, nil
+	bound := boundOver(runs, nil)
+	if fi.Size() < bound {
+		// Never silent (A2): this is the one place a job loses ground it had
+		// recorded, and the operator's copy of the file changed underneath it.
+		r.log.Warn("the partial file is shorter than its durable runs claim; discarding them "+
+			"and re-downloading the file",
+			"job", jobID, "file", fileIdx, "path", path,
+			"size", fi.Size(), "runs_claim", bound, "runs", len(runs))
+		if err := r.discard(ctx, jobID, fileIdx); err != nil {
+			return ResumeResult{}, err
+		}
+		return ResumeResult{Restart: true, Size: fi.Size()}, nil
 	}
-	res, err := r.recompute(ctx, jobID, fileIdx, path, fi.Size(), firstArtIdx, artCount)
-	if err != nil {
-		return ResumeResult{}, err
-	}
-	res.ModTimeNs = fi.ModTime().UnixNano()
-
-	// Write the recomputation back over the record it disproved.
-	//
-	// This makes the Resumer a second writer of Class B, which the original
-	// design forbade on the grounds that "a committed extent claims a
-	// completed fsync stands behind it, and a resume does not perform that
-	// fsync". The premise conflates the mechanism with the property: the fsync
-	// exists to make bytes survive a restart, and reading those bytes back
-	// AFTER a restart and matching their recorded CRC observes that same
-	// property directly, with strictly better evidence.
-	//
-	// The cost of not doing it was mis-stated as "re-verification on the next
-	// restart is bounded rework". There is no re-verification. Nothing clears
-	// a bit in the store, priorExtent ORs the stored bitmap as its base, so
-	// the next checkpoint re-commits the disproven bit with a fresh stamp that
-	// then validates — and the next start's fast path adopts it without
-	// reading a byte. The bit does not cost rework; it comes back.
-	//
-	// Safe as a second writer because of WHEN it runs: the startup sweep
-	// completes before the downloader can dispatch, so no barrier is running
-	// for any job and there is exactly one writer at this moment.
-	//
-	// Only after a recomputation, and after the missing-file branch above.
-	// The fast path adopted what is already stored, so committing it would
-	// rewrite a row with its own contents.
-	if err := r.writeBack(ctx, jobID, fileIdx, res); err != nil {
-		return ResumeResult{}, err
-	}
-	return res, nil
+	return ResumeResult{Runs: runs, Size: fi.Size()}, nil
 }
 
-// committedExtent loads the Class B cache for one file, reporting whether one
-// exists at all.
+// discard removes one file's runs after the file on disk has disproved them.
 //
-// The bitmap is re-derived at artCount bits rather than adopted as loaded, for
-// the reason Barrier.priorExtent documents at length: the store rebuilds each
-// bitmap at its full BYTE width, so Bitmap's tail-word mask never fires and a
-// damaged blob's padding bits would survive into Count() — the over-claim
-// direction. Only a caller holding artCount can apply the mask, and rebuilding
-// through BitmapFromBytes is what applies it; narrowing what the store returned
-// would not. A stored bitmap narrower than artCount is zero-padded, which reads
-// as "those articles are not durable", the safe direction under S3.
-func (r *Resumer) committedExtent(ctx context.Context, jobID string, fileIdx int32, artCount int) (FileExtent, bool, error) {
-	e, ok, err := r.exts.LoadFile(ctx, jobID, fileIdx)
-	if err != nil {
-		return FileExtent{}, false, fmt.Errorf("durability: resume load extent job=%s file=%d: %w", jobID, fileIdx, err)
-	}
-	if !ok {
-		return FileExtent{}, false, nil
-	}
-	raw := e.Durable.Bytes()
-	if need := (artCount + 63) / 64 * 8; len(raw) < need {
-		widened := make([]byte, need)
-		copy(widened, raw)
-		raw = widened
-	}
-	bm, err := BitmapFromBytes(raw, artCount)
-	if err != nil {
-		return FileExtent{}, false, fmt.Errorf("durability: resume re-derive bitmap job=%s file=%d: %w", jobID, fileIdx, err)
-	}
-	e.Durable = bm
-	return e, true, nil
-}
-
-// clearCommitted overwrites a file's Class B record with the empty result a
-// missing file produces, and does nothing when there is no record to clear.
-//
-// The existence check is not an optimisation. Committing unconditionally would
-// mint a zeroed row for every file of every job that has not started
-// downloading yet — the ordinary case on any restart — and those rows are
-// indistinguishable from a real record whose bits were all disproved.
-//
-// The stamp it writes is (0, 0), which is not a claim about the file: it is a
-// stamp that cannot match one. A file recreated at length zero still has a
-// mtime far from the epoch, so S7's fast path never adopts this row; the next
-// resume that finds a real file falls through to a recomputation, which is
-// correct by definition (S4).
-func (r *Resumer) clearCommitted(ctx context.Context, jobID string, fileIdx int32, res ResumeResult) error {
-	_, ok, err := r.exts.LoadFile(ctx, jobID, fileIdx)
-	if err != nil {
-		return fmt.Errorf("durability: resume load extent job=%s file=%d: %w", jobID, fileIdx, err)
-	}
-	if !ok {
-		return nil
-	}
-	return r.writeBack(ctx, jobID, fileIdx, res)
-}
-
-// writeBack commits a resume's own answer as the file's Class B record —
-// a recomputation, or the empty result a missing file produces.
-//
-// Every field is filled from the result rather than merged into the stored
-// row, because the stored row is exactly what the resume disproved: carrying
-// any part of it forward would preserve the claim being corrected. That is
-// load-bearing in the missing-file case, where every field of the result is a
-// zero value and a merge would therefore be indistinguishable from not
-// clearing the row at all.
-//
-// BytesDurable in particular has to come from the result — committing without
-// it would zero the figure the API reports for this file after a
-// recomputation, and leave it overstated after a restart.
-func (r *Resumer) writeBack(ctx context.Context, jobID string, fileIdx int32, res ResumeResult) error {
-	ext := FileExtent{
-		FileIdx:      fileIdx,
-		Durable:      res.Durable,
-		VerifiedTo:   res.VerifiedTo,
-		PrefixCRC:    res.PrefixCRC,
-		HasPrefixCRC: res.HasPrefixCRC,
-		BytesDurable: res.BytesDurable,
-		Size:         res.Size,
-		ModTimeNs:    res.ModTimeNs,
-	}
-	if err := r.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {
-		return fmt.Errorf("durability: resume write-back job=%s file=%d: %w", jobID, fileIdx, err)
+// The only mutation this type performs. See the Resumer type doc for why that
+// direction is the one a resume is entitled to.
+func (r *Resumer) discard(ctx context.Context, jobID string, fileIdx int32) error {
+	if err := r.runs.DeleteFile(ctx, jobID, fileIdx); err != nil {
+		return fmt.Errorf("durability: resume discard runs job=%s file=%d: %w", jobID, fileIdx, err)
 	}
 	return nil
-}
-
-// recompute derives the done-set from the file's bytes, which S4 makes correct
-// by definition, and the gapless-prefix CRC from the same read (R24).
-func (r *Resumer) recompute(ctx context.Context, jobID string, fileIdx int32, path string, size int64, firstArtIdx int32, artCount int) (ResumeResult, error) {
-	facts, err := r.facts.ForFile(ctx, jobID, fileIdx)
-	if err != nil {
-		return ResumeResult{}, fmt.Errorf("durability: resume facts job=%s file=%d: %w", jobID, fileIdx, err)
-	}
-	//nolint:gosec // G304: path is the job's own target file, the same path
-	// the assembler wrote and the stat above already resolved.
-	f, err := os.Open(path)
-	if err != nil {
-		return ResumeResult{}, fmt.Errorf("durability: resume open job=%s file=%d: %w", jobID, fileIdx, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	durable := NewBitmap(artCount)
-	verified, err := r.verifyRegions(ctx, f, facts, durable, size, firstArtIdx, artCount, jobID, fileIdx)
-	if err != nil {
-		return ResumeResult{}, err
-	}
-
-	// Summed here rather than by the caller: verified is parallel to facts and
-	// is the only place that knows which regions were proven, so deriving it
-	// anywhere else would re-walk the same two slices to reach the same answer.
-	var bytesDurable int64
-	for i, f := range facts {
-		if verified[i] {
-			bytesDurable += int64(f.Length)
-		}
-	}
-
-	walk := verifiedPrefix(facts, func(i int) bool { return verified[i] })
-	prefix, crc, whole := walk.VerifiedTo, walk.PrefixCRC, walk.wholeFile(size)
-	r.log.Info("durability resume recomputed a file from its bytes",
-		"job", jobID, "file", fileIdx, "articles_durable", durable.Count(),
-		"facts", len(facts), "verified_to", prefix)
-	return ResumeResult{
-		Durable:      durable,
-		VerifiedTo:   prefix,
-		PrefixCRC:    crc,
-		HasPrefixCRC: whole,
-		Recomputed:   true,
-		BytesDurable: bytesDurable,
-		Size:         size,
-	}, nil
-}
-
-// verifyRegions checks each recorded region against its CRC, setting the
-// article's bit only on a match, and returns a parallel slice saying which
-// facts were proven. The slice is what the prefix walk reads, so verification
-// happens exactly once per article for both answers.
-//
-// Every fact carries a CRC, so there is no unverifiable-article case to skip.
-// That used to be a branch here, guarded by ArticleFact.HasCRC, and it existed
-// for UU-encoded articles. It is gone because the premise was wrong: the CRC
-// is a checksum of the bytes this program decoded and wrote, so whether the
-// article's own format carried one is irrelevant. downloader.decodePayload now
-// computes it on the UU path, which closes the set — no decode path yields
-// bytes without a checksum over them.
-//
-// A fact can still fail to prove anything, and those cases remain below: a
-// region outside the file as it exists now, and a CRC that does not match. Both
-// leave the article Outstanding, per S3.
-func (r *Resumer) verifyRegions(ctx context.Context, f *os.File, facts []ArticleFact, durable Bitmap, size int64, firstArtIdx int32, artCount int, jobID string, fileIdx int32) ([]bool, error) {
-	verified := make([]bool, len(facts))
-	var buf []byte
-	for i, fact := range facts {
-		// R15: a recomputation over a large file must stop when its caller
-		// does rather than run to completion after a shutdown.
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("durability: resume recompute job=%s file=%d: %w", jobID, fileIdx, err)
-		}
-		ord := int(fact.ArtIdx - firstArtIdx)
-		if ord < 0 || ord >= artCount {
-			return nil, fmt.Errorf("%w: job=%s file=%d article=%d first=%d count=%d",
-				ErrArticleOutOfRange, jobID, fileIdx, fact.ArtIdx, firstArtIdx, artCount)
-		}
-		// Offset is bounded against size before the addition, so the sum
-		// cannot wrap: a corrupt row with Offset near MaxInt64 would
-		// otherwise produce a negative sum that passes a "> size" test, and
-		// the guard would read as bounding a region it had not bounded.
-		// ReadAt would still fail, but on the wrong claim.
-		if fact.Offset < 0 || fact.Length < 0 || fact.Offset > size-int64(fact.Length) {
-			// The region the fact describes is not wholly inside the file as
-			// it exists now, so its bytes cannot be checked. Outstanding.
-			continue
-		}
-		if int64(cap(buf)) < int64(fact.Length) {
-			buf = make([]byte, fact.Length)
-		}
-		region := buf[:fact.Length]
-		if _, err := f.ReadAt(region, fact.Offset); err != nil {
-			return nil, fmt.Errorf("durability: resume read job=%s file=%d article=%d: %w",
-				jobID, fileIdx, fact.ArtIdx, err)
-		}
-		if crc32.ChecksumIEEE(region) != fact.CRC32 {
-			continue
-		}
-		durable.Set(ord)
-		verified[i] = true
-	}
-	return verified, nil
 }

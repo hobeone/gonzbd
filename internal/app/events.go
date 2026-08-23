@@ -15,11 +15,12 @@ import (
 // never tile the file and the figure described a fragment while claiming to
 // describe the whole.
 //
-// The honest whole-file value is durability.FileExtent.PrefixCRC, guarded by
-// HasPrefixCRC and combined from the Class A facts over the file's real extent
-// — arithmetic over rows the barrier has already loaded, with no read of the
-// file (R24). Application.recordAssembledCRC threads it to Queue.SetFileCRC32
-// when the file finalizes, which is what QuickCheck and on-demand par2 read.
+// The honest whole-file value is the crc32 of a file's single durable run.
+// A run combines the CRCs of the articles that abut as they join it, across
+// restarts, so a file whose articles all arrive collapses to one row at offset
+// 0 whose crc32 IS the file's — already computed, with no read of the file
+// (R24). Application.recordAssembledCRC threads it to Queue.SetFileCRC32 when
+// the file finalizes, which is what QuickCheck and on-demand par2 read.
 type FileComplete struct {
 	JobID   string
 	FileIdx int

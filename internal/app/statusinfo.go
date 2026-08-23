@@ -203,14 +203,15 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // counter of its own, because on this design they are the same quantity. The
 // only things that mark an article Done are Queue.AckDurable, which takes a
 // DurableProof no path outside a completed barrier can mint, and the two
-// seeding entry points — SeedFromExtents, which replays a committed Class B
-// cache, and ReplaceFromResume, which installs what the startup sweep read
-// from the files themselves. A second counter would be a second representation
-// of one fact, free to drift (S5).
+// seeding entry points — SeedFromRuns, which replays the runs a barrier
+// recorded, and ReplaceFromRuns, which installs what the startup sweep's stat
+// left standing. A second counter would be a second representation of one
+// fact, free to drift (S5).
 //
-// ReplaceFromResume also UN-marks an article the resume disproved (#362), and
-// this figure follows it down rather than needing a correction of its own —
-// which is the same property, stated for the direction the design added last.
+// ReplaceFromRuns also UN-marks an article whose run the resume discarded
+// (#362), and this figure follows it down rather than needing a correction of
+// its own — which is the same property, stated for the direction the design
+// added last.
 func (app *Application) JobDurability(jobID string) JobDurability {
 	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
 	if app.queue != nil {
@@ -230,10 +231,10 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 // taking a second snapshot per poll.
 //
 // All three legs are NZB-declared, yEnc-ENCODED bytes, so this figure is too.
-// It is deliberately not durability.FileExtent.BytesDurable, which carries the
-// same name and sums the DECODED payload lengths an fsync proved --
-// docs/queue-lifecycle.md records that substitution overstating every
-// non-resident job's remaining bytes by the encoding overhead.
+// It is deliberately not a sum over the durability record's lengths, which are
+// the DECODED payload bytes an fsync proved -- docs/queue-lifecycle.md records
+// that substitution overstating every non-resident job's remaining bytes by
+// the encoding overhead.
 func DurableBytesOf(p *queue.JobProgress) int64 {
 	if p == nil {
 		return 0

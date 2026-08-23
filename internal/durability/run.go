@@ -45,14 +45,14 @@ type Run struct {
 	CRC32 uint32
 }
 
-// RunStore is the merged Class A + Class B store described in
+// RunStore is the durability record, described in
 // docs/superpowers/specs/2026-08-22-single-durability-record-design.md.
 //
-// It replaces FactLog and ExtentStore with a single record written only
-// after the fsync that makes it true (S1, S2), grouped into runs rather than
-// kept per article. Nothing in this package reads it yet — that is a later
-// task's wiring — but the store itself is complete: Commit builds and merges
-// runs, and is idempotent against the barrier's at-least-once redelivery.
+// One record, written only after the fsync that makes it true (S1, S2), and
+// grouped into runs rather than kept per article. It replaced a pairing of two
+// per-article records with independent writers, which could disagree — and
+// every disagreement was a defect (#389, #421). Barrier is its sole writer;
+// Resumer only ever deletes.
 type RunStore interface {
 	// Commit takes ARTICLES, not runs — the caller hands over what a
 	// completed Drain reported, and the store is the one place a run is
@@ -79,6 +79,15 @@ type RunStore interface {
 	// ForJob returns every stored run for a job, across all its files,
 	// ordered by FileIdx then Offset.
 	ForJob(ctx context.Context, jobID string) ([]Run, error)
+
+	// DeleteFile removes every run for ONE file of a job.
+	//
+	// It exists for Resumer, whose whole mutation budget is this: a file
+	// shorter than its runs claim has disproved them, and the response is
+	// to drop them so the file is fetched again (§3.4). Scoped to a file
+	// rather than a job because a resume proves nothing about the job's
+	// other files — it stat'ed one path.
+	DeleteFile(ctx context.Context, jobID string, fileIdx int32) error
 
 	// DeleteJob removes every run for a job that has left the queue. It
 	// touches only durable_runs — failed_articles is owned and written

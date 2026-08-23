@@ -962,9 +962,9 @@ func decodePayload(body []byte) (decodedPayload, error) {
 			// .acceptedAt is per-open-episode residency by design, so a later
 			// segment finds offset 0 unowned and overwrites what is there. The
 			// file then completes WRONG rather than short. The durability
-			// layer still reports the overlap from the Class A facts, which
-			// persist (#413), but that is a warning after the fact and no
-			// article is failed for it.
+			// layer still reports the overlap, because the bytes its runs
+			// account for exceed the file's size (#413), but that is a warning
+			// after the fact and no article is failed for it.
 			//
 			// Either way nothing in the diagnosis names UU as the cause. That
 			// is #346, and it is a gap in this offset, not in the collision

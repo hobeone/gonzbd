@@ -82,7 +82,7 @@ func failJobIntoHistory(t *testing.T, application *Application, job *queue.Job, 
 		t.Fatalf("persistAndCommit: %v", err)
 	}
 	if nf, ne := durabilityRowCounts(t, application, job.ID); nf != 1 || ne != 1 {
-		t.Fatalf("fixture: persistAndCommit left %d facts and %d extents, want 1 and 1 "+
+		t.Fatalf("fixture: persistAndCommit left %d runs and %d failed rows, want 1 and 1 "+
 			"(a failed job must keep both, which is what this test then checks the retry does not undo)", nf, ne)
 	}
 }
@@ -93,10 +93,9 @@ func failJobIntoHistory(t *testing.T, application *Application, job *queue.Job, 
 // what for: a retry reuses the job ID, resolves the same filename over the
 // same partial file, and re-fetches only the articles that failed, so the
 // retained rows are what bound FinalizeFile's truncate to the whole file
-// rather than to this run's few articles. Without them durableExtent returns
-// the end offset of the re-fetched articles alone and the rest of the partial
-// is destroyed silently — neither #342 guard fires, because every article the
-// fact log knows about IS durable.
+// rather than to this run's few articles. Without them the bound is the end
+// offset of the re-fetched articles alone and the rest of the partial is
+// destroyed silently.
 //
 // RetryHistoryJob then deleted them at the start of every retry, because
 // history.Repository.Delete drops both tables unconditionally. The retention
@@ -118,13 +117,13 @@ func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 
 	nf, ne := durabilityRowCounts(t, application, job.ID)
 	if nf == 0 {
-		t.Error("the retry deleted the job's Class A facts. It rebuilds the same " +
-			"filename over the same partial file, so with no facts the truncate " +
+		t.Error("the retry deleted the job's durable runs. It rebuilds the same " +
+			"filename over the same partial file, so with no runs the truncate " +
 			"bound collapses to the re-fetched articles and the rest is destroyed")
 	}
 	if ne == 0 {
-		t.Error("the retry deleted the job's Class B extents, so priorExtent starts " +
-			"from an empty bitmap and every article is re-fetched")
+		t.Error("the retry deleted the job's failed-article rows, so it re-attempts " +
+			"articles that already failed permanently on every eligible server")
 	}
 }
 
@@ -159,23 +158,24 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 
 	nf, ne := durabilityRowCounts(t, application, job.ID)
 	if nf != 0 || ne != 0 {
-		t.Errorf("the retry kept %d facts and %d extents against a manifest whose shape "+
+		t.Errorf("the retry kept %d runs and %d failed rows against a manifest whose shape "+
 			"changed. They are keyed on article index, so they now describe articles "+
 			"that are somewhere else, and a stale row bounds the truncate", nf, ne)
 	}
 }
 
-// failingDeleteFactLog delegates everything to a real FactLog except DeleteJob.
+// failingDeleteRunStore delegates everything to a real RunStore except
+// DeleteJob.
 //
 // Embedding the interface rather than reimplementing it keeps the stub honest:
-// if the retry path grows a call to some other FactLog method, the real one
+// if the retry path grows a call to some other RunStore method, the real one
 // answers it and the test keeps testing what it says it tests.
-type failingDeleteFactLog struct {
-	durability.FactLog
+type failingDeleteRunStore struct {
+	durability.RunStore
 	err error
 }
 
-func (f failingDeleteFactLog) DeleteJob(context.Context, string) error { return f.err }
+func (f failingDeleteRunStore) DeleteJob(context.Context, string) error { return f.err }
 
 // TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped is the other half of
 // the shape-mismatch gate, and the reason the gate is worth anything.
@@ -205,7 +205,7 @@ func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
 	writeRetryNZBBackup(t, adminDir, job.ID+".nzb.gz", retryFixtureNZB(nArticles+2))
 
 	wantErr := errors.New("disk on fire")
-	application.factLog = failingDeleteFactLog{FactLog: application.factLog, err: wantErr}
+	application.runs = failingDeleteRunStore{RunStore: application.runs, err: wantErr}
 
 	// Assert the pre-state rather than assume it. If the job were somehow
 	// still queued here, the "not queued" assertion below would pass for the

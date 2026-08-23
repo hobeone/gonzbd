@@ -22,7 +22,6 @@ type stubSyncTarget struct {
 	confirmed []int32
 	files     []int32
 	written   []durability.WrittenArticle
-	artCount  int
 }
 
 func (s *stubSyncTarget) Files() []int32    { return s.files }
@@ -31,17 +30,7 @@ func (s *stubSyncTarget) Drain(context.Context, int32) ([]durability.WrittenArti
 	return s.written, nil
 }
 func (s *stubSyncTarget) Sync(context.Context, int32) error { return nil }
-func (s *stubSyncTarget) Stat(int32) (int64, int64, error)  { return 4096, 1, nil }
-func (s *stubSyncTarget) ArticleCount(int32) int            { return s.artCount }
-func (s *stubSyncTarget) FileLocalOrdinal(_ int32, a int32) (int, bool) {
-	// The stub's single file starts at global article 0, so the global index
-	// is the file-local ordinal. Anything past the file's article count is
-	// rejected, which is what the barrier treats as a bookkeeping defect.
-	if int(a) >= s.artCount {
-		return 0, false
-	}
-	return int(a), true
-}
+func (s *stubSyncTarget) Stat(int32) (int64, error)         { return 4096, nil }
 
 // ackerFunc is a func-typed durability.Acker.
 type ackerFunc func(durability.DurableProof) error
@@ -69,9 +58,9 @@ func (noopStallable) Fail(string, *storagefault.Fault)  {}
 // Note the bound, which an earlier version of this comment overstated:
 // durability.DurableProof{} does compile here, it is simply empty and inert
 // (TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing), and
-// AckDurable is not the only door into markDone — SeedFromExtents and
-// ReplaceFromResume need no proof at all.
-func mintProof(t *testing.T, jobID string, arts []int32, artCount int) durability.DurableProof {
+// AckDurable is not the only door into markDone — SeedFromRuns and
+// ReplaceFromRuns need no proof at all.
+func mintProof(t *testing.T, jobID string, arts []int32) durability.DurableProof {
 	t.Helper()
 
 	written := make([]durability.WrittenArticle, len(arts))
@@ -80,7 +69,7 @@ func mintProof(t *testing.T, jobID string, arts []int32, artCount int) durabilit
 			FileIdx: 0, ArtIdx: a, Offset: int64(a) * 100, Length: 100,
 		}
 	}
-	tgt := &stubSyncTarget{files: []int32{0}, written: written, artCount: artCount}
+	tgt := &stubSyncTarget{files: []int32{0}, written: written}
 
 	var got durability.DurableProof
 	captured := ackerFunc(func(p durability.DurableProof) error { got = p; return nil })
@@ -93,8 +82,7 @@ func mintProof(t *testing.T, jobID string, arts []int32, artCount int) durabilit
 	db := history.NewRepository(hdb).DB()
 
 	b := durability.NewBarrier(
-		durability.NewSQLiteFactLog(db),
-		durability.NewSQLiteExtentStore(db),
+		durability.NewSQLiteRunStore(db),
 		captured,
 		noopStallable{},
 		slog.New(slog.DiscardHandler),
@@ -137,7 +125,7 @@ func outstandingFor(q *Queue, jobID string) []int32 {
 
 func TestAckDurable_MarksArticlesResolved(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 10)
-	p := mintProof(t, "job-1", []int32{0, 3, 7}, 10)
+	p := mintProof(t, "job-1", []int32{0, 3, 7})
 
 	if err := q.AckDurable(p); err != nil {
 		t.Fatal(err)
@@ -159,7 +147,7 @@ func TestAckDurable_MarksArticlesResolved(t *testing.T) {
 // bytes.
 func TestAckDurable_IsIdempotent(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 10)
-	p := mintProof(t, "job-1", []int32{0, 1, 2}, 10)
+	p := mintProof(t, "job-1", []int32{0, 1, 2})
 	if err := q.AckDurable(p); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +174,7 @@ func TestAckDurable_OutOfRangeArticleDoesNotAbortTheBatch(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", 4)
 	// artCount 8 lets the barrier place article 6, which the 4-article job
 	// does not have — the mismatch this test is about.
-	p := mintProof(t, "job-1", []int32{0, 6}, 8)
+	p := mintProof(t, "job-1", []int32{0, 6})
 
 	if err := q.AckDurable(p); err != nil {
 		t.Fatalf("AckDurable aborted the whole batch for one bad index: %v", err)
@@ -272,32 +260,48 @@ func TestSetWarning_IsReadableWithoutResidency(t *testing.T) {
 	}
 }
 
-// ---------- ReplaceFromResume (#362) ----------
+// ---------- ReplaceFromRuns (#362) ----------
 
-// bitmapOf builds a durable bitmap over n file-local ordinals with the named
-// ones set.
-func bitmapOf(n int, set ...int) durability.Bitmap {
-	bm := durability.NewBitmap(n)
+// runsOf builds one single-article durable Run per named article of file 0.
+//
+// Single-article rows rather than merged spans: a run's [FirstArtIdx,
+// LastArtIdx] range is all the queue's two seeding doors read, and merging
+// here would only make the fixtures harder to read. Merging is RunStore's job
+// and is pinned in internal/durability.
+//
+// The nArts parameter is unused by the construction and kept in the signature
+// so each call site states the file's width beside the articles it names —
+// runsCoverage refuses a run outside the file's manifest range, so a fixture
+// whose two disagree fails loudly rather than silently seeding nothing.
+func runsOf(set ...int) []durability.Run { return fileRunsOf(0, 0, set...) }
+
+// fileRunsOf is runsOf for a file other than the first. base is the file's
+// first GLOBAL article index, which is what converts the file-local numbers a
+// fixture reads naturally into the global ones a Run carries.
+func fileRunsOf(fileIdx int32, base int, set ...int) []durability.Run {
+	runs := make([]durability.Run, 0, len(set))
 	for _, i := range set {
-		bm.Set(i)
+		idx := int32(base + i) //nolint:gosec // G115: fixture article counts are tiny
+		runs = append(runs, durability.Run{
+			FileIdx: fileIdx, FirstArtIdx: idx, LastArtIdx: idx, Length: 1,
+		})
 	}
-	return bm
+	return runs
 }
 
 // restoreDone puts a job into the state Store.RestoreJobProgress leaves it in:
-// the named articles marked done because job_files.articles_done said so, with
+// the named articles marked done because the durability record said so, with
 // nothing on disk having been consulted.
 //
-// It goes through SeedFromExtents rather than reaching for markDone, so the
+// It goes through SeedFromRuns rather than reaching for markDone, so the
 // fixture cannot drift from what the additive path actually does — and so a
 // mutation that breaks markDone shows up as a fixture failure rather than as a
 // silent agreement between fixture and subject.
 func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 	t.Helper()
-	if err := q.SeedFromExtents(jobID, []durability.FileExtent{
-		{FileIdx: 0, Durable: bitmapOf(nArts, done...)},
-	}); err != nil {
-		t.Fatalf("restoreDone: SeedFromExtents: %v", err)
+	_ = nArts
+	if err := q.SeedFromRuns(jobID, runsOf(done...)); err != nil {
+		t.Fatalf("restoreDone: SeedFromRuns: %v", err)
 	}
 	for _, i := range done {
 		if !q.SnapshotJob(jobID).Progress().ArticleDone(i) {
@@ -307,7 +311,7 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 	}
 }
 
-// TestReplaceFromResume_ClearsArticlesTheResumerDidNotVerify is #362's core
+// TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify is #362's core
 // claim: a bit that was merely restored from job_files.articles_done loses to
 // a resume that read the file's bytes and did not find the article there.
 //
@@ -315,16 +319,14 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 // verified) and keeps at least one article durable in both (0 and 2). Both
 // halves are load-bearing: with nothing surviving, a clear-everything mutation
 // would pass; with nothing cleared, a no-op would.
-func TestReplaceFromResume_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
+func TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)
 	restoreDone(t, q, "job-1", nArts, 0, 1, 2)
 
 	// The resume read the file and proved only 0 and 2.
-	if err := q.ReplaceFromResume("job-1", []durability.FileExtent{
-		{FileIdx: 0, Durable: bitmapOf(nArts, 0, 2)},
-	}); err != nil {
-		t.Fatalf("ReplaceFromResume: %v", err)
+	if err := q.ReplaceFromRuns("job-1", []int32{0}, runsOf(0, 2)); err != nil {
+		t.Fatalf("ReplaceFromRuns: %v", err)
 	}
 
 	p := q.SnapshotJob("job-1").Progress()
@@ -345,7 +347,7 @@ func TestReplaceFromResume_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
 	}
 }
 
-// TestReplaceFromResume_CorrectsTheDerivedFigures pins the half a naive
+// TestReplaceFromRuns_CorrectsTheDerivedFigures pins the half a naive
 // inverse gets wrong. JobProgress derives failedBytes, byte counts and health
 // from the article bits, so clearing a bit without correcting them produces a
 // job reporting numbers its own per-article state does not support — which is
@@ -354,7 +356,7 @@ func TestReplaceFromResume_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
 // The reference is a second job that never had the extra bit set at all, so
 // the assertion is on agreement with ground truth rather than on figures a
 // test author computed by hand.
-func TestReplaceFromResume_CorrectsTheDerivedFigures(t *testing.T) {
+func TestReplaceFromRuns_CorrectsTheDerivedFigures(t *testing.T) {
 	const nArts = 4
 	type figures struct {
 		fileDownloaded, fileFailed, remaining int64
@@ -387,10 +389,8 @@ func TestReplaceFromResume_CorrectsTheDerivedFigures(t *testing.T) {
 			"below would hold against a do-nothing implementation", before)
 	}
 
-	if err := sub.ReplaceFromResume("job-sub", []durability.FileExtent{
-		{FileIdx: 0, Durable: bitmapOf(nArts, 0, 2)},
-	}); err != nil {
-		t.Fatalf("ReplaceFromResume: %v", err)
+	if err := sub.ReplaceFromRuns("job-sub", []int32{0}, runsOf(0, 2)); err != nil {
+		t.Fatalf("ReplaceFromRuns: %v", err)
 	}
 	if got := read(sub, "job-sub"); got != want {
 		t.Errorf("figures after the clear = %+v, want %+v (a job that never had the bit "+
@@ -399,7 +399,7 @@ func TestReplaceFromResume_CorrectsTheDerivedFigures(t *testing.T) {
 	}
 }
 
-// TestReplaceFromResume_HandlesAFileAlreadyComplete pins the rule for a file
+// TestReplaceFromRuns_HandlesAFileAlreadyComplete pins the rule for a file
 // the assembler had finished with.
 //
 // Complete means "the assembler is finished with this file", NOT "every
@@ -416,7 +416,7 @@ func TestReplaceFromResume_CorrectsTheDerivedFigures(t *testing.T) {
 //	         were never on disk, so their absence is the recorded outcome.
 //	file 1 — Complete, every article recorded done, one of them disproved.
 //	         The flag and the assembled CRC both go.
-func TestReplaceFromResume_HandlesAFileAlreadyComplete(t *testing.T) {
+func TestReplaceFromRuns_HandlesAFileAlreadyComplete(t *testing.T) {
 	const perFile = 3
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
@@ -427,11 +427,9 @@ func TestReplaceFromResume_HandlesAFileAlreadyComplete(t *testing.T) {
 	}
 
 	// File 0: articles 0 and 1 downloaded, article 2 permanently failed.
-	if err := q.SeedFromExtents("job-1", []durability.FileExtent{
-		{FileIdx: 0, Durable: bitmapOf(perFile, 0, 1)},
-		{FileIdx: 1, Durable: bitmapOf(perFile, 0, 1, 2)},
-	}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+	seed := append(fileRunsOf(0, 0, 0, 1), fileRunsOf(1, perFile, 0, 1, 2)...)
+	if err := q.SeedFromRuns("job-1", seed); err != nil {
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 	if err := q.AckPermanentFailure("job-1", []int32{2}); err != nil {
 		t.Fatalf("AckPermanentFailure: %v", err)
@@ -456,11 +454,9 @@ func TestReplaceFromResume_HandlesAFileAlreadyComplete(t *testing.T) {
 
 	// The resume finds every successful article of file 0, and only two of
 	// file 1's three.
-	if err := q.ReplaceFromResume("job-1", []durability.FileExtent{
-		{FileIdx: 0, Durable: bitmapOf(perFile, 0, 1)},
-		{FileIdx: 1, Durable: bitmapOf(perFile, 0, 2)},
-	}); err != nil {
-		t.Fatalf("ReplaceFromResume: %v", err)
+	proved := append(fileRunsOf(0, 0, 0, 1), fileRunsOf(1, perFile, 0, 2)...)
+	if err := q.ReplaceFromRuns("job-1", []int32{0, 1}, proved); err != nil {
+		t.Fatalf("ReplaceFromRuns: %v", err)
 	}
 
 	p := q.SnapshotJob("job-1").Progress()
@@ -496,32 +492,30 @@ func TestReplaceFromResume_HandlesAFileAlreadyComplete(t *testing.T) {
 	}
 }
 
-// TestSeedFromExtents_StaysAdditive is the regression guard for the whole of
+// TestSeedFromRuns_StaysAdditive is the regression guard for the whole of
 // #362's fix, and it fails the moment someone "simplifies" the two seeding
 // entry points into one.
 //
-// Application.reevaluateStall's phase 3 replays extents loaded from the store
+// Application.reevaluateStall's phase 3 replays runs loaded from the store
 // after a stall recovery. It is re-delivering an ack whose fsync already
-// landed and it has verified nothing about any file, so a clear there would
-// discard the acks this process made since the last commit — the exact bits
-// that phase exists to preserve.
-func TestSeedFromExtents_StaysAdditive(t *testing.T) {
+// landed and it has stat'ed nothing, so a clear there would discard the acks
+// this process made since the last commit — the exact bits that phase exists
+// to preserve.
+func TestSeedFromRuns_StaysAdditive(t *testing.T) {
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)
 	restoreDone(t, q, "job-1", nArts, 1)
 
-	// The committed extent covers only article 0. Article 1's bit came from
-	// an ack this process made after that commit.
-	if err := q.SeedFromExtents("job-1", []durability.FileExtent{
-		{FileIdx: 0, Durable: bitmapOf(nArts, 0)},
-	}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+	// The stored record covers only article 0. Article 1's bit came from an
+	// ack this process made after that commit.
+	if err := q.SeedFromRuns("job-1", runsOf(0)); err != nil {
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
 	p := q.SnapshotJob("job-1").Progress()
 	if !p.ArticleDone(1) {
-		t.Error("article 1 lost its Done bit to a replay of a committed extent that " +
-			"predates it; the stall recovery threw away an ack that had already landed")
+		t.Error("article 1 lost its Done bit to a replay of a record that predates it; " +
+			"the stall recovery threw away an ack that had already landed")
 	}
 	if !p.ArticleDone(0) {
 		t.Error("article 0 was not marked Done, so the replay installed nothing and the " +
@@ -581,16 +575,19 @@ func TestMarkNotDone_GuardsWhatItMayUndo(t *testing.T) {
 	}
 }
 
-// TestFileDurableBitmap_ReDerivesAtTheFilesArticleCount pins the two indexing
-// rules both seeding entry points depend on and neither can observe.
+// TestRunsCoverage_RefusesARunOutsideItsFile pins the indexing rule both
+// seeding entry points depend on and neither can observe.
 //
-// A stored bitmap is a byte blob: ExtentStore.Load rebuilds it at its full BYTE
-// width with no idea how many articles the file has. Reading it as-is
-// over-reports durability by however many padding bits happen to be set, which
-// is the over-claim direction the design forbids, and reading a SHORT one at
-// its own width would silently drop the file's tail articles from the mapping.
-func TestFileDurableBitmap_ReDerivesAtTheFilesArticleCount(t *testing.T) {
-	const perFile = 100 // > 64, so the bitmap spans two words and can be short
+// A Run names articles GLOBALLY, and it also names the file it belongs to. The
+// two can disagree only one way: the manifest was rebuilt to a different shape
+// under rows keyed on the old numbering. Marking whatever articles happen to
+// sit at those indices Done would skip real downloads silently, which is why
+// this refuses loudly (A2, R28) rather than clamping or skipping.
+//
+// The accept case is here too, because a check that refused everything would
+// satisfy the refusal arms on its own.
+func TestRunsCoverage_RefusesARunOutsideItsFile(t *testing.T) {
+	const perFile = 4
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "job-1", 2, perFile)
@@ -600,75 +597,35 @@ func TestFileDurableBitmap_ReDerivesAtTheFilesArticleCount(t *testing.T) {
 	}
 	m := job.manifest
 
-	t.Run("a short bitmap is widened with zeros", func(t *testing.T) {
-		// One word where the file needs two. The articles it cannot describe
-		// read as not-durable, which is the safe direction under S3.
-		narrow := durability.NewBitmap(64)
-		narrow.Set(3)
-		if len(narrow.Bytes()) >= len(durability.NewBitmap(perFile).Bytes()) {
-			t.Fatalf("the fixture's bitmap is %d bytes and the file needs %d — nothing is "+
-				"being widened, so this asserts against the ordinary path",
-				len(narrow.Bytes()), len(durability.NewBitmap(perFile).Bytes()))
-		}
-		bm, lo, n, err := fileDurableBitmap(m, durability.FileExtent{FileIdx: 1, Durable: narrow})
+	t.Run("a run inside its file is accepted with its global indices", func(t *testing.T) {
+		// File 1 owns global articles 4..7.
+		first, last, err := runsCoverage(m, durability.Run{FileIdx: 1, FirstArtIdx: 5, LastArtIdx: 6})
 		if err != nil {
-			t.Fatalf("fileDurableBitmap: %v", err)
+			t.Fatalf("runsCoverage: %v", err)
 		}
-		if n != perFile || bm.Len() != perFile {
-			t.Errorf("article count = %d and bitmap length = %d, want %d for both",
-				n, bm.Len(), perFile)
-		}
-		if wantLo, _ := m.FileRange(1); lo != wantLo {
-			t.Errorf("first article index = %d, want %d — Durable is file-local and "+
-				"JobProgress is global, so a wrong offset marks another file's articles",
-				lo, wantLo)
-		}
-		if !bm.Get(3) {
-			t.Error("the bit the short bitmap did carry was lost in the widening")
-		}
-		if bm.Count() != 1 {
-			t.Errorf("count = %d, want 1 — widening must add zeros, not durability", bm.Count())
+		if first != 5 || last != 6 {
+			t.Errorf("coverage = [%d,%d], want [5,6] — a Run's article indices are already "+
+				"global, so there is no conversion to apply", first, last)
 		}
 	})
 
-	t.Run("padding bits past the article count are masked off", func(t *testing.T) {
-		// A damaged or externally written blob with every bit of the second
-		// word set. Only 100 - 64 = 36 of them describe an article.
-		raw := make([]byte, 16)
-		for i := range raw {
-			raw[i] = 0xFF
-		}
-		wide, err := durability.BitmapFromBytes(raw, 128)
-		if err != nil {
-			t.Fatalf("BitmapFromBytes: %v", err)
-		}
-		if wide.Count() != 128 {
-			t.Fatalf("the fixture's blob has %d bits set, want 128 — there is no padding "+
-				"for the mask to strip", wide.Count())
-		}
-		bm, _, n, err := fileDurableBitmap(m, durability.FileExtent{FileIdx: 0, Durable: wide})
-		if err != nil {
-			t.Fatalf("fileDurableBitmap: %v", err)
-		}
-		if bm.Count() != n {
-			t.Errorf("count = %d over a %d-article file — padding bits survived as durable "+
-				"articles, which over-claims durability", bm.Count(), n)
-		}
-	})
-
-	t.Run("a file index outside the manifest is an error", func(t *testing.T) {
-		if _, _, _, err := fileDurableBitmap(m, durability.FileExtent{
-			FileIdx: int32(m.NumFiles()), Durable: durability.NewBitmap(perFile),
-		}); err == nil {
-			t.Error("no error for a file index the job does not have; the caller would " +
-				"index past its own per-file slice")
-		}
-		if _, _, _, err := fileDurableBitmap(m, durability.FileExtent{
-			FileIdx: -1, Durable: durability.NewBitmap(perFile),
-		}); err == nil {
-			t.Error("no error for a negative file index")
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		run  durability.Run
+	}{
+		{"a file index the job does not have", durability.Run{FileIdx: 2, FirstArtIdx: 0, LastArtIdx: 0}},
+		{"a negative file index", durability.Run{FileIdx: -1, FirstArtIdx: 0, LastArtIdx: 0}},
+		{"articles belonging to another file", durability.Run{FileIdx: 1, FirstArtIdx: 0, LastArtIdx: 1}},
+		{"a run running past its file's end", durability.Run{FileIdx: 0, FirstArtIdx: 3, LastArtIdx: 4}},
+		{"an inverted range", durability.Run{FileIdx: 0, FirstArtIdx: 2, LastArtIdx: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := runsCoverage(m, tc.run); err == nil {
+				t.Error("no error; the caller would mark articles Done that this run " +
+					"does not describe, and the downloads it skips are silent")
+			}
+		})
+	}
 }
 
 // TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing pins the runtime
@@ -695,7 +652,7 @@ func TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing(t *testing.T) {
 
 	// A genuine barrier-minted ack first, so the state under test is not the
 	// zero state.
-	if err := q.AckDurable(mintProof(t, jobID, []int32{0}, nArts)); err != nil {
+	if err := q.AckDurable(mintProof(t, jobID, []int32{0})); err != nil {
 		t.Fatalf("AckDurable(real proof): %v", err)
 	}
 	before := outstandingFor(q, jobID)
