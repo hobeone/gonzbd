@@ -197,7 +197,7 @@ func (app *Application) hasPendingFinalize(jobID string, fileIdx int) bool {
 	return ok && st == finalizePending
 }
 
-// needsSeed reports whether a replay of the job's committed extents is owed.
+// needsSeed reports whether a replay of the job's recorded runs is owed.
 func (app *Application) needsSeed(jobID string) bool {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
@@ -578,11 +578,11 @@ func (app *Application) stallLost(jobID string, fileIdx int) {
 	app.setFinalizeState(jobID, fileIdx, finalizeLost)
 	reason := fmt.Sprintf(
 		"Stalled: completed file %d could not be trimmed and its handle has been released; "+
-			"restart gonzbd to resume this job from its committed extents", fileIdx)
+			"restart gonzbd to resume this job from its recorded runs", fileIdx)
 	if path := app.filePathFor(jobID, fileIdx); path != "" {
 		reason = fmt.Sprintf(
 			"Stalled: completed file %q could not be trimmed and its handle has been released; "+
-				"restart gonzbd to resume this job from its committed extents", path)
+				"restart gonzbd to resume this job from its recorded runs", path)
 	}
 	app.noteStallReason(jobID, reason)
 	if err := app.queue.SetWarning(jobID, reason); err != nil {

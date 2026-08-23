@@ -103,11 +103,9 @@ handling:
 
 ### Restart
 
-`JobProgress` must be sized without loading manifests. That started as needing
-only the article count per file — `job_files.articles_done` recovers it to
-within 8, so `job_files` carries an explicit `article_count` column — and
-startup stays O(1) in manifest size rather than decompressing every manifest at
-boot.
+`JobProgress` must be sized without loading manifests, so `job_files` carries
+an explicit `article_count` column and startup stays O(1) in manifest size
+rather than decompressing every manifest at boot.
 
 Deriving remaining bytes rather than maintaining them widened what a
 non-resident job must reconstruct. `Store.ArticleCountsByJob` returns a whole
@@ -115,14 +113,20 @@ non-resident job must reconstruct. `Store.ArticleCountsByJob` returns a whole
 (`FetchPolicy`, exposed as `FileMeta.Fetch`) — because the derivation reads all
 of them.
 
-A **resident** job derives downloaded bytes from the `articles_done` bitmap the
-same rows already carry, in `JobProgress.recompute`. A **non-resident** one has
-no manifest to sum, so it reads `job_files.bytes_downloaded`.
+A **resident** job derives downloaded bytes from its restored article bits, in
+`JobProgress.recompute`. A **non-resident** one has no manifest to sum, so it
+reads `job_files.bytes_downloaded`.
 
-The **article** figures come from that same `articles_done` bitmap at both
-residencies. A non-resident job cannot ask a manifest how wide each file's half
-of the blob is, so it takes the width from `job_files.article_count` — the same
-number, written by the same statement — and places each file's bits at a global
+The **article** figures are **derived, not stored**, at both residencies.
+`job_files` carries no per-article blob at all: `resolveArticles` reads the
+job's `durable_runs` rows and its `failed_articles` rows and produces the
+done/failed pair from them — `done` means "covered by a run", `failed` means
+"has a `failed_articles` row", and `failed` implies `done`. That is the
+owner-model form of what a third copy of the same state used to do:
+`job_files.articles_done` was a bitmap re-serialised wholesale on every job
+update beside the two records that already held the answer, and it is dropped
+by `003_drop_legacy_durability.sql`. A non-resident job takes each file's
+article width from `job_files.article_count` and places the bits at a global
 index derived from a running sum of the counts, which is what
 `Manifest.fileArticleOffsets` accumulates. Without this every article read as
 still to fetch, so after a restart a half-downloaded Queued or Paused job showed
@@ -134,44 +138,48 @@ survived a restart is.
 
 `bytes_downloaded` and `failed_bytes` are the two columns on `job_files` that
 summarise something, and both are **caches with a single writer** rather than
-second authorities. Each is written by the same statement that writes
-`articles_done`, so a sum cannot be persisted out of step with the bits it
-sums, and each is superseded wholesale on promotion, where
+second authorities. Each is written by the one statement that updates the
+file's row, and each is superseded wholesale on promotion, where
 `JobProgress.recompute` *assigns* it from the manifest. That is what separates
 them from `write_cursor` and `max_written`, removed for being maintained in
 parallel with facts held elsewhere (#337, #311).
 
-They are there for different reasons. `failed_bytes` cannot be re-derived at
-all: a permanently failed article never decodes, so it writes no
-`article_facts` row, and no recomputation from Class A can produce the figure.
-`bytes_downloaded` *is* derivable from Class A — but only in decoded bytes, and
-this figure is subtracted from `job_files.bytes`, the **encoded** NZB per-file
-total. It was read from `file_extents.bytes_durable` until that turned out to
-be the wrong *quantity* rather than an unavailable one: that column sums the
-decoded payload lengths an fsync proved, which run a few percent below the
-encoded figure, so every non-resident job overstated its remaining bytes by the
-encoding overhead. A column of the same name was also removed in #306, for
-having two writers; the name is reused, the shape is not.
+They are there for different reasons. `failed_bytes` is a byte figure the
+durability record cannot produce: a permanently failed article never decodes,
+so nothing is ever written for it and no `durable_runs` row covers it. What the
+record *does* hold about it is the `failed_articles` row that says it failed —
+a count, not a byte total, and the NZB-declared size behind it lives in the
+manifest a non-resident job does not have.
 
-`internal/history/migrations/001_initial.sql` records that reasoning at the
-schema, and `docs/durability-contract.md` § *The two classes of fact* records
-why `durability.FileExtent` has no failed-byte column either.
+`bytes_downloaded` *is* derivable from `durable_runs` — but only in decoded
+bytes, and this figure is subtracted from `job_files.bytes`, the **encoded**
+NZB per-file total. It was read from a decoded-byte column on the old durability
+record until that turned out to be the wrong *quantity* rather than an
+unavailable one: a run's `length` sums the decoded payload bytes an fsync
+proved, which run a few percent below the encoded figure, so every non-resident
+job overstated its remaining bytes by the encoding overhead. A column of the
+same name was also removed in #306, for having two writers; the name is reused,
+the shape is not.
+
+`internal/history/migrations/003_drop_legacy_durability.sql` records that
+reasoning at the schema, superseding `001_initial.sql`'s version of it.
 
 **Residency parity therefore holds again**: a non-resident job reports its
 downloaded, failed and remaining bytes — and its resolved, failed and pending
-article counts — from `job_files` alone, without a manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin. Its
-fixture commits Class B extents whose `BytesDurable` is seeded in **decoded**
-bytes, matching what `Barrier.buildExtent` charges, so re-routing either figure
-back through `file_extents` shows up there as a divergence rather than passing
-by unit coincidence.
+article counts — from `job_files` plus the two durability records, without a
+manifest. `TestRemainingBytes_IdenticalResidentAndNonResident` is the pin. Its
+fixture records `durable_runs` rows whose lengths are in **decoded** bytes,
+matching what the barrier actually records, so re-routing either byte figure
+back through the durability record shows up there as a divergence rather than
+passing by unit coincidence.
 
-The article-level work set is a separate question, and `job_files.articles_done`
-is not the authority on it. At startup `Application.resumeAllJobs` re-derives
-every downloading job's work set from the files' actual bytes and installs the
-result through `Queue.ReplaceFromResume`, which **clears** a bit the
-recomputation could not prove as well as setting the ones it could. That column
-is a belief a previous process wrote; the recomputation is correct by definition
-(#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —
+The article-level work set is a separate question. At startup
+`Application.resumeAllJobs` stats each of a downloading job's files, has
+`durability.Resumer` **delete** the runs of any file shorter than they claim,
+and installs what survives through `Queue.ReplaceFromRuns` — which clears a bit
+no surviving run covers as well as setting the ones that are covered. The
+restored state is what the runs said before the stat; the sweep's finding
+supersedes it (#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —
 it covers Downloading, Fetching and Paused jobs, and only at startup. A swept
 job that is not resident is hydrated for the duration of the correction and
 evicted again, so this costs no residency.
@@ -213,8 +221,8 @@ every parked failure is therefore an unbounded, silent cost.
 
 A job in a terminal phase is not dispatching, so its per-article arrays are dead
 weight; only the summary counters and per-file state are read. The plan was to
-drop those arrays on entry to a terminal phase and rehydrate them from the
-persisted `articles_done` bitmap on retry.
+drop those arrays on entry to a terminal phase and rehydrate them on retry from
+the durability records the restore path already derives them from.
 
 **Measured, and declined.** The argument above was written when
 `done`/`failed`/`emitted` were three `[]bool` and before eviction on terminal

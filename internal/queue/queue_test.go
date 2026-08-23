@@ -648,7 +648,7 @@ func TestIsDirty(t *testing.T) {
 	_ = q.Add(j)
 	_ = q.Save(dir)
 
-	// ackDone (SeedFromExtents) sets dirty.
+	// ackDone (SeedFromRuns) sets dirty.
 	msgID := mustManifest(t, j).ArticleID(0)
 	ackDone(t, q, j.ID, msgID)
 	if !q.IsDirty() {
@@ -680,7 +680,7 @@ func TestIsDirty(t *testing.T) {
 	}
 	_ = q.Save(dir)
 
-	// ackDone (SeedFromExtents), batched, sets dirty.
+	// ackDone (SeedFromRuns), batched, sets dirty.
 	j2 := makeJob(t, "batch-done", constants.NormalPriority)
 	_ = q.Add(j2)
 	gotJ2, _ := q.Get(j2.ID)

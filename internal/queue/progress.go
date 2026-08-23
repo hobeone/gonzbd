@@ -791,8 +791,13 @@ type fileProgressJSON struct {
 // emitted in particular must never survive a restart: on crash recovery, any
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
-// marks an article as written, and it is set only once the bytes have reached
-// WriteAt (#355), so the pair is consistent.
+// marks an article as resolved, and nothing sets it from dispatch: markDone is
+// reached only from AckDurable, which needs a DurableProof a completed fsync
+// minted, and from SeedFromRuns/ReplaceFromRuns, which replay runs that same
+// fsync recorded. markFailed sets it too, for an article whose bytes will
+// never arrive. So a persisted done bit always stands on a completed fsync or
+// a permanent failure — never on a write that was merely attempted (#355) —
+// and the pair is consistent.
 type jobProgressJSON struct {
 	Done   []bool             `json:"done"`
 	Failed []bool             `json:"failed"`

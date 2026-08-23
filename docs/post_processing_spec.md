@@ -217,20 +217,20 @@ This produces a CRC32 that matches what par2 records as the **file-level CRC32**
 > describes SABnzbd and remains accurate about SABnzbd; the `Go:` directive
 > below is dead and must not be implemented as written.**
 >
-> GoNZBD does **not** maintain a running combined CRC at write time. The
-> assembler has no authority to record a whole-file CRC at all, and nothing
-> accumulates `crc32_combine` per write. Instead `durability.Resumer`
-> recomputes a gapless-prefix CRC from the bytes on disk during resume, guarded
-> by `HasPrefixCRC`, and that is the only CRC the design produces — deliberately
-> off the barrier's critical path.
+> GoNZBD does **not** maintain a running combined CRC at write time, and the
+> assembler has no authority to record a whole-file CRC at all. The value comes
+> from the durability record instead: each `durable_runs` row carries the
+> `crc32_combine` of the articles that merged into it, so a file whose articles
+> all abut collapses to a **single** row at offset 0 whose `crc32` *is* the
+> whole-file CRC — already computed, on stable storage, with no read of the
+> file. It is a query, not a walk.
 >
-> Consequence, recorded honestly: nothing threads that value to
-> `Queue.SetFileCRC32`, which has no production caller, so
-> `FileProgress.AssembledCRC32` is zero for every freshly downloaded file. Zero
-> is the documented "unavailable" value, QuickCheck reads it as `NoCRC`, and the
-> par2 bypass described below therefore does **not** happen. That is *Accepted
-> limitations #4* in [`durability-contract.md`](durability-contract.md), not a
-> claim that the optimisation is present.
+> `Application.recordAssembledCRC` threads that value to `Queue.SetFileCRC32`
+> when the file finalizes, so `FileProgress.AssembledCRC32` is populated for a
+> file whose bytes tile it exactly. A file that keeps more than one row — a hole,
+> or an article overlapping a sibling — supplies nothing, and zero is the
+> documented "unavailable" value: the verify reads it as `NoCRC` and par2 runs.
+> See §4 of [`durability-contract.md`](durability-contract.md).
 
 Go (superseded): implement `crc32Combine(crc1, crc2 uint32, len2 int64) uint32`
 using GF(2) matrix doubling — see zlib's `crc32_combine64`. Keep

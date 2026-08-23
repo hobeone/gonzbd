@@ -100,10 +100,13 @@ type Queue struct {
 	// every reversal of one, and failedGen makes that serialisation ordered
 	// rather than merely exclusive.
 	//
-	// Both writes happen outside mu — the project bans I/O under a lock — so
+	// The INSERT happens outside mu — the project bans I/O under a lock — so
 	// exclusion alone does not settle the outcome. AckPermanentFailure marks
-	// an article failed under mu and INSERTs after releasing it; a reversal
-	// clears the bit under mu and DELETEs after releasing it. Interleaved,
+	// an article failed under mu and INSERTs after releasing it. Of the two
+	// reversals, ClearAllEmitted matches that shape: it clears the bits under
+	// mu and DELETEs after releasing it. Queue.Retry does NOT — it deletes
+	// while still holding mu, which is why the LOCK ORDER note below exists
+	// at all. Interleaved,
 	// the INSERT can land after the DELETE and leave a row with no in-memory
 	// bit behind it, which the next RestoreJobProgress reads back as
 	// Failed+Done. The article is then never re-fetched. This is not a
@@ -127,6 +130,16 @@ type Queue struct {
 	// LOCK ORDER: mu before failedPersistMu. Queue.Retry deletes while
 	// holding mu and so takes both; nothing takes mu while holding
 	// failedPersistMu.
+	//
+	// That nesting has a COST worth naming rather than discovering: Retry
+	// blocks on failedPersistMu with mu held, so an AckPermanentFailure whose
+	// INSERT is slow — a stalled disk, a locked database — holds the queue
+	// lock shut for the duration of that INSERT, and every reader of the
+	// queue waits behind it. It is accepted rather than overlooked. Doing the
+	// delete after releasing mu would put it in the same shape as
+	// ClearAllEmitted's, but Retry's delete is ordered against an Update in
+	// the same critical section (see Queue.Retry), and splitting the two is
+	// what would leave a stale failed row beside a reset job.
 	failedPersistMu sync.Mutex
 	failedGen       atomic.Uint64
 

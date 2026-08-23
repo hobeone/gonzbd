@@ -233,7 +233,7 @@ func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 // TestResumeAllJobs_SeedsResidentAndSkipsNonResident pins the residency rule
 // in both directions at once.
 //
-// ReplaceFromResume installs bits into the LIVE job's progress, which needs a
+// ReplaceFromRuns installs bits into the LIVE job's progress, which needs a
 // resident manifest. A non-resident job cannot be seeded, and the sweep must
 // step over it rather than fail the whole startup — while the resident job
 // beside it is still seeded.
@@ -631,14 +631,14 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 	}, {
 		// A paused job is mid-download: nothing but the assembler has ever
 		// written its files. Skipping it let #362 survive in that branch —
-		// the disproven Done bits were never corrected, and priorExtent ORs
-		// the stored bitmap, so the next checkpoint re-committed them with a
-		// fresh matching stamp and the file finalized over a hole. It is also
-		// the branch Application.Stall leaves jobs in, which is what made
+		// nothing stats the file, so runs the file on disk no longer supports
+		// are never discarded, RestoreJobProgress derives Done from them
+		// again on the next start, and the file finalized over a hole. It is
+		// also the branch Application.Stall leaves jobs in, which is what made
 		// stallLost's "restart gonzbd to resume this job" unable to work.
 		//
 		// It is NOT resident, so this case also covers the hydration
-		// ReplaceFromResume does for the duration of the correction.
+		// ReplaceFromRuns does for the duration of the correction.
 		name:       "paused is swept",
 		walk:       []constants.Status{constants.StatusPaused},
 		wantSwept:  true,
@@ -647,7 +647,7 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 		name:       "verifying is skipped",
 		walk:       []constants.Status{constants.StatusVerifying},
 		wantSwept:  false,
-		wantReason: "par2 rewrote this file and its bytes are correct; the fact log describes what the assembler wrote, not what the repair produced",
+		wantReason: "par2 rewrote this file and its bytes are correct; the durable runs describe what the assembler wrote, not what the repair produced",
 	}, {
 		name:       "moving is skipped",
 		walk:       []constants.Status{constants.StatusVerifying, constants.StatusMoving},

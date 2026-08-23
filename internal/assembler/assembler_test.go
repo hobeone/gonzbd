@@ -1545,8 +1545,9 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 
 	written, err := a.SyncTargetFor("real-job").Drain(t.Context(), 0)
 	if err != nil {
-		t.Fatalf("Drain: %v — an out-of-range ArtIdx fails the barrier's "+
-			"file-local ordinal lookup, which is what the request's 99 would be", err)
+		t.Fatalf("Drain: %v — the drain report is where the request's out-of-range "+
+			"99 would surface, as a durable run naming an article the job's "+
+			"manifest does not have", err)
 	}
 	gotIdx := make([]int32, 0, len(written))
 	for _, w := range written {

@@ -143,20 +143,29 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    the rest of the assembler's authority (see
    [`docs/durability-contract.md`](durability-contract.md)).
 
-   The replacement is `FileExtent.PrefixCRC`, guarded by `HasPrefixCRC` and
-   combined from the **Class A facts** rather than from the articles one run
-   happened to see. Facts persist across restarts, so they name every article
-   of the file whichever run fetched it — a *resumed* file supplies a CRC as
-   readily as a fresh one, which the old design could not.
-   `durability.verifiedPrefix` combines them during the walk it already
-   performs, with no read of the file, and `Application.recordAssembledCRC`
-   threads the result to `Queue.SetFileCRC32` when the file finalizes — but
-   only when the walk both reached the file's end and consumed every fact, so
-   a file with an article overlapping a sibling supplies no CRC rather than one
-   describing bytes it may not hold.
+   The replacement is the `crc32` of the file's single **durable run**. A run
+   combines the CRCs of the articles that abut as they join it, and the runs
+   persist across restarts, so they account for every article of the file
+   whichever run fetched it — a *resumed* file supplies a CRC as readily as a
+   fresh one, which the old design could not. No read of the file is involved
+   (R24), and `Application.recordAssembledCRC` threads the value to
+   `Queue.SetFileCRC32` when the file finalizes — but **only when the file
+   holds exactly one run and that run starts at offset 0**. A file with an
+   article overlapping a sibling keeps that article in a row of its own, so it
+   has more than one row and supplies no CRC rather than one describing bytes
+   it may not hold (#387).
 
-   A file whose gapless prefix stops short of its end — a permanently failed
-   article leaves a hole — still reads as `NoCRC`, which is zero's documented
+   **The consumer is `par2.VerifyCRCs`, not `par2.QuickCheck`.** The two are
+   easy to conflate because the *stage* is named quickcheck. `par2.QuickCheck`
+   is filename relocation — it moves flat downloads into the subdirectory paths
+   a par2 manifest references, and where it does compare a checksum it computes
+   one itself from disk (`tryMatchCRC32File` takes a path). It never reads
+   `AssembledCRC32`. What our recorded CRC buys is one read of each file inside
+   `par2.VerifyCRCsWithOptions`, which both `stage_quickcheck.go` and
+   `app.par2NeedsRecovery` call.
+
+   A file that holds more than one run — a permanently failed article leaves a
+   hole, and a hole means a gap between rows — reads as `NoCRC`, which is zero's documented
    "unavailable" meaning rather than a mismatch, so `unverifiable > 0` and the
    stage lands on `Damaged`. The consequences stay conservative in both places
    that consume the verdict: `repair` is not bypassed by clause one, and

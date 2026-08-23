@@ -51,9 +51,9 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Two articles land: 0 at [0,100) and 2 at [200,300). Article 1 never
-	// arrives, so the file carries a hole and the gapless prefix stops at 100
-	// while the real extent reaches 300. If the truncate used VerifiedTo, this
-	// file would come back 100 bytes long.
+	// arrives, so the file carries a hole: the first run ends at 100 while the
+	// highest end offset the record holds reaches 300. If the bound stopped at
+	// the hole, this file would come back 100 bytes long.
 	for _, art := range []struct {
 		idx int32
 		off int64

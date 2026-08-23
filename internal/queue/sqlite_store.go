@@ -579,8 +579,8 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	// columns exist — they are for the NON-resident path (ArticleCountsByJob),
 	// where there is no manifest to recompute from;
 	// The write cursor and high-water mark are gone entirely: the completion
-	// truncate derives its bound from the durable facts rather than from a
-	// seed, and the coalescing cursor is local to the assembler's cache.
+	// truncate derives its bound from the file's durable runs rather than from
+	// a seed, and the coalescing cursor is local to the assembler's cache.
 	// The job's article resolution, derived once for the whole job from
 	// durable_runs and failed_articles. It replaces the per-file
 	// job_files.articles_done blob this loop used to unpack, and it is read

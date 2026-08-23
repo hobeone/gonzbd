@@ -33,10 +33,11 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 // failure AFTER the fsync — a Stat timeout, a failed RunStore.Commit, an
 // AckDurable answering ErrJobNotResident — therefore lost the report exactly as
 // it did before the retention existed. The reported field's own doc claimed
-// coverage of "the sync, the commit, the truncate"; only the first was real.
+// coverage of "the sync, the run commit, the truncate"; only the first was
+// real.
 //
 // Losing it is not losing the bytes, but it is losing the file. Those articles
-// keep their bytes on disk and are never acked and never earn a durable bit,
+// keep their bytes on disk and are never acked and never named by a run,
 // and a redelivery is dropped by handleSuccessArticle's seenDone check with no
 // write and no partsWritten increment — so the file cannot complete for the
 // life of the handle.

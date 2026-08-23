@@ -250,29 +250,28 @@ purpose, against a real defect. Both produced a **completed file with a hole in
 it**: the daemon declared the job finished and moved a file to the complete
 directory whose destroyed region read back as zeros.
 
-The cause was that the recomputation was discarded rather than wrong.
-`durability.Resumer` got the right answer — the daemon logs
-`articles_durable=16 facts=33` for a file truncated in half — but the startup
-sweep installed it through `Queue.SeedFromExtents`, which only *sets* durable
-bits and never clears one, while `Store.RestoreJobProgress` had already
-restored `job_files.articles_done` with every article the last barrier acked.
-So the queue's own cache of the same fact outranked the recomputation that
-disproved it, which is exactly the precedence S4 inverts.
+The cause was that the resume's finding was discarded rather than wrong.
+`durability.Resumer` got the right answer for a file truncated in half — but
+the startup sweep installed it through the **additive** seeding entry point,
+which only *sets* durable bits and never clears one, while
+`Store.RestoreJobProgress` had already restored every article the last barrier
+acked. So the queue's restored state outranked the finding that disproved it.
 
-The fix (#362) is `Queue.ReplaceFromResume`: a second, **authoritative**
-seeding entry point that the startup sweep uses in place of `SeedFromExtents`,
-because it is the one caller that has just read the files' bytes. Every other
-seeding path — `Application.reevaluateStall`'s phase 3 — is replaying an ack
-that already landed and stays additive. `TestSeedFromExtents_StaysAdditive` and
-`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade` are the guards
+The fix (#362) is `Queue.ReplaceFromRuns`: a second, **authoritative** seeding
+entry point that the startup sweep uses in place of `SeedFromRuns`, because it
+is the one caller that has just stat'ed the files and deleted the runs a file
+contradicts. Every other seeding path — `Application.reevaluateStall`'s phase 3
+— is replaying an ack that already landed and stays additive.
+`TestSeedFromRuns_StaysAdditive` and
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` are the guards
 on that split; they are the only tests in the repository that redden when the
 two entry points are merged.
 
 Making the sweep authoritative also turned two of the other four tests into
 real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the
 no-refetch half of `TestExternalModification_AppendedGarbageIsTrimmed` used to
-pass with `durability.Resumer.Resume` neutered to return an empty bitmap,
-because `articles_done` alone kept those articles off the wire. With the sweep
+pass with `durability.Resumer.Resume` neutered to return no runs, because the
+restored state alone kept those articles off the wire. With the sweep
 authoritative, that neutering reddens both — observed, not reasoned.
 
 **Do not silence a failing test here by weakening it.** The assertions are

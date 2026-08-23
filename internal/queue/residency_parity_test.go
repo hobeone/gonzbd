@@ -260,12 +260,12 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 // same property: a real restart, through Load, of a job that stays
 // non-resident afterwards.
 //
-// It is the test that could not pass while the failed-byte cache lived in
-// file_extents.bytes_failed, because nothing ever wrote that column — the
-// barrier commits only what its fsync made true, and a permanently failed
-// article never decodes, so it has no Class A record for the barrier to
-// derive one from. The figure now caches in job_files.failed_bytes, beside
-// the article resolution it sums and written by the same statement.
+// It is the test that could not pass while the failed-byte cache lived on the
+// durability record, because nothing ever wrote that column — the barrier
+// commits only what its fsync made true, and a permanently failed article
+// never decodes, so it is never written and no durable run covers it. The
+// figure caches in job_files.failed_bytes instead, written by the one
+// statement that updates the file's row.
 func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
 	store, dir, _ := setupResidencyTestStoreWithDB(t)
 	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)

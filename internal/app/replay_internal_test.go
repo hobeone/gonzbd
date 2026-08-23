@@ -16,8 +16,8 @@ import (
 //
 // Nothing then retried it. Every article is Done so nothing is dispatched,
 // FileProgress.Complete stays false, and RestoreJobProgress restores that flag
-// only from the persisted column with no fallback deriving it from
-// articles_done. The job is wedged, across restarts.
+// only from the persisted column with no fallback deriving it from the
+// article states. The job is wedged, across restarts.
 //
 // The finalize itself succeeded, so the file is recorded finalizeDone: the
 // recovery loop's phase 1 must skip it rather than run a barrier over a handle
@@ -57,13 +57,13 @@ func TestHandleFileComplete_RecordsACompletionItCouldNotDeliver(t *testing.T) {
 // TestCheckpointJob_RecordsAJobWhoseAckCouldNotLand pins the replay for
 // finding 9.
 //
-// Barrier.Run commits Class B and then acks. AckDurable resolves through
+// Barrier.Run commits the durable runs and then acks. AckDurable resolves through
 // residentJob, which fails for a job evicted between checkpointAll's
 // OpenJobIDs and the call — including by a concurrent Stall on another file of
 // the same job. checkpointJob's whole response was a Warn.
 //
 // The durable bits are on stable record and nothing replayed them into the
-// live work set: seedFromCommittedExtents is reachable only from
+// live work set: seedFromCommittedRuns is reachable only from
 // reevaluateStall, and the job was not on the stall list because this failure
 // never went through routeFault. retryFinalize treats the identical error as
 // recoverable and documents the replay; Run was not given the same treatment.

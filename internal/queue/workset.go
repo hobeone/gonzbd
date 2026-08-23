@@ -26,10 +26,13 @@ import (
 // proof-gated" as "nothing marks an article done without a barrier".
 //
 // Both of those doors are narrower than they were, though, and it is worth
-// saying why: they take durability.Run values, which only RunStore constructs
-// and which the store writes only after the barrier's fsync. The types they
-// replaced carried a fully exported, settable Bitmap that any package could
-// build from nothing.
+// saying exactly how far that goes. durability.Run is an exported struct with
+// exported fields, so ANY package can build one — the narrowing is not that
+// the type is unforgeable. It is that a Run carries an article RANGE and a
+// byte range that runsCoverage validates against the job's own manifest, where
+// the FileExtent these replaced carried a fully exported, settable Bitmap
+// whose set bits were taken at face value. A caller that fabricates a Run
+// still has to name articles the manifest has.
 //
 // Before this design the assembler could ack from six places, each
 // independently responsible for knowing that acceptance into a buffer is not
@@ -232,7 +235,8 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 // uses ReplaceFromRuns instead. Do not merge the two back into one entry
 // point, with or without a flag: the union of the two contracts is either #362
 // (a stale bit outliving the check that disproved it) or a stall recovery that
-// throws away live acks.
+// throws away live acks. TestSeedFromRuns_StaysAdditive is the guard on this
+// half, and it reddens when the two are merged.
 //
 // The indexing rule that makes both safe lives in runsCoverage; see its doc.
 func (q *Queue) SeedFromRuns(jobID string, runs []durability.Run) error {
@@ -267,7 +271,7 @@ func (q *Queue) SeedFromRuns(jobID string, runs []durability.Run) error {
 // # Why an authority is needed at all
 //
 // Store.RestoreJobProgress derives every article's state from the SAME runs
-// before any of thisdispatches, so on the ordinary path the two agree. They
+// before any of this dispatches, so on the ordinary path the two agree. They
 // diverge in exactly one case, and it is the case that matters:
 // durability.Resumer stats each file and DELETES the runs of a file shorter
 // than they claim. The sweep therefore hands back a smaller set than the

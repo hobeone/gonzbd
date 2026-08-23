@@ -57,18 +57,18 @@ type FileWriter struct {
 	// Sync — is what finally discards it.
 	//
 	// The distinction is the whole point. A successful fsync makes the bytes
-	// durable, but the barrier still has to build the extent, commit it and
-	// ack the articles, and all three can fail after it. Releasing on the
+	// durable, but the barrier still has to commit the run rows and ack the
+	// articles, and both can fail after it. Releasing on the
 	// fsync covered only the first of the failures this retention exists for,
 	// while the doc below claimed all three.
 	//
 	// This is R12's at-least-once delivery, which SyncTarget.Drain explicitly
 	// blesses ("re-reporting an article a previous Drain already returned is
 	// permitted and expected"), and it is load-bearing rather than tidy. A
-	// barrier that drains and then fails — the sync, the extent commit, the
+	// barrier that drains and then fails — the sync, the run commit, the
 	// truncate — used to lose the report outright. For a file still being
 	// written that only cost a re-fetch. For a COMPLETED file it costs bytes:
-	// the retry drains nothing, so the durable extent FinalizeFile trims to
+	// the retry drains nothing, so the bound FinalizeFile trims to
 	// sits below bytes that are genuinely on disk, and the truncate destroys
 	// them. That is the #342/#350 family arriving through the recovery path.
 	//

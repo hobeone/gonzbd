@@ -524,7 +524,7 @@ func TestSeedFromRuns_StaysAdditive(t *testing.T) {
 }
 
 // TestMarkNotDone_GuardsWhatItMayUndo pins the inverse of markDone at its own
-// level, because two of its three arms are invisible from ReplaceFromResume's
+// level, because two of its three arms are invisible from ReplaceFromRuns'
 // return value — it reports nothing, and both refusals leave the article
 // exactly as it found it.
 //

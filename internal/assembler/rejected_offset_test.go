@@ -22,7 +22,8 @@ import (
 // the job sits at 100%% with zero outstanding articles across restarts.
 //
 // Counting it claims nothing about its bytes. The truncate bound is derived
-// from Class A, a rejected article decoded no fact and earns no durable bit,
+// from the file's durable runs, a rejected article is never written so no run
+// ever covers it,
 // and its bytes are charged to failedBytes — so the file finishes with a hole
 // par2 repairs from, which is exactly what a permanently failed article
 // already does through handleFatalArticle.

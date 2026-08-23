@@ -355,7 +355,7 @@ func TestCounterConsistencyUnderRandomMutations(t *testing.T) {
 		op := rng.IntN(4)
 		id := pick()
 		switch op {
-		case 0: // MarkArticlesDone (now SeedFromExtents via ackDone)
+		case 0: // MarkArticlesDone (now SeedFromRuns via ackDone)
 			ackDone(t, q, "prop", id)
 		case 1: // MarkArticlesFailed (now AckPermanentFailure via ackFailed)
 			ackFailed(t, q, "prop", id)

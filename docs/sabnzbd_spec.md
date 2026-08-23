@@ -285,7 +285,7 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 ### 4.4 Queue Persistence
 
 - **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`history.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
-- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `jobs`, `job_files` and `queue_meta` tables, plus per-article download durability in `article_facts` and `file_extents`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
+- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `jobs`, `job_files` and `queue_meta` tables, plus download durability in `durable_runs` and `failed_articles`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
 - **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
@@ -297,20 +297,23 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 **Download durability** is a separate concern from queue state and has its own
 two tables, both keyed by job ID:
 
-- `article_facts` — immutable Class A facts, one row per decoded article:
-  `{file_idx, offset, length, crc32}`. Appended at decode time with no ordering
-  against the write, because the fact asserts nothing about presence on disk.
-- `file_extents` — the Class B derivation cache, one row per file: a per-article
-  durable bitmap, the gapless-prefix length and its CRC, the durable byte count,
-  and a size/mtime stamp. Written **only** by `durability.Barrier`, strictly
-  after the `fsync` that makes its claims true, and never authoritative — a
-  recomputation from `article_facts` plus the file's bytes supersedes it.
+- `durable_runs` — one row per contiguous **run** of articles made durable
+  together: `{file_idx, first_art_idx, last_art_idx, offset, length, crc32}`.
+  Written **only** by `durability.Barrier`, strictly after the `fsync` that
+  makes it true, so it asserts presence as well as content. Adjacent rows
+  merge, so a file whose articles arrive in order collapses to a single row at
+  offset 0 whose `crc32` is the whole-file CRC.
+- `failed_articles` — one row per permanently failed article: `{job_id,
+  art_idx}`. Written solely by `internal/queue`. A failed article never
+  decodes, so no run ever covers it, and this is the only record that it will
+  not arrive.
 
-On restart, every downloading job's work set is re-derived from those two plus
-the files themselves; the derived answer replaces `job_files.articles_done`
-rather than merging with it. GoNZBD has no equivalent of SABnzbd's repair
-modes 1 and 2 (rescan/reconstruct from the incomplete directory); the resume
-sweep covers the same ground from recorded facts instead of a directory scan.
+On restart, every downloading job's article state is derived from those two
+records, and the resume sweep then does one `stat` per file: a file shorter
+than its runs claim has them deleted and is fetched again. GoNZBD has no
+equivalent of SABnzbd's repair modes 1 and 2 (rescan/reconstruct from the
+incomplete directory); the resume sweep covers the same ground from the
+recorded runs instead of a directory scan.
 See [`docs/durability-contract.md`](durability-contract.md).
 
 ### 4.5 Duplicate Detection

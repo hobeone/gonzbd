@@ -643,7 +643,7 @@ var errFatalProbe = errors.New("permanent article failure (test)")
 // survives process death, so a SIGKILL cannot distinguish a synced file from an
 // unsynced one, and POSIX_FADV_DONTNEED / drop_caches both skip dirty pages.
 // Real coverage needs a device-mapper log-writes or flakey target, which needs
-// root. See docs/durability-contract.md, Accepted limitations #5, and #363.
+// root. See docs/durability-contract.md, Accepted limitations #7, and #363.
 //
 // So this is "the program calls fsync in the right order", not "the bytes are
 // on the platter". The second claim remains unverified in this repository.

@@ -25,19 +25,19 @@ end, rather than left for a reader to discover.
 once.** This is the design's own answer under S3, not an oversight, and nothing
 softer preserves the invariant.
 
-Such a job has `job_files.articles_done` bits from the old build, but no
-`article_facts` rows and no `file_extents`. The startup sweep therefore has no
-recorded region for any of its articles, cannot verify a single byte, and
-returns every article to Outstanding. The partial files on disk are overwritten
-in place by the re-download.
+Such a job has no `durable_runs` rows. Article resolution is **derived** from
+those rows — `done` means "covered by a run" — so with none, every article is
+Outstanding and the partial files on disk are overwritten in place by the
+re-download.
 
-The alternative — "there is no evidence, so trust the column" — is
-indistinguishable at runtime from a lost or truncated fact log, which is
+There is nothing to override, and that is the point of deriving the answer
+rather than storing it separately. An earlier shape kept a `job_files.articles_done`
+bitmap beside the durability record, and "there is no evidence, so trust the
+column" was indistinguishable at runtime from a lost or truncated record —
 precisely the case #362 exists to catch: a partial file that was truncated or
 deleted out of band finishing as a complete file with a zero-filled hole in it,
-silently. There is no signal that separates "this job predates the fact log"
-from "this job's fact log is gone", so any rule that trusts the column in the
-first case also trusts it in the second.
+silently. The column is gone (`003_drop_legacy_durability.sql`), so the
+question no longer arises.
 
 Completed jobs, history, configuration and the queue's ordering are unaffected.
 Only in-progress downloads pay, and only once.
@@ -48,11 +48,17 @@ Nine open issues (#306, #311, #337, #344, #349, #353, #355, #356, #357) and five
 of the eight merged fixes before them (#305, #315, #341, #343, #350) were two
 defects wearing different clothes — see
 `docs/superpowers/specs/2026-08-11-download-durability-design.md` for the full
-derivation. The dominant one is **a fact recorded before the thing it asserts
+derivation. The dominant one is **a claim recorded before the thing it asserts
 becomes true**: an article marked `Done` while its bytes sat in a memory buffer
 (#355, refiled as #356), a truncate bound describing one process's writes applied
 to a file built by several (#342, #350), a CRC over a subrange reported as the
 CRC of a file (#349).
+
+**A second round of that same family is why there is now one record rather than
+two** (#389, #421, #423). The first design kept a per-article record written at
+decode time — before the write, and unordered against it — beside a per-file one
+written after the fsync. Two writers describing one download disagreed, and each
+disagreement was a defect of exactly the shape above. See § *One record*.
 
 The costs are asymmetric, and that asymmetry is the whole design:
 
@@ -64,41 +70,83 @@ The costs are asymmetric, and that asymmetry is the whole design:
   No later run re-dispatches that article, and the file stays short. Without
   par2 it is silent.
 
-So every rule below resolves ambiguity toward re-fetching, and the one claim
-that can over-claim — "this article is on disk" — is made in exactly one place
-and is enforced by the compiler rather than by review.
+So every rule below resolves ambiguity toward re-fetching. The one claim that
+can over-claim — "this article is on disk" — is now **written in exactly one
+place**: `durability.Barrier`, after an `fsync` it performed, and nothing else
+writes a `durable_runs` row. Stating the bound precisely, because a looser
+version of this sentence has misled before: what the *compiler* enforces is
+narrower than that, covering `Queue.AckDurable`'s proof payload and that door
+only (§1). Sole authorship of the record is enforced by there being one writer,
+not by the type system.
 
-## The two classes of fact
+## One record
 
-Everything persisted about download progress is either Class A or Class B. Which
-class a fact belongs to determines whether it needs a barrier.
+Everything persisted about download progress that concerns *bytes on disk* is
+one record, in one table, with one writer.
 
-| | **Class A — `durability.ArticleFact`** | **Class B — `durability.FileExtent`** |
+```
+durable_runs(job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32)
+```
+
+One row per **run**: a maximal span of articles that abut in **both** byte
+offset and article index and were made durable by the same `fsync`. Adjacent
+rows merge — combine the CRCs, sum the lengths, widen the index range — so a
+file whose articles arrive in order collapses toward a single row at offset 0
+whose `crc32` is the whole-file CRC.
+
+| | **`durability.Run`** |
+|---|---|
+| Content | `{FileIdx, FirstArtIdx, LastArtIdx, Offset, Length, CRC32}` |
+| Asserts | the bytes at `[Offset, Offset+Length)` **are** present on stable storage, and they hash to `CRC32` |
+| True from | only after a completed `fsync` |
+| Ordering vs. the write | strictly after the `fsync` (S1, S2) |
+| Written by | `durability.Barrier`, and nothing else. `durability.Resumer` may only **delete**. |
+| Authoritative | **yes** — gated on one `stat` per file at startup (S4, inverted; see §6) |
+| Losing a suffix costs | a re-fetch (R3), which is the routine cost of an unclean shutdown |
+| Stored in | `durable_runs` |
+
+**This replaced two records with independent writers, and the replacement is
+the design.** Until this change the same download was described twice: a
+per-article Class A `ArticleFact` appended at decode with no ordering against
+the write, and a per-file Class B `FileExtent` committed by the barrier after
+the fsync. Two writers describing one thing can disagree, and every
+disagreement was a defect — #389 recorded an article the assembler then
+rejected, #421 recorded a bogus yEnc offset permanently because the store was
+append-only and re-fetching was the one mechanism `INSERT OR IGNORE` ignored.
+Both classes are gone, along with the contiguity apparatus that existed to
+reconcile them: `verifiedPrefix`, the abutment walk, `durableAt`, the durable
+`Bitmap`, and both of `FinalizeFile`'s guards. The full argument is
+`docs/superpowers/specs/2026-08-22-single-durability-record-design.md`.
+
+The second table is **`failed_articles`** — `{job_id, art_idx}`, one row per
+permanently failed article. It is not a durability record and `internal/durability`
+never touches it: a failed article never decodes, so nothing was ever written
+for it and no run could cover it, and `internal/queue` is its sole writer.
+
+One consequence worth stating explicitly, because it has been got wrong:
+**neither record carries a failed-byte figure, and neither can.** No sum over
+runs can produce it, because a failed article has no run; and `failed_articles`
+carries an index, not a size, while the NZB-declared size behind it lives in
+the manifest a non-resident job does not hold. It is cached in
+`job_files.failed_bytes` instead.
+`internal/history/migrations/003_drop_legacy_durability.sql` records that
+reasoning at the schema, superseding `001_initial.sql`'s version of it.
+
+### What changed against the previous contract
+
+A reader who knows the two-record version will otherwise carry forward rules
+that no longer hold. Two are **deleted**, two are **amended**, one **improves**,
+and one is new. Each change is argued at the section named.
+
+| Rule | Was | Now |
 |---|---|---|
-| Content | `article → {FileIdx, Offset, Length, CRC32}` | durable bitmap, `VerifiedTo`, `PrefixCRC`, `BytesDurable`, `Size`, `ModTimeNs` |
-| Asserts | *If* the bytes at `[Offset, Offset+Length)` are present, they hash to `CRC32`. **Nothing about presence.** | Those bytes **are** present on stable storage. |
-| True from | the moment the article is decoded — and forever after | only after a completed `fsync` |
-| Ordering vs. the write | **none** (R2). May be committed before, during or after the write, or when the write never happens at all | strictly after the `fsync` (S1) |
-| Barrier required | no | yes during a download — `durability.Barrier` is the only writer once articles are arriving. `durability.Resumer` also writes, at startup only, when a recomputation disproves the stored record (see §Resume write-back). |
-| Authoritative | yes (S5) | **never**. Where it disagrees with a recomputation, the recomputation is correct by definition (S4) |
-| Losing a suffix costs | a re-fetch (R3), and a skipped truncate if the file completes first (§4) | a recomputation |
-| Stored in | `article_facts` | `file_extents` |
-
-Two consequences worth stating explicitly, because both have been got wrong:
-
-- **Class A is appended at decode time and is deliberately not ordered against
-  the write** (`pipeline.appendArticleFacts`). Adding an ordering there would
-  destroy the property that makes Class A cheap. The append runs on a
-  `context.WithoutCancel` copy of the caller's context, bounded by
-  `factAppendTimeout` (5s), because a shutdown that cancels the pipeline while
-  an article is still being applied can still let the write land — and a fact
-  lost to that race makes a resume unable to prove bytes that are on disk.
-- **`FileExtent` has no failed-byte field, and cannot.** A permanently failed
-  article never decodes, so it never writes an `ArticleFact`, so no
-  recomputation from Class A could reproduce such a figure — it would be the one
-  field S4 could not be applied to. It is cached in `job_files.failed_bytes`
-  instead, beside the `articles_done` bits it sums. `internal/history/migrations/001_initial.sql`
-  records the same reasoning at the schema.
+| **R1** — the record is immutable | `INSERT OR IGNORE`; a re-delivery could not correct a bad row, which is #421 | **deleted.** Merging is read-modify-write, and the newest `fsync` is the newest truth. The threat R1 guarded — a record describing bytes that were never written — is *unreachable* rather than rare, because the record is now built from what a completed `Drain` reported after a completed `fsync`. |
+| **R2** — the record is not ordered against the write | may be committed before, during or after the write, or when the write never happened at all | **deleted.** The record exists only after a completed `fsync` (S1, S2). |
+| **S4** — a recomputation beats the stored record | the done-set was rebuilt from the per-article facts plus a disk read, and the stored record was *never* authoritative | **INVERTED.** The record is authoritative, gated on one `stat`. See §6 — this is the change most likely to be misread. |
+| **S7** — the validity stamp | `(size, mtime)`; a mismatch fell through to a recomputation | **narrowed to size**, and `ModTimeNs` is deleted. See §6 for why the *response* to a mismatch, not the stamp, decides this. |
+| **S5** — no second copy to drift | two records, two `FinalizeFile` guards | **improved.** One record; both guards and `file_extents` gone (§4). |
+| **Writers to the record** | **two** — the barrier's commit, and `Resumer.writeBack` | **one** — the barrier. The resume only *deletes* (§6). |
+| **S1, S2, S6, R3** | — | unchanged. R3 is now the routine cost of an unclean shutdown rather than an edge case. |
 
 ## The state of an article
 
@@ -106,22 +154,24 @@ Two consequences worth stating explicitly, because both have been got wrong:
                   decoded                writeAt returned nil        fsync returned nil
   Outstanding ───────────────► Decoded ──────────────────────► Written ──────────────────► Durable
        ▲                          │                               │                          │
-       │                          │ appends a Class A fact        │                          │ Barrier mints a
-       │                          │ (no barrier, no ordering)     │                          │ DurableProof
-       │                          ▼                               │                          ▼
-       │                    article_facts ──────────┐             │                    Queue.AckDurable
-       │                                            │             │                          │
-       └────────────────────────────────────────────┼─────────────┘                          ▼
-          a write failure, a storage fault, or a    │                                  ARTICLE IS DONE
-          restart that cannot prove the bytes       │                                        ▲
-          returns the article to Outstanding        │                                        │
-          — never Failed                            │  ON RESTART, the SECOND way in:        │
-                                                    │  Resumer re-reads the file and checks  │
-                                                    └─►the bytes against the recorded CRC; ──┘
-                                                       Queue.ReplaceFromResume then resolves
-                                                       it — no barrier, no proof, no fsync by
-                                                       this process. Evidence is stable
-                                                       storage. See §1.
+       │                          │ nothing is persisted          │                          │ Barrier commits the
+       │                          │ here — the CRC just rides     │                          │ RUN, then mints a
+       │                          │ along to the drain report     │                          │ DurableProof
+       │                          │                               │                          ▼
+       │                          │                               │                    durable_runs
+       │                          │                               │                          │
+       └──────────────────────────┴───────────────────────────────┘                          ▼
+          a write failure, a storage fault, or a                                     Queue.AckDurable
+          restart with no run covering the article                                           │
+          returns the article to Outstanding                                                 ▼
+          — never Failed                                                              ARTICLE IS DONE
+                                                                                             ▲
+                                       ON RESTART, the SECOND way in:                        │
+                                       the runs a previous process committed are ────────────┘
+                                       adopted, gated on one stat per file, and
+                                       Queue.ReplaceFromRuns resolves the
+                                       articles they cover — no barrier, no
+                                       proof, no fsync by this process. See §6.
 ```
 
 There are therefore **two** ways an article becomes Done, and only the first
@@ -129,6 +179,11 @@ goes through a barrier. The resume path is not a loophole — it is the only way
 to credit bytes an earlier process wrote, which no proof can express — but any
 statement of the form "X is the only thing that resolves an article" is false
 unless it says *during a download*.
+
+Note what the resume path is **not**, because the shape it replaced worked
+differently: it does not read the file back and check a CRC. It stats the file,
+and if the file is at least as long as its runs claim it adopts them whole. See
+§6.
 
 `Decoded`, `Written` and `Durable` are three different things and the design
 turns on not conflating them:
@@ -150,9 +205,9 @@ turns on not conflating them:
 | **Ingest** | `Assembler.WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into a bounded channel (`reqs`, cap 2048). Control messages for cancel and close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` drains cleanly. |
 | **Worker** | `Assembler.worker` goroutine | Owns the open-file map, the shared write cache, and every `FileWriter`. Routes requests, counts parts, checks disk space, performs barrier operations. | Single goroutine (X1). No locks over file handles. |
 | **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its share of the write cache, its coalescing, its pre-allocation. Reports `Written`. | Worker-owned; never touched from another goroutine. |
-| **Barrier** | `durability.Barrier` | The only place `Written → Durable → Resolved` happens **during a download**. Drains, fsyncs, commits Class B, mints the proof. Not the only place an article becomes Done: the Resume tier below resolves articles too, with no barrier and no proof — see the state diagram above and §1. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
+| **Barrier** | `durability.Barrier` | The only place `Written → Durable → Resolved` happens **during a download**. Drains, fsyncs, commits the runs, mints the proof. Not the only place an article becomes Done: the Resume tier below resolves articles too, with no barrier and no proof — see the state diagram above and §1. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
 | **Cadence** | `Application.runCheckpoint`, `noteJobBytes` | *When* a barrier runs. Time bound, byte bound, file completion, clean shutdown. | One goroutine; per-job mutex around each barrier. |
-| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | What is actually on disk, at startup, from stable storage alone — and, through `Queue.ReplaceFromResume`, the second path by which an article becomes Done. Authoritative over the files it is passed: it *clears* bits it cannot verify. | Per-file, shares no state between calls. |
+| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | One `stat` per file at startup, and no reads — and, through `Queue.ReplaceFromRuns`, the second path by which an article becomes Done. Its whole mutation budget is **deletion**: a file shorter than its runs claim has them dropped. Authoritative over the files it is passed: it *clears* bits no surviving run covers. | Per-file, shares no state between calls. |
 | **Fault routing** | `internal/storagefault`, `Application.Stall` / `Fail` | Turns a storage error into a stalled or failed job with a reason a user can act on — never into a failed article. | — |
 | **DirectUnpack** | `internal/directunpack` | Streams RAR extraction as whole volumes complete. Reads assembled files, never partial article data. | Mutex over volume tracking and kill state; blocking `volumeReady` channel. |
 
@@ -180,17 +235,26 @@ Inside `internal/durability` the guarantee is package-scoped: `newProof` is
 reachable from anywhere in the package, and exactly two functions call it —
 `Barrier.Run` and `Barrier.FinalizeFile`. That pair is what review has to hold.
 
-**This gate covers one door.** `Queue.SeedFromExtents` and
-`Queue.ReplaceFromResume` also reach `markDone`, take a fully exported
-`durability.FileExtent` whose `Bitmap` is exported and settable, and are
-callable from any package with no barrier and no proof. That is deliberate —
-their evidence is stable storage re-read at startup, which is exactly the kind
-of evidence a proof cannot represent — but it means "ack before fsync is code
-that does not compile" is true of `AckDurable` and **false as a statement about
-the queue as a whole**. The seeding doors are held by their contracts and by
-`TestSeedFromExtents_StaysAdditive` /
-`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade`, not by the
+**This gate covers one door.** `Queue.SeedFromRuns` and
+`Queue.ReplaceFromRuns` also reach `markDone`, and are callable from any
+package with no barrier and no proof. That is deliberate — their evidence is
+the runs a barrier's fsync already recorded, which is exactly the kind of
+evidence a proof cannot represent — but it means "ack before fsync is code that
+does not compile" is true of `AckDurable` and **false as a statement about the
+queue as a whole**. The seeding doors are held by their contracts and by
+`TestSeedFromRuns_StaysAdditive` /
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade`, not by the
 compiler.
+
+**How much narrower those doors got, exactly.** `durability.Run` is an exported
+struct with exported fields, so any package can build one — the narrowing is
+*not* that the type is unforgeable, and a claim that only the store constructs
+one would be the same overstatement this section already had to retract about
+`FileExtent`. What changed is that a `Run` carries an article **range** which
+`runsCoverage` validates against the job's own manifest, refusing a run whose
+`[FirstArtIdx, LastArtIdx]` falls outside the named file's article range. The
+`FileExtent` it replaced carried a fully exported, settable `Bitmap` whose set
+bits were taken at face value.
 
 This replaces a design in which the assembler could ack from six places, each
 independently responsible for knowing that acceptance into a buffer is not
@@ -203,30 +267,45 @@ evidence about disk. That is why the same defect kept being refiled.
 ```
   phase 1: Drain every open file          — no claim of any kind yet
   phase 2: Sync  every open file          — only now may anything be claimed
-  phase 3: build one FileExtent per file  — derived, not yet persisted
-  phase 4: ExtentStore.Commit (atomic)    — then, and only then, AckDurable
+  phase 3: Stat  every open file          — collect the drained articles + sizes
+  phase 4: RunStore.Commit (atomic)       — then, and only then, AckDurable
 ```
 
-Every file is synced before any file's extent is built, so a barrier that fails
-on the second file's sync has claimed nothing about the first either. Nothing may
+Every file is synced before anything is collected, so a barrier that fails on
+the second file's sync has claimed nothing about the first either. Nothing may
 be inserted between the commit and the ack: the commit is what makes the proof
 true after a crash.
 
+**The barrier does not build the runs.** `Commit` takes the drained *articles*,
+and the store is the one place a run is ever constructed from them, inside that
+same transaction. Deciding which articles form a run is derived state and it
+gets one owner (Standing Rule 2) — but the reason is stronger than tidiness. A
+drain is at-least-once (§3), so the drained set overlaps what is already
+stored, and the dedup has to happen at **article** granularity **before**
+grouping. Grouped first, a re-delivery of articles 5–9 arriving beside
+genuinely new 10–12 forms one run `[5,12]` that no stored row covers, so no
+whole-run check drops it; it inserts beside the stored row and `Σ length` then
+exceeds the file's true size — a permanent false overlap finding on a healthy
+file. Subtracting covered `art_idx` values first leaves `[10,12]`, which is the
+truth. One owner, one order: **subtract, then sort, then group, then merge.**
+
 **A failed barrier claims nothing** (R7). It acks no article and leaves the
-previously committed cache wholly intact, because `ExtentStore.Commit` is atomic
-and is the last thing that can fail before the ack.
+stored rows wholly intact, because `RunStore.Commit` is atomic and is the last
+thing that can fail before the ack.
 
 ### 3. A drain is at-least-once, and a report survives a failed sync
 
 `SyncTarget.Drain` may re-report an article a previous `Drain` already returned,
-and the barrier's apply absorbs the duplicate (R12) — `ext.Durable.Set` is
-idempotent and `BytesDurable` is charged only on a 0→1 transition.
+and `RunStore.Commit` absorbs the duplicate (R12): an article whose `ArtIdx` a
+stored row already covers is dropped before grouping, so it is never inserted
+twice and never widens `Σ length`. See §2 for why that subtraction has to
+happen at article granularity rather than per run.
 
 `FileWriter` keeps two slices to make that true: `written` (reported by no
 `Drain` yet) and `reported` (handed to a `Drain`, not yet confirmed by a
 `Sync`). **Only `Confirm` discards `reported`**, and the barrier calls it solely
-once the extent is committed and the articles are acked. A barrier that drains
-and then fails — at the sync, the extent commit, the ack, or the truncate —
+once the runs are committed and the articles are acked. A barrier that drains
+and then fails — at the sync, the run commit, the ack, or the truncate —
 re-reports on the next attempt.
 
 Releasing on the `Sync` would cover only the first of those. The fsync makes the
@@ -237,59 +316,110 @@ a redelivery is dropped as a duplicate.
 
 This is load-bearing rather than tidy. For a file still being written, losing a
 report costs a re-fetch. For a **completed** file it costs bytes: the retry
-drains nothing, so the durable extent `FinalizeFile` trims to sits below bytes
-that are genuinely on disk, and the truncate destroys them.
+drains nothing, so the bound `FinalizeFile` trims to sits below bytes that are
+genuinely on disk, and the truncate destroys them.
 
 The split between the two slices is what keeps an article written *between* a
 `Drain` and its `Sync` from being discarded by that `Sync`: it is still in
 `written`, which `Sync` does not touch.
 
-### 4. The truncate bound is derived from Class A, and only ever shrinks
+### 4. The truncate bound is `max(offset+length)` over the runs, and only ever shrinks
 
-`Barrier.FinalizeFile` trims a completed file to **the highest end offset among
-its durable articles** — `max(Offset+Length)` over the facts whose durable bit is
-set. Three quantities are easy to confuse here and the distinction is
-load-bearing:
+`Barrier.FinalizeFile` trims a completed file to **the highest end offset any
+run claims** — `max(Offset+Length)` over the file's stored rows *union* the
+articles this call just drained and fsynced. Two quantities are easy to confuse
+with it and the distinction is load-bearing:
 
 | Quantity | What it is | Why it is not the bound |
 |---|---|---|
 | this run's high-water mark | the highest byte *this process* wrote | on a resumed file it sits below what earlier runs wrote; truncating to it discards them (#342, #350) |
-| `FileExtent.VerifiedTo` | the **gapless prefix** from byte 0 | stalls at the first permanently failed article; a 40 GB file with a hole at 2 GB would be cut to 2 GB, destroying exactly the blocks par2 repairs from |
-| the durable extent | `max(Offset+Length)` over durable facts | **this is the bound** |
+| the file's first run, or its gapless prefix | the span from byte 0 to the first hole | stalls at the first permanently failed article; a 40 GB file with a hole at 2 GB would be cut to 2 GB, destroying exactly the blocks par2 repairs from |
+| `max(offset+length)` over every run | the top of the highest run | **this is the bound** |
 
-Deriving it from Class A rather than storing it means there is no second copy to
-drift (S5), and it is correct by construction: every fact counted has an article
-behind it whose bytes a completed fsync covered.
+The bound is taken **before** the commit and over both sources, rather than
+after it over one: the commit has to be the last thing that can fail before the
+ack (§2), so a truncate placed after it would sit between the two statements
+nothing may be inserted between — and one placed after the *ack* would leave an
+untrimmed file behind on any crash, which par2's `QuickCheck` reads as a
+missing file and works to reconstruct.
 
 `FileWriter.Truncate` refuses a bound above the file on disk rather than clamping
 (S6). Growing appends zeros, which asserts content that exists nowhere, and a job
 with no par2 has no repair stage to notice.
 
-**Two exceptions, and both are the same hazard from opposite sides.** The
-durable set and the fact log can disagree in either direction, and each
-direction makes a different bound unsafe.
+**Both of the old `FinalizeFile` guards are gone, and this is S5 improving.**
+They existed because the durable set and the fact log could disagree in either
+direction: a recorded article that was not durable made the durable bound
+destroy real bytes, and a durable article the fact log did not name made *both*
+bounds walk past bytes that were simultaneously marked Done. Neither state is
+reachable now. There is one record, written from the drained set after the
+fsync, so "recorded" and "durable" are the same set by construction — there is
+no second copy to drift. Under Standing Rule 2 that is the preferred shape:
+where a check and an owner would both work, take the owner.
 
-*A recorded article that is not durable.* If a completed file's recorded facts
-are not *all* durable, `FinalizeFile` trims to the **recorded** extent instead.
-In the healthy case the two sets coincide — every article of a completed file is
-either durable or permanently failed, and a failed article wrote no fact. A gap
-means this is a retry of a finalize whose earlier attempt consumed the writer's
-drain report without committing the bits it earned. Those bytes are on disk, the
-durable bound sits below them, and trimming to it would destroy them silently.
+#### The whole-file CRC is a query, not a walk
 
-*A durable article the fact log does not name.* Reachable because the Class A
-append is independent of the write (R2): `pipeline.appendArticleFacts` logs its
-error and lets the write proceed, so an article can reach disk, be drained, be
-fsynced and earn a truthful durable bit while having no fact. **Both** bounds
-above are computed by walking facts, so both walk past its bytes; when it holds
-the file's top offset they land below its end, and `buildExtent` has already
-added it to the ack set, so the truncate destroys bytes that are simultaneously
-marked Done. `FinalizeFile` counts these and **declines to truncate at all** —
-no bound derived from an incomplete record can be trusted, and since S6 only
-ever shrinks, declining to shrink is always safe.
+A file's whole-file CRC **exists exactly when the file holds one row and that
+row starts at offset 0**; its `crc32` is the value. `crc32util.Combine` is
+zlib's `crc32_combine` and is associative, so a run's CRC is built pairwise as
+articles join it, across restarts — nothing reads the file.
+`Application.recordAssembledCRC` threads the value to `Queue.SetFileCRC32` when
+the file finalizes.
 
-In both cases trailing zeros par2 reports as damage is a visible, repairable
-cost; downloaded bytes gone is not.
+**Its consumer is `par2.VerifyCRCs`, not `par2.QuickCheck`.** The two are easy
+to conflate because the post-processing *stage* is named quickcheck.
+`par2.QuickCheck` the **function** is filename relocation — it moves flat
+downloads into the subdirectory paths a par2 manifest references — and where it
+compares a checksum it computes one itself from disk (`tryMatchCRC32File` takes
+a path). It never reads `AssembledCRC32`. What our value feeds is
+`par2.VerifyCRCsWithOptions`, called from `stage_quickcheck.go` and from
+`app.par2NeedsRecovery`, where it saves one read of each file.
+
+What that verdict then buys is real and worth naming rather than
+under-claiming: a `Clean` outcome makes `stage_repair.go` skip the par2
+verify+repair subprocess entirely, and `par2NeedsRecovery` returning false
+leaves the deferred recovery volumes unfetched. Neither is reachable for a file
+this record supplies no CRC for — it reads `NoCRC`, and both take the
+conservative branch.
+
+**The predicate is a row count, not a span**, and the difference is #387. An
+overlapping article is *written* rather than refused (see below), and it abuts
+nothing, so it gets a row of its own. A file whose articles tile `[0,1000)` into one merged row plus a
+displaced article at `[450,550)` in a second row would satisfy a span-shaped
+predicate — a row does start at 0, and its length does equal the maximum — and
+publish a CRC combined from the *original* articles while foreign bytes occupy
+450–550. par2 would then match a manifest whose bytes are not what is on disk.
+A second row means bytes this record cannot account for, whatever its span, and
+that is what carries #387's guarantee across from the `prefixWalk.consumedAll`
+this change deleted.
+
+#### Overlaps are detected at completion, and `Σ length` has a blind spot
+
+A run is built only from articles that abut exactly, so an overlapping article
+never merges into one. It is still written, and the overlap is caught at
+completion by comparing the recorded lengths against the file:
+
+| | Meaning |
+|---|---|
+| `Σ length > stat size` | **definite overlap** — articles wrote over each other |
+| `Σ length == stat size` | **no evidence of overlap** — not proof of a clean tiling; see below |
+| `Σ length < stat size` | articles are missing or failed, the ordinary incomplete case |
+
+**Record the gap rather than let a reader assume the middle row is a
+guarantee.** `Σ length` is a sum, so an N-byte overlap and an N-byte hole
+cancel and land on equality: the check reports *no evidence of overlap* on a
+file holding both. The prefix walk this replaced compared adjacent extents
+structurally and saw the overlap regardless; this arithmetic cannot.
+
+Two things bound the loss, and neither is this check:
+
+- A hole means a gap between rows, so such a file has **more than one row**, and
+  the whole-file CRC is withheld on the row count regardless. The #387 outcome
+  is closed structurally by a different guard, not by this sum.
+- The file is incomplete either way, so par2 fetches recovery volumes and
+  repairs both defects.
+
+What is lost is a *warning* on a file the user is already told is incomplete.
 
 ### 5. A storage fault never marks an article failed
 
@@ -326,70 +456,132 @@ completed file that was never trimmed. A new fault site inside
 now visibly unrouted rather than indistinguishable from a routed one.
 
 The one thing that must **not** go through `Stallable` is a bookkeeping defect —
-an article with no file-local ordinal, a target reporting zero articles. Those
+a run naming articles outside the file's own range in the manifest
+(`queue.runsCoverage`), an ack naming an index the manifest does not have. Those
 fail loudly as ordinary errors (A2, R28). Routing them through the fault path
 would blame storage for a numbering bug, which is the A1 conflation in reverse.
 
-### 6. Class B is a cache, and a recomputation wins
+The **shape** of that class narrowed with the record. It used to include an
+article the barrier could not place in a per-file durable bitmap — no file-local
+ordinal, or a target reporting zero articles — and both of those questions went
+with `SyncTarget.FileLocalOrdinal` and `ArticleCount`, because a run carries
+`FirstArtIdx` and `LastArtIdx` directly and there is no bitmap to index. The
+rule is unchanged; the sites it applies to are fewer.
 
-`FileExtent` carries `Size` and `ModTimeNs` as an S7 validity stamp. On resume,
-`durability.Resumer` compares them against the file as it exists now:
+### 6. The record is authoritative, gated on one `stat` — S4 INVERTED
 
-- **Both match** → the cache is adopted without reading a byte. This is the fast
-  path, and correctness never depends on it being right.
-- **Either differs** → fall through to recomputation, which reads each recorded
-  region and checks it against the CRC the fact log recorded at decode time.
+**Read this section even if you know the old contract, because it says the
+opposite of what it used to.** S4 used to read: *the stored record is never
+authoritative, and where it disagrees with a recomputation from the bytes the
+recomputation is correct by definition.* That is no longer true. **The record
+is authoritative.** There is no recomputation left to lose to — `Resumer.recompute`
+is deleted — and a reader who assumes one still wins will misread every
+paragraph below.
 
-Both halves of the stamp are load-bearing: a truncation moves the size, an
-in-place edit of the same length moves only the mtime.
+What makes trusting it sound is *when* it is written. The barrier is the record's
+only writer and writes only after an `fsync` it performed, over articles a
+completed `Drain` reported, so nothing in the store can assert bytes that were
+never written. That was not true of the record this replaced, which was appended
+at decode with no ordering against the write at all (R2).
 
-`HasPrefixCRC` is **re-checked** against the file's current size rather than
-adopted, because the flag can outlive its condition: a resume commits it true for
-a whole file, an article then lands beyond a hole so the file grows while
-`VerifiedTo` does not, and the barrier clears the flag only when `VerifiedTo`
-*changes*. Adopting a stale one would report a partial extent's CRC as the file's
-(#349).
+But trust needs a floor. If the partial file were deleted or replaced between
+runs, a record believed absolutely would report most articles complete and
+re-fetch only the remainder, producing a file with holes exactly where the
+"done" articles were (#362). So there is one check per file, and **no reads**:
 
-`Bitmap` widths are the other place the cache can over-claim. `ExtentStore`
-rebuilds each bitmap at its full **byte** width — `Load` and `LoadFile` alike,
-since neither stores the bit count — which is always a multiple of 64, so
-`Bitmap`'s tail-word mask never fires and padding bits in a damaged blob would
-survive into `Count()`. Every consumer that knows the file's true article count
-therefore re-derives through `BitmapFromBytes` rather than adopting what the
-store returned — `Barrier.priorExtent`, `Resumer.committedExtent` and
-`queue.fileDurableBitmap` each do this, and each documents it. A stored bitmap *narrower* than the article count is zero-padded,
-which reads as "not durable yet": the safe direction under S3.
+```
+stat(path).size >= max(offset+length) over the file's runs
+```
+
+- **Satisfied** → every run is adopted whole. A file that is merely *longer* is
+  the ordinary pre-allocated case.
+- **Missing file, or shorter than the runs claim** → that file's runs are
+  **DELETED** and it is downloaded again. This is the resumer's entire mutation
+  budget.
+
+#### S7 is NARROWED to size, and `ModTimeNs` is deleted — deliberately
+
+S7's validity stamp used to be the pair `(size, mtime)`. It is now **size
+alone**. This is a contract amendment with a reason, not a rewording, and it is
+stated here so a reader who knows the pair can tell a decision from an
+oversight.
+
+The reason is what the **response** to a mismatch costs, not what the stamp
+detects. A mismatch used to fall through to `recompute()`: the file was
+re-read, the records were corrected, and the stamp cost **one read**. With
+`recompute` deleted the only response left is discard-and-refetch, so the same
+stamp would cost **the whole file**.
+
+That inverts the guard's economics, because the two halves fail differently. An
+mtime moves without a byte moving — a restore from backup, a copy that does not
+preserve timestamps, a tool that touches the file — and each of those would now
+trigger a full re-download of a file that is entirely intact. A size shortfall
+cannot happen that way: it means bytes the record claims are genuinely not
+there.
+
+So `ModTimeNs` is gone from `SyncTarget.Stat` (now `Stat(fileIdx int32) (size
+int64, err error)`), from `ResumeResult`, and from the barrier and resumer
+plumbing that carried it.
+
+**What this gives up:** in-place corruption that preserves the file's length is
+no longer detected at startup. par2 detects and repairs it at completion, which
+is the same answer §4 gives for an overlap and the same one the *"a bad article
+costs only its own bytes"* rule gives generally.
+
+#### The barrier is the record's SOLE writer
+
+Under Standing Rule 2 this is the strongest result in the change, and it is
+worth stating as an invariant rather than as a consequence.
+
+The record used to have **two** writers. `Resumer.writeBack` committed "a
+resume's own answer as the file's Class B record" — a recomputed result written
+back over the row it disproved, and a missing file written back as the empty
+result it produced. It was defensible (the startup sweep completes before the
+downloader can dispatch, so no barrier is running), but it was a second writer,
+and it needed a no-merge rule and a `(0,0)` sentinel stamp to work.
+
+`writeBack` is deleted. `durability.Barrier` is the only thing that writes a
+`durable_runs` row, from `Run` and from `FinalizeFile`, both inside the
+transaction that precedes the ack. `durability.Resumer` can only **delete**, and
+only when the file on disk contradicts the record. That asymmetry is what makes
+the record trustworthy without reading a byte of it back.
 
 ### 7. Absence of evidence is absence
 
-S3. An article a restart cannot prove is Outstanding. A region outside the file
-as it exists now, a CRC that does not match, a missing file, a missing fact — all
-resolve the same way, and none of them is an error.
+S3. An article no surviving run covers is Outstanding. A missing file, a file
+shorter than its runs claim, an article that was never recorded — all resolve
+the same way, and none of them is an error.
 
 This is why the startup sweep is **authoritative** rather than additive, which is
-the fix for #362. `Store.RestoreJobProgress` marks done every article in
-`job_files.articles_done` before any of this runs, and that column is a *belief*
-a previous process wrote. `durability.Resumer` answers the same question from the
-file's bytes, and S4 makes its answer correct by definition. With only an additive
-entry point the belief always won, so a truncated or deleted partial finished as a
-complete file with a zero-filled hole in it and no warning.
+the fix for #362. `Store.RestoreJobProgress` derives `done` from the same runs
+before any of this happens, so on the ordinary path the two agree. They diverge
+in exactly one case, and it is the case that matters: the sweep stats each file
+and deletes the runs of one that is too short, so it hands back a *smaller* set
+than the restore installed. With only an additive entry point the earlier belief
+always won, so a truncated or deleted partial finished as a complete file with a
+zero-filled hole in it and no warning.
 
 There are consequently two seeding entry points on `Queue`, and **they must not
 be merged**:
 
 | Entry point | Caller | Contract |
 |---|---|---|
-| `ReplaceFromResume` | `Application.resumeAllJobs` (startup sweep) | **authoritative over the files it is passed** — sets *and clears* for those, and leaves a file absent from the slice entirely alone. The only caller that has just read the files' bytes. |
-| `SeedFromExtents` | `Application.reevaluateStall` phase 3 | **additive** — only ever sets. Replaying an ack whose fsync already landed; it has verified nothing. |
+| `ReplaceFromRuns` | `Application.resumeAllJobs` (startup sweep) | **authoritative over the files it is passed** — sets *and clears* for those, and leaves a file absent from the slice entirely alone. The only caller that has just stat'ed the files and deleted the runs one of them contradicts. |
+| `SeedFromRuns` | `Application.reevaluateStall` phase 3 | **additive** — only ever sets. Replaying an ack whose fsync already landed; it has stat'ed nothing. |
 
-The union of the two contracts is either #362 (a stale bit outliving the
-recomputation that disproved it) or a stall recovery that throws away live acks.
-`TestSeedFromExtents_StaysAdditive` and
-`TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade` are the guards,
+The union of the two contracts is either #362 (a stale bit outliving the check
+that disproved it) or a stall recovery that throws away live acks.
+`TestSeedFromRuns_StaysAdditive` and
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` are the guards,
 and they are the only tests in the repository that redden when the two are
 merged.
 
-`ReplaceFromResume` never clears a permanently failed article: its bytes were
+The file indices are carried separately from the runs, and that is structural
+rather than convenience: a file whose runs were **all** discarded contributes no
+run at all, and would otherwise be indistinguishable from a file the sweep never
+looked at.
+
+`ReplaceFromRuns` never clears a permanently failed article: its bytes were
 never on disk, so their absence is the recorded outcome and not new information.
 It clears a file's `Complete` flag and its `AssembledCRC32` only where a bit was
 actually cleared — `Complete` means "the assembler is finished with this file",
@@ -408,16 +600,17 @@ and deriving it from the queue would be a second representation free to drift
 
 `Barrier.Run` holds no lock — it does I/O throughout, and the project bans I/O
 under a lock — so `Application.jobBarrierLock` guarantees at most one barrier in
-flight per job. Two concurrent barriers over one job would interleave the
-read-modify-write of its `FileExtent`: both load the same stored bitmap, each adds
-its own bits, and the second commit overwrites the first, so the committed cache
-describes neither run and the articles the loser acked are durable with no bit to
-say so.
+flight per job. `Drain` is **destructive**, so two concurrent barriers over one
+file split its articles between them: one gets what the writer was holding and
+the other gets none. Each then acks only its own half while both believe they
+checkpointed the file, and whichever calls `Confirm` releases the reports the
+other never saw — so those articles are neither acked nor re-reported, and only
+a restart recovers them.
 
 The lock is **per job**, not global: a barrier is a few dozen fsyncs, and one
 job's slow mount must not park every other job's checkpoint. `FinalizeFile` takes
-it too — it is a barrier by another name, same `buildExtent`, same
-`ExtentStore.Commit`.
+it too — it is a barrier by another name, same drain, same
+`RunStore.Commit`.
 
 ### 9a. Only storage conditions reach `Stallable` — the `SyncTarget` boundary rule
 
@@ -529,14 +722,15 @@ zero or negative value. A barrier is the only thing that acks a downloaded
 article *while the job is running*, so with checkpoints off a job makes no
 visible progress and holds every article Outstanding until it stops.
 
-It does **not** follow that the work is re-fetched, and an earlier version of
-this paragraph claimed it did. `Resume` falls through to `recompute` when no
-committed extent exists, and `recompute` re-derives the done-set from Class A
-facts and the bytes on disk. What is lost is the point of Class B — a restart
-must then re-read every partial file in full — plus whatever the write cache had
-not flushed when the process died, which has no fact-and-bytes pair to recover
-from. "Off" trades a bounded fsync cadence for an unbounded startup read and
-real re-fetch.
+**And with this design, the work IS re-fetched.** An earlier version of this
+paragraph said it was not, and it was right about the shape it described: a
+per-article record written at decode time named each region, so a resume could
+re-read the file and recover bytes no barrier had covered. That record is gone.
+A run exists only after the fsync that made it durable, so with no barrier there
+is no record, and a restart returns every article of the job to Outstanding.
+"Off" is not a slow startup; it is throwing the download away on every restart.
+This is the same cost R3 prices for a crash, unbounded instead of bounded to one
+checkpoint window.
 
 Three details that have each been got wrong once:
 
@@ -561,8 +755,8 @@ durable total. `bytes_durable` comes from the job's progress —
 same unit as `size`/`sizeleft` beside it. `bytes_pending` accumulates
 `len(data)` per accepted article: **decoded** bytes, the ones on disk, because
 B1's volume bound measures rework at risk. Neither can move to the other's
-unit. Reading `bytes_durable` from `file_extents.bytes_durable` — a decoded
-figure carrying the same name — is the substitution `docs/queue-lifecycle.md`
+unit. Reading `bytes_durable` from a sum over the durability record's lengths —
+a decoded figure — is the substitution `docs/queue-lifecycle.md`
 records as having overstated every non-resident job's remaining bytes; and
 re-basing the accumulator on declared sizes would corrupt the cadence trigger
 it exists to drive. The API contract already forbids summing them; the unit
@@ -618,7 +812,7 @@ The sequence is:
                     │                          cached FileInfo, so a path asked
                     │                          for afterwards comes back empty)
                     ├─ finalizeCompletedFile
-                    │     ├─ Barrier.FinalizeFile   (drain, sync, extent, trim,
+                    │     ├─ Barrier.FinalizeFile   (drain, sync, trim,
                     │     │                          re-sync, re-stat, commit, ack)
                     │     └─ Assembler.CloseFile    (ONLY on success)
                     └─ completeFinalizedFile
@@ -637,7 +831,7 @@ condition that waiting can clear.
 Both callers still log rather than act on it, but the reason is narrower than
 "post-hoc" and the first draft of this paragraph overstated it. On the path the
 argument describes — a finalize that ran to completion — the barrier has
-drained, synced, truncated, committed the extent and acked the articles, so
+drained, synced, truncated, committed the runs and acked the articles, so
 acting on the redundant second fsync's fault would race the completion it is
 part of, and on a permanent errno would carry a 100%-complete, fully acked job
 into history as failed.
@@ -645,7 +839,7 @@ into history as failed.
 That is **not** every entry path. `finalizeCompletedFile`'s defer also runs
 after `app.barrier == nil`, after a nil sync target, and after the
 assembler-stopped and not-in-`open` early returns; and `retryFinalize` reaches
-it on a job whose extent was committed but never acked. On all of those the
+it on a job whose runs were committed but never acked. On all of those the
 close-time `Drain` is the file's FIRST flush and the fault is not post-hoc at
 all. `Warn` is the floor there, not `Debug`, and the completion should not
 proceed past it — see #374. The close-time fault is
@@ -715,76 +909,57 @@ For each job it sweeps, per file:
 
 1. Resolve the path from the filename the queue already recorded
    (`pipeline.jobFilePath`, same `JoinSafe` sanitisation the writer used). A file
-   whose filename was never resolved is **skipped**, contributing no extent —
-   no process ever opened a path for it, so there is nothing to have proved
-   absent.
-2. `durability.Resumer.Resume` — stat, adopt-or-recompute, per §6 above.
-3. Collect a `FileExtent` carrying only `FileIdx` and `Durable`, because those are
-   the only two fields `ReplaceFromResume` reads.
+   whose filename was never resolved is **skipped**, contributing neither a file
+   index nor a run — no process ever opened a path for it, so there is nothing
+   to have proved absent.
+2. `durability.Resumer.Resume` — one `stat`, adopt-or-discard, per §6 above.
+3. Collect the file's index, and the runs that survived the gate.
 
-Then `Queue.ReplaceFromResume` installs the finding. It is authoritative
-**over the files it is given, and only those**: it loops over the `exts` slice,
-so for each file named there an article the resume did not verify goes back to
-Outstanding, and the job's derived figures are recomputed from the bitmaps so its
-reported health matches its per-article state.
+Then `Queue.ReplaceFromRuns` installs the finding. It is authoritative
+**over the files it is given, and only those**: for each file named there an
+article no surviving run covers goes back to Outstanding, and the job's derived
+figures are recomputed so its reported health matches its per-article state.
 
-### Resume write-back
+`ResumeResult.Restart` needs no case of its own downstream: a discarded file
+comes back with no runs at all, which already says "nothing here is recorded".
+The file index is what says the sweep looked.
 
-A **recomputed** result is committed back over the Class B record it disproved,
-from inside `Resumer.Resume`. An **adopted** result is not: it came from the
-stored row, so rewriting it would restate its own contents.
+**The sweep does not read a single byte of any partial file.** That is the S4
+inversion in operation, and it is the property a refactor is most likely to
+break by accident — see §6.
 
-A **missing file** is committed back too, as the empty result it produces.
-Absence is the strongest disproof a resume can hold — not one article's bytes
-are on disk — and the resurrection chain below does not care how the row was
-disproved. Left standing, the row survives the file: the assembler recreates
-it, `priorExtent` ORs the stale bitmap as its base, `buildExtent` stamps a
-fresh `Size`/`ModTimeNs`, and the next start's fast path adopts articles this
-process never wrote. The row is cleared only when one exists; a file that never
-had a record does not get a zeroed one minted for it, because "a resume
-examined this file and disproved every bit" is a claim about evidence that was
-never gathered. The stamp written is `(0, 0)`, which cannot match any real
-file, so the next resume that finds one recomputes (S4).
+### The resume deletes; it never writes
 
-This makes the `Resumer` a second writer of Class B, and the design originally
-forbade it: *"a committed extent claims a completed fsync stands behind it, and
-a resume does not perform that fsync."* Two things are wrong with that.
+**There is no resume write-back.** `Resumer.writeBack` and `Resumer.recompute`
+are both deleted, and the `Resumer` is no longer a second writer of the
+durability record. See §6, which states the sole-writer invariant; this section
+records what the resume may do instead, and why the machinery the write-back
+needed is gone with it.
 
-The premise conflates the mechanism with the property. An `fsync` exists to
-make bytes survive a restart. Reading those bytes back **after** a restart and
-matching their recorded CRC observes that property directly, with strictly
-better evidence than a syscall's return value.
+The resume's whole mutation budget is `RunStore.DeleteFile`, and it is reached
+in exactly two cases:
 
-The stated cost of omitting the write-back — *"re-verification on the next
-restart is bounded rework"* — does not exist. Nothing clears a bit in
-`file_extents`: `Durable.Set` is the only bit mutation in the package.
-`Barrier.priorExtent` adopts the stored bitmap as an **OR-base**, so the next
-checkpoint re-commits the disproven bit together with a fresh `Size`/`ModTimeNs`
-from its own `Stat` — a stamp that then validates against the file. The next
-start's fast path adopts it without reading a byte, and `reevaluateStall`'s
-third phase replays the same rows through the additive `SeedFromExtents`. A bit
-the recomputation disproved does not cost rework; it comes back.
+- **The file is missing.** Absence is the strongest disproof a resume can
+  hold — not one article's bytes are on disk.
+- **The file is shorter than `max(offset+length)` over its runs.** Bytes the
+  record claims are genuinely not there.
 
-Safe as a second writer because of **when** it runs: the startup sweep
-completes before the downloader can dispatch, so no barrier is running for any
-job and there is exactly one writer at that moment.
+Left standing, either row set survives the file: the assembler recreates and
+pre-allocates the file, and the next start's gate compares against a file of
+zeros that passes a check the real file would have failed. Deleting is what
+stops the resurrection, and it is scoped to **one file** because a resume proves
+nothing about the job's other files — it stat'ed one path.
 
-Every field of the written-back extent comes from the resume's own answer,
-including `BytesDurable` — merging any part of the stored row forward would
-preserve the claim being corrected, and committing without `BytesDurable` would
-zero the figure the API reports for the file after a recomputation and leave it
-overstated after a restart. The no-merge rule is what makes the missing-file
-case work at all: every field of that result is a zero value, so a merge would
-be indistinguishable from not clearing the row.
+Note what deletion is not: it is not a claim that the record was *wrong when
+written*. The barrier wrote it after an fsync it performed. The file changed
+underneath it, which is precisely what the gate exists to notice.
 
-**A correction that CLEARS a bit is persisted before it returns**, and that is
-load-bearing rather than tidy. Every re-hydration in the queue re-reads
-`job_files.articles_done` unconditionally, so a cleared bit that lives only in
-memory is undone by the next eviction and re-promotion — which the sweep
-reaches without any concurrency, since it calls `Stall` on a job whose other
-file faulted and `Stall` pauses the job, evicting the manifest. A bit the sweep
-merely *sets* is not persisted here: losing it costs a re-fetch, which is the
-safe direction under S3.
+**A deletion is persisted before `Resume` returns**, and that is load-bearing
+rather than tidy. Article resolution is derived from the runs on every
+re-hydration, so a correction that lived only in memory would be undone by the
+next eviction and re-promotion — which the sweep reaches without any
+concurrency, since it calls `Stall` on a job whose other file faulted and
+`Stall` pauses the job, evicting the manifest.
 
 A file **absent** from that slice is not touched at all. Absence is silence, not
 a finding of absence — and three ordinary cases produce it: a file whose filename
@@ -799,19 +974,14 @@ outcome rather than new information), and a file's `Complete` flag where no bit
 was actually cleared — `Complete` means "the assembler is finished with this
 file", not "every article arrived", so it cannot be re-derived from the bits.
 
-**Running only at startup is complete.** A job admitted later has no committed
-extents to seed from, and a job's extents cannot change while it is not running —
-only a barrier commits Class B, and a barrier runs only for a job with open
-files. So a job promoted hours after startup is still correctly seeded by the
-sweep that ran before it was promoted.
-
-**The sweep never commits an extent.** A committed extent asserts that a completed
-fsync stands behind it, and a resume proves what is on disk without performing
-that fsync. Paying the verification again on the next restart is bounded rework
-and is the correct cost.
+**Running only at startup is complete.** A job admitted later has no runs to
+seed from, and a job's runs cannot change while it is not running — only a
+barrier writes them, and a barrier runs only for a job with open files. So a job
+promoted hours after startup is still correctly seeded by the sweep that ran
+before it was promoted.
 
 **A fault does not discard the files already resumed.** `resumeJobFiles` returns
-the extents gathered *before* the fault, `resumeAllJobs` seeds them, and only then
+what it gathered *before* the fault, `resumeAllJobs` seeds it, and only then
 stalls the job. Returning early and discarding them turned a transient NFS flap on
 file 7 of 20 into a permanent loss of ground for all 20: the stall pauses the job,
 a paused job is not resident, and a non-resident job is skipped by every future
@@ -833,11 +1003,11 @@ The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
 - Not phase, because `PhaseActive` excludes **Paused**, and a paused job is the
   case that needs the sweep most: it is mid-download, nothing but the assembler
   has ever written its files, and `Application.Stall` is what puts jobs there.
-  Skipping it let #362 survive in that branch — the disproven Done bits were
-  never corrected, `priorExtent` ORs the stored bitmap as its base, so the next
-  checkpoint re-committed them with a fresh matching stamp and the file
-  finalized over a hole. It also made `stallLost`'s own "restart gonzbd to
-  resume this job from its committed extents" unable to work.
+  Skipping it let #362 survive in that branch — nothing stats the file, so runs
+  the file on disk no longer supports are never discarded, the restore derives
+  Done from them again on the next start, and the file finalized over a hole. It
+  also made `stallLost`'s own "restart gonzbd to resume this job from its
+  recorded runs" unable to work.
 - Not residency either — `JobPhase.IsResident` is also true for
   `PhaseProcessing`, and in those phases something other than the assembler owns
   the job's files: par2 repairs a file **in place**, unpack reads it, the move
@@ -847,7 +1017,7 @@ The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
 A swept job that is **not resident** — every paused one — is hydrated for the
 duration and evicted again, so residency is unchanged from outside.
 `Application.resumeAllJobs` takes a hydrated clone through `SnapshotJob` to read
-the manifest, and `Queue.ReplaceFromResume` hydrates the live job itself to
+the manifest, and `Queue.ReplaceFromRuns` hydrates the live job itself to
 apply the correction. Startup is when this is cheapest and safest: nothing else
 holds a manifest and no article is being dispatched.
 
@@ -914,8 +1084,8 @@ persisted, not seeded from anything at open, and is not evidence about disk:
 `drainFile` advances it past gaps and before any write is attempted, so it sits
 above the bytes actually written whenever a write then fails. Collapsing the
 frontier and the durability anchor into one value is what made the old
-`write_cursor` column unusable, and the two questions are now answered separately
-— `FileExtent.Durable` for resume, `FileExtent.VerifiedTo` for the CRC anchor.
+`write_cursor` column unusable. The durability question is answered elsewhere
+entirely, by `durable_runs`, which the assembler neither reads nor writes.
 
 **The cache is on by default at 64 MiB** — `constants.DefaultWriteCacheBytes`,
 seeded into `Downloads.WriteCacheSize` by `config.Default()` and threaded to
@@ -966,9 +1136,9 @@ including every failure path.
 
   - **Incumbent written → the offset is SETTLED and the ARRIVAL is rejected**
     (`offsetSettledBy`, checked in `acceptArticle`). Its bytes back a durable
-    claim: the pipeline recorded a Class A fact naming its CRC at that offset,
-    and the barrier will ack it. Letting a later article overwrite the range
-    makes that fact unverifiable on restart, and failing the incumbent as well
+    claim: the next `Drain` reports them, and the barrier records the run
+    naming its CRC at that offset and acks it. Letting a later article overwrite
+    the range makes that record unverifiable, and failing the incumbent as well
     would give one article two terminal dispositions — permanently failed *and*
     acked durable. The arrival is resolved permanently failed, keeps its part
     (it will never arrive again), and its bytes are charged to par2.
@@ -1026,9 +1196,10 @@ including every failure path.
   sources.** Two articles whose ranges overlap without sharing a start offset
   are invisible here — `acceptedAt` is keyed on the offset — and the later one
   overwrites the earlier's bytes. The durability layer catches that case
-  instead, after both writes have landed, by classifying why `verifiedPrefix`
-  stopped walking a file's Class A facts: a fact that starts BELOW the run means
-  two durable articles describe the same bytes. It reports through
+  instead, after both writes have landed, by comparing `Σ length` over the
+  file's runs against the file's size: a sum above the size means two durable
+  articles describe the same bytes (§4, which also records the blind spot in
+  that comparison). It reports through
   `durability.PostAnomaly` on the barrier's return, and the app routes it to the
   same `job.Warning`, at most once per `(jobID, fileIdx)`. The latch is in
   memory, so that bound is per process: a restart raises each finding once
@@ -1112,8 +1283,8 @@ The rejected article still **counts toward its file's part total**. That looks
 like the wrong direction and is not: it will never arrive again, so a file that
 declines to count it can never reach `TotalParts`, `OnFileComplete` never fires,
 and the job sits at 100% with zero outstanding articles across restarts.
-Counting it claims nothing — no Class A fact was decoded, so no durable bit is
-earned and no fact-derived truncate bound reaches past it. This is what a
+Counting it claims nothing — a rejected article is never written, so no run
+covers it and no run-derived truncate bound reaches past it. This is what a
 permanently failed article already does through `handleFatalArticle`.
 
 ## DirectUnpack streaming contract
@@ -1167,7 +1338,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `article_facts` and `file_extents`, deleted per job by `deleteJobDurability`. Neither table has a foreign key to the queue, so nothing removes them implicitly. `SQLiteStore.Prune` is the backstop: on every queue save it deletes rows whose job is in neither `jobs` nor history-as-`Failed`, which catches a crash in the window between a job leaving the queue and its rows being deleted. The `Failed` exception is load-bearing -- a retry bounds `FinalizeFile`'s truncate with those rows. |
+| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. Neither table has a foreign key to the queue, so nothing removes them implicitly. `SQLiteStore.Prune` is the backstop: on every queue save it deletes rows whose job is in neither `jobs` nor history-as-`Failed`, which catches a crash in the window between a job leaving the queue and its rows being deleted. The `Failed` exception is load-bearing -- a retry bounds `FinalizeFile`'s truncate with those rows. |
 
 ## Failure & degradation rules
 
@@ -1255,7 +1426,7 @@ articles or sparse regions.
 These are known, deliberate, and **not** claims about correctness. They are
 recorded here so the next reader does not mistake them for design.
 
-1. **The startup sweep skips non-resident jobs.** `ReplaceFromResume` needs a
+1. **The startup sweep skips non-resident jobs.** `ReplaceFromRuns` needs a
    resident manifest. **Resolved:** a swept job is hydrated for the duration of
    the correction and evicted again, so the durability subsystem's own fault
    response manufacturing that state — `Application.Stall` → `Queue.Pause` →
@@ -1276,37 +1447,48 @@ recorded here so the next reader does not mistake them for design.
    download-complete.
 
 3. **The SPLIT case in stall recovery.** `reevaluateStall` phase 3
-   (`seedFromCommittedExtents`) logs and returns on failure, while phase 4 still
+   (`seedFromCommittedRuns`) logs and returns on failure, while phase 4 still
    delivers the completion. The result is a file marked `Complete` with some of
    its articles still Outstanding — `IsComplete` is file-based
    (`internal/queue/job.go`), so the two do not have to agree. The cost is wrong
    figures and a wasted re-fetch, not corruption or a short file. Recorded and
    unfixed.
 
-4. **A file with a hole reports no whole-file CRC.** `durability.verifiedPrefix`
-   combines the Class A facts into `FileExtent.PrefixCRC` during the walk it
-   already performs, and `HasPrefixCRC` is set when that prefix reaches the
-   file's end **and the walk consumed every recorded fact**. Both clauses are
-   required, and `verifiedPrefix` is the only place the claim is *created* —
-   the barrier used to derive the flag at its call sites from `VerifiedTo` and
-   `Size` alone, which cannot see a fact the walk never reached, so an article
-   overlapping a sibling without extending the file published a CRC of the
-   bytes that should have been written (#387). One place *narrows* the created
-   claim without re-deriving it: `Resumer`'s cache fast path additionally
-   requires `ext.VerifiedTo == fi.Size()`, because a file whose size changed
-   under a cached extent has invalidated it. Narrowing a claim the guard
-   already allowed cannot manufacture one it refused, which is why that site
-   is safe and the barrier's old call-site derivation was not.
-   `Application.recordAssembledCRC` threads the result to
-   `Queue.SetFileCRC32` when the file finalizes. A permanently failed article
-   leaves a hole, the prefix stops there, and no whole-file value exists to
-   record — `FileProgress.AssembledCRC32` stays zero, which is the documented
-   "unavailable" value (#349), so QuickCheck reads `NoCRC` and
+4. **A file with a hole reports no whole-file CRC.** The claim exists exactly
+   when a file holds ONE run starting at offset 0 (§4). A permanently failed
+   article leaves a hole, a hole means a gap between rows, so such a file keeps
+   at least two rows and no whole-file value exists to record —
+   `FileProgress.AssembledCRC32` stays zero, which is the documented
+   "unavailable" value (#349), so `par2.VerifyCRCs` reads `NoCRC` and
    `par2NeedsRecovery` conservatively returns true for that file. This is the
-   correct answer rather than a gap: a partial prefix recorded as the file's CRC
+   correct answer rather than a gap: a partial CRC recorded as the file's
    would report corruption for a file that is merely incomplete.
 
-5. **The crash suite does not test fsync-to-platter.** See below.
+   The **row count** is the predicate, not a span, and that is what carries
+   #387's guarantee across from the `prefixWalk.consumedAll` this design
+   deleted. §4 has the worked example.
+
+5. **`Σ length` cannot see a hole and an equal-sized overlap together.** A bound
+   on the overlap check rather than a defect in it; §4 states it, its two
+   bounding arguments, and what is actually lost.
+
+6. **A crash between the barrier's commit and the following queue save can
+   strand a completed file.** Article state reaches disk at the barrier's
+   commit; a file's `Complete` flag reaches it at the *next* queue save. A
+   crash in that window leaves a file with every article resolved, no
+   `Complete` flag, and nothing able to re-complete it — completion fires from
+   `partsWritten == TotalParts` inside the assembler, and on the next start
+   those articles are Done so none of them is dispatched, so the count never
+   climbs again.
+
+   **This is pre-existing and was merely made observable.** The shape this
+   design replaced committed the same claim inside the same finalize, with the
+   queue save equally following it; the window is neither new nor widened.
+   Recorded here honestly rather than fixed: closing it means making the
+   `Complete` flag part of the same transaction as the article state, which is
+   a change to what the barrier's commit covers.
+
+7. **The crash suite does not test fsync-to-platter.** See below.
 
 ## What the crash suite actually pins
 
@@ -1337,7 +1519,7 @@ a green run does and does not bound.
 ### Landed
 
 - `internal/durability`: `Barrier` (checkpoint and `FinalizeFile`), `Resumer`,
-  `DurableProof`, `Bitmap`, SQLite `FactLog` and `ExtentStore`.
+  `DurableProof`, and the SQLite `RunStore` behind `durable_runs`.
 - `internal/storagefault`: classification into retryable/permanent with the
   operation and path attached.
 - Compiler-enforced ack path: `Queue.AckDurable(durability.DurableProof)` —
@@ -1349,12 +1531,15 @@ a green run does and does not bound.
   timeout-bounded.
 - Checkpoint cadence: time bound, byte bound, file completion, clean shutdown,
   with `lastBarrier`/`PendingBytes` surfaced through the API and UI.
-- Authoritative startup sweep (`resumeAllJobs` → `Queue.ReplaceFromResume`) and
-  the additive stall-recovery replay (`SeedFromExtents`).
+- Authoritative startup sweep (`resumeAllJobs` → `Queue.ReplaceFromRuns`) and
+  the additive stall-recovery replay (`SeedFromRuns`).
 - Storage-fault stall/fail with a surfaced, actionable reason and interval-based
   re-evaluation.
-- `article_facts` and `file_extents` tables; `job_files.bytes_downloaded`,
-  `max_written` and `write_cursor` removed.
+- `durable_runs` and `failed_articles` tables (migrations `002`/`003`), which
+  replaced `article_facts`, `file_extents` and `job_files.articles_done`;
+  `job_files.max_written` and `write_cursor` removed earlier.
+- The whole-file CRC threaded to `Queue.SetFileCRC32` by
+  `Application.recordAssembledCRC`, for a file that collapses to one run.
 - Crash-consistency suite (`test/crash/`, six tests).
 
 ### Open gaps

@@ -764,9 +764,9 @@ func TestIsComplete_AbsentFileStateIsNotComplete(t *testing.T) {
 	})
 }
 
-// ---------- SeedFromExtents (batch done, replaces MarkArticlesDone) ----------
+// ---------- SeedFromRuns (batch done, replaces MarkArticlesDone) ----------
 
-func TestSeedFromExtents_Batch(t *testing.T) {
+func TestSeedFromRuns_Batch(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "batch-done", 1, 4)

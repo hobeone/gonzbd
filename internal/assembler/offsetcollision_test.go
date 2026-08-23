@@ -13,9 +13,10 @@ import (
 // depends on whether the incumbent has been reported Written:
 //
 //   - Incumbent written → the offset is SETTLED and the ARRIVAL is rejected.
-//     Its bytes are on disk, the pipeline has recorded a Class A fact naming
-//     its CRC at that offset, and the barrier will ack it durable. Letting a
-//     later article overwrite the range makes that fact unverifiable, and
+//     Its bytes are on disk, the next Drain reports them, and the barrier
+//     records the run naming its CRC at that offset and acks it durable.
+//     Letting a later article overwrite the range makes that record
+//     unverifiable, and
 //     failing the incumbent as well would give one article two terminal
 //     dispositions. Checked in acceptArticle, refused like any other
 //     article-level rejection.
@@ -103,7 +104,7 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	}
 
 	// The incumbent's bytes are still the truth at that offset, which is what
-	// keeps its Class A fact verifiable after a restart.
+	// keeps the run the barrier records for it verifiable after a restart.
 	if _, err := c.f.w.Drain(); err != nil {
 		t.Fatalf("drain: %v", err)
 	}

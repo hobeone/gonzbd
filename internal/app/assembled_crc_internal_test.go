@@ -52,7 +52,8 @@ func TestRecordAssembledCRC_ThreadsAWholeFileCRCToTheQueue(t *testing.T) {
 	}
 	if got := snap.Progress().FileAssembledCRC32(0); got != want {
 		t.Errorf("assembled CRC = %#x, want %#x (CRC32 of the file's bytes) — with none "+
-			"recorded, QuickCheck cannot bypass the par2 verify and on-demand par2 "+
+			"recorded, the quickcheck stage cannot report Clean so repair runs the "+
+			"full par2 verify, and on-demand par2 "+
 			"fetches every recovery volume for an intact download", got, want)
 	}
 }

@@ -901,13 +901,18 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 }
 
 // recordAssembledCRC copies the finalized file's whole-file CRC onto the queue,
-// where QuickCheck and on-demand par2 read it.
+// where the quickcheck STAGE and on-demand par2 read it.
 //
-// Both compare a par2 set's recorded CRC32 against the one this download
-// produced. With none recorded they read NoCRC and take the conservative
-// branch: par2NeedsRecovery fetches every recovery volume even for a
-// bit-perfect download, and QuickCheck can never bypass the full par2 verify.
-// That is safe but it is not free, and it was the state of every download.
+// Both reach it through par2.VerifyCRCsWithOptions, which compares a par2 set's
+// recorded CRC32 against the one this download produced. Note which function
+// that is NOT: par2.QuickCheck is filename relocation and computes its own CRC
+// from a path (tryMatchCRC32File), never reading this value.
+//
+// With none recorded both read NoCRC and take the conservative branch:
+// par2NeedsRecovery fetches every recovery volume even for a bit-perfect
+// download, and the stage cannot report Clean, so stage_repair.go runs the full
+// par2 verify+repair subprocess. That is safe but it is not free, and it was
+// the state of every download.
 //
 // The value comes from the file's durable runs, and it is a QUERY rather than
 // a walk. A run's CRC32 is combined left-to-right over the articles it covers

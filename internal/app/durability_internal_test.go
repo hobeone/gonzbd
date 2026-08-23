@@ -628,8 +628,8 @@ func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 // TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds pins that neither
 // bound can be switched off. A barrier is the only thing that acks a
 // downloaded article while the job is running, so with checkpoints off a job
-// holds every article Outstanding until it stops, and a restart must re-read
-// every partial file instead of adopting the Class B cache. See
+// holds every article Outstanding until it stops, and a restart has no
+// recorded run to adopt for anything downloaded since the last barrier. See
 // checkpointSettings for why that is not the same as re-fetching everything.
 func TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds(t *testing.T) {
 	for _, tc := range []struct {
@@ -728,8 +728,8 @@ func TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft(t *testing.T) {
 
 // TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead pins the non-resident
 // case. A job whose manifest has been evicted has nothing open to checkpoint,
-// and building a target with no ArticleMap would make the barrier refuse it
-// loudly for an entirely ordinary condition.
+// so syncTargetFor answers nil rather than handing the barrier a target for a
+// job it cannot resolve.
 func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 

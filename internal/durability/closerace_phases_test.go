@@ -66,8 +66,9 @@ func (s *lateCloseTarget) Confirm(_ context.Context, idx int32) {
 // successfully before the race touched file 0 at all.
 //
 // The "stat" arm is the phase-3 entry to the same race: the close lands
-// between the fsync and the stat, which is a window buildExtent owns rather
-// than Run.
+// between the fsync and the stat, which is the third place in Run a closed
+// handle can be noticed — phase 3's own Stat rather than phase 1's Drain or
+// phase 2's Sync.
 func TestBarrier_ACloseAfterTheDrainDropsOnlyThatFile(t *testing.T) {
 	for _, closeAt := range []string{"sync", "stat"} {
 		t.Run("closed at "+closeAt, func(t *testing.T) {
