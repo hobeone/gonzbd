@@ -228,6 +228,14 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // in step. A narrowing here that says "only the barrier" belongs in none of
 // them — this list is the reason why.
 //
+// Keeping them in step is no longer left to whoever remembers to look:
+// queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse parses the queue
+// package and fails when the set of functions reaching markDone, or setting
+// the bit directly, stops matching what these three sites say. It exists
+// because this enumeration was found short TWICE — the second time here,
+// months after the copy in queue/progress.go was corrected, because a grep of
+// internal/queue cannot reach internal/app.
+//
 // ReplaceFromRuns also UN-marks an article whose run the resume discarded
 // (#362), and this figure follows it down rather than needing a correction of
 // its own — which is the same property, stated for the direction the design

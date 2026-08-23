@@ -231,6 +231,14 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 // downloaded bytes at all (markFailed). Application.JobDurability enumerates
 // them; keep the two in step.
 //
+// This comment is the third statement of that enumeration and the one most
+// likely to be missed, since it sits in a test file that a sweep of the
+// production sources never opens.
+// queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse is what now
+// catches a divergence: it derives the list from the queue package's own
+// syntax, so the three prose copies are checked against the code rather than
+// against each other.
+//
 // The fixture makes articles durable through Queue.SeedFromRuns — the same
 // replay a resume performs — because that is the only route to a NON-ZERO
 // figure that a test can drive. An earlier version asserted only that the
