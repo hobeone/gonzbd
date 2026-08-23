@@ -272,16 +272,19 @@ func TestSQLiteRunStore_CRCMatchesRealBytes(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle pins the
-// specific arithmetic trap the design doc's Step 2 calls out: when a new
-// article merges onto an already-merged run via a SECOND Commit call,
-// Combine's len2 argument must be the incoming run's WHOLE length, not a
-// single article's length. Because this test's two runs are both
-// multi-article (not single articles) before they merge, a naive
-// implementation that combines per-article instead of per-run produces a
-// plausible-looking but wrong CRC that this test catches and a
-// single-article version of the same test would not.
-func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
+// TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits pins that two
+// runs which are each already multi-article BEFORE they meet — one from an
+// earlier Commit, one grouped fresh within the current Commit — still fold
+// into one correct row. Each entry in the fold (run.go's mergeAdjacentRuns)
+// contributes its OWN accumulated Length to Combine, and left-to-right
+// folding makes that equivalent to a single Combine call using the whole
+// right-hand run's length — it is not a distinct code path, so this test
+// does not by itself distinguish "combine per run" from "combine per
+// article": every fold here happens to have a single-article run as the
+// right-hand operand (see mergeAdjacentRuns), so r.Length and "one article's
+// length" agree throughout. That distinguishing case is
+// TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle below.
+func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 	ctx := context.Background()
 	rs := NewSQLiteRunStore(openTestDB(t))
 
@@ -299,10 +302,8 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Second Commit: articles 2-3 arrive together, merge into their own
-	// run [8,20) BEFORE merging against the stored run — so the stored
-	// run's Combine call must use the second run's WHOLE length
-	// (len(right1)+len(right2) == 12), not right1's length alone (6).
+	// Second Commit: articles 2-3 arrive together, group into their own
+	// run [8,20) before folding against the stored run.
 	secondBatch := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 2, Offset: int64(len(left1) + len(left2)), Length: int32(len(right1)), CRC32: crcOf(right1)},
 		{FileIdx: 0, ArtIdx: 3, Offset: int64(len(left1) + len(left2) + len(right1)), Length: int32(len(right2)), CRC32: crcOf(right2)},
@@ -322,6 +323,81 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 	whole := append(append(append(append([]byte{}, left1...), left2...), right1...), right2...)
 	want := crcOf(whole)
 	if got[0].CRC32 != want {
-		t.Errorf("merged CRC32 = %#x, want %#x — Combine must use the incoming run's whole length, not one article's", got[0].CRC32, want)
+		t.Errorf("merged CRC32 = %#x, want %#x", got[0].CRC32, want)
+	}
+}
+
+// TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle pins the
+// specific arithmetic trap the design doc's Step 2 calls out: Combine's
+// len2 argument must be the incoming run's WHOLE length, not one article's.
+//
+// That distinction is only reachable on a LEFTWARD extension: new articles
+// landing immediately BEFORE an already-merged multi-article stored run.
+// mergeAdjacentRuns always builds a fresh incoming article as a
+// single-article Run, and combined is sorted by Offset ascending, so a
+// stored multi-article run can only ever appear as the RIGHT-hand operand
+// (`r`) of a fold — never the left (`cur`). A fold whose new articles land
+// AFTER the stored run (as in
+// TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits above) never
+// puts a multi-article run on the right, so it cannot exercise this: r is a
+// single new article at every step there, and "r.Length" and "one article's
+// length" are the same number throughout. Landing new articles BEFORE the
+// stored run is the one shape that forces r to be the multi-article stored
+// run itself, which is what this test does: articles 2-3 commit first and
+// merge into a 2-article stored run, then articles 0-1 commit second,
+// merge with EACH OTHER into their own 2-article run, and finally fold
+// against the stored run as r — so Combine's len2 must be the stored run's
+// whole Length (12), not right1's length alone (6).
+//
+// A mutation that replaces r.Length with a per-article length
+// (r.Length / (r.LastArtIdx-r.FirstArtIdx+1)) is silent on every other test
+// in this file, because every other fold's r is already single-article.
+// Confirmed empirically: with that mutation applied, this test alone fails;
+// every other test in the package stays green. See the fix report for the
+// observed failure and the restored green run.
+func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
+	ctx := context.Background()
+	rs := NewSQLiteRunStore(openTestDB(t))
+
+	left1 := []byte("AAAA")
+	left2 := []byte("BBBB")
+	right1 := []byte("CCCCCC")
+	right2 := []byte("DDDDDD")
+
+	// First Commit: articles 2-3 land and merge into one stored run,
+	// [8,20) — a 2-article run that will later be the RIGHT-hand operand
+	// of a fold.
+	firstBatch := []DurableArticle{
+		{FileIdx: 0, ArtIdx: 2, Offset: int64(len(left1) + len(left2)), Length: int32(len(right1)), CRC32: crcOf(right1)},
+		{FileIdx: 0, ArtIdx: 3, Offset: int64(len(left1) + len(left2) + len(right1)), Length: int32(len(right2)), CRC32: crcOf(right2)},
+	}
+	if err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second Commit: articles 0-1 land to the LEFT of the stored run,
+	// group into their own run [0,8), and then that run's fold against
+	// the stored run puts the stored run — whole Length 12 — on the
+	// right-hand side of the final Combine call.
+	secondBatch := []DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(left1)), CRC32: crcOf(left1)},
+		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(left1)), Length: int32(len(left2)), CRC32: crcOf(left2)},
+	}
+	if err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := rs.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ForFile returned %d rows, want 1 fully-merged row: %+v", len(got), got)
+	}
+
+	whole := append(append(append(append([]byte{}, left1...), left2...), right1...), right2...)
+	want := crcOf(whole)
+	if got[0].CRC32 != want {
+		t.Errorf("merged CRC32 = %#x, want %#x — Combine must use the stored run's WHOLE length (12), not one article's (6)", got[0].CRC32, want)
 	}
 }
