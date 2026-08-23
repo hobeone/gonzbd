@@ -50,9 +50,9 @@ func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *test
 		t.Fatal(err)
 	}
 	if len(stored) != 1 {
-		t.Fatalf("a file whose articles tile it holds %d runs, want 1 — the predicate "+
-			"that publishes the whole-file CRC is a row COUNT, so more than one row "+
-			"means no CRC is published at all: %+v", len(stored), stored)
+		t.Fatalf("a file whose articles tile it holds %d runs, want 1 — a row COUNT is "+
+			"the first of the three conditions that publish the whole-file CRC, so "+
+			"more than one row means no CRC is published at all: %+v", len(stored), stored)
 	}
 	if stored[0].Offset != 0 {
 		t.Errorf("the single run starts at %d, want 0", stored[0].Offset)
@@ -108,8 +108,14 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 // equals the maximum") this exact shape publishes a CRC combined from the
 // ORIGINAL articles while foreign bytes occupy 150-200. par2 then matches a
 // manifest whose bytes are not on disk and never fetches the recovery volumes.
-// The row count is what carries the guarantee; this pins that the mechanism
-// really does leave a second row for it to see.
+// The row count is what carries the guarantee FOR THIS SHAPE — a partial
+// overlap, whose displaced article abuts nothing and so keeps a row. It is not
+// what carries it for an EXACT-offset duplicate, where one of the pair is
+// dropped and a single row survives; that shape is caught by the article-
+// coverage condition instead, and is pinned separately in
+// TestFinalizeFile_ReportsAnExactOffsetDuplicate and in
+// app.TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped.
+// This test pins that the mechanism really does leave a second row to see.
 func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	ctx := context.Background()
 	rs := NewSQLiteRunStore(openTestDB(t))

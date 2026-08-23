@@ -49,7 +49,7 @@ func newOverlapDetector(inner durability.RunStore) *overlapDetector {
 	return &overlapDetector{RunStore: inner, second: make(chan struct{})}
 }
 
-func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durability.DurableArticle) error {
+func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durability.DurableArticle) ([]durability.Collision, error) {
 	g.mu.Lock()
 	g.open++
 	open := g.open
@@ -67,12 +67,12 @@ func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durab
 		case <-ctx.Done():
 		}
 	}
-	err := g.RunStore.Commit(ctx, jobID, arts)
+	cols, err := g.RunStore.Commit(ctx, jobID, arts)
 
 	g.mu.Lock()
 	g.open--
 	g.mu.Unlock()
-	return err
+	return cols, err
 }
 
 func (g *overlapDetector) sawOverlap() bool {

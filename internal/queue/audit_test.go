@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
@@ -312,9 +313,29 @@ func TestCheckEarlyAbort(t *testing.T) {
 	})
 }
 
-// ---------- SetFileCRC32 ----------
+// ---------- SetFileCRC32FromRuns ----------
 
-func TestSetFileCRC32(t *testing.T) {
+// coveringRuns builds the record a fully-accounted file has: ONE run at offset
+// 0 whose article span is the file's whole range.
+//
+// Tests that merely need a CRC on a file go through this rather than writing
+// the field, because the gatekeeper's whole point is that the value and its
+// evidence arrive together — a fixture that could set a CRC no record could
+// produce would be testing a state the program cannot reach.
+func coveringRuns(t *testing.T, m *Manifest, fileIdx int, crc uint32) []durability.Run {
+	t.Helper()
+	lo, hi := m.FileRange(fileIdx)
+	return []durability.Run{{
+		FileIdx:     int32(fileIdx),
+		FirstArtIdx: int32(lo),
+		LastArtIdx:  int32(hi - 1),
+		Offset:      0,
+		Length:      m.FileBytes(fileIdx),
+		CRC32:       crc,
+	}}
+}
+
+func TestSetFileCRC32FromRuns(t *testing.T) {
 	t.Parallel()
 
 	t.Run("sets CRC on valid file index", func(t *testing.T) {
@@ -326,8 +347,8 @@ func TestSetFileCRC32(t *testing.T) {
 		_ = q.Save(dir)
 
 		var crc uint32 = 0xDEADBEEF
-		if err := q.SetFileCRC32(j.ID, 0, crc); err != nil {
-			t.Fatalf("SetFileCRC32: %v", err)
+		if err := q.SetFileCRC32FromRuns(j.ID, 0, coveringRuns(t, mustManifest(t, j), 0, crc)); err != nil {
+			t.Fatalf("SetFileCRC32FromRuns: %v", err)
 		}
 		got, _ := q.Get(j.ID)
 		if got.Progress().FileAssembledCRC32(0) != crc {
@@ -338,7 +359,7 @@ func TestSetFileCRC32(t *testing.T) {
 			t.Errorf("File 1 AssembledCRC32 = 0x%X, want 0", got.Progress().FileAssembledCRC32(1))
 		}
 		if !q.IsDirty() {
-			t.Error("SetFileCRC32 should set dirty flag")
+			t.Error("SetFileCRC32FromRuns should set dirty flag")
 		}
 	})
 
@@ -349,8 +370,8 @@ func TestSetFileCRC32(t *testing.T) {
 		_ = q.Add(j)
 
 		var crc uint32 = 0xCAFEBABE
-		if err := q.SetFileCRC32(j.ID, 2, crc); err != nil {
-			t.Fatalf("SetFileCRC32: %v", err)
+		if err := q.SetFileCRC32FromRuns(j.ID, 2, coveringRuns(t, mustManifest(t, j), 2, crc)); err != nil {
+			t.Fatalf("SetFileCRC32FromRuns: %v", err)
 		}
 		got, _ := q.Get(j.ID)
 		if got.Progress().FileAssembledCRC32(2) != crc {
@@ -358,13 +379,83 @@ func TestSetFileCRC32(t *testing.T) {
 		}
 	})
 
+	// The three withholding cases below are the reason this method takes runs
+	// at all. Each is a record that does NOT account for the whole file, and
+	// each must leave the field at zero — which QuickCheck reads as NoCRC and
+	// routes to par2, rather than as a verified match.
+	withheld := []struct {
+		name  string
+		runs  func(m *Manifest) []durability.Run
+		why   string
+		crc   uint32
+		files int
+		arts  int
+	}{
+		{
+			name:  "an article missing from the span",
+			files: 1, arts: 3, crc: 0xDEADBEEF,
+			runs: func(m *Manifest) []durability.Run {
+				r := coveringRuns(t, m, 0, 0xDEADBEEF)
+				r[0].LastArtIdx-- // one article unaccounted for
+				return r
+			},
+			why: "this is the exact-offset collision's signature — the dropped " +
+				"article's index is in no run's span — and it is also every " +
+				"permanently failed article. Publishing here is #387: the value " +
+				"is a real CRC over the articles the record DOES hold, so it can " +
+				"match par2's manifest while the file on disk is not those bytes",
+		},
+		{
+			name:  "more than one run",
+			files: 1, arts: 3, crc: 0xDEADBEEF,
+			runs: func(m *Manifest) []durability.Run {
+				lo, hi := m.FileRange(0)
+				return []durability.Run{
+					{FileIdx: 0, FirstArtIdx: int32(lo), LastArtIdx: int32(lo), Offset: 0, Length: 10, CRC32: 0xDEADBEEF},
+					{FileIdx: 0, FirstArtIdx: int32(hi - 1), LastArtIdx: int32(hi - 1), Offset: 500, Length: 10, CRC32: 0xBEEF},
+				}
+			},
+			why: "two rows means a gap between them, so no single CRC describes " +
+				"the file and the first row's value describes only its prefix",
+		},
+		{
+			name:  "a single run that does not start at zero",
+			files: 1, arts: 3, crc: 0xDEADBEEF,
+			runs: func(m *Manifest) []durability.Run {
+				r := coveringRuns(t, m, 0, 0xDEADBEEF)
+				r[0].Offset = 10
+				return r
+			},
+			why: "the file's first bytes are accounted for by nothing, so a CRC " +
+				"folded from this run describes a suffix, not the file",
+		},
+	}
+	for _, tc := range withheld {
+		t.Run("withholds: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := New()
+			j := makeMultiFileJob(t, "crc-"+tc.name, tc.files, tc.arts)
+			_ = q.Add(j)
+
+			if err := q.SetFileCRC32FromRuns(j.ID, 0, tc.runs(mustManifest(t, j))); err != nil {
+				t.Fatalf("SetFileCRC32FromRuns: %v — withholding is not an error, "+
+					"it is the ordinary answer for an incomplete record", err)
+			}
+			got, _ := q.Get(j.ID)
+			if c := got.Progress().FileAssembledCRC32(0); c != 0 {
+				t.Errorf("AssembledCRC32 = 0x%X, want 0 (withheld): %s", c, tc.why)
+			}
+		})
+	}
+
 	t.Run("error on out-of-bounds index", func(t *testing.T) {
 		t.Parallel()
 		q := New()
 		j := makeMultiFileJob(t, "crc-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileCRC32(j.ID, mustManifest(t, j).NumFiles(), 0x1234); err == nil {
+		n := mustManifest(t, j).NumFiles()
+		if err := q.SetFileCRC32FromRuns(j.ID, n, nil); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})
@@ -375,7 +466,7 @@ func TestSetFileCRC32(t *testing.T) {
 		j := makeMultiFileJob(t, "crc-neg", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileCRC32(j.ID, -1, 0x1234); err == nil {
+		if err := q.SetFileCRC32FromRuns(j.ID, -1, nil); err == nil {
 			t.Error("expected error for negative file index")
 		}
 	})
@@ -383,7 +474,7 @@ func TestSetFileCRC32(t *testing.T) {
 	t.Run("error on unknown job", func(t *testing.T) {
 		t.Parallel()
 		q := New()
-		err := q.SetFileCRC32("nonexistent", 0, 0x1234)
+		err := q.SetFileCRC32FromRuns("nonexistent", 0, nil)
 		if err == nil {
 			t.Fatal("expected error for nonexistent job")
 		}

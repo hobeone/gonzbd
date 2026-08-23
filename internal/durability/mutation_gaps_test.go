@@ -61,7 +61,7 @@ func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
 func TestFinalizeFile_ARunAtOffsetZeroOfZeroLengthDoesNotTruncate(t *testing.T) {
 	ctx := context.Background()
 	rs := NewSQLiteRunStore(openTestDB(t))
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 0, CRC32: 0},
 	}); err != nil {
 		t.Fatal(err)

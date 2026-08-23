@@ -450,8 +450,14 @@ func TestReplaceFromRuns_HandlesAFileAlreadyComplete(t *testing.T) {
 		if err := q.MarkFileComplete("job-1", fi); err != nil {
 			t.Fatalf("MarkFileComplete(%d): %v", fi, err)
 		}
-		if err := q.SetFileCRC32("job-1", fi, 0xC0FFEE); err != nil {
-			t.Fatalf("SetFileCRC32(%d): %v", fi, err)
+		// A covering run for BOTH files, including file 0 whose article 2 is
+		// permanently failed. The fixture is building the state this test
+		// tears down, and what it needs is a CRC present to be cleared — the
+		// question of whether file 0 could have earned one is
+		// SetFileCRC32FromRuns' own, and is pinned there.
+		if err := q.SetFileCRC32FromRuns("job-1", fi,
+			coveringRuns(t, mustManifest(t, job), fi, 0xC0FFEE)); err != nil {
+			t.Fatalf("SetFileCRC32FromRuns(%d): %v", fi, err)
 		}
 	}
 	pre := q.SnapshotJob("job-1").Progress()

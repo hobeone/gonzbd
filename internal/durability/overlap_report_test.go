@@ -66,6 +66,81 @@ func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 	}
 }
 
+// TestFinalizeFile_ReportsAnExactOffsetDuplicate pins the OTHER collision
+// shape — the one §3.3's arithmetic structurally cannot see.
+//
+// Two articles claim offset 0. The store keeps one and drops the other, so the
+// dropped bytes contribute nothing to Σ Length and it never exceeds the file's
+// size: overlapFrom has no evidence and correctly reports nothing. Before the
+// commit began returning its drops, that made this case invisible everywhere —
+// dispatch.go's UU block describes it, and no code path told anyone.
+//
+// The report has to come from the commit because the commit is the last moment
+// the collision exists. Afterwards the surviving row is indistinguishable from
+// one that never had a rival: no gap, no excess, no index naming the article
+// that lost.
+func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
+	ctx := context.Background()
+	rs := NewSQLiteRunStore(openTestDB(t))
+
+	// A0 and A2 both at offset 0; A1 abuts A0. 200 bytes of surviving record
+	// over a 200-byte file, so Σ Length EQUALS the size and the overlap check
+	// is silent by construction.
+	tgt := &factGapTarget{
+		size: 200,
+		drained: []WrittenArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11},
+			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0x22},
+			{FileIdx: 0, ArtIdx: 2, Offset: 0, Length: 100, CRC32: 0x33},
+		},
+	}
+
+	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
+	found, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
+	if err != nil {
+		t.Fatalf("FinalizeFile: %v", err)
+	}
+
+	if len(found) != 1 {
+		t.Fatalf("FinalizeFile returned %d anomalies, want 1 — two articles claimed "+
+			"offset 0, one was discarded, and Σ Length still equals the file's size "+
+			"so nothing else in the barrier can notice", len(found))
+	}
+	if found[0].FileIdx != 0 {
+		t.Errorf("FileIdx = %d, want 0", found[0].FileIdx)
+	}
+	if !strings.Contains(found[0].Reason, "vol042.rar") {
+		t.Errorf("Reason = %q, want it to name the file so a user can act on it",
+			found[0].Reason)
+	}
+	// Both articles, which is what this report can say and the overlap report
+	// cannot: the drop has not happened from the record's point of view until
+	// the commit lands, so the pair is still in hand.
+	for _, want := range []string{"0", "2", "offset 0"} {
+		if !strings.Contains(found[0].Reason, want) {
+			t.Errorf("Reason = %q, want it to contain %q — naming both articles and "+
+				"the contested offset is the whole advantage this report has",
+				found[0].Reason, want)
+		}
+	}
+
+	// Grounding: Σ Length really does equal the size here, so the assertion
+	// above cannot be passing because overlapFrom fired instead.
+	runs, err := rs.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, r := range runs {
+		total += r.Length
+	}
+	if total != 200 {
+		t.Fatalf("stored runs total %d bytes over a 200-byte file; the fixture has "+
+			"drifted into the overlap check's reach and no longer isolates the "+
+			"exact-offset shape", total)
+	}
+}
+
 // TestFinalizeFile_DoesNotReportAHoleAsAnOverlap is the other half of the pin,
 // and without it the test above cannot distinguish "reports overlaps" from
 // "reports whenever the recorded total differs from the file".
@@ -110,10 +185,11 @@ func TestFinalizeFile_DoesNotReportAHoleAsAnOverlap(t *testing.T) {
 //
 // Two things bound the loss, and both are checked elsewhere:
 //
-//   - The file has a gap, so it keeps more than one run, so §3.5 withholds its
-//     whole-file CRC on the ROW COUNT. #387's actual harm — publishing a CRC
-//     over bytes that are not on disk — is closed structurally, by a different
-//     guard, and is pinned in app.recordAssembledCRC's tests.
+//   - The file has a gap, so it keeps more than one run AND no single run
+//     covers its whole article range — §3.5 withholds the whole-file CRC on
+//     either condition alone. #387's actual harm — publishing a CRC over bytes
+//     that are not on disk — is closed structurally, by a different guard, and
+//     is pinned in app.recordAssembledCRC's tests.
 //   - The file is incomplete either way, so par2 fetches recovery volumes and
 //     repairs both defects.
 //

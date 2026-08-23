@@ -21,7 +21,7 @@ import (
 // owns failed_articles.
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
-	if err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
+	if _, err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 7},
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)

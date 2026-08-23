@@ -76,7 +76,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	// the reset it is guarding. ackFailed needs no equivalent: it goes through
 	// AckPermanentFailure, which writes its own failed_articles row.
 	ackDone(t, q, jobID, "a1@t")
-	if err := durability.NewSQLiteRunStore(h.repo.DB()).Commit(ctx, jobID,
+	if _, err := durability.NewSQLiteRunStore(h.repo.DB()).Commit(ctx, jobID,
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		}); err != nil {

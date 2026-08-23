@@ -925,52 +925,25 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // par2 verify+repair subprocess. That is safe but it is not free, and it was
 // the state of every download.
 //
-// The value comes from the file's durable runs, and it is a QUERY rather than
-// a walk. A run's CRC32 is combined left-to-right over the articles it covers
-// as they join it, so when a file collapses to a single run at offset 0, that
-// run's CRC32 IS the whole-file CRC — already computed, on stable storage,
-// with no prefix state to maintain.
+// # This function does not decide whether the CRC is publishable
+//
+// It hands the whole record over and lets Queue.SetFileCRC32FromRuns decide.
+// The decision needs the file's article range, which lives on the resident
+// manifest that the queue owns and this package deliberately does not reach
+// into (docs/queue-lifecycle.md), and — more to the point — a setter that took
+// a bare uint32 would have no way to refuse a wrong one. The predicate, and
+// the argument for its exact shape, are at the gatekeeper.
+//
+// What is worth knowing HERE is why the value is trustworthy at all. It is a
+// QUERY rather than a walk: a run's CRC32 is combined left-to-right over the
+// articles as they join it, so a file that collapses to a single run at offset
+// 0 carries the whole-file CRC already computed, on stable storage, with no
+// prefix state to maintain.
 //
 // That source is what #349's combine lacked: the assembler could only see the
 // articles THIS run fetched, so a resumed file's parts did not tile and the
 // figure described a fragment. Runs persist, so they account for every article
 // of the file whichever process fetched it.
-//
-// # The predicate is EXACTLY ONE ROW at offset 0 — a row COUNT, not a span
-//
-// The tempting alternative is "some row starts at 0 and its length equals
-// max(offset+length)". It reads as the same rule and it republishes #387. An
-// overlapping article is WRITTEN rather than refused (§3.3) and gets a run of
-// its own, so a file whose articles tile [0,1000) into one merged run, PLUS a
-// displaced article sitting at [450,550) in a second run, satisfies the span
-// form: a row does start at 0, and its length does equal the maximum. Under
-// that predicate the CRC is published — combined from the ORIGINAL articles,
-// while foreign bytes occupy 450-550. par2 then matches a manifest whose bytes
-// are not what is on disk, and the recovery volumes that would have repaired
-// it are never fetched.
-//
-// A second row means bytes this record cannot account for, whatever its span.
-// That is what carries #387's guarantee across from prefixWalk.consumedAll,
-// which used to catch it and which the durable-runs change deletes.
-//
-// The same form preserves R23's "unavailable is not zero" for an INTERIOR
-// hole, which is the case that needs preserving: a file whose failed article
-// sits between two survivors has a gap BETWEEN rows, so it keeps more than one
-// row and publishes nothing. Correct — that file is merely incomplete, and a
-// CRC over it would report a false mismatch against par2.
-//
-// Scoped to "interior" deliberately, because the universal is false. When the
-// file's LAST article(s) fail there is nothing to their right, so the
-// survivors form ONE run at offset 0, FinalizeFile trims the file to that
-// run's end, and this predicate is satisfied: a CRC IS published, over a short
-// file. That is safe rather than a second #387. The value cannot spuriously
-// MATCH — it is a real CRC over bytes that are missing the tail par2 hashed —
-// so VerifyCRCsWithOptions counts the file Mismatched, quickcheck's
-// `unverifiable` is non-zero and it reports Damaged instead of Clean, and
-// par2NeedsRecovery's `Mismatched+NoCRC+Unverified > 0` fetches the recovery
-// volumes. That is the same destination NoCRC reaches, by the Mismatched
-// branch instead of the NoCRC one. What is lost is a clearer log line, not a
-// guarantee.
 //
 // Best effort by design. A missing CRC costs a full verify, which is exactly
 // today's behaviour, so a failure here must not fail the finalize that has
@@ -984,10 +957,7 @@ func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fi
 		app.log.Debug("load the durable runs to record the assembled CRC", "job", jobID, "err", err)
 		return
 	}
-	if len(runs) != 1 || runs[0].Offset != 0 {
-		return
-	}
-	if err := app.queue.SetFileCRC32(jobID, fileIdx, runs[0].CRC32); err != nil {
+	if err := app.queue.SetFileCRC32FromRuns(jobID, fileIdx, runs); err != nil {
 		app.log.Debug("record the assembled CRC", "job", jobID, "fileidx", fileIdx, "err", err)
 	}
 }

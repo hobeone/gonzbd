@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 )
@@ -1908,9 +1909,16 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 	return nil
 }
 
-// SetFileCRC32 stores the assembled CRC32 on a JobFile, where QuickCheck reads
-// it to verify file integrity against par2's file hashes without re-reading
-// from disk.
+// SetFileCRC32FromRuns stores the assembled CRC32 on a JobFile, where
+// QuickCheck reads it to verify file integrity against par2's file hashes
+// without re-reading from disk — but only if the file's durable runs are
+// evidence for it. Otherwise it records nothing and returns nil.
+//
+// It takes the RUNS rather than a uint32, and that is the point of its shape.
+// The CRC's meaning is entirely a property of the record it came from, so a
+// setter accepting a bare value has no way to refuse a wrong one and pushes
+// the whole invariant into its caller's comments. Here there is nowhere else
+// to write the field, and the evidence arrives with the claim.
 //
 // The value is the crc32 of the file's single durable run, not something the
 // assembler computed. The assembler used to combine the per-article CRCs it
@@ -1918,27 +1926,43 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 // completed, so its parts did not tile the file and it generally could not
 // produce one (#349). A run folds each article's CRC in as the article joins
 // it, across restarts, so a resumed file supplies a CRC as readily as a fresh
-// one — and a file that keeps more than one run supplies none, which is the
-// honest answer for a file whose bytes are incomplete or in doubt.
+// one.
 //
-// Written by Application.recordAssembledCRC when a file finalizes, and only
-// when the file's durable runs have collapsed to exactly ONE row starting at
-// offset 0. That is a row count, not a prefix walk — `prefix`/`verifiedPrefix`
-// is precisely the machinery the durable-runs change deleted, and this
-// sentence went on naming it after the paragraph above it was rewritten.
+// # The predicate: one run, at offset 0, covering every article of the file
 //
-// A file with a permanently failed article INTERIOR to it has a gap between
-// rows, so it keeps more than one row, nothing is recorded, and zero keeps its
-// documented "unavailable" meaning rather than "mismatched".
+// All three conditions, and the third is the one main used to enforce by other
+// means. It is the direct expression of prefixWalk.consumedAll — "did the
+// record account for every article of this file?" — in the vocabulary of runs,
+// and #387 is what it is for.
 //
-// A file whose LAST article(s) failed is the exception, and it is not a
-// counter-example to the field's meaning. The survivors form one run at offset
-// 0, so a CRC is recorded over the trimmed short file. It cannot read as a
-// false "verified": the bytes par2 hashed include the missing tail, so the
-// comparison reports a mismatch and the repair path runs — the same
-// destination an unavailable CRC reaches. See recordAssembledCRC's doc in
-// internal/app/durability.go for the full argument.
-func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
+// The geometric alternative — one row at offset 0 whose length equals the
+// file's size — reads as the same rule and is not. It is INERT: FinalizeFile
+// derives its truncate bound from max(offset+length) over the same rows, so
+// size == Length holds by construction and the comparison can never fail.
+// Worse, it is inert on exactly the case that matters. Two articles claiming
+// one offset leave a single row at offset 0 after the merge drops one, its
+// length equals the file's size, Σ length equals it too so no overlap is
+// raised — and the CRC would be published over articles whose bytes another
+// article has overwritten. par2.VerifyCRCs compares that value against the par2
+// MANIFEST and never opens the file, so it MATCHES, QuickCheckClean is set, and
+// the repair stage returns without running par2 at all.
+//
+// The article-coverage form closes that, and closes it exactly rather than
+// heuristically. A dropped entry removes an article index from the record
+// entirely; no other article carries that index, since ArtIdx is the manifest's
+// unique global index; and a merge extends a span only to
+// LastArtIdx+1, so a span never contains an index no article contributed. The
+// dropped article is therefore in no run's span, and no single run can cover
+// [lo, hi-1]. Every exact-offset collision fails this check.
+//
+// A file with a permanently failed article — INTERIOR or at the TAIL — also
+// fails it, and unlike the row-count form this needs no exception. Its record
+// does not account for every article, so no CRC is published, QuickCheck reads
+// NoCRC, and the repair path runs. The tail case used to publish a CRC over
+// the trimmed short file and rely on that value MISMATCHING par2 to reach the
+// same place; it now reaches it one branch earlier, without a published number
+// that describes bytes the file does not hold.
+func (q *Queue) SetFileCRC32FromRuns(jobID string, fileIdx int, runs []durability.Run) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, err := q.residentJob(jobID)
@@ -1948,7 +1972,14 @@ func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.progress.files[fileIdx].AssembledCRC32 = crc
+	if len(runs) != 1 || runs[0].Offset != 0 {
+		return nil
+	}
+	lo, hi := job.manifest.FileRange(fileIdx)
+	if int(runs[0].FirstArtIdx) != lo || int(runs[0].LastArtIdx) != hi-1 {
+		return nil
+	}
+	job.progress.files[fileIdx].AssembledCRC32 = runs[0].CRC32
 	q.dirty.Store(true)
 	return nil
 }

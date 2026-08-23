@@ -360,11 +360,12 @@ where a check and an owner would both work, take the owner.
 
 #### The whole-file CRC is a query, not a walk
 
-A file's whole-file CRC **exists exactly when the file holds one row and that
-row starts at offset 0**; its `crc32` is the value. `crc32util.Combine` is
+A file's whole-file CRC **exists exactly when the file holds one row, that row
+starts at offset 0, and it covers every article of the file**; its `crc32` is
+the value. `crc32util.Combine` is
 zlib's `crc32_combine` and is associative, so a run's CRC is built pairwise as
 articles join it, across restarts — nothing reads the file.
-`Application.recordAssembledCRC` threads the value to `Queue.SetFileCRC32` when
+`Application.recordAssembledCRC` threads the value to `Queue.SetFileCRC32FromRuns` when
 the file finalizes.
 
 **Its consumer is `par2.VerifyCRCs`, not `par2.QuickCheck`.** The two are easy
@@ -383,18 +384,49 @@ leaves the deferred recovery volumes unfetched. Neither is reachable for a file
 this record supplies no CRC for — it reads `NoCRC`, and both take the
 conservative branch.
 
-**The predicate is a row count, not a span**, and the difference is #387. An
-overlapping article is *written* rather than refused (see below), and it abuts
-nothing, so it gets a row of its own. A file whose articles tile `[0,1000)` into one merged row plus a
-displaced article at `[450,550)` in a second row would satisfy a span-shaped
-predicate — a row does start at 0, and its length does equal the maximum — and
-publish a CRC combined from the *original* articles while foreign bytes occupy
-450–550. par2 would then match a manifest whose bytes are not what is on disk —
-and given the bypass above, the repair stage is skipped on that verdict and
-`par2NeedsRecovery` leaves the volumes unfetched, so nothing later looks.
-A second row means bytes this record cannot account for, whatever its span, and
-that is what carries #387's guarantee across from the `prefixWalk.consumedAll`
-this change deleted.
+**The predicate has three conditions: one row, at offset 0, covering every
+article of the file.** All three, and each closes a shape the others do not.
+Together they are `prefixWalk.consumedAll` restated in the vocabulary of runs —
+*did the record account for every article of this file?* — which is the
+guarantee this change had to carry across, and #387 is what it is for.
+
+`Queue.SetFileCRC32FromRuns` owns the whole predicate. It takes the runs rather
+than a `uint32` deliberately: a setter accepting a bare value cannot refuse a
+wrong one, and the CRC's meaning is entirely a property of the record it came
+from, so the value and its evidence arrive together or the invariant lives only
+in its callers' comments.
+
+**A row count, not a span.** An overlapping article is *written* rather than
+refused (see below), and it abuts nothing, so it gets a row of its own. A file
+whose articles tile `[0,1000)` into one merged row plus a displaced article at
+`[450,550)` in a second row would satisfy a span-shaped predicate — a row does
+start at 0, and its length does equal the maximum — and publish a CRC combined
+from the *original* articles while foreign bytes occupy 450–550. par2 would then
+match a manifest whose bytes are not what is on disk — and given the bypass
+above, the repair stage is skipped on that verdict and `par2NeedsRecovery`
+leaves the volumes unfetched, so nothing later looks.
+
+**And article coverage, not geometry**, because the row count alone does not
+reach the *exact-offset* duplicate. Two articles claiming one offset cannot both
+be stored — `(job_id, file_idx, offset)` is the primary key — so
+`mergeAdjacentRuns` drops one, and a **single row at offset 0** survives. A
+length check against the file's size would be *inert* here: `FinalizeFile`
+derives its truncate bound from `max(offset+length)` over the same rows, so
+`size == Length` holds by construction. `Σ length` equals the size too, so the
+overlap check below sees nothing either. Every condition stated in *bytes* is
+satisfied, and the CRC would be published over articles whose bytes another
+article has overwritten.
+
+The coverage condition closes that exactly rather than heuristically. A dropped
+entry removes an article index from the record entirely; no other article
+carries that index, since `ArtIdx` is the manifest's unique global index; and a
+merge extends a span only to `LastArtIdx+1`, never skipping. So the dropped
+article is in no run's span, and no single run can cover the file's range.
+
+A permanently failed article — interior *or* at the tail — fails the same
+condition, and needs no exception for it. The record does not account for every
+article, so no CRC is published, `QuickCheck` reads `NoCRC`, and the repair path
+runs.
 
 #### Overlaps are detected at completion, and `Σ length` has a blind spot
 
@@ -416,9 +448,10 @@ structurally and saw the overlap regardless; this arithmetic cannot.
 
 Two things bound the loss, and neither is this check:
 
-- A hole means a gap between rows, so such a file has **more than one row**, and
-  the whole-file CRC is withheld on the row count regardless. The #387 outcome
-  is closed structurally by a different guard, not by this sum.
+- A hole means a gap between rows, so such a file has **more than one row** —
+  and no single run covers its whole article range. The whole-file CRC is
+  withheld on either condition alone. The #387 outcome is closed structurally by
+  a different guard, not by this sum.
 - The file is incomplete either way, so par2 fetches recovery volumes and
   repairs both defects.
 
@@ -1247,6 +1280,18 @@ including every failure path.
   because the assembler is blind in exactly that window. What the barrier alone
   can see, in any window, is a range overlap sharing no start offset. Neither
   prevents the write; see #387 for what detection here does not cover.
+
+  That exact-offset pair reaches the user by a **third** path, not by the sum
+  above. `RunStore.Commit` must discard one of the two — the primary key admits
+  one row per offset — and returns the discard as a `durability.Collision`,
+  which the barrier renders as a `PostAnomaly` naming both articles and the
+  contested offset. It has to come from the commit: the dropped row contributes
+  nothing to `Σ length`, and once the commit lands the survivor is
+  indistinguishable from a row that never had a rival, so no later pass over
+  the stored rows can re-derive it. The report says the post is malformed and
+  that par2 will repair the file; it does **not** say the file is corrupt,
+  because this layer cannot tell the in-episode case (which completes *short*)
+  from the cross-episode one (which completes *wrong*).
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
@@ -1488,18 +1533,20 @@ recorded here so the next reader does not mistake them for design.
    unfixed.
 
 4. **A file with a hole reports no whole-file CRC.** The claim exists exactly
-   when a file holds ONE run starting at offset 0 (§4). A permanently failed
-   article leaves a hole, a hole means a gap between rows, so such a file keeps
-   at least two rows and no whole-file value exists to record —
-   `FileProgress.AssembledCRC32` stays zero, which is the documented
+   when a file holds ONE run, starting at offset 0, covering every article of
+   the file (§4). A permanently failed article leaves a hole and is accounted
+   for by no run, so both conditions fail and no whole-file value exists to
+   record — `FileProgress.AssembledCRC32` stays zero, which is the documented
    "unavailable" value (#349), so `par2.VerifyCRCs` reads `NoCRC` and
    `par2NeedsRecovery` conservatively returns true for that file. This is the
    correct answer rather than a gap: a partial CRC recorded as the file's
    would report corruption for a file that is merely incomplete.
 
-   The **row count** is the predicate, not a span, and that is what carries
-   #387's guarantee across from the `prefixWalk.consumedAll` this design
-   deleted. §4 has the worked example.
+   Together those conditions are `prefixWalk.consumedAll` restated over runs,
+   which is what carries #387's guarantee across from the walk this design
+   deleted. Neither the row count nor the coverage check is that guarantee on
+   its own — the row count misses the exact-offset duplicate, where one of the
+   pair is dropped and a single row survives. §4 has both worked examples.
 
 5. **`Σ length` cannot see a hole and an equal-sized overlap together.** A bound
    on the overlap check rather than a defect in it; §4 states it, its two
@@ -1571,8 +1618,9 @@ a green run does and does not bound.
 - `durable_runs` and `failed_articles` tables (migrations `002`/`003`), which
   replaced `article_facts`, `file_extents` and `job_files.articles_done`;
   `job_files.max_written` and `write_cursor` removed earlier.
-- The whole-file CRC threaded to `Queue.SetFileCRC32` by
-  `Application.recordAssembledCRC`, for a file that collapses to one run.
+- The whole-file CRC threaded to `Queue.SetFileCRC32FromRuns` by
+  `Application.recordAssembledCRC`, for a file that collapses to one run
+  accounting for every one of its articles.
 - Crash-consistency suite (`test/crash/`, six tests).
 
 ### Open gaps

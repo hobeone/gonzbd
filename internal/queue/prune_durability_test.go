@@ -51,7 +51,7 @@ func pruneFixture(t *testing.T) (*SQLiteStore, *history.Repository, *durability.
 func seedDurability(t *testing.T, store *SQLiteStore, rs *durability.SQLiteRunStore, jobID string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := rs.Commit(ctx, jobID, []durability.DurableArticle{
+	if _, err := rs.Commit(ctx, jobID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1234},
 	}); err != nil {
 		t.Fatalf("Commit(%s): %v", jobID, err)

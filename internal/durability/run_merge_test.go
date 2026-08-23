@@ -28,7 +28,7 @@ func TestSQLiteRunStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(a)), CRC32: crcOf(a)},
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(a)), Length: int32(len(b)), CRC32: crcOf(b)},
 	}
-	if err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,7 +60,7 @@ func TestSQLiteRunStore_OffsetAbutsIndexDoesNot(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 		{FileIdx: 0, ArtIdx: 5, Offset: 100, Length: 50, CRC32: 0x2222}, // index gap: 1..4 missing
 	}
-	if err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestSQLiteRunStore_IndexAbutsOffsetDoesNot(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 		{FileIdx: 0, ArtIdx: 1, Offset: 150, Length: 50, CRC32: 0x2222}, // offset gap: 100..150
 	}
-	if err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,7 +109,7 @@ func TestSQLiteRunStore_RedeliveredArticleIsDropped(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 500, CRC32: 0xAAAA},
 		{FileIdx: 0, ArtIdx: 1, Offset: 500, Length: 500, CRC32: 0xBBBB},
 	}
-	if err := rs.Commit(ctx, "job-1", first); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", first); err != nil {
 		t.Fatal(err)
 	}
 	before, err := rs.ForFile(ctx, "job-1", 0)
@@ -122,7 +122,7 @@ func TestSQLiteRunStore_RedeliveredArticleIsDropped(t *testing.T) {
 	redelivered := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: 500, Length: 500, CRC32: 0xBBBB},
 	}
-	if err := rs.Commit(ctx, "job-1", redelivered); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", redelivered); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,13 +164,13 @@ func TestSQLiteRunStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T)
 	}
 
 	// First commit: articles 0-9 land and merge into one stored row.
-	if err := rs.Commit(ctx, "job-1", mkArts(0, 9)); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", mkArts(0, 9)); err != nil {
 		t.Fatal(err)
 	}
 
 	// Second commit: a redelivery of 5-9 arrives alongside genuinely new
 	// 10-12, in one batch — exactly the shape that breaks whole-run dedup.
-	if err := rs.Commit(ctx, "job-1", mkArts(5, 12)); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", mkArts(5, 12)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +205,7 @@ func TestSQLiteRunStore_MergeIsOrderIndependent(t *testing.T) {
 	reversed := []DurableArticle{forward[2], forward[0], forward[1]}
 
 	rsFwd := NewSQLiteRunStore(openTestDB(t))
-	if err := rsFwd.Commit(ctx, "job-1", forward); err != nil {
+	if _, err := rsFwd.Commit(ctx, "job-1", forward); err != nil {
 		t.Fatal(err)
 	}
 	gotFwd, err := rsFwd.ForFile(ctx, "job-1", 0)
@@ -214,7 +214,7 @@ func TestSQLiteRunStore_MergeIsOrderIndependent(t *testing.T) {
 	}
 
 	rsRev := NewSQLiteRunStore(openTestDB(t))
-	if err := rsRev.Commit(ctx, "job-1", reversed); err != nil {
+	if _, err := rsRev.Commit(ctx, "job-1", reversed); err != nil {
 		t.Fatal(err)
 	}
 	gotRev, err := rsRev.ForFile(ctx, "job-1", 0)
@@ -256,7 +256,7 @@ func TestSQLiteRunStore_CRCMatchesRealBytes(t *testing.T) {
 		offset += int64(len(c))
 	}
 
-	if err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 	got, err := rs.ForFile(ctx, "job-1", 0)
@@ -298,7 +298,7 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(left1)), CRC32: crcOf(left1)},
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(left1)), Length: int32(len(left2)), CRC32: crcOf(left2)},
 	}
-	if err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,7 +308,7 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 2, Offset: int64(len(left1) + len(left2)), Length: int32(len(right1)), CRC32: crcOf(right1)},
 		{FileIdx: 0, ArtIdx: 3, Offset: int64(len(left1) + len(left2) + len(right1)), Length: int32(len(right2)), CRC32: crcOf(right2)},
 	}
-	if err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -371,7 +371,7 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 2, Offset: int64(len(left1) + len(left2)), Length: int32(len(right1)), CRC32: crcOf(right1)},
 		{FileIdx: 0, ArtIdx: 3, Offset: int64(len(left1) + len(left2) + len(right1)), Length: int32(len(right2)), CRC32: crcOf(right2)},
 	}
-	if err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -383,7 +383,7 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(left1)), CRC32: crcOf(left1)},
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(left1)), Length: int32(len(left2)), CRC32: crcOf(left2)},
 	}
-	if err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -461,10 +461,10 @@ func TestSQLiteRunStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
 			ctx := context.Background()
 			rs := NewSQLiteRunStore(openTestDB(t))
 
-			if err := rs.Commit(ctx, "job-1", c.first); err != nil {
+			if _, err := rs.Commit(ctx, "job-1", c.first); err != nil {
 				t.Fatal(err)
 			}
-			if err := rs.Commit(ctx, "job-1", c.second); err != nil {
+			if _, err := rs.Commit(ctx, "job-1", c.second); err != nil {
 				t.Fatal(err)
 			}
 

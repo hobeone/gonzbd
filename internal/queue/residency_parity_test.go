@@ -66,7 +66,7 @@ func commitBarrierRuns(t *testing.T, db *sql.DB, job *Job) {
 			off += n
 		}
 	}
-	if err := durability.NewSQLiteRunStore(db).Commit(context.Background(), job.ID, arts); err != nil {
+	if _, err := durability.NewSQLiteRunStore(db).Commit(context.Background(), job.ID, arts); err != nil {
 		t.Fatalf("commitBarrierRuns: commit: %v", err)
 	}
 }

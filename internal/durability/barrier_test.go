@@ -131,7 +131,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 	ctx := context.Background()
 	rs := NewSQLiteRunStore(openTestDB(t))
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 	}); err != nil {
 		t.Fatal(err)
@@ -257,7 +257,9 @@ type errStore struct {
 	err error
 }
 
-func (e *errStore) Commit(context.Context, string, []DurableArticle) error { return e.err }
+func (e *errStore) Commit(context.Context, string, []DurableArticle) ([]Collision, error) {
+	return nil, e.err
+}
 
 // TestBarrier_CommitFailureAcksNothing pins the second half of phase 4: the
 // ack is downstream of the commit, so a commit that fails must ack nothing.

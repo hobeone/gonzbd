@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -34,8 +35,23 @@ func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *que
 	if err := q.SetFileFilename(qjob.ID, 0, filename); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
-	if err := q.SetFileCRC32(qjob.ID, 0, crc); err != nil {
-		t.Fatalf("SetFileCRC32: %v", err)
+	// Through the gatekeeper, presenting the record that would have earned the
+	// CRC: one run at offset 0 covering the file's whole article range. The
+	// job here has a single one-article file, so that range is [0,0].
+	m, err := qjob.Manifest()
+	if err != nil {
+		t.Fatalf("manifest for the CRC fixture: %v", err)
+	}
+	lo, hi := m.FileRange(0)
+	if err := q.SetFileCRC32FromRuns(qjob.ID, 0, []durability.Run{{
+		FileIdx:     0,
+		FirstArtIdx: int32(lo),
+		LastArtIdx:  int32(hi - 1),
+		Offset:      0,
+		Length:      bytes,
+		CRC32:       crc,
+	}}); err != nil {
+		t.Fatalf("SetFileCRC32FromRuns: %v", err)
 	}
 	return q.SnapshotJob(qjob.ID)
 }

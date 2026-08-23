@@ -59,8 +59,9 @@ func TestReplaceFromRuns_SurvivesAReHydration(t *testing.T) {
 		if err := q.MarkFileComplete("resume-persist", fi); err != nil {
 			t.Fatalf("MarkFileComplete(%d): %v", fi, err)
 		}
-		if err := q.SetFileCRC32("resume-persist", fi, 0xC0FFEE); err != nil {
-			t.Fatalf("SetFileCRC32(%d): %v", fi, err)
+		if err := q.SetFileCRC32FromRuns("resume-persist", fi,
+			coveringRuns(t, mustManifest(t, job), fi, 0xC0FFEE)); err != nil {
+			t.Fatalf("SetFileCRC32FromRuns(%d): %v", fi, err)
 		}
 	}
 	if err := q.store.Update(t.Context(), job); err != nil {

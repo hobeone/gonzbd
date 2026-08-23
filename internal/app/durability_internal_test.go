@@ -594,7 +594,7 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 
 	store := application.queue.Store()
 	for _, id := range []string{job.ID, "other-job"} {
-		if err := application.runs.Commit(ctx, id, []durability.DurableArticle{
+		if _, err := application.runs.Commit(ctx, id, []durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		}); err != nil {
 			t.Fatal(err)
@@ -677,8 +677,8 @@ func TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds(t *testing.T) {
 // that must degrade to a re-fetch rather than to a wrong answer.
 type failingRunStore struct{ err error }
 
-func (f failingRunStore) Commit(context.Context, string, []durability.DurableArticle) error {
-	return f.err
+func (f failingRunStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
+	return nil, f.err
 }
 
 func (f failingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
@@ -696,8 +696,8 @@ func (f failingRunStore) DeleteJob(context.Context, string) error         { retu
 // a tautology, which is what this replaces.
 type recordingRunStore struct{ deleted []string }
 
-func (r *recordingRunStore) Commit(context.Context, string, []durability.DurableArticle) error {
-	return nil
+func (r *recordingRunStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
+	return nil, nil
 }
 
 func (r *recordingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {

@@ -189,7 +189,7 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 			rs := NewSQLiteRunStore(openTestDB(t))
 			// A stored run, so the truncate bound is non-zero and the
 			// truncate arm is actually reached.
-			if err := rs.Commit(context.Background(), "job-1", []DurableArticle{
+			if _, err := rs.Commit(context.Background(), "job-1", []DurableArticle{
 				{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1},
 			}); err != nil {
 				t.Fatal(err)

@@ -19,7 +19,7 @@ import (
 // A run combines the CRCs of the articles that abut as they join it, across
 // restarts, so a file whose articles all arrive collapses to one row at offset
 // 0 whose crc32 IS the file's — already computed, with no read of the file
-// (R24). Application.recordAssembledCRC threads it to Queue.SetFileCRC32 when
+// (R24). Application.recordAssembledCRC threads it to Queue.SetFileCRC32FromRuns when
 // the file finalizes, which is what QuickCheck and on-demand par2 read.
 type FileComplete struct {
 	JobID   string

@@ -91,7 +91,7 @@ func TestOverlapFindings_ReportsOnePerOverlappedFile(t *testing.T) {
 	rs := NewSQLiteRunStore(openTestDB(t))
 	// File 0 overlaps: 150 bytes recorded over a 100-byte file. File 1 is
 	// healthy. File 2 overlaps too.
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		{FileIdx: 0, ArtIdx: 2, Offset: 50, Length: 50, CRC32: 2},
 		{FileIdx: 1, ArtIdx: 3, Offset: 0, Length: 100, CRC32: 3},

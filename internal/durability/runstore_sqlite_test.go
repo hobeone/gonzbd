@@ -29,14 +29,19 @@ func TestCoveredByAny(t *testing.T) {
 // TestMergeAdjacentRuns pins the fold itself, independent of SQL storage:
 // empty input, a single run, and a three-way chain that must fold into one.
 func TestMergeAdjacentRuns(t *testing.T) {
-	if got := mergeAdjacentRuns(nil); got != nil {
-		t.Errorf("mergeAdjacentRuns(nil) = %+v, want nil", got)
+	if got, cols := mergeAdjacentRuns(nil); got != nil || cols != nil {
+		t.Errorf("mergeAdjacentRuns(nil) = %+v, %+v, want nil, nil", got, cols)
 	}
 
 	single := []Run{{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1234}}
-	got := mergeAdjacentRuns(single)
+	got, cols := mergeAdjacentRuns(single)
 	if len(got) != 1 || got[0] != single[0] {
 		t.Errorf("mergeAdjacentRuns(single) = %+v, want unchanged %+v", got, single)
+	}
+	if len(cols) != 0 {
+		t.Errorf("mergeAdjacentRuns(single) reported %+v; one entry cannot collide "+
+			"with anything, so a collision here means the report fires on a shape "+
+			"that has no duplicate at all", cols)
 	}
 
 	chain := []Run{
@@ -44,9 +49,13 @@ func TestMergeAdjacentRuns(t *testing.T) {
 		{FileIdx: 0, FirstArtIdx: 1, LastArtIdx: 1, Offset: 4, Length: 4, CRC32: crcOf([]byte("BBBB"))},
 		{FileIdx: 0, FirstArtIdx: 2, LastArtIdx: 2, Offset: 8, Length: 4, CRC32: crcOf([]byte("CCCC"))},
 	}
-	got = mergeAdjacentRuns(chain)
+	got, cols = mergeAdjacentRuns(chain)
 	if len(got) != 1 {
 		t.Fatalf("mergeAdjacentRuns(chain) = %d rows, want 1: %+v", len(got), got)
+	}
+	if len(cols) != 0 {
+		t.Errorf("a chain that folds cleanly reported %+v; abutting entries merge "+
+			"and must not be counted as claiming the same offset", cols)
 	}
 	if got[0].FirstArtIdx != 0 || got[0].LastArtIdx != 2 || got[0].Offset != 0 || got[0].Length != 12 {
 		t.Errorf("folded run = %+v, want FirstArtIdx=0 LastArtIdx=2 Offset=0 Length=12", got[0])
@@ -103,7 +112,7 @@ func TestSQLiteRunStore_HelpersDirectly(t *testing.T) {
 	arts := []DurableArticle{
 		{FileIdx: 1, ArtIdx: 0, Offset: 0, Length: 5, CRC32: crcOf([]byte("hello"))},
 	}
-	if err := rs.commitFile(ctx, tx, "job-1", 1, arts); err != nil {
+	if _, err := rs.commitFile(ctx, tx, "job-1", 1, arts); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -125,7 +134,7 @@ func TestSQLiteRunStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
 	ctx := context.Background()
 	rs := NewSQLiteRunStore(openTestDB(t))
 
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 1, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1},
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x2},
 		{FileIdx: 0, ArtIdx: 5, Offset: 200, Length: 10, CRC32: 0x3},
@@ -155,10 +164,10 @@ func TestSQLiteRunStore_ForJobIsScopedToJob(t *testing.T) {
 	rs := NewSQLiteRunStore(openTestDB(t))
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{art}); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rs.Commit(ctx, "job-2", []DurableArticle{art}); err != nil {
+	if _, err := rs.Commit(ctx, "job-2", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,10 +188,10 @@ func TestSQLiteRunStore_DeleteJobIsScoped(t *testing.T) {
 	rs := NewSQLiteRunStore(openTestDB(t))
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{art}); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
-	if err := rs.Commit(ctx, "job-2", []DurableArticle{art}); err != nil {
+	if _, err := rs.Commit(ctx, "job-2", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +218,7 @@ func TestSQLiteRunStore_CommitEmptyIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := NewSQLiteRunStore(db)
-	if err := rs.Commit(ctx, "job-1", nil); err != nil {
+	if _, err := rs.Commit(ctx, "job-1", nil); err != nil {
 		t.Fatalf("Commit(nil) on a closed DB = %v, want nil (nothing to do)", err)
 	}
 }
@@ -222,7 +231,7 @@ func TestSQLiteRunStore_CommitErrorsOnClosedDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := NewSQLiteRunStore(db)
-	err := rs.Commit(ctx, "job-1", []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}})
+	_, err := rs.Commit(ctx, "job-1", []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}})
 	if err == nil {
 		t.Fatal("Commit on a closed DB returned nil, want an error")
 	}
@@ -252,14 +261,14 @@ func TestSQLiteRunStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	rs := NewSQLiteRunStore(db)
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		{FileIdx: 1, ArtIdx: 5, Offset: 0, Length: 100, CRC32: 2},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Another job's file 0, so the delete's job scoping is exercised too.
-	if err := rs.Commit(ctx, "job-2", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-2", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 3},
 	}); err != nil {
 		t.Fatal(err)
@@ -304,7 +313,7 @@ func TestSQLiteRunStore_InsertFailureMidBatchRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := rs.Commit(ctx, "job-1", []DurableArticle{
+	_, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1},
 		{FileIdx: 1, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 2},
 	})
@@ -331,7 +340,7 @@ func TestSQLiteRunStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 	rs := NewSQLiteRunStore(db)
 
 	first := []byte("AAAA")
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(first)), CRC32: crcOf(first)},
 	}); err != nil {
 		t.Fatal(err)
@@ -344,7 +353,7 @@ func TestSQLiteRunStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 	}
 
 	second := []byte("BBBB")
-	err := rs.Commit(ctx, "job-1", []DurableArticle{
+	_, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(first)), Length: int32(len(second)), CRC32: crcOf(second)},
 	})
 	if err == nil {

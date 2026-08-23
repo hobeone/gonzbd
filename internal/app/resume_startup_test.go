@@ -146,7 +146,7 @@ func (f *resumeFixture) recordRuns(durableArts ...int) {
 			CRC32:   crc32.ChecksumIEEE(f.parts[i]),
 		})
 	}
-	if err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(f.t.Context(), f.jobID, arts); err != nil {
+	if _, err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(f.t.Context(), f.jobID, arts); err != nil {
 		f.t.Fatalf("RunStore.Commit: %v", err)
 	}
 }

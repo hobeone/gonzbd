@@ -277,7 +277,8 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// Phase 4 — commit the runs atomically, then and only then ack. Nothing
 	// between these two statements may fail, and nothing may be inserted
 	// between them: the commit is what makes the proof true after a crash.
-	if err := b.runs.Commit(ctx, jobID, arts); err != nil {
+	collisions, err := b.runs.Commit(ctx, jobID, arts)
+	if err != nil {
 		return nil, fmt.Errorf("durability: barrier commit for %s: %w", jobID, err)
 	}
 	if len(acked) > 0 {
@@ -319,7 +320,15 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// Classified from the stored rows AFTER the commit, so this cycle's own
 	// articles are included. It is deliberately not squeezed between the
 	// commit and the ack, where §6 forbids anything at all.
-	return b.admit(jobID, b.overlapFindings(ctx, jobID, files, sizes, t)), nil
+	//
+	// Collisions come FIRST, and the order is load-bearing rather than
+	// cosmetic: admit's latch is keyed on (job, file), so where a file has
+	// both findings only the first survives. A collision names two articles
+	// and a byte offset; an overlap names a byte total. The specific one is
+	// the one worth spending the file's single warning on.
+	cands := collisionFindings(collisions, t.Path)
+	cands = append(cands, b.overlapFindings(ctx, jobID, files, sizes, t)...)
+	return b.admit(jobID, cands), nil
 }
 
 // durableArticle converts one drained article into the record the store places.
@@ -590,7 +599,8 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		return nil, b.raise(jobID, "stat", t.Path(idx), err)
 	}
 
-	if err := b.runs.Commit(ctx, jobID, arts); err != nil {
+	collisions, err := b.runs.Commit(ctx, jobID, arts)
+	if err != nil {
 		return nil, fmt.Errorf("durability: finalize commit for %s file %d: %w", jobID, idx, err)
 	}
 	if len(acked) > 0 {
@@ -612,7 +622,11 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// are included, and against the POST-truncate size, which is the first
 	// point at which the file's size is its true content length rather than
 	// pre-allocation's.
-	return b.admit(jobID, b.overlapFindings(ctx, jobID, []int32{idx}, map[int32]int64{idx: size}, t)), nil
+	// Collisions first, for the reason Run gives: one warning per file, spent
+	// on the more specific finding.
+	cands := collisionFindings(collisions, t.Path)
+	cands = append(cands, b.overlapFindings(ctx, jobID, []int32{idx}, map[int32]int64{idx: size}, t)...)
+	return b.admit(jobID, cands), nil
 }
 
 // boundOver returns the highest end offset among a file's stored runs and the

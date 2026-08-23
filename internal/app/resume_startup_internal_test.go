@@ -93,7 +93,7 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	// File 1 has a run of its own that must NOT reach the work set: with no
 	// resolved name there is no path the gate could have stat'ed, and adopting
 	// it would mark an article Done on the strength of the record alone.
-	if err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), job.ID,
+	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), job.ID,
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 				CRC32: crc32.ChecksumIEEE(f.articles[0])},
@@ -283,7 +283,7 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := os.WriteFile(otherPath, otherBytes, 0o600); err != nil {
 		t.Fatalf("write(other): %v", err)
 	}
-	if err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(t.Context(), other.ID,
+	if _, err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(t.Context(), other.ID,
 		[]durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(otherBytes)}}); err != nil {
 		t.Fatalf("RunStore.Commit(other): %v", err)
@@ -571,7 +571,7 @@ func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 	// Both articles recorded and both installed, so the state the sweep would
 	// destroy is a complete one. The fixture's own commit covers article 0
 	// only; this adds article 1.
-	if err := f.app.runs.Commit(t.Context(), f.job.ID, []durability.DurableArticle{
+	if _, err := f.app.runs.Commit(t.Context(), f.job.ID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: unitArtLen, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(f.articles[1])},
 	}); err != nil {
@@ -585,9 +585,7 @@ func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 	if err := f.app.queue.MarkFileComplete(f.job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
-	if err := f.app.queue.SetFileCRC32(f.job.ID, 0, 0xC0FFEE); err != nil {
-		t.Fatalf("SetFileCRC32: %v", err)
-	}
+	seedFileCRC(t, f.app.queue, f.job, 0, 0xC0FFEE)
 	// Shorter than the 200 bytes the runs claim, so the gate discards them.
 	if err := os.WriteFile(f.path, bytes.Repeat([]byte{'r'}, 50), 0o600); err != nil {
 		t.Fatalf("rewrite the replaced file: %v", err)

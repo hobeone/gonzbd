@@ -739,7 +739,7 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 	}
 
 	// What a barrier records for article index 1 ("art2") and nothing else.
-	if err := durability.NewSQLiteRunStore(repo.DB()).Commit(ctx, job.ID,
+	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(ctx, job.ID,
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0xABCD},
 		}); err != nil {

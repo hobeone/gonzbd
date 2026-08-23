@@ -22,7 +22,7 @@ func writePartial(t *testing.T, dir, name string, n int) string {
 // storeRun commits one article as a run and returns the store.
 func storeRuns(t *testing.T, rs RunStore, jobID string, arts ...DurableArticle) {
 	t.Helper()
-	if err := rs.Commit(context.Background(), jobID, arts); err != nil {
+	if _, err := rs.Commit(context.Background(), jobID, arts); err != nil {
 		t.Fatalf("commit runs: %v", err)
 	}
 }

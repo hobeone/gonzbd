@@ -225,11 +225,14 @@ This produces a CRC32 that matches what par2 records as the **file-level CRC32**
 > whole-file CRC — already computed, on stable storage, with no read of the
 > file. It is a query, not a walk.
 >
-> `Application.recordAssembledCRC` threads that value to `Queue.SetFileCRC32`
+> `Application.recordAssembledCRC` threads that value to `Queue.SetFileCRC32FromRuns`
 > when the file finalizes, so `FileProgress.AssembledCRC32` is populated for a
 > file whose bytes tile it exactly. A file that keeps more than one row — a hole,
-> or an article overlapping a sibling — supplies nothing, and zero is the
-> documented "unavailable" value: the verify reads it as `NoCRC` and par2 runs.
+> or an article overlapping a sibling — supplies nothing, and so does one whose
+> single row does not account for every article of the file, which is what a
+> permanently failed article or a discarded same-offset duplicate leaves. Zero
+> is the documented "unavailable" value: the verify reads it as `NoCRC` and
+> par2 runs.
 > See §4 of [`durability-contract.md`](durability-contract.md).
 
 Go (superseded): implement `crc32Combine(crc1, crc2 uint32, len2 int64) uint32`

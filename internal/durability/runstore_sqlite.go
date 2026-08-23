@@ -37,9 +37,9 @@ var _ RunStore = (*SQLiteRunStore)(nil)
 // subtracting can build a run that bridges a redelivered span into genuinely
 // new work, which no stored row covers and no whole-run check can catch —
 // see run.go's Commit doc for the worked example this order prevents.
-func (s *SQLiteRunStore) Commit(ctx context.Context, jobID string, arts []DurableArticle) error {
+func (s *SQLiteRunStore) Commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
 	if len(arts) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	byFile := make(map[int32][]DurableArticle)
@@ -49,7 +49,7 @@ func (s *SQLiteRunStore) Commit(ctx context.Context, jobID string, arts []Durabl
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("durability: begin run commit job=%s: %w", jobID, err)
+		return nil, fmt.Errorf("durability: begin run commit job=%s: %w", jobID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -62,21 +62,30 @@ func (s *SQLiteRunStore) Commit(ctx context.Context, jobID string, arts []Durabl
 	}
 	slices.Sort(fileIdxs)
 
+	var collisions []Collision
 	for _, fi := range fileIdxs {
-		if err := s.commitFile(ctx, tx, jobID, fi, byFile[fi]); err != nil {
-			return err
+		found, err := s.commitFile(ctx, tx, jobID, fi, byFile[fi])
+		if err != nil {
+			return nil, err
 		}
+		collisions = append(collisions, found...)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("durability: commit run tx job=%s: %w", jobID, err)
+		return nil, fmt.Errorf("durability: commit run tx job=%s: %w", jobID, err)
 	}
-	return nil
+	// Below tx.Commit, so a collision is reported only once the drop it
+	// describes is on stable storage. A rolled-back transaction dropped
+	// nothing: the rows it would have replaced are still there, and the next
+	// commit of the same articles re-derives the same collision from the same
+	// inputs.
+	return collisions, nil
 }
 
 // commitFile applies Commit's algorithm to one file's incoming articles,
-// within the caller's transaction.
-func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID string, fileIdx int32, arts []DurableArticle) error {
+// within the caller's transaction, and returns the exact-offset collisions the
+// merge dropped.
+func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID string, fileIdx int32, arts []DurableArticle) ([]Collision, error) {
 	sort.Slice(arts, func(i, j int) bool { return arts[i].Offset < arts[j].Offset })
 
 	var maxEnd int64
@@ -92,7 +101,7 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 	// key, so this is an index range scan, not a full-file read.
 	stored, err := s.queryBracketing(ctx, tx, jobID, fileIdx, maxEnd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Subtract: drop every incoming article whose ArtIdx a stored row
@@ -104,7 +113,12 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 		}
 	}
 	if len(kept) == 0 {
-		return nil
+		// Every incoming article was an at-least-once redelivery of one a
+		// stored row already covers (R12). That is not a collision — no
+		// entry is discarded here that asserted anything the record does
+		// not already hold — so there is nothing to report and nothing to
+		// write.
+		return nil, nil
 	}
 
 	// Sort (kept is already offset-sorted from the slice above, since
@@ -154,7 +168,7 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 		return a.FirstArtIdx < b.FirstArtIdx
 	})
 
-	final := mergeAdjacentRuns(combined)
+	final, collisions := mergeAdjacentRuns(combined)
 
 	// Delete every stored row this commit read — some may be unchanged,
 	// but re-writing them is a bounded, atomic no-op; leaving a stale
@@ -162,10 +176,17 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 	// offset) would not be.
 	if len(stored) > 0 {
 		if err := s.deleteRows(ctx, tx, jobID, fileIdx, stored); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return s.insertRuns(ctx, tx, jobID, final)
+	if err := s.insertRuns(ctx, tx, jobID, final); err != nil {
+		return nil, err
+	}
+	// Collisions are returned only on the path that reached the insert. A
+	// commitFile that failed earlier has changed nothing, and its caller
+	// rolls the transaction back — reporting a drop from a transaction that
+	// never landed would name an event that did not happen.
+	return collisions, nil
 }
 
 // coveredByAny reports whether artIdx falls within any stored run's
@@ -195,25 +216,35 @@ func coveredByAny(stored []Run, artIdx int32) bool {
 // LATER finalize truncate the file to it, while keeping the longer leaves the
 // bound conservative in the safe direction.
 //
-// What this does NOT do is report the collision. The exact-offset duplicate
-// currently raises no PostAnomaly: overlapFrom compares Σ length against the
-// file's size, and dropping the duplicate is exactly what stops Σ length from
-// exceeding it. Surfacing it is escalated, not implemented here.
+// Every drop is REPORTED, as a Collision, and this is the only place in the
+// program that can report one. overlapFrom cannot: it compares Σ length
+// against the file's size, and dropping the duplicate is exactly what stops
+// Σ length from exceeding it. Nor can any later pass over the stored rows —
+// the survivor is by then indistinguishable from a row that never had a
+// rival. The information exists here and nowhere else, so it leaves by return
+// value rather than being re-derived downstream.
 //
 // The trap this exists to avoid: crc32util.Combine(a, b, lenB) requires lenB
 // to be the WHOLE length of the run being folded in, not one article's
 // length. Using r.Length — which already reflects any prior merging of r —
 // is what keeps that true regardless of how many articles r itself covers.
-func mergeAdjacentRuns(sorted []Run) []Run {
+func mergeAdjacentRuns(sorted []Run) ([]Run, []Collision) {
 	if len(sorted) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]Run, 0, len(sorted))
+	var collisions []Collision
 	cur := sorted[0]
 	for _, r := range sorted[1:] {
 		// Checked before the fold, because a zero-length cur would satisfy
 		// both predicates and folding an overlapping entry is never right.
 		if r.Offset == cur.Offset {
+			collisions = append(collisions, Collision{
+				FileIdx: cur.FileIdx,
+				Offset:  cur.Offset,
+				Kept:    cur.FirstArtIdx,
+				Dropped: r.FirstArtIdx,
+			})
 			continue
 		}
 		if r.Offset == cur.Offset+cur.Length && r.FirstArtIdx == cur.LastArtIdx+1 {
@@ -226,7 +257,7 @@ func mergeAdjacentRuns(sorted []Run) []Run {
 		cur = r
 	}
 	out = append(out, cur)
-	return out
+	return out, collisions
 }
 
 // queryBracketing returns every stored run for (jobID, fileIdx) whose Offset

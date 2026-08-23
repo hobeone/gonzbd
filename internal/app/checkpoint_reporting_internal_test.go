@@ -15,8 +15,8 @@ type failingCommitStore struct {
 	durability.RunStore
 }
 
-func (failingCommitStore) Commit(context.Context, string, []durability.DurableArticle) error {
-	return errors.New("database is locked")
+func (failingCommitStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
+	return nil, errors.New("database is locked")
 }
 
 // TestCheckpointJob_DoesNotStampABarrierOverNoFiles pins the other half of the

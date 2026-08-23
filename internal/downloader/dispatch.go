@@ -963,27 +963,29 @@ func decodePayload(body []byte) (decodedPayload, error) {
 			// segment finds offset 0 unowned and overwrites what is there. The
 			// file then completes WRONG rather than short.
 			//
-			// The durability record does not report that, and an earlier draft
-			// of this comment claiming it did was simply wrong — the check it
-			// named cannot see this shape, before or after the drop described
-			// below. Two runs asserting the SAME offset
-			// never abut, so they never merge; mergeAdjacentRuns keeps the
-			// longer of the two and drops the other, which is what stops a
-			// later FinalizeFile from bounding its truncate to the shorter.
-			// The dropped row contributes nothing to Σ length, and the
-			// durability layer's one overlap signal is overlapFrom's
-			// comparison of Σ length against the file's stat size (#413), so
-			// that check sees no evidence and raises no PostAnomaly. #413
-			// catches the PARTIAL overlaps, which do leave two rows tiling
-			// past the file's end; the exact-offset case is not currently
-			// surfaced anywhere. Nor does §3.5's row count withhold the
-			// whole-file CRC here, because one row is exactly what survives —
-			// so a CRC over the run's articles is published while foreign
-			// bytes sit at offset 0. That lands on par2 as a mismatch rather
-			// than as a false match, because the value describes articles the
-			// file no longer holds: QuickCheckClean is not set and the full
-			// verify plus recovery-volume fetch runs, which is the same
-			// outcome the pre-drop behaviour reached by a different route.
+			// The durability record DOES report that, but by neither of the
+			// two mechanisms a reader would reach for, and an earlier draft
+			// of this comment naming one of them was simply wrong. Two runs
+			// asserting the SAME offset never abut, so they never merge;
+			// mergeAdjacentRuns keeps the longer of the two and drops the
+			// other, which is what stops a later FinalizeFile from bounding
+			// its truncate to the shorter. The dropped row then contributes
+			// nothing to Σ length, so overlapFrom's comparison against the
+			// file's stat size (#413) sees no evidence and raises nothing —
+			// #413 catches the PARTIAL overlaps, which do leave two rows
+			// tiling past the file's end. And §3.5's row count does not
+			// withhold the whole-file CRC either, because one row is exactly
+			// what survives.
+			//
+			// What catches it is Commit RETURNING the drop, which the barrier
+			// turns into a PostAnomaly naming both articles and the contested
+			// offset (durability.Collision). The commit is the last moment the
+			// collision exists: afterwards the surviving row is
+			// indistinguishable from one that never had a rival. And what
+			// withholds the CRC is §3.5's ARTICLE-COVERAGE half — the dropped
+			// article's index is in no run's span, so the survivor cannot
+			// cover the file's whole article range. Both were added because
+			// this shape defeats every check stated in bytes.
 			//
 			// Either way nothing in the diagnosis names UU as the cause. That
 			// is #346, and it is a gap in this offset, not in the collision

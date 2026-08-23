@@ -51,7 +51,7 @@ func TestGet_CorruptManifestTakesTheDurabilityRowsWithTheJob(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if err := durability.NewSQLiteRunStore(db).Commit(ctx, job.ID, []durability.DurableArticle{
+	if _, err := durability.NewSQLiteRunStore(db).Commit(ctx, job.ID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestRemoveCorrupt_SweepsEvenWhenTheJobRowIsAlreadyGone(t *testing.T) {
 	store, _, db := setupResidencyTestStoreWithDB(t)
 	ctx := context.Background()
 
-	if err := durability.NewSQLiteRunStore(db).Commit(ctx, "ghost-job", []durability.DurableArticle{
+	if _, err := durability.NewSQLiteRunStore(db).Commit(ctx, "ghost-job", []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatal(err)

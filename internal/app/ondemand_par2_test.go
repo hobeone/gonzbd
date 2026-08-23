@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
@@ -29,8 +30,35 @@ func copyFixturePar2(t *testing.T, dir string) {
 	}
 }
 
+// seedFileCRC gives one of a job's files an assembled CRC32.
+//
+// It goes through Queue.SetFileCRC32FromRuns rather than writing the field,
+// which means presenting the record that would have earned the value: one
+// durable run at offset 0 spanning every article of the file. That is the
+// gatekeeper's point — the CRC and its evidence arrive together — and it keeps
+// these fixtures describing a state the program can actually reach.
+func seedFileCRC(t *testing.T, q *queue.Queue, job *queue.Job, fileIdx int, crc uint32) {
+	t.Helper()
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("manifest for the CRC fixture: %v", err)
+	}
+	lo, hi := m.FileRange(fileIdx)
+	runs := []durability.Run{{
+		FileIdx:     int32(fileIdx),
+		FirstArtIdx: int32(lo),
+		LastArtIdx:  int32(hi - 1),
+		Offset:      0,
+		Length:      m.FileBytes(fileIdx),
+		CRC32:       crc,
+	}}
+	if err := q.SetFileCRC32FromRuns(job.ID, fileIdx, runs); err != nil {
+		t.Fatalf("SetFileCRC32FromRuns(%d): %v", fileIdx, err)
+	}
+}
+
 // par2FileSpec describes one file for buildPar2Job: its subject, assembled
-// CRC32 (set post-construction via SetFileCRC32), and byte count.
+// CRC32 (seeded post-construction via seedFileCRC), and byte count.
 type par2FileSpec struct {
 	subject string
 	crc     uint32
@@ -76,9 +104,7 @@ func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job)
 		if f.crc == 0 {
 			continue
 		}
-		if err := q.SetFileCRC32(qjob.ID, i, f.crc); err != nil {
-			t.Fatalf("SetFileCRC32: %v", err)
-		}
+		seedFileCRC(t, q, qjob, i, f.crc)
 	}
 	return q, qjob
 }
@@ -175,9 +201,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	if err := q.Add(qjob); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := q.SetFileCRC32(jobID, 0, 0x1068AFA6); err != nil {
-		t.Fatalf("SetFileCRC32: %v", err)
-	}
+	seedFileCRC(t, q, qjob, 0, 0x1068AFA6)
 
 	app := &Application{
 		queue:   q,
@@ -242,9 +266,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		if err := q.Add(jobCorrupt); err != nil {
 			t.Fatal(err)
 		}
-		if err := q.SetFileCRC32(jobCorruptID, 0, 0xDEADBEEF); err != nil {
-			t.Fatal(err)
-		}
+		seedFileCRC(t, q, jobCorrupt, 0, 0xDEADBEEF)
 
 		dirCorrupt := filepath.Join(dir, "job-corrupt-name")
 		if err := os.MkdirAll(dirCorrupt, 0o750); err != nil {

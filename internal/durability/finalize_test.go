@@ -64,7 +64,7 @@ func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 
 	// What earlier runs recorded: articles 0 and 1 tile [0,200), and article 4
 	// sits above the hole at [400,500).
-	if err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11},
 		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0x22},
 		{FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100, CRC32: 0x44},

@@ -45,6 +45,40 @@ type Run struct {
 	CRC32 uint32
 }
 
+// Collision is one exact-offset duplicate a Commit dropped: two entries
+// claiming the same byte at the same offset of the same file, of which only
+// one can be stored because (job_id, file_idx, offset) is the primary key.
+//
+// It is returned rather than persisted because it describes an EVENT, not a
+// property. Once the commit has landed, the surviving row is indistinguishable
+// from a row that never had a rival: the dropped one contributes nothing to
+// Σ length, leaves no gap, and is not named by any index. A later pass over
+// the stored rows cannot re-derive this, which is why it must travel out of
+// the call that observed it.
+//
+// Kept and Dropped name the LOWEST article index on each side. Either side may
+// be a run that has already merged several articles, so the pair identifies the
+// collision rather than exhausting the articles involved — and after the drop
+// there is no longer a pair on disk to enumerate.
+//
+// What it means for the file is not decidable from here, and the report must
+// not overstate it. Two articles claiming one offset arises from a multi-part
+// UU post whose parts all assert offset 0 (dispatch.go's block): within one
+// open-file episode the assembler resolves it and the file completes SHORT,
+// which is benign; across a close-handles cycle or a restart the second write
+// overwrites the first and the file completes WRONG. Both need par2. Only the
+// second is corruption, and this type cannot tell them apart.
+type Collision struct {
+	// FileIdx is the file whose offset was claimed twice.
+	FileIdx int32
+	// Offset is the byte position both entries claimed.
+	Offset int64
+	// Kept is the lowest article index of the surviving entry.
+	Kept int32
+	// Dropped is the lowest article index of the discarded entry.
+	Dropped int32
+}
+
 // RunStore is the durability record, described in
 // docs/superpowers/specs/2026-08-22-single-durability-record-design.md.
 //
@@ -85,11 +119,19 @@ type RunStore interface {
 	// finalize. mergeAdjacentRuns carries the argument.
 	//
 	// This is the exact-offset collision internal/downloader/dispatch.go's
-	// UU block describes, and it is silent by design for now: the dropped
-	// row contributes nothing to Σ length, so §3.3's completion check has
-	// no evidence to report. §3.3's "an overlapped file keeps more rows"
-	// is therefore true of PARTIAL overlaps and not of this one.
-	Commit(ctx context.Context, jobID string, arts []DurableArticle) error
+	// UU block describes, and the returned Collisions are how it is
+	// reported: the dropped row contributes nothing to Σ length, so
+	// §3.3's completion check has no evidence to find and cannot be the
+	// signal. §3.3's "an overlapped file keeps more rows" is therefore
+	// true of PARTIAL overlaps and not of this one, and this return value
+	// exists because that difference is invisible from the stored rows
+	// afterwards — the commit that drops the row is the last moment the
+	// collision can be observed at all.
+	//
+	// Collisions are returned rather than raised: a commit that hits one
+	// has still succeeded, the transaction still lands, and the file is
+	// still repairable. See Collision.
+	Commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error)
 
 	// ForFile returns every stored run for one file, ordered by Offset.
 	ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run, error)

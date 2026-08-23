@@ -55,8 +55,11 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 		{"SetFileFilename", func(q *Queue, id string) error {
 			return q.SetFileFilename(id, 0, "out.rar")
 		}},
-		{"SetFileCRC32", func(q *Queue, id string) error {
-			return q.SetFileCRC32(id, 0, 0xdeadbeef)
+		{"SetFileCRC32FromRuns", func(q *Queue, id string) error {
+			// nil runs: residency is checked before the predicate, so this
+			// reaches the same answer a covering run would and keeps the case
+			// about residency rather than about the record's shape.
+			return q.SetFileCRC32FromRuns(id, 0, nil)
 		}},
 		{"UndeferRecoveryVolumes", func(q *Queue, id string) error {
 			return q.UndeferRecoveryVolumes(id, []int{0})
@@ -83,8 +86,8 @@ func TestNonResident_AbsentJobStillReportsNotFound(t *testing.T) {
 	if err := q.MarkFileComplete("no-such-job", 0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("MarkFileComplete on an absent job = %v, want ErrNotFound", err)
 	}
-	if err := q.SetFileCRC32("no-such-job", 0, 1); !errors.Is(err, ErrNotFound) {
-		t.Errorf("SetFileCRC32 on an absent job = %v, want ErrNotFound", err)
+	if err := q.SetFileCRC32FromRuns("no-such-job", 0, nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetFileCRC32FromRuns on an absent job = %v, want ErrNotFound", err)
 	}
 }
 
