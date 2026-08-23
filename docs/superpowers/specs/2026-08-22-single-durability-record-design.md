@@ -278,19 +278,16 @@ above. It is carried here by explicit scope decision, as its own commit.
 
 ## 8. Open questions
 
-Carried into the plan's discovery contract.
+**The plan's `Inconclusive / Deferred items` section is the authority**, and this
+section deliberately does not restate it. An earlier version listed four
+questions here as well; three were then resolved in the plan and this copy went
+stale within the day, which is the failure mode the single-authority rule exists
+to prevent.
 
-1. **Are byte offsets monotonic in article index for well-formed yEnc?** The run
-   model carries an index *range*, which assumes offset-contiguous implies
-   index-contiguous. Checking both when merging makes the invariant true by
-   construction, so a malformed file costs extra rows rather than a wrong range —
-   but the frequency of that case decides whether runs actually collapse.
-2. **Merge cost per barrier.** Read-modify-write over a file's rows on every
-   checkpoint. Expected to be small because the row count is small, unmeasured.
-3. **Can `Resumer` be deleted outright,** or does the `stat` gate need a home
-   that survives it?
-4. **Coalesced-run partial writes.** `flushRun` fails every article in a run on
-   any write error, and `WriteAt` can return `io.ErrShortWrite` having written
-   leading bytes — bytes on disk with no record. Narrower than it looks, since
-   both callers discard `n` and fail every part, so it arises only through the
-   injectable `w.writeAt` seam.
+One question remains open at the time of writing, and it gates nothing: how
+often an NZB's segment `number` matches the yEnc part number in the body, which
+decides how often runs actually collapse to one row rather than whether the
+design holds. It cannot be answered from an NZB — an NZB carries segment numbers
+and encoded byte counts, never offsets — and the only `=ypart` emitters in this
+repository are its own test generators. It needs the decoder instrumented against
+real traffic.
