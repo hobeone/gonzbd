@@ -1068,7 +1068,7 @@ It uses `FileInfo.ExpectedSize`, the NZB's declared **encoded** byte count, whic
 runs ~2% above the file's decoded size. That difference is exactly why a completed
 file must be trimmed: left in place it is trailing zeros, which par2 reports as
 damage on a download that was perfectly healthy. The trim bound comes from the
-durable facts (§4), never from a high-water mark the assembler maintained — there
+durable runs (§4), never from a high-water mark the assembler maintained — there
 is no longer any such figure, and `openFile` records no resume state at all.
 
 `SupportsSparse()` (`sparse.go`) probes whether the target filesystem supports

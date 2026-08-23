@@ -1802,7 +1802,7 @@ const offsetSlackDivisor = 8
 // is therefore attacker-controlled: without this check, a hostile or
 // compromised server can return a single article whose offset makes WriteAt
 // produce a file of arbitrary apparent size. The completion truncate no longer
-// commits that size — it is bounded by the durable facts — but the sparse file
+// commits that size — it is bounded by the durable runs — but the sparse file
 // itself is still the attack, so the offset is rejected before the write.
 //
 // It returns the reason rather than a bare bool because the rejection has to

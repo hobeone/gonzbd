@@ -59,7 +59,7 @@ type fileBuf struct {
 	// not re-delivered simply never forms a run from 0 and its articles are
 	// written individually, which costs syscalls and never correctness. The
 	// completion truncate, which used to depend on a resume seed, now derives
-	// its bound from the durable facts instead.
+	// its bound from the durable runs instead.
 	//
 	// It advances as contiguous runs are flushed, and also on a drain —
 	// drainFile moves it past everything it hands back, which can jump an
