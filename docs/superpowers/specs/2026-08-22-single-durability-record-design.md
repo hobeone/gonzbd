@@ -1,9 +1,18 @@
-# Single Durability Record — Design
+# Durable Runs — Design
 
 **Issue:** #423. Supersedes #389 and #421. Carries #422 as an independent commit.
 
-**Status:** Direction settled. This document is the argument the implementation plan
-is written against.
+**Status:** Direction settled. This document is the argument the implementation
+plan is written against.
+
+> **Second draft.** The first version of this document collapsed Class A and
+> Class B into one record *per article*, keeping the per-article offset and CRC
+> and therefore keeping the entire contiguity apparatus that consumes them —
+> `verifiedPrefix`, the abutment walk, `durableAt`, `overlapAnywhere`, and a
+> five-consumer union with dedup and ordering requirements. Four review rounds
+> hardened that plan without ever asking whether the record needed to be
+> per-article at all. It does not. The unit of recording should be the unit of
+> writing: a **run** of contiguous articles that were fsynced together.
 
 ## 1. The problem
 
@@ -14,62 +23,66 @@ Every downloaded article is described twice, by two writers, at two times.
 | Written by | `pipeline.handleSuccessResult`, at decode | `Barrier`, at the checkpoint |
 | Ordered against the write | **not at all** (R2) | strictly after the `fsync` (S1) |
 | Asserts | *if* the bytes are present, they hash to `CRC32` | the bytes **are** present |
-| Store | `article_facts` | `file_extents` |
 
-Because the writers are independent, the two records can disagree, and every
-disagreement is a defect rather than a discrepancy:
+Because the writers are independent, the records can disagree, and every
+disagreement is a defect:
 
-- **#389** — `pipeline.go` appends the fact before `assembler.WriteArticle` is
-  called. An article the assembler then rejects or displaces holds a record with
-  no durable bit. `recordedExtent` counts it in `missing` and lets it set `high`,
-  and `FinalizeFile` promotes that to the truncate bound.
-- **#421** — the same append site. `offsetOutOfRange` rejects *after* the append,
-  so a bogus `=ypart begin=` offset is recorded permanently. `INSERT OR IGNORE`
-  then makes the one mechanism that would correct it — re-fetching the article —
-  the exact mechanism that is ignored.
+- **#389** — `pipeline.go` appends before `assembler.WriteArticle` is called, so
+  an article the assembler rejects holds a record with no durable bit.
+- **#421** — the same site. `offsetOutOfRange` rejects *after* the append, so a
+  bogus `=ypart begin=` is recorded permanently, and `INSERT OR IGNORE` makes
+  re-fetching — the one mechanism that would correct it — the exact mechanism
+  that is ignored.
 
-`FinalizeFile` already carries two guards for this (`missing > 0` swaps to the
-recorded bound, `unrecorded > 0` declines to truncate at all). Neither removes
-the class; both choose a least-bad bound once it has occurred. Adding a third is
-a third enforcement point for one invariant, which is the smell Standing Design
-Rule 2 names.
+`FinalizeFile` carries two guards for this. Neither removes the class; both
+choose a least-bad bound once it has occurred.
 
 ## 2. The change
 
-`WrittenArticle` is already `ArticleFact` minus the CRC, and its own doc states
-the relationship:
+**One record, written only after the `fsync` that makes its bytes durable, and
+describing a contiguous run of articles rather than a single one.**
 
-> It is a *Written* article, not a Durable one — the barrier is what closes that
-> gap, and until its fsync returns nil this struct asserts nothing about stable
-> storage (S1, S2).
+```
+durable_runs(job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32)
+```
 
-The change is to close that gap **with the record**:
+One row per run of articles that abut in **both** byte offset and article index
+and were made durable together. Adjacent rows **merge**: combine the CRCs, sum
+the lengths, widen the index range.
 
-1. `WrittenArticle` gains `CRC32`. The decoder's CRC travels
-   decoder → `WriteRequest` → `FileWriter` → `Drain`.
-2. The barrier writes the record in the transaction that already commits the
-   extent. `pipeline.appendArticleFacts` and its call site are deleted.
-3. `INSERT OR IGNORE` becomes last-write-wins.
-4. The queue's `done` bit stops being persisted and is rebuilt from the records
-   at load. `failed` stays persisted.
+A file whose articles arrive in order collapses to a single row — offset 0,
+length equal to the file's true decoded size, `crc32` equal to the whole-file
+CRC.
 
-`buildExtent` at `internal/durability/barrier.go:383-387` currently carries the
-comment that is exactly negated by this change:
+### Why a run rather than an article
 
-> The barrier does NOT write ArticleFacts. Class A is appended by the writer when
-> the article is decoded, with no ordering against the data (R2) — that
-> independence is what lets Class A be committed without a barrier at all.
-> Writing facts here would make them barrier-ordered and quietly destroy the
-> property.
+`crc32util.Combine` is zlib's `crc32_combine` and is associative, so the CRC of
+`A ++ B ++ C` can be built pairwise in any grouping. The whole-file CRC has
+always been computed this way — `prefix.go:258` combines per-article CRCs and
+never reads the file. What `verifiedPrefix` adds is only the *proof that the
+pieces abut*, re-derived by walking every article on every barrier.
 
-That comment marks the seam. The record write replaces it.
+Recording runs moves that proof to write time, where it is a single comparison,
+and makes it durable. The walk disappears rather than being made correct.
+
+The alignment is already in the code: `flushRun` coalesces contiguous articles
+into one `WriteAt` because that is the efficient way to write them. That same
+run is the efficient way to record them.
+
+### What each field is for
+
+| Field | Purpose |
+|---|---|
+| `first_art_idx`, `last_art_idx` | which articles this run accounts for — the resume set is the complement |
+| `offset`, `length` | the truncate bound is `max(offset+length)`; the integrity check is `Σ length` |
+| `crc32` | combined over the run; when one row spans the file it *is* the whole-file CRC |
 
 ## 3. Decisions
 
 ### 3.1 Last-write-wins replaces R1 immutability
 
-**Ruled: adopt.** This is a second writer to an append-only store, which the
-Decision Protocol makes an escalation; it was escalated and ruled on.
+**Ruled: adopt.** A second writer to an append-only store is a Decision Protocol
+escalation; it was escalated and ruled on.
 
 R1 guarded a record written *before* the write, which could describe bytes that
 were never written — "whether from a buggy path or a hostile server". A record
@@ -78,293 +91,183 @@ through `offsetOutOfRange` and actually wrote, because `Drain` reports only
 articles "whose bytes the target handed to the OS without error". A redelivery
 cannot make the record assert anything the write did not.
 
-So the threat R1 defends against is **unreachable** rather than rare, and the
-security carve-out in `AGENTS.md` does not apply: the value cannot do anything
-the write did not already do. The carve-out's own test is what the value could
-*do* — this one reaches a truncate bound and a CRC, not a protocol, a path, a
-query, or a command line.
+The threat R1 defends against is **unreachable** rather than rare, so
+`AGENTS.md`'s security carve-out does not apply: the value reaches a truncate
+bound and a CRC, not a protocol, a path, a query, or a command line.
 
-It is also what makes the re-fetch path self-healing. A bogus offset recorded on
-a first attempt is replaced by the correct one when the article is re-fetched.
-Under `INSERT OR IGNORE` that repair is impossible by construction, which is the
-whole of #421.
+Merging is itself read-modify-write, so append-only was going to go regardless.
 
-**The hazard it closes.** `resetForReload` clears `done` and `failed` for every
-failed article on every process start and every reload
-(`internal/queue/progress.go:767-778`), and an article that is both failed and
-durable is reachable because `internal/durability/resume.go:373` sets the durable
-bit purely on a CRC match, consulting nothing about failure. Under
-`INSERT OR IGNORE` a re-fetch of such an article at a different offset would keep
-the stale row — which, once the row *is* the durability claim, asserts bytes at
-an offset they are not at. Last-write-wins makes that row correct instead.
+### 3.2 An out-of-range offset fails permanently and immediately
 
-### 3.2 Two types, not one
+**Ruled: keep current behaviour.** It is a verdict about *content*, not about a
+server. The article downloaded and decoded cleanly; its yEnc header claims an
+implausible position, and another server asked for the same Message-ID will
+answer the same way. Spending the whole try-list on it costs connections to
+reach a conclusion already reached.
 
-`WrittenArticle` and the persisted record have identical fields after this
-change, which invites merging them. **They stay separate**, and the barrier is
-the only converter.
+### 3.3 Overlaps are refused, not tolerated
 
-The distinction is the one the whole design turns on: a `WrittenArticle` reached
-the OS, a record survived an `fsync`. Collapsing them into one type makes it
-expressible to pass a `Drain` result where a durable record is expected, which is
-the same class of mistake `DurableProof` exists to make unrepresentable. Two
-types with identical fields and one converter is not the "two constructors"
-smell — the smell is two paths populating *one* type, which is what
-`newManifest`/`UnmarshalJSON` did.
+A run is built only from articles that abut exactly. An article that overlaps an
+existing run does not merge and does not extend it, so it is refused the way an
+out-of-range offset is: recorded failed, its bytes charged to `failedBytes`, and
+left for par2.
 
-`ArticleFact` is renamed to `DurableArticle`. The old name was accurate while the
-claim was conditional; it is not now. The rename is mechanical and forces every
-call site to be re-read, which is wanted given the semantic change.
+This is stricter than today, and it is what keeps the arithmetic exact.
+`Σ length == stat size` is then a complete integrity statement for the file, and
+it is the *only* one needed — it catches a hole, an overlap, and a stretched
+file, in one comparison at completion.
 
-### 3.3 The queue keeps the push; only the persisted copy goes
+### 3.4 The resume trusts the record, gated on one `stat`
 
-**Ruled: keep `AckDurable` and `DurableProof`.**
+**Ruled: trust the log.** No per-region CRC verification at startup.
 
-`done` is already set only by `Queue.AckDurable`, which takes a `DurableProof`
-whose fields are unexported with no exported constructor, so nothing outside a
-completed barrier can mint one (`internal/queue/workset.go:39-76`,
-`internal/durability/proof.go:14-26`). What changes is only that the bitmap stops
-being serialized into `jobProgressJSON` and is rebuilt from the records at load.
+But trust needs a floor. If the partial file were deleted or replaced between
+runs, a log believed absolutely would report most articles complete and re-fetch
+only the remainder, producing a file with holes where the "done" articles were.
 
-Deleting the ack entirely and having the queue read the records was considered
-and rejected: `CountUnfinishedArticles` sits on the dispatch path, so the bitmap
-must remain an in-memory cache either way, and something must still invalidate it
-when the barrier commits. That something is `AckDurable` under another name, and
-the inversion would additionally reverse the queue-to-durability dependency
-direction for no gain.
+So one check per file, no reads: **`stat(path).size >= max(offset+length)`**. A
+missing file, or one shorter than the records claim, discards that file's records
+and re-downloads it. A file that is merely *longer* is the ordinary
+pre-allocated case.
 
-**`done` is not a durability flag.** `markFailed` sets `done` *and* `failed`,
-deliberately, so a permanently-failed article is excluded from
-`CountUnfinishedArticles` and the file still finalizes. The derivation on load is
-therefore:
+**This inverts S4.** The contract currently says a recomputation from the bytes
+is correct by definition and the stored record is never authoritative. After this
+change the record *is* authoritative, and only its size is checked. That is a
+deliberate trade of an in-place-corruption check for a startup that does no I/O,
+and the contract must state it rather than inherit the old claim.
 
-```
-unfinished(art)  ==  !hasRecord(art) && !failed(art)
-```
+### 3.5 The whole-file CRC is a query, not a walk
 
-not `done == hasRecord`. Getting this backwards leaves every failed article
-outstanding forever and no file ever completes.
+It exists exactly when one row covers the file: `offset == 0` and
+`length == max(offset+length)`. Its `crc32` is the value. There is no prefix
+walk, no `VerifiedTo`, no `HasPrefixCRC` sentinel.
 
-**`BytesDownloaded` is already derived, not persisted.** `JobProgress.recompute`
-sums the articles that are `done && !failed` (`internal/queue/progress.go:635`),
-and `job_files.bytes_downloaded` is written *from* that derived value
-(`internal/queue/sqlite_store.go:355`) rather than being its source. So it is not
-a separate decision: once `done` is derived from the records, progress accounting
-becomes a function of the records too, and the `fsync` → commit loss window moves
-with it. A checkpoint lost to an unclean shutdown therefore costs a visible step
-backwards in the reported byte total as well as a re-fetch — the same bytes, told
-to the user twice.
+Its consumer is `par2.VerifyCRCs`, which compares an assembled CRC against the
+par2 manifest "without re-reading files from disk". **It is not a par2 bypass** —
+an earlier draft of this document said so repeatedly and was wrong. par2 still
+runs; what the CRC saves is one read of each file during verification.
 
-An earlier draft of this section claimed `BytesDownloaded` "stays persisted" and
-treated leaving it alone as a scope decision. That was wrong on the facts. A
-first correction then overshot in the other direction, saying there was nothing
-persisted at all: `job_files.bytes_downloaded` **is** written
-(`internal/queue/sqlite_store.go:789`) and **is** read back as the seed for a
-non-resident job's figures (`internal/queue/persistence.go:152`). What is true is
-that it is written *from* the derived value rather than being its source. Once
-`done` derives from the records, that column becomes a second persisted
-derivation of a record-derived quantity — a Standing Rule 2 concern in its own
-right, recorded here and deliberately left out of scope.
+`par2.QuickCheck` is a different function — it relocates flat downloads into the
+subdirectory paths a par2 manifest references — and it computes its own CRC from
+disk (`tryMatchCRC32File` takes a path). It does not consume ours. It does gate
+its hash16k and CRC passes on an exact size match, which is why the truncate in
+§3.6 is load-bearing: an untrimmed file is never relocated, so par2 reports it
+missing and works to reconstruct a file that is complete on disk.
 
-### 3.4 The assembler's part accounting does not move
+### 3.6 Pre-allocation stays; the truncate bounds on `Σ length`
 
-An earlier framing of this issue named moving `partsWritten`, `seenDone` and
-`seenFailed` to the barrier as the largest piece of work. **It is withdrawn.**
+`FileInfo.ExpectedSize` is the NZB's declared **encoded** byte count and yEnc
+inflates ~2%, so every file is pre-allocated above its decoded size and trimmed
+on completion. Pre-allocation earns its place — it detects `ENOSPC` at the start
+of a 50 GB job rather than at 90% — and the trim is what makes §3.5's size
+comparison meaningful.
 
-`partsWritten` triggers *file* completion, which triggers the barrier
-(`app.go:1243` — `handleFileComplete` calls `finalizeCompletedFile`). Moving it
-into the barrier would make the barrier both the trigger and the consumer of the
-same event. Article completion is already post-`fsync`; file completion is a
-different event and stays in `FileWriter`.
-
-A rejected or permanently-failed article counts toward `TotalParts` by design
-(`internal/assembler/assembler.go:1418-1430`) — declining to count it means
-`partsWritten` never reaches `TotalParts`, `OnFileComplete` never fires, and the
-job sits at 100% with zero outstanding articles across restarts. That stays true
-and is untouched.
+The bound is `max(offset+length)` over the file's rows, which for a complete
+file equals `Σ length`.
 
 ## 4. Invariants
 
 | Rule | Before | After |
 |---|---|---|
-| R1 — Class A immutable | `INSERT OR IGNORE`; a second delivery must not redescribe | **Deleted.** Last-write-wins; the newest `fsync` is the newest truth about disk |
-| R2 — no ordering against the write | Class A may be committed before, during, after, or when the write never happens | **Deleted.** The record exists only after a completed `fsync` |
+| R1 — record immutable | `INSERT OR IGNORE` | **deleted** — merging is read-modify-write, and the newest `fsync` is the newest truth |
+| R2 — no ordering against the write | may be committed before, during, after, or never | **deleted** — the record exists only after a completed `fsync` |
 | Class A asserts | nothing about presence | presence, and the CRC of what is present |
 | S1, S2 | Class B strictly after the `fsync` | unchanged, and now the only claim there is |
-| S4 — recomputation wins over the stored record | the durable bitmap is rebuilt from Class A plus a disk read | unchanged; the record is still what `Resumer` reads |
-| S5 — no second copy to drift | two records, reconciled by two guards | one record; **both** guards become unreachable, once the resumer deletes what it cannot verify — see below |
+| S4 — recomputation beats the stored record | the bitmap is rebuilt from facts plus a disk read | **inverted** — the record is authoritative, gated on one `stat` (§3.4) |
+| S5 — no second copy to drift | two records, two guards | one record; both guards and `file_extents` gone |
 | S6 — truncate only shrinks | unchanged | unchanged |
-| R3 — losing a suffix costs a re-fetch | applies to Class A | applies to the merged record, and is now the *routine* cost after an unclean shutdown rather than a rare one |
+| R3 — losing a suffix costs a re-fetch | applies to Class A | applies to the run record, and is now the routine cost after an unclean shutdown |
 
-### Both guards die — but only with a change in the resumer
+### What this deletes
 
-This section has been wrong twice, in opposite directions, and the history is
-worth keeping because the second error was caused by fixing the first.
-
-A first draft claimed both `FinalizeFile` guards become unreachable, and named
-no mechanism. A correction then established that one survives — and stopped
-there, treating the surviving producer as a fact of the world rather than as a
-thing that could itself be removed. It is removable, and removing it is cheaper
-than the guard it justifies.
-
-The reasoning below is that correction, kept because it identifies the producer.
-What follows it is what to do about it.
-
-`unrecorded > 0` — *a durable article the record does not name* — does die. Once
-both commit sites write the record in the same transaction that sets the durable
-bit, a durable bit without a record is not expressible.
-
-`missing > 0` — *a recorded article that is not durable* — **survives, and must
-be kept.** `Resumer.verifyRegions` (`internal/durability/resume.go:355-372`) sets
-the durable bit only on a CRC match and `continue`s past a region that is out of
-range or mismatches, leaving the record in place. `writeBack` then commits an
-extent whose bitmap lacks that article. If it subsequently fails permanently on
-re-fetch, it reaches finalize holding a record with no durable bit — and dropping
-the bound to `durableExtent` there destroys bytes above it. That is the #342/#350
-class arriving through the recovery path, which is exactly the path this design's
-failure mode depends on.
-
-**So make the resumer delete what it cannot verify.** An unverifiable record
-describes bytes that are not there — the region falls outside the file, or the
-bytes differ from what the record claims. Preserving a truncate bound over them
-protects garbage; where the region was overwritten by an overlapping neighbour,
-that neighbour's own record covers the bytes and the bound does not drop. Once
-the resumer deletes rather than skips, *recorded but not durable* has no producer
-left that this design does not already close, and **both** guards go, along with
-`recordedExtent` itself.
-
-The price is real and belongs in this document rather than only in the plan:
-**the startup sweep becomes destructive.** `Resumer` has never deleted a record —
-it writes extents back and nothing else. After this change a verification bug
-deletes real records. The blast radius is bounded, because a deleted record
-returns its article to Outstanding and the file cannot finalize until it
-resolves, so the cost is a re-fetch rather than lost data. But a startup path
-that can now delete durability state is a different kind of path, and calling it
-free would be the same overreach that produced this section's first draft.
-
-So the count is: two records become one, two guards become none, and one
-startup path becomes destructive.
+`article_facts`, `file_extents`, `ArticleFact`, `FileExtent`, `verifiedPrefix`,
+`prefixWalk`, `durableAt`, `durableExtent`, `recordedExtent`, `overlapAnywhere`,
+both `FinalizeFile` guards, `PrefixCRC`/`HasPrefixCRC`, `VerifiedTo`,
+`BytesDurable`, the durable bitmap, `Resumer.recompute`, `verifyRegions`,
+`SeedFromExtents`, `ReplaceFromResume`, the `articles_done` blob in both
+`job_files` and `history_job_files`, and its independent reimplementation in
+`test/crash/harness.go`.
 
 ### What this costs
 
-Class A is currently the crash-recovery mechanism for Class B. `Resumer.recompute`
-(`internal/durability/resume.go:280-296`) rebuilds the durable bitmap from the
-records plus a disk read; Class B is written back, never read as authority. A
-record appended only after the extent commit is unavailable in the
-`fsync` → commit window, so bytes that reached disk in that window are no longer
-**provable** on resume and are re-fetched instead of trusted.
+**A checkpoint of re-download per unclean shutdown.** Bytes fsynced but not yet
+recorded are re-fetched rather than trusted. The barrier cadence is 30s or
+64 MiB, whichever comes first, and file completion and clean shutdown both
+shrink it further; a paused job runs no barrier at all. The contract already
+prices this as R3.
 
-The contract already prices this: Class A's own row reads *"Losing a suffix costs
-a re-fetch (R3)"*, and the append already runs on a `context.WithoutCancel` copy
-with a 5s timeout precisely because *"a fact lost to that race makes a resume
-unable to prove bytes that are on disk."* This change makes a rare race into an
-ordinary one.
+**No detection of in-place corruption at startup.** §3.4's trade.
 
-The window is bounded by the checkpoint cadence — 30s or 64 MiB, whichever comes
-first (`internal/constants/limits.go`) — and three events shrink it further: file
-completion, a clean shutdown, and the byte-bound kick. Nothing widens it; a
-dropped `barrierKick` does not reset the accumulator. **A paused job runs no
-barrier at all**, so its buffered bytes wait for the tick.
+**Diagnosis gets coarser.** A merged row says the file is wrong, not which
+article. par2 repairs at block level and does not consume that distinction.
 
-So: at most one checkpoint's worth of re-download per job per unclean shutdown,
-in exchange for a record that cannot contradict itself. A re-fetch is loud,
-bounded, and recoverable by a mechanism the system already has. The defects it
-replaces are silent.
+**Overlapping articles are now refused** rather than written, so a release whose
+NZB describes overlapping parts loses those articles to par2 instead of writing
+them and hoping.
 
 ## 5. Why the storage-fault objection does not apply
 
-Appending at accept time was rejected for #389 on the grounds that a SQLite write
-on the assembler's worker goroutine sits where `jobSyncTarget.submit` reads
-"worker did not answer in 5s" as evidence about storage — so ordinary write
-contention could mint a storage fault and park a healthy job (A1).
+Appending at accept time was rejected for #389 because a SQLite write on the
+assembler's worker goroutine sits where `jobSyncTarget.submit` reads "worker did
+not answer in 5s" as evidence about storage, so contention could mint a storage
+fault and park a healthy job (A1).
 
-That objection does not reach this design. `b.exts.Commit` runs on the barrier's
-own goroutine (`internal/durability/barrier.go:272` and `:769`); it is not a
-`syncOp`. Only `Files`, `Drain`, `Sync`, `Stat`, `Truncate`, `Confirm` and
-`Close` cross into the assembler worker under `barrierOpTimeout`. An existing
-off-worker write gains a payload; no new write lands on the worker.
+That does not reach this design. The commit runs on the barrier's own goroutine
+(`barrier.go:272`, `:769`); only `Files`, `Drain`, `Sync`, `Stat`, `Truncate`,
+`Confirm` and `Close` cross into the worker under `barrierOpTimeout`.
 
 ## 6. Ordering inside the barrier
 
-`Barrier.Run`'s phase 4 carries a constraint the record write must respect:
+`Run`'s phase 4 carries a constraint the record write must respect:
 
-> Phase 4 — commit Class B atomically, then and only then ack. Nothing between
-> these two statements may fail, and nothing may be inserted between them: the
-> commit is what makes the proof true after a crash.
+> commit Class B atomically, then and only then ack. Nothing between these two
+> statements may fail, and nothing may be inserted between them: the commit is
+> what makes the proof true after a crash.
 
-The record write therefore goes **inside** the commit, not beside it: one
-transaction writing both the records for this cycle's drained articles and the
-extents built from them. A separate `Append` call before or after `Commit` would
-be a second failure point between the fsync and the ack, which is what that
-comment forbids.
+So the run rows are written **inside** that commit, in one transaction, at both
+commit sites — `Run`'s at `:272` and `FinalizeFile`'s own at `:769`. A separate
+call before or after would be a second failure point between the fsync and the
+ack.
 
-This has a consequence for `buildExtent`. It computes `verifiedPrefix` over
-`facts` loaded from the store, and today this cycle's articles are already in
-that set because they were appended at decode. After the change they are not, so
-`buildExtent` must walk the union of the stored records and this cycle's drained
-articles. That merge is the real work in this file.
+Building the runs happens before the commit and needs the drained set **sorted
+by offset and deduplicated on `ArtIdx`** — the sets overlap whenever an ack fails
+after a commit, because `Confirm` runs only after `AckDurable`, and `Drain`
+re-delivers (R12). Both requirements are now local to one function instead of
+spread across five consumers.
 
-## 7. What does not change
+## 7. #422, carried separately
 
-- File completion, `TotalParts`, and the rejected-article counting rule.
-- Progress reporting cadence, which is already checkpoint-driven.
-- DirectUnpack, which is already fed by `completeFinalizedFile` *after*
-  `finalizeCompletedFile` has run the barrier, drained, synced and truncated.
-- The truncate itself. `FileInfo.ExpectedSize` is the NZB's declared *encoded*
-  byte count and yEnc inflates ~2%, so every file is pre-allocated oversized and
-  trimmed on completion; QuickCheck gates on an exact size match, so an
-  untruncated file also loses the par2 bypass. The bound stays exact-or-short and
-  never long, because every article with bytes on disk is drained, fsynced and
-  recorded in one transaction.
-
-## 8. #422, carried separately
-
-`RetryHistoryJob` deletes the durability rows the retry needs. `history.Repository.Delete`
-drops both tables unconditionally (`internal/history/repository.go:358-363`), and
-`RetryHistoryJob` calls it at `internal/app/app.go:1858` — nine lines *after*
-`queue.Add` at `:1849`, so records the re-enqueued job appends in that window die
-too.
+`RetryHistoryJob` deletes the durability rows the retry needs.
+`history.Repository.Delete` drops them unconditionally
+(`internal/history/repository.go:358-363`), called at `internal/app/app.go:1858`
+— nine lines *after* `queue.Add` at `:1849`, so rows the re-enqueued job writes
+in that window die too.
 
 **The function says so itself, twice, and both statements are false today.**
-`app.go:1841-1842` opens with
+`app.go:1841-1842` opens with "its Class A facts survive with it (`Append` is
+`INSERT OR IGNORE` …)", seventeen lines above the `Delete` that removes them.
+And `:1852-1857`, justifying `Delete` over `deleteHistoryEntries`, enumerates
+what goes and what stays and does not mention the durability rows at all. One
+asserts they survive; the other lists what is destroyed and omits them.
 
-> The job returns under the SAME ID, and its Class A facts survive with it
-> (`Append` is `INSERT OR IGNORE` on `(job_id, art_idx)`).
+This is not an instance of the two-record class and is not fixed by anything
+above. It is carried here by explicit scope decision, as its own commit.
 
-seventeen lines above the `Delete` that removes them. And the comment at
-`:1852-1857` justifying `Delete` over `deleteHistoryEntries` enumerates what goes
-and what stays — the NZB backup stays, the per-file progress goes — and does not
-mention the durability rows at all. One comment asserts they survive; the other
-lists what is destroyed and omits them. Neither is a drifted claim about old
-behaviour: both were wrong when written, and the second is what made the first
-easy to keep believing.
+## 8. Open questions
 
-This is **not** an instance of the two-record class and is not fixed by anything
-above: with one table the same loop drops that one identically, and the retry's
-progress comes from `history_job_files` via `RestoreRetryProgress`
-(`internal/queue/sqlite_store.go:1030-1075`), never from the records. It is
-carried here by explicit scope decision, as its own commit, because it is
-severity:high live data loss on the recovery path this design's failure mode
-depends on.
+Carried into the plan's discovery contract.
 
-## 9. Open questions
-
-Carried into the plan's discovery contract rather than settled here.
-
-1. **Where the CRC lives between the write and the drain.** `FileWriter` must
-   retain one `uint32` per written-but-undrained article. Whether that fits an
-   existing per-article structure or needs a new map is not established.
-2. **Coalesced-run partial writes.** `flushRun` fails every article in a run on
-   any write error, and `WriteAt` can return `ErrShortWrite` having written
-   leading bytes. Those bytes are on disk with no record. Expected to be harmless
-   because they sit above every good record and the bound is a `max`, but not
-   proven.
-3. **`retryFinalize` against an evicted job** (`internal/app/stall.go:484-532`) —
-   no manifest and no `SyncTarget` exist there. The record write must have an
-   answer for that path.
-4. **Rebuilding the bitmap at load** — one query per job at startup, over
-   `article_facts`. Cost against a 20k-article job is not measured.
-5. **`jobProgressJSON`'s comment is already stale** — it says the done bit "is set
-   only once the bytes have reached WriteAt (#355)", which contradicts
-   `statusinfo.go:200-207`. It must be swept, and the sweep must not simply
-   inherit the wrong claim.
+1. **Are byte offsets monotonic in article index for well-formed yEnc?** The run
+   model carries an index *range*, which assumes offset-contiguous implies
+   index-contiguous. Checking both when merging makes the invariant true by
+   construction, so a malformed file costs extra rows rather than a wrong range —
+   but the frequency of that case decides whether runs actually collapse.
+2. **Merge cost per barrier.** Read-modify-write over a file's rows on every
+   checkpoint. Expected to be small because the row count is small, unmeasured.
+3. **Can `Resumer` be deleted outright,** or does the `stat` gate need a home
+   that survives it?
+4. **Coalesced-run partial writes.** `flushRun` fails every article in a run on
+   any write error, and `WriteAt` can return `io.ErrShortWrite` having written
+   leading bytes — bytes on disk with no record. Narrower than it looks, since
+   both callers discard `n` and fail every part, so it arises only through the
+   injectable `w.writeAt` seam.
