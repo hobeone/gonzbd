@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -159,5 +162,70 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 		t.Errorf("the retry kept %d facts and %d extents against a manifest whose shape "+
 			"changed. They are keyed on article index, so they now describe articles "+
 			"that are somewhere else, and a stale row bounds the truncate", nf, ne)
+	}
+}
+
+// failingDeleteFactLog delegates everything to a real FactLog except DeleteJob.
+//
+// Embedding the interface rather than reimplementing it keeps the stub honest:
+// if the retry path grows a call to some other FactLog method, the real one
+// answers it and the test keeps testing what it says it tests.
+type failingDeleteFactLog struct {
+	durability.FactLog
+	err error
+}
+
+func (f failingDeleteFactLog) DeleteJob(context.Context, string) error { return f.err }
+
+// TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped is the other half of
+// the shape-mismatch gate, and the reason the gate is worth anything.
+//
+// Deciding to drop the stale rows is not the same as dropping them.
+// deleteJobDurability logs its failures and returns nothing, so a retry that
+// used it would enqueue the job with the stale rows still in place — the exact
+// state the mismatch branch exists to prevent, reached silently.
+//
+// Nothing else catches it. SQLiteStore.pruneDurabilityRows is the backstop for
+// orphaned rows, but it deliberately skips any job_id still present in `jobs`,
+// and queue.Add puts this job back there immediately. A row that survives the
+// deletion survives for the life of the job and bounds FinalizeFile's truncate
+// to articles that are somewhere else.
+//
+// So the deletion is fatal here, alone among its callers. The abort is clean
+// because it precedes every commit: the history entry is untouched and no job
+// enters the queue, which is what the second assertion pins.
+func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
+	const nArticles = 3
+	application, job := newDurabilityTestApp(t, 1, nArticles)
+	seedDurability(t, application, job.ID)
+	failJobIntoHistory(t, application, job, nArticles)
+
+	// A different shape, so the retry takes the !progressApplied branch.
+	adminDir := application.config.GetGeneral().AdminDir
+	writeRetryNZBBackup(t, adminDir, job.ID+".nzb.gz", retryFixtureNZB(nArticles+2))
+
+	wantErr := errors.New("disk on fire")
+	application.factLog = failingDeleteFactLog{FactLog: application.factLog, err: wantErr}
+
+	// Assert the pre-state rather than assume it. If the job were somehow
+	// still queued here, the "not queued" assertion below would pass for the
+	// wrong reason and pin nothing.
+	if snap := application.queue.SnapshotJob(job.ID); snap != nil {
+		t.Fatalf("fixture: job %s is still in the queue before the retry, so the "+
+			"post-abort queue assertion would be vacuous", job.ID)
+	}
+
+	err := application.RetryHistoryJob(t.Context(), job.ID)
+	if err == nil {
+		t.Fatal("the retry reported success while the stale durability rows it decided " +
+			"to drop are still in place; a stale row bounds the completion truncate to " +
+			"the wrong articles and silently destroys the rest of the partial")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("error does not wrap the cause: got %v, want it to wrap %v", err, wantErr)
+	}
+	if snap := application.queue.SnapshotJob(job.ID); snap != nil {
+		t.Error("the retry aborted but still enqueued the job, so the download proceeds " +
+			"against durability rows the abort declared untrustworthy")
 	}
 }

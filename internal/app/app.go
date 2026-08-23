@@ -1860,7 +1860,24 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		// renumbering and describe articles that are no longer at those
 		// indices. Dropped BEFORE Add, so the re-enqueued job's own rows
 		// cannot be caught by the deletion.
-		app.deleteJobDurability(ctx, jobID)
+		//
+		// Fatal rather than logged, unlike every other caller of this
+		// deletion. Those are departed jobs whose rows are garbage; here the
+		// rows are about to be READ, and a stale one bounds FinalizeFile's
+		// truncate to the wrong article range — the silent partial-file
+		// destruction this whole change exists to stop. Prune is no backstop
+		// either: it skips job_ids present in `jobs`, and Add puts this one
+		// back there on the next line.
+		//
+		// Aborting here is clean because nothing has been committed yet. The
+		// history entry is untouched, no job has entered the queue, and the
+		// only prior effect is ForgetJob clearing an overlap latch, which
+		// costs one re-warning. The retry stays retryable.
+		if err := app.dropJobDurability(ctx, jobID); err != nil {
+			return fmt.Errorf("app: retry %s: the re-parsed manifest changed shape and the "+
+				"stale durability rows could not be dropped; refusing to requeue, because a "+
+				"stale row would bound the completion truncate to the wrong articles: %w", jobID, err)
+		}
 	}
 	if err := app.queue.Add(job); err != nil {
 		return err
@@ -1879,7 +1896,24 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// exactly this path and silently truncated the partial to whatever the
 	// retry re-fetched (#422). The !progressApplied branch above has already
 	// removed them where they could not be trusted.
-	_, _ = app.historyRepo.DeleteKeepingDurability(ctx, jobID)
+	//
+	// Logged, deliberately NOT returned, and the asymmetry with the durability
+	// deletion above is the point. That one runs BEFORE Add and guards a value
+	// about to be read, so failing it means nothing has happened yet and the
+	// abort is free. This one runs AFTER Add: the retry has already succeeded,
+	// the job is queued and will download. Returning an error here would report
+	// a failure for an operation that worked, and Queue.Add rejects a duplicate
+	// ID ("job %q already present"), so the caller's natural response — retry
+	// again — would then fail for a second, unrelated-looking reason.
+	//
+	// What actually survives a failure is a stale FAILED history entry beside a
+	// running job under the same ID, superseded when this attempt finalizes.
+	// That is worth a loud log and is not worth failing the call.
+	if _, err := app.historyRepo.DeleteKeepingDurability(ctx, jobID); err != nil {
+		app.log.Warn("retry requeued but its history entry could not be deleted; "+
+			"the entry is stale until this attempt finalizes over it",
+			"job", jobID, "err", err)
+	}
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
 	snap := app.queue.SnapshotJob(jobID)
