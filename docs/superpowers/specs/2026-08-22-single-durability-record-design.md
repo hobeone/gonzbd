@@ -158,9 +158,28 @@ and the contract must state it rather than inherit the old claim.
 
 ### 3.5 The whole-file CRC is a query, not a walk
 
-It exists exactly when one row covers the file: `offset == 0` and
-`length == max(offset+length)`. Its `crc32` is the value. There is no prefix
-walk, no `VerifiedTo`, no `HasPrefixCRC` sentinel.
+It exists exactly when the file has **exactly one row**, and that row starts at
+`offset == 0`. Its `crc32` is the value. There is no prefix walk, no
+`VerifiedTo`, no `HasPrefixCRC` sentinel.
+
+**The predicate is a row count, not a span.** An earlier draft of this section
+said instead that some row must have `offset == 0` and `length ==
+max(offset+length)` — which reads as the same rule and is not. §3.3 *writes* an
+overlapping article rather than refusing it, and gives it its own row. So a file
+whose articles tile `[0,1000)` into one merged row, plus a displaced article
+sitting at `[450,550)` in a second row, satisfies the span form: a row does
+start at 0, and its length does equal the maximum. Under that predicate the CRC
+is published — combined from the *original* articles, while foreign bytes
+occupy 450–550. par2 then matches a manifest whose bytes are not what is on
+disk, and the recovery volumes that would have repaired it are never fetched.
+
+That is #387, which `prefixWalk.consumedAll` exists to prevent and which this
+change deletes. The row-count form is what carries #387's guarantee across: a
+second row means bytes this record cannot account for, whatever its span. It is
+also what §3.3's closing sentence already asserts — *"an overlapped file keeps
+more rows, never collapses to one, and so never publishes a whole-file CRC"* —
+so the two sections now state one rule rather than two that agree only on the
+cases anyone happened to imagine.
 
 Its consumer is `par2.VerifyCRCs`, which compares an assembled CRC against the
 par2 manifest "without re-reading files from disk". **It is not a par2 bypass** —
@@ -268,11 +287,28 @@ commit sites — `Run`'s at `:272` and `FinalizeFile`'s own at `:769`. A separat
 call before or after would be a second failure point between the fsync and the
 ack.
 
-Building the runs happens before the commit and needs the drained set **sorted
-by offset and deduplicated on `ArtIdx`** — the sets overlap whenever an ack fails
-after a commit, because `Confirm` runs only after `AckDurable`, and `Drain`
-re-delivers (R12). Both requirements are now local to one function instead of
-spread across five consumers.
+**The barrier does not build the runs. `Commit` takes the drained articles and
+the store builds them**, inside that same transaction. The barrier's job is to
+hand over what was fsynced; deciding which of those articles form a run is
+derived state, and it gets one owner.
+
+That is not tidiness — it is the only place the dedup can be correct. The
+drained set overlaps the stored rows whenever an ack fails after a commit,
+because `Confirm` runs only after `AckDurable` and `Drain` re-delivers (R12).
+Dedup must therefore happen against **what is already stored**, and it must
+happen at *article* granularity **before** grouping:
+
+> A re-delivery of articles 5–9 arrives alongside genuinely new articles 10–12.
+> Grouped first, they form one run `[5,12]` that no stored row covers, so no
+> whole-run check drops it, and it is inserted beside the stored `[0,1000]`
+> row. `Σ length` is then 1800 against a 1300-byte file — a permanent
+> false overlap finding (§3.3) on a perfectly healthy file.
+
+Subtracting covered `art_idx` values first leaves the run `[10,12]`, which is
+the truth. A barrier that grouped before calling the store could not do this
+without first querying the store for coverage — which is the store's knowledge,
+reached through a second code path, at two call sites. One owner, one order:
+**subtract, then sort, then group, then merge.**
 
 ## 7. #422, carried separately
 

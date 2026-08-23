@@ -36,6 +36,7 @@
 2. **Cross-package coupling in both directions.** `internal/durability` owns and writes `durable_runs`; `internal/queue` **reads** it. `internal/queue` owns and writes `failed_articles`; `internal/durability` never touches it. Both tables are created by one migration, so state the ownership explicitly rather than leaving a Rule 2 reader to infer it.
 3. **A persistence-format change** — two tables dropped, two created.
 4. **S4 is inverted** (spec §3.4). The record becomes authoritative and startup does no reads. A departure from `docs/durability-contract.md`, not an elaboration.
+5. **A public cross-package signature changes: `Assembler.SyncTargetFor`.** Step 13b deletes `ArticleCount` and `FileLocalOrdinal`. Verified against source: those are the *only* two methods on `assembler.ArticleMap` (`synctarget.go:150-159`), so the interface goes to zero methods and the type dies with them — taking its sole implementation, `app.manifestArticleMap` (`app/durability.go:20-60`), and reducing `SyncTargetFor(jobID string, am ArticleMap)` (`synctarget.go:185`) to `SyncTargetFor(jobID string)`. One production caller (`app/durability.go:480`). Listed separately from #3 because AGENTS.md escalates a public interface change between packages on its own terms, and Step 13b reads as a deletion list where a reader skims past it.
 
 ---
 
@@ -79,7 +80,14 @@ Additive and independently landable — the field is unused until Task 3.
 
 ## Task 3: Replace both records with durable runs — one commit
 
-**This is the whole change.** Every deletion below removes a type from every signature that names it, so none of it can land separately.
+**Two commits, not one.** The earlier claim that the whole task was atomic is true of the *deletions* and false of what precedes them:
+
+- **3a — purely additive.** Steps 1–5: a `002_durable_runs.sql` that only **creates** `durable_runs` and `failed_articles`, the store, and the merge and associativity tests. Nothing reads the new tables and nothing is deleted, so the tree builds and every existing test passes unchanged. This is what makes Steps 1–3's red-green possible at all: a merge test cannot be observed failing inside a commit that has already removed the types its neighbours compile against.
+- **3b — the flip.** Steps 6–18, plus a `003` that **drops** `article_facts` and `file_extents`. This half genuinely is atomic: deleting `ArticleFact` and `FileExtent` removes them from every signature that names them, across nine files in five packages.
+
+Splitting the migration in two is the point — a single `002` that both creates and drops cannot be half-applied, and would force 3a to carry the deletion.
+
+**Test strategy is this task's largest unwritten piece.** Roughly 4,000 test lines in `internal/durability` assert Class A/Class B behaviour, and 3b deletes the types they name — so they do not fail, they stop compiling, and a package that does not build reports no coverage at all. Before writing 3b, triage them into three piles: *delete* (asserts a mechanism that no longer exists — prefix walks, bitmap seeding), *port* (asserts a behaviour that survives under a new mechanism — the truncate bound, the R23 CRC gate, storage-fault stalls), and *keep as-is*. The middle pile is the one that matters; anything not explicitly ported is a property silently dropped, and a green suite after a 4,000-line deletion proves nothing about it.
 
 ### Schema (`002_durable_runs.sql`)
 
@@ -107,21 +115,49 @@ CREATE TABLE failed_articles (
 
 | Method | Used by |
 |---|---|
-| `Commit(ctx, jobID, runs []Run) error` | the barrier, both commit sites |
+| `Commit(ctx, jobID, arts []DurableArticle) error` | the barrier, both commit sites |
 | `ForFile(ctx, jobID, fileIdx) ([]Run, error)` | the resume gate, `recordAssembledCRC` |
 | `ForJob(ctx, jobID) ([]Run, error)` | `stall.go`'s seed — **a whole-job read the earlier API sketch omitted** |
 | `DeleteJob(ctx, jobID) error` | `deleteJobDurability`, `pruneDurabilityRows` |
+
+**`Commit` takes articles, not runs, and the store groups them.** An earlier
+draft had the barrier build runs and hand them over. That put a derived value's
+construction at two call sites, and — worse — made the correct dedup
+unreachable; see spec §6 and Step 4 below. Run construction has one owner, and
+it is the store.
+
+**`offset` and `length` need no quoting** — checked, do not "fix" it. A review
+round flagged them as SQLite keywords that would fail at apply time. Probed
+against `modernc.org/sqlite`: `CREATE TABLE`, `INSERT`, `SELECT … WHERE offset
+>= 0` and `SELECT max(offset+length)` all execute unquoted without error.
+SQLite admits most keywords as identifiers, and `length` is a function name
+rather than a reserved word at all. Recorded because the claim is plausible
+enough to be re-raised.
 
 ### Steps
 
 - [ ] **Step 1: Write the merge tests before the merge.** Two runs abutting in both offset and index merge with the combined CRC; two abutting in offset but not index do not; two abutting in index but not offset do not; **a new run whose index range a stored row already covers is dropped, not inserted**; merging is order-independent.
 - [ ] **Step 2: Pin associativity against real bytes.** For a file of N articles, the merged row's CRC must equal `crc32.ChecksumIEEE` of the concatenation. Everything rests on this. **`Combine(a.crc32, b.crc32, b.length)` requires `b.length` to be b's whole run length, not one article's** — strict left-to-right merging only. That is the one arithmetic trap; pin it.
 - [ ] **Step 3: Run both; confirm they fail.** Record the messages.
-- [ ] **Step 4: Implement `Commit` — and make it idempotent against STORED rows, not just the drained set.** `Confirm` runs only after `AckDurable` (`barrier.go:287`, `:776`), so an ack failure leaves the report unconfirmed while the commit has landed, and the next `Drain` re-delivers (R12). Deduping the drained set against itself does **not** cover this: a re-delivered article whose stored row has since merged *forward* does not collide on the primary key and is inserted as a duplicate — stored `[off=0,len=1000]` covering articles 0–9, plus a fresh `[off=500,len=100]` for article 5, gives `Σ length` 1100 against a 1000-byte file and **a permanent false overlap finding on a healthy file.** Drop any new run whose `[first_art_idx, last_art_idx]` a stored row already covers, before merging.
+- [ ] **Step 4: Implement `Commit` — and dedup at ARTICLE granularity against STORED rows, before grouping.** `Confirm` runs only after `AckDurable` (`barrier.go:287`, `:776`), so an ack failure leaves the report unconfirmed while the commit has landed, and the next `Drain` re-delivers (R12). Two things follow, and the second is the one an earlier draft got wrong.
+
+  **Deduping the drained set against itself does not cover it.** A re-delivered article whose stored row has since merged *forward* does not collide on the primary key: stored `[off=0,len=1000]` covering articles 0–9, plus a fresh `[off=500,len=100]` for article 5, gives `Σ length` 1100 against a 1000-byte file — **a permanent false overlap finding on a healthy file.**
+
+  **Deduping whole RUNS against stored rows does not cover it either.** That was the previous fix and it leaks as soon as a re-delivery is adjacent to genuinely new work. Articles 5–9 re-delivered alongside new 10–12 group into one run `[5,12]`; no stored row covers all of it, so no whole-run test drops it, and it is inserted beside the stored row. Same false overlap, one level deeper.
+
+  So the order is **subtract, then sort, then group, then merge**: drop every incoming article whose `art_idx` a stored row already covers, and build runs from what is left. This is why `Commit` takes articles rather than runs — the barrier cannot perform this subtraction without reaching into the store's knowledge from two call sites.
+
+  Pin the adjacent case specifically. The wholly-covered case passes under both rules and proves nothing about the one that failed.
 - [ ] **Step 5: Range-scope `Commit`'s read.** Only rows bracketing the new runs' offset span can merge, and the primary key supports that query. The barrier fires at 64 MiB and an article is ~700 KB, so at most ~90 arrive per cycle; a full-file read is fine at one row and wasteful at twenty thousand.
-- [ ] **Step 6: Build runs in the barrier, at BOTH commit sites.** Two drains — `:162` (`Run`) and `:599` (`FinalizeFile`) — and two commits — `:272` and `:769`. Sort the drained set by offset, dedup on `ArtIdx`, group where offset and index both abut, combine each run's CRC, commit inside the existing transaction before the ack. Index-abutment is **sufficient and conservative, not necessary**: byte-abutting runs whose article indices disagree are refused a merge that would still be CRC-correct, which costs rows and never correctness.
+- [ ] **Step 6: Hand the drained articles to `Commit`, at BOTH commit sites.** Two drains — `:162` (`Run`) and `:599` (`FinalizeFile`) — and two commits — `:272` and `:769`. The barrier passes the drained set through and does **not** group it; grouping is Step 4's, inside the same transaction, before the ack. Index-abutment is **sufficient and conservative, not necessary**: byte-abutting runs whose article indices disagree are refused a merge that would still be CRC-correct, which costs rows and never correctness.
 - [ ] **Step 7: Replace the truncate bound with `max(offset+length)`, and delete both guards.** Note that deleting `buildExtent` also deletes its `artCount <= 0` guard (`:341-347`) and its `FileLocalOrdinal` A2/R28 failure (`:362-369`). Both are intended; say so where they went.
-- [ ] **Step 8: Rewire `recordAssembledCRC` (`app/durability.go:957-980`).** It is the *only* production path carrying the whole-file CRC to par2 — `app.extents.LoadFile` → `HasPrefixCRC` guard → `queue.SetFileCRC32` → `par2.VerifyCRCs` — and no earlier draft named it. Reimplement as: **publish `crc32` only when one row has `offset == 0` and `length == the file's size`.** That preserves the R23 semantic its current comment states — *"a file with a permanently failed article has a prefix that stops at the hole, and recording that as the file's CRC would report a mismatch against par2 for a file that is merely incomplete"* — because a holed file keeps more than one row. **Pin it red-green;** this is the claim spec §3.5 rests on.
+- [ ] **Step 8: Rewire `recordAssembledCRC` (`app/durability.go:957-980`).** It is the *only* production path carrying the whole-file CRC to par2 — `app.extents.LoadFile` → `HasPrefixCRC` guard → `queue.SetFileCRC32` → `par2.VerifyCRCs` — and no earlier draft named it. Reimplement as: **publish `crc32` only when the file has EXACTLY ONE row, and that row has `offset == 0`.**
+
+  **Not "some row spans the file".** That was this step's previous wording and it republishes #387. §3.3 writes an overlapping article rather than refusing it, and gives it its own row — so articles tiling `[0,1000)` into one merged row, plus a displaced article at `[450,550)` in a second row, still satisfy the span form: a row starts at 0 and its length equals the maximum. The CRC would be published, combined from the *original* articles, over a file holding foreign bytes at 450–550. par2 matches a manifest that does not describe the disk and the recovery volumes are never fetched. `prefixWalk.consumedAll` (`prefix.go:120-122`) is the guard that catches this today, and its doc at `:95-102` names #387 by number — Step 13 deletes it, so the replacement predicate is what has to carry the guarantee.
+
+  The row-count form also preserves the R23 semantic the current comment states — *"a file with a permanently failed article has a prefix that stops at the hole, and recording that as the file's CRC would report a mismatch against par2 for a file that is merely incomplete"* — because a holed file keeps more than one row.
+
+  **Pin both cases red-green:** the holed file (the R23 case, which the span form also passes) *and* the overlapped file (the #387 case, which only the row-count form catches). A pin on the first alone is what let the span form look correct.
 - [ ] **Step 9: Rewire `stall.go`'s seed.** `seedFromCommittedExtents` (`:453-467`) calls `app.extents.Load` and `queue.SeedFromExtents`, both deleted. Its doc says the seed is what stops a job that finalized a file during a stall from re-fetching it, so the behaviour must survive: `ForJob` plus whatever replaces `SeedFromExtents`.
 - [ ] **Step 10: Reconcile `failed_articles`' THREE reversal sites.** Writing is one site (`AckPermanentFailure`, `workset.go:94`). Reversal is not: `resetForReload` (`progress.go:767`) **and** `Job.ResetForRetry` (`job.go:812`), the latter reached from both `Queue.Retry` (`queue.go:658`) and `RetryHistoryJob`. Today these stay consistent because `articles_done` is re-serialised wholesale on the next store update; a separate table has no wholesale rewrite, so stale rows survive a retry and **the next restart marks the retry's re-fetched articles failed.** Batch the delete per job, never per article.
 - [ ] **Step 11: Trim `ResumeResult`.** `Resume`'s **return type changes** — `VerifiedTo`, `PrefixCRC`, `HasPrefixCRC`, `BytesDurable` and the `Durable Bitmap` all go (`resume.go:23-56`). An earlier draft claimed the signature was unchanged, in two places; only the parameter list is. `fileResumer` (`resume_startup.go:27`) and `resumeJobFiles`'s construction (`:325-330`) both change, as does its `recomputed` counter.
@@ -149,7 +185,18 @@ CREATE TABLE failed_articles (
 - [ ] **Step 14: Derive article resolution in the queue.** `done` = covered by a run; `failed` = a `failed_articles` row; `unfinished` = neither. Delete `encodeArticlesDone`, `decodeArticlesDone`, `decodeArticleFlags`, the column from `job_files` and `history_job_files`, `SeedFromExtents`, `ReplaceFromResume`, and the crash harness's copy. **The consumer is `newJobProgressSized` (`persistence.go:130`, loop `:150-183`), not `sqlite_store.go`** — it applies `f.Failed[i]` only inside the `f.Done[i]` branch, so anything leaving `Done` empty makes every article of every non-resident job read as Pending.
 - [ ] **Step 15: Solve the boot cost.** `ArticleCountsByJob` derives Pending for every non-resident job at startup without a manifest (`sqlite_store.go:648-651`). Runs make this far cheaper than per-article rows, but establish the query shape. **If none is cheap enough, stop and re-scope.**
 - [ ] **Step 16: Check the gates that fail on stale entries.** `manifest_gate_test.go`'s allow-list is keyed on method names and fails on stale entries as well as missing ones. `internal/history/testdata/schema.golden` and `schema_guard_test.go` both move with the migration.
-- [ ] **Step 17: Check `p.done`/`p.emitted` sizing** — `progress.go:605` panics on a mismatch and `Done`'s length was the source. Name the new one.
+- [ ] **Step 17: Nothing to do — `p.done` sizing does not depend on `articles_done`.** Kept as a step so it is not re-raised. The earlier wording said `Done`'s length was the sizing source; it is not. `newJobProgressSized` sizes every bitset from `Σ FileMeta.ArticleCount` (`persistence.go:130-137`), and the panic at `progress.go:605` compares `p.done.Len()` against `m.NumArticles()` — manifest against manifest. Step 14 removes what *fills* the bitsets, never what sizes them. **Do still confirm the `Done`-gated read at `:150-183`**, which is a real hazard and belongs to Step 14: it applies `f.Failed[i]` only inside the `f.Done[i]` branch, so anything leaving `Done` empty makes every article of every non-resident job read as Pending.
+- [ ] **Step 17b: Sweep the comments THIS commit falsifies, before committing it.** Task 5 sweeps the `docs/` prose. These are in-package comments this task's own diff makes wrong, and AGENTS.md is explicit that a sweep runs against the diff the commit will land as — deferring them to Task 5 ships the drift in the commit that caused it. Each was read and confirmed present:
+
+  | Location | What it asserts that stops being true |
+  |---|---|
+  | `fact.go:1-18` | the **package doc**, which defines Class A and Class B as the package's organising idea. Both classes are gone. This is the largest single rewrite in the task and the easiest to miss, because nothing in the diff sits next to it. |
+  | `barrier.go:14-31` | names `SeedFromExtents` and `ReplaceFromResume` as the seeding doors that bypass the proof, and `durability.FileExtent` as the exported type they take. All three are deleted by Step 14 and Step 13a. |
+  | `barrier.go:112-119` | `ForgetJob`'s rationale, keyed on `article_facts` and `INSERT OR IGNORE`. See the note below — this one is already wrong today. |
+  | `barrier.go:39-59`, `:225-238`, `:574-597`, `:383-387` | the checkpoint/finalize narration, in terms of Class A walks and Class B extents. |
+  | `postanomaly.go:8-24` | *"found while walking a file's Class A facts"* — there is no walk after Step 13. |
+  | `synctarget.go:138-142` | `Stat`'s doc names the **S7 validity stamp** as the `(size, mtime)` pair a resume checks before adopting a Class B value. §3.4 keeps only the size comparison, so **S7 loses its mtime half entirely** — and neither the spec nor Task 5 currently says so. Decide it here: either §3.4 checks mtime too, or S7 is narrowed on the record and this doc says which half survives. Do not let it disappear silently. |
+
 - [ ] **Step 18: Run everything, including the crash suite. Commit** — `refactor(durability): replace two per-article records with durable runs`. Closes #421 and #389.
 
 ---
@@ -248,3 +295,15 @@ After the round-five rewrite, the surrounding code was surveyed for machinery th
 13. **The write cache was surveyed and deliberately kept.** `writeCache` is ~448 non-test lines plus ~680 of tests and a `write_cache_size` config key, it coalesces contiguous articles into fewer `WriteAt` calls, and the no-cache path already exists and is exercised (`withCacheBytes(0)`). It is not needed for run formation — runs are grouped from the drained set's offsets, not from how the bytes reached disk — so it was a genuine candidate. **Decision: keep it.** Recorded here so a later reader does not re-litigate it as an oversight.
 
 Measured totals for the change: roughly **1,850 non-test lines deleted against ~360 written**, before tests.
+
+### Round six — Task 3 validation
+
+14. **The whole-file CRC predicate republished #387.** Spec §3.5 and Step 8 gated the CRC on *"some row has `offset == 0` and `length == the file's size"*, while §3.3 stated the different — and correct — rule that an overlapped file *"never collapses to one [row], and so never publishes a whole-file CRC"*. The two are not equivalent, because §3.3 **writes** an overlapping article and gives it its own row: a file tiled `[0,1000)` into one merged row plus a displaced article at `[450,550)` satisfies the span form, and the CRC would be published over foreign bytes. `prefixWalk.consumedAll` is the guard that catches this today and this change deletes it. Both now read **exactly one row, starting at offset 0**, and Step 8 pins the overlapped case as well as the holed one.
+15. **Correction #2 leaked one level deeper.** Dropping whole *runs* a stored row covers does not help when a re-delivery is adjacent to new work: articles 5–9 re-delivered beside new 10–12 group into `[5,12]`, which no stored row covers, and insert beside the stored row for the same permanent false overlap. Dedup moved to **article granularity, before grouping** — which is only reachable if the store, not the barrier, builds the runs. `Commit` now takes articles, and run construction has one owner instead of two call sites.
+16. **No step swept the comments Task 3 falsifies.** Task 5 sweeps `docs/`; these are in-package, and AGENTS.md requires the sweep to run against the diff the commit lands as. Six locations confirmed present, including `fact.go:1-18`, which is the **package doc** defining Class A and Class B as the package's organising idea. Now Step 17b.
+17. **S7 was losing its mtime half silently.** `synctarget.go:138-142` names the `(size, mtime)` pair as the validity stamp a resume checks; §3.4 keeps only the size comparison. Neither document said so. Step 17b forces the decision rather than letting the stamp erode.
+18. **Task 3 is splittable after all, in the one place it matters.** Steps 1–5 are purely additive — a `002` that only *creates*, with the `003` that drops old tables held for the flip. Without that split, Steps 1–3's red-green is unobservable, because the merge tests would sit in a commit that has already deleted the types their neighbours compile against.
+19. **`SyncTargetFor`'s signature change was buried in a deletion list.** `ArticleMap`'s only two methods are the ones Step 13b deletes, so the interface dies and the public cross-package signature changes. Now escalation 5.
+20. **Step 17's premise was false.** `p.done` is sized from `Σ FileMeta.ArticleCount`, and the panic compares against `m.NumArticles()` — manifest against manifest, untouched by deleting `articles_done`. The real hazard is the `Done`-gated `Failed` read, which already belonged to Step 14.
+21. **The SQLite-keyword finding was itself wrong.** A round-six finding said `offset`/`length` must be quoted or the migration fails. Probed against `modernc.org/sqlite`: all four statement shapes execute unquoted. Recorded in the Store API section so it is not re-raised.
+22. **Test strategy was the plan's biggest silence.** ~4,000 test lines in `internal/durability` name types 3b deletes, so they stop compiling rather than failing — and a package that does not build reports no coverage. The delete/port/keep triage is now stated where 3b begins.
