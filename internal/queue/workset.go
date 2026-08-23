@@ -102,6 +102,13 @@ func (q *Queue) AckDurable(p durability.DurableProof) error {
 // below the lock rather than inside it, because the project bans I/O under one
 // and this method's whole body used to run under q.mu.
 //
+// Running below the lock is what makes the write raceable against a reversal
+// that also runs below the lock, so it takes q.failedPersistMu and re-checks
+// the reload generation it captured under q.mu before committing anything.
+// Queue's failedPersistMu doc carries the full argument; the short version is
+// that a row surviving its own in-memory bit is re-derived as Failed+Done on
+// the next promotion and the article is never fetched again.
+//
 // A persist failure is logged, not returned, and R10 is the licence: a
 // permanent failure asserts nothing about disk, and losing one in a crash is
 // safe because the restart re-attempts an article that fails again, costing
@@ -152,14 +159,41 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 		}
 		q.notifyLocked()
 	}
+	// Captured under the same lock hold as the in-memory marks above, so the
+	// two cannot straddle a reversal. See the failedPersistMu/failedGen doc on
+	// Queue for why an unordered write here is a defect rather than a lost
+	// optimisation.
+	gen := q.failedGen.Load()
 	q.mu.Unlock()
 	// --- No lock held below this line ---
+	var overtaken bool
+	var persistErr error
 	if len(persist) > 0 && q.store != nil {
-		if err := q.store.RecordFailedArticles(context.Background(), jobID, persist); err != nil {
-			q.log.Warn("could not persist permanently failed articles; they will be "+
-				"re-attempted after a restart and fail again",
-				"job", jobID, "count", len(persist), "err", err)
+		q.failedPersistMu.Lock()
+		// A reversal that ran between the marks above and this write has
+		// already cleared the bits these rows would describe. Writing them now
+		// would leave rows with nothing in memory behind them, and the next
+		// RestoreJobProgress would re-derive the articles as Failed+Done —
+		// never re-fetched, which is the outcome the reversal exists to
+		// prevent. Dropping the write instead costs one re-request of an
+		// article that fails again (R10).
+		if overtaken = q.failedGen.Load() != gen; !overtaken {
+			persistErr = q.store.RecordFailedArticles(context.Background(), jobID, persist) //lockio: failedPersistMu exists to serialise exactly this call against the reversals in ClearAllEmitted and Retry; see Queue.failedPersistMu
 		}
+		q.failedPersistMu.Unlock()
+	}
+	// Reporting is deliberately outside failedPersistMu: the mutex's whole job
+	// is ordering the store call against a delete, and a logging handler is
+	// neither.
+	if overtaken {
+		q.log.Info("dropping a permanently-failed-article write that a reset overtook; "+
+			"the articles will be re-attempted and fail again",
+			"job", jobID, "count", len(persist))
+	}
+	if persistErr != nil {
+		q.log.Warn("could not persist permanently failed articles; they will be "+
+			"re-attempted after a restart and fail again",
+			"job", jobID, "count", len(persist), "err", persistErr)
 	}
 	if invalidCount > 0 {
 		q.log.Warn("AckPermanentFailure: out-of-bounds article index received",

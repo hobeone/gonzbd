@@ -96,6 +96,40 @@ type Queue struct {
 	// dirty is false, avoiding unnecessary I/O on idle queues.
 	dirty atomic.Bool
 
+	// failedPersistMu serialises every failed_articles STORE call against
+	// every reversal of one, and failedGen makes that serialisation ordered
+	// rather than merely exclusive.
+	//
+	// Both writes happen outside mu — the project bans I/O under a lock — so
+	// exclusion alone does not settle the outcome. AckPermanentFailure marks
+	// an article failed under mu and INSERTs after releasing it; a reversal
+	// clears the bit under mu and DELETEs after releasing it. Interleaved,
+	// the INSERT can land after the DELETE and leave a row with no in-memory
+	// bit behind it, which the next RestoreJobProgress reads back as
+	// Failed+Done. The article is then never re-fetched. This is not a
+	// theoretical window: ClearAllEmitted exists for articles failed during
+	// the old downloader's teardown, so acks in flight across a reload are
+	// precisely its designed-for case.
+	//
+	// failedGen is bumped under mu by every reversal, and an ack captures it
+	// under mu alongside its in-memory mark. Under failedPersistMu the ack
+	// re-reads it and skips the INSERT if it moved, so a write whose bit has
+	// since been cleared cannot be committed. The mutex is what makes that
+	// check meaningful — without it the DELETE could still overtake an INSERT
+	// that passed the check.
+	//
+	// One counter for the whole queue rather than one per job. A reversal of
+	// job A therefore discards an in-flight ack for job B as well, which
+	// costs one re-request of an article that fails again — R10's direction,
+	// and the same trade AckPermanentFailure's best-effort persist already
+	// takes.
+	//
+	// LOCK ORDER: mu before failedPersistMu. Queue.Retry deletes while
+	// holding mu and so takes both; nothing takes mu while holding
+	// failedPersistMu.
+	failedPersistMu sync.Mutex
+	failedGen       atomic.Uint64
+
 	sOpts fsutil.SanitizeOptions
 	store Store
 
@@ -681,12 +715,24 @@ func (q *Queue) Retry(id string) error {
 			// fails again. Reversing the two would leave a STALE failed row
 			// beside a reset job, which is the direction this whole step
 			// exists to prevent.
-			if err := q.store.ClearFailedArticles(context.Background(), id); err != nil { //lockio: drops the retry's stale failed rows before PromoteNext's unconditional RestoreJobProgress can re-read them
+			//
+			// The generation bump and failedPersistMu are the same pairing
+			// ClearAllEmitted uses, and for the same reason: an
+			// AckPermanentFailure for this job may have released q.mu with
+			// its INSERT still pending, and without both it could land after
+			// this delete. Taking failedPersistMu while holding q.mu is the
+			// declared lock order (see Queue's failedPersistMu doc); nothing
+			// acquires q.mu while holding it.
+			q.failedGen.Add(1)
+			q.failedPersistMu.Lock()
+			clearErr := q.store.ClearFailedArticles(context.Background(), id) //lockio: drops the retry's stale failed rows before PromoteNext's unconditional RestoreJobProgress can re-read them
+			q.failedPersistMu.Unlock()
+			if clearErr != nil {
 				job.Status, job.Warning = prevStatus, prevWarning
 				job.setResidency(job.manifest, prevProgress)
 				q.evictJobLocked(job)
 				q.mu.Unlock()
-				return fmt.Errorf("queue: retry job %s: clear failed articles: %w", id, err)
+				return fmt.Errorf("queue: retry job %s: clear failed articles: %w", id, clearErr)
 			}
 			if err := q.store.Update(context.Background(), job); err != nil { //lockio: persists the reset progress before PromoteNext's unconditional RestoreJobProgress can re-read the stale row
 				// The write is load-bearing, so its failure cannot be
@@ -1567,6 +1613,11 @@ func (q *Queue) ClearAllEmitted() {
 			job.progress.recompute(m)
 		}
 	}
+	// Bumped under mu, in the same hold that cleared the bits, so any
+	// AckPermanentFailure that captured the previous value has already made
+	// its in-memory mark and will find its own write invalidated below. See
+	// the failedPersistMu/failedGen doc on Queue.
+	q.failedGen.Add(1)
 	// Drain any stale notification (e.g. from AckDurable calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
 	// notification is guaranteed to be delivered.
@@ -1589,15 +1640,32 @@ func (q *Queue) ClearAllEmitted() {
 	// Best effort, matching resetForReload's own direction: this runs on a
 	// downloader reload, and a row that outlives it costs one wasted attempt
 	// at an article that fails again.
+	//
+	// Under failedPersistMu, which is what stops an AckPermanentFailure that
+	// unlocked mu before this call from landing its INSERT after these
+	// deletes. Exclusion is only half of it — the generation bump above is
+	// what tells that ack its rows are stale.
 	if q.store == nil {
 		return
 	}
+	type clearFailure struct {
+		id  string
+		err error
+	}
+	var failures []clearFailure
+	q.failedPersistMu.Lock()
 	for _, id := range reset {
-		if err := q.store.ClearFailedArticles(context.Background(), id); err != nil {
-			q.log.Warn("could not clear a job's permanently failed articles on downloader reload; "+
-				"they will not be re-attempted after a restart",
-				"job", id, "err", err)
+		if err := q.store.ClearFailedArticles(context.Background(), id); err != nil { //lockio: failedPersistMu exists to order exactly this delete against AckPermanentFailure's insert; see Queue.failedPersistMu
+			failures = append(failures, clearFailure{id: id, err: err})
 		}
+	}
+	q.failedPersistMu.Unlock()
+	// Reported outside the mutex: it is held to order this delete against an
+	// ack's insert, and a logging handler is neither of those.
+	for _, f := range failures {
+		q.log.Warn("could not clear a job's permanently failed articles on downloader reload; "+
+			"they will not be re-attempted after a restart",
+			"job", f.id, "err", f.err)
 	}
 }
 
