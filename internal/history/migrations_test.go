@@ -217,7 +217,11 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	t.Run("only one migration file remains", func(t *testing.T) {
+	t.Run("no stray migration files", func(t *testing.T) {
+		// This guarded a single 001_initial.sql until durable_runs added
+		// 002_durable_runs.sql (purely additive — see that file's header).
+		// It still exists to catch an accidental extra file, just against
+		// the now-two-file list rather than one.
 		entries, err := os.ReadDir("migrations")
 		if err != nil {
 			t.Fatal(err)
@@ -228,8 +232,9 @@ func TestMigrations_SchemaShape(t *testing.T) {
 				sqls = append(sqls, e.Name())
 			}
 		}
-		if len(sqls) != 1 || sqls[0] != "001_initial.sql" {
-			t.Errorf("migrations = %v, want exactly [001_initial.sql]", sqls)
+		want := []string{"001_initial.sql", "002_durable_runs.sql"}
+		if !slices.Equal(sqls, want) {
+			t.Errorf("migrations = %v, want exactly %v", sqls, want)
 		}
 	})
 }

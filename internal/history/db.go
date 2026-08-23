@@ -184,11 +184,11 @@ func (d *DB) Ping(ctx context.Context) error {
 // does not ship.
 //
 // It is not a "downgrade" guard in the usual sense. The 001-011 chain was
-// collapsed into a single 001, and goose keys purely on version numbers — so a
-// database written by any earlier build records versions 2..11 that no longer
-// exist, and Up() sees version 1 as already applied and does nothing at all.
-// The failure is silent by construction, which is why it is refused rather
-// than repaired.
+// collapsed into 001, and goose keys purely on version numbers — so a
+// database written by any pre-collapse build records versions 2..11 that no
+// longer exist, and Up() sees version 1 as already applied and does nothing
+// at all. The failure is silent by construction, which is why it is refused
+// rather than repaired.
 var ErrSchemaFromTheFuture = errors.New("history: the database records migrations this build does not have")
 
 // refuseUnknownSchema fails when goose_db_version holds a version above the
@@ -212,8 +212,8 @@ func refuseUnknownSchema(ctx context.Context, db *sql.DB, migrations fs.FS) erro
 	}
 	return fmt.Errorf(
 		"%w: it is at version %d and this build ships up to %d. The 001-011 chain was "+
-			"collapsed into a single migration and there is no upgrade path, so this "+
-			"database cannot be read: move it aside and let gonzbd create a new one",
+			"collapsed into 001 and there is no upgrade path from a pre-collapse database, "+
+			"so this database cannot be read: move it aside and let gonzbd create a new one",
 		ErrSchemaFromTheFuture, applied.Int64, highest)
 }
 
