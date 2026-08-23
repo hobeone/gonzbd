@@ -466,7 +466,7 @@ func TestFileWriter_CachedIncumbentIsDisplaced(t *testing.T) {
 
 	// Small enough that no contiguous run forms, so it stays buffered.
 	w.admitAccepted(first.artIdx)
-	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err != nil {
 		t.Fatalf("accept first: %v", err)
 	}
 	if len(w.writtenSoFar()) != 0 {
@@ -475,7 +475,7 @@ func TestFileWriter_CachedIncumbentIsDisplaced(t *testing.T) {
 	}
 
 	w.admitAccepted(second.artIdx)
-	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...)); err != nil {
+	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 64)...), 0); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
 
@@ -508,7 +508,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
 	if rolled := w.takeFaulted(); len(rolled) != 1 || rolled[0].displaced {
@@ -518,7 +518,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	// The re-dispatched copy, at the same offset.
 	w.writeAt = func(p []byte, _ int64) (int, error) { return len(p), nil }
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
 
@@ -551,7 +551,7 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 
 	// Small enough that no contiguous run forms, so it stays buffered.
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
 	if !w.wc.buffered(w.key, 0) {
@@ -561,7 +561,7 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 
 	// The same article again, still cache-resident.
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
 
@@ -613,7 +613,7 @@ func TestFileWriter_ThirdArticleAtOneOffsetIsStillDetected(t *testing.T) {
 	}
 	for _, id := range ids {
 		w.admitAccepted(id.artIdx)
-		if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'x'}, 64)...)); err != nil {
+		if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'x'}, 64)...), 0); err != nil {
 			t.Fatalf("accept %s: %v", id.msgID, err)
 		}
 	}

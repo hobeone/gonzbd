@@ -21,6 +21,12 @@ type WrittenArticle struct {
 	Offset int64
 	// Length is the decoded byte length.
 	Length int32
+	// CRC32 is the decoded article's CRC32, the same value the decoder
+	// validated against the yEnc trailer. It is carried here so a later
+	// durable-run record can be built from confirmed-written articles without
+	// re-deriving the checksum. Nothing reads it yet — a later task groups
+	// articles into contiguous runs and combines their CRCs.
+	CRC32 uint32
 }
 
 // ErrFileNotOpen reports that a file the barrier listed is no longer open.

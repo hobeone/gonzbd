@@ -84,6 +84,12 @@ type WriteRequest struct {
 	// callers must not modify Data after enqueueing.
 	Data []byte
 
+	// CRC32 is the decoded article's CRC32 — the same value the decoder
+	// validated against the yEnc trailer. It travels alongside Data through
+	// Accept, the write cache, and noteWritten, unread until a later task
+	// consumes it off Drain's report.
+	CRC32 uint32
+
 	// FatalErr is set if the article permanently failed to download.
 	// If non-nil, the assembler skips writing and counts the part toward
 	// file completion. Duplicate failures are deduplicated locally
@@ -1479,7 +1485,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		}
 		return rej
 	}
-	return f.w.Accept(id, req.Offset, req.Data)
+	return f.w.Accept(id, req.Offset, req.Data, req.CRC32)
 }
 
 // rejectedArticleError marks a refusal that is about the ARTICLE, so the

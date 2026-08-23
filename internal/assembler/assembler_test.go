@@ -1362,7 +1362,7 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
 
-	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
+	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data"), 0); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
@@ -1387,7 +1387,7 @@ func TestFileWriter_DrainWriteErrorCountsPipelineError(t *testing.T) {
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(1<<20))
 	// Buffer an article without triggering a contiguous flush, then close
 	// the handle so the drain's WriteAt fails.
-	if err := w.Accept(articleID{msgID: "m1"}, 4096, []byte("data")); err != nil {
+	if err := w.Accept(articleID{msgID: "m1"}, 4096, []byte("data"), 0); err != nil {
 		t.Fatalf("Accept (buffered): %v", err)
 	}
 	_ = tmpFile.Close()

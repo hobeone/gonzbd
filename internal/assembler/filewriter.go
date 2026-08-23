@@ -291,7 +291,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 // same reason the append is here: both assert "these bytes are the file's
 // content at this offset", and applying one without the other is the
 // derived-state split #375 was about.
-func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
+func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
 	if owner, taken := w.acceptedAt[off]; taken && owner.id.sameArticle(id) {
 		owner.written = true
 		w.acceptedAt[off] = owner
@@ -301,6 +301,7 @@ func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
 		ArtIdx:  id.artIdx,
 		Offset:  off,
 		Length:  int32(n), //nolint:gosec // G115: an article's decoded length is far below int32
+		CRC32:   crc32,
 	})
 }
 
@@ -599,7 +600,7 @@ func (w *FileWriter) takeFaulted() []faultedArticle {
 // returns the article to Outstanding — see fail's doc for why absence from a
 // Drain is not enough on its own — and the file goes on to complete over bytes
 // that never landed.
-func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
+func (w *FileWriter) Accept(id articleID, off int64, data []byte, crc32 uint32) error {
 	// Collision detection happens HERE, before the cache is consulted, so it
 	// is independent of cache residency and of whether caching is configured
 	// at all. See acceptedAt for why identity rather than occupancy.
@@ -643,7 +644,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 		w.acceptedAt[off] = offsetOwner{id: id}
 	}
 
-	art := bufferedArticle{offset: off, data: data, id: id}
+	art := bufferedArticle{offset: off, data: data, id: id, crc32: crc32}
 	if w.wc.buffer(w.key, art) {
 		telemetry.CacheHits.Add(1)
 		if run := w.wc.flushContiguous(w.key); run != nil {
@@ -669,7 +670,7 @@ func (w *FileWriter) writeOne(art bufferedArticle) error {
 		w.fail(art.id)
 		return storagefault.Classify("write", w.path, err)
 	}
-	w.noteWritten(art.id, art.offset, len(art.data))
+	w.noteWritten(art.id, art.offset, len(art.data), art.crc32)
 	return nil
 }
 
@@ -693,7 +694,7 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 		return storagefault.Classify("write", w.path, err)
 	}
 	for _, p := range run.parts {
-		w.noteWritten(p.id, p.offset, p.length)
+		w.noteWritten(p.id, p.offset, p.length, p.crc32)
 	}
 	return nil
 }

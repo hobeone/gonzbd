@@ -85,7 +85,7 @@ func TestDisplacement_StaleOwnerIsCountedNotMerelyKept(t *testing.T) {
 	second := articleID{msgID: "b", artIdx: 1}
 
 	w.admitAccepted(first.artIdx)
-	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 32)...)); err != nil {
+	if err := w.Accept(first, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 32)...), 0); err != nil {
 		t.Fatalf("accept first: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestDisplacement_StaleOwnerIsCountedNotMerelyKept(t *testing.T) {
 	}
 
 	w.admitAccepted(second.artIdx)
-	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 32)...)); err != nil {
+	if err := w.Accept(second, 0, append([]byte(nil), bytes.Repeat([]byte{'B'}, 32)...), 0); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
 

@@ -471,6 +471,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	writeErr := p.assembler.WriteArticle(ctx, refFor(res), assembler.WriteRequest{
 		Offset: res.Offset,
 		Data:   res.Data,
+		CRC32:  res.CRC,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",

@@ -19,7 +19,7 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	w := newFileWriter(fh, path, key, newWriteCache(0))
-	if err := w.Accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA")); err != nil {
+	if err := w.Accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA"), 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	return w

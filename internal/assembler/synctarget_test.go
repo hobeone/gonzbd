@@ -83,7 +83,7 @@ func TestHandleSyncOp_DrainSyncStatTruncate(t *testing.T) {
 	a, open, key := newSyncOpFixture(t)
 	f := open[key]
 
-	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("0123456789")); err != nil {
+	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("0123456789"), 0); err != nil {
 		t.Fatal(err)
 	}
 	r := runSyncOp(t, a, open, syncOp{kind: opDrain, jobID: "job1", fileIdx: 0})

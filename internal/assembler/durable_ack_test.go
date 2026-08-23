@@ -41,7 +41,7 @@ func TestFailedCoalescedRunFailsEveryArticleInTheRun(t *testing.T) {
 
 	var lastErr error
 	for i := range int32(artCount) {
-		lastErr = w.Accept(articleID{msgID: fmt.Sprintf("msg%d", i), artIdx: i}, int64(i)*artSize, make([]byte, artSize))
+		lastErr = w.Accept(articleID{msgID: fmt.Sprintf("msg%d", i), artIdx: i}, int64(i)*artSize, make([]byte, artSize), 0)
 	}
 	if lastErr == nil {
 		t.Fatal("the run-triggering Accept returned nil error against a closed handle")
@@ -275,10 +275,10 @@ func TestDisplacedArticleIsFailed(t *testing.T) {
 	// Two different Message-IDs claiming the same offset. Upstream dedup keys
 	// on the Message-ID, so it does not catch this; the cache's own
 	// replacement branch is what sees it.
-	if err := w.Accept(articleID{msgID: "msg7", artIdx: 7}, 0, []byte("first")); err != nil {
+	if err := w.Accept(articleID{msgID: "msg7", artIdx: 7}, 0, []byte("first"), 0); err != nil {
 		t.Fatalf("first article: %v", err)
 	}
-	if err := w.Accept(articleID{msgID: "msg8", artIdx: 8}, 0, []byte("second")); err != nil {
+	if err := w.Accept(articleID{msgID: "msg8", artIdx: 8}, 0, []byte("second"), 0); err != nil {
 		t.Fatalf("second article: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestZeroLengthArticleIsNotBuffered(t *testing.T) {
 
 	// End to end: it takes the inline path through Accept and is reported.
 	w := newTestFileWriter(t, withCacheBytes(1<<20))
-	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil); err != nil {
+	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil, 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	got, err := w.Drain()
@@ -660,7 +660,7 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 		return nil
 	}
 
-	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
+	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello"), 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	if _, err := w.Drain(); err != nil {
@@ -693,7 +693,7 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 
 	// A FAILING fsync must keep the report, or the next Drain has nothing to
 	// re-report and a retried finalize truncates below bytes that are on disk.
-	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
+	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world"), 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	if _, err := w.Drain(); err != nil {
