@@ -1136,7 +1136,8 @@ and `internal/assembler` does not import `internal/durability`'s store at all.
 Reaching it from `FileWriter.Accept` would mean a SQLite read on the single
 goroutine that owns every open file handle, on the hot accept path. Nothing the
 writer holds in memory distinguishes a written range from an acked-durable one:
-`Confirm` empties `written` and `reported` once the articles are acked, so a
+the `Drain`/`Confirm` cycle empties `written` and then `reported` once the
+articles are acked, so a
 derived check would read the acked case as *no* claim at all, which is why
 `offsetOwner.written` is latched on the offset instead.
 

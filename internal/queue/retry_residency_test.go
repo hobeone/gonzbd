@@ -17,10 +17,16 @@ import (
 //
 // The previous attempt's test never flushed to the store, so the
 // persistence round trip -- the actual defect -- was never exercised. This
-// test explicitly calls q.Save(dir) before evicting, matching production:
-// a real daemon periodically flushes progress to SQLite while a job
-// downloads, so job_files.articles_done holds real state by the time a job
-// fails and is evicted.
+// test still calls q.Save(dir) before evicting because that matches
+// production: a real daemon periodically flushes progress to SQLite while a
+// job downloads.
+//
+// What the Save no longer supplies is the FAILED bit. Article resolution is
+// derived from durable_runs and failed_articles, and AckPermanentFailure
+// writes its failed_articles row at ack time rather than waiting for a flush
+// (see Queue.AckPermanentFailure and the failedPersistMu doc). So the stale
+// state this test needs is on disk before the Save runs. Measured, not
+// assumed: neutering the Save below leaves this test green.
 func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
@@ -39,9 +45,9 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 	ackDone(t, q, job.ID, okID)
 	ackFailed(t, q, job.ID, failID)
 
-	// Flush to SQLite -- this is the step the previous, ineffective fix
-	// attempt's test skipped. Without it job_files.articles_done never
-	// holds the failed bit and the bug is not exercised.
+	// Flush to SQLite -- the step the previous, ineffective fix attempt's test
+	// skipped, kept because it is what production does. It is no longer what
+	// puts the failed article on disk; see the note on this function.
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -111,11 +117,13 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 		t.Error("article 1 (was failed) should be reset to pending: not done, not failed")
 	}
 
-	// Reversion check: reverting the q.store.Update call added to Retry (the
-	// persist-before-PromoteNext line) makes this test fail, because
-	// PromoteNext's own RestoreJobProgress call re-reads the stale SQLite
-	// row (still encoding article 1 as done, from the pre-Retry Save) and
-	// re-marks article 1 done, so it is never offered again.
+	// Reversion check: reverting the persist-before-PromoteNext work Retry does
+	// makes this test fail, because PromoteNext's own RestoreJobProgress call
+	// re-derives resolution from the stale records — article 1's failed_articles
+	// row, written back at ack time, which resolves as done-because-failed — and
+	// re-marks article 1 done, so it is never offered again. That is why Retry
+	// clears the job's failed_articles rows and persists the reset before
+	// promoting.
 }
 
 // TestRetry_HydrationFailureLeavesStatusUnchanged pins the #264-style
@@ -238,8 +246,9 @@ func TestRetry_RestartRoundTrip_PreservesFailedSet(t *testing.T) {
 	}
 	// A second flush persists the Failed status transition itself (the jobs
 	// table's status column); job_files is untouched by this call since the
-	// job is now non-resident (manifest/progress nil), preserving the
-	// articles_done row written by the first Save above.
+	// job is now non-resident (manifest/progress nil), preserving the per-file
+	// row written by the first Save above. The durability records are not
+	// written by Save at all.
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save (post-failure): %v", err)
 	}

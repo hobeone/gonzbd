@@ -834,7 +834,7 @@ func (w *FileWriter) Stat() (size int64, err error) {
 
 // Truncate trims the file to n bytes.
 //
-// Only ever called with a bound derived from the durable facts, never from
+// Only ever called with a bound derived from the durable runs, never from
 // this run's high-water mark — see the assembler's completion path. S6 permits
 // metadata to shrink a file and never to grow it, so a target above the file
 // on disk is refused rather than clamped: growing appends zeros, which asserts

@@ -101,12 +101,14 @@ func TestDecodePayload_NonDMCA_NonYenc(t *testing.T) {
 // TestDecodePayload_UUYieldsACRCOverTheDecodedBytes pins the removal of
 // ArticleFact.HasCRC.
 //
-// The durability design records, for every decoded article, a CRC32 over its
-// decoded bytes, and a resume verifies the bytes on disk against it. UU is the
-// one decode path that used to report no CRC at all — not because the bytes
-// are unverifiable, but because the *format* carries no checksum to compare
-// against. That is irrelevant here: the fact log verifies our own bytes, not
-// the sender's honesty, so the checksum is ours to compute.
+// The durability design carries, for every decoded article, a CRC32 over its
+// decoded bytes: it rides the barrier's drain report and is combined into the
+// crc32 of the durable run the article joins, which for a file that collapses
+// to one run IS the whole-file CRC par2 verification compares against. UU is
+// the one decode path that used to report no CRC at all — not because the
+// bytes are unverifiable, but because the *format* carries no checksum to
+// compare against. That is irrelevant here: the value describes our own bytes,
+// not the sender's honesty, so the checksum is ours to compute.
 //
 // With this, no successfully decoded article lacks a CRC, which is the closed
 // set that makes dropping the "unverifiable article" branch safe. If this test

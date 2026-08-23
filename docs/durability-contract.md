@@ -388,7 +388,9 @@ nothing, so it gets a row of its own. A file whose articles tile `[0,1000)` into
 displaced article at `[450,550)` in a second row would satisfy a span-shaped
 predicate — a row does start at 0, and its length does equal the maximum — and
 publish a CRC combined from the *original* articles while foreign bytes occupy
-450–550. par2 would then match a manifest whose bytes are not what is on disk.
+450–550. par2 would then match a manifest whose bytes are not what is on disk —
+and given the bypass above, the repair stage is skipped on that verdict and
+`par2NeedsRecovery` leaves the volumes unfetched, so nothing later looks.
 A second row means bytes this record cannot account for, whatever its span, and
 that is what carries #387's guarantee across from the `prefixWalk.consumedAll`
 this change deleted.

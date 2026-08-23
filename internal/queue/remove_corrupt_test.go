@@ -34,8 +34,9 @@ func countDurabilityRows(t *testing.T, db *sql.DB, jobID string) (runs, failed i
 // stayed — one set per corrupted job, forever.
 //
 // Dropping them is safe here specifically because the manifest is what is
-// gone. Every Class A fact is keyed by a global article index that only a
-// manifest can interpret, so there is nothing left to read them against. That
+// gone. Every durable_runs and failed_articles row is keyed by a global
+// article index that only a manifest can interpret, so there is nothing left
+// to read them against. That
 // is why this is not done in Remove generally: Remove also runs on the
 // queue-to-history transition, where a FAILED job's runs are retained on
 // purpose for its retry.

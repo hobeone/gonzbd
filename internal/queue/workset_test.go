@@ -312,11 +312,12 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 }
 
 // TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify is #362's core
-// claim: a bit that was merely restored from job_files.articles_done loses to
-// a resume that read the file's bytes and did not find the article there.
+// claim: a bit restored from the durable runs loses to a resume whose stat
+// found the file shorter than they claim.
 //
-// The fixture claims MORE than the resume verifies (0,1,2 restored against 0,2
-// verified) and keeps at least one article durable in both (0 and 2). Both
+// The fixture claims MORE than the surviving runs cover (0,1,2 restored
+// against 0,2 covered) and keeps at least one article durable in both (0 and
+// 2). Both
 // halves are load-bearing: with nothing surviving, a clear-everything mutation
 // would pass; with nothing cleared, a no-op would.
 func TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
@@ -324,7 +325,7 @@ func TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
 	q := newTestQueueWithJob(t, "job-1", nArts)
 	restoreDone(t, q, "job-1", nArts, 0, 1, 2)
 
-	// The resume read the file and proved only 0 and 2.
+	// The runs that survived the resume's stat cover only 0 and 2.
 	if err := q.ReplaceFromRuns("job-1", []int32{0}, runsOf(0, 2)); err != nil {
 		t.Fatalf("ReplaceFromRuns: %v", err)
 	}
@@ -337,8 +338,8 @@ func TestReplaceFromRuns_ClearsArticlesTheResumerDidNotVerify(t *testing.T) {
 		}
 	}
 	if p.ArticleDone(1) {
-		t.Error("article 1 is still Done after a resume that did not find its bytes — a " +
-			"persisted belief outlived the recomputation that disproved it, so the file " +
+		t.Error("article 1 is still Done although no surviving run covers it — a " +
+			"restored belief outlived the resume that disproved it, so the file " +
 			"completes with a zero-filled hole (#362)")
 	}
 	if p.ArticleDone(3) {
