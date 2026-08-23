@@ -1922,9 +1922,22 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 // honest answer for a file whose bytes are incomplete or in doubt.
 //
 // Written by Application.recordAssembledCRC when a file finalizes, and only
-// when the prefix reaches the file's end. A file with a permanently failed
-// article has no whole-file value, so nothing is recorded and zero keeps its
+// when the file's durable runs have collapsed to exactly ONE row starting at
+// offset 0. That is a row count, not a prefix walk — `prefix`/`verifiedPrefix`
+// is precisely the machinery the durable-runs change deleted, and this
+// sentence went on naming it after the paragraph above it was rewritten.
+//
+// A file with a permanently failed article INTERIOR to it has a gap between
+// rows, so it keeps more than one row, nothing is recorded, and zero keeps its
 // documented "unavailable" meaning rather than "mismatched".
+//
+// A file whose LAST article(s) failed is the exception, and it is not a
+// counter-example to the field's meaning. The survivors form one run at offset
+// 0, so a CRC is recorded over the trimmed short file. It cannot read as a
+// false "verified": the bytes par2 hashed include the missing tail, so the
+// comparison reports a mismatch and the repair path runs — the same
+// destination an unavailable CRC reaches. See recordAssembledCRC's doc in
+// internal/app/durability.go for the full argument.
 func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

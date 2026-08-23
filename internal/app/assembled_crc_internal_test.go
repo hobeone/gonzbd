@@ -61,10 +61,19 @@ func TestRecordAssembledCRC_ThreadsAWholeFileCRCToTheQueue(t *testing.T) {
 // TestRecordAssembledCRC_RecordsNothingForAHoledFile pins the R23 distinction:
 // "unavailable" must stay distinguishable from a CRC of zero.
 //
-// A file with a permanently failed article has a hole, a hole is a gap between
-// runs, so the file keeps more than one row. Publishing the first row's crc32
-// would report a MISMATCH against par2 — corruption — for a file that is
-// merely incomplete, which is a worse answer than reporting nothing.
+// A file with a permanently failed article INTERIOR to it — which is what the
+// fixture below builds, articles 0 and 2 recorded and 1 missing — has a hole,
+// a hole is a gap between runs, so the file keeps more than one row.
+// Publishing the first row's crc32 would report a MISMATCH against par2 —
+// corruption — for a file that is merely incomplete, which is a worse answer
+// than reporting nothing.
+//
+// The interiority is the fixture's, not a universal about failed articles. A
+// file whose LAST article failed leaves the survivors as one run at offset 0
+// and DOES publish a CRC, over the trimmed short file. That outcome is safe
+// and deliberate — it reaches the same repair path by the Mismatched branch
+// rather than the NoCRC one — and recordAssembledCRC's own doc carries the
+// argument. It is out of scope here: this test pins the interior case.
 //
 // This case is ALSO satisfied by the wrong predicate (see the overlap test
 // below), which is exactly why pinning it alone is not enough.

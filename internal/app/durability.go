@@ -953,11 +953,24 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // That is what carries #387's guarantee across from prefixWalk.consumedAll,
 // which used to catch it and which the durable-runs change deletes.
 //
-// The same form preserves R23's "unavailable is not zero": a file with a
-// permanently failed article has a hole, a hole is a gap between rows, so such
-// a file keeps more than one row and publishes nothing. Correct — that file is
-// merely incomplete, and a CRC over it would report a false mismatch against
-// par2.
+// The same form preserves R23's "unavailable is not zero" for an INTERIOR
+// hole, which is the case that needs preserving: a file whose failed article
+// sits between two survivors has a gap BETWEEN rows, so it keeps more than one
+// row and publishes nothing. Correct — that file is merely incomplete, and a
+// CRC over it would report a false mismatch against par2.
+//
+// Scoped to "interior" deliberately, because the universal is false. When the
+// file's LAST article(s) fail there is nothing to their right, so the
+// survivors form ONE run at offset 0, FinalizeFile trims the file to that
+// run's end, and this predicate is satisfied: a CRC IS published, over a short
+// file. That is safe rather than a second #387. The value cannot spuriously
+// MATCH — it is a real CRC over bytes that are missing the tail par2 hashed —
+// so VerifyCRCsWithOptions counts the file Mismatched, quickcheck's
+// `unverifiable` is non-zero and it reports Damaged instead of Clean, and
+// par2NeedsRecovery's `Mismatched+NoCRC+Unverified > 0` fetches the recovery
+// volumes. That is the same destination NoCRC reaches, by the Mismatched
+// branch instead of the NoCRC one. What is lost is a clearer log line, not a
+// guarantee.
 //
 // Best effort by design. A missing CRC costs a full verify, which is exactly
 // today's behaviour, so a failure here must not fail the finalize that has
