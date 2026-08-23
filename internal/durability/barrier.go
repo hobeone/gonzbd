@@ -113,10 +113,23 @@ func (b *Barrier) admit(jobID string, cands []PostAnomaly) []PostAnomaly {
 // checkpoint may raise them again.
 //
 // Called when a job re-enters the queue under an ID it has already used — a
-// retry reuses the job ID and calls ResetForRetry, and Class A facts are
-// retained across it (Append is INSERT OR IGNORE on (job_id, art_idx)). Without
-// this the retried job's overlaps match the latch from the previous attempt and
-// are dropped, silencing the warning permanently rather than once.
+// retry reuses the job ID and calls ResetForRetry, and its Class A facts are
+// usually retained across it. Without this the retried job's overlaps match the
+// latch from the previous attempt and are dropped, silencing the warning
+// permanently rather than once.
+//
+// "Usually", and not because of INSERT OR IGNORE, which is what this comment
+// used to say. That is Append's idempotency against re-appending the same fact;
+// it says nothing about whether the rows survive a retry, and for the history
+// route they did not — Repository.Delete dropped both durability tables
+// unconditionally (#422). What retains them is job_finalizer declining to
+// delete them for a FAILED job plus RetryHistoryJob using
+// DeleteKeepingDurability. And they are dropped deliberately when the re-parsed
+// manifest changes shape, because the rows are keyed on art_idx and a
+// renumbering makes them describe other articles.
+//
+// So ForgetJob may not assume facts are present, and does not need to: it
+// clears the latch either way, which is correct for both outcomes.
 //
 // Idempotent, and safe for a job that never reported anything.
 func (b *Barrier) ForgetJob(jobID string) {
