@@ -1827,6 +1827,11 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err != nil {
 		return err
 	}
+	// Hoisted out of the block below because the deletion downstream branches
+	// on it: the retained durability rows are only trustworthy for a retry
+	// whose re-parsed manifest has the same shape the rows were written
+	// against.
+	var progressApplied bool
 	if store := app.queue.Store(); store != nil {
 		applied, rErr := store.RestoreRetryProgress(ctx, job)
 		if rErr != nil {
@@ -1836,26 +1841,45 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			app.log.Info("no usable retained progress for retry; downloading from scratch",
 				"job", jobID)
 		}
+		progressApplied = applied
 	}
 	job.ResetForRetry()
-	// The job returns under the SAME ID, and its Class A facts survive with it
-	// (Append is INSERT OR IGNORE on (job_id, art_idx)). The barrier latches
-	// overlap warnings per (jobID, fileIdx), so without this the retry's
-	// overlaps match the previous attempt's latch and are dropped — silencing
-	// the warning permanently instead of raising it once per attempt.
+	// The job returns under the SAME ID, and its durability rows survive with
+	// it — see the deletion below, which is what makes that true. The barrier
+	// latches overlap warnings per (jobID, fileIdx), so without this the
+	// retry's overlaps match the previous attempt's latch and are dropped —
+	// silencing the warning permanently instead of raising it once per
+	// attempt.
 	if app.barrier != nil {
 		app.barrier.ForgetJob(jobID)
+	}
+	if !progressApplied {
+		// The retained rows were written against a manifest this retry did not
+		// reproduce — RestoreRetryProgress declines the overlay on a shape
+		// mismatch but deletes nothing, so without this they would outlive a
+		// renumbering and describe articles that are no longer at those
+		// indices. Dropped BEFORE Add, so the re-enqueued job's own rows
+		// cannot be caught by the deletion.
+		app.deleteJobDurability(ctx, jobID)
 	}
 	if err := app.queue.Add(job); err != nil {
 		return err
 	}
-	// Deliberately Delete rather than deleteHistoryEntries: the job is going
-	// back into the queue under the same ID and the same NZBBackup, and if
-	// it fails again it will finalize into a new history entry naming that
-	// same file. Removing the backup here would make the second failure
+	// Deliberately a Delete variant rather than deleteHistoryEntries: the job
+	// is going back into the queue under the same ID and the same NZBBackup,
+	// and if it fails again it will finalize into a new history entry naming
+	// that same file. Removing the backup here would make the second failure
 	// unretryable. The retained per-file progress does go, because Add has
 	// just written fresh job_files rows that supersede it.
-	_, _ = app.historyRepo.Delete(ctx, jobID)
+	//
+	// KeepingDurability because ownership of article_facts and file_extents
+	// passes back to the job as it re-enters the queue. They are what bound
+	// this attempt's truncate to the whole partial file; plain Delete drops
+	// them, which destroyed the retention job_finalizer.go maintains for
+	// exactly this path and silently truncated the partial to whatever the
+	// retry re-fetched (#422). The !progressApplied branch above has already
+	// removed them where they could not be trusted.
+	_, _ = app.historyRepo.DeleteKeepingDurability(ctx, jobID)
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
 	snap := app.queue.SnapshotJob(jobID)
