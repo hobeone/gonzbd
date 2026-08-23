@@ -53,8 +53,18 @@ CREATE TABLE failed_articles (
     art_idx INTEGER NOT NULL,
     PRIMARY KEY (job_id, art_idx)
 ) WITHOUT ROWID;
--- Owned and written solely by internal/queue, not by anything in this
--- package. It exists as a table rather than a packed bitmap column on
+-- internal/queue is the sole WRITER: Queue.AckPermanentFailure is the only
+-- thing that inserts a row here, and nothing in this package writes one.
+--
+-- Deletion is deliberately not so narrow, and saying "owned solely" would
+-- misdescribe it. Rows are removed by the three reversal sites that clear the
+-- matching in-memory bits (Queue.ClearAllEmitted, Queue.Retry and
+-- Application.RetryHistoryJob), by SQLiteStore.Prune sweeping rows whose job
+-- has left both the queue and history-as-FAILED, and by
+-- history.Repository.Delete dropping a departed job's durability with it.
+-- Every one of those is a job-scoped delete; none of them writes a row.
+--
+-- It exists as a table rather than a packed bitmap column on
 -- job_files because its reversal (ResetForRetry, resetForReload) is
 -- per-article and per-job — a bitmap column can only express that by
 -- rewriting the whole blob, which is the articles_done fragility this

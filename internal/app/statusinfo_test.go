@@ -221,11 +221,11 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 
 // TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
 // listing's bytes_durable rests on: on this design the only things that mark an
-// article Done are the barrier's ack and a replay of a committed extent cache,
-// so a downloaded byte IS a durable byte. A second counter would be a second
-// representation of one fact, free to drift.
+// article Done are the barrier's ack and a replay of the committed durable
+// runs, so a downloaded byte IS a durable byte. A second counter would be a
+// second representation of one fact, free to drift.
 //
-// The fixture makes articles durable through Queue.SeedFromExtents — the same
+// The fixture makes articles durable through Queue.SeedFromRuns — the same
 // replay a resume performs — because that is the only route to a NON-ZERO
 // figure that a test can drive. An earlier version asserted only that the
 // number was 0 before any barrier, which the fixture guarantees on its own:

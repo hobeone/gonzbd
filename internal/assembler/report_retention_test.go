@@ -30,24 +30,16 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 //
 // Sync discarded the report the moment the fsync returned, but the barrier's
 // order is drain-all, sync-all, build, then Commit and AckDurable. Every
-// failure AFTER the fsync — a Stat timeout, a busy ExtentStore.Commit, an
+// failure AFTER the fsync — a Stat timeout, a failed RunStore.Commit, an
 // AckDurable answering ErrJobNotResident — therefore lost the report exactly as
 // it did before the retention existed. The reported field's own doc claimed
-// coverage of "the sync, the extent commit, the truncate"; only the first was
-// real.
+// coverage of "the sync, the commit, the truncate"; only the first was real.
 //
 // Losing it is not losing the bytes, but it is losing the file. Those articles
 // keep their bytes on disk and are never acked and never earn a durable bit,
 // and a redelivery is dropped by handleSuccessArticle's seenDone check with no
 // write and no partsWritten increment — so the file cannot complete for the
 // life of the handle.
-//
-// The two guards in FinalizeFile do not save it either. appendArticleFacts and
-// ExtentStore.Commit write the same SQLite database, so a single busy window
-// can drop an article's Class A fact AND fail the barrier's commit after Sync
-// cleared the report. That article is then invisible to durableExtent and
-// recordedExtent alike, neither missing nor unrecorded fires, and the truncate
-// destroys its bytes.
 func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
 	w := newWrittenFileWriter(t)
 
@@ -86,7 +78,7 @@ func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
 // TestDrainReport_IsReleasedOnceTheCycleIsConfirmed pins the other side, which
 // is what keeps the retained set bounded: a confirmed cycle must drop its
 // report, or every later Drain re-reports every article ever written to the
-// file and buildExtent's work grows without bound.
+// file and the barrier's per-cycle commit grows without bound.
 func TestDrainReport_IsReleasedOnceTheCycleIsConfirmed(t *testing.T) {
 	w := newWrittenFileWriter(t)
 

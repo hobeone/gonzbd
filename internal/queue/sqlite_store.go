@@ -802,9 +802,18 @@ SELECT jf.job_id, jf.file_index, jf.article_count, jf.bytes, jf.complete,
 //
 // Neither sweep is bounded to the jobs in `result`, and that is deliberate
 // rather than sloppy: a WHERE ... IN over every queued job ID is a bigger
-// statement than the scan it saves, and SQLiteStore.Prune already keeps both
-// tables free of rows whose job is in neither the queue nor history-as-FAILED.
-// Rows for a job not in `result` are simply skipped below.
+// statement than the scan it saves.
+//
+// The scoping is a SIZE question, not a correctness one, and it is worth being
+// precise about which. `result` is built from a whole-table job_files scan
+// before either sweep runs, and every scanned row is filtered through a
+// membership test against it below — so a row belonging to a departed job is
+// discarded in Go and cannot reach any job's FileMeta. The answer is the same
+// whatever the tables hold. What the scoping buys is only the cost of reading
+// rows nobody wants, and SQLiteStore.Prune is what keeps that bounded by
+// removing rows whose job is in neither the queue nor history-as-FAILED. If
+// Prune ever weakened, these sweeps would get slower at boot; they would not
+// get wrong.
 //
 // # Deriving the file-local index without a manifest
 //
