@@ -1568,7 +1568,56 @@ recorded here so the next reader does not mistake them for design.
    `Complete` flag part of the same transaction as the article state, which is
    a change to what the barrier's commit covers.
 
-7. **The crash suite does not test fsync-to-platter.** See below.
+7. **An exact-offset collision is PREVENTED only within one open-file episode;
+   across a boundary it is detected and reported after the fact.**
+   `FileWriter.acceptedAt` maps each byte offset to the article that owns it,
+   and a second article claiming an owned offset is refused and resolved
+   permanently failed — which works because that article is not yet `Done`, and
+   `markFailed` early-returns on one that is. The file then completes *short*.
+   That map lives on the `FileWriter`, so it is forgotten when the file closes:
+   a **restart**, or a **retry** of a failed job whose file was incomplete,
+   reopens the file with an empty map, and the later write overwrites the
+   earlier. The file then completes *wrong*.
+
+   **The bound is that both outcomes are diagnosed and repairable.** Across the
+   boundary `RunStore.Commit` must discard one of the two rows, returns it as a
+   `durability.Collision`, and the barrier raises a `PostAnomaly` naming both
+   articles and the contested offset (§4). The whole-file CRC is withheld either
+   way, because the record cannot cover the discarded article's index. So par2
+   runs in both cases; what differs is a short file versus a wrong one, and a
+   failed-byte figure that is correct versus one that omits the loser's bytes.
+
+   **Do not try to close this by rehydrating `acceptedAt` from `durable_runs`.**
+   It cannot be done: a `Run` is a *merged* span carrying `FirstArtIdx`,
+   `LastArtIdx`, `Offset` and `Length`, and merging destroys the per-article
+   boundaries — a row saying "articles 0–199 occupy bytes [0,20000)" cannot say
+   where article 137 begins. Deriving the boundaries by walking the manifest's
+   article lengths assumes articles lie contiguously in `ArtIdx` order, which is
+   exactly what a malformed post violates; the derivation would be correct for
+   every file that does not need it. Persisting ownership separately means
+   re-introducing a per-article record, which is what this design removed and
+   for the reason that two per-article records with independent writers could
+   disagree (#389, #421).
+
+   **What could work, if it is ever worth it**, is a weaker question the merged
+   record *can* answer: for an incoming article at offset `O` with index `A`,
+   against a stored run `R`, treat `O ∈ R`'s byte span with `A` outside
+   `[R.FirstArtIdx, R.LastArtIdx]` as a collision — two different articles
+   claiming the same bytes — while `A` inside that span stays the ordinary R12
+   redelivery. It needs no schema change and fits the injected-callback seam
+   `openTargetFile` already uses for `FileInfo`. It costs a blocking `ForFile`
+   read on the assembler's write path at each file open, requires rewriting the
+   #342 note at `assembler.go` that currently reads as a blanket prohibition on
+   seeding the open path, and still misses an article durable but not yet
+   committed when the episode ended.
+
+   Not scheduled, because after #387's fix both outcomes reach par2 with a
+   warning naming the file. **The case that would change that is a post with no
+   par2**, where "repairable" is false and short-versus-wrong is the difference
+   between a hole and an unusable file — `AGENTS.md` Standing Rule 3's case that
+   needs the bound most. How common those are in practice is the open question.
+
+8. **The crash suite does not test fsync-to-platter.** See below.
 
 ## What the crash suite actually pins
 
