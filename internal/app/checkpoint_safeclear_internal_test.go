@@ -175,6 +175,71 @@ func TestCheckpointJob_ReportsSafeWhenNothingWasWrittenSinceTheLastBarrier(t *te
 	}
 }
 
+// TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes covers the answer the
+// sweep gives when it cannot enumerate jobs itself.
+//
+// A failed OpenJobIDs is not the transient listing error it looks like: submit
+// bounds it with barrierOpTimeout, and in production it fails when a worker is
+// parked in an fsync on a wedged mount — the state with the most unacked bytes.
+// Answering "clear everything" there would let one timed-out listing undo the
+// whole fix, so it answers from the accumulator instead.
+func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+
+	if got := application.jobsAtRisk(); got != nil {
+		t.Errorf("jobsAtRisk() = %v with an empty accumulator, want nil: no job has "+
+			"written anything since its last barrier, so none needs withholding", got)
+	}
+
+	application.noteJobBytes(job.ID, 4096)
+	application.noteJobBytes("idle-job", 0)
+
+	got := application.jobsAtRisk()
+	if _, ok := got[job.ID]; !ok {
+		t.Errorf("jobsAtRisk() = %v, want it to name %s, which holds unacked written bytes",
+			got, job.ID)
+	}
+	if _, ok := got["idle-job"]; ok {
+		t.Errorf("jobsAtRisk() = %v names a job with a zero entry; withholding it strands "+
+			"articles that were emitted and cancelled but never written", got)
+	}
+
+	// A successful barrier takes the accumulator, so the job stops being at risk
+	// without anything having to remember that it was.
+	application.takeJobBytes(job.ID)
+	if got := application.jobsAtRisk(); got != nil {
+		t.Errorf("jobsAtRisk() = %v after the accumulator was taken, want nil", got)
+	}
+}
+
+// TestNothingAtRisk_TracksTheAccumulator pins the per-job predicate the unsafe
+// arms narrow themselves with.
+func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+
+	if !application.nothingAtRisk(job.ID) {
+		t.Error("a job that has written nothing was reported as having bytes at risk")
+	}
+
+	application.noteJobBytes(job.ID, 4096)
+	if application.nothingAtRisk(job.ID) {
+		t.Error("a job holding unacked written bytes was reported as having nothing at " +
+			"risk, which would let a reload clear its emitted bits and re-fetch them")
+	}
+
+	// restoreJobBytes is what keeps a FAILED barrier from looking like a
+	// successful one to this predicate.
+	pending := application.takeJobBytes(job.ID)
+	if !application.nothingAtRisk(job.ID) {
+		t.Error("taking the accumulator did not clear the at-risk verdict")
+	}
+	application.restoreJobBytes(job.ID, pending)
+	if application.nothingAtRisk(job.ID) {
+		t.Error("a restored accumulator — the state after a barrier that FAILED — was " +
+			"reported as nothing at risk, so a failed barrier would read as a success")
+	}
+}
+
 // TestCheckpointAllShare_ReportsNothingWhenEveryJobIsAcked is the other half:
 // the ordinary reload must not withhold anything, or every settings change
 // would stall the articles it was supposed to re-dispatch.
