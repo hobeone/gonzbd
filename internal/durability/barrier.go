@@ -287,7 +287,19 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 		// other. Both are on Barrier and both sit below a Sync that returned nil.
 		// See the Barrier type doc.
 		if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
-			return nil, fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
+			// The collisions travel WITH the error, because they describe the
+			// commit above — which landed — rather than this ack. Dropping
+			// them here lost them permanently: the commit already discarded
+			// the losing row, and on the next cycle these same articles are
+			// subtracted as an at-least-once redelivery before the merge runs,
+			// so Commit finds nothing to collide and returns none. Nothing
+			// downstream can re-derive a collision from the stored rows.
+			//
+			// A caller that ignores findings alongside an error loses nothing
+			// it had before; app.finalizeCompletedFile already reports them
+			// first and checks the error second.
+			return b.admit(jobID, collisionFindings(collisions, t.Path)),
+				fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
 		}
 	}
 	// Only here, below both the commit and the ack. Releasing on the fsync —
@@ -578,6 +590,18 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		// whose metadata is not yet on stable storage would compare against a
 		// number the next restart does not see.
 		if err := t.Sync(ctx, idx); err != nil {
+			if errors.Is(err, ErrFileNotOpen) {
+				// Closed between this function's own Truncate and this Sync.
+				// Every other operation on t in this function treats a close
+				// as "nothing left to do here" — Drain, the pre-truncate
+				// Sync, Truncate and Stat all do — and this one raised a
+				// storage fault instead, which parks a job on a healthy disk
+				// over a race that means the file is already someone else's.
+				// See the pre-truncate Sync for the same argument at length.
+				b.log.Debug("file closed between its finalize truncate and sync",
+					"job", jobID, "file", idx)
+				return nil, nil
+			}
 			return nil, b.raise(jobID, "sync", t.Path(idx), err)
 		}
 	}
@@ -606,7 +630,11 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	if len(acked) > 0 {
 		slices.Sort(acked)
 		if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
-			return nil, fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
+			// Carried with the error, as in Run and for the same reason: the
+			// commit landed, so the collision is real and this is the only
+			// cycle that can ever see it.
+			return b.admit(jobID, collisionFindings(collisions, t.Path)),
+				fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
 		}
 	}
 	// Below both the commit and the ack, as in Run. A finalize that failed

@@ -149,10 +149,24 @@ func TestResumeSweep_FinishesAFinalizeACrashInterrupted(t *testing.T) {
 			"truncate was not finished, so pre-allocation's tail goes to post-processing "+
 			"and QuickCheck reads it as a missing file", fi.Size(), crashDecoded)
 	}
-	if !f.app.queue.SnapshotJob(f.job.ID).Progress().FileComplete(0) {
+	progress := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	if !progress.FileComplete(0) {
 		t.Error("the file is still not Complete after the sweep; every article is resolved " +
 			"so none will be dispatched, nothing moves partsWritten, and the job stays " +
 			"wedged across every future restart")
+	}
+
+	// The assembled CRC too, which the repair reaches through
+	// completeFinalizedFile. Recovering the file without it leaves
+	// AssembledCRC32 at zero, which par2 reads as NoCRC: QuickCheck cannot
+	// report Clean, so the full verify runs and every recovery volume is
+	// fetched — for a file whose whole-file CRC was sitting in its single
+	// durable run the entire time.
+	want := crc32.ChecksumIEEE(append(
+		bytes.Repeat([]byte{'x'}, crashArtLen),
+		bytes.Repeat([]byte{'y'}, crashArtLen)...))
+	if got := progress.FileAssembledCRC32(0); got != want {
+		t.Errorf("assembled CRC = %#x after the repair, want %#x", got, want)
 	}
 }
 

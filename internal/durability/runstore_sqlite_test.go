@@ -66,6 +66,56 @@ func TestMergeAdjacentRuns(t *testing.T) {
 	}
 }
 
+// TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow pins the asymmetry
+// between the two overlap shapes, which reads as a missed collision and is not.
+//
+// A duplicate landing on an offset cur has ABSORBED is not equal to cur.Offset,
+// so it is neither dropped nor reported as a Collision. It becomes a row of its
+// own — and that is the outcome the design wants, because the drop exists only
+// to satisfy the primary key (job_id, file_idx, offset), and two rows at
+// different offsets do not contend for one key.
+//
+// What the surviving pair buys is the evidence: Σ length then exceeds the
+// file's size, which is the only thing §3.3's overlap check can see. Dropping
+// the entry would make Σ length equal the size, silence that warning, and
+// return the article to Outstanding to be re-fetched and collide again.
+func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
+	// A0 [0,100) and A1 [100,200) abut and fold together; A2 then claims
+	// A1's offset, after A1 has already been absorbed.
+	out, cols := mergeAdjacentRuns([]Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11},
+		{FileIdx: 0, FirstArtIdx: 1, LastArtIdx: 1, Offset: 100, Length: 100, CRC32: 0x22},
+		{FileIdx: 0, FirstArtIdx: 2, LastArtIdx: 2, Offset: 100, Length: 100, CRC32: 0x33},
+	})
+
+	if len(cols) != 0 {
+		t.Errorf("collisions = %+v, want none — the survivors sit at different offsets, "+
+			"so the primary key forces no choice between them and nothing is dropped", cols)
+	}
+	if len(out) != 2 {
+		t.Fatalf("rows = %d, want 2: %+v", len(out), out)
+	}
+
+	// The evidence the overlap check reads. Without BOTH rows this sum equals
+	// the file's size and §3.3 reports nothing at all.
+	var recorded int64
+	for _, r := range out {
+		recorded += r.Length
+	}
+	size := int64(200) // max(Offset+Length), which is what FinalizeFile trims to
+	if recorded <= size {
+		t.Errorf("Σ length = %d against a %d-byte file; it must EXCEED the size, or "+
+			"overlapFrom has no evidence and the user is told nothing", recorded, size)
+	}
+
+	// And the CRC is withheld on the row count, so #387's outcome is closed
+	// here as well — by a different one of §3.5's three conditions.
+	if len(out) == 1 {
+		t.Error("one row survived; §3.5 would publish a whole-file CRC over bytes " +
+			"a second article overwrote")
+	}
+}
+
 // TestSQLiteRunStore_HelpersDirectly exercises queryBracketing, insertRuns,
 // deleteRows, and commitFile against a live transaction, the way Commit
 // itself calls them. Commit's own tests exercise the same code paths

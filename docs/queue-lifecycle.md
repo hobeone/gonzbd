@@ -255,10 +255,11 @@ accessors, threaded through every package that reads progress. A cross-package
 API break for 7.5 KB a job is not a trade worth making.
 
 Note that the rehydration half already exists and is exercised: `Retry` →
-`hydrateJobLocked` → `RestoreJobProgress` → `decodeArticlesDone` restores both
-`done` and `failed` from the persisted bitmap (the #260 widening), and
+`hydrateJobLocked` → `RestoreJobProgress` restores both `done` and `failed`
+(the #260 widening) — no longer from a per-article bitmap on `job_files`, which
+is deleted, but derived from `durable_runs` and `failed_articles` — and
 `SQLiteStore.Update`'s per-file flush is guarded on the manifest being
-readable, so a terminal job's stored bitmap survives eviction untouched. If the
+readable, so a terminal job's stored state survives eviction untouched. If the
 memory figures ever change, only the dropping and the type remain to build.
 
 ## Failing versus degrading

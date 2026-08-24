@@ -1265,6 +1265,29 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 // its completion silently dropped. handleFileComplete's own call has already
 // logged everything a live pipeline can act on.
 func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComplete) error {
+	// The assembled CRC is recorded HERE rather than beside the barrier,
+	// because this function is what every completion path shares and the CRC
+	// is part of "everything the completion path does after the bytes are
+	// correct". Beside the barrier it was reached by ONE of the three:
+	//
+	//   - the ordinary path reached it, since finalizeCompletedFile returns
+	//     nil and its caller comes straight here;
+	//   - stall recovery did not. retryFinalize swallows ErrJobNotResident —
+	//     the ack cannot mark a paused job — and returns before the CRC, then
+	//     Phase 4 arrives here having marked the file finalizeDone, and
+	//     nothing retried it;
+	//   - the startup repair did not, because completeStrandedFiles has no
+	//     barrier call to hang it off at all.
+	//
+	// Both of those left AssembledCRC32 at zero, which par2 reads as NoCRC:
+	// the QuickCheck bypass is suppressed and every recovery volume is fetched
+	// for a file whose whole-file CRC was sitting in its durable run the
+	// entire time. One owner rather than three call sites is what stops a
+	// fourth path from being added without one.
+	//
+	// Before MarkFileComplete, so the value is on the progress record by the
+	// time maybeFinalize below can hand the job to post-processing.
+	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		// Returning bare here was itself the shape #261 describes: the file
 		// never gets marked complete, no event is emitted, and nothing says
@@ -1716,10 +1739,10 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 // re-parsing the gzipped NZB backup recorded on it.
 //
 // This is where the article message-IDs come back. They are not in SQLite —
-// job_files holds per-file metadata and a per-article bitmap, never the
-// <id@host> strings a BODY command needs — and the job's manifest was
-// unlinked when it finalized. The NZB is the only remaining copy, which is
-// why the backup's name is recorded on the entry.
+// job_files holds per-file metadata, durable_runs holds article INDICES, and
+// neither holds the <id@host> strings a BODY command needs — and the job's
+// manifest was unlinked when it finalized. The NZB is the only remaining copy,
+// which is why the backup's name is recorded on the entry.
 //
 // The rebuilt job takes the entry's ID so its retained progress, its
 // incomplete directory, and any later history entry all still line up.

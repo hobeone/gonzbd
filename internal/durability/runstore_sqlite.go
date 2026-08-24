@@ -1,11 +1,11 @@
 package durability
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
 	"slices"
-	"sort"
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
 )
@@ -86,7 +86,7 @@ func (s *SQLiteRunStore) Commit(ctx context.Context, jobID string, arts []Durabl
 // within the caller's transaction, and returns the exact-offset collisions the
 // merge dropped.
 func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID string, fileIdx int32, arts []DurableArticle) ([]Collision, error) {
-	sort.Slice(arts, func(i, j int) bool { return arts[i].Offset < arts[j].Offset })
+	slices.SortFunc(arts, func(a, b DurableArticle) int { return cmp.Compare(a.Offset, b.Offset) })
 
 	var maxEnd int64
 	for _, a := range arts {
@@ -148,8 +148,9 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 	// segment (internal/downloader/dispatch.go's UU block) — and two entries
 	// at one offset never abut, so both survive the fold and both address the
 	// one primary key (job_id, file_idx, offset). Under a bare Offset
-	// comparison sort.Slice is free to order them either way, and INSERT OR
-	// REPLACE then keeps whichever landed last.
+	// comparison the sort is free to order them either way — slices.SortFunc
+	// is not stable, exactly as sort.Slice was not — and INSERT OR REPLACE
+	// then keeps whichever landed last.
 	//
 	// Length descending puts the longer entry first, which is the one
 	// mergeAdjacentRuns keeps. FirstArtIdx breaks the remaining tie when two
@@ -157,15 +158,12 @@ func (s *SQLiteRunStore) commitFile(ctx context.Context, tx *sql.Tx, jobID strin
 	// order — without it the accumulator at a shared offset is again
 	// arbitrary, and picking the higher-indexed entry leaves the articles
 	// that would have abutted the lower one unable to fold into it.
-	sort.Slice(combined, func(i, j int) bool {
-		a, b := combined[i], combined[j]
-		if a.Offset != b.Offset {
-			return a.Offset < b.Offset
-		}
-		if a.Length != b.Length {
-			return a.Length > b.Length
-		}
-		return a.FirstArtIdx < b.FirstArtIdx
+	slices.SortFunc(combined, func(a, b Run) int {
+		return cmp.Or(
+			cmp.Compare(a.Offset, b.Offset),
+			cmp.Compare(b.Length, a.Length), // DESCENDING: operands reversed
+			cmp.Compare(a.FirstArtIdx, b.FirstArtIdx),
+		)
 	})
 
 	final, collisions := mergeAdjacentRuns(combined)
@@ -216,8 +214,32 @@ func coveredByAny(stored []Run, artIdx int32) bool {
 // LATER finalize truncate the file to it, while keeping the longer leaves the
 // bound conservative in the safe direction.
 //
-// Every drop is REPORTED, as a Collision, and this is the only place in the
-// program that can report one. overlapFrom cannot: it compares Σ length
+// The check is against cur's OWN offset, not against any offset cur has
+// absorbed, and that asymmetry is deliberate rather than an oversight.
+//
+// Once cur has merged leftward its Offset stays at the start of the span while
+// its Length grows, so a later entry landing on an INTERIOR offset of cur —
+// the offset of an article already folded in — is not equal to cur.Offset, is
+// not adjacent either, and becomes a row of its own. Two rows then describe
+// overlapping bytes.
+//
+// That is the correct outcome, because the drop exists for exactly one reason:
+// (job_id, file_idx, offset) is the primary key and cannot hold two rows at
+// one offset. Two rows at DIFFERENT offsets violate nothing, so nothing forces
+// a choice between them, and keeping both is what makes Σ length exceed the
+// file's size — which is precisely the evidence §3.3's overlap check reports
+// on. Dropping the later entry instead would erase that evidence, silence the
+// warning, and return its article to Outstanding to be re-fetched and collide
+// again.
+//
+// The consequence is that one physical situation — two articles claiming one
+// offset — is reported as a Collision or as an overlap depending on whether
+// the rival was absorbed by a merge first. Both reach the user; §3.5 withholds
+// the whole-file CRC either way, on the row count in this case and on article
+// coverage in the other.
+//
+// Every drop that DOES happen is reported, as a Collision, and this is the
+// only place in the program that can report one. overlapFrom cannot: it compares Σ length
 // against the file's size, and dropping the duplicate is exactly what stops
 // Σ length from exceeding it. Nor can any later pass over the stored rows —
 // the survivor is by then indistinguishable from a row that never had a

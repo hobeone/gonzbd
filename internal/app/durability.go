@@ -907,7 +907,11 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 		// extending that span.
 		return fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, jobID, fileIdx, err)
 	}
-	app.recordAssembledCRC(ctx, jobID, fileIdx)
+	// The assembled CRC is NOT recorded here. It moved to
+	// completeFinalizedFile, which every completion path reaches and this one
+	// does not: a stall recovery whose ack found the job non-resident returns
+	// above, and the startup repair never calls this function at all. See that
+	// function for the two paths this placement used to miss.
 	return nil
 }
 
@@ -966,10 +970,18 @@ func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fi
 // bound and a byte bound, and a queue save after it.
 //
 // The queue save follows the barrier rather than running on its own timer
-// because the barrier is what produces something worth saving. An ack marks
-// articles Done in memory; until the queue is written, a crash re-fetches
-// them anyway, so saving first would persist a snapshot that is stale by
-// construction.
+// because the barrier is what produces something worth saving — and what it
+// produces is the durable_runs commit, which is already on stable storage
+// before the ack. Saving first would persist a snapshot taken before that
+// commit, which is stale by construction.
+//
+// What the save carries is therefore the FILE-level state the record does not
+// hold: Complete, the assembled CRC, the fetch policy. Article resolution
+// survives a crash without it, because the startup sweep replays the runs.
+// This paragraph used to say a crash re-fetches unsaved acked articles, which
+// was true of the per-article bitmap this design deleted and is not true now;
+// what a crash between the commit and the save actually strands is a file's
+// Complete flag (docs/durability-contract.md, limitation 6).
 //
 // Two of the other three triggers R6 names are not here, because they are
 // events rather than a cadence: file completion goes through

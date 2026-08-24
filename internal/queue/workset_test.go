@@ -331,6 +331,46 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 // 2). Both
 // halves are load-bearing: with nothing surviving, a clear-everything mutation
 // would pass; with nothing cleared, a no-op would.
+// TestReplaceFromRuns_EvictsAHydratedJobOnAValidationError pins the cleanup on
+// the paths that give up before the write-back.
+//
+// ReplaceFromRuns hydrates a non-resident job for the duration — a Paused job
+// is the case the startup sweep needs most, and it is never resident — and
+// evicts it again at the bottom. Both validation returns jumped over that
+// eviction, leaving the job resident with its manifest attached, against a
+// residency budget docs/queue-lifecycle.md exists to bound. A malformed run is
+// a bad argument, not a reason to promote a job nobody asked to promote.
+//
+// The run below names articles outside the file's range, which is what
+// runsCoverage refuses.
+func TestReplaceFromRuns_EvictsAHydratedJobOnAValidationError(t *testing.T) {
+	const nArts = 4
+	q := newTestQueueWithJob(t, "job-1", nArts)
+
+	job := q.byID["job-1"]
+	q.evictJobLocked(job)
+	if job.manifest != nil || q.activeSet.IsResident("job-1") {
+		t.Fatal("fixture guard: the job is still resident, so ReplaceFromRuns will not " +
+			"hydrate it and there is no eviction to check")
+	}
+
+	err := q.ReplaceFromRuns("job-1", []int32{0}, []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: int32(nArts) + 10, Offset: 0, Length: 10},
+	})
+	if err == nil {
+		t.Fatal("ReplaceFromRuns accepted a run covering articles the file does not have")
+	}
+
+	if job.manifest != nil {
+		t.Error("the job kept its manifest after a failed ReplaceFromRuns; a call that " +
+			"hydrated it for the duration must put it back however it returns")
+	}
+	if q.activeSet.IsResident("job-1") {
+		t.Error("the job is still in the active set after a failed ReplaceFromRuns, " +
+			"holding a residency slot nothing asked for")
+	}
+}
+
 func TestReplaceFromRuns_ClearsArticlesNoSurvivingRunCovers(t *testing.T) {
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)

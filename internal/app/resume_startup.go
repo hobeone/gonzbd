@@ -231,7 +231,8 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 		// why: a file whose runs the gate discarded contributes no run at all,
 		// so the runs alone cannot distinguish "I looked and found nothing"
 		// from "I never looked".
-		if err := app.queue.ReplaceFromRuns(snap.ID, swept, runs); err != nil {
+		replaceErr := app.queue.ReplaceFromRuns(snap.ID, swept, runs)
+		if replaceErr != nil {
 			// Not fatal to startup, but the two failures behind this differ
 			// and the message must not flatten them.
 			//
@@ -240,21 +241,33 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 			//
 			// A PERSIST failure is the other direction. The correction is
 			// applied in memory, so this process behaves correctly, but the
-			// stored row still records the disproven article as done. If the
-			// job is evicted before the next successful save, the next
-			// promotion re-reads that row and the article comes back Done
-			// without its bytes. An earlier version of this comment claimed a
-			// re-fetch either way, which is true only of the first case.
+			// file's stored `job_files` row still carries the Complete flag
+			// and assembled CRC this sweep cleared — the article bits are
+			// derived from durable_runs, whose rows Resumer has already
+			// deleted, so it is the FILE-level correction that is at risk and
+			// not the article-level one. If the job is evicted before the next
+			// successful save, the next promotion re-reads that row and the
+			// file comes back Complete over articles this sweep returned to
+			// Outstanding.
 			app.log.Warn("resume sweep could not fully apply a job's recomputation; "+
 				"if this was the persist, an eviction before the next queue save "+
-				"restores the disproven articles",
-				"job", snap.ID, "err", err)
+				"restores the file's cleared Complete flag and assembled CRC",
+				"job", snap.ID, "err", replaceErr)
 		}
-		if fault == nil {
+		if fault == nil && replaceErr == nil {
 			// Below ReplaceFromRuns because that is what installs the Done
 			// bits this reads, and inside the no-fault arm because a truncate
 			// is the one irreversible act in this sweep — see
 			// completeStrandedFiles for both arguments in full.
+			//
+			// Gated on ReplaceFromRuns SUCCEEDING for the same reason it is
+			// placed below it. A failure there leaves the Done bits as
+			// Store.RestoreJobProgress derived them, uncorrected — while
+			// Resumer has already deleted the runs of a file it found short or
+			// missing. Reading those two together describes a file as fully
+			// resolved when its bytes are gone, and this pass would then mark
+			// it Complete: a job shipped to post-processing over a file that
+			// was about to be re-fetched.
 			app.completeStrandedFiles(ctx, snap.ID, m, swept, runs)
 		}
 		if fault != nil {

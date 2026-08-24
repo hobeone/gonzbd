@@ -369,6 +369,22 @@ func (q *Queue) ReplaceFromRuns(jobID string, files []int32, runs []durability.R
 		}
 		job, evictAfter = j, j
 	}
+	// abandonLocked undoes this call's hydration and releases the lock, in
+	// that order, for the paths that give up before the write-back.
+	//
+	// It exists because the eviction at the bottom is the ONLY one, and the
+	// two validation returns below jumped over it — a job this call hydrated
+	// for the duration stayed resident with its manifest attached, against a
+	// residency budget docs/queue-lifecycle.md exists to bound. A malformed
+	// run or an out-of-range file index is a bad argument, not a reason to
+	// promote a job nobody asked to promote.
+	abandonLocked := func() {
+		if evictAfter != nil {
+			q.evictJobLocked(evictAfter)
+		}
+		q.mu.Unlock()
+	}
+
 	m := job.manifest
 	// Covered is built over the WHOLE job before any file is walked, because a
 	// run names articles globally and the loop below asks the question per
@@ -378,7 +394,7 @@ func (q *Queue) ReplaceFromRuns(jobID string, files []int32, runs []durability.R
 	for _, r := range runs {
 		lo, hi, cErr := runsCoverage(m, r)
 		if cErr != nil {
-			q.mu.Unlock()
+			abandonLocked()
 			return fmt.Errorf("queue: ReplaceFromRuns %s: %w", jobID, cErr)
 		}
 		for i := lo; i <= hi; i++ {
@@ -389,7 +405,7 @@ func (q *Queue) ReplaceFromRuns(jobID string, files []int32, runs []durability.R
 	for _, fi := range files {
 		f := int(fi)
 		if f < 0 || f >= m.NumFiles() {
-			q.mu.Unlock()
+			abandonLocked()
 			return fmt.Errorf("queue: ReplaceFromRuns %s: file index %d out of range (%d files)",
 				jobID, f, m.NumFiles())
 		}
