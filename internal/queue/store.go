@@ -145,12 +145,18 @@ type Store interface {
 
 	// ClearFailedArticles removes every failed-article row for ONE job.
 	//
-	// It is the wholesale reversal of the above, for the two sites that reset
-	// a job's articles WITHOUT exception: Queue.Retry via Job.ResetForRetry,
-	// and Application.RetryHistoryJob, which resets a rebuilt job outside the
+	// Three callers, enumerated from `git grep -n ClearFailedArticles`. Two
+	// are wholesale reversals of the above, resetting a job's articles WITHOUT
+	// exception: Queue.Retry via Job.ResetForRetry, and
+	// Application.RetryHistoryJob, which resets a rebuilt job outside the
 	// queue and so has to reach this method itself. For both, the articles
 	// whose failed bit is cleared are exactly this job's stored set, so a
 	// whole-job delete is equivalent to clearing them one at a time.
+	//
+	// The third is not a reversal at all: Application.dropJobDurability
+	// (durability.go) drops the rows of a job that is DEPARTING, alongside its
+	// durable runs. There is no in-memory state left to stay level with, so
+	// the whole-job form is the only sensible one there.
 	//
 	// It must be scoped to a job the caller is actually resetting: a sweep
 	// over every job would resurrect the permanently failed articles of

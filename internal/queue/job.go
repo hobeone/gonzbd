@@ -809,6 +809,23 @@ func (j *Job) DeferredRecoveryIndices() []int {
 // reset. RemainingBytes needs no adjustment of its own — it derives from
 // the same done/failed ground truth this clears, so the next read reflects
 // it. Can be called prior to re-adding or during Queue.Retry.
+//
+// # It is half of a pair, and the other half is not in this package
+//
+// Clearing Complete makes a short-finalized file's articles fetchable again.
+// It does not make them WRITABLE: the assembler tombstones a file the moment
+// it reaches TotalParts, keyed on (jobID, fileIdx), and a retry returns under
+// the same ID, so those writes land in handleLateDuplicate and the articles
+// fail again. Assembler.ForgetJob drops the tombstones and must be called
+// alongside this — Application.RetryHistoryJob does both, next to
+// durability.Barrier.ForgetJob, which clears the third piece of per-job state
+// latched under that ID.
+//
+// This contrasts with resetForReload, which faces the same tombstone and
+// answers it the other way: a reload has no opportunity to clear it, so it
+// leaves the article resolved instead of creating work the assembler would
+// refuse (#426). The two differ because a retry can arrange for the write to
+// land and a reload cannot.
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false

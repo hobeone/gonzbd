@@ -701,6 +701,88 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	}
 }
 
+// ForgetJob drops every tombstone this assembler holds for jobID, so its files
+// can be written again. It is the counterpart of durability.Barrier.ForgetJob
+// and is called from the same place, for the same reason: a retry returns
+// under the SAME job ID, and per-job state latched during the previous attempt
+// would otherwise silently apply to the new one.
+//
+// # What it is for
+//
+// finalizeFile tombstones a file the moment it reaches TotalParts, and the
+// close-handles arm tombstones every file of a job entering post-processing.
+// Nothing removes an entry: the set is keyed on (jobID, fileIdx) and lives as
+// long as the worker goroutine. That is right while a job is running — the
+// tombstone is what stops a late duplicate racing the barrier's finalize — and
+// wrong the moment the same job ID comes back.
+//
+// Without this, an in-process retry re-dispatches articles whose writes all
+// land in handleLateDuplicate: the buffer is returned to the pool, nothing is
+// written, and the article is failed again. The retry cannot make progress on
+// any file the assembler already completed, and a restart is the only thing
+// that clears it, because the map dies with the process. A file that finalized
+// SHORT is the case that matters most — Job.ResetForRetry clears its Complete
+// flag precisely so its failed articles can be re-fetched, and this is what
+// lets those articles land.
+//
+// cancelledJobs is dropped too. An article for a cancelled job is discarded
+// before it reaches processRequest, so a retry of a job that was cancelled
+// would otherwise have every article silently dropped rather than written.
+//
+// Open handles are deliberately left alone. This says nothing about a file
+// being written right now; it only forgets that one was finished earlier.
+func (a *Assembler) ForgetJob(ctx context.Context, jobID string) error {
+	// Checked up front for the reason CancelJob's own doc gives at length: a
+	// context already cancelled must not be able to enqueue the control
+	// message and then report success because the ack happened to win a
+	// uniform-random select.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	if !a.started {
+		a.mu.Unlock()
+		return ErrNotStarted
+	}
+	if a.stopped {
+		a.mu.Unlock()
+		return ErrStopped
+	}
+	a.wg.Add(1)
+	a.mu.Unlock()
+
+	defer a.wg.Done()
+
+	// Control message convention: FileIdx=fileIdxForgetJob and a non-nil
+	// ackCh, with the real job ID in MessageID and JobID left empty. The
+	// worker discriminates on ackCh, which is unexported; the sentinel picks
+	// which control message this is.
+	ack := make(chan error, 1)
+	control := WriteRequest{
+		JobID:     "",
+		FileIdx:   fileIdxForgetJob,
+		MessageID: jobID,
+		ackCh:     ack,
+	}
+	select {
+	case a.reqs <- control:
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case <-ack:
+		return nil
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // worker is the single goroutine that owns all file handles and performs disk
 // I/O. It runs until stopCh is closed and the request channel is drained.
 //
@@ -797,11 +879,17 @@ mainLoop:
 	a.cacheUsedBytes.Store(wc.used)
 }
 
-// dispatchRequest handles a single request from the channel. It processes
-// cancel control messages (a non-nil ackCh with FileIdx==fileIdxCancelJob) by closing and removing
-// all open files for the cancelled job, skips articles for already-cancelled
-// jobs, and delegates normal write requests to processRequest. Returns 1 if
-// a normal request was processed (for reqCount tracking), 0 otherwise.
+// dispatchRequest handles a single request from the channel. It processes the
+// control messages — each a non-nil ackCh (or syncOp) plus a FileIdx sentinel —
+// skips articles for already-cancelled jobs, and delegates normal write
+// requests to processRequest. Returns 1 if a normal request was processed (for
+// reqCount tracking), 0 otherwise.
+//
+// Four control messages, in the order the arms below test for them:
+// fileIdxSyncOp (a barrier operation), fileIdxCancelJob (close and remove a
+// job's files), fileIdxCloseHandles (close a job's handles, leaving the files),
+// and fileIdxForgetJob (drop a job's tombstones so a retry under the same ID
+// can write again).
 //
 // This method is called from both the main select loop and the shutdown
 // drain loop to ensure cancel messages are handled correctly in both paths.
@@ -936,6 +1024,25 @@ func (a *Assembler) dispatchRequest(
 			if closeErr != nil {
 				req.ackCh <- closeErr
 			}
+			close(req.ackCh)
+		}
+		return 0
+	}
+	if req.ackCh != nil && req.FileIdx == fileIdxForgetJob {
+		// Control message: drop a job's tombstones so a retry under the same
+		// ID can write its files again. See Assembler.ForgetJob.
+		//
+		// The open map is untouched on purpose. This forgets that files were
+		// FINISHED; it asserts nothing about one currently being written, and
+		// closing a live handle here would strand its cached bytes.
+		forgetID := req.MessageID
+		for k := range completed {
+			if k.jobID == forgetID {
+				delete(completed, k)
+			}
+		}
+		delete(cancelledJobs, forgetID)
+		if req.ackCh != nil {
 			close(req.ackCh)
 		}
 		return 0

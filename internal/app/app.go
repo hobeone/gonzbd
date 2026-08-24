@@ -1849,6 +1849,31 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if app.barrier != nil {
 		app.barrier.ForgetJob(jobID)
 	}
+	// The assembler latches per-job state too, and for a longer time: its
+	// tombstone set is keyed on (jobID, fileIdx) and nothing removes an entry
+	// for the life of the worker goroutine. Since the retry returns under the
+	// same ID, every file this process already completed for it would reject
+	// the retry's writes as late duplicates — the articles would be pooled,
+	// never written, and failed again, with a restart the only cure.
+	//
+	// ResetForRetry clears Complete on a file whose failed articles it reset,
+	// which is what makes those articles fetchable again; this is what lets
+	// them land. The two have to move together or the reset creates work the
+	// assembler refuses.
+	//
+	// Logged rather than fatal, unlike the deletion below. Nothing is
+	// corrupted if it fails — the retry simply cannot make progress on
+	// already-completed files until a restart, which is exactly today's
+	// behaviour — and failing the retry outright would be a worse outcome
+	// than the degraded one.
+	if app.assembler != nil {
+		if err := app.assembler.ForgetJob(ctx, jobID); err != nil {
+			app.log.Warn("could not clear the assembler's completed-file tombstones for a "+
+				"retry; articles for files this process already finished will be refused "+
+				"as late duplicates until a restart",
+				"job", jobID, "err", err)
+		}
+	}
 	if !progressApplied {
 		// The retained rows were written against a manifest this retry did not
 		// reproduce — RestoreRetryProgress declines the overlay on a shape

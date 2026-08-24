@@ -118,9 +118,12 @@ func (q *Queue) AckDurable(p durability.DurableProof) error {
 // one request. That is the same reasoning that lets this method take no proof.
 // The REVERSAL is the opposite direction, and the two sites differ. Queue.Retry
 // returns its clear's error and rolls the retry back, for the reason #260 gives.
-// Queue.ClearAllEmitted's is best-effort like this method, and a row outliving
-// it costs one re-attempt at an article that fails again. See
-// SQLiteStore.ClearFailedArticles and ClearFailedArticlesByIdx respectively.
+// Queue.ClearAllEmitted's is best-effort like this method, but the failure is
+// not symmetric with this one: a row that outlives the clear is reloaded by
+// resolutionForJob and re-derives the article as Failed+Done, so it is NOT
+// re-attempted after a restart — the reverse of losing a row, which costs one
+// request at an article that fails again. See SQLiteStore.ClearFailedArticles
+// and ClearFailedArticlesByIdx respectively.
 func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 	if len(artIdxs) == 0 {
 		return nil

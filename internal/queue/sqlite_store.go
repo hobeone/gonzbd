@@ -254,12 +254,14 @@ func (s *SQLiteStore) RecordFailedArticles(ctx context.Context, jobID string, ar
 // failed bit is set, which is precisely the set stored here. Batching is
 // therefore exact rather than approximate.
 //
-// Two callers. Queue.Retry is in this package; the other is
-// Application.RetryHistoryJob, which calls ResetForRetry on a job rebuilt from
-// its NZB backup, outside the queue and before Queue.Add, and so calls this
-// method directly. Its sibling branch drops the rows through
+// Three callers, enumerated from `git grep -n ClearFailedArticles`. Queue.Retry
+// is in this package. Application.RetryHistoryJob calls ResetForRetry on a job
+// rebuilt from its NZB backup, outside the queue and before Queue.Add, and so
+// calls this method directly; its sibling branch reaches the rows through
 // Application.dropJobDurability instead, so both of its paths are covered but
-// by different routes.
+// by different routes. Application.dropJobDurability is the third, and it is
+// not a reversal — it drops the rows of a DEPARTING job, where no in-memory
+// state survives for them to disagree with.
 //
 // Queue.ClearAllEmitted was a third caller until #426 and is not one now. Its
 // per-article reset stopped being exhaustive — JobProgress.resetForReload
@@ -293,8 +295,9 @@ func (s *SQLiteStore) ClearFailedArticles(ctx context.Context, jobID string) err
 // reversal: the alternative leaves memory and the record disagreeing about a
 // subset nobody can name afterwards.
 //
-// Chunked at the same 999 host parameters history.Repository.Delete uses,
-// leaving one of SQLite's default 1000 for jobID. The chunking is why this
+// Chunked to the same 999-host-parameter budget history.Repository.Delete
+// works to, but at 998 indices per statement rather than 999: jobID is bound
+// too, and it is the total that the limit applies to. The chunking is why this
 // enumerates the rows to REMOVE rather than the rows to keep — a "delete
 // everything except these" form is not chunkable, because the second
 // statement's NOT IN would delete what the first was preserving.
@@ -308,7 +311,7 @@ func (s *SQLiteStore) ClearFailedArticlesByIdx(ctx context.Context, jobID string
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	const chunkSize = 999 // SQLite safe limit for host parameters, less jobID
+	const chunkSize = 998 // 999 SQLite host parameters, less the one jobID binds
 	for i := 0; i < len(artIdxs); i += chunkSize {
 		chunk := artIdxs[i:min(i+chunkSize, len(artIdxs))]
 		args := make([]any, 0, len(chunk)+1)

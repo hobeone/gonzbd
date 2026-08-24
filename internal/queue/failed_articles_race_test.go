@@ -104,12 +104,28 @@ func TestReversalsBumpTheReloadGeneration(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
+	// A reload that reverses NOTHING must not move the counter. The bump means
+	// "a reversal has invalidated pending writes", and bumping without one
+	// drops the insert of every ack in flight across the queue, losing a
+	// permanent failure no reversal ever touched (#426 review).
+	quiet := q.failedGen.Load()
+	q.ClearAllEmitted()
+	if q.failedGen.Load() != quiet {
+		t.Error("ClearAllEmitted moved the reload generation without reversing " +
+			"anything, which invalidates the pending write of every ack in flight")
+	}
+
+	// Now give it something to reverse.
+	if err := q.AckPermanentFailure("gen-bump", []int32{0}); err != nil {
+		t.Fatalf("AckPermanentFailure: %v", err)
+	}
 	before := q.failedGen.Load()
 	q.ClearAllEmitted()
 	afterClear := q.failedGen.Load()
 	if afterClear == before {
-		t.Error("ClearAllEmitted did not move the reload generation, so an ack " +
-			"in flight across a downloader reload cannot tell its rows are stale")
+		t.Error("ClearAllEmitted did not move the reload generation after reversing " +
+			"an article, so an ack in flight across a downloader reload cannot tell " +
+			"its rows are stale")
 	}
 
 	if err := q.SetStatus("gen-bump", constants.StatusFailed); err != nil {

@@ -90,8 +90,15 @@ func TestResetForReload_LeavesAFailedArticleAloneWhenItsFileIsComplete(t *testin
 	}
 	fileFailedBefore := p.files[0].FailedBytes
 
-	p.resetForReload(m, 0)
-	p.resetForReload(m, 2)
+	// The return value is not incidental: ClearAllEmitted deletes exactly the
+	// stored rows of the articles this reports true for, so a wrong answer
+	// desynchronises memory from the record even when the bits below are right.
+	if got := p.resetForReload(m, 0); got {
+		t.Error("resetForReload reported it cleared an article whose file is Complete")
+	}
+	if got := p.resetForReload(m, 2); !got {
+		t.Error("resetForReload reported it did not clear an article whose file is incomplete")
+	}
 
 	// The Complete file's article keeps its resolution.
 	if !p.done.Get(0) {

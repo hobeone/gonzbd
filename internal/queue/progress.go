@@ -757,7 +757,7 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 
 // resetForReload clears the transient Emitted flag on article i and, if it
 // was Failed and its file is still open for writing, resets it to retryable
-// (Done=false, Failed=false), restoring its bytes to FailedBytes.
+// (Done=false, Failed=false), subtracting its bytes from FailedBytes.
 // RemainingBytes needs no restoring of its own: it derives from
 // BytesDownloaded/FailedBytes on read, and an article that was never
 // downloaded leaves BytesDownloaded untouched, so undoing FailedBytes here is

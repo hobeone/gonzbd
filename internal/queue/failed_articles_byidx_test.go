@@ -103,6 +103,57 @@ func TestClearFailedArticlesByIdx_ChunksBeyondTheHostParameterLimit(t *testing.T
 	}
 }
 
+// TestClearAllEmitted_ReassertsARetainedRowAnAckLost pins the reconciling
+// write against the race the generation bump creates.
+//
+// AckPermanentFailure marks its articles under q.mu, captures failedGen,
+// unlocks, and only then takes failedPersistMu to insert. A ClearAllEmitted
+// landing in that window bumps the generation, and the ack drops its whole
+// insert — correct while every failed article was being reversed, wrong now
+// that an article on a Complete file keeps its bit. Left alone, that article
+// is Failed in memory with no row, and the next restart reloads it as
+// outstanding work on a file ForEachUnfinishedArticle skips.
+//
+// Simulated rather than raced: the store is emptied behind the queue's back to
+// stand in for the ack whose insert was dropped, leaving exactly the state that
+// interleaving produces — bit set in memory, no row on disk. ClearAllEmitted
+// must put the row back.
+func TestClearAllEmitted_ReassertsARetainedRowAnAckLost(t *testing.T) {
+	store, _, _ := setupResidencyTestStoreWithDB(t)
+	ctx := context.Background()
+
+	q := New(WithStore(store))
+	if err := q.Add(makeTestJob("j1", 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	ackDone(t, q, "j1", artID(0, 0))
+	ackFailed(t, q, "j1", artID(0, 1))
+	if err := q.MarkFileComplete("j1", 0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+
+	// Stand in for the dropped insert: the bit stays set in memory, the row
+	// is gone from the store.
+	if err := store.ClearFailedArticles(ctx, "j1"); err != nil {
+		t.Fatalf("clearing the store to simulate the dropped ack: %v", err)
+	}
+	if got, _ := store.failedArticlesForJob(ctx, "j1"); len(got) != 0 {
+		t.Fatalf("fixture: store should be empty, has %v", got)
+	}
+
+	q.ClearAllEmitted()
+
+	got, err := store.failedArticlesForJob(ctx, "j1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("stored failed articles = %v, want the retained article re-asserted; "+
+			"without it the ack's dropped insert is never repaired and the article "+
+			"reloads as outstanding work on a Complete file", got)
+	}
+}
+
 // TestClearAllEmitted_KeepsTheStoredRowForARetainedFailedArticle is the half
 // of #426 that only shows up after a restart.
 //
