@@ -756,24 +756,59 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 }
 
 // resetForReload clears the transient Emitted flag on article i and, if it
-// was Failed, resets it to retryable (Done=false, Failed=false), restoring
-// its bytes to FailedBytes. RemainingBytes needs no restoring of its own:
-// it derives from BytesDownloaded/FailedBytes on read, and an article that
-// was never downloaded leaves BytesDownloaded untouched, so undoing
-// FailedBytes here is what makes the article's bytes reappear as
-// remaining. Used by ClearAllEmitted on a downloader reload; recompute
-// must be called afterward to rebuild Pending counters from the resulting
-// ground truth.
-func (p *JobProgress) resetForReload(m *Manifest, i int) {
+// was Failed and its file is still open for writing, resets it to retryable
+// (Done=false, Failed=false), restoring its bytes to FailedBytes.
+// RemainingBytes needs no restoring of its own: it derives from
+// BytesDownloaded/FailedBytes on read, and an article that was never
+// downloaded leaves BytesDownloaded untouched, so undoing FailedBytes here is
+// what makes the article's bytes reappear as remaining. Used by
+// ClearAllEmitted on a downloader reload; recompute must be called afterward
+// to rebuild Pending counters from the resulting ground truth.
+//
+// # Why a Complete file's article is left resolved (#426)
+//
+// A failed article whose file is already Complete stays Done and Failed. The
+// combination is ordinary rather than corrupt: a permanently failed article
+// keeps its place in the file's part total, so the file still reaches
+// TotalParts, finalizes short, and is marked Complete.
+//
+// Resetting it would create work nothing can perform. ForEachUnfinishedArticle
+// skips a Complete file outright, so the article would be counted in Pending
+// and never dispatched — the job reports outstanding work forever. Clearing
+// Complete instead does not help: the file is finalized, truncated to its
+// durable bound, and in the assembler's completed set, which is never cleared
+// for the life of the process, so a re-fetched article routes to
+// handleLateDuplicate, its buffer is pooled, nothing is written, and it is
+// failed again. The reset would buy one wasted fetch per article and arrive
+// back here.
+//
+// Keeping the bytes is the honest figure for the same reason: the article
+// really did fail, and unwinding FailedBytes on a file that shipped short
+// would understate the damage par2 is being asked to repair.
+//
+// The narrower guard reloader.go rejects — skipping an article the writer
+// still holds — is a different one, and its objection does not apply here. It
+// needs knowledge of the writer that this layer does not have; Complete is
+// queue-owned state.
+// It reports whether it cleared article i's failed bit. ClearAllEmitted needs
+// that answer per article to name the stored rows it may drop: now that the
+// reset is not exhaustive, a whole-job delete would forget an article that is
+// still failed in memory.
+func (p *JobProgress) resetForReload(m *Manifest, i int) bool {
 	p.emitted.Clear(i)
-	if p.failed.Get(i) {
-		fi := m.fileIndexForArticle(i)
-		bytes := int64(m.ArticleBytes(i))
-		p.failedBytes -= bytes
-		p.files[fi].FailedBytes -= bytes
-		p.done.Clear(i)
-		p.failed.Clear(i)
+	if !p.failed.Get(i) {
+		return false
 	}
+	fi := m.fileIndexForArticle(i)
+	if p.files[fi].Complete {
+		return false
+	}
+	bytes := int64(m.ArticleBytes(i))
+	p.failedBytes -= bytes
+	p.files[fi].FailedBytes -= bytes
+	p.done.Clear(i)
+	p.failed.Clear(i)
+	return true
 }
 
 // fileProgressJSON is one file's on-disk shape. Pending and BytesDownloaded

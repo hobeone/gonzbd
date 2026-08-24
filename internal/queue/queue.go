@@ -1599,8 +1599,14 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 // teardown (e.g. from context cancellation) are reset to retryable
 // state. Without this, a late assembler flush could race ahead and
 // permanently mark articles as Done+Failed, preventing re-dispatch.
-// Only articles with Failed=true are reset; successfully completed
-// articles (Done=true, Failed=false) are preserved.
+//
+// Two kinds of article keep their resolution. A successfully completed one
+// (Done=true, Failed=false) is finished. A failed one whose file is already
+// Complete has nowhere to be retried to — the file is finalized, truncated and
+// tombstoned in the assembler — so resetting it would count work that
+// ForEachUnfinishedArticle then skips forever (#426). JobProgress.resetForReload
+// owns that decision and reports which articles it cleared, because the stored
+// failed_articles rows must be dropped for exactly those and no others.
 func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
 	// reset collects the jobs whose failed articles this call cleared in
@@ -1609,18 +1615,27 @@ func (q *Queue) ClearAllEmitted() {
 	// the articles_done blob it replaced was, so a row left behind survives
 	// the reload and the next restart marks the re-attempted article failed
 	// again.
-	var reset []string
+	type jobReset struct {
+		id   string
+		arts []int32
+	}
+	var reset []jobReset
 	for _, job := range q.jobs {
 		m := job.manifest
 		if m != nil && job.progress != nil {
-			reset = append(reset, job.ID)
+			var cleared []int32
 			for i := range m.NumArticles() {
 				// Reset articles that were marked Failed during the old
 				// downloader's teardown so they can be retried by the
-				// new downloader. Successfully completed articles
-				// (Done && !Failed) are left untouched.
-				job.progress.resetForReload(m, i)
+				// new downloader. Two kinds are left untouched:
+				// successfully completed articles (Done && !Failed), and a
+				// failed article whose file is already Complete, which has
+				// nowhere to land (#426 — see resetForReload).
+				if job.progress.resetForReload(m, i) {
+					cleared = append(cleared, int32(i))
+				}
 			}
+			reset = append(reset, jobReset{id: job.ID, arts: cleared})
 			// Recompute pending counters from ground truth after bulk
 			// state reset. Incremental tracking is fragile here because
 			// both Emitted and Failed flags are being cleared in bulk.
@@ -1643,13 +1658,19 @@ func (q *Queue) ClearAllEmitted() {
 	q.mu.Unlock()
 	// --- No lock held below this line ---
 
-	// One delete per RESIDENT job, which is exactly the set the loop above
-	// walked: it skips any job without both a manifest and progress. That
-	// scoping is what makes a whole-job delete equivalent to the per-article
-	// clearing it replaces — a sweep over every job would resurrect the
-	// permanently failed articles of every NON-resident job as fetchable
-	// work, and the symptom would be a silent re-download storm rather than
-	// an error.
+	// One delete per RESIDENT job, naming the articles the loop above
+	// actually reset. The scoping to resident jobs is still load-bearing — a
+	// sweep over every job would resurrect the permanently failed articles of
+	// every NON-resident job as fetchable work, and the symptom would be a
+	// silent re-download storm rather than an error.
+	//
+	// What is no longer true is that a whole-job delete would do: since #426
+	// the reset skips a failed article whose file is already Complete, so the
+	// cleared set is a strict subset of the job's stored rows. Dropping the
+	// rest would leave that article failed in memory and unrecorded on disk,
+	// and the next restart would load it as outstanding work on a file
+	// ForEachUnfinishedArticle skips — the same strand the guard exists to
+	// prevent, one restart later.
 	//
 	// Best effort, matching resetForReload's own direction: this runs on a
 	// downloader reload, and a row that outlives it costs one wasted attempt
@@ -1668,9 +1689,9 @@ func (q *Queue) ClearAllEmitted() {
 	}
 	var failures []clearFailure
 	q.failedPersistMu.Lock()
-	for _, id := range reset {
-		if err := q.store.ClearFailedArticles(context.Background(), id); err != nil { //lockio: failedPersistMu exists to order exactly this delete against AckPermanentFailure's insert; see Queue.failedPersistMu
-			failures = append(failures, clearFailure{id: id, err: err})
+	for _, r := range reset {
+		if err := q.store.ClearFailedArticlesByIdx(context.Background(), r.id, r.arts); err != nil { //lockio: failedPersistMu exists to order exactly this delete against AckPermanentFailure's insert; see Queue.failedPersistMu
+			failures = append(failures, clearFailure{id: r.id, err: err})
 		}
 	}
 	q.failedPersistMu.Unlock()

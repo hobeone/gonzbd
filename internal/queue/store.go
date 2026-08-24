@@ -145,17 +145,40 @@ type Store interface {
 
 	// ClearFailedArticles removes every failed-article row for ONE job.
 	//
-	// It is the reversal of the above and there is no per-article form,
-	// because all THREE reversal sites clear exactly the articles whose
-	// failed bit is set — which is exactly this job's stored set. Two are
-	// in this package (Queue.ClearAllEmitted via JobProgress.resetForReload,
-	// and Queue.Retry via Job.ResetForRetry); the third is
-	// Application.RetryHistoryJob, which resets a rebuilt job outside the
-	// queue and so has to reach this method itself. It
-	// must be scoped to a job the caller is actually resetting: a sweep
+	// It is the wholesale reversal of the above, for the two sites that reset
+	// a job's articles WITHOUT exception: Queue.Retry via Job.ResetForRetry,
+	// and Application.RetryHistoryJob, which resets a rebuilt job outside the
+	// queue and so has to reach this method itself. For both, the articles
+	// whose failed bit is cleared are exactly this job's stored set, so a
+	// whole-job delete is equivalent to clearing them one at a time.
+	//
+	// It must be scoped to a job the caller is actually resetting: a sweep
 	// over every job would resurrect the permanently failed articles of
 	// every non-resident one as fetchable work.
+	//
+	// Queue.ClearAllEmitted used to be a third such site and is not one now —
+	// JobProgress.resetForReload retains the failed bit of an article whose
+	// file is already Complete (#426), so its in-memory reset is a strict
+	// subset of the stored set and this method would over-delete. It uses
+	// ClearFailedArticlesByIdx below.
 	ClearFailedArticles(ctx context.Context, jobID string) error
+
+	// ClearFailedArticlesByIdx removes the failed-article rows for exactly
+	// artIdxs within ONE job. It is the precise inverse of
+	// RecordFailedArticles, and is idempotent: an index with no stored row is
+	// not an error.
+	//
+	// It exists because Queue.ClearAllEmitted resets only SOME of a job's
+	// failed articles, so it must name them rather than clear the job. The
+	// caller passes the articles it actually reset; anything omitted keeps
+	// its row, which is what holds the stored set level with memory across a
+	// restart.
+	//
+	// It enumerates what to REMOVE rather than what to keep, and that is
+	// load-bearing rather than stylistic: a "delete everything except these"
+	// form cannot be chunked. Split across two statements, the second chunk's
+	// NOT IN would delete the rows the first chunk was keeping.
+	ClearFailedArticlesByIdx(ctx context.Context, jobID string, artIdxs []int32) error
 
 	// DeleteJobArtifacts removes the on-disk manifest for job id
 	// (manifests/<id>.json.gz). A missing file is not an error.
