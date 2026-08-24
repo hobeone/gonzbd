@@ -68,11 +68,12 @@ type ArticleResult struct {
 	// where the bytes go" without knowing which decoder produced it.
 	Offset int64
 
-	// CRC is the CRC32 of the decoded article data. It is recorded as the
-	// article's Class A fact, which a resume verifies the bytes on disk
-	// against, so every successful decode carries one: the yEnc path takes
-	// the decoder's own checksum over the decoded output, and the UU path
-	// computes one in decodePayload because the format supplies none.
+	// CRC is the CRC32 of the decoded article data. It travels with the
+	// article to the assembler, comes back in the drain, and is folded into
+	// the durable run the barrier records — so every successful decode carries
+	// one: the yEnc path takes the decoder's own checksum over the decoded
+	// output, and the UU path computes one in decodePayload because the format
+	// supplies none.
 	//
 	// Zero only when the article failed. A zero on a successful article
 	// means the bytes genuinely hash to zero.

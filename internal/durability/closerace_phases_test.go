@@ -44,17 +44,13 @@ func (s *lateCloseTarget) Sync(_ context.Context, idx int32) error {
 	return nil
 }
 
-func (s *lateCloseTarget) Stat(idx int32) (int64, int64, error) {
+func (s *lateCloseTarget) Stat(idx int32) (int64, error) {
 	if idx == 0 && s.closed {
-		return 0, 0, fmt.Errorf("assembler: job x file 0 is not open: %w", ErrFileNotOpen)
+		return 0, fmt.Errorf("assembler: job x file 0 is not open: %w", ErrFileNotOpen)
 	}
-	return 100, 1, nil
+	return 100, nil
 }
 
-func (s *lateCloseTarget) ArticleCount(int32) int { return 2 }
-func (s *lateCloseTarget) FileLocalOrdinal(_ int32, a int32) (int, bool) {
-	return int(a), int(a) < 2
-}
 func (s *lateCloseTarget) Confirm(_ context.Context, idx int32) {
 	s.confirmed = append(s.confirmed, idx)
 }
@@ -70,15 +66,16 @@ func (s *lateCloseTarget) Confirm(_ context.Context, idx int32) {
 // successfully before the race touched file 0 at all.
 //
 // The "stat" arm is the phase-3 entry to the same race: the close lands
-// between the fsync and the stat, which is a window buildExtent owns rather
-// than Run.
+// between the fsync and the stat, which is the third place in Run a closed
+// handle can be noticed — phase 3's own Stat rather than phase 1's Drain or
+// phase 2's Sync.
 func TestBarrier_ACloseAfterTheDrainDropsOnlyThatFile(t *testing.T) {
 	for _, closeAt := range []string{"sync", "stat"} {
 		t.Run("closed at "+closeAt, func(t *testing.T) {
 			stall := &recordingStall{}
 			ack := &recordingAcker{}
 			db := openTestDB(t)
-			b := NewBarrier(NewSQLiteFactLog(db), NewSQLiteExtentStore(db),
+			b := NewBarrier(NewSQLiteRunStore(db),
 				ack, stall, slog.New(slog.DiscardHandler))
 
 			tgt := &lateCloseTarget{closeAt: closeAt}
@@ -154,11 +151,11 @@ func (s *finalizeCloseTarget) Sync(context.Context, int32) error {
 	return nil
 }
 
-func (s *finalizeCloseTarget) Stat(int32) (int64, int64, error) {
+func (s *finalizeCloseTarget) Stat(int32) (int64, error) {
 	if s.closeOn == "stat" {
-		return 0, 0, fmt.Errorf("assembler: job x file 0 is not open: %w", ErrFileNotOpen)
+		return 0, fmt.Errorf("assembler: job x file 0 is not open: %w", ErrFileNotOpen)
 	}
-	return 100, 1, nil
+	return 100, nil
 }
 
 func (s *finalizeCloseTarget) Truncate(context.Context, int32, int64) error {
@@ -169,10 +166,6 @@ func (s *finalizeCloseTarget) Truncate(context.Context, int32, int64) error {
 	return nil
 }
 
-func (s *finalizeCloseTarget) ArticleCount(int32) int { return 1 }
-func (s *finalizeCloseTarget) FileLocalOrdinal(_ int32, a int32) (int, bool) {
-	return int(a), a == 0
-}
 func (s *finalizeCloseTarget) Confirm(context.Context, int32) {}
 
 // TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep pins the rule FinalizeFile
@@ -193,15 +186,15 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 	for _, closeOn := range []string{"sync", "stat", "truncate"} {
 		t.Run("closed on "+closeOn, func(t *testing.T) {
 			stall := &recordingStall{}
-			db := openTestDB(t)
-			fl := NewSQLiteFactLog(db)
-			if err := fl.Append(context.Background(), "job-1", []ArticleFact{
-				{ArtIdx: 0, FileIdx: 0, Offset: 0, Length: 10, CRC32: 1},
+			rs := NewSQLiteRunStore(openTestDB(t))
+			// A stored run, so the truncate bound is non-zero and the
+			// truncate arm is actually reached.
+			if _, err := rs.Commit(context.Background(), "job-1", []DurableArticle{
+				{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1},
 			}); err != nil {
 				t.Fatal(err)
 			}
-			b := NewBarrier(fl, NewSQLiteExtentStore(db),
-				&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
+			b := NewBarrier(rs, &recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 			tgt := &finalizeCloseTarget{closeOn: closeOn}
 			_, err := b.FinalizeFile(context.Background(), "job-1", 0, tgt)
@@ -237,10 +230,10 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 func TestBarrier_ARoutedFaultSaysSo(t *testing.T) {
 	stall := &recordingStall{}
 	db := openTestDB(t)
-	b := NewBarrier(NewSQLiteFactLog(db), NewSQLiteExtentStore(db),
+	b := NewBarrier(NewSQLiteRunStore(db),
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
-	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC, artCount: 4}
+	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC}
 	_, err := b.Run(context.Background(), "job-1", tgt)
 
 	if len(stall.stalled) == 0 {

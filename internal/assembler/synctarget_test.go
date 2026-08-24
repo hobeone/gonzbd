@@ -65,7 +65,7 @@ func TestHandleSyncOp_FilesReportsOnlyTheRequestedJob(t *testing.T) {
 // TestHandleSyncOp_UnknownFileIsAnErrorNotASilentSkip pins A2 for the
 // adapter's disagreement case. A file the barrier believes open but the worker
 // does not is a bookkeeping defect; skipping it silently would let the barrier
-// commit an extent for a file nothing wrote.
+// commit a durable run for a file nothing wrote.
 func TestHandleSyncOp_UnknownFileIsAnErrorNotASilentSkip(t *testing.T) {
 	a, open, _ := newSyncOpFixture(t)
 	for _, kind := range []syncOpKind{opDrain, opSync, opStat, opTruncate} {
@@ -83,7 +83,7 @@ func TestHandleSyncOp_DrainSyncStatTruncate(t *testing.T) {
 	a, open, key := newSyncOpFixture(t)
 	f := open[key]
 
-	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("0123456789")); err != nil {
+	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("0123456789"), 0); err != nil {
 		t.Fatal(err)
 	}
 	r := runSyncOp(t, a, open, syncOp{kind: opDrain, jobID: "job1", fileIdx: 0})
@@ -121,7 +121,7 @@ func TestSyncTargetSubmit_AfterStopDoesNotBlock(t *testing.T) {
 	if err := a.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	tgt := a.SyncTargetFor("job1", nil).(*jobSyncTarget)
+	tgt := a.SyncTargetFor("job1").(*jobSyncTarget)
 	if _, err := tgt.submit(context.Background(), syncOp{kind: opFiles}); err == nil {
 		t.Fatal("submit returned nil error after Stop; the barrier would block on a dead worker")
 	}
@@ -141,7 +141,7 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 2})
+	tgt := a.SyncTargetFor("job1")
 	if got := tgt.Files(); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("Files() = %v through the worker, want [0]", got)
 	}
@@ -159,47 +159,6 @@ func TestSyncTargetFor_RoundTripsThroughTheWorker(t *testing.T) {
 
 }
 
-// TestSyncTargetFor_NilArticleMapAnswersUnknown pins the safe direction of the
-// manifest dependency. The adapter has no manifest of its own, so with no
-// ArticleMap it must answer "I don't know" rather than invent an ordinal: the
-// barrier places durable bits by that ordinal, and a plausible-looking wrong
-// answer marks the wrong article durable and costs a silently short file.
-//
-// A false ordinal makes Barrier.buildExtent fail loudly on the first article,
-// which is the intended outcome — a barrier that cannot place an article must
-// stop, not guess.
-func TestSyncTargetFor_NilArticleMapAnswersUnknown(t *testing.T) {
-	a := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, slog.Default())
-	tgt := a.SyncTargetFor("job1", nil)
-
-	if got := tgt.ArticleCount(0); got != 0 {
-		t.Errorf("ArticleCount with no ArticleMap = %d, want 0", got)
-	}
-	if _, ok := tgt.FileLocalOrdinal(0, 3); ok {
-		t.Error("FileLocalOrdinal reported a usable ordinal with no ArticleMap; " +
-			"the barrier would place a durable bit from an invented position")
-	}
-}
-
-// TestSyncTargetFor_ArticleMapRejectsOutOfRangeArticles pins the false result
-// on the supplied-map path too. An article that does not belong to the file is
-// a bookkeeping defect, and reporting a usable ordinal for it would write the
-// bit into some other article's position.
-func TestSyncTargetFor_ArticleMapRejectsOutOfRangeArticles(t *testing.T) {
-	a := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, slog.Default())
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 3})
-
-	if got := tgt.ArticleCount(0); got != 3 {
-		t.Errorf("ArticleCount = %d, want 3", got)
-	}
-	if ord, ok := tgt.FileLocalOrdinal(0, 2); !ok || ord != 2 {
-		t.Errorf("FileLocalOrdinal(0,2) = (%d,%v), want (2,true)", ord, ok)
-	}
-	if _, ok := tgt.FileLocalOrdinal(0, 9); ok {
-		t.Error("FileLocalOrdinal accepted article 9 for a 3-article file")
-	}
-}
-
 // TestSyncTargetFiles_AfterStopReportsNoFiles pins Files' error branch. It has
 // no error return, so a dead worker has to surface as an empty set — the
 // barrier then fsyncs nothing and claims nothing, which is the safe answer.
@@ -211,43 +170,8 @@ func TestSyncTargetFiles_AfterStopReportsNoFiles(t *testing.T) {
 	if err := a.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.SyncTargetFor("job1", oneFileMap{n: 1}).Files(); len(got) != 0 {
+	if got := a.SyncTargetFor("job1").Files(); len(got) != 0 {
 		t.Errorf("Files() = %v after Stop, want empty", got)
-	}
-}
-
-// TestSyncTargetFor_NilArticleMapReportsNoFiles pins the inertness of a nil
-// ArticleMap, which is a data-loss guard rather than a tidiness rule.
-//
-// Answering "unknown" to the manifest questions is only conditionally safe. A
-// barrier that drains at least one article fails on the missing ordinal, but
-// one whose drain is empty never reaches the lookup: it sizes the durable
-// bitmap from ArticleCount == 0 and commits a zero-width bitmap over the
-// stored one, erasing every durable bit the job had. The next restart reads
-// nothing as durable and re-downloads everything — the ground L3 says a
-// restart must not lose.
-//
-// Reporting no files removes the case: the barrier iterates nothing, so there
-// is no extent to commit and nothing to erase.
-func TestSyncTargetFor_NilArticleMapReportsNoFiles(t *testing.T) {
-	dir := t.TempDir()
-	files := map[string]FileInfo{}
-	registerFile(t, dir, files, "job1", 0, 1000)
-	a := startAssembler(t, makeOpts(dir, files))
-
-	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0", Offset: 0, Data: []byte("abcd"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// The file IS open, so a target with a manifest sees it...
-	if got := a.SyncTargetFor("job1", oneFileMap{n: 1}).Files(); len(got) != 1 {
-		t.Fatalf("Files() with an ArticleMap = %v, want one file — the fixture is not exercising the guard", got)
-	}
-	// ...and one without a manifest must still report nothing.
-	if got := a.SyncTargetFor("job1", nil).Files(); len(got) != 0 {
-		t.Errorf("Files() with a nil ArticleMap = %v, want none: a barrier would size a "+
-			"zero-width bitmap from ArticleCount==0 and commit it over the stored durable bits", got)
 	}
 }
 

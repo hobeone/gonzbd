@@ -21,12 +21,8 @@ func (s *closedFileTarget) Drain(context.Context, int32) ([]WrittenArticle, erro
 	return nil, fmt.Errorf("assembler: job x file 0 is not open: %w", ErrFileNotOpen)
 }
 func (s *closedFileTarget) Sync(context.Context, int32) error { return nil }
-func (s *closedFileTarget) Stat(int32) (int64, int64, error)  { return 100, 1, nil }
-func (s *closedFileTarget) ArticleCount(int32) int            { return 2 }
-func (s *closedFileTarget) FileLocalOrdinal(_ int32, a int32) (int, bool) {
-	return int(a), int(a) < 2
-}
-func (s *closedFileTarget) Confirm(context.Context, int32) {}
+func (s *closedFileTarget) Stat(int32) (int64, error)         { return 100, nil }
+func (s *closedFileTarget) Confirm(context.Context, int32)    {}
 
 // TestBarrier_ADeliberatelyClosedFileDoesNotStallTheJob pins that losing a
 // file to an ordinary close is not a storage fault.
@@ -45,7 +41,7 @@ func (s *closedFileTarget) Confirm(context.Context, int32) {}
 // sync before closing, so there is nothing left for this barrier to do.
 func TestBarrier_ADeliberatelyClosedFileDoesNotStallTheJob(t *testing.T) {
 	stall := &recordingStall{}
-	b := NewBarrier(NewSQLiteFactLog(openTestDB(t)), NewSQLiteExtentStore(openTestDB(t)),
+	b := NewBarrier(NewSQLiteRunStore(openTestDB(t)),
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 	tgt := &closedFileTarget{}

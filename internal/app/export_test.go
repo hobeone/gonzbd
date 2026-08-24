@@ -190,7 +190,7 @@ func (a *Application) ForceStopWorkers() {
 //
 // The cadence tests need to tell "the barrier fired" from "the barrier had
 // nothing to do", and every externally visible effect of a barrier — an ack, a
-// committed extent — is absent in both cases.
+// committed run — is absent in both cases.
 func (a *Application) BarrierRuns() int64 { return a.barrierRuns.Load() }
 
 // Assembler returns the internal assembler for testing.

@@ -200,10 +200,10 @@ type queueSlot struct {
 	//
 	// Neither figure can be moved to the other's unit without breaking what
 	// it exists for. bytes_durable pairs with size/sizeleft/mb, which are the
-	// encoded NZB figures a client renders beside it, and reading it from
-	// file_extents.bytes_durable instead -- a decoded figure, and confusingly
-	// the same name -- is the exact substitution docs/queue-lifecycle.md
-	// records as having overstated every non-resident job's remaining bytes.
+	// encoded NZB figures a client renders beside it, and summing the
+	// durability record's lengths instead -- a decoded figure -- is the exact
+	// substitution docs/queue-lifecycle.md records as having overstated every
+	// non-resident job's remaining bytes.
 	// bytes_pending feeds B1's volume bound, which measures rework at risk
 	// and is therefore about bytes on disk by definition.
 	//
@@ -467,8 +467,8 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		StallReason:       cp.StallReason,
 		// From the job's own progress rather than a second snapshot: on this
 		// design a downloaded byte IS a durable byte, because the only things
-		// that mark an article Done are the barrier's ack and a replay of a
-		// committed extent cache. That also fixes its unit as the encoded one
+		// that mark an article Done are the barrier's ack and a replay of the
+		// recorded runs. That also fixes its unit as the encoded one
 		// -- see the field doc for why it is not the same unit as
 		// BytesPending below, and why neither can move.
 		BytesDurable:    app.DurableBytesOf(p),

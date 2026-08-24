@@ -19,7 +19,7 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	w := newFileWriter(fh, path, key, newWriteCache(0))
-	if err := w.Accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA")); err != nil {
+	if err := w.Accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA"), 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	return w
@@ -30,24 +30,17 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 //
 // Sync discarded the report the moment the fsync returned, but the barrier's
 // order is drain-all, sync-all, build, then Commit and AckDurable. Every
-// failure AFTER the fsync — a Stat timeout, a busy ExtentStore.Commit, an
+// failure AFTER the fsync — a Stat timeout, a failed RunStore.Commit, an
 // AckDurable answering ErrJobNotResident — therefore lost the report exactly as
 // it did before the retention existed. The reported field's own doc claimed
-// coverage of "the sync, the extent commit, the truncate"; only the first was
+// coverage of "the sync, the run commit, the truncate"; only the first was
 // real.
 //
 // Losing it is not losing the bytes, but it is losing the file. Those articles
-// keep their bytes on disk and are never acked and never earn a durable bit,
+// keep their bytes on disk and are never acked and never named by a run,
 // and a redelivery is dropped by handleSuccessArticle's seenDone check with no
 // write and no partsWritten increment — so the file cannot complete for the
 // life of the handle.
-//
-// The two guards in FinalizeFile do not save it either. appendArticleFacts and
-// ExtentStore.Commit write the same SQLite database, so a single busy window
-// can drop an article's Class A fact AND fail the barrier's commit after Sync
-// cleared the report. That article is then invisible to durableExtent and
-// recordedExtent alike, neither missing nor unrecorded fires, and the truncate
-// destroys its bytes.
 func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
 	w := newWrittenFileWriter(t)
 
@@ -86,7 +79,7 @@ func TestDrainReport_SurvivesAFailureAfterTheSync(t *testing.T) {
 // TestDrainReport_IsReleasedOnceTheCycleIsConfirmed pins the other side, which
 // is what keeps the retained set bounded: a confirmed cycle must drop its
 // report, or every later Drain re-reports every article ever written to the
-// file and buildExtent's work grows without bound.
+// file and the barrier's per-cycle commit grows without bound.
 func TestDrainReport_IsReleasedOnceTheCycleIsConfirmed(t *testing.T) {
 	w := newWrittenFileWriter(t)
 
@@ -112,7 +105,7 @@ func TestDrainReport_IsReleasedOnceTheCycleIsConfirmed(t *testing.T) {
 // TestJobSyncTargetConfirm_SwallowsAStoppedAssembler pins that a Confirm which
 // cannot reach the worker is not an error anyone has to handle.
 //
-// It records work that already succeeded — the extent is committed and the
+// It records work that already succeeded — the runs are committed and the
 // articles are acked — so there is no recovery a caller could perform. What a
 // missed Confirm actually costs is one redundant re-report on the next Drain,
 // which R12 requires the apply to absorb. Returning an error here would invent
@@ -130,6 +123,6 @@ func TestJobSyncTargetConfirm_SwallowsAStoppedAssembler(t *testing.T) {
 	// A stopped assembler answers ErrAssemblerStopped to every submit. The
 	// requirement is that this returns quietly rather than panicking or
 	// blocking — it has no error to return by design.
-	tgt := a.SyncTargetFor("job1", oneFileMap{n: 1})
+	tgt := a.SyncTargetFor("job1")
 	tgt.Confirm(t.Context(), 0)
 }

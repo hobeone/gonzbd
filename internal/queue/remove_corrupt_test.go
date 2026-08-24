@@ -11,17 +11,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// countDurabilityRows returns how many Class A facts and Class B extents the
+// countDurabilityRows returns how many durable runs and failed-article rows the
 // database still holds for a job.
-func countDurabilityRows(t *testing.T, db *sql.DB, jobID string) (facts, extents int) {
+func countDurabilityRows(t *testing.T, db *sql.DB, jobID string) (runs, failed int) {
 	t.Helper()
-	if err := db.QueryRow(`SELECT COUNT(*) FROM article_facts WHERE job_id = ?`, jobID).Scan(&facts); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM durable_runs WHERE job_id = ?`, jobID).Scan(&runs); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM file_extents WHERE job_id = ?`, jobID).Scan(&extents); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM failed_articles WHERE job_id = ?`, jobID).Scan(&failed); err != nil {
 		t.Fatal(err)
 	}
-	return facts, extents
+	return runs, failed
 }
 
 // TestGet_CorruptManifestTakesTheDurabilityRowsWithTheJob pins the self-healing
@@ -29,15 +29,16 @@ func countDurabilityRows(t *testing.T, db *sql.DB, jobID string) (facts, extents
 //
 // Get removes a job whose manifest it cannot read, and that removal is the end
 // of the job: there is no queue row left, and no history entry is created, so
-// nothing later arrives to collect anything. article_facts and file_extents
+// nothing later arrives to collect anything. durable_runs and failed_articles
 // are keyed by job ID with no foreign key to jobs, so before this they simply
 // stayed — one set per corrupted job, forever.
 //
 // Dropping them is safe here specifically because the manifest is what is
-// gone. Every Class A fact is keyed by a global article index that only a
-// manifest can interpret, so there is nothing left to read them against. That
+// gone. Every durable_runs and failed_articles row is keyed by a global
+// article index that only a manifest can interpret, so there is nothing left
+// to read them against. That
 // is why this is not done in Remove generally: Remove also runs on the
-// queue-to-history transition, where a FAILED job's facts are retained on
+// queue-to-history transition, where a FAILED job's runs are retained on
 // purpose for its retry.
 func TestGet_CorruptManifestTakesTheDurabilityRowsWithTheJob(t *testing.T) {
 	store, dir, db := setupResidencyTestStoreWithDB(t)
@@ -50,23 +51,17 @@ func TestGet_CorruptManifestTakesTheDurabilityRowsWithTheJob(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	exts := durability.NewSQLiteExtentStore(db)
-	facts := durability.NewSQLiteFactLog(db)
-	if err := facts.Append(ctx, job.ID, []durability.ArticleFact{
+	if _, err := durability.NewSQLiteRunStore(db).Commit(ctx, job.ID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	bm := durability.NewBitmap(2)
-	bm.Set(0)
-	if err := exts.Commit(ctx, job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: bm, BytesDurable: 100, Size: 100, ModTimeNs: 1},
-	}); err != nil {
+	if err := store.RecordFailedArticles(ctx, job.ID, []int32{1}); err != nil {
 		t.Fatal(err)
 	}
-	if f, e := countDurabilityRows(t, db, job.ID); f != 1 || e != 1 {
-		t.Fatalf("fixture wrote %d facts and %d extents, want 1 and 1; the test would "+
-			"pass vacuously against rows that were never there", f, e)
+	if r, f := countDurabilityRows(t, db, job.ID); r != 1 || f != 1 {
+		t.Fatalf("fixture wrote %d runs and %d failed rows, want 1 and 1; the test would "+
+			"pass vacuously against rows that were never there", r, f)
 	}
 
 	// Corrupt the manifest so Get self-heals.
@@ -78,11 +73,11 @@ func TestGet_CorruptManifestTakesTheDurabilityRowsWithTheJob(t *testing.T) {
 		t.Fatal("Get returned nil error for an unreadable manifest")
 	}
 
-	f, e := countDurabilityRows(t, db, job.ID)
-	if f != 0 || e != 0 {
-		t.Errorf("after the self-healing removal the job still has %d facts and %d extents; "+
-			"no queue row and no history entry remain, so nothing will ever collect them "+
-			"and they accumulate one set per corrupted job", f, e)
+	r, f := countDurabilityRows(t, db, job.ID)
+	if r != 0 || f != 0 {
+		t.Errorf("after the self-healing removal the job still has %d runs and %d failed "+
+			"rows; no queue row and no history entry remain, so nothing will ever collect "+
+			"them and they accumulate one set per corrupted job", r, f)
 	}
 }
 
@@ -99,29 +94,24 @@ func TestRemoveCorrupt_SweepsEvenWhenTheJobRowIsAlreadyGone(t *testing.T) {
 	store, _, db := setupResidencyTestStoreWithDB(t)
 	ctx := context.Background()
 
-	facts := durability.NewSQLiteFactLog(db)
-	if err := facts.Append(ctx, "ghost-job", []durability.ArticleFact{
+	if _, err := durability.NewSQLiteRunStore(db).Commit(ctx, "ghost-job", []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	bm := durability.NewBitmap(1)
-	bm.Set(0)
-	if err := durability.NewSQLiteExtentStore(db).Commit(ctx, "ghost-job", []durability.FileExtent{
-		{FileIdx: 0, Durable: bm, BytesDurable: 100, Size: 100, ModTimeNs: 1},
-	}); err != nil {
+	if err := store.RecordFailedArticles(ctx, "ghost-job", []int32{1}); err != nil {
 		t.Fatal(err)
 	}
-	if f, e := countDurabilityRows(t, db, "ghost-job"); f != 1 || e != 1 {
-		t.Fatalf("fixture wrote %d facts and %d extents, want 1 and 1", f, e)
+	if r, f := countDurabilityRows(t, db, "ghost-job"); r != 1 || f != 1 {
+		t.Fatalf("fixture wrote %d runs and %d failed rows, want 1 and 1", r, f)
 	}
 
 	store.removeCorrupt(ctx, "ghost-job")
 
-	if f, e := countDurabilityRows(t, db, "ghost-job"); f != 0 || e != 0 {
-		t.Errorf("removeCorrupt left %d facts and %d extents behind for a job with no queue "+
-			"row; Remove's ErrNotFound must not stop the sweep, because these rows are "+
-			"keyed by job ID alone and are precisely what outlives the row", f, e)
+	if r, f := countDurabilityRows(t, db, "ghost-job"); r != 0 || f != 0 {
+		t.Errorf("removeCorrupt left %d runs and %d failed rows behind for a job with no "+
+			"queue row; Remove's ErrNotFound must not stop the sweep, because these rows "+
+			"are keyed by job ID alone and are precisely what outlives the row", r, f)
 	}
 }
 

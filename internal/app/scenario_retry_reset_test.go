@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -66,7 +67,21 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	// One article succeeds and one fails. The successful one is what makes
 	// the assertions below non-vacuous: it must survive the retry, which
 	// only a loaded overlay can achieve.
+	//
+	// The successful one is RECORDED as a durable run as well as installed in
+	// memory, because the retry overlay derives article resolution from the
+	// record rather than from a column the queue re-serialises. Without the
+	// run the retry rebuilds the job with nothing done, and the "article 0
+	// survived" assertion below fails for a reason that has nothing to do with
+	// the reset it is guarding. ackFailed needs no equivalent: it goes through
+	// AckPermanentFailure, which writes its own failed_articles row.
 	ackDone(t, q, jobID, "a1@t")
+	if _, err := durability.NewSQLiteRunStore(h.repo.DB()).Commit(ctx, jobID,
+		[]durability.DurableArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+		}); err != nil {
+		t.Fatalf("record the durable run: %v", err)
+	}
 	ackFailed(t, q, jobID, "a2@t")
 	seeded.MarkDownloadFinished(finished)
 	if err := q.Save(h.adminDir); err != nil {

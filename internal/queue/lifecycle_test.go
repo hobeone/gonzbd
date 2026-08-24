@@ -764,9 +764,9 @@ func TestIsComplete_AbsentFileStateIsNotComplete(t *testing.T) {
 	})
 }
 
-// ---------- SeedFromExtents (batch done, replaces MarkArticlesDone) ----------
+// ---------- SeedFromRuns (batch done, replaces MarkArticlesDone) ----------
 
-func TestSeedFromExtents_Batch(t *testing.T) {
+func TestSeedFromRuns_Batch(t *testing.T) {
 	t.Parallel()
 	q := New()
 	j := makeMultiFileJob(t, "batch-done", 1, 4)
@@ -802,14 +802,14 @@ func TestSeedFromExtents_Batch(t *testing.T) {
 	})
 
 	t.Run("empty batch is no-op", func(t *testing.T) {
-		if err := q.SeedFromExtents(j.ID, nil); err != nil {
+		if err := q.SeedFromRuns(j.ID, nil); err != nil {
 			t.Errorf("empty batch should not error: %v", err)
 		}
 	})
 
 	t.Run("error on nonexistent job", func(t *testing.T) {
-		exts := []durability.FileExtent{{FileIdx: 0, Durable: durability.NewBitmap(4)}}
-		if err := q.SeedFromExtents("bogus", exts); err == nil {
+		runs := []durability.Run{{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Length: 1}}
+		if err := q.SeedFromRuns("bogus", runs); err == nil {
 			t.Error("expected error for nonexistent job")
 		}
 	})

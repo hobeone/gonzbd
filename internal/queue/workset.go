@@ -20,10 +20,19 @@ import (
 // makes such a proof inert, so it is part of the invariant rather than a
 // defensive nicety. See the DurableProof type doc.
 //
-// This gate covers THIS door only. SeedFromExtents and ReplaceFromResume also
+// This gate covers THIS door only. SeedFromRuns and ReplaceFromRuns also
 // reach markDone without a proof, deliberately — their evidence is stable
 // storage, which a proof cannot express. Do not read "AckDurable is
 // proof-gated" as "nothing marks an article done without a barrier".
+//
+// Both of those doors are narrower than they were, though, and it is worth
+// saying exactly how far that goes. durability.Run is an exported struct with
+// exported fields, so ANY package can build one — the narrowing is not that
+// the type is unforgeable. It is that a Run carries an article RANGE and a
+// byte range that runsCoverage validates against the job's own manifest, where
+// the FileExtent these replaced carried a fully exported, settable Bitmap
+// whose set bits were taken at face value. A caller that fabricates a Run
+// still has to name articles the manifest has.
 //
 // Before this design the assembler could ack from six places, each
 // independently responsible for knowing that acceptance into a buffer is not
@@ -91,6 +100,24 @@ func (q *Queue) AckDurable(p durability.DurableProof) error {
 // and is counted as damage. Routing a full disk here would burn the article's
 // retry budget, inflate the job's failed-byte count and degrade its reported
 // health (R21).
+//
+// It is the single WRITE site of failed_articles, and its persistence runs
+// below the lock rather than inside it, because the project bans I/O under one
+// and this method's whole body used to run under q.mu.
+//
+// Running below the lock is what makes the write raceable against a reversal
+// that also runs below the lock, so it takes q.failedPersistMu and re-checks
+// the reload generation it captured under q.mu before committing anything.
+// Queue's failedPersistMu doc carries the full argument; the short version is
+// that a row surviving its own in-memory bit is re-derived as Failed+Done on
+// the next promotion and the article is never fetched again.
+//
+// A persist failure is logged, not returned, and R10 is the licence: a
+// permanent failure asserts nothing about disk, and losing one in a crash is
+// safe because the restart re-attempts an article that fails again, costing
+// one request. That is the same reasoning that lets this method take no proof.
+// The REVERSAL is the opposite direction and is not best-effort anywhere — see
+// SQLiteStore.ClearFailedArticles.
 func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 	if len(artIdxs) == 0 {
 		return nil
@@ -103,12 +130,17 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 	}
 	nArt := job.manifest.NumArticles()
 	var firstTime, invalidCount int
+	// Only the in-range indices are persisted. An out-of-range one is a
+	// numbering defect and a row for it could never be interpreted against any
+	// manifest; it is counted and warned about below instead.
+	persist := make([]int32, 0, len(artIdxs))
 	for _, idx := range artIdxs {
 		i := int(idx)
 		if i < 0 || i >= nArt {
 			invalidCount++
 			continue
 		}
+		persist = append(persist, idx)
 		if job.progress.markFailed(job.manifest, i) {
 			firstTime++
 		}
@@ -130,8 +162,42 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 		}
 		q.notifyLocked()
 	}
+	// Captured under the same lock hold as the in-memory marks above, so the
+	// two cannot straddle a reversal. See the failedPersistMu/failedGen doc on
+	// Queue for why an unordered write here is a defect rather than a lost
+	// optimisation.
+	gen := q.failedGen.Load()
 	q.mu.Unlock()
 	// --- No lock held below this line ---
+	var overtaken bool
+	var persistErr error
+	if len(persist) > 0 && q.store != nil {
+		q.failedPersistMu.Lock()
+		// A reversal that ran between the marks above and this write has
+		// already cleared the bits these rows would describe. Writing them now
+		// would leave rows with nothing in memory behind them, and the next
+		// RestoreJobProgress would re-derive the articles as Failed+Done —
+		// never re-fetched, which is the outcome the reversal exists to
+		// prevent. Dropping the write instead costs one re-request of an
+		// article that fails again (R10).
+		if overtaken = q.failedGen.Load() != gen; !overtaken {
+			persistErr = q.store.RecordFailedArticles(context.Background(), jobID, persist) //lockio: failedPersistMu exists to serialise exactly this call against the reversals in ClearAllEmitted and Retry; see Queue.failedPersistMu
+		}
+		q.failedPersistMu.Unlock()
+	}
+	// Reporting is deliberately outside failedPersistMu: the mutex's whole job
+	// is ordering the store call against a delete, and a logging handler is
+	// neither.
+	if overtaken {
+		q.log.Info("dropping a permanently-failed-article write that a reset overtook; "+
+			"the articles will be re-attempted and fail again",
+			"job", jobID, "count", len(persist))
+	}
+	if persistErr != nil {
+		q.log.Warn("could not persist permanently failed articles; they will be "+
+			"re-attempted after a restart and fail again",
+			"job", jobID, "count", len(persist), "err", persistErr)
+	}
 	if invalidCount > 0 {
 		q.log.Warn("AckPermanentFailure: out-of-bounds article index received",
 			"job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
@@ -146,36 +212,35 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 	return nil
 }
 
-// SeedFromExtents installs a resumed job's durable article bits, so a restart
-// does not re-fetch bytes an earlier run already got onto stable storage (L3).
+// SeedFromRuns installs a job's stored durable runs into its live work set, so
+// a restart does not re-fetch bytes an earlier run already got onto stable
+// storage (L3).
 //
-// The extents are Class B — a cache the barrier committed after the fsync that
-// made its claims true — and this is the point at which that cache becomes the
-// running job's belief about what is outstanding.
+// A run is written only after the fsync that makes its bytes durable, and this
+// is the point at which that record becomes the running job's belief about
+// what is outstanding.
 //
 // It is ADDITIVE, deliberately and permanently: it only ever SETS a bit. An
 // article this does not name keeps whatever state it already had, which for a
-// restored job is whatever job_files.articles_done recorded.
+// restored job is whatever Store.RestoreJobProgress derived.
 //
 // That is the right contract for this method's one caller and the wrong one
 // for the other, which is why there are two. Application.reevaluateStall's
-// phase 3 replays extents LOADED FROM THE STORE after a stall recovery: it is
-// re-delivering an ack whose fsync already landed, and it has verified nothing
-// about any file. A clear there would discard the acks this process made since
-// the last commit — precisely the bits that phase exists to preserve.
+// phase 3 replays runs LOADED FROM THE STORE after a stall recovery: it is
+// re-delivering an ack whose fsync already landed, and it has stat'ed nothing.
+// A clear there would discard the acks this process made since the last
+// commit — precisely the bits that phase exists to preserve.
 //
-// The startup resume sweep is the caller that HAS just read the file's bytes,
-// and it uses ReplaceFromResume instead. Do not merge the two back into one
-// entry point, with or without a flag: the union of the two contracts is
-// either #362 (a stale bit outliving the recomputation that disproved it) or a
-// stall recovery that throws away live acks. TestSeedFromExtents_StaysAdditive
-// is the guard on this half.
+// The startup resume sweep is the caller that HAS stat'ed each file, and it
+// uses ReplaceFromRuns instead. Do not merge the two back into one entry
+// point, with or without a flag: the union of the two contracts is either #362
+// (a stale bit outliving the check that disproved it) or a stall recovery that
+// throws away live acks. TestSeedFromRuns_StaysAdditive is the guard on this
+// half, and it reddens when the two are merged.
 //
-// Two indexing rules make this safe, and both are easy to get wrong in a way
-// no range check catches. They are shared with ReplaceFromResume through
-// fileDurableBitmap; see its doc.
-func (q *Queue) SeedFromExtents(jobID string, exts []durability.FileExtent) error {
-	if len(exts) == 0 {
+// The indexing rule that makes both safe lives in runsCoverage; see its doc.
+func (q *Queue) SeedFromRuns(jobID string, runs []durability.Run) error {
+	if len(runs) == 0 {
 		return nil
 	}
 	q.mu.Lock()
@@ -183,53 +248,56 @@ func (q *Queue) SeedFromExtents(jobID string, exts []durability.FileExtent) erro
 
 	job, err := q.residentJob(jobID)
 	if err != nil {
-		return fmt.Errorf("queue: SeedFromExtents %s: %w", jobID, err)
+		return fmt.Errorf("queue: SeedFromRuns %s: %w", jobID, err)
 	}
 	m := job.manifest
-	for _, e := range exts {
-		bm, lo, n, err := fileDurableBitmap(m, e)
+	for _, r := range runs {
+		lo, hi, err := runsCoverage(m, r)
 		if err != nil {
-			return fmt.Errorf("queue: SeedFromExtents %s: %w", jobID, err)
+			return fmt.Errorf("queue: SeedFromRuns %s: %w", jobID, err)
 		}
-		for ord := range n {
-			if bm.Get(ord) {
-				job.progress.markDone(m, lo+ord)
-			}
+		for i := lo; i <= hi; i++ {
+			job.progress.markDone(m, i)
 		}
 	}
 	q.dirty.Store(true)
 	return nil
 }
 
-// ReplaceFromResume installs what a fresh resume PROVED about a job's files,
-// in place of what was recorded about them. It is the authoritative half of
-// the pair SeedFromExtents documents, and it closes #362.
+// ReplaceFromRuns installs what a fresh resume established about a job's
+// files, in place of what was recorded about them. It is the authoritative
+// half of the pair SeedFromRuns documents, and it closes #362.
 //
 // # Why an authority is needed at all
 //
-// Store.RestoreJobProgress marks done every article in job_files.articles_done
-// before any of this runs, and that column is a BELIEF a previous process
-// wrote. durability.Resumer answers the same question from the file's bytes,
-// and S4 makes its answer correct by definition: "where it disagrees with a
-// recomputation, the recomputation is correct". With only an additive entry
-// point the belief always won, so a truncated or deleted partial finished as a
-// complete file with a zero-filled hole in it and no warning (#362).
+// Store.RestoreJobProgress derives every article's state from the SAME runs
+// before any of this dispatches, so on the ordinary path the two agree. They
+// diverge in exactly one case, and it is the case that matters:
+// durability.Resumer stats each file and DELETES the runs of a file shorter
+// than they claim. The sweep therefore hands back a smaller set than the
+// restore installed, and those articles have to go back to Outstanding. With
+// only an additive entry point the earlier belief always won, so a truncated
+// or deleted partial finished as a complete file with a zero-filled hole in it
+// and no warning (#362).
 //
 // # What it replaces, and what it deliberately does not
 //
-// For every file named by an extent, an article the resume did not verify goes
-// back to Outstanding — S3's absence of evidence read as absence, rather than
-// as evidence. ResumeResult.Restart needs no case of its own: a missing file
-// yields an empty bitmap, and an empty bitmap already says "nothing here is
-// proven".
+// For every file the sweep named, an article no surviving run covers goes back
+// to Outstanding — S3's absence of evidence read as absence, rather than as
+// evidence. ResumeResult.Restart needs no case of its own: a discarded file
+// comes back with no runs at all, which already says "nothing here is
+// recorded".
 //
 // Two things are NOT touched, and both are limits on what the caller's
 // evidence covers rather than concessions:
 //
-//   - A file with no extent in exts keeps its state entirely. The startup
-//     sweep omits a file it never resumed — one whose name was never resolved,
-//     one it did not reach before a storage fault, and every file of a job
-//     past downloading — and an omission is silence, not a finding of absence.
+//   - A file not named in files keeps its state entirely. The startup sweep
+//     omits a file it never resumed — one whose name was never resolved, one
+//     it did not reach before a storage fault, and every file of a job past
+//     downloading — and an omission is silence, not a finding of absence.
+//     This is why the file indices are carried separately from the runs: a
+//     file whose runs were all discarded contributes NO run, and would be
+//     indistinguishable from a file the sweep never looked at.
 //   - A permanently failed article is never cleared. See markNotDone: its
 //     bytes were never on disk, so their absence is the recorded outcome and
 //     not new information.
@@ -266,18 +334,18 @@ func (q *Queue) SeedFromExtents(jobID string, exts []durability.FileExtent) erro
 // unconditionally rather than only when something changed: after a pure
 // markDone pass it is a no-op by construction, and a condition whose two arms
 // agree is untestable branching.
-func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) error {
-	if len(exts) == 0 {
+func (q *Queue) ReplaceFromRuns(jobID string, files []int32, runs []durability.Run) error {
+	if len(files) == 0 {
 		return nil
 	}
 	q.mu.Lock()
 	// A PAUSED job is not resident, and it is exactly the job that needs this.
 	//
 	// The startup sweep used to skip it, so #362 survived in that branch: its
-	// disproven Done bits were never corrected, the next checkpoint re-committed
-	// them from the stored bitmap priorExtent ORs into, and the file finalized
-	// over a hole. It also defeated stallLost's own "restart gonzbd to resume
-	// this job" instruction, since Stall leaves the job Paused.
+	// disproven Done bits were never corrected, the next checkpoint re-recorded
+	// them, and the file finalized over a hole. It also defeated stallLost's own
+	// "restart gonzbd to resume this job" instruction, since Stall leaves the
+	// job Paused.
 	//
 	// Hydrated here for the duration and evicted again before returning, so
 	// the job's residency is unchanged from outside. Startup is the moment
@@ -289,38 +357,71 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 		j, ok := q.byID[jobID]
 		if !ok {
 			q.mu.Unlock()
-			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, err)
+			return fmt.Errorf("queue: ReplaceFromRuns %s: %w", jobID, err)
 		}
 		if hErr := q.hydrateJobLocked(j, jobID); hErr != nil { //lockio: reads the manifest for a non-resident job; startup only, see the comment above
 			q.mu.Unlock()
-			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, hErr)
+			return fmt.Errorf("queue: ReplaceFromRuns %s: %w", jobID, hErr)
 		}
 		if j.manifest == nil {
 			q.mu.Unlock()
-			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, err)
+			return fmt.Errorf("queue: ReplaceFromRuns %s: %w", jobID, err)
 		}
 		job, evictAfter = j, j
 	}
-	m := job.manifest
-	var cleared int
-	for _, e := range exts {
-		bm, lo, n, bmErr := fileDurableBitmap(m, e)
-		if bmErr != nil {
-			q.mu.Unlock()
-			return fmt.Errorf("queue: ReplaceFromResume %s: %w", jobID, bmErr)
+	// abandonLocked undoes this call's hydration and releases the lock, in
+	// that order, for the paths that give up before the write-back.
+	//
+	// It exists because the eviction at the bottom is the ONLY one, and the
+	// two validation returns below jumped over it — a job this call hydrated
+	// for the duration stayed resident with its manifest attached, against a
+	// residency budget docs/queue-lifecycle.md exists to bound. A malformed
+	// run or an out-of-range file index is a bad argument, not a reason to
+	// promote a job nobody asked to promote.
+	abandonLocked := func() {
+		if evictAfter != nil {
+			q.evictJobLocked(evictAfter)
 		}
+		q.mu.Unlock()
+	}
+
+	m := job.manifest
+	// Covered is built over the WHOLE job before any file is walked, because a
+	// run names articles globally and the loop below asks the question per
+	// article rather than per run. Runs for a file the sweep did not name are
+	// simply never consulted — the file loop is what bounds the authority.
+	covered := make([]bool, m.NumArticles())
+	for _, r := range runs {
+		lo, hi, cErr := runsCoverage(m, r)
+		if cErr != nil {
+			abandonLocked()
+			return fmt.Errorf("queue: ReplaceFromRuns %s: %w", jobID, cErr)
+		}
+		for i := lo; i <= hi; i++ {
+			covered[i] = true
+		}
+	}
+	var cleared int
+	for _, fi := range files {
+		f := int(fi)
+		if f < 0 || f >= m.NumFiles() {
+			abandonLocked()
+			return fmt.Errorf("queue: ReplaceFromRuns %s: file index %d out of range (%d files)",
+				jobID, f, m.NumFiles())
+		}
+		lo, hi := m.FileRange(f)
 		fileCleared := 0
-		for ord := range n {
-			if bm.Get(ord) {
-				job.progress.markDone(m, lo+ord)
+		for i := lo; i < hi; i++ {
+			if covered[i] {
+				job.progress.markDone(m, i)
 				continue
 			}
-			if job.progress.markNotDone(lo + ord) {
+			if job.progress.markNotDone(i) {
 				fileCleared++
 			}
 		}
 		if fileCleared > 0 {
-			fp := &job.progress.files[int(e.FileIdx)]
+			fp := &job.progress.files[f]
 			fp.Complete = false
 			fp.AssembledCRC32 = 0
 			cleared += fileCleared
@@ -332,12 +433,14 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 	// A cleared bit must reach the store before this returns.
 	//
 	// Marking the dirty flag is not enough. Every re-hydration in this package
-	// re-reads job_files.articles_done unconditionally — PromoteNext,
-	// hydrateSnapshot, SetStatus — so until the row is rewritten, any eviction
-	// and re-promotion refills the corrected progress from the pre-correction
-	// row and the disproven article is Done again, carrying that file's
-	// Complete flag and AssembledCRC32 back with it. The first periodic save
-	// can be a whole checkpoint interval away.
+	// re-derives the article state from the durability record unconditionally
+	// — PromoteNext, hydrateSnapshot, SetStatus all reach
+	// Store.RestoreJobProgress — and the row that carries the CORRECTION is
+	// job_files itself: Complete and assembled_crc32 are cleared in memory
+	// here and nowhere else. Until that row is rewritten, any eviction and
+	// re-promotion brings the file's Complete flag and AssembledCRC32 back,
+	// over articles this sweep has just returned to Outstanding. The first
+	// periodic save can be a whole checkpoint interval away.
 	//
 	// The window is reached without any concurrency: resumeAllJobs calls this
 	// and then Stall on the same job whenever another of its files faulted,
@@ -353,7 +456,7 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 	// same reason (#260); this generalizes it to the authoritative sweep.
 	var persistErr error
 	if cleared > 0 && q.store != nil {
-		persistErr = q.store.Update(context.Background(), job) //lockio: persists the cleared articles_done before any re-hydration can re-read the stale row
+		persistErr = q.store.Update(context.Background(), job) //lockio: persists the cleared Complete/CRC before any re-hydration can re-read the stale row
 	}
 	// Put the job back the way it was found. Done AFTER the persist, so the
 	// corrected row is written from the hydrated job rather than from one this
@@ -375,50 +478,39 @@ func (q *Queue) ReplaceFromResume(jobID string, exts []durability.FileExtent) er
 		// ground it has already lost is safe. resumeAllJobs treats a failure
 		// here as "the job re-fetches what it could not be told it has", which
 		// is the safe direction; silently succeeding is not.
-		return fmt.Errorf("queue: ReplaceFromResume %s: persist cleared articles: %w", jobID, persistErr)
+		return fmt.Errorf("queue: ReplaceFromRuns %s: persist cleared articles: %w", jobID, persistErr)
 	}
 	return nil
 }
 
-// fileDurableBitmap re-derives one extent's durable bitmap at the file's true
-// article count, and returns it with the file's first global article index and
-// its article count.
+// runsCoverage returns the inclusive GLOBAL article range one run accounts
+// for, after checking it against the file the run claims.
 //
-// Two indexing rules live here because both seeding entry points need them and
-// both are easy to get wrong in a way no range check catches:
+// It exists because both seeding entry points need the same check and it is
+// easy to get wrong in a way no bounds check downstream catches. A run's
+// FirstArtIdx and LastArtIdx are already global — that is exactly what
+// replaced the file-local ordinal conversion the deleted durable bitmap
+// needed — so there is no arithmetic here, only the verification that the pair
+// really lies inside the file the row names.
 //
-//   - FileExtent.Durable is indexed by FILE-LOCAL ordinal, while JobProgress
-//     is indexed globally. The conversion is the file's own manifest range, so
-//     it is taken from FileRange(fileIdx) here rather than passed in.
-//   - The bitmap is re-derived at the file's true article count via
-//     BitmapFromBytes rather than read at the width persistence rounded it up
-//     to. ExtentStore rebuilds each bitmap at its full BYTE width, which is
-//     always a multiple of 64, so Bitmap's tail-word mask never fires and
-//     padding bits in a damaged blob would otherwise read as durable articles.
-//     Over-reporting durability is the over-claim direction the design
-//     forbids, and this is the only layer that knows the real count.
-func fileDurableBitmap(m *Manifest, e durability.FileExtent) (durable durability.Bitmap, firstArtIdx, artCount int, err error) {
-	fi := int(e.FileIdx)
+// A run that does not is refused LOUDLY rather than clamped or skipped (A2,
+// R28). It means the manifest was rebuilt to a different shape under rows
+// keyed on the old numbering, and marking whatever articles happen to sit at
+// those indices done would skip real downloads silently. The retry path
+// already drops the rows for that case before requeuing; anything reaching
+// here has escaped it.
+func runsCoverage(m *Manifest, r durability.Run) (first, last int, err error) {
+	fi := int(r.FileIdx)
 	nFiles := m.NumFiles()
 	if fi < 0 || fi >= nFiles {
-		return durability.Bitmap{}, 0, 0, fmt.Errorf("file index %d out of range (%d files)", fi, nFiles)
+		return 0, 0, fmt.Errorf("file index %d out of range (%d files)", fi, nFiles)
 	}
 	lo, hi := m.FileRange(fi)
-	n := hi - lo
-	raw := e.Durable.Bytes()
-	// A stored bitmap narrower than the file's article count is widened
-	// with zeros, which reads as "those articles are not durable yet" —
-	// the safe direction under S3. Rejecting it instead would fail a
-	// resume over a file whose article count grew, and adopting it at its
-	// short width would silently drop the tail articles from the mapping.
-	if need := (n + 63) / 64 * 8; len(raw) < need {
-		widened := make([]byte, need)
-		copy(widened, raw)
-		raw = widened
+	first, last = int(r.FirstArtIdx), int(r.LastArtIdx)
+	if first > last || first < lo || last >= hi {
+		return 0, 0, fmt.Errorf(
+			"file %d: run covers articles [%d,%d], outside the file's range [%d,%d)",
+			fi, first, last, lo, hi)
 	}
-	bm, err := durability.BitmapFromBytes(raw, n)
-	if err != nil {
-		return durability.Bitmap{}, 0, 0, fmt.Errorf("file %d: %w", fi, err)
-	}
-	return bm, lo, n, nil
+	return first, last, nil
 }

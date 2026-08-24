@@ -23,7 +23,7 @@ func TestRaise(t *testing.T) {
 
 	newBarrier := func(s *recordingStall) *Barrier {
 		db := openTestDB(t)
-		return NewBarrier(NewSQLiteFactLog(db), NewSQLiteExtentStore(db),
+		return NewBarrier(NewSQLiteRunStore(db),
 			&recordingAcker{}, s, slog.New(slog.DiscardHandler))
 	}
 
@@ -119,7 +119,7 @@ func TestRaise(t *testing.T) {
 	// its own operations, so the branches above are not exercised only here.
 	t.Run("the call sites reach it", func(t *testing.T) {
 		s := &recordingStall{}
-		tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC, artCount: 4}
+		tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC}
 		if _, err := newBarrier(s).Run(context.Background(), "job-1", tgt); err == nil {
 			t.Fatal("Run succeeded over a failing sync")
 		}

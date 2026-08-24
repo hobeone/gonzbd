@@ -95,11 +95,11 @@ type FileProgress struct {
 	// encoded NZB `bytes` attribute — because RemainingBytes subtracts the
 	// two, and only figures in one unit can be subtracted.
 	//
-	// That is not the unit durability works in. durability.FileExtent's
-	// BytesDurable sums the DECODED payload lengths an fsync proved, over the
-	// same set of articles, and runs a few percent lower. The two are not
-	// interchangeable; this one caches in job_files.bytes_downloaded rather
-	// than being read back from file_extents.
+	// That is not the unit durability works in. A durable run's Length is the
+	// DECODED payload an fsync proved, summed over the same set of articles,
+	// and runs a few percent lower. The two are not interchangeable; this one
+	// caches in job_files.bytes_downloaded rather than being derived from the
+	// record.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
@@ -108,11 +108,11 @@ type FileProgress struct {
 	// without this the derivation would report its bytes as still to fetch
 	// forever. Recomputable from the article bitmaps when a manifest is
 	// resident, and read from job_files.failed_bytes when not — which is why
-	// that column exists at all. It is the one per-file byte figure that
-	// cannot be re-derived from durability's Class A facts: a permanently
-	// failed article never decodes, so it writes no article_facts row, so
-	// durability.FileExtent has no field for it either. See
-	// internal/history/migrations/001_initial.sql and
+	// that column exists at all. It is the one per-file byte figure the
+	// durability record cannot supply: failed_articles records WHICH articles
+	// failed and never how many bytes they were, and a permanently failed
+	// article never decodes so no run covers it either. See
+	// internal/history/migrations/003_drop_legacy_durability.sql and
 	// docs/durability-contract.md.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
@@ -699,10 +699,10 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 }
 
 // markNotDone returns article i to Outstanding. It is the inverse of markDone,
-// and it exists for exactly one caller: Queue.ReplaceFromResume, which holds
-// evidence about the file's bytes and is entitled to contradict a bit that was
-// merely restored from job_files.articles_done (#362). Nothing on the download
-// path may call it — an ack is a one-way transition (R9).
+// and it exists for exactly one caller: Queue.ReplaceFromRuns, which has
+// stat'ed the file and is entitled to contradict a bit derived from a run the
+// resume then discarded (#362). Nothing on the download path may call it — an
+// ack is a one-way transition (R9).
 //
 // It clears the bit and nothing else. The figures markDone maintains are
 // deliberately NOT unwound here article by article: JobProgress.recompute
@@ -712,7 +712,7 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 // nor emitted. A copy of those rules that drifts is a half-inverse, and a
 // half-inverse of markDone is how #300 arose from the other direction: bits
 // and derived figures disagreeing, so the job reports a health its per-article
-// state does not support. ReplaceFromResume recomputes once for the whole job
+// state does not support. ReplaceFromRuns recomputes once for the whole job
 // instead.
 //
 // A permanently failed article is never cleared, and that is a rule about what
@@ -791,8 +791,19 @@ type fileProgressJSON struct {
 // emitted in particular must never survive a restart: on crash recovery, any
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
-// marks an article as written, and it is set only once the bytes have reached
-// WriteAt (#355), so the pair is consistent.
+// marks an article as resolved, and nothing sets it from dispatch: markDone is
+// reached from AckDurable, which needs a DurableProof a completed fsync
+// minted; from SeedFromRuns/ReplaceFromRuns, which replay runs that same fsync
+// recorded; and from applyResolution, which replays the resolution derived
+// from those same records on re-hydration. markFailed sets it too, for an
+// article whose bytes will
+// never arrive. So a persisted done bit always stands on a completed fsync or
+// a permanent failure — never on a write that was merely attempted (#355) —
+// and the pair is consistent.
+//
+// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above,
+// and the wider one in app.JobDurability that adds the direct writer this
+// paragraph does not mention. Add a door onto the bit and it fails by name.
 type jobProgressJSON struct {
 	Done   []bool             `json:"done"`
 	Failed []bool             `json:"failed"`

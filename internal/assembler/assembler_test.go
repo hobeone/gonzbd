@@ -1362,7 +1362,7 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
 
-	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
+	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data"), 0); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
@@ -1387,7 +1387,7 @@ func TestFileWriter_DrainWriteErrorCountsPipelineError(t *testing.T) {
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(1<<20))
 	// Buffer an article without triggering a contiguous flush, then close
 	// the handle so the drain's WriteAt fails.
-	if err := w.Accept(articleID{msgID: "m1"}, 4096, []byte("data")); err != nil {
+	if err := w.Accept(articleID{msgID: "m1"}, 4096, []byte("data"), 0); err != nil {
 		t.Fatalf("Accept (buffered): %v", err)
 	}
 	_ = tmpFile.Close()
@@ -1543,10 +1543,11 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 	}
 
-	written, err := a.SyncTargetFor("real-job", oneFileMap{n: 2}).Drain(t.Context(), 0)
+	written, err := a.SyncTargetFor("real-job").Drain(t.Context(), 0)
 	if err != nil {
-		t.Fatalf("Drain: %v — an out-of-range ArtIdx fails the barrier's "+
-			"file-local ordinal lookup, which is what the request's 99 would be", err)
+		t.Fatalf("Drain: %v — the drain report is where the request's out-of-range "+
+			"99 would surface, as a durable run naming an article the job's "+
+			"manifest does not have", err)
 	}
 	gotIdx := make([]int32, 0, len(written))
 	for _, w := range written {

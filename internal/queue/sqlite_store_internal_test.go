@@ -2,7 +2,6 @@ package queue
 
 import (
 	"errors"
-	"log/slog"
 	"path/filepath"
 	"testing"
 
@@ -11,45 +10,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
-
-func TestSQLiteStore_EncodeDecodeArticlesDone(t *testing.T) {
-	parsed := &nzb.NZB{
-		Files: []nzb.File{
-			{
-				Subject:  "test_file",
-				Articles: []nzb.Article{{ID: "art1", Number: 1}, {ID: "art2", Number: 2}, {ID: "art3", Number: 3}},
-				Bytes:    300,
-			},
-		},
-	}
-	jobArt, err := NewJob(parsed, AddOptions{Name: "job-arts"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	jobArt.Progress().markDone(mustManifest(t, jobArt), 1) // Mark article index 1 as done
-	encoded := encodeArticlesDone(jobArt, 0)
-	if encoded == "" {
-		t.Fatal("expected non-empty encoded articles done string")
-	}
-
-	jobArt2, _ := NewJob(parsed, AddOptions{Name: "job-arts-2"}, fsutil.SanitizeOptions{})
-	decodeTestStore(t).decodeArticlesDone(encoded, jobArt2, 0)
-	if !jobArt2.Progress().ArticleDone(1) || jobArt2.Progress().ArticleDone(0) || jobArt2.Progress().ArticleDone(2) {
-		t.Errorf("decodeArticlesDone failed to restore article bitmap: %v", jobArt2.progress.done)
-	}
-
-	// Test boundary and invalid input branches for 100% function coverage
-	if encodeArticlesDone(nil, 0) != "" {
-		t.Error("expected empty string for nil job in encodeArticlesDone")
-	}
-	if encodeArticlesDone(jobArt, 99) != "" {
-		t.Error("expected empty string for out-of-bounds fileIdx in encodeArticlesDone")
-	}
-	decodeTestStore(t).decodeArticlesDone("invalid-hex-string!!!", jobArt2, 0)
-	decodeTestStore(t).decodeArticlesDone("", jobArt2, 0)
-	decodeTestStore(t).decodeArticlesDone("00", nil, 0)
-	decodeTestStore(t).decodeArticlesDone("00", jobArt2, 99)
-}
 
 func TestSQLiteStore_UpdateTx(t *testing.T) {
 	dir := t.TempDir()
@@ -162,12 +122,4 @@ func TestSQLiteStore_ResequenceTx(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-}
-
-// decodeTestStore returns a store carrying only a logger. decodeArticlesDone
-// reads no database state, so the rest of SQLiteStore is not needed to
-// exercise it.
-func decodeTestStore(t *testing.T) *SQLiteStore {
-	t.Helper()
-	return &SQLiteStore{log: slog.Default()}
 }

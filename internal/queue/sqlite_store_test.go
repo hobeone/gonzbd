@@ -708,8 +708,16 @@ func TestSQLiteStore_GetFailsClosedOnFileCountQueryError(t *testing.T) {
 	}
 }
 
+// TestSQLiteStore_UpdateArticleProgressRoundTrip pins that a job's per-article
+// state survives a checkpoint and a reload.
+//
+// It goes through the barrier's OWN store rather than through a queue column,
+// because that is where the state lives now: the queue derives resolution from
+// durable_runs and failed_articles rather than re-serialising a bitmap of its
+// own on every update. So the fixture writes what a barrier would have written
+// and the reload has to derive the same answer from it.
 func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
-	store, _, dir := setupTestStore(t)
+	store, repo, dir := setupTestStore(t)
 	ctx := t.Context()
 
 	parsed := &nzb.NZB{
@@ -730,11 +738,17 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Mutate progress (mark article index 1, "art2", as done).
-	bm := durability.NewBitmap(2)
-	bm.Set(1)
-	if err := q.SeedFromExtents(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: bm}}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+	// What a barrier records for article index 1 ("art2") and nothing else.
+	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(ctx, job.ID,
+		[]durability.DurableArticle{
+			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0xABCD},
+		}); err != nil {
+		t.Fatalf("record the durable run: %v", err)
+	}
+	if err := q.SeedFromRuns(job.ID, []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 1, LastArtIdx: 1, Offset: 100, Length: 100},
+	}); err != nil {
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
 	// Update store (simulating checkpoint)

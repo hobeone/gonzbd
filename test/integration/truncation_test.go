@@ -157,7 +157,7 @@ func TestDownload_FileSizeMatchesPayload(t *testing.T) {
 // pre-allocated size. This uses a more realistic scenario with varied part
 // sizes to exercise the completion truncate across out-of-order delivery. The
 // bound comes from durability.Barrier.FinalizeFile — the highest end offset
-// among the file's durable Class A facts — not from any high-water mark the
+// over the file's durable runs — not from any high-water mark the
 // assembler tracks, since it tracks none.
 func TestDownload_MultiPartFileSizeExact(t *testing.T) {
 	t.Parallel()

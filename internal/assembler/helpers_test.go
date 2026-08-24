@@ -244,7 +244,7 @@ func TestDrainAndClose_FlushesBeforeClosing(t *testing.T) {
 	f := newHelperFile(t, dir, "drainclose.dat", 0)
 	f.w.wc = newWriteCache(1 << 20)
 
-	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
+	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh"), 0); err != nil {
 		t.Fatal(err)
 	}
 	// Still buffered: nothing has reached the file yet.

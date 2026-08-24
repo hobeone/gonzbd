@@ -203,11 +203,12 @@ func TestCheckpointAllWithBudget_ImposesThePolicysDeadline(t *testing.T) {
 //
 // forgetJobBarrierState deleted the map entry unconditionally, so the next
 // jobBarrierLock minted a SECOND mutex for the same job — which is the same as
-// having no mutex at all. Two barriers then interleave one job's
-// priorExtent → Set → Commit read-modify-write, and Commit is an
-// INSERT OR REPLACE with no transaction spanning the load, so the second
-// overwrites the first and every article the loser acked is durable with no bit
-// to say so.
+// having no mutex at all. Drain is DESTRUCTIVE, so two concurrent barriers
+// over one file split its articles between them: each acks only its own half
+// while both believe they checkpointed the file, and whichever confirms
+// releases the reports the other never saw — so those articles are neither
+// acked nor re-reported, and only a restart recovers them. See
+// jobBarrierLock, which states the same argument at the production site.
 //
 // The delete is reachable from INSIDE a live barrier, which is what makes this
 // reachable rather than theoretical: routeFault → stall.Fail →
@@ -226,9 +227,10 @@ func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T
 	again := application.jobBarrierLock("job-a")
 	if again != held {
 		t.Fatal("a second mutex was minted for a job whose first one is still held. " +
-			"Two barriers can now run concurrently over one job's extents, and the " +
-			"second commit overwrites the first: the articles the loser acked are " +
-			"durable with no bit to say so")
+			"Two barriers can now run concurrently over one job, and Drain is " +
+			"destructive: they split the file's articles, each acks only its half, " +
+			"and whichever calls Confirm releases the reports the other never saw — " +
+			"so those articles are neither acked nor re-reported")
 	}
 	held.Unlock()
 	application.releaseJobBarrierLock("job-a")

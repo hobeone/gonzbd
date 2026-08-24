@@ -35,11 +35,6 @@ func ackDoneIdx(t *testing.T, q *queue.Queue, jobID string, artIdxs ...int32) {
 	if len(artIdxs) == 0 {
 		return
 	}
-	add := make(map[int]bool, len(artIdxs))
-	for _, a := range artIdxs {
-		add[int(a)] = true
-	}
-
 	job, err := q.Get(jobID)
 	if err != nil {
 		t.Fatalf("ackDoneIdx: job %s not in queue: %v", jobID, err)
@@ -48,10 +43,10 @@ func ackDoneIdx(t *testing.T, q *queue.Queue, jobID string, artIdxs ...int32) {
 	if err != nil {
 		t.Fatalf("ackDoneIdx: job %s manifest: %v", jobID, err)
 	}
-	progress := job.Progress()
 
-	touched := make(map[int]bool)
-	for i := range add {
+	runs := make([]durability.Run, 0, len(artIdxs))
+	for _, a := range artIdxs {
+		i := int(a)
 		if i < 0 || i >= m.NumArticles() {
 			t.Fatalf("ackDoneIdx: article %d out of range for job %s", i, jobID)
 		}
@@ -59,25 +54,16 @@ func ackDoneIdx(t *testing.T, q *queue.Queue, jobID string, artIdxs ...int32) {
 		if !ok {
 			t.Fatalf("ackDoneIdx: article %d not owned by any file in job %s", i, jobID)
 		}
-		touched[fi] = true
-	}
-	var exts []durability.FileExtent
-	for fi := range touched {
-		lo, hi := m.FileRange(fi)
-		bm := durability.NewBitmap(hi - lo)
-		for i := lo; i < hi; i++ {
-			if add[i] || (progress.ArticleDone(i) && !progress.ArticleFailed(i)) {
-				bm.Set(i - lo)
-			}
-		}
-		exts = append(exts, durability.FileExtent{
-			FileIdx: int32(fi), //nolint:gosec // G115: file counts are far below int32
-			Durable: bm,
+		runs = append(runs, durability.Run{
+			FileIdx:     int32(fi), //nolint:gosec // G115: file counts are far below int32
+			FirstArtIdx: a,
+			LastArtIdx:  a,
+			Length:      int64(m.ArticleBytes(i)),
 		})
 	}
 
-	if err := q.SeedFromExtents(jobID, exts); err != nil {
-		t.Fatalf("ackDoneIdx: SeedFromExtents: %v", err)
+	if err := q.SeedFromRuns(jobID, runs); err != nil {
+		t.Fatalf("ackDoneIdx: SeedFromRuns: %v", err)
 	}
 }
 

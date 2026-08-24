@@ -52,10 +52,10 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 
 	// Two contiguous articles, so the cache forms one run from the cursor and
 	// flushes it through flushRun rather than writeOne.
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100)); err != nil {
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100), 0); err != nil {
 		t.Fatalf("Accept a0: %v", err)
 	}
-	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 100, bytes.Repeat([]byte{0xBB}, 100)); err != nil {
+	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 100, bytes.Repeat([]byte{0xBB}, 100), 0); err != nil {
 		t.Fatalf("Accept a1: %v", err)
 	}
 

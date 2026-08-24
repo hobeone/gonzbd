@@ -770,8 +770,8 @@ func TestLoad_RehydratesResidentJob(t *testing.T) {
 	}
 	ackDone(t, seed, job.ID, articleID(0, 0))
 	// Save while resident: SQLiteStore.Update's per-file flush is guarded on
-	// the manifest being readable, so a save after eviction never writes
-	// articles_done.
+	// the manifest being readable, so a save after eviction never writes the
+	// job_files rows this test reads back.
 	if err := seed.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

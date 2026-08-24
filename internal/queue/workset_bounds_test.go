@@ -47,7 +47,7 @@ func TestAckDurable_RejectsAnArticleIndexAtTheArticleCount(t *testing.T) {
 	// A proof naming article n. The stub target is given n+1 articles so the
 	// barrier can place the index and actually mint it; the QUEUE still has
 	// only n, which is what makes the proof out of range on arrival.
-	p := mintProof(t, "bounds-ack", []int32{int32(n)}, n+1)
+	p := mintProof(t, "bounds-ack", []int32{int32(n)})
 
 	if err := q.AckDurable(p); err != nil {
 		t.Fatalf("AckDurable returned %v; an out-of-range index must not fail the "+
@@ -147,7 +147,7 @@ func TestAck_ValidIndicesLogNoOutOfRangeWarning(t *testing.T) {
 
 	t.Run("AckDurable", func(t *testing.T) {
 		q, logs := newTestQueueWithJobLogging(t, "clean-ack", n)
-		p := mintProof(t, "clean-ack", []int32{0, 1}, n)
+		p := mintProof(t, "clean-ack", []int32{0, 1})
 		if err := q.AckDurable(p); err != nil {
 			t.Fatalf("AckDurable: %v", err)
 		}

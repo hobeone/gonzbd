@@ -88,31 +88,30 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 	if err := app.queue.Remove(job.Queue.ID); err != nil {
 		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
 	}
-	// The download is over and filed, so its Class A facts and Class B extents
-	// describe a queue entry that no longer exists. They are keyed by job ID
-	// with no foreign key to the queue, so without a deliberate removal they
-	// accumulate one set per job ever downloaded. SQLiteStore.Prune is the
-	// backstop for a crash between the Remove above and this call; it is not a
-	// reason to skip this one.
+	// The download is over and filed, so its durable runs and failed-article
+	// rows describe a queue entry that no longer exists. They are keyed by job
+	// ID with no foreign key to the queue, so without a deliberate removal
+	// they accumulate one set per job ever downloaded. SQLiteStore.Prune is
+	// the backstop for a crash between the Remove above and this call; it is
+	// not a reason to skip this one.
 	//
 	// Deliberately here rather than in enqueuePostProc: post-processing can
 	// send a job back for more downloading, and a job that returns to the
-	// queue without its extents re-fetches every byte it already has.
+	// queue without its runs re-fetches every byte it already has.
 	//
 	// A FAILED job keeps them, in step with MoveToHistory, which retains that
-	// job's job_files row — filename, articles_done, assembled_crc32 — for the
-	// same reason. Retrying reuses the job ID, resolves the same filename over
-	// the same partial file, and re-fetches only the articles that failed, so
-	// the retained facts are what bound FinalizeFile's truncate to the whole
-	// file rather than to this run's few articles. Without them durableExtent
-	// returns the end offset of the re-fetched articles alone and the rest of
-	// the partial is destroyed, silently: neither #342 guard fires, because
-	// every article the fact log knows about IS durable.
+	// job's job_files row — filename, complete, assembled_crc32 — for the same
+	// reason. Retrying reuses the job ID, resolves the same filename over the
+	// same partial file, and re-fetches only the articles that failed, so the
+	// retained runs are what bound FinalizeFile's truncate to the whole file
+	// rather than to this run's few articles. Without them the bound is the
+	// end offset of the re-fetched articles alone and the rest of the partial
+	// is destroyed, silently.
 	//
 	// This is the replacement for the max_written column migration 011 carried
 	// into history_job_files for exactly this case. That column and the
-	// assembler's maxWritten seed are gone, and deriving the bound from the
-	// retained facts keeps Class A the single authority (S5) instead of
+	// assembler's maxWritten seed are gone, and taking the bound over the
+	// retained runs keeps one record the single authority (S5) instead of
 	// reintroducing a summary that can drift from it.
 	//
 	// The retention is bounded the same way the job_files one is: these rows

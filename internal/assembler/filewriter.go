@@ -57,18 +57,18 @@ type FileWriter struct {
 	// Sync — is what finally discards it.
 	//
 	// The distinction is the whole point. A successful fsync makes the bytes
-	// durable, but the barrier still has to build the extent, commit it and
-	// ack the articles, and all three can fail after it. Releasing on the
+	// durable, but the barrier still has to commit the run rows and ack the
+	// articles, and both can fail after it. Releasing on the
 	// fsync covered only the first of the failures this retention exists for,
 	// while the doc below claimed all three.
 	//
 	// This is R12's at-least-once delivery, which SyncTarget.Drain explicitly
 	// blesses ("re-reporting an article a previous Drain already returned is
 	// permitted and expected"), and it is load-bearing rather than tidy. A
-	// barrier that drains and then fails — the sync, the extent commit, the
+	// barrier that drains and then fails — the sync, the run commit, the
 	// truncate — used to lose the report outright. For a file still being
 	// written that only cost a re-fetch. For a COMPLETED file it costs bytes:
-	// the retry drains nothing, so the durable extent FinalizeFile trims to
+	// the retry drains nothing, so the bound FinalizeFile trims to
 	// sits below bytes that are genuinely on disk, and the truncate destroys
 	// them. That is the #342/#350 family arriving through the recovery path.
 	//
@@ -291,7 +291,7 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 // same reason the append is here: both assert "these bytes are the file's
 // content at this offset", and applying one without the other is the
 // derived-state split #375 was about.
-func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
+func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
 	if owner, taken := w.acceptedAt[off]; taken && owner.id.sameArticle(id) {
 		owner.written = true
 		w.acceptedAt[off] = owner
@@ -301,6 +301,7 @@ func (w *FileWriter) noteWritten(id articleID, off int64, n int) {
 		ArtIdx:  id.artIdx,
 		Offset:  off,
 		Length:  int32(n), //nolint:gosec // G115: an article's decoded length is far below int32
+		CRC32:   crc32,
 	})
 }
 
@@ -358,10 +359,10 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // This is only correct for an article that made no durability claim. One that
 // reached noteWritten is in w.written, or in w.reported after a Drain, or
 // already acked and gone from both after a Confirm — and in every one of those
-// the barrier will assert it durable. Rolling it back here as well gives one
-// article two terminal dispositions, and lets the displacer overwrite bytes
-// whose Class A fact names the incumbent's CRC at that offset, so a restart
-// verifies the range and cannot match it.
+// the barrier will record it. Rolling it back here as well gives one article
+// two terminal dispositions, and lets the displacer overwrite bytes a run
+// records the incumbent's CRC over, so the record describes a range the file
+// no longer holds.
 //
 // acceptArticle enforces the precondition by refusing the ARRIVAL when the
 // offset is settled, so this is reached only from the cache-eviction case it
@@ -487,10 +488,10 @@ func (w *FileWriter) parts() int { return w.partsWritten }
 //
 // Failing it there gives one article two terminal dispositions at once —
 // routeFaulted resolves it permanently failed while the barrier still holds it
-// as evidence and acks it durable. And the ack would be a lie: the pipeline
-// appended a Class A fact naming this article's CRC at this offset when it
-// decoded, independent of any write, so letting the arrival overwrite the
-// range leaves a durable fact that a restart cannot verify.
+// as evidence and acks it durable. And the ack would be a lie: the drain
+// reports this article's CRC at this offset, and the barrier records a run
+// over exactly that range, so letting the arrival overwrite it leaves a
+// record describing bytes the file no longer holds.
 //
 // So an offset whose owner has been reported Written is SETTLED, and the later
 // article loses. That is the opposite of the cache-resident case, deliberately:
@@ -599,7 +600,7 @@ func (w *FileWriter) takeFaulted() []faultedArticle {
 // returns the article to Outstanding — see fail's doc for why absence from a
 // Drain is not enough on its own — and the file goes on to complete over bytes
 // that never landed.
-func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
+func (w *FileWriter) Accept(id articleID, off int64, data []byte, crc32 uint32) error {
 	// Collision detection happens HERE, before the cache is consulted, so it
 	// is independent of cache residency and of whether caching is configured
 	// at all. See acceptedAt for why identity rather than occupancy.
@@ -643,7 +644,7 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte) error {
 		w.acceptedAt[off] = offsetOwner{id: id}
 	}
 
-	art := bufferedArticle{offset: off, data: data, id: id}
+	art := bufferedArticle{offset: off, data: data, id: id, crc32: crc32}
 	if w.wc.buffer(w.key, art) {
 		telemetry.CacheHits.Add(1)
 		if run := w.wc.flushContiguous(w.key); run != nil {
@@ -669,7 +670,7 @@ func (w *FileWriter) writeOne(art bufferedArticle) error {
 		w.fail(art.id)
 		return storagefault.Classify("write", w.path, err)
 	}
-	w.noteWritten(art.id, art.offset, len(art.data))
+	w.noteWritten(art.id, art.offset, len(art.data), art.crc32)
 	return nil
 }
 
@@ -693,7 +694,7 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 		return storagefault.Classify("write", w.path, err)
 	}
 	for _, p := range run.parts {
-		w.noteWritten(p.id, p.offset, p.length)
+		w.noteWritten(p.id, p.offset, p.length, p.crc32)
 	}
 	return nil
 }
@@ -707,7 +708,7 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 // confirmed, which is R12's at-least-once delivery. Reading "since the last
 // call" as the contract makes the re-report look redundant, and removing it
 // destroys bytes on a retried finalize: the retry drains nothing, so the
-// durable extent FinalizeFile trims to sits below bytes genuinely on disk. See
+// bound FinalizeFile trims to sits below bytes genuinely on disk. See
 // take() and the FileWriter.reported field doc, which are the authority.
 //
 // It must NOT return an article that is merely buffered. S2 makes acceptance
@@ -793,15 +794,15 @@ func (w *FileWriter) Sync() error {
 		return storagefault.Classify("sync", w.path, err)
 	}
 	// The report is deliberately NOT discarded here. The fsync makes the
-	// bytes durable, but the barrier has not yet built the extent, committed
-	// it, or acked anything, and every one of those can still fail. Clearing
-	// on the fsync covered only the first of the three failures the retention
-	// exists for. Confirm is what releases it.
+	// bytes durable, but the runs are not yet committed and nothing is acked,
+	// and either of those can still fail. Clearing on the fsync covered only
+	// the first of the failures the retention exists for. Confirm is what
+	// releases it.
 	return nil
 }
 
 // Confirm releases the drain report, and is called only once the barrier has
-// committed the extent and acked the articles.
+// committed the runs and acked the articles.
 //
 // It is what bounds the retained set. Drain re-reports across any failure, so
 // without a confirmation the set would grow to every article ever written to
@@ -815,20 +816,25 @@ func (w *FileWriter) Confirm() {
 	w.reported = nil
 }
 
-// Stat returns the file's size and modification time as they are now. The pair
-// is the S7 validity stamp a later resume checks the file against, so it must
-// be read after the Sync it describes.
-func (w *FileWriter) Stat() (size, modTimeNs int64, err error) {
+// Stat returns the file's size as it is now. It is S7's validity stamp — which
+// a resume checks the file against, and which the barrier compares Σ Length to
+// — so it must be read after the Sync it describes.
+//
+// It used to return the modification time as the stamp's second half. See
+// durability.SyncTarget.Stat for why that half was deleted rather than left
+// unread: with no recomputation left, an mtime mismatch's only remaining
+// response would be a full re-download of an intact file.
+func (w *FileWriter) Stat() (size int64, err error) {
 	fi, err := w.handle.Stat()
 	if err != nil {
-		return 0, 0, storagefault.Classify("stat", w.path, err)
+		return 0, storagefault.Classify("stat", w.path, err)
 	}
-	return fi.Size(), fi.ModTime().UnixNano(), nil
+	return fi.Size(), nil
 }
 
 // Truncate trims the file to n bytes.
 //
-// Only ever called with a bound derived from the durable facts, never from
+// Only ever called with a bound derived from the durable runs, never from
 // this run's high-water mark — see the assembler's completion path. S6 permits
 // metadata to shrink a file and never to grow it, so a target above the file
 // on disk is refused rather than clamped: growing appends zeros, which asserts

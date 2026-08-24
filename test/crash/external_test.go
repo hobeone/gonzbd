@@ -29,20 +29,33 @@ func externalFixture() harnessOpts {
 // working: the recomputation got the right answer and the answer was
 // discarded, so the job finished with a completed file that had a hole in it.
 // It is green as of the fix — the startup sweep installs its result through
-// the authoritative Queue.ReplaceFromResume rather than the additive
-// Queue.SeedFromExtents. Do not relax the assertions.
+// the authoritative Queue.ReplaceFromRuns rather than the additive
+// Queue.SeedFromRuns. Do not relax the assertions.
 //
-// A clean stop commits an extent whose size and mtime match the file, so the
-// next start would adopt it without reading a byte. Truncating the file
-// falsifies that stamp, and the design's answer is to recompute from the bytes
-// rather than to trust the cache or to restart the file wholesale.
+// A clean stop records runs describing exactly what the file holds, so the
+// next start adopts them on one stat with no read. Truncating the file makes
+// it SHORTER than those runs claim, which is the one condition §3.4's gate
+// treats as a disproof.
 //
-// The assertions are therefore about WHICH articles came back, not merely that
-// the job finished: the articles below the cut must be re-verified from disk
-// and NOT re-fetched, and the ones the cut destroyed must be re-fetched. A
-// test that only checked the final file would pass just as happily against an
-// implementation that threw the whole file away, which is the L3 regression
-// this suite exists to catch.
+// # The discard is whole-file, and that is the design's trade rather than a bug
+//
+// This test used to assert that the articles BELOW the cut were re-verified
+// from their bytes and NOT re-fetched. That property is gone with the
+// recomputation that produced it. A size comparison cannot tell which articles
+// the missing bytes belonged to, so the file's whole record is discarded and
+// every one of its articles is fetched again. §3.4 prices that deliberately:
+// the alternative is reading every partial file at every startup, and a bad
+// article costs only its own bytes.
+//
+// What the test pins instead is the pair that still matters, and the second
+// half is #362 itself:
+//
+//   - Every article the truncation destroyed is re-fetched. Treating a
+//     destroyed article as present is S3's absence-of-evidence read as
+//     evidence, and it is what finished a file with a hole in it.
+//   - The completed file matches its expected content byte for byte. A test
+//     that only counted re-fetches would pass against an implementation that
+//     re-fetched everything and still assembled it wrongly.
 func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 	opts := externalFixture()
 	h := newHarness(t, opts)
@@ -62,7 +75,7 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 	// a destroyed article at ordinal 33.
 	durableAtStop := h.DurableOrdinals(jobID)[0]
 	if len(durableAtStop) == 0 {
-		t.Fatal("no durable bits were recorded for file 0 at the stop")
+		t.Fatal("no durable article was recorded for file 0 at the stop")
 	}
 
 	// Cut the file in half, at an article boundary, so the surviving and
@@ -90,22 +103,14 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 	// Classify EVERY article that was durable at the stop by where it sits
 	// relative to the cut, rather than by the ordinal the wait returned on.
 	ids := h.MsgIDs[0]
-	var below, above int
-	var survivedRefetched, destroyedMissed []string
+	var above int
+	var destroyedMissed []string
 	for i, wasDurable := range durableAtStop {
-		if !wasDurable {
-			continue
-		}
-		refetched := servedAfter[ids[i]] > servedBefore[ids[i]]
-		if i < keepArticles {
-			below++
-			if refetched {
-				survivedRefetched = append(survivedRefetched, ids[i])
-			}
+		if !wasDurable || i < keepArticles {
 			continue
 		}
 		above++
-		if !refetched {
+		if servedAfter[ids[i]] <= servedBefore[ids[i]] {
 			destroyedMissed = append(destroyedMissed, ids[i])
 		}
 	}
@@ -113,27 +118,25 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 		t.Fatal("the truncation destroyed no durable article — the destroyed-set " +
 			"assertion below would hold vacuously")
 	}
-	if len(survivedRefetched) > 0 {
-		t.Errorf("%d of the %d durable articles BELOW the truncation point were re-fetched; "+
-			"a recomputation reads their bytes and proves them, so re-fetching them is "+
-			"rework a falsified cache did not cause: %v",
-			len(survivedRefetched), below, survivedRefetched)
-	}
 	if len(destroyedMissed) > 0 {
 		t.Errorf("%d of the %d durable articles the truncation DESTROYED were not "+
 			"re-fetched; their bytes are gone, so treating them as present is S3's "+
 			"absence-of-evidence read as evidence: %v",
 			len(destroyedMissed), above, destroyedMissed)
 	}
-	t.Logf("%d durable articles below the cut, %d above it; %d below were re-fetched, "+
-		"%d above were not", below, above, len(survivedRefetched), len(destroyedMissed))
+	// The assertion the re-fetch bookkeeping exists to serve. A file finished
+	// over a discarded-but-partly-trusted record has a hole in it, and only
+	// reading it back can say so.
+	h.AssertCompletedFilesMatch()
+	t.Logf("%d durable articles were destroyed by the cut; %d of them were not re-fetched",
+		above, len(destroyedMissed))
 }
 
 // TestExternalModification_DeletedPartialRestartsTheFile was committed RED
 // against issue #362, the same defect as the test above, and is green as of
 // the same fix. It pins the absence branch of S3: with no file there is no
 // evidence for any article, so every one of them is Outstanding again —
-// including the ones a committed extent still claims are durable.
+// including the ones the stored runs still claim are durable.
 func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
 	opts := externalFixture()
 	h := newHarness(t, opts)
@@ -170,8 +173,8 @@ func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
 	}
 	if len(notRefetched) > 0 {
 		t.Errorf("%d of %d articles that were durable before the file was deleted were "+
-			"not re-fetched — a committed extent was trusted over the absence of the "+
-			"file it describes: %v", len(notRefetched), durableArticles, notRefetched)
+			"not re-fetched — the stored runs were trusted over the absence of the "+
+			"file they describe: %v", len(notRefetched), durableArticles, notRefetched)
 	}
 	t.Logf("%d of %d previously durable articles were not re-fetched after the partial was deleted",
 		len(notRefetched), durableArticles)
@@ -181,11 +184,11 @@ func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
 // side: metadata may shrink a file, never grow it, so bytes appended past the
 // last durable article must not survive into the completed file.
 //
-// The extent's size stamp no longer matches, so the fast path is refused and
-// the file is recomputed — but every recorded region is still where it was, so
-// nothing needs re-fetching. Both halves are asserted: the articles already on
-// disk must NOT come back over the wire, and the completed file must be
-// exactly the bytes the server served, with the appended garbage gone.
+// The file is now LONGER than its runs claim, which S7's surviving size
+// comparison treats as the ordinary pre-allocated case: the runs are adopted
+// whole, so nothing needs re-fetching. Both halves are asserted: the articles
+// already on disk must NOT come back over the wire, and the completed file
+// must be exactly the bytes the server served, with the appended garbage gone.
 //
 // Both halves discriminate. The no-refetch half did not until #362 was fixed —
 // see the note on TestExternalModification_MtimeTouchCostsNoRefetch.
@@ -244,16 +247,23 @@ func TestExternalModification_AppendedGarbageIsTrimmed(t *testing.T) {
 	}
 	if len(refetched) > 0 {
 		t.Errorf("%d of %d durable articles were re-fetched after bytes were appended "+
-			"past them; their own regions were untouched, so a recomputation proves them "+
+			"past them; the file only grew, so their runs still pass the size gate "+
 			"and the re-fetch is rework the append did not cause: %v",
 			len(refetched), len(durableIDs), refetched)
 	}
 }
 
-// TestExternalModification_MtimeTouchCostsNoRefetch pins the cheap half of the
-// R13 validity check: the stamp is size AND mtime, so touching the mtime alone
-// invalidates the fast path — and that must cost a recomputation, not a
-// re-download.
+// TestExternalModification_MtimeTouchCostsNoRefetch pins S7 as it now stands:
+// the validity stamp is SIZE ALONE, so touching the mtime while leaving every
+// byte in place must cost nothing at all.
+//
+// It used to pin the opposite reason for the same outcome — the stamp was the
+// pair (size, mtime), so a touch invalidated the fast path and the file was
+// recomputed rather than re-downloaded. The recompute is gone with the
+// two-record design, which is exactly why mtime had to go with it: the only
+// response left to a mismatch is discard-and-refetch, and an mtime moves
+// without a byte moving. This test is what would have shown that as a whole
+// file re-downloaded.
 //
 // The assertion is on the re-fetch set rather than on the file, and that is the
 // point. A file that finishes correctly says nothing about whether the daemon
@@ -261,17 +271,17 @@ func TestExternalModification_AppendedGarbageIsTrimmed(t *testing.T) {
 //
 // # What this test discriminates, and what it used to not
 //
-// It is a pin on the recomputation, not merely on the outcome: with
-// durability.Resumer.Resume neutered to return an empty bitmap, every durable
-// article is re-fetched and this fails — observed, not reasoned.
+// It is a pin on the resume, not merely on the outcome: with
+// durability.Resumer.Resume neutered to return no runs, every durable article
+// is re-fetched and this fails — observed, not reasoned.
 //
-// That was not true before #362 was fixed. Queue.SeedFromExtents was not the
-// only carrier of "this article is already done": Store.RestoreJobProgress
-// restores job_files.articles_done unconditionally, and that alone kept the
-// articles off the wire whatever the resume concluded. Making the startup sweep
-// authoritative over that column — Queue.ReplaceFromResume — is what turned this
-// assertion into a pin, and the same neutering that leaves it green again would
-// mean the precedence has been reverted.
+// That was not true before #362 was fixed. Queue's additive seeding entry point
+// was not the only carrier of "this article is already done":
+// Store.RestoreJobProgress restored a per-job done bitmap unconditionally, and
+// that alone kept the articles off the wire whatever the resume concluded.
+// Making the startup sweep authoritative — Queue.ReplaceFromRuns — is what
+// turned this assertion into a pin, and the same neutering that leaves it green
+// again would mean the precedence has been reverted.
 func TestExternalModification_MtimeTouchCostsNoRefetch(t *testing.T) {
 	opts := externalFixture()
 	h := newHarness(t, opts)

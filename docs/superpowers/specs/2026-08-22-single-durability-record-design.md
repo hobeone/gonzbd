@@ -227,9 +227,24 @@ so the two sections now state one rule rather than two that agree only on the
 cases anyone happened to imagine.
 
 Its consumer is `par2.VerifyCRCs`, which compares an assembled CRC against the
-par2 manifest "without re-reading files from disk". **It is not a par2 bypass** —
-an earlier draft of this document said so repeatedly and was wrong. par2 still
-runs; what the CRC saves is one read of each file during verification.
+par2 manifest "without re-reading files from disk". What the CRC saves directly
+is one read of each file during verification.
+
+**It IS a par2 bypass, and an earlier draft of this section denied it in the
+course of correcting a different error.** That draft was right that
+`par2.QuickCheck` — the *function* — never consumes our value, and wrong to
+conclude from this that "par2 still runs". The chain is:
+`stage_quickcheck.go:136` feeds `p.FileAssembledCRC32(fi)` into
+`par2.VerifyCRCsWithOptions` (`:141`); `Checked > 0` with nothing unverifiable
+sets `QuickCheckClean` (`:194`); and `stage_repair.go:111-117` returns `nil` on
+`QuickCheckClean`, skipping the par2 verify+repair subprocess entirely. The
+same value also lets `app.par2NeedsRecovery` return false, leaving the deferred
+recovery volumes unfetched. So our CRC feeds the verdict, and the verdict is a
+full bypass.
+
+The half worth keeping is the distinction, not the denial: **`par2.VerifyCRCs`
+consumes our CRC; `par2.QuickCheck` does not.** The confusion is that the
+post-processing *stage* shares the latter's name.
 
 `par2.QuickCheck` is a different function — it relocates flat downloads into the
 subdirectory paths a par2 manifest references — and it computes its own CRC from

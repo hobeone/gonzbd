@@ -15,31 +15,27 @@ import (
 )
 
 // overlapDetector observes whether two barriers for one job are ever inside
-// their read-modify-write at the same time.
+// the store's read-modify-write at the same time.
 //
-// buildExtent's Load and ExtentStore.Commit are the two ends of that window:
-// Load reads the stored FileExtent, the barrier adds its drained articles to
-// it, and Commit writes the result back. Two barriers overlapping there both
-// read the same prior value and the later Commit replaces the earlier one, so
-// the committed cache describes neither run.
+// RunStore.Commit is that window in its entirety now: it reads the file's
+// bracketing rows, subtracts the redelivered articles, merges what is left,
+// then deletes and re-inserts. The whole of it runs in one transaction, which
+// is why the hazard the SERIALISATION exists for is upstream of it — Drain is
+// destructive, so two overlapping barriers split one file's articles between
+// them and each acks only its own half.
 //
 // The wrapper does not merely watch — it makes the overlap deterministic. The
-// first barrier to reach LoadFile is held there until a second arrives, so if
+// first barrier to reach Commit is held on entry until a second arrives, so if
 // concurrency is possible it happens on every run rather than on a lucky
 // scheduling. The wait has a deadline, because with the serialisation in place
 // no second barrier can arrive and the test must proceed rather than hang.
 //
-// LoadFile and not Load: Barrier.priorExtent reads one file by primary key.
-// It filtered a whole-job Load until that turned out to be quadratic in a
-// job's file count, and this wrapper hooked Load. Hooking a method the barrier
-// no longer calls costs nothing visible — the embedded store still answers, so
-// the test stays green while the counter it asserts on never moves.
-//
-// The alternative — asserting only on the final committed bitmap — was tried
-// and rejected: which of two unserialised barriers commits last is a coin
-// flip, so half the runs would report the invariant holding while it did not.
+// The alternative — asserting only on the final stored runs — was tried and
+// rejected even when the store still replaced rather than merged: which of two
+// unserialised barriers commits last was a coin flip, so half the runs would
+// report the invariant holding while it did not.
 type overlapDetector struct {
-	durability.ExtentStore
+	durability.RunStore
 
 	mu         sync.Mutex
 	open       int
@@ -49,11 +45,11 @@ type overlapDetector struct {
 	second     chan struct{}
 }
 
-func newOverlapDetector(inner durability.ExtentStore) *overlapDetector {
-	return &overlapDetector{ExtentStore: inner, second: make(chan struct{})}
+func newOverlapDetector(inner durability.RunStore) *overlapDetector {
+	return &overlapDetector{RunStore: inner, second: make(chan struct{})}
 }
 
-func (g *overlapDetector) LoadFile(ctx context.Context, jobID string, fileIdx int32) (durability.FileExtent, bool, error) {
+func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durability.DurableArticle) ([]durability.Collision, error) {
 	g.mu.Lock()
 	g.open++
 	open := g.open
@@ -71,14 +67,12 @@ func (g *overlapDetector) LoadFile(ctx context.Context, jobID string, fileIdx in
 		case <-ctx.Done():
 		}
 	}
-	return g.ExtentStore.LoadFile(ctx, jobID, fileIdx)
-}
+	cols, err := g.RunStore.Commit(ctx, jobID, arts)
 
-func (g *overlapDetector) Commit(ctx context.Context, jobID string, exts []durability.FileExtent) error {
 	g.mu.Lock()
 	g.open--
 	g.mu.Unlock()
-	return g.ExtentStore.Commit(ctx, jobID, exts)
+	return cols, err
 }
 
 func (g *overlapDetector) sawOverlap() bool {
@@ -94,14 +88,15 @@ func (g *overlapDetector) sawOverlap() bool {
 // I/O under a lock — so it documents that the caller owns the guarantee of at
 // most one barrier in flight per job. This is that guarantee.
 //
-// Two overlapping barriers over one job interleave phase 3: both load the same
-// stored FileExtent, each adds only the articles its own Drain returned, and
-// the second Commit replaces the first. Drain is destructive, so one of the
-// two gets the articles and the other gets none — and the loser's commit
-// silently erases the winner's durable bits. The job then re-downloads bytes
-// that are on disk, which is the ground L3 says a restart must not lose.
+// Drain is destructive, so two overlapping barriers over one file split its
+// articles between them: one gets what the writer was holding and the other
+// gets none. Each then acks only its own half while both believe they
+// checkpointed the file, and the reports the loser never saw are released by
+// whichever cycle confirms — so the articles are neither acked nor re-reported,
+// and only a restart recovers them. That is the ground L3 says a restart must
+// not lose, arriving through the concurrency door rather than the crash one.
 //
-// The assertion is on the committed bitmap rather than on the lock, because a
+// The assertion is on the observed overlap rather than on the lock, because a
 // test that checked "the mutex was taken" would pass against any lock, held
 // anywhere, for any duration.
 func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
@@ -141,11 +136,10 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 		}
 	}
 
-	inner := durability.NewSQLiteExtentStore(repo.DB())
+	inner := durability.NewSQLiteRunStore(repo.DB())
 	detector := newOverlapDetector(inner)
 	application.barrier = durability.NewBarrier(
-		durability.NewSQLiteFactLog(repo.DB()), detector,
-		application.queue, application, slog.New(slog.DiscardHandler))
+		detector, application.queue, application, slog.New(slog.DiscardHandler))
 
 	var wg sync.WaitGroup
 	for range 2 {
@@ -157,21 +151,21 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 		t.Fatalf("%d barriers ran, want 2 — the fixture never created the race it is about", got)
 	}
 	if detector.sawOverlap() {
-		t.Error("two barriers for one job were inside their read-modify-write at the same " +
-			"time; whichever commits last erases the other's durable bits and the job " +
-			"re-downloads bytes that are already on disk")
+		t.Error("two barriers for one job were inside the store's read-modify-write at " +
+			"the same time; their destructive Drains split the file's articles and each " +
+			"acks only its own half")
 	}
-	exts, err := inner.Load(ctx, job.ID)
+	runs, err := inner.ForFile(ctx, job.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exts) != 1 {
-		t.Fatalf("loaded %d extents, want 1", len(exts))
+	if len(runs) != 1 {
+		t.Fatalf("recorded %d runs, want 1 — the two articles abut in both offset and "+
+			"index, so they must merge: %+v", len(runs), runs)
 	}
-	if got := exts[0].Durable.Count(); got != nArts {
-		t.Errorf("committed durable bits = %d, want %d — two barriers over one job "+
-			"interleaved their read-modify-write and the later commit erased the earlier "+
-			"one's bits, so the job re-downloads bytes that are already on disk",
+	if got := int(runs[0].LastArtIdx-runs[0].FirstArtIdx) + 1; got != nArts {
+		t.Errorf("the recorded run covers %d articles, want %d — one barrier's articles "+
+			"were lost to the other's drain, so they are neither acked nor re-reported",
 			got, nArts)
 	}
 }

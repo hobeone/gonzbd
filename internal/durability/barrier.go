@@ -12,26 +12,38 @@ import (
 )
 
 // Barrier is the single place the Written → Durable → Resolved transition
-// happens (X2). Its two methods Run and FinalizeFile are the only callers of
-// newProof, so no other code path — inside this package or out — can ack an
-// article THROUGH Queue.AckDurable.
+// happens (X2). No package outside internal/durability can ack an article
+// THROUGH Queue.AckDurable, because newProof is unexported and a proof built
+// from outside is necessarily empty.
 //
-// That is narrower than "can ack an article as downloaded", which is what this
-// comment used to say and is false. Queue.SeedFromExtents and
-// Queue.ReplaceFromResume also reach markDone, take a fully exported
-// durability.FileExtent whose Bitmap is exported and settable, and are
-// therefore callable from any package with no barrier and no proof. That is by
-// DESIGN — their evidence is stable storage re-read at startup, not an fsync
-// this process performed, which is the one kind of evidence a proof cannot
-// represent — but it means the proof gates the barrier door only. The seeding
-// doors are held by their own contracts and tests, not by the compiler.
+// Inside this package the guarantee is package-scoped rather than enforced:
+// newProof is reachable from anywhere here, and Run and FinalizeFile are
+// exactly the two functions that call it. That pair is what review has to
+// hold. See newProof's own doc, which states this bound carefully.
+//
+// It is also, since the durable-runs change, the only thing that puts CONTENT
+// into the durability record — the only path by which a durable_runs row comes
+// to assert anything. RunStore.Commit is called from exactly two places, both
+// below, both inside the transaction that precedes the ack. Resumer no longer
+// writes anything: it deletes a file's runs when the file on disk contradicts
+// them and otherwise reads.
+//
+// The bound is on content, not on the table. Rows are DELETED from five places
+// outside Commit's own merge — Resumer, RunStore.DeleteJob,
+// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
+// history.Repository.delete — and none of them can make a row claim anything,
+// which is why the narrower statement is the one the trust argument needs.
+//
+// The queue's seeding entry points, which used to take a fully exported
+// FileExtent and reach markDone with no barrier and no proof, are gone with the
+// type — what installs a resume's answer now carries runs the store produced
+// rather than a bitmap any package could build.
 //
 // Before this design the assembler could ack from six places, and the same
 // defect was refiled twice (#355, #356). One place is the whole point;
 // adding a second caller of newProof silently undoes it.
 type Barrier struct {
-	facts FactLog
-	exts  ExtentStore
+	runs  RunStore
 	ack   Acker
 	stall Stallable
 	log   *slog.Logger
@@ -41,7 +53,7 @@ type Barrier struct {
 	reportedMu sync.Mutex
 	// reported latches the files whose overlap has already been raised.
 	//
-	// An overlap is a property of PERSISTED facts, so every checkpoint after
+	// An overlap is a property of the PERSISTED runs, so every checkpoint after
 	// the first re-derives the same finding from the same rows. Without a
 	// latch a job with one malformed file raises it on every cycle until the
 	// download ends — and because Queue.SetWarning holds a single string, each
@@ -71,9 +83,9 @@ type overlapKey struct {
 // and released around a map probe on the report latch, below every collaborator
 // call. Run and FinalizeFile do I/O throughout and the project bans I/O under a
 // lock, so nothing else here may grow a lock without moving the I/O first.
-func NewBarrier(fl FactLog, es ExtentStore, ack Acker, stall Stallable, log *slog.Logger) *Barrier {
+func NewBarrier(rs RunStore, ack Acker, stall Stallable, log *slog.Logger) *Barrier {
 	return &Barrier{
-		facts: fl, exts: es, ack: ack, stall: stall, log: log,
+		runs: rs, ack: ack, stall: stall, log: log,
 		reported: make(map[overlapKey]struct{}),
 	}
 }
@@ -113,22 +125,16 @@ func (b *Barrier) admit(jobID string, cands []PostAnomaly) []PostAnomaly {
 // checkpoint may raise them again.
 //
 // Called when a job re-enters the queue under an ID it has already used — a
-// retry reuses the job ID and calls ResetForRetry, and its Class A facts are
-// usually retained across it. Without this the retried job's overlaps match the
-// latch from the previous attempt and are dropped, silencing the warning
-// permanently rather than once.
+// retry reuses the job ID, and its durable runs are usually retained across it:
+// job_finalizer declines to delete them for a FAILED job, and RetryHistoryJob
+// uses DeleteKeepingDurability. They are dropped deliberately when the
+// re-parsed manifest changes shape, because a run names articles by art_idx
+// and a renumbering makes it describe other articles.
 //
-// "Usually", and not because of INSERT OR IGNORE, which is what this comment
-// used to say. That is Append's idempotency against re-appending the same fact;
-// it says nothing about whether the rows survive a retry, and for the history
-// route they did not — Repository.Delete dropped both durability tables
-// unconditionally (#422). What retains them is job_finalizer declining to
-// delete them for a FAILED job plus RetryHistoryJob using
-// DeleteKeepingDurability. And they are dropped deliberately when the re-parsed
-// manifest changes shape, because the rows are keyed on art_idx and a
-// renumbering makes them describe other articles.
+// Without this the retried job's overlaps match the latch from the previous
+// attempt and are dropped, silencing the warning permanently rather than once.
 //
-// So ForgetJob may not assume facts are present, and does not need to: it
+// So ForgetJob may not assume any run is present, and does not need to: it
 // clears the latch either way, which is correct for both outcomes.
 //
 // Idempotent, and safe for a job that never reported anything.
@@ -144,13 +150,19 @@ func (b *Barrier) ForgetJob(jobID string) {
 
 // Run executes one checkpoint for a job:
 //
-//	drain → fsync → commit Class B → ack
+//	drain → fsync → commit the runs → ack
 //
 // The order is the invariant (S1). Nothing before the fsync may be claimed,
 // and nothing is claimed at all if any step fails (R7): a failed barrier acks
-// nothing and leaves the previously committed cache wholly intact, because
-// ExtentStore.Commit is atomic and is the last thing that can fail before the
-// ack.
+// nothing and leaves the stored runs wholly intact, because RunStore.Commit is
+// atomic and is the last thing that can fail before the ack.
+//
+// The barrier hands Commit the ARTICLES the drain reported and does not group
+// them. Deciding which of them form a run is derived state and it has exactly
+// one owner, the store — which is also the only place the dedup against an
+// at-least-once redelivery can be correct, because it has to subtract already
+// stored art_idx values BEFORE grouping. See RunStore.Commit and the design
+// doc's §6 for the worked example that ordering prevents.
 //
 // Run does not schedule itself. The cadence in R6 — a time bound, a byte
 // bound, file completion, pause, and clean shutdown — belongs to the caller,
@@ -187,9 +199,9 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	files = open
 
 	// Phase 2 — fsync every file. Only after this may anything be claimed.
-	// Every file is synced before any file's extent is built, so a barrier
-	// that fails on the second file's sync has claimed nothing about the
-	// first either.
+	// Every file is synced before any file's articles are handed over, so a
+	// barrier that fails on the second file's sync has claimed nothing about
+	// the first either.
 	//
 	// A file dropped here leaves BOTH collections. Dropping it from drained
 	// alone left it in files, so phase 3 went on to Stat it, got the same
@@ -224,7 +236,8 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	}
 	files = synced
 
-	// Phase 3 — build the Class B cache from what the fsync just made true.
+	// Phase 3 — collect what the fsync just made durable, and the size each
+	// file now has.
 	//
 	// A file dropped by any phase leaves `files` there and then, and that is
 	// what makes the drop complete rather than partial. The slice is also what
@@ -232,81 +245,144 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// was discarded has that report CONFIRMED — released from the writer with
 	// nothing committed and nothing acked, destroying the re-report R12 relies
 	// on to make the next drain whole.
-	exts := make([]FileExtent, 0, len(files))
-	built := files[:0:0]
+	var arts []DurableArticle
 	var acked []int32
-	// Findings ride the paths that COMMITTED, and every one of them — which is
-	// not the same as "the paths that returned a nil error", and the
-	// difference is a real defect this comment's first draft allowed. An
-	// overlap is a property of the persisted facts, not of this cycle, so
-	// withholding it from a checkpoint that failed loses nothing: the next
-	// committing one re-derives it from the same rows. Reporting it from a
-	// cycle that committed nothing would tell the user about a state the
-	// barrier had just declined to make true.
-	//
-	// The trap is the acked==0 return below. It commits and returns nil, so it
-	// is a committing path and must carry the finding — and it is exactly the
-	// path a RESUMED job takes for a file that became durable in an earlier
-	// process, where no later cycle re-derives anything because the file never
-	// drains again.
-	var found []PostAnomaly
+	sizes := make(map[int32]int64, len(files))
+	built := files[:0:0]
 	for _, idx := range files {
-		facts, err := b.facts.ForFile(ctx, jobID, idx)
-		if err != nil {
-			return nil, fmt.Errorf("durability: barrier facts job=%s file=%d: %w", jobID, idx, err)
-		}
-		ext, walk, arts, err := b.buildExtent(ctx, jobID, idx, drained[idx], facts, t)
+		size, err := t.Stat(idx)
 		if errors.Is(err, ErrFileNotOpen) {
 			// Closed between the fsync and the stat — the same race phases 1
 			// and 2 each handle, arriving at the third place a closed handle
 			// can be noticed. Its bytes are on disk and its report is held by
 			// the writer, so the file is dropped from this run rather than
 			// failing it.
-			b.log.Debug("file closed before its extent could be built; dropped from this run",
+			b.log.Debug("file closed before it could be stat'ed; dropped from this run",
 				"job", jobID, "file", idx)
 			delete(drained, idx)
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, b.raise(jobID, "stat", t.Path(idx), err)
 		}
-		if pa, ok := overlapFrom(walk, idx, func() string { return t.Path(idx) }); ok {
-			found = append(found, pa)
+		sizes[idx] = size
+		for _, w := range drained[idx] {
+			arts = append(arts, durableArticle(idx, w))
+			acked = append(acked, w.ArtIdx)
 		}
-		exts = append(exts, ext)
-		acked = append(acked, arts...)
 		built = append(built, idx)
 	}
 	files = built
 
-	// Phase 4 — commit Class B atomically, then and only then ack. Nothing
+	// Phase 4 — commit the runs atomically, then and only then ack. Nothing
 	// between these two statements may fail, and nothing may be inserted
 	// between them: the commit is what makes the proof true after a crash.
-	if err := b.exts.Commit(ctx, jobID, exts); err != nil {
+	collisions, err := b.runs.Commit(ctx, jobID, arts)
+	if err != nil {
 		return nil, fmt.Errorf("durability: barrier commit for %s: %w", jobID, err)
 	}
-	if len(acked) == 0 {
-		// Nothing was acked, but the commit landed, so the reports these
-		// extents were built from have done their work and must be released
-		// too — otherwise a job whose files are all already durable re-reports
-		// them on every checkpoint forever.
-		b.confirmAll(ctx, files, t)
-		return b.admit(jobID, found), nil
-	}
-	slices.Sort(acked)
-	// One of the two calls to newProof in the program; FinalizeFile has the
-	// other. Both are on Barrier and both sit below a Sync that returned nil.
-	// See the Barrier type doc.
-	if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
-		return nil, fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
+	if len(acked) > 0 {
+		slices.Sort(acked)
+		// One of the two calls to newProof in the program; FinalizeFile has the
+		// other. Both are on Barrier and both sit below a Sync that returned nil.
+		// See the Barrier type doc.
+		if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
+			// The collisions travel WITH the error, because they describe the
+			// commit above — which landed — rather than this ack. Dropping
+			// them here lost them permanently: the commit already discarded
+			// the losing row, and on the next cycle these same articles are
+			// subtracted as an at-least-once redelivery before the merge runs,
+			// so Commit finds nothing to collide and returns none. Nothing
+			// downstream can re-derive a collision from the stored rows.
+			//
+			// A caller that ignores findings alongside an error loses nothing
+			// it had before; app.finalizeCompletedFile already reports them
+			// first and checks the error second.
+			return b.admit(jobID, collisionFindings(collisions, t.Path)),
+				fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
+		}
 	}
 	// Only here, below both the commit and the ack. Releasing on the fsync —
 	// which is what Sync used to do — left every failure between the two
 	// unable to re-report, so a retried barrier had nothing to retry with.
+	//
+	// It runs even when nothing was acked: the commit landed, so the reports
+	// those articles came from have done their work and must be released too —
+	// otherwise a job whose files are all already durable re-reports them on
+	// every checkpoint forever.
 	b.confirmAll(ctx, files, t)
 	b.log.Debug("durability barrier committed",
-		"job", jobID, "files", len(exts), "articles_acked", len(acked))
-	return b.admit(jobID, found), nil
+		"job", jobID, "files", len(files), "articles_acked", len(acked))
+
+	// Findings ride the paths that COMMITTED, and every one of them — which is
+	// not the same as "the paths that returned a nil error", and the
+	// difference is a real defect this comment's first draft allowed. An
+	// overlap is a property of the persisted runs, not of this cycle, so
+	// withholding it from a checkpoint that failed loses nothing: the next
+	// committing one re-derives it from the same rows. Reporting it from a
+	// cycle that committed nothing would tell the user about a state the
+	// barrier had just declined to make true.
+	//
+	// The acked==0 case is exactly the path a RESUMED job takes for a file
+	// that became durable in an earlier process, where no later cycle
+	// re-derives anything because the file never drains again — so it carries
+	// the finding too, which is why this sits below the shared confirmAll
+	// rather than inside a branch.
+	//
+	// Classified from the stored rows AFTER the commit, so this cycle's own
+	// articles are included. It is deliberately not squeezed between the
+	// commit and the ack, where §6 forbids anything at all.
+	//
+	// Collisions come FIRST, and the order is load-bearing rather than
+	// cosmetic: admit's latch is keyed on (job, file), so where a file has
+	// both findings only the first survives. A collision names two articles
+	// and a byte offset; an overlap names a byte total. The specific one is
+	// the one worth spending the file's single warning on.
+	cands := collisionFindings(collisions, t.Path)
+	cands = append(cands, b.overlapFindings(ctx, jobID, files, sizes, t)...)
+	return b.admit(jobID, cands), nil
+}
+
+// durableArticle converts one drained article into the record the store places.
+//
+// The whole conversion, in one place, so neither commit site can invent a
+// different mapping. WrittenArticle already carries every field a run needs —
+// see DurableArticle's own doc for why the two vocabularies mirror each other
+// deliberately.
+func durableArticle(fileIdx int32, w WrittenArticle) DurableArticle {
+	return DurableArticle{
+		FileIdx: fileIdx,
+		ArtIdx:  w.ArtIdx,
+		Offset:  w.Offset,
+		Length:  w.Length,
+		CRC32:   w.CRC32,
+	}
+}
+
+// overlapFindings classifies each file's stored runs against the size the file
+// now has, per §3.3: Σ Length greater than the file means articles wrote over
+// each other.
+//
+// A read failure is logged and skipped rather than raised. The runs are on
+// stable storage and the next committing checkpoint asks the same question of
+// the same rows, so a failure here costs a delayed warning about a file that
+// is repairable anyway — it must not fail a barrier whose commit and ack have
+// already landed.
+func (b *Barrier) overlapFindings(ctx context.Context, jobID string, files []int32, sizes map[int32]int64, t SyncTarget) []PostAnomaly {
+	var found []PostAnomaly
+	for _, idx := range files {
+		runs, err := b.runs.ForFile(ctx, jobID, idx)
+		if err != nil {
+			b.log.Warn("could not read a file's durable runs to check it for overlaps; "+
+				"the next checkpoint asks the same question of the same rows",
+				"job", jobID, "file", idx, "err", err)
+			continue
+		}
+		if pa, ok := overlapFrom(runs, sizes[idx], idx, func() string { return t.Path(idx) }); ok {
+			found = append(found, pa)
+		}
+	}
+	return found
 }
 
 // confirmAll releases every file's drain report once the cycle has landed.
@@ -320,139 +396,6 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 	}
 }
 
-// buildExtent derives one file's Class B cache from the articles the fsync
-// just made durable, and returns the article indices that may be acked.
-//
-// It claims nothing on its own: the extent it returns is not persisted and the
-// articles it names are not acked until the caller commits.
-//
-// This is the chokepoint for every extent that can reach ExtentStore.Commit.
-// Run's phase 3 and FinalizeFile are the only two callers, and Commit has no
-// other call site, so a guard here covers every path that can overwrite a
-// stored extent — which a guard on Files() did not, because FinalizeFile takes
-// an explicit file index and never calls it.
-func (b *Barrier) buildExtent(ctx context.Context, jobID string, idx int32, drained []WrittenArticle, facts []ArticleFact, t SyncTarget) (FileExtent, prefixWalk, []int32, error) {
-	// A target that cannot say how many articles the file holds must not have
-	// an extent built for it, and this is a data-loss guard rather than
-	// tidiness.
-	//
-	// priorExtent re-derives the stored bitmap at artCount bits. At zero, that
-	// yields a zero-WIDTH bitmap, and committing it replaces the stored one —
-	// erasing every durable bit the job had accumulated. The next restart then
-	// reads nothing as durable and re-downloads the whole job, which is exactly
-	// the ground L3 says a restart must not lose.
-	//
-	// A drain with at least one article happens to abort later on the
-	// FileLocalOrdinal lookup, so the erasure needs an EMPTY drain to be
-	// reachable — a checkpoint over a file that took no writes this interval,
-	// which is an ordinary event rather than an exotic one.
-	//
-	// Refusing loudly rather than skipping the file follows A2 and matches how
-	// the ordinal lookup below is already treated: an unusable article count is
-	// a bookkeeping defect, not a storage fault, so it does not go through
-	// Stallable — blaming storage for it would be the A1 conflation in reverse.
-	artCount := t.ArticleCount(idx)
-	if artCount <= 0 {
-		return FileExtent{}, prefixWalk{}, nil, fmt.Errorf(
-			"durability: job %s file %d: target reports %d articles, refusing to build an extent "+
-				"(committing a zero-width bitmap would erase the stored durable bits)",
-			jobID, idx, artCount)
-	}
-	size, modNs, err := t.Stat(idx)
-	if err != nil {
-		return FileExtent{}, prefixWalk{}, nil, b.raise(jobID, "stat", t.Path(idx), err)
-	}
-	ext, err := b.priorExtent(ctx, jobID, idx, artCount)
-	if err != nil {
-		return FileExtent{}, prefixWalk{}, nil, err
-	}
-	ext.FileIdx = idx
-	ext.Size = size
-	ext.ModTimeNs = modNs
-
-	var acked []int32
-	for _, w := range drained {
-		ord, ok := t.FileLocalOrdinal(idx, w.ArtIdx)
-		if !ok {
-			// The target could not place this article in its file. That is
-			// a bookkeeping defect, not a storage fault, and it must not be
-			// swallowed (A2, R28). Routing it through Stallable would also
-			// be wrong: it would blame storage for a numbering bug.
-			return FileExtent{}, prefixWalk{}, nil, fmt.Errorf("durability: job %s file %d: article %d has no file-local ordinal", jobID, idx, w.ArtIdx)
-		}
-		// Charge the bytes only on a 0->1 transition. Drain may report an
-		// article this or a previous barrier already recorded — R12 makes
-		// at-least-once delivery the contract and requires the apply to
-		// absorb it — and += outside this guard would inflate the R26
-		// "bytes durable" figure on every replay. Set() is idempotent; the
-		// accumulator is not.
-		if !ext.Durable.Get(ord) {
-			ext.Durable.Set(ord)
-			ext.BytesDurable += int64(w.Length)
-		}
-		acked = append(acked, w.ArtIdx)
-	}
-
-	// The barrier does NOT write ArticleFacts. Class A is appended by the
-	// writer when the article is decoded, with no ordering against the data
-	// (R2) — that independence is what lets Class A be committed without a
-	// barrier at all. Writing facts here would make them barrier-ordered and
-	// quietly destroy the property.
-
-	walk := verifiedPrefix(facts, durableAt(facts, idx, ext.Durable, t))
-	verified, prefixCRC := walk.VerifiedTo, walk.PrefixCRC
-	// Both assigned from the same walk, so the CRC always describes exactly
-	// the prefix beside it. The old code could only CLEAR them — it carried a
-	// loaded PrefixCRC across an unchanged VerifiedTo and zeroed it otherwise,
-	// and nothing on this path ever produced one. That left a file downloaded
-	// without a restart with no CRC at any point in its life, because Resumer
-	// was the only writer and it runs at startup.
-	//
-	// Relabelling one prefix's CRC as another's is still the hazard it was;
-	// recomputing both together is what makes it unreachable, rather than a
-	// rule about when to discard.
-	ext.VerifiedTo = verified
-	ext.PrefixCRC = prefixCRC
-	// A prefix that reaches the file's end IS the whole file — but only when
-	// it also accounts for every fact, which is why verifiedPrefix decides it
-	// rather than this call site. Deriving it here from VerifiedTo and Size
-	// alone is what let an overlapping article's leftover fact go unnoticed
-	// (#387). During a download this is normally false — the stat reads
-	// pre-allocation's full size while the prefix is still growing — and
-	// FinalizeFile re-evaluates it after the truncate, where size is the
-	// file's true end. R23 keeps "unavailable" distinguishable from a CRC of
-	// zero.
-	ext.HasPrefixCRC = walk.wholeFile(size)
-	return ext, walk, acked, nil
-}
-
-// routeFault dispatches a storage fault per A1 and returns it as the error,
-// so a caller that ignores Stallable still cannot mistake a fault for
-// success. f must be non-nil; every call site builds it from a non-nil error
-// via storagefault.Classify, which returns nil only for a nil error.
-//
-// Neither branch marks an article failed. That is the whole distinction A1
-// draws: storage faults resolve against storage, article faults against the
-// article, and conflating them is how a full disk gets recorded as damage.
-//
-// # A coupling any new fault site must honour
-//
-// The returned error carries ErrFaultRouted, which is how the application
-// layer knows this function already dispatched the fault and must not park the
-// job a second time for it.
-//
-// It used to carry nothing, and the caller inferred the same thing from the
-// mere PRESENCE of a *storagefault.Fault in the chain. That inference held
-// only while this function was the one thing that let a fault escape the
-// barrier, and it is not: the SyncTarget boundary mints its own fault when the
-// worker does not answer, filewriter.go and assembler.go both build faults
-// with storagefault.Classify, and any of those reaching the application layer
-// was read as "already handled" and silently swallowed — the job carrying on
-// with a file that was never trimmed.
-//
-// So the marker states the fact rather than leaving it to be deduced. A new
-// fault site inside this package still routes through here; one that does not
-// is now visibly unrouted rather than indistinguishable from a routed one.
 // raise turns one SyncTarget error into the right kind of failure, and it is
 // the single boundary every fault site in this file goes through.
 //
@@ -497,6 +440,33 @@ func (b *Barrier) raise(jobID, op, path string, err error) error {
 	return b.routeFault(jobID, storagefault.Classify(op, path, err))
 }
 
+// routeFault dispatches a storage fault per A1 and returns it as the error,
+// so a caller that ignores Stallable still cannot mistake a fault for
+// success. f must be non-nil; every call site builds it from a non-nil error
+// via storagefault.Classify, which returns nil only for a nil error.
+//
+// Neither branch marks an article failed. That is the whole distinction A1
+// draws: storage faults resolve against storage, article faults against the
+// article, and conflating them is how a full disk gets recorded as damage.
+//
+// # A coupling any new fault site must honour
+//
+// The returned error carries ErrFaultRouted, which is how the application
+// layer knows this function already dispatched the fault and must not park the
+// job a second time for it.
+//
+// It used to carry nothing, and the caller inferred the same thing from the
+// mere PRESENCE of a *storagefault.Fault in the chain. That inference held
+// only while this function was the one thing that let a fault escape the
+// barrier, and it is not: the SyncTarget boundary mints its own fault when the
+// worker does not answer, filewriter.go and assembler.go both build faults
+// with storagefault.Classify, and any of those reaching the application layer
+// was read as "already handled" and silently swallowed — the job carrying on
+// with a file that was never trimmed.
+//
+// So the marker states the fact rather than leaving it to be deduced. A new
+// fault site inside this package still routes through here; one that does not
+// is now visibly unrouted rather than indistinguishable from a routed one.
 func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 	if f.Permanent {
 		b.log.Error("durability barrier hit a permanent storage fault", "job", jobID, "fault", f)
@@ -506,70 +476,6 @@ func (b *Barrier) routeFault(jobID string, f *storagefault.Fault) error {
 	b.log.Warn("durability barrier hit a retryable storage fault", "job", jobID, "fault", f)
 	b.stall.Stall(jobID, f)
 	return fmt.Errorf("%w: %w", ErrFaultRouted, f)
-}
-
-// priorExtent loads the committed extent for one file, or returns a zero
-// extent with an empty artCount-wide bitmap when none exists.
-//
-// The bitmap is re-derived at artCount bits rather than adopted as loaded,
-// and that is load-bearing in both directions:
-//
-//   - ExtentStore.Load rebuilds each bitmap at its full BYTE width, because
-//     the blob is all it has. That width is always a multiple of 64, so
-//     Bitmap's tail-word mask cannot fire, and any padding bits in a damaged
-//     or externally-written blob survive into Count() — over-reporting how
-//     many articles are durable, which is the over-claim direction the
-//     design forbids. priorExtent has artCount and the store does not, so
-//     this is the only place the mask can be applied. Re-deriving through
-//     BitmapFromBytes applies it; narrowing what Load returned would not.
-//
-//   - A stored bitmap narrower than artCount is widened by zero-padding,
-//     which reads as "those articles are not durable yet" — the safe
-//     direction under S3.
-//
-// The extent is returned by value and Bitmap.Set has a value receiver that
-// mutates through the shared backing slice, so the caller's ext.Durable.Set
-// reaches this bitmap's storage. That holds only while Set never reassigns
-// words; see the note on Bitmap.Set.
-func (b *Barrier) priorExtent(ctx context.Context, jobID string, idx int32, artCount int) (FileExtent, error) {
-	e, ok, err := b.exts.LoadFile(ctx, jobID, idx)
-	if err != nil {
-		return FileExtent{}, fmt.Errorf("durability: barrier load prior extent job=%s file=%d: %w", jobID, idx, err)
-	}
-	if !ok {
-		return FileExtent{Durable: NewBitmap(artCount)}, nil
-	}
-	raw := e.Durable.Bytes()
-	if need := (artCount + 63) / 64 * 8; len(raw) < need {
-		widened := make([]byte, need)
-		copy(widened, raw)
-		raw = widened
-	}
-	bm, err := BitmapFromBytes(raw, artCount)
-	if err != nil {
-		return FileExtent{}, fmt.Errorf("durability: barrier re-derive bitmap job=%s file=%d: %w", jobID, idx, err)
-	}
-	e.Durable = bm
-	return e, nil
-}
-
-// durableAt builds verifiedPrefix's per-fact predicate for the barrier: a
-// fact counts when its article has a file-local ordinal and that ordinal's
-// durable bit is set.
-//
-// A hole stops the walk and leaves durable untouched. That separation is the
-// #311/#353 distinction: resume reads the bitmap, so an article above the hole
-// is still durable and is not re-fetched, while the CRC anchor reads the walk,
-// so it does not claim a prefix it cannot prove. Collapsing the two into one
-// value is what made writeCursor unusable as a durability anchor.
-//
-// A closure rather than a precomputed []bool so the ordinal lookup is skipped
-// for every fact past the break — verifiedPrefix stops at the first false.
-func durableAt(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) func(i int) bool {
-	return func(i int) bool {
-		ord, ok := t.FileLocalOrdinal(idx, facts[i].ArtIdx)
-		return ok && durable.Get(ord)
-	}
 }
 
 // Truncator is a SyncTarget that can also trim a completed file.
@@ -586,24 +492,36 @@ type Truncator interface {
 
 // FinalizeFile checkpoints one completed file and trims it to its real extent.
 //
-// The bound is the highest end offset among the file's DURABLE articles —
-// max(Offset+Length) over the facts whose durable bit is set — and getting
-// that quantity right is the whole point of this function.
+// The bound is max(Offset+Length) over everything the record will hold once
+// this call commits — the file's stored runs, plus the articles this drain
+// just made durable — and getting that quantity right is the whole point of
+// this function.
 //
 // It is emphatically NOT this run's high-water mark. That figure describes the
 // articles this process happened to fetch, so on a resumed file it sits below
 // what earlier runs wrote and truncating to it discards them. That is #342 and
 // #350, and it is silent without par2.
 //
-// It is also NOT FileExtent.VerifiedTo. VerifiedTo is the GAPLESS PREFIX and
-// deliberately stalls at the first hole, so a 40 GB file with one permanently
-// failed article at 2 GB would be cut to 2 GB — far worse than the bug above,
-// and it destroys precisely the blocks par2 would repair from. Extent and
-// gapless prefix are different quantities and the distinction is load-bearing.
+// It is also NOT a gapless prefix. A gapless prefix deliberately stalls at the
+// first hole, so a 40 GB file with one permanently failed article at 2 GB would
+// be cut to 2 GB — far worse than the bug above, and it destroys precisely the
+// blocks par2 would repair from. A run record has no trouble spanning a hole:
+// the hole is simply a gap between two rows, and the maximum is taken over
+// both.
 //
-// Deriving it from Class A rather than storing it means there is no second
-// copy to drift (S5), and it is correct by construction: every fact counted
-// has an article behind it whose bytes a completed fsync covered.
+// # Two guards deleted here on purpose
+//
+// This function used to carry two of them, and both existed only because the
+// two records could disagree — one naming an article the other did not call
+// durable, and the reverse. Neither state is representable in a single record
+// written after the fsync, so both guards are gone rather than ported. Read
+// their absence as the class being deleted, not as an oversight.
+//
+// A third guard went the same way, one layer up: the barrier used to refuse a
+// target that reported zero articles, because committing a zero-width durable
+// bitmap over the stored one erased every bit a job had accumulated. Nothing
+// sizes a bitmap any more, so there is no zero-width bitmap and no erasure to
+// guard against — SyncTarget.ArticleCount went with it.
 //
 // Truncation only ever shrinks (S6). The writer refuses a bound above the file
 // on disk rather than clamping, because growing appends zeros, which asserts
@@ -636,90 +554,27 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		}
 		return nil, b.raise(jobID, "sync", t.Path(idx), err)
 	}
-	// One read of the file's facts for all three walks below. They ask three
-	// different questions of the same rows — the CRC anchor, the durable
-	// bound, the recorded bound — and each used to load them again.
-	facts, err := b.facts.ForFile(ctx, jobID, idx)
-	if err != nil {
-		return nil, fmt.Errorf("durability: finalize facts job=%s file=%d: %w", jobID, idx, err)
-	}
-	ext, walk, acked, err := b.buildExtent(ctx, jobID, idx, written, facts, t)
-	if errors.Is(err, ErrFileNotOpen) {
-		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
+
+	arts := make([]DurableArticle, 0, len(written))
+	acked := make([]int32, 0, len(written))
+	for _, w := range written {
+		arts = append(arts, durableArticle(idx, w))
+		acked = append(acked, w.ArtIdx)
 	}
 
-	bound := durableExtent(facts, idx, ext.Durable, t)
-	// A completed file whose recorded articles are not ALL durable must not be
-	// trimmed to the durable bound.
-	//
-	// The two sets coincide only when every article of a completed file is
-	// Done — hence durable — or was permanently failed WITHOUT decoding, which
-	// is the only kind that wrote no Class A fact.
-	//
-	// An earlier version of this paragraph asserted that of every failed
-	// article. It is false for the two the assembler refuses after decoding:
-	// an arrival at an already-written offset, and an article displaced from
-	// one. Both decoded, so both have a Class A fact appended at decode time
-	// and independent of any write, and neither earns a durable bit. #386 made
-	// the displaced case routinely reachable — before it, a file with a
-	// cache-resident collision never reached TotalParts and so never finalized
-	// at all. See #389, which is about what that costs rather than what it is.
-	//
-	// So a gap between the sets means one of two things: a collision of that
-	// kind, or a RETRY of a finalize whose earlier attempt consumed the
-	// writer's drain report without committing the bits it earned. The second
-	// is why the bound must not drop: those bytes are on disk, the durable
-	// bound sits below them, and truncating to it destroys them. That is the
-	// #342/#350 family arriving through the recovery path, and it is silent.
-	//
-	// The recorded bound is safe where the durable one is not: every fact names
-	// an article that decoded, so nothing below its end is pre-allocation
-	// padding, and Truncate only ever shrinks (S6). Trailing zeros par2 reports
-	// as damage is a visible, repairable cost; downloaded bytes gone is not.
-	if bound > 0 {
-		recorded, missing, unrecorded := recordedExtent(facts, idx, ext.Durable, t)
-		if missing > 0 {
-			b.log.Warn("finalizing a file whose recorded articles are not all durable; "+
-				"trimming to the recorded extent rather than the durable one so no "+
-				"already-written bytes are destroyed. Expected after an offset "+
-				"collision, or on a retry of an interrupted finalize",
-				"job", jobID, "file", idx, "not_durable", missing,
-				"durable_extent", bound, "recorded_extent", recorded)
-			bound = recorded
-		}
-		// The mirror case, and the one no fact-derived bound can survive: an
-		// article that is durable but that Class A does not name.
-		//
-		// It is reachable because R2 makes the fact append independent of the
-		// write — pipeline.appendArticleFacts logs its error and lets the
-		// write proceed — so an article can reach disk, be drained, be
-		// fsynced, and earn a truthful durable bit while having no fact. Both
-		// durableExtent and recordedExtent answer by walking facts, so both
-		// walk straight past its bytes. When it holds the file's top offset
-		// they return a bound below its end and the truncate destroys it,
-		// while buildExtent has already added it to acked — so it is marked
-		// Done in the same call and never re-fetched.
-		//
-		// Refuse to truncate at all rather than trying to repair the bound.
-		// The bytes are on disk and correct; what is missing is the record
-		// that would let a walk find them, and no bound derived from that
-		// record can be trusted while it is incomplete. Leaving pre-allocation
-		// zeros is the same visible, repairable cost the recorded-bound
-		// fallback above already accepts (S6 only ever shrinks, so declining
-		// to shrink is always safe).
-		if unrecorded > 0 {
-			b.log.Warn("finalizing a file with durable articles the fact log does not name; "+
-				"skipping the truncate entirely, because every fact-derived bound sits "+
-				"below their bytes and would destroy them",
-				"job", jobID, "file", idx, "unrecorded", unrecorded,
-				"durable_extent", bound, "recorded_extent", recorded)
-			bound = 0
-		}
+	// The bound is taken BEFORE the commit and over both sources, rather than
+	// after it over one. The commit has to be the last thing that can fail
+	// before the ack (§6), so a truncate placed after it would sit between the
+	// two statements nothing may be inserted between — and a truncate placed
+	// after the ack would leave an untrimmed file behind on any crash, which
+	// par2's QuickCheck reads as a missing file (§3.5) and works to
+	// reconstruct.
+	stored, err := b.runs.ForFile(ctx, jobID, idx)
+	if err != nil {
+		return nil, fmt.Errorf("durability: finalize runs job=%s file=%d: %w", jobID, idx, err)
 	}
+	bound := boundOver(stored, arts)
+
 	if bound > 0 {
 		if err := t.Truncate(ctx, idx, bound); err != nil {
 			if errors.Is(err, ErrFileNotOpen) {
@@ -729,129 +584,97 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			}
 			return nil, b.raise(jobID, "truncate", t.Path(idx), err)
 		}
-		// The truncate changed the file, so the size/mtime stamp taken inside
-		// buildExtent describes a file that no longer exists. Re-stat and
-		// re-sync: a stamp that does not match the file on disk fails S7's
-		// validity check on the next resume and throws away a valid cache.
+		// The truncate changed the file, so it is fsynced again before its
+		// size is read: the size is what §3.3's overlap check and §3.4's
+		// resume gate are both stated against, and reading it from a file
+		// whose metadata is not yet on stable storage would compare against a
+		// number the next restart does not see.
 		if err := t.Sync(ctx, idx); err != nil {
+			if errors.Is(err, ErrFileNotOpen) {
+				// Closed between this function's own Truncate and this Sync.
+				// Every other operation on t in this function treats a close
+				// as "nothing left to do here" — Drain, the pre-truncate
+				// Sync, Truncate and Stat all do — and this one raised a
+				// storage fault instead, which parks a job on a healthy disk
+				// over a race that means the file is already someone else's.
+				// See the pre-truncate Sync for the same argument at length.
+				b.log.Debug("file closed between its finalize truncate and sync",
+					"job", jobID, "file", idx)
+				return nil, nil
+			}
 			return nil, b.raise(jobID, "sync", t.Path(idx), err)
 		}
-		size, modNs, err := t.Stat(idx)
-		if err != nil {
-			return nil, b.raise(jobID, "stat", t.Path(idx), err)
-		}
-		ext.Size, ext.ModTimeNs = size, modNs
-		// buildExtent judged this against pre-allocation's size, where a
-		// complete file's prefix falls short of the stat and the CRC reads as
-		// unavailable. The truncate has just made Size the file's true end, so
-		// this is the first point at which "the prefix covers the whole file"
-		// can be answered.
-		//
-		// Re-asked through verifiedPrefix against the same facts, NOT recomputed
-		// from VerifiedTo and Size. Those two alone cannot see a fact the walk
-		// never consumed, which is how an article overlapping a sibling without
-		// extending the file published a CRC of the bytes that should have been
-		// written (#387).
-		//
-		// Re-ASKED, not re-walked. buildExtent's walk already established the
-		// prefix and whether it consumed every fact; only the size has changed,
-		// so this is a comparison rather than another full pass of
-		// crc32util.Combine (163 ms on a 20,000-article file, measured).
-		ext.HasPrefixCRC = walk.wholeFile(ext.Size)
+	}
+	// One stat, unconditionally — not nested inside `if bound > 0` above. A
+	// bound of 0 means no run, stored or newly acked, claims any bytes, so the
+	// truncate is skipped; nothing here is exempt from needing the file's real
+	// size, though, because it is what §3.3's overlap check below is compared
+	// against. Reading it from `t.Stat` in both branches — rather than falling
+	// back to some zero value when bound == 0 — is what keeps that comparison
+	// honest for a file this call finds already empty. After any truncate,
+	// so the size reflects the trim when one happened. R27: a fault here
+	// names the file, which is what makes the stall reason actionable.
+	size, err := t.Stat(idx)
+	if errors.Is(err, ErrFileNotOpen) {
+		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, b.raise(jobID, "stat", t.Path(idx), err)
 	}
 
-	// Classified once, so the two returns below cannot disagree about whether
-	// a finding exists.
-	//
-	// overlapAnywhere rather than the walk's own classification, and this is
-	// the ONE place that difference matters. A file being finalized has stopped
-	// receiving articles, so a hole in it is permanent — and the walk cannot
-	// see past a hole, because computing a contiguous prefix means halting at
-	// the first one. An overlap above a permanent gap would otherwise never be
-	// reported by anything: no later checkpoint fills the hole, and no later
-	// finalize runs for this file. Run keeps the cheap classification because
-	// its holes are usually temporary.
-	//
-	// Classification is free and repeatable; only admit spends the latch, and
-	// it is called at each return rather than here. See admit.
-	var found []PostAnomaly
-	if victim, arrival, ok := overlapAnywhere(facts, durableAt(facts, idx, ext.Durable, t)); ok {
-		found = append(found, overlapAnomaly(idx, t.Path(idx), victim, arrival))
-	}
-
-	if err := b.exts.Commit(ctx, jobID, []FileExtent{ext}); err != nil {
+	collisions, err := b.runs.Commit(ctx, jobID, arts)
+	if err != nil {
 		return nil, fmt.Errorf("durability: finalize commit for %s file %d: %w", jobID, idx, err)
 	}
-	if len(acked) == 0 {
-		return b.admit(jobID, found), nil
-	}
-	slices.Sort(acked)
-	if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
-		return nil, fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
+	if len(acked) > 0 {
+		slices.Sort(acked)
+		if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
+			// Carried with the error, as in Run and for the same reason: the
+			// commit landed, so the collision is real and this is the only
+			// cycle that can ever see it.
+			return b.admit(jobID, collisionFindings(collisions, t.Path)),
+				fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
+		}
 	}
 	// Below both the commit and the ack, as in Run. A finalize that failed
-	// between them used to lose the report as well, and it is the retry of
-	// THIS path that the #342/#350 recovery guard exists to serve — with the
-	// report gone, the retry drains nothing and the durable bound sits below
-	// bytes that are genuinely on disk.
+	// between them used to lose the report as well, and the #342/#350 recovery
+	// case is what that cost: with the report gone, the retry drains nothing
+	// and a bound derived only from this run's articles sits below bytes that
+	// are genuinely on disk.
 	t.Confirm(ctx, idx)
-	return b.admit(jobID, found), nil
+
+	// A file being finalized has stopped receiving articles, so its overlap is
+	// permanent and this is the last chance to notice it. Classified from the
+	// stored rows after the commit, so the articles this call just recorded
+	// are included, and against the POST-truncate size, which is the first
+	// point at which the file's size is its true content length rather than
+	// pre-allocation's.
+	// Collisions first, for the reason Run gives: one warning per file, spent
+	// on the more specific finding.
+	cands := collisionFindings(collisions, t.Path)
+	cands = append(cands, b.overlapFindings(ctx, jobID, []int32{idx}, map[int32]int64{idx: size}, t)...)
+	return b.admit(jobID, cands), nil
 }
 
-// durableExtent returns the highest end offset among the file's durable
-// articles, or 0 when none is durable.
+// boundOver returns the highest end offset among a file's stored runs and the
+// articles about to join them, or 0 when there are none.
 //
-// Unlike verifiedPrefix this does NOT stop at a hole. A hole means an article
-// permanently failed, and the bytes above it are still real bytes that par2
-// repairs from — stopping there is the data-loss bug this function exists to
-// avoid. The two walks read the same facts and answer deliberately different
-// questions: verifiedPrefix asks "what can I prove about a CRC anchor", this
-// asks "how long is the file".
-func durableExtent(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) int64 {
+// Both sources, because the commit that folds the second into the first has
+// not happened yet — see FinalizeFile for why it cannot happen earlier. Taking
+// the maximum rather than a sum is what lets the bound span a permanently
+// failed article's hole instead of stopping at it.
+func boundOver(stored []Run, arts []DurableArticle) int64 {
 	var high int64
-	for _, f := range facts {
-		ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx)
-		if !ok || !durable.Get(ord) {
-			continue
+	for _, r := range stored {
+		if end := r.Offset + r.Length; end > high {
+			high = end
 		}
-		if end := f.Offset + int64(f.Length); end > high {
+	}
+	for _, a := range arts {
+		if end := a.Offset + int64(a.Length); end > high {
 			high = end
 		}
 	}
 	return high
-}
-
-// recordedExtent returns the highest end offset among ALL of the file's
-// recorded facts, and how many of them are not durable.
-//
-// It is the fallback bound FinalizeFile uses when the durable set is provably
-// incomplete — see the guard there for why a durable-only bound is unsafe on a
-// retried finalize. The count is what decides that, so it is returned rather
-// than derived again by the caller: "some fact has no durable bit" and "the
-// recorded extent is longer than the durable one" are not the same condition,
-// and a non-durable article at a LOW offset satisfies only the first.
-//
-// unrecorded is the OTHER direction: durable articles the fact log does not
-// name at all. It is counted here because this walk already holds both sides,
-// and it is separate from missing because the two have opposite remedies — a
-// recorded-but-not-durable article makes the recorded bound the safe one,
-// while a durable-but-unrecorded article makes EVERY fact-derived bound
-// unsafe, since no walk over facts can see the bytes it holds.
-func recordedExtent(facts []ArticleFact, idx int32, durable Bitmap, t SyncTarget) (high int64, missing, unrecorded int) {
-	// Distinct rather than a plain counter: Class A is appended at least once
-	// per article (R12), so a replayed append would otherwise cancel out a
-	// genuinely unrecorded article and hide the very case this counts.
-	covered := make(map[int]struct{}, len(facts))
-	for _, f := range facts {
-		if end := f.Offset + int64(f.Length); end > high {
-			high = end
-		}
-		ord, ok := t.FileLocalOrdinal(idx, f.ArtIdx)
-		if !ok || !durable.Get(ord) {
-			missing++
-			continue
-		}
-		covered[ord] = struct{}{}
-	}
-	return high, missing, durable.Count() - len(covered)
 }

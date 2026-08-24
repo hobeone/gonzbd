@@ -961,10 +961,31 @@ func decodePayload(body []byte) (decodedPayload, error) {
 			// ACROSS a restart or a close-handles cycle it is not. FileWriter
 			// .acceptedAt is per-open-episode residency by design, so a later
 			// segment finds offset 0 unowned and overwrites what is there. The
-			// file then completes WRONG rather than short. The durability
-			// layer still reports the overlap from the Class A facts, which
-			// persist (#413), but that is a warning after the fact and no
-			// article is failed for it.
+			// file then completes WRONG rather than short.
+			//
+			// The durability record DOES report that, but by neither of the
+			// two mechanisms a reader would reach for, and an earlier draft
+			// of this comment naming one of them was simply wrong. Two runs
+			// asserting the SAME offset never abut, so they never merge;
+			// mergeAdjacentRuns keeps the longer of the two and drops the
+			// other, which is what stops a later FinalizeFile from bounding
+			// its truncate to the shorter. The dropped row then contributes
+			// nothing to Σ length, so overlapFrom's comparison against the
+			// file's stat size (#413) sees no evidence and raises nothing —
+			// #413 catches the PARTIAL overlaps, which do leave two rows
+			// tiling past the file's end. And §3.5's row count does not
+			// withhold the whole-file CRC either, because one row is exactly
+			// what survives.
+			//
+			// What catches it is Commit RETURNING the drop, which the barrier
+			// turns into a PostAnomaly naming both articles and the contested
+			// offset (durability.Collision). The commit is the last moment the
+			// collision exists: afterwards the surviving row is
+			// indistinguishable from one that never had a rival. And what
+			// withholds the CRC is §3.5's ARTICLE-COVERAGE half — the dropped
+			// article's index is in no run's span, so the survivor cannot
+			// cover the file's whole article range. Both were added because
+			// this shape defeats every check stated in bytes.
 			//
 			// Either way nothing in the diagnosis names UU as the cause. That
 			// is #346, and it is a gap in this offset, not in the collision

@@ -58,9 +58,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
 	if err := q.Add(qjob); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := q.SetFileCRC32(jobID, 0, 0x1068AFA6); err != nil {
-		t.Fatalf("SetFileCRC32: %v", err)
-	}
+	seedFileCRC(t, q, qjob, 0, 0x1068AFA6)
 
 	// The precondition the whole feature rests on, asserted against a
 	// snapshot because that is what maybeReleaseRecoveryVolumes receives.
@@ -131,9 +129,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
 	if err := q.Add(qjob); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := q.SetFileCRC32(jobID, 0, 0xDEADBEEF); err != nil {
-		t.Fatalf("SetFileCRC32: %v", err)
-	}
+	seedFileCRC(t, q, qjob, 0, 0xDEADBEEF)
 
 	snap := q.SnapshotJob(jobID)
 	if snap == nil || !snap.HasDeferredPar2() {

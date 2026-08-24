@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
@@ -323,8 +322,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 //
 // All three must return the article to the dispatch pool rather than dropping
 // it, and none may hand it to the assembler — writing into a file whose job no
-// longer exists creates bytes nothing will ever clean up. The Class A fact is
-// not recorded either: there is no job to record it against.
+// longer exists creates bytes nothing will ever clean up.
 func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 	t.Parallel()
 
@@ -337,12 +335,10 @@ func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 		},
 	}, slog.New(slog.DiscardHandler))
 
-	facts := &countingFactLog{}
 	p := &pipeline{
 		log:       slog.New(slog.DiscardHandler),
 		queue:     queue.New(),
 		assembler: forbidden,
-		factLog:   facts,
 		fileInfo:  make(map[fileKey]assembler.FileInfo),
 	}
 
@@ -351,9 +347,6 @@ func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 		JobID: "gone", FileIdx: 0, ArtIdx: 0, MessageID: "a@x",
 		Data: []byte("payload"), ServerName: "s1",
 	})
-	if facts.calls != 0 {
-		t.Errorf("recorded %d Class A facts for a job that is not in the queue", facts.calls)
-	}
 }
 
 // TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered pins
@@ -366,14 +359,12 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 	if err := q.MarkArticleEmittedByIdx(job.ID, 0); err != nil {
 		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
-	facts := &countingFactLog{}
 	p := &pipeline{
 		log:   slog.New(slog.DiscardHandler),
 		queue: q,
 		assembler: assembler.New(assembler.Options{
 			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler)),
-		factLog:  facts,
 		fileInfo: make(map[fileKey]assembler.FileInfo),
 	}
 
@@ -388,23 +379,33 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 		t.Error("the article was left marked Emitted after a registration failure, so " +
 			"the dispatcher never offers it again and the job stalls at 99%")
 	}
-	if facts.calls != 0 {
-		t.Errorf("recorded %d Class A facts for a file the manifest does not have", facts.calls)
-	}
 }
 
-// TestHandleSuccessResult_RecordsTheFactAndTheBytesOnTheHappyPath pins the two
-// things this function gained: the Class A append, and the byte count the
-// checkpoint cadence's volume bound is measured in.
+// TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes pins what
+// this function does and, as importantly, what it no longer does.
 //
-// The fact must carry the DECODED offset and length — not the NZB's encoded
-// figures — because those are what a resume verifies the file's bytes against.
-func TestHandleSuccessResult_RecordsTheFactAndTheBytesOnTheHappyPath(t *testing.T) {
+// It used to append a Class A fact here — the article's decoded offset, length
+// and CRC — BEFORE handing the bytes to the assembler, with no ordering
+// against the write and no way to take it back. That is #389 and #421: an
+// article the assembler then rejected held a record with no bytes behind it,
+// and a bogus yEnc offset was recorded permanently because the append was
+// INSERT OR IGNORE and re-fetching was the exact case it ignored. The pipeline
+// now records nothing at all; the barrier records after the fsync.
+//
+// The byte count the checkpoint cadence's volume bound is measured in stays,
+// and it is in DECODED bytes — the payload's length, not the NZB's encoded
+// figure — because it is compared against a budget describing bytes on disk.
+//
+// The article's offset and CRC are not lost with the fact: they travel on to
+// the assembler, which reports them in its drain, and the barrier records them
+// there. That hand-off is pinned in internal/assembler
+// (TestSyncTargetFor_RoundTripsThroughTheWorker and the durable-ack suite);
+// what is pinned here is that this site claims nothing.
+func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	q, job := helperJob(t, "happy", 1, 1)
-	facts := &countingFactLog{}
+	q, job := helperJob(t, "happy", 1, 2)
 	var notedJob string
 	var notedBytes int
 	p := &pipeline{
@@ -412,9 +413,12 @@ func TestHandleSuccessResult_RecordsTheFactAndTheBytesOnTheHappyPath(t *testing.
 		queue:       q,
 		downloadDir: dir,
 		assembler: assembler.New(assembler.Options{
-			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+			// TotalParts 2 against one written article, so the file does not
+			// complete and the assembler keeps it open for the drain below.
+			FileInfo: func(string, int) (assembler.FileInfo, error) {
+				return assembler.FileInfo{TotalParts: 2}, nil
+			},
 		}, slog.New(slog.DiscardHandler)),
-		factLog:  facts,
 		fileInfo: make(map[fileKey]assembler.FileInfo),
 		onArticleWritten: func(jobID string, n int) {
 			notedJob, notedBytes = jobID, n
@@ -431,35 +435,20 @@ func TestHandleSuccessResult_RecordsTheFactAndTheBytesOnTheHappyPath(t *testing.
 		Offset: 4096, Data: payload, CRC: 0xC0FFEE, ServerName: "s1",
 	})
 
-	if len(facts.appended) != 1 {
-		t.Fatalf("recorded %d Class A facts, want 1 — without one the completion "+
-			"truncate has no bound and a resume can verify nothing", len(facts.appended))
-	}
-	got := facts.appended[0]
-	if got.Offset != 4096 || got.Length != int32(len(payload)) || got.CRC32 != 0xC0FFEE {
-		t.Errorf("fact = %+v, want offset 4096, length %d, crc 0xc0ffee", got, len(payload))
-	}
 	if notedJob != job.ID || notedBytes != len(payload) {
 		t.Errorf("reported (%q, %d) to the checkpoint cadence, want (%q, %d) — the "+
 			"volume bound never fires and a fast link carries a whole interval unacked",
 			notedJob, notedBytes, job.ID, len(payload))
 	}
-}
 
-// countingFactLog records what the pipeline appends, so the Class A write can
-// be asserted without a database.
-type countingFactLog struct {
-	calls    int
-	appended []durability.ArticleFact
+	// Nothing was RESOLVED, and that is the half the test's name is about. The
+	// article's identity, offset and CRC travel on with it to the assembler,
+	// which reports them back in its drain; only the barrier turns that report
+	// into a record, and only after the fsync. A pipeline that resolved
+	// anything here would be claiming durability nothing has established —
+	// which is what appending a Class A fact before the write amounted to.
+	if snap := q.SnapshotJob(job.ID); snap.Progress().ArticleDone(0) {
+		t.Error("the article is Done straight off the pipeline; nothing has fsynced it, " +
+			"so a crash here loses bytes the queue has already stopped asking for")
+	}
 }
-
-func (c *countingFactLog) Append(_ context.Context, _ string, facts []durability.ArticleFact) error {
-	c.calls++
-	c.appended = append(c.appended, facts...)
-	return nil
-}
-
-func (c *countingFactLog) ForFile(context.Context, string, int32) ([]durability.ArticleFact, error) {
-	return nil, nil
-}
-func (c *countingFactLog) DeleteJob(context.Context, string) error { return nil }

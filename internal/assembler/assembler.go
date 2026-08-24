@@ -84,6 +84,12 @@ type WriteRequest struct {
 	// callers must not modify Data after enqueueing.
 	Data []byte
 
+	// CRC32 is the decoded article's CRC32 — the same value the decoder
+	// validated against the yEnc trailer. It travels alongside Data through
+	// Accept, the write cache, and noteWritten, unread until a later task
+	// consumes it off Drain's report.
+	CRC32 uint32
+
 	// FatalErr is set if the article permanently failed to download.
 	// If non-nil, the assembler skips writing and counts the part toward
 	// file completion. Duplicate failures are deduplicated locally
@@ -160,8 +166,8 @@ type Options struct {
 	// It no longer reports a whole-file CRC. The assembler cannot compute one
 	// honestly: a resumed run is not sent the articles an earlier run
 	// completed, so the parts it sees never tile the file (#349). The verified
-	// figure is durability.FileExtent.PrefixCRC, guarded by HasPrefixCRC,
-	// which the resumer derives from Class A over the file's real extent.
+	// figure is the crc32 of a file's single durable run, which the barrier
+	// builds by combining the CRCs of the articles that abut as they join it.
 	//
 	// The callback should be cheap; expensive work should be dispatched
 	// asynchronously.
@@ -999,7 +1005,7 @@ func (a *Assembler) dispatchRequest(
 //     a phase neither Stall nor Fail can act on: Verifying → Paused is not a
 //     legal status edge, and maybeFinalize is a no-op once PostProc is set.
 //   - On the opClose path the barrier has already drained, synced, truncated,
-//     committed the extent and acked the articles. A fault from the redundant
+//     committed the runs and acked the articles. A fault from the redundant
 //     second fsync would race the completion it is part of.
 //
 // A permanent fault is preferred over the first one when they differ, because
@@ -1329,11 +1335,16 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		)
 	}
 	// No seeded high-water mark, and no seeded write cursor. Both used to
-	// carry an earlier run's extent into this one so the completion truncate
-	// would not cut away what those runs wrote (#342). The truncate no longer
-	// derives its bound from anything this process measured — it comes from
-	// the durable facts, which describe the FILE rather than the session — so
+	// carry forward how far EARLIER PROCESSES — previous starts of the daemon
+	// — had written this file, so the completion truncate would not cut away
+	// the bytes those processes put there (#342). The truncate no longer
+	// derives its bound from anything this process measured: it comes from the
+	// file's durable runs, which describe the FILE rather than the session, so
 	// there is nothing left for a seed to protect.
+	//
+	// "Run" is never a daemon lifetime in this block, and it still carries two
+	// senses: a DURABLE run is a recorded span of articles, a CONTIGUOUS run
+	// is the write cache's coalescing unit.
 	//
 	// The cursor starts at 0 for the same reason it is safe to: it is a
 	// coalescing hint, not an authority (#311, #353). A resumed file whose
@@ -1423,10 +1434,10 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// what handleFatalArticle already does for a permanent failure, which
 		// is the same fact arriving from the other side of the pipeline.
 		//
-		// Counting it claims nothing about its bytes: it decoded no Class A
-		// fact and earns no durable bit, so no fact-derived truncate bound
-		// reaches past it, and its bytes are charged to failedBytes for par2
-		// to repair from.
+		// Counting it claims nothing about its bytes: nothing wrote them, so
+		// no durable run covers it and the truncate bound never reaches past
+		// it, and its bytes are charged to failedBytes for par2 to repair
+		// from.
 		return a.routeAcceptFailure(f, req, err)
 	}
 	return true
@@ -1479,7 +1490,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		}
 		return rej
 	}
-	return f.w.Accept(id, req.Offset, req.Data)
+	return f.w.Accept(id, req.Offset, req.Data, req.CRC32)
 }
 
 // rejectedArticleError marks a refusal that is about the ARTICLE, so the
@@ -1690,11 +1701,11 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 // finalizeFile records that a file's parts have all arrived and reports it.
 //
 // It no longer truncates and no longer computes a CRC. Both decisions moved to
-// durability.Barrier: the truncate bound is the highest end offset among the
-// file's DURABLE articles, which only the fact log knows, and the whole-file
-// CRC is FileExtent.PrefixCRC guarded by HasPrefixCRC. Doing either here would
-// be this package asserting something about bytes on disk that it cannot check
-// — the shape behind #342, #349 and #350.
+// durability.Barrier: the truncate bound is the highest end offset the file's
+// durable runs reach, which spans what earlier processes wrote and this one
+// never saw, and the whole-file CRC is the crc32 of a file's single run. Doing
+// either here would be this package asserting something about bytes on disk
+// that it cannot check — the shape behind #342, #349 and #350.
 //
 // It no longer CLOSES the file either, and that is the load-bearing part. The
 // barrier's FinalizeFile must Drain, Sync, Truncate and Stat this file, and
@@ -1791,7 +1802,7 @@ const offsetSlackDivisor = 8
 // is therefore attacker-controlled: without this check, a hostile or
 // compromised server can return a single article whose offset makes WriteAt
 // produce a file of arbitrary apparent size. The completion truncate no longer
-// commits that size — it is bounded by the durable facts — but the sparse file
+// commits that size — it is bounded by the durable runs — but the sparse file
 // itself is still the attack, so the offset is rejected before the write.
 //
 // It returns the reason rather than a bare bool because the rejection has to

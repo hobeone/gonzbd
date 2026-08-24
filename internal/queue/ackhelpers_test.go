@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -14,10 +15,10 @@ import (
 // makes them different kinds of claim:
 //
 //   - A success asserts bytes are on stable storage, so the only production
-//     path is a DurableProof minted by a barrier, or SeedFromExtents replaying
-//     a barrier's committed Class B cache. ackDone uses the latter: it is
-//     exported, it needs no proof, and it is the real resume path rather than
-//     a test-only shortcut. Deliberately NOT an exported test constructor for
+//     path is a DurableProof minted by a barrier, or SeedFromRuns replaying
+//     the runs a barrier recorded. ackDone uses the latter: it is exported, it
+//     needs no proof, and it is the real resume path rather than a test-only
+//     shortcut. Deliberately NOT an exported test constructor for
 //     DurableProof — that would move R9's compiler enforcement into a CI grep.
 //   - A failure asserts nothing about disk (R10), so AckPermanentFailure is
 //     callable directly and the helper is a thin index-resolving wrapper.
@@ -51,23 +52,23 @@ func artIdxFor(t *testing.T, q *Queue, jobID, msgID string) int32 {
 	return 0
 }
 
-// ackDoneIdx marks articles durable through SeedFromExtents, the path a
-// resumed job uses to adopt a barrier's committed durable bitmap.
+// ackDoneIdx marks articles durable the way a barrier does: it RECORDS the
+// runs first, then installs them in the live work set.
 //
-// It rebuilds each affected file's extent from the job's CURRENT durable bits
-// plus the newly named articles, because SeedFromExtents installs a bitmap
-// rather than merging one: seeding only the new articles would still be
-// correct (markDone is idempotent and never clears a bit), but rebuilding
-// keeps the extent a truthful picture of the file, which is what a barrier
-// would have committed.
+// Both halves are needed and the recording half is the one that is easy to
+// forget. Per-article resolution is no longer a column the queue re-serialises
+// on Update — it is derived from durable_runs and failed_articles — so a
+// fixture that only touched memory would vanish across every reload, which is
+// precisely what production does when no barrier has run.
+//
+// The in-memory install uses one single-article Run per named article rather
+// than merged spans: a run's article range is all SeedFromRuns reads, and
+// markDone is idempotent. The real merging is RunStore.Commit's job and is
+// pinned in internal/durability.
 func ackDoneIdx(t *testing.T, q *Queue, jobID string, artIdxs ...int32) {
 	t.Helper()
 	if len(artIdxs) == 0 {
 		return
-	}
-	add := make(map[int]bool, len(artIdxs))
-	for _, a := range artIdxs {
-		add[int(a)] = true
 	}
 
 	q.mu.RLock()
@@ -81,32 +82,52 @@ func ackDoneIdx(t *testing.T, q *Queue, jobID string, artIdxs ...int32) {
 		q.mu.RUnlock()
 		t.Fatalf("ackDoneIdx: job %s is not resident", jobID)
 	}
-	touched := make(map[int]bool)
-	for i := range add {
+	runs := make([]durability.Run, 0, len(artIdxs))
+	for _, a := range artIdxs {
+		i := int(a)
 		if i < 0 || i >= m.NumArticles() {
 			q.mu.RUnlock()
 			t.Fatalf("ackDoneIdx: article %d out of range for job %s", i, jobID)
 		}
-		touched[m.fileIndexForArticle(i)] = true
-	}
-	var exts []durability.FileExtent
-	for fi := range touched {
-		lo, hi := m.FileRange(fi)
-		bm := durability.NewBitmap(hi - lo)
-		for i := lo; i < hi; i++ {
-			if add[i] || (job.progress.ArticleDone(i) && !job.progress.ArticleFailed(i)) {
-				bm.Set(i - lo)
-			}
-		}
-		exts = append(exts, durability.FileExtent{
-			FileIdx: int32(fi), //nolint:gosec // G115: file counts are far below int32
-			Durable: bm,
+		runs = append(runs, durability.Run{
+			FileIdx:     int32(m.fileIndexForArticle(i)), //nolint:gosec // G115: file counts are far below int32
+			FirstArtIdx: a,
+			LastArtIdx:  a,
+			Length:      int64(m.ArticleBytes(i)),
 		})
 	}
 	q.mu.RUnlock()
 
-	if err := q.SeedFromExtents(jobID, exts); err != nil {
-		t.Fatalf("ackDoneIdx: SeedFromExtents: %v", err)
+	if err := q.SeedFromRuns(jobID, runs); err != nil {
+		t.Fatalf("ackDoneIdx: SeedFromRuns: %v", err)
+	}
+	// Recorded AFTER the install, from the job's resulting progress, so the
+	// stored record and the live work set cannot disagree about which
+	// articles this fixture claims.
+	if s, ok := q.store.(*SQLiteStore); ok {
+		q.mu.RLock()
+		live := q.byID[jobID]
+		q.mu.RUnlock()
+		commitBarrierRuns(t, s.db, live)
+	}
+}
+
+// discardRuns drops one file's durable runs, which is the ONLY mutation
+// durability.Resumer performs: a file missing or shorter than its runs claim
+// has disproved them, so they go and the file is fetched again.
+//
+// A fixture that wants to model a resume disproving a file has to do this, not
+// merely withhold the runs from ReplaceFromRuns. The queue re-derives every
+// article's state from the record on each re-hydration, so a withheld-but-
+// stored run comes straight back.
+func discardRuns(t *testing.T, q *Queue, jobID string, fileIdx int32) {
+	t.Helper()
+	s, ok := q.store.(*SQLiteStore)
+	if !ok {
+		t.Fatalf("discardRuns: queue for %s has no SQLite store", jobID)
+	}
+	if err := durability.NewSQLiteRunStore(s.db).DeleteFile(context.Background(), jobID, fileIdx); err != nil {
+		t.Fatalf("discardRuns: %v", err)
 	}
 }
 

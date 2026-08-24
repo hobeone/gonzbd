@@ -88,13 +88,17 @@ func (q *Queue) saveStore(_ string) error {
 // Used by Load to give a non-resident job (StatusQueued/StatusPaused at
 // restart) a real JobProgress instead of leaving it nil.
 //
-// The done and failed bits ARE restored, from the same
-// job_files.articles_done bitmap the byte figures below sum — article_count
-// gives its width, so it decodes without a manifest. Without them every
-// article read as still to fetch, and a restart showed a half-downloaded
-// Queued or Paused job with EVERY article remaining until it was promoted.
-// Once the byte figures were cached the two even disagreed in kind: bytes
-// right, article count wrong.
+// The done and failed bits ARE restored, DERIVED from durable_runs and
+// failed_articles by Store.ArticleCountsByJob and delivered here as
+// FileMeta.Done/Failed. Without them every article read as still to fetch, and
+// a restart showed a half-downloaded Queued or Paused job with EVERY article
+// remaining until it was promoted. Once the byte figures were cached the two
+// even disagreed in kind: bytes right, article count wrong.
+//
+// The Done branch below is where that derivation has to be read carefully:
+// f.Failed[i] is applied only INSIDE it, so a resolution that left Done clear
+// for a failed article would make it Pending here and re-fetch it on every
+// restart. resolveArticles sets both, which is why failed implies done there.
 //
 // EMITTED genuinely does start clear, and must: it is transient per-process
 // state about what a downloader has in flight, and nothing that survived a
@@ -107,9 +111,10 @@ func (q *Queue) saveStore(_ string) error {
 //
 // BytesDownloaded and FailedBytes are seeded from FileMeta, and that is what
 // makes a non-resident job report the same figures a resident one does. Both
-// arrive from job_files — bytes_downloaded and failed_bytes, each cached
-// beside the articles_done bits it sums — which FileMeta's own doc explains,
-// including why the first is not read from file_extents.bytes_durable.
+// arrive from job_files — bytes_downloaded and failed_bytes, each caching a
+// sum over the same article resolution — which FileMeta's own doc explains,
+// including why the first is not derived from the durability record's own
+// lengths.
 //
 // Seeding them here does NOT recreate the two-writer defect that removed the
 // old columns (#306, #337). Nothing maintains these fields in parallel with

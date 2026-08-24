@@ -46,7 +46,7 @@ func fileIdxForArticle(m *queue.Manifest, i int) (int, bool) {
 
 // ackFailedIDs is AckPermanentFailure keyed by message ID, replacing the
 // deleted MarkArticlesFailed. A permanent failure asserts nothing about
-// disk, so unlike done articles it needs no durable-extent proof.
+// disk, so unlike done articles it needs no durable-run proof.
 func ackFailedIDs(t *testing.T, q *queue.Queue, m *queue.Manifest, jobID string, msgIDs []string) {
 	t.Helper()
 	idxs := make([]int32, 0, len(msgIDs))
@@ -130,17 +130,21 @@ func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Qu
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	// Collect done/failed state per file first, then apply it in two batched
-	// calls: SeedFromExtents installs a file's whole durable bitmap rather
-	// than merging into one, and AckPermanentFailure asserts nothing about
-	// disk so it needs no proof. Since buildQueueJob knows the full spec
-	// upfront there is no need to reconstruct "current" state from the
-	// job's progress (which is unexported outside package queue anyway).
+	// Collect done/failed state first, then apply it in two batched calls:
+	// SeedFromRuns installs the runs a barrier recorded, and
+	// AckPermanentFailure asserts nothing about disk so it needs no proof.
+	// Since buildQueueJob knows the full spec upfront there is no need to
+	// reconstruct "current" state from the job's progress (which is
+	// unexported outside package queue anyway).
 	//
 	// specs' file order is NOT the manifest's: NewJob calls sortJobFiles,
 	// so every lookup below goes through the message ID rather than
 	// trusting fi/ai to line up with the manifest's file/article indices.
-	doneByFile := make(map[int][]int) // manifest file index -> local ordinals
+	//
+	// One single-article Run per done article: a run's article range is all
+	// SeedFromRuns reads, and markDone is idempotent, so merging spans here
+	// would only make the fixture harder to read.
+	var runs []durability.Run
 	var failedIDs []string
 	for fi, f := range specs {
 		for ai, a := range f.articles {
@@ -154,29 +158,21 @@ func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Qu
 				if !ok {
 					t.Fatalf("buildQueueJob: article %s (global idx %d) not owned by any manifest file", id, globalIdx)
 				}
-				lo, _ := m.FileRange(mfi)
-				doneByFile[mfi] = append(doneByFile[mfi], globalIdx-lo)
+				runs = append(runs, durability.Run{
+					FileIdx:     int32(mfi),       //nolint:gosec // G115: file counts are far below int32
+					FirstArtIdx: int32(globalIdx), //nolint:gosec // G115: article counts are far below int32
+					LastArtIdx:  int32(globalIdx), //nolint:gosec // G115: article counts are far below int32
+					Length:      int64(m.ArticleBytes(globalIdx)),
+				})
 			}
 		}
-	}
-	exts := make([]durability.FileExtent, 0, len(doneByFile))
-	for mfi, ordinals := range doneByFile {
-		lo, hi := m.FileRange(mfi)
-		bm := durability.NewBitmap(hi - lo)
-		for _, o := range ordinals {
-			bm.Set(o)
-		}
-		exts = append(exts, durability.FileExtent{
-			FileIdx: int32(mfi), //nolint:gosec // G115: file counts are far below int32
-			Durable: bm,
-		})
 	}
 	if len(failedIDs) > 0 {
 		ackFailedIDs(t, q, m, job.ID, failedIDs)
 	}
-	if len(exts) > 0 {
-		if err := q.SeedFromExtents(job.ID, exts); err != nil {
-			t.Fatalf("SeedFromExtents: %v", err)
+	if len(runs) > 0 {
+		if err := q.SeedFromRuns(job.ID, runs); err != nil {
+			t.Fatalf("SeedFromRuns: %v", err)
 		}
 	}
 	return q, job

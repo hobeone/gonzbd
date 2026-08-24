@@ -19,7 +19,8 @@ import (
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	t.Skip("#387: FileWriter detects collisions by exact start offset only, so THIS " +
 		"layer does not see the overlap and the bytes are overwritten. The durability " +
-		"layer now detects it afterwards, from the Class A facts, and reports it as a " +
+		"layer now detects it afterwards, by comparing the recorded runs' summed " +
+		"lengths against the file's size, and reports it as a " +
 		"post anomaly — but that is detection after the write, and what this pins is " +
 		"that the write happens at all. Kept executable rather than deleted: #387 " +
 		"records that its original probe was thrown away and had to be rebuilt. Remove " +
@@ -67,7 +68,7 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	}
 
 	// A's durable range [500, 1000) must still hold A's bytes. If B was allowed
-	// to land, this range reads "B" and A's recorded Class A fact — a CRC over
+	// to land, this range reads "B" and the run recorded for A — a CRC over
 	// [0, 1000) — is asserting a checksum the file no longer satisfies.
 	overlap := got[500:1000]
 	if !bytes.Equal(overlap, bytes.Repeat([]byte("A"), 500)) {
@@ -85,8 +86,8 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 }
 
 // TestOverlap_ContainedOverlapStillCompletesTheFile is the variant that matters
-// more than the one above. The overlapping article ends at or before the file's
-// durable extent, so the file does NOT grow — every byte is covered, the part
+// more than the one above. The overlapping article ends at or before the top of
+// the file's recorded runs, so the file does NOT grow — every byte is covered, the part
 // count reaches TotalParts, and the file finalizes as healthy.
 //
 // A0 [0,100), A1 [100,200), X [150,200). X overlaps A1 without sharing its
@@ -94,8 +95,10 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 	t.Skip("#387: as above, THE ASSEMBLER does not see the overlap. Note what this one " +
 		"shows that the other does not: the file COMPLETES, which is what let the " +
-		"barrier publish a whole-file CRC. That half is fixed — durability.verifiedPrefix " +
-		"withholds the claim when a fact is left unconsumed, so par2 runs — and the " +
+		"barrier publish a whole-file CRC. That half is fixed — the overlapping article " +
+		"abuts nothing, so it gets a durable_runs row of its own, and a whole-file CRC " +
+		"is published only for a file that holds exactly ONE row starting at offset 0, " +
+		"so par2 runs — and the " +
 		"barrier now also reports the overlap, so it is no longer silent. What remains " +
 		"unfixed, and what this pins, is that the bytes are overwritten in the first place.")
 

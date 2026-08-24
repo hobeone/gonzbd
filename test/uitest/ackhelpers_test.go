@@ -10,11 +10,9 @@ import (
 )
 
 // ackDone replaces the queue's deleted MarkArticleDone. It marks msgID
-// durable via SeedFromExtents, the real resume path (see
-// internal/queue/ackhelpers_test.go, the worked example for this
-// migration), rebuilding the owning file's extent from the job's current
-// durable bits plus the newly named article since SeedFromExtents installs
-// a bitmap rather than merging one.
+// durable via SeedFromRuns, the real resume path (see
+// internal/queue/ackhelpers_test.go, the worked example for this migration),
+// handing it the single-article Run a barrier would have recorded.
 func ackDone(t *testing.T, q *queue.Queue, jobID, msgID string) {
 	t.Helper()
 	job, err := q.Get(jobID)
@@ -25,7 +23,6 @@ func ackDone(t *testing.T, q *queue.Queue, jobID, msgID string) {
 	if err != nil {
 		t.Fatalf("ackDone: job %s manifest: %v", jobID, err)
 	}
-	progress := job.Progress()
 
 	target := -1
 	for i := range m.NumArticles() {
@@ -39,11 +36,10 @@ func ackDone(t *testing.T, q *queue.Queue, jobID, msgID string) {
 	}
 
 	fi := -1
-	var lo, hi int
 	for f := range m.NumFiles() {
 		l, h := m.FileRange(f)
 		if target >= l && target < h {
-			fi, lo, hi = f, l, h
+			fi = f
 			break
 		}
 	}
@@ -51,17 +47,13 @@ func ackDone(t *testing.T, q *queue.Queue, jobID, msgID string) {
 		t.Fatalf("ackDone: article %d not owned by any file in job %s", target, jobID)
 	}
 
-	bm := durability.NewBitmap(hi - lo)
-	for i := lo; i < hi; i++ {
-		if i == target || (progress.ArticleDone(i) && !progress.ArticleFailed(i)) {
-			bm.Set(i - lo)
-		}
+	run := durability.Run{
+		FileIdx:     int32(fi),     //nolint:gosec // G115: file counts are far below int32
+		FirstArtIdx: int32(target), //nolint:gosec // G115: article counts are far below int32
+		LastArtIdx:  int32(target), //nolint:gosec // G115: article counts are far below int32
+		Length:      int64(m.ArticleBytes(target)),
 	}
-	ext := durability.FileExtent{
-		FileIdx: int32(fi), //nolint:gosec // G115: file counts are far below int32
-		Durable: bm,
-	}
-	if err := q.SeedFromExtents(jobID, []durability.FileExtent{ext}); err != nil {
-		t.Fatalf("ackDone: SeedFromExtents: %v", err)
+	if err := q.SeedFromRuns(jobID, []durability.Run{run}); err != nil {
+		t.Fatalf("ackDone: SeedFromRuns: %v", err)
 	}
 }

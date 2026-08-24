@@ -488,14 +488,14 @@ func TestNoteStallReason_RecordsAReasonThatIsNotAStorageFault(t *testing.T) {
 	}
 }
 
-// TestSeedFromCommittedExtents_InstallsWhatTheRetryCouldNotAck pins phase 3 of
+// TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck pins phase 3 of
 // the re-evaluation.
 //
-// A finalize retried while the job is paused commits its durable bits and then
-// fails to ack, because AckDurable needs a resident job. Without this replay
-// those articles stay Outstanding on a file the assembler has already
-// tombstoned, so no re-fetch can ever resolve them.
-func TestSeedFromCommittedExtents_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
+// A finalize retried while the job is paused records its runs and then fails
+// to ack, because AckDurable needs a resident job. Without this replay those
+// articles stay Outstanding on a file the assembler has already tombstoned, so
+// no re-fetch can ever resolve them.
+func TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 	ctx := t.Context()
 	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
@@ -503,86 +503,83 @@ func TestSeedFromCommittedExtents_InstallsWhatTheRetryCouldNotAck(t *testing.T) 
 			"distinguish a replay from the starting state")
 	}
 
-	durable := durability.NewBitmap(2)
-	durable.Set(0)
-	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: durable},
+	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	application.seedFromCommittedExtents(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID)
 
 	p := application.queue.SnapshotJob(job.ID).Progress()
 	if !p.ArticleDone(0) {
-		t.Error("article 0 is still Outstanding although a committed extent covers it; the " +
+		t.Error("article 0 is still Outstanding although a recorded run covers it; the " +
 			"retry's work is thrown away and the article can never be resolved, because the " +
 			"assembler has tombstoned its file")
 	}
 	if p.ArticleDone(1) {
-		t.Error("article 1 was marked done although no extent covers it — the replay is " +
+		t.Error("article 1 was marked done although no run covers it — the replay is " +
 			"claiming durability the barrier never established")
 	}
 }
 
-// TestSeedFromCommittedExtents_IsInertWithoutAnExtentStore pins the process
-// with no history database, where there is no Class B to replay. The
-// re-evaluation must still complete rather than panicking on a nil store.
-func TestSeedFromCommittedExtents_IsInertWithoutAnExtentStore(t *testing.T) {
+// TestSeedFromCommittedRuns_IsInertWithoutARunStore pins the process with no
+// history database, where there is no record to replay. The re-evaluation must
+// still complete rather than panicking on a nil store.
+func TestSeedFromCommittedRuns_IsInertWithoutARunStore(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
-	application.extents = nil
+	application.runs = nil
 
-	application.seedFromCommittedExtents(t.Context(), job.ID)
+	application.seedFromCommittedRuns(t.Context(), job.ID)
 
 	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
-		t.Error("an article was marked durable with no extent store to prove it")
+		t.Error("an article was marked durable with no run store to prove it")
 	}
 }
 
-// TestSeedFromCommittedExtents_ReportsAJobItCannotSeed pins the disposition
-// when the queue refuses the seed — a job the active set had no room to
-// re-promote. The articles stay Outstanding and are re-fetched, which is the
-// safe direction, and it must not abort the rest of the re-evaluation.
-func TestSeedFromCommittedExtents_ReportsAJobItCannotSeed(t *testing.T) {
+// TestSeedFromCommittedRuns_ReportsAJobItCannotSeed pins the disposition when
+// the queue refuses the seed — a job the active set had no room to re-promote.
+// The articles stay Outstanding and are re-fetched, which is the safe
+// direction, and it must not abort the rest of the re-evaluation.
+func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
-	durable := durability.NewBitmap(1)
-	durable.Set(0)
-	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: durable},
+	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	// Pause evicts the manifest, and SeedFromExtents needs a resident one.
+	// Pause evicts the manifest, and SeedFromRuns needs a resident one.
 	if err := application.queue.Pause(job.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	application.seedFromCommittedExtents(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID)
 
-	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
-		t.Error("a non-resident job was seeded anyway; SeedFromExtents installs bits into the " +
-			"LIVE job, so this can only mean the assertion is reading a hydrated clone")
+	// liveProgress rather than SnapshotJob: hydration re-derives the article
+	// state from the same record this replay reads, so a hydrated clone would
+	// report the bit set whether or not the seed landed.
+	if liveProgress(t, application, job.ID).ArticleDone(0) {
+		t.Error("a non-resident job was seeded anyway; SeedFromRuns installs bits into the " +
+			"LIVE job, and a job with no resident manifest has nowhere to install them")
 	}
 }
 
-// TestSeedFromCommittedExtents_ReportsAFailedLoad pins the arm where Class B
+// TestSeedFromCommittedRuns_ReportsAFailedLoad pins the arm where the record
 // cannot be read at all. It must not be mistaken for "nothing is durable": the
 // job simply re-fetches, and the re-evaluation carries on to deliver the
 // completions it was in the middle of.
-func TestSeedFromCommittedExtents_ReportsAFailedLoad(t *testing.T) {
+func TestSeedFromCommittedRuns_ReportsAFailedLoad(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
-	durable := durability.NewBitmap(1)
-	durable.Set(0)
-	if err := application.extents.Commit(t.Context(), job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: durable},
+	if _, err := application.runs.Commit(t.Context(), job.ID, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	application.seedFromCommittedExtents(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID)
 
 	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
 		t.Error("an article was marked durable from a load that failed; a read error is not " +
@@ -616,23 +613,23 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 	}
 }
 
-// TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade is the caller
+// TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade is the caller
 // half of #362's two-contracts rule, and it is the guard on the mistake the
 // fix makes newly possible.
 //
-// Phase 3 replays Class B after a stall recovery. It has verified NOTHING
-// about any file — it is re-delivering an ack whose fsync already landed — so
-// it must stay on the additive Queue.SeedFromExtents. Pointing it at
-// Queue.ReplaceFromResume instead compiles, reads as a tidy-up, and silently
-// destroys exactly the bits this phase exists to preserve: an ack this process
-// made AFTER the last extent commit is not in that extent, so an authoritative
-// replay would clear it and the article would be re-fetched on a file the
-// assembler has already tombstoned.
+// Phase 3 replays the committed durable runs after a stall recovery. It has
+// verified NOTHING about any file — it is re-delivering an ack whose fsync
+// already landed — so it must stay on the additive Queue.SeedFromRuns.
+// Pointing it at Queue.ReplaceFromRuns instead compiles, reads as a tidy-up,
+// and silently destroys exactly the bits this phase exists to preserve: an ack
+// this process made AFTER the last commit is not in the runs that commit
+// wrote, so an authoritative replay would clear it and the article would be
+// re-fetched on a file the assembler has already tombstoned.
 //
 // Verified as the only test in the repository that reddens on that swap: with
-// phase 3 switched to ReplaceFromResume, ./internal/app and ./internal/api
-// were both still green before this test existed.
-func TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade(t *testing.T) {
+// phase 3 switched to the replacing entry point, ./internal/app and
+// ./internal/api were both still green before this test existed.
+func TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 	ctx := t.Context()
 
@@ -648,21 +645,19 @@ func TestSeedFromCommittedExtents_DoesNotClearAnAckThisProcessMade(t *testing.T)
 		t.Fatal("article 0 is already done, so the replay cannot be shown to have run at all")
 	}
 
-	durable := durability.NewBitmap(2)
-	durable.Set(0)
-	if err := application.extents.Commit(ctx, job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: durable},
+	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	application.seedFromCommittedExtents(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID)
 
 	p := application.queue.SnapshotJob(job.ID).Progress()
 	if !p.ArticleDone(1) {
-		t.Error("article 1 lost its Done bit to a replay of an extent that predates it — " +
-			"phase 3 has read no file and proved nothing, so it may not contradict an ack " +
-			"that already landed; it must stay on the additive SeedFromExtents (#362)")
+		t.Error("article 1 lost its Done bit to a replay of a record that predates it — " +
+			"phase 3 has stat'ed nothing and proved nothing, so it may not contradict an " +
+			"ack that already landed; it must stay on the additive SeedFromRuns (#362)")
 	}
 	if !p.ArticleDone(0) {
 		t.Error("article 0 is still Outstanding, so the replay installed nothing and the " +

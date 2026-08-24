@@ -8,146 +8,144 @@ import (
 	"testing"
 )
 
-// TestFinalizeFile_ProducesAWholeFileCRC pins the CRC that QuickCheck and
-// on-demand par2 consume.
+// TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC pins the
+// substrate the whole-file CRC is read off.
 //
 // The assembler used to combine the per-article CRCs it happened to see, which
 // was #349: a resumed run is never sent the articles an earlier run completed,
 // so its parts do not tile the file and the combined value described a
-// fragment while claiming to describe the whole. That writer was removed and
-// nothing replaced it, so assembled_crc32 was 0 for every download.
+// fragment while claiming to describe the whole.
 //
-// FileExtent.PrefixCRC was named as the replacement but could not be one. The
-// barrier never WROTE a PrefixCRC — buildExtent only ever cleared it, and only
-// Resumer set it, at startup — so a file downloaded without a restart had no
-// CRC at any point in its life.
+// A run record has no such blind spot. Articles that abut in both offset and
+// article index merge into one row as they arrive, across restarts, and their
+// CRCs are combined left-to-right by crc32util.Combine — so a file whose
+// articles all arrive collapses to a SINGLE row at offset 0 whose crc32 is the
+// whole-file CRC, already computed and on stable storage.
 //
-// Class A is the right source, and it is the source #349's combine lacked: the
-// facts persist across restarts, so they name every article of the file
-// regardless of which run fetched it. Combining them is arithmetic over rows
-// the barrier has already loaded, with no read of the file.
-func TestFinalizeFile_ProducesAWholeFileCRC(t *testing.T) {
+// The PREDICATE that reads it — exactly one row, offset 0 — lives in
+// Application.recordAssembledCRC and is pinned there, including against the
+// overlapped file this mechanism must keep at more than one row.
+func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *testing.T) {
 	ctx := context.Background()
-	db := openTestDB(t)
-	facts := NewSQLiteFactLog(db)
-	exts := NewSQLiteExtentStore(db)
+	rs := NewSQLiteRunStore(openTestDB(t))
 
 	a0 := bytes.Repeat([]byte{0x01}, 100)
 	a1 := bytes.Repeat([]byte{0x02}, 100)
 	want := crc32.ChecksumIEEE(append(append([]byte{}, a0...), a1...))
 
-	if err := facts.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
 	tgt := &factGapTarget{
-		artCount: 2,
-		size:     200,
+		size: 200,
 		drained: []WrittenArticle{
-			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100},
-			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100},
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(a0)},
+			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
 		},
 	}
-	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
+	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
 	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
-	stored, err := exts.Load(ctx, "job-1")
+	stored, err := rs.ForFile(ctx, "job-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(stored) != 1 {
-		t.Fatalf("Load returned %d extents, want 1", len(stored))
+		t.Fatalf("a file whose articles tile it holds %d runs, want 1 — a row COUNT is "+
+			"the first of the three conditions that publish the whole-file CRC, so "+
+			"more than one row means no CRC is published at all: %+v", len(stored), stored)
 	}
-	got := stored[0]
-
-	// Grounding: the facts must actually tile the file, or "no CRC" would be
-	// the correct answer and this test would be asserting the wrong thing.
-	if got.VerifiedTo != 200 {
-		t.Fatalf("VerifiedTo = %d, want 200; the fixture's facts do not tile the "+
-			"file, so a whole-file CRC is legitimately unavailable", got.VerifiedTo)
+	if stored[0].Offset != 0 {
+		t.Errorf("the single run starts at %d, want 0", stored[0].Offset)
 	}
-	if !got.HasPrefixCRC {
-		t.Fatal("a completed file whose facts tile it end to end reports no whole-file " +
-			"CRC. QuickCheck can never bypass the full par2 verify and on-demand par2 " +
-			"fetches every recovery volume even for a bit-perfect download")
-	}
-	if got.PrefixCRC != want {
-		t.Errorf("PrefixCRC = %#x, want %#x (CRC32 of the whole file)", got.PrefixCRC, want)
+	if stored[0].CRC32 != want {
+		t.Errorf("run CRC32 = %#x, want %#x (CRC32 of the whole file)", stored[0].CRC32, want)
 	}
 }
 
-// TestFinalizeFile_NoWholeFileCRCWhenAnArticleIsMissing pins the other side:
-// R23 asks for "unavailable" to stay distinguishable from a CRC of zero, and a
-// file with a permanently failed article has no whole-file value to report.
-func TestFinalizeFile_NoWholeFileCRCWhenAnArticleIsMissing(t *testing.T) {
+// TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun pins the R23 side of the
+// same mechanism: "unavailable" must stay distinguishable from a CRC of zero,
+// and a file with a permanently failed article has no whole-file value.
+//
+// It is structural rather than a flag. A hole is a gap between rows by
+// definition, so such a file cannot collapse to one, so the row-count
+// predicate withholds the CRC with nothing to remember.
+func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	ctx := context.Background()
-	db := openTestDB(t)
-	facts := NewSQLiteFactLog(db)
-	exts := NewSQLiteExtentStore(db)
+	rs := NewSQLiteRunStore(openTestDB(t))
 
-	a1 := bytes.Repeat([]byte{0x02}, 100)
-	// Article 0 permanently failed, so it never decoded and wrote no fact.
-	if err := facts.Append(ctx, "job-1", []ArticleFact{
-		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: crc32.ChecksumIEEE(a1)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
+	// Article 1 permanently failed: nothing was ever written for [100,200).
 	tgt := &factGapTarget{
-		artCount: 2,
-		size:     200,
-		drained:  []WrittenArticle{{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}},
+		size: 300,
+		drained: []WrittenArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11},
+			{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: 0x22},
+		},
 	}
-	b := NewBarrier(facts, exts, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
+	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
 	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
-	stored, err := exts.Load(ctx, "job-1")
+	stored, err := rs.ForFile(ctx, "job-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored[0].HasPrefixCRC {
-		t.Errorf("a file with a hole at its start reported a whole-file CRC of %#x; "+
-			"the prefix walk stops at the hole, so that value covers no bytes at all "+
-			"and QuickCheck would compare it against par2's real one", stored[0].PrefixCRC)
+	if len(stored) != 2 {
+		t.Fatalf("a file with a hole holds %d runs, want 2 — one either side of the "+
+			"hole. A single row would publish a whole-file CRC over bytes that are "+
+			"not there: %+v", len(stored), stored)
 	}
 }
 
-// TestGaplessPrefixCRC_EmptyFileClaimsNoWholeFileCRC pins the one input on
-// which both of the walk's clauses are satisfied by there being nothing to
-// check: a zero-length file with no recorded facts.
+// TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun is #387's structural
+// closure, at the layer that produces it.
 //
-// The run consumes every fact (there are none) and reaches the file's end (it
-// is 0), so the flag came back true with a CRC of 0. CRC32 of zero bytes is
-// genuinely 0, which is what makes this the wrong kind of wrong — the value is
-// not fabricated, the CLAIM is. HasPrefixCRC means "this is a verified
-// whole-file CRC", and a file with no facts has been verified against nothing.
+// A0 [0,100), A1 [100,200) tile the file into one merged run. X [150,200) is
+// displaced: it abuts nothing, so it cannot merge, so the file keeps a second
+// row — which is what the row-count predicate reads to withhold the CRC.
 //
-// It matters because a target file exists before its first article lands: the
-// assembler creates it, and with pre-allocation off it is zero-length until a
-// write. A resume in that window would commit a whole-file CRC for it, and
-// QuickCheck compares exactly this flag's value against par2's hash — turning
-// a job that has merely not started into one reported as damaged.
-//
-// Both paths now ask verifiedPrefix, so this pins the rule once for the
-// barrier and the resume alike. It used to pin only the resume copy, which is
-// how the two came to disagree about a different clause (#387).
-func TestVerifiedPrefix_EmptyFileClaimsNoWholeFileCRC(t *testing.T) {
-	w := verifiedPrefix(nil, func(int) bool { return true })
-	verifiedTo, crc, whole := w.VerifiedTo, w.PrefixCRC, w.wholeFile(0)
-	if whole {
-		t.Error("verifiedPrefix reported a verified whole-file CRC for a zero-length " +
-			"file with no facts; QuickCheck would compare 0 against par2's real hash " +
-			"and report an untouched job as damaged")
+// Under the SPAN form of the predicate ("a row starts at 0 and its length
+// equals the maximum") this exact shape publishes a CRC combined from the
+// ORIGINAL articles while foreign bytes occupy 150-200. par2 then matches a
+// manifest whose bytes are not on disk and never fetches the recovery volumes.
+// The row count is what carries the guarantee FOR THIS SHAPE — a partial
+// overlap, whose displaced article abuts nothing and so keeps a row. It is not
+// what carries it for an EXACT-offset duplicate, where one of the pair is
+// dropped and a single row survives; that shape is caught by the article-
+// coverage condition instead, and is pinned separately in
+// TestFinalizeFile_ReportsAnExactOffsetDuplicate and in
+// app.TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped.
+// This test pins that the mechanism really does leave a second row to see.
+func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
+	ctx := context.Background()
+	rs := NewSQLiteRunStore(openTestDB(t))
+
+	tgt := &factGapTarget{
+		size: 200,
+		drained: []WrittenArticle{
+			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11},
+			{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0x22},
+			{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50, CRC32: 0x33},
+		},
 	}
-	if verifiedTo != 0 || crc != 0 {
-		t.Errorf("verifiedTo/crc = %d/%d, want 0/0 — the prefix itself is unchanged, "+
-			"only the claim about it", verifiedTo, crc)
+	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
+	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+		t.Fatalf("FinalizeFile: %v", err)
+	}
+
+	stored, err := rs.ForFile(ctx, "job-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("an overlapped file holds %d runs, want 2 — the displaced article "+
+			"abuts nothing and must keep a row of its own: %+v", len(stored), stored)
+	}
+	// The merged row spans the whole file, which is exactly why the SPAN form
+	// of the predicate would publish here and the ROW-COUNT form does not.
+	if stored[0].Offset != 0 || stored[0].Length != 200 {
+		t.Errorf("the merged run is [%d,%d), want [0,200) — without it this fixture "+
+			"does not exercise the span form the row count exists to beat",
+			stored[0].Offset, stored[0].Offset+stored[0].Length)
 	}
 }

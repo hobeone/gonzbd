@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 )
@@ -90,11 +91,58 @@ type Queue struct {
 	notifyCh chan struct{}
 
 	// dirty is set to true by the article/file mutation methods
-	// (AckDurable, AckPermanentFailure, MarkFileComplete, SeedFromExtents,
-	// ReplaceFromResume) and cleared by Save on a
+	// (AckDurable, AckPermanentFailure, MarkFileComplete, SeedFromRuns,
+	// ReplaceFromRuns) and cleared by Save on a
 	// successful write. The periodic checkpoint ticker no-ops when
 	// dirty is false, avoiding unnecessary I/O on idle queues.
 	dirty atomic.Bool
+
+	// failedPersistMu serialises every failed_articles STORE call against
+	// every reversal of one, and failedGen makes that serialisation ordered
+	// rather than merely exclusive.
+	//
+	// The INSERT happens outside mu — the project bans I/O under a lock — so
+	// exclusion alone does not settle the outcome. AckPermanentFailure marks
+	// an article failed under mu and INSERTs after releasing it. Of the two
+	// reversals, ClearAllEmitted matches that shape: it clears the bits under
+	// mu and DELETEs after releasing it. Queue.Retry does NOT — it deletes
+	// while still holding mu, which is why the LOCK ORDER note below exists
+	// at all. Interleaved,
+	// the INSERT can land after the DELETE and leave a row with no in-memory
+	// bit behind it, which the next RestoreJobProgress reads back as
+	// Failed+Done. The article is then never re-fetched. This is not a
+	// theoretical window: ClearAllEmitted exists for articles failed during
+	// the old downloader's teardown, so acks in flight across a reload are
+	// precisely its designed-for case.
+	//
+	// failedGen is bumped under mu by every reversal, and an ack captures it
+	// under mu alongside its in-memory mark. Under failedPersistMu the ack
+	// re-reads it and skips the INSERT if it moved, so a write whose bit has
+	// since been cleared cannot be committed. The mutex is what makes that
+	// check meaningful — without it the DELETE could still overtake an INSERT
+	// that passed the check.
+	//
+	// One counter for the whole queue rather than one per job. A reversal of
+	// job A therefore discards an in-flight ack for job B as well, which
+	// costs one re-request of an article that fails again — R10's direction,
+	// and the same trade AckPermanentFailure's best-effort persist already
+	// takes.
+	//
+	// LOCK ORDER: mu before failedPersistMu. Queue.Retry deletes while
+	// holding mu and so takes both; nothing takes mu while holding
+	// failedPersistMu.
+	//
+	// That nesting has a COST worth naming rather than discovering: Retry
+	// blocks on failedPersistMu with mu held, so an AckPermanentFailure whose
+	// INSERT is slow — a stalled disk, a locked database — holds the queue
+	// lock shut for the duration of that INSERT, and every reader of the
+	// queue waits behind it. It is accepted rather than overlooked. Doing the
+	// delete after releasing mu would put it in the same shape as
+	// ClearAllEmitted's, but Retry's delete is ordered against an Update in
+	// the same critical section (see Queue.Retry), and splitting the two is
+	// what would leave a stale failed row beside a reset job.
+	failedPersistMu sync.Mutex
+	failedGen       atomic.Uint64
 
 	sOpts fsutil.SanitizeOptions
 	store Store
@@ -630,8 +678,11 @@ func (q *Queue) Resume(id string) error {
 // PromoteNext below). PromoteNext unconditionally calls
 // Store.RestoreJobProgress for every job it promotes, including one that is
 // already resident, so skipping this write would let PromoteNext re-read the
-// stale on-disk articles_done and silently undo the reset one layer down
-// (the exact failure mode issue #260 describes).
+// stale on-disk row and silently undo the reset one layer down (the exact
+// failure mode issue #260 describes). The job's failed_articles rows are
+// dropped in the same window and for the same reason: nothing else rewrites
+// them, so a stale one would come back as a failed article the retry never
+// re-attempts.
 func (q *Queue) Retry(id string) error {
 	q.mu.Lock()
 	job, ok := q.byID[id]
@@ -657,7 +708,47 @@ func (q *Queue) Retry(id string) error {
 		job.Warning = ""
 		job.ResetForRetry()
 		if q.store != nil {
-			if err := q.store.Update(context.Background(), job); err != nil { //lockio: persists the reset articles_done before PromoteNext's unconditional RestoreJobProgress can re-read the stale row
+			// ResetForRetry cleared every failed bit in memory; the stored
+			// rows have to go with them. A failed_articles row is not
+			// re-serialised by the Update below the way the articles_done
+			// blob it replaced was, so one left behind survives the retry and
+			// the next restart marks the retry's re-fetched article failed.
+			//
+			// Before the Update and inside the same failure branch: if this
+			// cannot be made durable the retry must roll back, for exactly the
+			// reason #260 gives about the row itself. Scoped to this one job —
+			// see SQLiteStore.ClearFailedArticles for what a wider sweep would
+			// resurrect.
+			//
+			// The order leaves ONE asymmetry, and it is the safe one. If this
+			// succeeds and the Update below then fails, the rollback restores
+			// the failed bits in memory while the stored rows are already
+			// gone: a restart before the next retry derives those articles as
+			// Outstanding and re-attempts them. That is R10's direction —
+			// losing a permanent failure costs one request, and the article
+			// fails again. Reversing the two would leave a STALE failed row
+			// beside a reset job, which is the direction this whole step
+			// exists to prevent.
+			//
+			// The generation bump and failedPersistMu are the same pairing
+			// ClearAllEmitted uses, and for the same reason: an
+			// AckPermanentFailure for this job may have released q.mu with
+			// its INSERT still pending, and without both it could land after
+			// this delete. Taking failedPersistMu while holding q.mu is the
+			// declared lock order (see Queue's failedPersistMu doc); nothing
+			// acquires q.mu while holding it.
+			q.failedGen.Add(1)
+			q.failedPersistMu.Lock()
+			clearErr := q.store.ClearFailedArticles(context.Background(), id) //lockio: drops the retry's stale failed rows before PromoteNext's unconditional RestoreJobProgress can re-read them
+			q.failedPersistMu.Unlock()
+			if clearErr != nil {
+				job.Status, job.Warning = prevStatus, prevWarning
+				job.setResidency(job.manifest, prevProgress)
+				q.evictJobLocked(job)
+				q.mu.Unlock()
+				return fmt.Errorf("queue: retry job %s: clear failed articles: %w", id, clearErr)
+			}
+			if err := q.store.Update(context.Background(), job); err != nil { //lockio: persists the reset progress before PromoteNext's unconditional RestoreJobProgress can re-read the stale row
 				// The write is load-bearing, so its failure cannot be
 				// discarded: PromoteNext would re-read the stale row and undo
 				// the reset, leaving Retry to report success on a job that is
@@ -1512,10 +1603,17 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 // articles (Done=true, Failed=false) are preserved.
 func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	// reset collects the jobs whose failed articles this call cleared in
+	// memory, so their stored rows can be dropped below the lock. A
+	// failed_articles row is not re-serialised by the next job update the way
+	// the articles_done blob it replaced was, so a row left behind survives
+	// the reload and the next restart marks the re-attempted article failed
+	// again.
+	var reset []string
 	for _, job := range q.jobs {
 		m := job.manifest
 		if m != nil && job.progress != nil {
+			reset = append(reset, job.ID)
 			for i := range m.NumArticles() {
 				// Reset articles that were marked Failed during the old
 				// downloader's teardown so they can be retried by the
@@ -1529,6 +1627,11 @@ func (q *Queue) ClearAllEmitted() {
 			job.progress.recompute(m)
 		}
 	}
+	// Bumped under mu, in the same hold that cleared the bits, so any
+	// AckPermanentFailure that captured the previous value has already made
+	// its in-memory mark and will find its own write invalidated below. See
+	// the failedPersistMu/failedGen doc on Queue.
+	q.failedGen.Add(1)
 	// Drain any stale notification (e.g. from AckDurable calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
 	// notification is guaranteed to be delivered.
@@ -1537,6 +1640,47 @@ func (q *Queue) ClearAllEmitted() {
 	default:
 	}
 	q.notifyLocked()
+	q.mu.Unlock()
+	// --- No lock held below this line ---
+
+	// One delete per RESIDENT job, which is exactly the set the loop above
+	// walked: it skips any job without both a manifest and progress. That
+	// scoping is what makes a whole-job delete equivalent to the per-article
+	// clearing it replaces — a sweep over every job would resurrect the
+	// permanently failed articles of every NON-resident job as fetchable
+	// work, and the symptom would be a silent re-download storm rather than
+	// an error.
+	//
+	// Best effort, matching resetForReload's own direction: this runs on a
+	// downloader reload, and a row that outlives it costs one wasted attempt
+	// at an article that fails again.
+	//
+	// Under failedPersistMu, which is what stops an AckPermanentFailure that
+	// unlocked mu before this call from landing its INSERT after these
+	// deletes. Exclusion is only half of it — the generation bump above is
+	// what tells that ack its rows are stale.
+	if q.store == nil {
+		return
+	}
+	type clearFailure struct {
+		id  string
+		err error
+	}
+	var failures []clearFailure
+	q.failedPersistMu.Lock()
+	for _, id := range reset {
+		if err := q.store.ClearFailedArticles(context.Background(), id); err != nil { //lockio: failedPersistMu exists to order exactly this delete against AckPermanentFailure's insert; see Queue.failedPersistMu
+			failures = append(failures, clearFailure{id: id, err: err})
+		}
+	}
+	q.failedPersistMu.Unlock()
+	// Reported outside the mutex: it is held to order this delete against an
+	// ack's insert, and a logging handler is neither of those.
+	for _, f := range failures {
+		q.log.Warn("could not clear a job's permanently failed articles on downloader reload; "+
+			"they will not be re-attempted after a restart",
+			"job", f.id, "err", f.err)
+	}
 }
 
 // TotalRemainingBytes returns the sum of RemainingBytes across all jobs,
@@ -1765,22 +1909,60 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 	return nil
 }
 
-// SetFileCRC32 stores the assembled CRC32 on a JobFile, where QuickCheck reads
-// it to verify file integrity against par2's file hashes without re-reading
-// from disk.
+// SetFileCRC32FromRuns stores the assembled CRC32 on a JobFile, where
+// QuickCheck reads it to verify file integrity against par2's file hashes
+// without re-reading from disk — but only if the file's durable runs are
+// evidence for it. Otherwise it records nothing and returns nil.
 //
-// The value is combined from the Class A facts, not from the assembler. The
-// assembler used to combine the per-article CRCs it happened to SEE, and a
-// resumed run is never sent the articles an earlier run completed, so its parts
-// did not tile the file and it generally could not produce one (#349). Facts
-// persist across restarts, so they name every article of the file whichever run
-// fetched it, and a resumed file supplies a CRC as readily as a fresh one.
+// It takes the RUNS rather than a uint32, and that is the point of its shape.
+// The CRC's meaning is entirely a property of the record it came from, so a
+// setter accepting a bare value has no way to refuse a wrong one and pushes
+// the whole invariant into its caller's comments. Here there is nowhere else
+// to write the field, and the evidence arrives with the claim.
 //
-// Written by Application.recordAssembledCRC when a file finalizes, and only
-// when the prefix reaches the file's end. A file with a permanently failed
-// article has no whole-file value, so nothing is recorded and zero keeps its
-// documented "unavailable" meaning rather than "mismatched".
-func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
+// The value is the crc32 of the file's single durable run, not something the
+// assembler computed. The assembler used to combine the per-article CRCs it
+// happened to SEE, and a resumed run is never sent the articles an earlier run
+// completed, so its parts did not tile the file and it generally could not
+// produce one (#349). A run folds each article's CRC in as the article joins
+// it, across restarts, so a resumed file supplies a CRC as readily as a fresh
+// one.
+//
+// # The predicate: one run, at offset 0, covering every article of the file
+//
+// All three conditions, and the third is the one main used to enforce by other
+// means. It is the direct expression of prefixWalk.consumedAll — "did the
+// record account for every article of this file?" — in the vocabulary of runs,
+// and #387 is what it is for.
+//
+// The geometric alternative — one row at offset 0 whose length equals the
+// file's size — reads as the same rule and is not. It is INERT: FinalizeFile
+// derives its truncate bound from max(offset+length) over the same rows, so
+// size == Length holds by construction and the comparison can never fail.
+// Worse, it is inert on exactly the case that matters. Two articles claiming
+// one offset leave a single row at offset 0 after the merge drops one, its
+// length equals the file's size, Σ length equals it too so no overlap is
+// raised — and the CRC would be published over articles whose bytes another
+// article has overwritten. par2.VerifyCRCs compares that value against the par2
+// MANIFEST and never opens the file, so it MATCHES, QuickCheckClean is set, and
+// the repair stage returns without running par2 at all.
+//
+// The article-coverage form closes that, and closes it exactly rather than
+// heuristically. A dropped entry removes an article index from the record
+// entirely; no other article carries that index, since ArtIdx is the manifest's
+// unique global index; and a merge extends a span only to
+// LastArtIdx+1, so a span never contains an index no article contributed. The
+// dropped article is therefore in no run's span, and no single run can cover
+// [lo, hi-1]. Every exact-offset collision fails this check.
+//
+// A file with a permanently failed article — INTERIOR or at the TAIL — also
+// fails it, and unlike the row-count form this needs no exception. Its record
+// does not account for every article, so no CRC is published, QuickCheck reads
+// NoCRC, and the repair path runs. The tail case used to publish a CRC over
+// the trimmed short file and rely on that value MISMATCHING par2 to reach the
+// same place; it now reaches it one branch earlier, without a published number
+// that describes bytes the file does not hold.
+func (q *Queue) SetFileCRC32FromRuns(jobID string, fileIdx int, runs []durability.Run) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, err := q.residentJob(jobID)
@@ -1790,7 +1972,14 @@ func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.progress.files[fileIdx].AssembledCRC32 = crc
+	if len(runs) != 1 || runs[0].Offset != 0 {
+		return nil
+	}
+	lo, hi := job.manifest.FileRange(fileIdx)
+	if int(runs[0].FirstArtIdx) != lo || int(runs[0].LastArtIdx) != hi-1 {
+		return nil
+	}
+	job.progress.files[fileIdx].AssembledCRC32 = runs[0].CRC32
 	q.dirty.Store(true)
 	return nil
 }

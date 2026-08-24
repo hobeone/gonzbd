@@ -157,7 +157,7 @@ func TestFileWriter_FirstCollisionMarksOnlyTheFirst(t *testing.T) {
 		{msgID: "a", artIdx: 1}, {msgID: "b", artIdx: 2}, {msgID: "c", artIdx: 3},
 	} {
 		w.admitAccepted(id.artIdx)
-		if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'x'}, 64)...)); err != nil {
+		if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'x'}, 64)...), 0); err != nil {
 			t.Fatalf("accept %s: %v", id.msgID, err)
 		}
 	}

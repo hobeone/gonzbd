@@ -200,17 +200,46 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // goroutine, and safe at any residency.
 //
 // DurableBytes comes from the job's downloaded-byte total rather than from a
-// counter of its own, because on this design they are the same quantity. The
-// only things that mark an article Done are Queue.AckDurable, which takes a
-// DurableProof no path outside a completed barrier can mint, and the two
-// seeding entry points — SeedFromExtents, which replays a committed Class B
-// cache, and ReplaceFromResume, which installs what the startup sweep read
-// from the files themselves. A second counter would be a second representation
-// of one fact, free to drift (S5).
+// counter of its own, because on this design they are the same quantity.
+// Everything that marks an article Done ultimately stands on a barrier's
+// fsync: Queue.AckDurable, which takes a DurableProof no path outside a
+// completed barrier can mint; the two seeding entry points — SeedFromRuns,
+// which replays the runs a barrier recorded, and ReplaceFromRuns, which
+// installs what the startup sweep's stat left standing; and
+// queue.applyResolution, which replays the resolution derived from those same
+// records when a job is re-hydrated. queue.markFailed sets the bit too, for an
+// article whose bytes will never arrive and which therefore contributes no
+// downloaded bytes.
 //
-// ReplaceFromResume also UN-marks an article the resume disproved (#362), and
-// this figure follows it down rather than needing a correction of its own —
-// which is the same property, stated for the direction the design added last.
+// One path sets the bit WITHOUT going through markDone at all, and it is named
+// here rather than left to the word "ultimately": queue.newJobProgressSized
+// writes p.done directly when sizing a non-resident job's progress, because
+// markDone needs a manifest for byte arithmetic that has already been seeded
+// from job_files. Its input is the same derived resolution — done means
+// covered by a durable run — so the identity survives it, but a reader
+// grepping for markDone will not find it.
+//
+// So the identity holds at every residency, and a second counter would be a
+// second representation of one fact, free to drift (S5).
+//
+// See queue.jobProgressJSON, which states the markDone-scoped version of this
+// at the bit itself, and TestJobDurability_ReportsDownloadedBytesAsDurable,
+// which pins the identity and restates the enumeration above; keep all three
+// in step. A narrowing here that says "only the barrier" belongs in none of
+// them — this list is the reason why.
+//
+// Keeping them in step is no longer left to whoever remembers to look:
+// queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse parses the queue
+// package and fails when the set of functions reaching markDone, or setting
+// the bit directly, stops matching what these three sites say. It exists
+// because this enumeration was found short TWICE — the second time here,
+// months after the copy in queue/progress.go was corrected, because a grep of
+// internal/queue cannot reach internal/app.
+//
+// ReplaceFromRuns also UN-marks an article whose run the resume discarded
+// (#362), and this figure follows it down rather than needing a correction of
+// its own — which is the same property, stated for the direction the design
+// added last.
 func (app *Application) JobDurability(jobID string) JobDurability {
 	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
 	if app.queue != nil {
@@ -230,10 +259,10 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 // taking a second snapshot per poll.
 //
 // All three legs are NZB-declared, yEnc-ENCODED bytes, so this figure is too.
-// It is deliberately not durability.FileExtent.BytesDurable, which carries the
-// same name and sums the DECODED payload lengths an fsync proved --
-// docs/queue-lifecycle.md records that substitution overstating every
-// non-resident job's remaining bytes by the encoding overhead.
+// It is deliberately not a sum over the durability record's lengths, which are
+// the DECODED payload bytes an fsync proved -- docs/queue-lifecycle.md records
+// that substitution overstating every non-resident job's remaining bytes by
+// the encoding overhead.
 func DurableBytesOf(p *queue.JobProgress) int64 {
 	if p == nil {
 		return 0

@@ -14,10 +14,10 @@ import (
 // failure, then moves the job to history as Failed so its progress is
 // retained. It returns the store and the original job.
 //
-// The two article states matter: articles_done packs done and failed as
-// separate bitmaps, and a retry must refetch the failed one while leaving the
-// succeeded one alone. A test that only marked articles done could not tell
-// the two apart.
+// The two article states matter: they come from two different records —
+// durable_runs says done, failed_articles says failed — and a retry must
+// refetch the failed one while leaving the succeeded one alone. A test that
+// only marked articles done could not tell the two apart.
 func failedJobInHistory(t *testing.T) (*SQLiteStore, *Job) {
 	t.Helper()
 
@@ -86,10 +86,13 @@ func TestRestoreRetryProgress_AppliesAlignedOverlay(t *testing.T) {
 // refused when the rebuilt manifest does not match the shape the bitmap was
 // written against.
 //
-// articles_done is indexed positionally, so applying it to a different
-// manifest marks the wrong articles done — and a wrongly-done article is
-// never requested, so the job would finish "successfully" with missing data.
-// Refusing costs a full re-download; applying costs silent corruption.
+// The retained resolution is derived from durable_runs and failed_articles,
+// both keyed by GLOBAL ARTICLE INDEX — positional against the manifest — so
+// applying it to a different manifest marks the wrong articles done, and a
+// wrongly-done article is never requested, so the job would finish
+// "successfully" with missing data. Refusing costs a full re-download;
+// applying costs silent corruption. retainedMatchesManifest is the guard, and
+// RestoreRetryProgress reads the rows only after it passes.
 func TestRestoreRetryProgress_RefusesMisalignedOverlay(t *testing.T) {
 	store, orig := failedJobInHistory(t)
 

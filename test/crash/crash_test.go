@@ -61,17 +61,12 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 	if len(files) != len(h.opts.Files) {
 		t.Fatalf("job_files has %d rows, want %d", len(files), len(h.opts.Files))
 	}
-	counts := map[int32]int{}
-	for _, f := range files {
-		counts[f.FileIdx] = f.ArticleCount
-	}
-	durable := h.DurableBits(db, jobID, counts)
-	facts := h.Facts(db, jobID)
-	bases := FileRanges(files)
+	runs := h.Runs(db, jobID)
+	durable := h.DurableOrdinals(jobID)
 
-	// Grounding 1: the committed Class B cache actually claims something. An
-	// empty claim set would make every assertion below vacuously true, which
-	// is how a harness comes to certify a property it never checked.
+	// Grounding 1: the record actually claims something. An empty claim set
+	// would make every assertion below vacuously true, which is how a harness
+	// comes to certify a property it never checked.
 	claimed := 0
 	for _, f := range files {
 		for i := range f.ArticleCount {
@@ -98,8 +93,22 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 			len(servedAtKill), claimed)
 	}
 
-	// The check itself: every article either side claims is resolved must have
-	// bytes in the file that hash to the CRC its own Class A fact recorded.
+	// The check itself: every recorded run must have bytes in the file that
+	// hash to the CRC the record holds for it.
+	//
+	// The unit is a RUN rather than an article, and that is the whole of what
+	// the durable-runs change did to this assertion. A run's crc32 is combined
+	// left-to-right over the articles it covers, so checking it checks every
+	// one of them at once — and there is no longer a per-article CRC to check
+	// individually.
+	//
+	// It is also strictly stronger than the check it replaced. That one could
+	// only compare an article's bytes against a Class A fact appended at
+	// DECODE time, which asserted nothing about presence; a run is written
+	// only after the fsync, so a mismatch here is an over-claim rather than an
+	// unproven claim. The "done in the queue but no fact recorded" arm the old
+	// version needed is gone with the class: an article the queue calls done
+	// is one a run covers, by construction — that IS the derivation.
 	checked := 0
 	for _, f := range files {
 		if f.Filename == "" {
@@ -107,45 +116,25 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 				"wrote cannot be located, which is issue #361's shape", f.FileIdx)
 		}
 		path := filepath.Join(h.JobDir(), f.Filename)
-		bits := durable[f.FileIdx]
-		for i := range f.ArticleCount {
-			claimedDone := f.Done[i] && !f.Failed[i]
-			claimedDurable := i < len(bits) && bits[i]
-			if !claimedDone && !claimedDurable {
-				continue
-			}
-			artIdx := bases[f.FileIdx] + int32(i) //nolint:gosec // fixture article counts are tiny
-			fact, ok := facts[artIdx]
-			if !ok {
-				// Class A may legitimately lag: it is committed with no
-				// ordering against the write (R2), and a lost suffix costs
-				// only a re-fetch (R3). What it may NOT do is be missing for
-				// an article the queue calls done, because then the resume
-				// has a claim it cannot check.
-				if claimedDone {
-					t.Errorf("article %d is done in the saved queue state but has no "+
-						"Class A fact — its resolution cannot be checked against any bytes",
-						artIdx)
-				}
-				continue
-			}
-			got, present := h.ReadRegionCRC(path, fact)
+		for _, r := range runs[f.FileIdx] {
+			got, present := h.ReadRegionCRC(path, r.Offset, r.Length)
 			if !present {
-				t.Errorf("article %d is claimed (done=%v durable=%v) but %s is shorter "+
-					"than its range [%d,%d) — a claim outlived its data",
-					artIdx, claimedDone, claimedDurable, path, fact.Offset, fact.Offset+int64(fact.Length))
+				t.Errorf("file %d has a durable run over articles [%d,%d] but %s is "+
+					"shorter than its range [%d,%d) — a claim outlived its data",
+					f.FileIdx, r.FirstArtIdx, r.LastArtIdx, path, r.Offset, r.Offset+r.Length)
 				continue
 			}
-			if got != fact.CRC32 {
-				t.Errorf("article %d is claimed (done=%v durable=%v) but its bytes hash "+
+			if got != r.CRC32 {
+				t.Errorf("file %d's durable run over articles [%d,%d] at [%d,%d) hashes "+
 					"to %#x, want %#x — a claim outlived its data",
-					artIdx, claimedDone, claimedDurable, got, fact.CRC32)
+					f.FileIdx, r.FirstArtIdx, r.LastArtIdx, r.Offset, r.Offset+r.Length,
+					got, r.CRC32)
 			}
-			checked++
+			checked += int(r.LastArtIdx-r.FirstArtIdx) + 1
 		}
 	}
 	if checked == 0 {
-		t.Fatal("no article's bytes were actually read back; the assertions above " +
+		t.Fatal("no run's bytes were actually read back; the assertions above " +
 			"never ran against a file")
 	}
 	t.Logf("checked %d claimed articles against their bytes; %d articles had been served",

@@ -220,12 +220,26 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 }
 
 // TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
-// listing's bytes_durable rests on: on this design the only things that mark an
-// article Done are the barrier's ack and a replay of a committed extent cache,
-// so a downloaded byte IS a durable byte. A second counter would be a second
-// representation of one fact, free to drift.
+// listing's bytes_durable rests on: a downloaded byte IS a durable byte, so a
+// second counter would be a second representation of one fact, free to drift.
 //
-// The fixture makes articles durable through Queue.SeedFromExtents — the same
+// That is not "only the barrier marks an article Done" — queue.markFailed,
+// queue.applyResolution and queue.newJobProgressSized all set the bit as well.
+// What holds is narrower and is what the identity needs: every path that marks
+// an article Done either stands on a barrier's fsync (the ack, and the replays
+// of the runs a barrier recorded) or marks an article that contributes no
+// downloaded bytes at all (markFailed). Application.JobDurability enumerates
+// them; keep the two in step.
+//
+// This comment is the third statement of that enumeration and the one most
+// likely to be missed, since it sits in a test file that a sweep of the
+// production sources never opens.
+// queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse is what now
+// catches a divergence: it derives the list from the queue package's own
+// syntax, so the three prose copies are checked against the code rather than
+// against each other.
+//
+// The fixture makes articles durable through Queue.SeedFromRuns — the same
 // replay a resume performs — because that is the only route to a NON-ZERO
 // figure that a test can drive. An earlier version asserted only that the
 // number was 0 before any barrier, which the fixture guarantees on its own:
@@ -239,21 +253,19 @@ func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
 	}
 	application.noteJobBytes(job.ID, 999)
 
-	// Two of the file's three 100-byte articles are on stable storage.
-	durable := durability.NewBitmap(3)
-	durable.Set(0)
-	durable.Set(1)
-	if err := application.queue.SeedFromExtents(job.ID, []durability.FileExtent{
-		{FileIdx: 0, Durable: durable},
+	// Two of the file's three 100-byte articles are on stable storage, as one
+	// merged run.
+	if err := application.queue.SeedFromRuns(job.ID, []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 200},
 	}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
 	got := application.JobDurability(job.ID)
 
 	if got.DurableBytes != 200 {
 		t.Errorf("DurableBytes = %d, want 200 — two 100-byte articles are covered by a "+
-			"committed extent and the figure does not report them", got.DurableBytes)
+			"recorded run and the figure does not report them", got.DurableBytes)
 	}
 	if got.PendingBytes != 999 {
 		t.Errorf("PendingBytes = %d, want 999 — the written-but-not-fsynced window is being "+

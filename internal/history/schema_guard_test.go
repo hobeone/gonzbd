@@ -20,8 +20,8 @@ import (
 // versions 2..11 that no longer exist, and goose sees version 1 as already
 // applied — so Up() applies nothing and returns nil.
 //
-// The daemon then came up CLEAN with no article_facts and no file_extents.
-// Every barrier failed in priorExtent with a plain error rather than a
+// The daemon then came up CLEAN with no durability tables at all. Every
+// barrier failed on its commit with a plain error rather than a
 // *storagefault.Fault, so checkpointJob logged one Warn and did not stall.
 // Nothing was ever acked, no job ever completed, and the only signal was a
 // last_barrier_unix that never advanced — which the barrier stamps anyway when
@@ -54,9 +54,9 @@ func TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse(t *testing.T) {
 	if err == nil {
 		_ = opened.Close()
 		t.Fatal("Open succeeded against a pre-collapse database. goose applies nothing, " +
-			"so the daemon runs with no article_facts and no file_extents: every barrier " +
-			"fails with a plain error that does not stall, nothing is ever acked, and no " +
-			"job ever completes")
+			"so the daemon runs with no durability tables: every barrier fails with a " +
+			"plain error that does not stall, nothing is ever acked, and no job ever " +
+			"completes")
 	}
 	if !errors.Is(err, ErrSchemaFromTheFuture) {
 		t.Errorf("err = %v, want ErrSchemaFromTheFuture", err)

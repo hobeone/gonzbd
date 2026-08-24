@@ -524,7 +524,7 @@ the rows.
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
 | D1–D3 | NZB ↔ article disagreements | L3 | job-level warning | — |
 | E1–E2 | bounds, exact-offset collision | L4 | ✅ already enforced | — |
-| E3 | range overlap | L4 detects nothing; the durability layer detects it from the Class A facts | **post anomaly** (user warning), after the write | A7 **and** E5 |
+| E3 | range overlap | L4 detects nothing; the durability layer detects it by comparing the recorded runs' summed lengths against the file's size | **post anomaly** (user warning), after the write | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -955,9 +955,11 @@ way — see `offsetSettledBy`, which says so — and only the disposition differ
 that matters.** `FileWriter.acceptedAt` is per-open-episode residency by
 design, so a segment arriving in a later episode finds offset 0 unowned and
 overwrites what is there: the file completes **wrong**, not short, and no
-article is failed for it. E3 does report the overlap from the Class A facts,
+article is failed for it. E3 does report the overlap from the durable runs,
 which persist (#413) — but E3 is a warning, which is exactly the property
-decision 3 below is conditional on.
+decision 3 below is conditional on. Note the bound E3 now carries: `Σ length`
+is a sum, so an N-byte overlap and an N-byte hole cancel to equality and the
+check reports no evidence of an overlap on a file holding both.
 
 **Neither case is E5.** In both, the request is still not refused, the article
 count is still satisfied by a body that answers a different segment, and
@@ -1109,8 +1111,8 @@ This argues *against* reflexive rejection. Refusing an article we cannot verify
 discards data that par2 might well have been able to use, and converts a
 repairable file into an unrepairable one. But it does not argue for accepting
 everything, because writing an unverifiable article can destroy a better-
-evidenced one (#387: an overlapping write silently falsifies a Class A fact that
-has already been acked durable).
+evidenced one (#387: an overlapping write silently falsifies a durable run whose
+articles have already been acked).
 
 The rule that resolves the family:
 
@@ -1128,13 +1130,16 @@ articles is a coin flip and either may be written; a collision with a written
 range is not, and must be refused.
 
 **The durable tier is deliberately collapsed into "written", because it is not
-retrievable where the decision is made.** `ArticleFact` carries only
-`FileIdx`, `ArtIdx`, `Offset`, `Length` and `CRC32` — it has no evidence tier,
-and its own package doc says Class A asserts nothing about presence on disk. The
-durable bit lives in `FileExtent.Durable` in the ExtentStore, which
-`internal/assembler` does not import at all: reaching it from `FileWriter.Accept`
-would mean a SQLite read on the single goroutine that owns every open file
-handle, on the hot accept path.
+retrievable where the decision is made.** Durability is now recorded in exactly
+one place — `durable_runs`, written by `durability.Barrier` after the fsync —
+and `internal/assembler` does not import `internal/durability`'s store at all.
+Reaching it from `FileWriter.Accept` would mean a SQLite read on the single
+goroutine that owns every open file handle, on the hot accept path. Nothing the
+writer holds in memory distinguishes a written range from an acked-durable one:
+the `Drain`/`Confirm` cycle empties `written` and then `reported` once the
+articles are acked, so a
+derived check would read the acked case as *no* claim at all, which is why
+`offsetOwner.written` is latched on the offset instead.
 
 So the four-level ordering that reads naturally here — durable-and-acked beats
 written beats accepted beats claimed — **does not exist and must not be cited as

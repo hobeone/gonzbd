@@ -19,6 +19,7 @@ var errInjected = errors.New("injected store failure")
 type failingStore struct {
 	Store
 	failUpdate        bool
+	failClearFailed   bool
 	failRestore       bool
 	failUpdateBatch   bool
 	failList          bool
@@ -70,6 +71,13 @@ func (f *failingStore) UpdateBatch(ctx context.Context, jobs []*Job) error {
 		return errInjected
 	}
 	return f.Store.UpdateBatch(ctx, jobs)
+}
+
+func (f *failingStore) ClearFailedArticles(ctx context.Context, jobID string) error {
+	if f.failClearFailed {
+		return errInjected
+	}
+	return f.Store.ClearFailedArticles(ctx, jobID)
 }
 
 func (f *failingStore) Update(ctx context.Context, job *Job) error {
@@ -195,6 +203,63 @@ func TestRetryPersistFailureRollsBackJob(t *testing.T) {
 	})
 	if len(offered) != 1 || offered[0] != articleID(0, 1) {
 		t.Errorf("after recovery, offered %v, want exactly [%s]", offered, articleID(0, 1))
+	}
+}
+
+// TestRetryClearFailedArticlesFailureRollsBackJob pins the SECOND write Retry
+// depends on, and it is not interchangeable with the first.
+//
+// ResetForRetry clears every failed bit in memory; the stored failed_articles
+// rows have to go with them. Nothing else rewrites those rows — unlike the
+// articles_done column they replaced, which the Update below re-serialised
+// wholesale — so one left behind survives the retry and the next restart
+// derives the retry's re-fetched article as permanently failed. The job then
+// never asks for it again.
+//
+// The rollback is therefore the same shape as the Update's, and it has to run
+// BEFORE the Update rather than after: aborting with the row already deleted
+// and the reset unpersisted is a worse state than aborting with neither done.
+func TestRetryClearFailedArticlesFailureRollsBackJob(t *testing.T) {
+	q, fs, job := newFailedNonResidentJob(t)
+
+	before := job.Progress()
+	wantResolved := before.ArticlesResolved()
+	wantFailed := before.ArticlesFailed()
+
+	fs.failClearFailed = true
+	err := q.Retry(job.ID)
+
+	if err == nil {
+		t.Fatal("Retry reported success while the job's stale failed_articles rows are " +
+			"still in place; the next restart derives its re-fetched article as " +
+			"permanently failed and it is never asked for again")
+	}
+	if !errors.Is(err, errInjected) {
+		t.Errorf("error = %v, want it to wrap the store failure", err)
+	}
+	if job.Status != constants.StatusFailed {
+		t.Errorf("Status = %s, want %s — a failed retry must not leave the job moved",
+			job.Status, constants.StatusFailed)
+	}
+	if job.Warning != "download failed" {
+		t.Errorf("Warning = %q, want it restored", job.Warning)
+	}
+	if manifestResident(job) {
+		t.Error("job is resident after a rolled-back Retry, want the manifest still evicted")
+	}
+	p := job.Progress()
+	if got := p.ArticlesResolved(); got != wantResolved {
+		t.Errorf("ArticlesResolved = %d, want %d — ResetForRetry's reset must not survive "+
+			"the rollback", got, wantResolved)
+	}
+	if got := p.ArticlesFailed(); got != wantFailed {
+		t.Errorf("ArticlesFailed = %d, want %d (pre-mutation value)", got, wantFailed)
+	}
+
+	// The rollback must leave a retry still possible once the store recovers.
+	fs.failClearFailed = false
+	if err := q.Retry(job.ID); err != nil {
+		t.Fatalf("Retry after the store recovered: %v", err)
 	}
 }
 

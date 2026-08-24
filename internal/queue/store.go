@@ -29,27 +29,28 @@ type FileMeta struct {
 	// parity TestRemainingBytes_IdenticalResidentAndNonResident exists to
 	// forbid.
 	//
-	// Both come from job_files, cached beside the articles_done bits they sum
-	// and written by the same statement, so neither can be persisted out of
-	// step with its authority. FailedBytes has no other home available: a
-	// permanently failed article never decodes, so it writes no Class A fact
-	// and no recomputation could produce the figure.
+	// Both come from job_files, each caching a sum over the same article
+	// resolution and written by the same statement, so neither can be
+	// persisted out of step with the rest of its row. FailedBytes has no other
+	// home available: failed_articles records WHICH articles failed and never
+	// how many bytes they were, and a permanently failed article never decodes
+	// so no durable run covers it either.
 	//
-	// BytesDownloaded could be recomputed from Class A and once was, read from
-	// file_extents.bytes_durable. That was the wrong quantity rather than an
-	// unavailable one. This field is compared against Bytes, the encoded NZB
-	// per-file total, so it must count ENCODED bytes; bytes_durable counts the
-	// DECODED payload lengths an fsync proved. Seeding one from the other
-	// overstated a non-resident job's remaining bytes by the encoding
-	// overhead.
+	// BytesDownloaded could be derived from the durability record and once was
+	// read from it. That was the wrong QUANTITY rather than an unavailable
+	// one. This field is compared against Bytes, the encoded NZB per-file
+	// total, so it must count ENCODED bytes; a run's Length is the DECODED
+	// payload an fsync proved. Seeding one from the other overstated a
+	// non-resident job's remaining bytes by the encoding overhead.
 	//
 	// Both are caches and neither is authoritative: hydration runs
 	// JobProgress.recompute, which ASSIGNS these figures from the manifest and
 	// the bitmaps and so supersedes whatever was seeded here (S4).
 	BytesDownloaded int64
 	FailedBytes     int64
-	// Done and Failed are the file's per-article resolved state, decoded from
-	// the same job_files.articles_done bitmap the byte figures above sum.
+	// Done and Failed are the file's per-article resolved state, DERIVED from
+	// durable_runs and failed_articles — the same resolution the byte figures
+	// above sum over.
 	//
 	// They exist for the same reason those do, one level down. Without them a
 	// non-resident job's JobProgress had every article Pending, so a restart
@@ -57,9 +58,17 @@ type FileMeta struct {
 	// remaining until it was promoted — and after the byte figures were
 	// cached, the two disagreed in kind: bytes right, article count wrong.
 	//
-	// Indexed file-locally, length ArticleCount. Nil means the column was
-	// empty or malformed, which reads as "nothing resolved" — the safe
-	// direction under S3, and the same one an absent column already produced.
+	// Indexed FILE-LOCALLY, length ArticleCount, while a run and a
+	// failed-article row both name articles GLOBALLY — SQLiteStore.fillResolution
+	// converts between the two using the running sum of the article counts
+	// above, which is how it manages without a manifest. Nil means the job had
+	// nothing recorded, which reads as "nothing resolved": the safe direction
+	// under S3.
+	//
+	// failed implies done, and this is where that matters most.
+	// newJobProgressSized reads Failed[i] only inside the Done[i] branch, so a
+	// failed article with Done clear would come back Pending and be re-fetched
+	// on every restart, forever.
 	//
 	// Caches, not authorities, on the same terms as the byte figures:
 	// hydration runs JobProgress.recompute, which re-derives everything from
@@ -129,6 +138,24 @@ type Store interface {
 	// query, indexed by file_index within each job. Used by Load to size
 	// a non-resident job's JobProgress without reading its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
+
+	// RecordFailedArticles persists article indices that will never be
+	// fetched. Idempotent per (jobID, artIdx).
+	RecordFailedArticles(ctx context.Context, jobID string, artIdxs []int32) error
+
+	// ClearFailedArticles removes every failed-article row for ONE job.
+	//
+	// It is the reversal of the above and there is no per-article form,
+	// because all THREE reversal sites clear exactly the articles whose
+	// failed bit is set — which is exactly this job's stored set. Two are
+	// in this package (Queue.ClearAllEmitted via JobProgress.resetForReload,
+	// and Queue.Retry via Job.ResetForRetry); the third is
+	// Application.RetryHistoryJob, which resets a rebuilt job outside the
+	// queue and so has to reach this method itself. It
+	// must be scoped to a job the caller is actually resetting: a sweep
+	// over every job would resurrect the permanently failed articles of
+	// every non-resident one as fetchable work.
+	ClearFailedArticles(ctx context.Context, jobID string) error
 
 	// DeleteJobArtifacts removes the on-disk manifest for job id
 	// (manifests/<id>.json.gz). A missing file is not an error.

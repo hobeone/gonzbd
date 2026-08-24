@@ -29,9 +29,9 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 
 	// Give file 0 state that is distinguishable in every column the INSERT
 	// writes from progress, and leave file 1 as the untouched contrast.
-	p.markDone(m, 0)   // sets two articles_done bits
+	p.markDone(m, 0)   // two articles resolved done
 	p.markDone(m, 1)   //
-	p.markFailed(m, 2) // sets one articles_done failed bit
+	p.markFailed(m, 2) // one resolved failed (and therefore also done)
 	p.files[0].AssembledCRC32 = 0xDEADBEEF
 	p.files[0].Filename = "resolved-name.rar"
 	p.files[0].Complete = true

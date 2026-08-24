@@ -174,8 +174,8 @@ of their failure ratio.
    evidence about disk, so it is not persisted at all.
 
    `Done` now means what it says. `durability.Barrier` drains the assembler's
-   write cache, `fsync`s the file, commits the Class B extent, and only then
-   mints a `DurableProof` — which `Queue.AckDurable` requires and which has no
+   write cache, `fsync`s the file, commits the drained articles to
+   `durable_runs`, and only then mints a `DurableProof` — which `Queue.AckDurable` requires and which has no
    exported constructor outside `internal/durability`. So an acked article's
    bytes were covered by a completed `fsync`; the ack does not describe bytes
    sitting in a page cache.
@@ -186,28 +186,34 @@ of their failure ratio.
    checkpoint interval rather than one whole file.
 
    What a crash costs, by what the restart can prove. The deciding question is
-   not "was it acked" but "can the resume sweep verify the bytes against the
-   article's Class A fact", and those are different questions:
+   "is this article covered by a `durable_runs` row", and since the barrier
+   writes that row only after the fsync, it is now the same question as "was it
+   acked":
 
    | State at the crash | Acked? | What the restart does |
    |---|---|---|
-   | still in the write cache, or never received | no | nothing on disk to verify. Outstanding, re-dispatched. This contract. |
-   | written but not yet fsynced, **and the bytes did not survive** | no | no recorded region verifies. Outstanding, re-dispatched. |
-   | written but not yet fsynced, **and the bytes did survive** | no | **recovered, not re-fetched.** `durability.Resumer` reads the region the Class A fact names and checks it against the CRC recorded at decode time; a match makes the article durable even though no barrier ever covered it. |
-   | covered by a completed fsync | yes | the committed extent's size/mtime stamp still matches, so the cache is adopted without reading a byte. |
+   | still in the write cache, or never received | no | no row covers it. Outstanding, re-dispatched. This contract. |
+   | written but not yet fsynced-and-committed, whether or not the bytes survived | no | no row covers it, and nothing reads the file to find out. Outstanding, re-dispatched. |
+   | covered by a completed fsync, and the file is at least as long as its rows claim | yes | the rows are adopted without reading a byte. |
+   | covered by a completed fsync, but the file is shorter than its rows claim (truncated or deleted out of band) | yes | the file's rows are DELETED and every one of its articles is Outstanding. |
    | a fsync the storage layer acknowledged but did not honour (a lying disk, an NFS server that acks early) | yes | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
 
-   Rows two and three are the same article; only the disk's behaviour differs,
-   and the resume tells them apart by reading. That is why an unacked article is
-   **not** synonymous with a re-fetched one: the ack bounds what may be
-   *claimed*, while the fact log plus the file's bytes bound what can be
-   *recovered*, and the second is the larger set. Writing the unacked case down
-   as always-Outstanding understates the resumer, in the direction of making it
-   sound worse than it is.
+   **Row two used to split, and no longer does.** Bytes that reached the disk
+   and survived, but which no barrier had recorded, used to be recovered: a
+   per-article record written at decode time named the region, and the resume
+   read it back and matched the CRC. That record is gone — there is now one
+   record, written only after the fsync — so an unacked article is exactly a
+   re-fetched one. The cost is priced as R3 in
+   `docs/durability-contract.md`: **a checkpoint's worth of re-download per
+   unclean shutdown**, bounded by the 30s/64 MiB cadence and shrunk further by
+   file completion and clean shutdown. What was bought for it is that a record
+   can no longer describe bytes that were never written.
 
    The last row is genuinely outside what this program can observe, and it is
    the only case where an ack can be wrong — the "written but not fsynced yet and
-   therefore acked" case that used to sit there is gone.
+   therefore acked" case that used to sit there is gone. The row above it is not
+   an ack being wrong: the record was true when written, and the file changed
+   underneath it, which is exactly what the size gate exists to catch.
 
    See `docs/durability-contract.md` for the assembler and barrier side of this.
 

@@ -84,8 +84,8 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 //
 // AckDurable answers queue.ErrJobNotResident when the job was evicted between
 // the barrier's file listing and the ack. retryFinalize already treats that as
-// landed and documents why — the extent is committed, so the bits are replayed
-// from Class B after the resume — but the FIRST-attempt path classified it as
+// landed and documents why — the runs are committed, so the bits are replayed
+// from the record after the resume — but the FIRST-attempt path classified it as
 // storage and stalled the job over a queue-residency condition.
 func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)

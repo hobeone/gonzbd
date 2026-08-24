@@ -72,41 +72,6 @@ const (
 	// paces a config change, and a user waiting on a settings save is a
 	// different tolerance from a process on its way out.
 	reloadCheckpointTimeout = 10 * time.Second
-
-	// factAppendTimeout bounds one Class A insert. It exists because the
-	// append drops the caller's cancellation (see pipeline.appendArticleFacts)
-	// and something must still stop a contended database from holding the
-	// pipeline — or a shutdown — open indefinitely.
-	//
-	// Sized to the busy_timeout(5000) the history connection carries
-	// (internal/history/db.go), which with _txlock=immediate is what covers
-	// contention: a lock this waits out is one the driver would have waited
-	// out anyway.
-	//
-	// It does NOT bound the worst case of one Append, so do not read the
-	// figure as "one Append always completes or fails within 5s". This
-	// ceiling covers the whole call, and for a BATCH that is BeginTx,
-	// Prepare, Exec and Commit in sequence, so a wait in the first step can
-	// leave the rest without room and cut it short part-way through. (In
-	// practice _txlock=immediate takes the write lock at BEGIN, so contention
-	// is one wait at BeginTx rather than one per step — nearer a single 5s
-	// than four — but that is a property of the DSN, not of this constant.)
-	//
-	// The append this constant actually bounds is the single-fact one, which
-	// SQLiteFactLog issues as a lone statement with no explicit transaction,
-	// so there is one step to wait in. Being cut short is deliberate and safe
-	// in the only direction
-	// that matters: a truncated append rolls back and records nothing, which
-	// leaves the article unprovable rather than wrongly proven (R3). See
-	// pipeline.appendArticleFacts for what that actually costs — it is
-	// bounded, but it is not "a re-fetch and nothing else".
-	//
-	// The cost it buys is a shutdown that can now block here for up to this
-	// long per in-flight article, where a cancelled context previously
-	// returned immediately. In-flight means the handful of articles being
-	// applied when the cancel lands, not the queue; the alternative is losing
-	// their facts and re-fetching bytes that are on disk.
-	factAppendTimeout = 5 * time.Second
 )
 
 // Downloader defines the lifecycle and control interface for the Usenet
@@ -184,8 +149,11 @@ type Application struct {
 	// history database, in which case nothing acks and every restart
 	// re-downloads — see New.
 	barrier *durability.Barrier
-	factLog durability.FactLog
-	extents durability.ExtentStore
+	// runs is the durability record itself. The barrier is its only writer;
+	// everything here READS it — recordAssembledCRC for the whole-file CRC,
+	// seedFromCommittedRuns for a stall recovery's replay — or deletes a
+	// departed job's rows.
+	runs    durability.RunStore
 	resumer fileResumer
 
 	// checkpointBytes is B1's volume bound. checkpointInterval above is its
@@ -482,9 +450,10 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		// No CRC32 is reported. The assembler cannot compute a whole-file
 		// one honestly — a resumed run is never sent the articles an earlier
 		// run completed, so its parts never tile the file (#349) — and the
-		// honest figure is durability.FileExtent.PrefixCRC guarded by
-		// HasPrefixCRC, which the resumer derives off the barrier's critical
-		// path. Nothing consumes it yet; see the note on FileComplete.
+		// honest figure is the crc32 of a file's single durable run, which
+		// Application.recordAssembledCRC queries after the finalize. Nothing
+		// consumes this callback's would-be figure; see the note on
+		// FileComplete.
 		fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
 		select {
 		case app.internalFileComplete <- fc:
@@ -507,7 +476,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
-	// Class A and Class B live in the history database, which is also where
+	// The durability record lives in the history database, which is also where
 	// the queue's own state lives. One database, one set of transactions, no
 	// second file to keep consistent with it.
 	//
@@ -517,12 +486,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// re-downloads everything. It is logged loudly for that reason. Only
 	// tests that never download reach it.
 	if repo != nil && repo.DB() != nil {
-		db := repo.DB()
-		app.factLog = durability.NewSQLiteFactLog(db)
-		app.extents = durability.NewSQLiteExtentStore(db)
-		app.resumer = durability.NewResumer(app.factLog, app.extents, log)
-		app.barrier = durability.NewBarrier(app.factLog, app.extents, q, app, log)
-		p.factLog = app.factLog
+		app.runs = durability.NewSQLiteRunStore(repo.DB())
+		app.resumer = durability.NewResumer(app.runs, log)
+		app.barrier = durability.NewBarrier(app.runs, q, app, log)
 	} else {
 		log.Warn("no history database: durability barrier disabled, " +
 			"no article will be acked and every restart re-downloads the whole queue")
@@ -541,11 +507,12 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// permanent failures still go to Queue.AckPermanentFailure from the
 	// pipeline.
 	//
-	// Options carries no FactLog either. Class A is appended by the pipeline
-	// at the point it hands the article over, with no ordering against the
-	// write (R2) — routing it through the assembler would make it
-	// write-ordered and destroy exactly the independence that lets Class A
-	// commit without a barrier.
+	// Options carries no durability store either, and nothing here records
+	// anything about an article. The assembler REPORTS what its writes
+	// reached — offset, length and CRC come back in the drain — and the
+	// barrier records them after the fsync. A store wired in here would put a
+	// writer on the assembler's worker goroutine, where a SQLite stall is read
+	// as evidence about storage and parks a healthy job (A1).
 	asm := assembler.New(assembler.Options{
 		FileInfo:            p.resolveFileInfo,
 		MinFreeBytes:        minFreeBytes,
@@ -754,8 +721,8 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	}
 	app.pipeline.forgetJob(id)
 	app.forgetJobBarrierState(id)
-	// The job is gone from the queue, so nothing will ever read its Class A
-	// facts or Class B extents again. Both are keyed by job ID with no
+	// The job is gone from the queue, so nothing will ever read its durable
+	// runs or its failed-article rows again. Both are keyed by job ID with no
 	// foreign key to anything, so this is the only thing that removes them —
 	// without it every deleted job leaves its rows behind for the life of
 	// the database.
@@ -1266,10 +1233,16 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 		// Recorded, not just logged. The barrier has already trimmed this
 		// file, acked its articles and released the handle, and the
 		// assembler's tombstone means OnFileComplete will never fire for it
-		// again — so nothing else can re-trigger this. Dropping it left the
-		// file's Complete flag false forever with every article Done and
-		// nothing left to dispatch: a wedged job, surviving restarts because
-		// the flag is only ever restored from the persisted column.
+		// again — so nothing else IN THIS PROCESS can re-trigger this. Dropping
+		// it leaves the file's Complete flag false with every article Done and
+		// nothing left to dispatch: a wedged job.
+		//
+		// It no longer survives restarts — completeStrandedFiles finishes the
+		// interrupted finalize during the next start's resume sweep — and this
+		// note stays because a restart is not an acceptable recovery for a
+		// condition the running process can fix itself. The retry is what keeps
+		// the repair in-process; the sweep is the backstop for the crash that
+		// takes the note down with it.
 		app.log.Info("completion not delivered; recorded for the stall re-evaluation to retry",
 			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
 		app.noteUndeliveredCompletion(fc.JobID, fc.FileIdx)
@@ -1292,6 +1265,29 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 // its completion silently dropped. handleFileComplete's own call has already
 // logged everything a live pipeline can act on.
 func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComplete) error {
+	// The assembled CRC is recorded HERE rather than beside the barrier,
+	// because this function is what every completion path shares and the CRC
+	// is part of "everything the completion path does after the bytes are
+	// correct". Beside the barrier it was reached by ONE of the three:
+	//
+	//   - the ordinary path reached it, since finalizeCompletedFile returns
+	//     nil and its caller comes straight here;
+	//   - stall recovery did not. retryFinalize swallows ErrJobNotResident —
+	//     the ack cannot mark a paused job — and returns before the CRC, then
+	//     Phase 4 arrives here having marked the file finalizeDone, and
+	//     nothing retried it;
+	//   - the startup repair did not, because completeStrandedFiles has no
+	//     barrier call to hang it off at all.
+	//
+	// Both of those left AssembledCRC32 at zero, which par2 reads as NoCRC:
+	// the QuickCheck bypass is suppressed and every recovery volume is fetched
+	// for a file whose whole-file CRC was sitting in its durable run the
+	// entire time. One owner rather than three call sites is what stops a
+	// fourth path from being added without one.
+	//
+	// Before MarkFileComplete, so the value is on the progress record by the
+	// time maybeFinalize below can hand the job to post-processing.
+	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		// Returning bare here was itself the shape #261 describes: the file
 		// never gets marked complete, no event is emitted, and nothing says
@@ -1414,16 +1410,16 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // recorded CRC to check against (NoCRC), or could not be matched
 // (Unverified).
 //
-// The CRCs come from Class A. The assembler used to combine the per-article
-// CRCs it happened to see, which was #349 — a resumed run never receives the
-// articles an earlier run completed, so its parts do not tile the file — and
-// that writer is gone. durability.verifiedPrefix combines the FACTS instead, which
-// persist across restarts and so name every article whichever run fetched it,
-// and Application.recordAssembledCRC copies the result onto the queue when the
-// file finalizes.
+// The CRCs come from the durability record. The assembler used to combine the
+// per-article CRCs it happened to see, which was #349 — a resumed run never
+// receives the articles an earlier run completed, so its parts do not tile the
+// file — and that writer is gone. A durable run combines the CRCs of the
+// articles that abut as they join it, across restarts, so when a file collapses
+// to one row that row's crc32 IS the whole-file CRC; Application.recordAssembledCRC
+// copies it onto the queue when the file finalizes.
 //
-// A file whose prefix stops short of its end still reads as NoCRC, which is
-// R23's "unavailable" rather than a CRC of zero, and this function then
+// A file that keeps more than one row still reads as NoCRC, which is R23's
+// "unavailable" rather than a CRC of zero, and this function then
 // conservatively returns true. That costs bandwidth on a file with a hole; it
 // never ships an unrepaired one. When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
@@ -1743,10 +1739,10 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 // re-parsing the gzipped NZB backup recorded on it.
 //
 // This is where the article message-IDs come back. They are not in SQLite —
-// job_files holds per-file metadata and a per-article bitmap, never the
-// <id@host> strings a BODY command needs — and the job's manifest was
-// unlinked when it finalized. The NZB is the only remaining copy, which is
-// why the backup's name is recorded on the entry.
+// job_files holds per-file metadata, durable_runs holds article INDICES, and
+// neither holds the <id@host> strings a BODY command needs — and the job's
+// manifest was unlinked when it finalized. The NZB is the only remaining copy,
+// which is why the backup's name is recorded on the entry.
 //
 // The rebuilt job takes the entry's ID so its retained progress, its
 // incomplete directory, and any later history entry all still line up.
@@ -1878,6 +1874,38 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 				"stale durability rows could not be dropped; refusing to requeue, because a "+
 				"stale row would bound the completion truncate to the wrong articles: %w", jobID, err)
 		}
+	} else if store := app.queue.Store(); store != nil {
+		// The THIRD of Step 10's reversal sites, and the only one outside
+		// internal/queue. ResetForRetry above cleared every failed bit in
+		// memory; on this branch nothing else clears the rows behind them.
+		//
+		// The two tables part company here, and they are retained together by
+		// job_finalizer.go for opposite-facing reasons. durable_runs describes
+		// bytes still on disk, so DeleteKeepingDurability below deliberately
+		// keeps them (#422). failed_articles describes a DECISION not to
+		// fetch, and a retry exists to revisit that decision — so the rows go.
+		//
+		// The undo would be immediate, not restart-only: Add writes no
+		// resolution, and PromoteNext unconditionally calls
+		// Store.RestoreJobProgress, which re-derives per-article state from
+		// these two tables and re-marks exactly these articles Failed+Done. A
+		// user retrying a failed job would never re-attempt the articles that
+		// made it fail. It is a regression rather than a latent gap: the
+		// articles_done blob this table replaced was re-serialised wholesale
+		// by Add's own insert, so the reset corrected the stored copy as a
+		// side effect. A separate table has no wholesale rewrite.
+		//
+		// Fatal, for the same reason the sibling branch above gives: nothing
+		// has been committed at this point — the history entry is untouched
+		// and no job has entered the queue — so the abort is free and the
+		// retry stays retryable. Proceeding instead would requeue a job whose
+		// stored state contradicts the reset that was just performed on it.
+		if err := store.ClearFailedArticles(ctx, jobID); err != nil {
+			return fmt.Errorf("app: retry %s: the reset cleared the job's failed "+
+				"articles in memory but their stored rows could not be dropped; refusing "+
+				"to requeue, because the next promotion would restore them and the retry "+
+				"would skip the very articles it exists to re-attempt: %w", jobID, err)
+		}
 	}
 	if err := app.queue.Add(job); err != nil {
 		return err
@@ -1889,7 +1917,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// unretryable. The retained per-file progress does go, because Add has
 	// just written fresh job_files rows that supersede it.
 	//
-	// KeepingDurability because ownership of article_facts and file_extents
+	// KeepingDurability because ownership of durable_runs and failed_articles
 	// passes back to the job as it re-enters the queue. They are what bound
 	// this attempt's truncate to the whole partial file; plain Delete drops
 	// them, which destroyed the retention job_finalizer.go maintains for

@@ -59,7 +59,7 @@ type fileBuf struct {
 	// not re-delivered simply never forms a run from 0 and its articles are
 	// written individually, which costs syscalls and never correctness. The
 	// completion truncate, which used to depend on a resume seed, now derives
-	// its bound from the durable facts instead.
+	// its bound from the durable runs instead.
 	//
 	// It advances as contiguous runs are flushed, and also on a drain —
 	// drainFile moves it past everything it hands back, which can jump an
@@ -99,6 +99,12 @@ type bufferedArticle struct {
 	offset int64
 	data   []byte
 	id     articleID
+	// crc32 is the decoded article's CRC32, carried alongside offset and id
+	// so a later run's noteWritten can report it. It travels with the article
+	// through buffering and coalescing untouched — this cache never computes
+	// or combines a CRC, it only carries the one the decoder already
+	// validated.
+	crc32 uint32
 }
 
 // flushRun is a contiguous run of articles that can be written as a single WriteAt.
@@ -124,6 +130,11 @@ type runPart struct {
 	id     articleID
 	offset int64
 	length int
+	// crc32 is the article's decoded CRC32, carried through coalescing the
+	// same way offset and length are: copied out of the bufferedArticle
+	// before its entry is deleted, since nothing else can say which CRC
+	// belonged to which article once the run's bytes are flat.
+	crc32 uint32
 }
 
 // newWriteCache creates a write cache with the given memory limit.
@@ -315,7 +326,7 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 		// Copied out of art rather than read back from the map: the entry is
 		// gone by the time the run reaches disk, and the identity and extent
 		// are what the write needs in order to report the article Written.
-		parts = append(parts, runPart{id: art.id, offset: art.offset, length: len(art.data)})
+		parts = append(parts, runPart{id: art.id, offset: art.offset, length: len(art.data), crc32: art.crc32})
 		delete(fb.articles, art.offset)
 		fb.totalBytes -= int64(len(art.data))
 		wc.used -= int64(len(art.data))

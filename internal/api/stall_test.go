@@ -179,17 +179,17 @@ func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 	}
 
 	// Now make the job's single 1024-byte article durable, through the same
-	// committed-extent replay a resume performs. Asserting only the zero above
+	// recorded-run replay a resume performs. Asserting only the zero above
 	// pinned nothing: a bytes_durable that always answered 0 satisfied it.
-	durable := durability.NewBitmap(1)
-	durable.Set(0)
-	if err := q.SeedFromExtents(job.ID, []durability.FileExtent{{FileIdx: 0, Durable: durable}}); err != nil {
-		t.Fatalf("SeedFromExtents: %v", err)
+	if err := q.SeedFromRuns(job.ID, []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Length: 1024},
+	}); err != nil {
+		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
 	after := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
 	if after.BytesDurable != 1024 {
-		t.Errorf("bytes_durable = %d after a committed extent covered the job's only article, "+
+		t.Errorf("bytes_durable = %d after a recorded run covered the job's only article, "+
 			"want 1024 — the field reports nothing a barrier achieved", after.BytesDurable)
 	}
 	if after.BytesPending != 512 {
