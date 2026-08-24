@@ -61,11 +61,15 @@ func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
 // TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails pins the
 // figure beside the stamp.
 //
-// checkpointJob resets the accumulator BEFORE the run, deliberately, so an
-// article written while the barrier is in flight is charged to the next
-// window. Nothing restored it when the run failed, so a job that stalled at
-// phase 1 with megabytes unsynced reported bytes_pending as 0 — and because
-// the stall pauses it, nothing re-accumulated.
+// checkpointJob used to reset the accumulator BEFORE the run, so an article
+// written while the barrier was in flight would be charged to the next window.
+// Nothing restored it when the run failed, so a job that stalled at phase 1
+// with megabytes unsynced reported bytes_pending as 0 — and because the stall
+// pauses it, nothing re-accumulated.
+//
+// The window is now retired by settleJobBytes on the success path, which keeps
+// this property without the reset: a failed run simply never settles. The test
+// is unchanged because the property it pins never was about the reset.
 //
 // The nil-target branch a few lines above declines to reset for exactly this
 // reason: "two figures agreeing that nothing is at risk, at the moment when
@@ -91,16 +95,16 @@ func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T
 	}
 }
 
-// TestCheckpointJob_RestoresThePendingBytesWhenTheRunFails pins the restore on
-// the path that actually reaches it: a barrier with real open files that fails
-// at the commit.
+// TestCheckpointJob_LeavesThePendingBytesWhenTheRunFails pins the figure on the
+// path that actually reaches the settle: a barrier with real open files that
+// fails at the commit.
 //
 // The sibling test above covers a run that claims nothing and returns early,
-// which never resets the accumulator in the first place. This one resets it and
-// then fails, which is the case the restore exists for — a job stalled at phase
-// 1 with megabytes unsynced reported zero bytes pending, and because the stall
+// never reaching the settle at all. This one gets as far as the commit and then
+// fails, which is the case the arithmetic exists for — a job stalled at phase 1
+// with megabytes unsynced reported zero bytes pending, and because the stall
 // pauses it nothing re-accumulated.
-func TestCheckpointJob_RestoresThePendingBytesWhenTheRunFails(t *testing.T) {
+func TestCheckpointJob_LeavesThePendingBytesWhenTheRunFails(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -124,41 +128,66 @@ func TestCheckpointJob_RestoresThePendingBytesWhenTheRunFails(t *testing.T) {
 
 	if got := application.pendingBytesFor(job.ID); got < 400 {
 		t.Errorf("bytes_pending = %d after a failed barrier, want at least 400. The "+
-			"reset was taken for a run that claimed nothing, so the figure reports "+
+			"window was retired by a run that claimed nothing, so the figure reports "+
 			"no bytes at risk while every byte written since the last real barrier "+
 			"still is", got)
 	}
 }
 
-// TestRestoreJobBytes_AddsRatherThanReplaces pins the arithmetic, which is the
-// only decision this helper makes.
+// TestSettleJobBytes_SubtractsRatherThanClears pins the arithmetic, which is
+// the only decision this helper makes.
 //
-// A barrier resets the accumulator before it runs, so articles written while
-// it was in flight are charged to the NEW window. Restoring by assignment
-// would discard exactly those — the most recently written bytes, and the ones
-// least likely to be on disk — so the figure has to be added back on top.
-func TestRestoreJobBytes_AddsRatherThanReplaces(t *testing.T) {
+// A barrier reads the accumulator before it runs, so articles written while it
+// was in flight belong to the NEXT window. Clearing the entry on success would
+// discard exactly those — the most recently written bytes, and the ones least
+// likely to be on disk — so only the figure the barrier actually read comes off.
+func TestSettleJobBytes_SubtractsRatherThanClears(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	// 120 bytes arrived while the barrier that reset the counter was running.
+	// The window the barrier read before it started.
+	application.noteJobBytes(job.ID, 400)
+	pending := application.pendingBytesFor(job.ID)
+	// 120 bytes arrived while that barrier was in flight.
 	application.noteJobBytes(job.ID, 120)
 
-	application.restoreJobBytes(job.ID, 400)
+	application.settleJobBytes(job.ID, pending)
 
-	if got := application.pendingBytesFor(job.ID); got != 520 {
-		t.Errorf("pending = %d, want 520 — assignment would drop the %d bytes written "+
-			"during the run, which are the least likely of all to be on disk", got, 120)
+	if got := application.pendingBytesFor(job.ID); got != 120 {
+		t.Errorf("pending = %d, want 120 — clearing would drop the bytes written during "+
+			"the run, which are the least likely of all to be on disk", got)
 	}
 }
 
-// TestRestoreJobBytes_IgnoresANonPositiveAmount pins the guard that keeps a
+// TestSettleJobBytes_IgnoresANonPositiveAmount pins the guard that keeps a
 // job with nothing pending out of the map entirely.
-func TestRestoreJobBytes_IgnoresANonPositiveAmount(t *testing.T) {
+func TestSettleJobBytes_IgnoresANonPositiveAmount(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.restoreJobBytes(job.ID, 0)
+	application.settleJobBytes(job.ID, 0)
 
 	if got := application.pendingBytesFor(job.ID); got != 0 {
-		t.Errorf("pending = %d after restoring nothing, want 0", got)
+		t.Errorf("pending = %d after settling nothing, want 0", got)
+	}
+	if at := application.jobsAtRisk(); len(at) != 0 {
+		t.Errorf("jobsAtRisk() = %v after settling nothing; the guard must not create "+
+			"an entry for a job that never wrote", at)
+	}
+}
+
+// TestSettleJobBytes_RemovesTheEntryWhenTheWindowIsFullyRetired keeps a settled
+// job from lingering as a zero entry, which would leak one map entry per job
+// ever downloaded.
+func TestSettleJobBytes_RemovesTheEntryWhenTheWindowIsFullyRetired(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+
+	application.noteJobBytes(job.ID, 400)
+	application.settleJobBytes(job.ID, 400)
+
+	application.barrierMu.Lock()
+	_, present := application.jobBarrierBytes[job.ID]
+	application.barrierMu.Unlock()
+	if present {
+		t.Error("a fully settled job kept its accumulator entry; the map grows by one " +
+			"entry per job ever downloaded")
 	}
 }

@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/durability"
 )
 
 // checkpointJob's return answers one question: does this job hold
@@ -209,14 +212,154 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 			"articles that were emitted and cancelled but never written", got)
 	}
 
-	// A successful barrier takes the accumulator, so the job stops being at risk
-	// without anything having to remember that it was.
-	application.takeJobBytes(job.ID)
+	// A successful barrier settles the accumulator, so the job stops being at
+	// risk without anything having to remember that it was.
+	application.settleJobBytes(job.ID, 4096)
 	// Empty rather than nil: the zero "idle-job" entry above is still present,
 	// so the map is allocated and then filtered down to nothing. Either shape
 	// means the same thing to ClearAllEmitted, which only does lookups.
 	if got := application.jobsAtRisk(); len(got) != 0 {
-		t.Errorf("jobsAtRisk() = %v after the accumulator was taken, want no jobs", got)
+		t.Errorf("jobsAtRisk() = %v after the window was settled, want no jobs", got)
+	}
+}
+
+// blockingCommitStore parks a barrier inside Commit — phase 4, after the drain,
+// the fsync and the stat — so a test can observe the accumulator at the one
+// moment that matters: the run is genuinely in flight and nothing is durable.
+type blockingCommitStore struct {
+	durability.RunStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s blockingCommitStore) Commit(ctx context.Context, jobID string, arts []durability.DurableArticle) ([]durability.Collision, error) {
+	close(s.entered)
+	<-s.release
+	return s.RunStore.Commit(ctx, jobID, arts)
+}
+
+// TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight is the pin for the
+// window itself, observed through checkpointJob rather than the primitives.
+//
+// The unit tests below fix the CONTRACT of the read and the settle; this one
+// fixes which of them checkpointJob calls, and when. That distinction is the
+// whole defect: the old code's read was destructive, so between it and the
+// restore-on-failure the job had no accumulator entry, and jobsAtRisk — which a
+// reload consults when OpenJobIDs fails — could not name it.
+//
+// Nothing serialises the two. checkpointJob holds the per-job barrier mutex
+// across its run, but the OpenJobIDs failure path never calls checkpointJob at
+// all; it reads the accumulator directly, and barrierMu is a leaf.
+func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 2)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+
+	// Grounding: with no open file the run returns before it ever reaches
+	// Commit, and this test would pass without observing anything.
+	if len(application.syncTargetFor(job.ID).Files()) == 0 {
+		t.Fatal("the fixture has no open file, so the barrier never reaches Commit")
+	}
+
+	blocked := blockingCommitStore{
+		RunStore: application.runs,
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	application.barrier = durability.NewBarrier(
+		blocked, application.queue, application, slog.New(slog.DiscardHandler),
+	)
+
+	application.noteJobBytes(job.ID, 4096)
+
+	done := make(chan bool, 1)
+	go func() { done <- application.checkpointJob(t.Context(), job.ID) }()
+
+	<-blocked.entered
+	// The barrier is parked mid-run. Its bytes are on disk but not durable, and
+	// this is precisely when a concurrent reload would consult jobsAtRisk.
+	if _, ok := application.jobsAtRisk()[job.ID]; !ok {
+		t.Error("a job whose barrier is in flight is absent from jobsAtRisk. A reload " +
+			"whose OpenJobIDs failed here would clear its emitted bits, and if the " +
+			"barrier then fails, bytes already on disk are re-fetched against a " +
+			"changed server set — #417")
+	}
+	if application.nothingAtRisk(job.ID) {
+		t.Error("a job whose barrier is in flight reported nothing at risk")
+	}
+	close(blocked.release)
+
+	if safe := <-done; !safe {
+		t.Fatal("the barrier failed; this test is about a run that succeeds")
+	}
+	// And the success really does retire it, or every reload after a healthy
+	// checkpoint would stall the articles it is supposed to re-dispatch.
+	if _, ok := application.jobsAtRisk()[job.ID]; ok {
+		t.Error("a job whose barrier succeeded is still named at risk")
+	}
+}
+
+// TestJobsAtRisk_NamesAJobWhoseBarrierIsStillInFlight closes the window
+// CodeRabbit found on #428.
+//
+// The accumulator used to be read-and-cleared BEFORE barrier.Run and put back
+// only if that run failed. Between those two points the job had no entry, so
+// jobsAtRisk could not name it — and jobsAtRisk is exactly what a reload
+// consults when OpenJobIDs fails, which is the wedged-mount case where a
+// background barrier is most likely to be in flight and about to fail. The
+// reload cleared the job's Emitted bits, the barrier then failed and restored
+// the bytes too late, and #417 reproduced through a narrower door.
+//
+// Nothing serialised the two: checkpointJob holds the per-job barrier mutex
+// across its run, but the OpenJobIDs failure path never calls checkpointJob at
+// all — it reads the accumulator directly, and barrierMu is a leaf.
+func TestJobsAtRisk_NamesAJobWhoseBarrierIsStillInFlight(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	application.noteJobBytes(job.ID, 4096)
+
+	// The barrier reads its window and starts running. Nothing is durable yet.
+	pending := application.pendingBytesFor(job.ID)
+	if pending != 4096 {
+		t.Fatalf("fixture: barrier read %d bytes, want 4096", pending)
+	}
+
+	if _, ok := application.jobsAtRisk()[job.ID]; !ok {
+		t.Error("a job whose barrier is still in flight is absent from jobsAtRisk. A " +
+			"reload whose OpenJobIDs failed would clear its emitted bits, and if that " +
+			"barrier then fails its written bytes are re-fetched against a changed " +
+			"server set — #417")
+	}
+	if application.nothingAtRisk(job.ID) {
+		t.Error("a job whose barrier is still in flight reported nothing at risk")
+	}
+
+	// Only the run that earns it retires the window.
+	application.settleJobBytes(job.ID, pending)
+	if _, ok := application.jobsAtRisk()[job.ID]; ok {
+		t.Error("a job whose barrier succeeded is still named at risk, so every reload " +
+			"after a healthy checkpoint would stall the articles it must re-dispatch")
+	}
+}
+
+// TestJobsAtRisk_KeepsAFailedBarriersBytesAtRisk is the other half: a barrier
+// that does NOT succeed never calls settleJobBytes, so the figure stands.
+//
+// This replaces what restoreJobBytes used to pin. The property is the same —
+// a failed barrier leaves the bytes at risk — but it now holds because nothing
+// removed them, rather than because something put them back.
+func TestJobsAtRisk_KeepsAFailedBarriersBytesAtRisk(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	application.noteJobBytes(job.ID, 4096)
+
+	// A barrier reads its window and fails. settleJobBytes is not called.
+	_ = application.pendingBytesFor(job.ID)
+
+	if _, ok := application.jobsAtRisk()[job.ID]; !ok {
+		t.Error("a job whose barrier failed is absent from jobsAtRisk; its written bytes " +
+			"are unacked and a clear would offer them for re-fetch")
+	}
+	if got := application.pendingBytesFor(job.ID); got != 4096 {
+		t.Errorf("pending = %d after a failed barrier, want 4096 — the figure is read as "+
+			"reassurance and must not drop beside a last_barrier that did not move", got)
 	}
 }
 
@@ -235,16 +378,21 @@ func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
 			"risk, which would let a reload clear its emitted bits and re-fetch them")
 	}
 
-	// restoreJobBytes is what keeps a FAILED barrier from looking like a
-	// successful one to this predicate.
-	pending := application.takeJobBytes(job.ID)
-	if !application.nothingAtRisk(job.ID) {
-		t.Error("taking the accumulator did not clear the at-risk verdict")
-	}
-	application.restoreJobBytes(job.ID, pending)
+	// Reading the window is what a barrier does before it runs, and it must NOT
+	// move this predicate — the run has not earned anything yet. That is what
+	// keeps a barrier in flight, and a barrier that FAILED, from looking like
+	// one that succeeded.
+	pending := application.pendingBytesFor(job.ID)
 	if application.nothingAtRisk(job.ID) {
-		t.Error("a restored accumulator — the state after a barrier that FAILED — was " +
-			"reported as nothing at risk, so a failed barrier would read as a success")
+		t.Error("reading the window cleared the at-risk verdict, so a barrier still in " +
+			"flight — or one that failed — reads as a success")
+	}
+
+	// Only settling does, and only a successful barrier settles.
+	application.settleJobBytes(job.ID, pending)
+	if !application.nothingAtRisk(job.ID) {
+		t.Error("a settled window still reports bytes at risk, which would stall the " +
+			"articles a reload must re-dispatch")
 	}
 }
 

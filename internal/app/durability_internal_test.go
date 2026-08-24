@@ -202,20 +202,28 @@ func TestNoteJobBytes_KicksOnlyOnceTheBoundIsCrossed(t *testing.T) {
 	}
 }
 
-// TestTakeJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers pins why the
+// TestSettleJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers pins why the
 // reset lives in the barrier rather than in the kick: without it the
 // accumulator keeps its pre-barrier total and every subsequent article
 // re-crosses the bound.
-func TestTakeJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers(t *testing.T) {
+//
+// The retirement is on the SUCCESS path now, not before the run, so this models
+// a barrier that read its window and then earned it.
+func TestSettleJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	application.checkpointBytes = 100
 
 	application.noteJobBytes("job-a", 150)
 	<-application.barrierKick
 
-	if got := application.takeJobBytes("job-a"); got != 150 {
-		t.Errorf("takeJobBytes = %d, want 150 — the window's bytes are RETURNED as well "+
-			"as cleared, and the caller puts them back if its barrier fails", got)
+	pending := application.pendingBytesFor("job-a")
+	if pending != 150 {
+		t.Errorf("pendingBytesFor = %d, want 150 — the window's bytes are READ without "+
+			"being cleared, so a job whose barrier is in flight stays at risk", pending)
+	}
+	application.settleJobBytes("job-a", pending)
+	if got := application.pendingBytesFor("job-a"); got != 0 {
+		t.Errorf("pending = %d after a successful barrier settled its window, want 0", got)
 	}
 	application.noteJobBytes("job-a", 10)
 	if n := len(application.barrierKick); n != 0 {
@@ -1396,7 +1404,8 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 //
 // checkpointJob had two outcomes where the world has three. A job with no sync
 // target ran no barrier at all, but `err` stayed nil, so control fell through
-// to the success stamp — and takeJobBytes had already zeroed the window. The
+// to the success stamp — and the window had already been zeroed, by a
+// read-and-clear that then ran before the barrier rather than after it. The
 // operator then sees a fresh barrier timestamp beside zero pending bytes: two
 // figures agreeing that nothing is at risk, at the moment when everything
 // written since the last real barrier is.

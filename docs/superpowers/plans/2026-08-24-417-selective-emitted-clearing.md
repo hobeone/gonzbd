@@ -91,9 +91,15 @@ A job that simply never opened a file has nothing written and is safe trivially.
 inside `ClearAllEmitted`'s loop. `checkpointAllShare` and `checkpointAll` pass
 it through.
 
-Both early returns yield an empty map, i.e. today's behaviour: `app.barrier ==
-nil`, and `OpenJobIDs` failing. Neither can enumerate the at-risk jobs, so
-neither can protect them. State this in the doc.
+Both early returns — `app.barrier == nil`, and `OpenJobIDs` failing — answer
+`app.jobsAtRisk()`, **not** an empty map. Neither reaches the loop, so neither
+can ask `checkpointJob` about any job; the barrier accumulator names the at-risk
+jobs without needing the listing.
+
+**Superseded during review.** This originally read "both early returns yield an
+empty map, i.e. today's behaviour", on the reasoning recorded in deferred item 2
+below. That reasoning was wrong about how `OpenJobIDs` fails, and the empty map
+would have let one timed-out listing re-open #417 in full.
 
 **Document the coverage gap, and why it is benign.** The sweep enumerates
 `app.assembler.OpenJobIDs` (`durability.go:701`) — jobs holding an open file —
@@ -208,10 +214,21 @@ against the landed diff, correct what is falsified.
    production (`app.go:487-491`, `main.go:206-214`). Kept `true` so test
    behaviour is unchanged.
 
-2. **`OpenJobIDs` failure and nil barrier yield an empty skip set**, so the
-   clear proceeds as today. A deliberate choice, not an unknown: the alternative
-   — skipping the clear entirely on a transient listing error — would strand
-   every job's in-flight articles. Recorded so a reviewer sees it was decided.
+2. **`OpenJobIDs` failure and nil barrier yield an empty skip set** — **WRONG,
+   overturned in review; both now answer `app.jobsAtRisk()`.** Recorded rather
+   than deleted, because the reasoning failed in an instructive way.
+
+   The premise was that this is "a transient listing error", so withholding on
+   it would strand every job's in-flight articles for nothing. But `submit`
+   bounds that call with `barrierOpTimeout`, and the way it fails in production
+   is a worker parked in an fsync on a wedged mount — the state holding the MOST
+   written-but-unacked bytes, and precisely what the per-job arm calls unsafe.
+   The two arms would have disagreed about identical evidence, with the wider one
+   winning.
+
+   The error was classifying a failure by what its name suggested rather than by
+   tracing how it actually fires. Answering from the accumulator withholds
+   exactly the at-risk jobs, so neither the strand nor the over-clear happens.
 
 3. **The stall is only PARTLY self-clearing.** `AckDurable` reaches `markDone`
    (`workset.go:69`) which clears `emitted` (`progress.go:695`), so a later

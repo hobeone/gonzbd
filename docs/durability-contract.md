@@ -841,8 +841,20 @@ checkpoint window.
 
 Three details that have each been got wrong once:
 
-- **The byte accumulator resets before the run, not after.** An article written
-  while the barrier is in flight belongs to the *next* window.
+- **The byte accumulator is retired by the run that EARNS it, and by nothing
+  else.** The barrier reads its window before it runs and subtracts exactly that
+  figure once the run succeeds, so an article written while the barrier is in
+  flight belongs to the *next* window and survives the settle.
+
+  Subtracting on success replaced a read-and-clear before the run plus a
+  put-back on failure. That pair got the arithmetic right and the *window*
+  wrong: between the clear and the put-back the job had no entry at all, so
+  `jobsAtRisk` could not name it — and `jobsAtRisk` is what a reload consults
+  when it cannot list open jobs, which is the wedged-mount case where a
+  background barrier is most likely to be in flight and about to fail. The
+  reload cleared that job's Emitted bits and #417 reproduced through a narrower
+  door. Retiring only on success closes it by construction: there is no interval
+  in which written-but-unacked bytes are invisible.
 - **A dropped kick is not a lost kick.** `barrierKick` is a non-blocking send;
   the accumulator is not reset by `noteJobBytes`, so the next article re-raises
   it and the interval tick covers the job regardless.
@@ -850,10 +862,10 @@ Three details that have each been got wrong once:
   actually ran.** "The barrier ran and failed" and "no barrier ran at all" are
   different facts. Folding the second into the first's nil-error case is how a
   job on a dead mount came to report a fresh stamp every 30 seconds — the exact
-  inversion of what R26 asks that figure to distinguish. When `checkpointJob`
-  finds no sync target it also declines to reset the accumulator, because
-  zeroing it would report zero pending bytes beside a stale timestamp, two
-  figures agreeing that nothing is at risk at the moment when everything is.
+  inversion of what R26 asks that figure to distinguish. A job with no sync
+  target likewise never reaches the settle, so its accumulator stands: zeroing
+  it would report zero pending bytes beside a stale timestamp, two figures
+  agreeing that nothing is at risk at the moment when everything is.
 
 **`bytes_durable` and `bytes_pending` are not in the same unit**, and R26 asks
 only that the rework window be *visible*, not that it be commensurable with the

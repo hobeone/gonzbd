@@ -247,21 +247,28 @@ func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T
 	}
 }
 
-// TestTakeJobBytes_LosesNothingToAConcurrentWrite pins the single acquisition.
+// TestSettleJobBytes_LosesNothingToAConcurrentWrite pins the arithmetic that
+// makes the read-then-settle pair safe WITHOUT a single acquisition.
 //
-// The read and the reset were two separate calls on barrierMu, and an article
-// written in the gap was added to the accumulator and then deleted with it —
-// counted toward neither window. On the failing path restoreJobBytes then put
-// back less than had been reset, so the "bytes still at risk" figure drifted
-// DOWN over a run of failed barriers. That is the direction R26 most needs it
-// not to drift, because the figure is read as reassurance: it says nothing is
-// at risk at the moment when everything written since the last real barrier is.
+// This used to be a read-and-clear under one lock, and it had to be: an article
+// written between a separate read and a separate reset was added to the
+// accumulator and then deleted with it — counted toward neither window, so the
+// "bytes still at risk" figure drifted DOWN over a run of failed barriers. That
+// is the direction R26 most needs it not to drift, because the figure is read
+// as reassurance: it says nothing is at risk at the moment when everything
+// written since the last real barrier is.
 //
-// A writer runs concurrently for the whole take, so the accumulator is being
-// added to across it. Whatever the interleaving, the invariant holds: every
-// byte is either returned by the take or still in the accumulator afterwards,
-// and never both, and never neither.
-func TestTakeJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
+// settleJobBytes SUBTRACTS the figure the barrier read rather than clearing the
+// entry, so the gap stopped mattering — a byte written inside it survives the
+// settle instead of vanishing with it. That is what allows the retirement to
+// move to the success path, which is what closes the window in which a job at
+// risk had no entry for jobsAtRisk to find.
+//
+// A writer runs concurrently throughout, so the accumulator is being added to
+// across every read. Whatever the interleaving, the invariant holds: every byte
+// is either settled or still in the accumulator, and never both, and never
+// neither.
+func TestSettleJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	// High enough that noteJobBytes never crosses it and blocks on the kick
 	// channel; the accumulator arithmetic is what is under test.
@@ -276,16 +283,22 @@ func TestTakeJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
 		}
 	}()
 
-	var taken int64
+	settle := func() int64 {
+		n := application.pendingBytesFor("job-a")
+		application.settleJobBytes("job-a", n)
+		return n
+	}
+
+	var settled int64
 	for {
-		taken += application.takeJobBytes("job-a")
+		settled += settle()
 		select {
 		case <-done:
-			taken += application.takeJobBytes("job-a")
+			settled += settle()
 			left := application.pendingBytesFor("job-a")
-			if taken != writes || left != 0 {
-				t.Fatalf("took %d and left %d, want %d and 0 — a byte added between the "+
-					"read and the reset was counted toward neither window", taken, left, writes)
+			if settled != writes || left != 0 {
+				t.Fatalf("settled %d and left %d, want %d and 0 — a byte added between the "+
+					"read and the settle was counted toward neither window", settled, left, writes)
 			}
 			return
 		default:
