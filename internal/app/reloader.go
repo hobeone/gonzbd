@@ -241,7 +241,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 		// Without this line the symptom is a job that quietly stops after a
 		// settings change, which is harder to diagnose than the corruption it
 		// replaces.
-		app.log.Warn("some jobs could not be checkpointed before the reload; their in-flight "+
+		app.log.Warn("some jobs could not be checkpointed before the reload; their in-flight "+ //lockio: reloadMu spans this whole function by design — see ReloadDownloader's doc — and the line must precede the clear it describes
 			"articles keep their emitted bits and will not be re-dispatched until a later "+
 			"barrier acks them, or until a restart",
 			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
