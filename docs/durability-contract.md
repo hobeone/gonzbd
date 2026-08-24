@@ -1553,20 +1553,88 @@ recorded here so the next reader does not mistake them for design.
    bounding arguments, and what is actually lost.
 
 6. **A crash between the barrier's commit and the following queue save can
-   strand a completed file.** Article state reaches disk at the barrier's
-   commit; a file's `Complete` flag reaches it at the *next* queue save. A
-   crash in that window leaves a file with every article resolved, no
-   `Complete` flag, and nothing able to re-complete it — completion fires from
-   `partsWritten == TotalParts` inside the assembler, and on the next start
-   those articles are Done so none of them is dispatched, so the count never
-   climbs again.
+   strand a completed file.** The two facts about a finished file survive a
+   crash by *different* mechanisms, and only one of them is transactional:
+
+   - **Article resolution** survives through `durable_runs`. The barrier writes
+     those rows in the transaction that precedes the ack, and the startup sweep
+     replays them through `SeedFromRuns`/`ReplaceFromRuns`, which re-sets the
+     Done bits. The queue save plays no part in it.
+   - **`Complete`** survives only through `job_files.complete`, written by the
+     *next* queue save. Nothing in the durability record witnesses it.
+
+   A crash between them leaves a file with every article resolved, no
+   `Complete` flag, and nothing able to re-complete it: completion fires from
+   `partsWritten == TotalParts` inside the assembler, that counter moves only
+   when the assembler is handed an article to write, and on the next start
+   every one of the file's articles is Done so none is dispatched. The job is
+   then not dispatchable, not complete and not failed, and stays that way
+   across restarts.
 
    **This is pre-existing and was merely made observable.** The shape this
    design replaced committed the same claim inside the same finalize, with the
    queue save equally following it; the window is neither new nor widened.
-   Recorded here honestly rather than fixed: closing it means making the
-   `Complete` flag part of the same transaction as the article state, which is
-   a change to what the barrier's commit covers.
+
+   **Do not close this by deriving `Complete` on load from the article bits.**
+   It is the obvious fix — `JobProgress.recompute` already derives `Pending`,
+   `BytesDownloaded` and `FailedBytes`, and Standing Design Rule 2 says a
+   recomputable value should not also be stored — and it is wrong here, because
+   `Complete` does not mean "every article resolved". It means **the finalize
+   ran**: drained, fsynced, **truncated to the durable bound**, handle closed.
+   Files are pre-allocated, so an un-finalized file carries trailing zeros, and
+   `Barrier.Run` acks articles *without* truncating — only `FinalizeFile`
+   truncates. So the bits under-determine the flag, and a derived `Complete`
+   would send untrimmed files into post-processing, which QuickCheck reads as a
+   missing file (§3.5) and works to reconstruct. Within this window the truncate
+   has in fact already run — `FinalizeFile` truncates before it commits and acks
+   — but nothing in the bits distinguishes that file from one whose finalize has
+   not started.
+
+   **The fix shape is decomposition, and most of the seam already exists.**
+   `FinalizeFile` cannot simply be re-run at startup: its first action is
+   `Truncator.Drain`, which returns `ErrFileNotOpen` and takes the early exit,
+   and nothing reopens files during the sweep. But a startup pass needs almost
+   none of it — no drain (a fresh process has an empty write cache), no commit
+   (no new articles), no ack (the sweep has re-set the bits). It needs one step:
+   *trim this path to the bound its runs imply, and fsync it*, which requires a
+   path rather than a live handle. Everything after that is
+   `Application.completeFinalizedFile`, which is **already** split out for the
+   in-process version of this same interruption — a stall between "bytes
+   correct" and "file marked complete", resumed from exactly that boundary by
+   `reevaluateStall`. The crash case is the same interruption with the process
+   gone in between. `resumeJobFiles` is also already in the right place: it
+   iterates every file, resolves each path, holds the adopted runs, and runs
+   inside `Start` *before the downloader can dispatch*, so a truncate there
+   cannot race a writer.
+
+   Three constraints on doing it:
+
+   - **One trim owner, not two.** A second site that trims a file is a second
+     enforcement point for one invariant (Standing Design Rule 2). Extract a
+     single trim-to-bound function and have both `FinalizeFile` and the startup
+     pass call it; adding a parallel implementation is the drift that rule names.
+   - **Order after the resume gate.** A file that failed §3.4's size comparison
+     has had its runs deleted and is no longer complete. Cheap to get right,
+     silent to get wrong.
+   - **`completeFinalizedFile` does more than set the flag.** It emits, may
+     start DirectUnpack, and calls `maybeFinalize` when the job's last file
+     lands — that last one matters, because a pass that only flipped the flag
+     would leave a differently wedged job. DirectUnpack is the part that needs
+     thought: it is a during-download optimisation and the download is over.
+
+   **The alternative considered and not taken** was folding `Complete` into the
+   barrier's own transaction, so it lands with the runs and a restart
+   reconstructs it from the same authority. That closes the window atomically
+   rather than by repair, but it needs a schema change and makes the barrier
+   write state `internal/queue` owns — the line `durable_runs`' own doc draws
+   when it says `failed_articles` is written solely by the queue. Decomposition
+   costs neither. The wedge only *manifests* across a restart and the repair
+   would also run at restart, so recovery is indistinguishable from atomicity
+   from the user's side.
+
+   Not fixed here: it is out of scope for the change that replaced the
+   durability record, and mixing a new ownership question into that commit would
+   have made both harder to review.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**
