@@ -566,8 +566,10 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		//
 		// It is safe because no class that reaches here can be re-dispatched
 		// with unacked bytes behind it. FOUR paths remove a job's files from
-		// the open set — enumerated with `git grep -n 'delete(open'` plus
-		// synctarget.go's opClose, not recalled — and each is safe for its own
+		// the open set — three found by `git grep -n 'delete(open'`
+		// (CancelJob, CloseJobHandles, opClose), plus drainAndCloseAll at
+		// worker exit, which that grep does not find because it discards the
+		// whole set rather than deleting from it. Each is safe for its own
 		// reason:
 		//
 		//   - CloseJobHandles: the job is already StatusVerifying, and
@@ -739,6 +741,11 @@ func (app *Application) nothingAtRisk(jobID string) bool {
 //
 // Used where the sweep cannot enumerate jobs itself and so cannot ask
 // checkpointJob about any of them.
+//
+// One job it does NOT name: one whose accumulator is currently taken by an
+// in-flight background barrier. Unlike checkpointJob's arms, this does not hold
+// the per-job barrier mutex, so it cannot see that window. That is strictly
+// narrower than the nil this replaced, not a new gap.
 func (app *Application) jobsAtRisk() map[string]struct{} {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()

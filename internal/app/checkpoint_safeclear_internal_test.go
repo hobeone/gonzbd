@@ -192,7 +192,12 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 	}
 
 	application.noteJobBytes(job.ID, 4096)
-	application.noteJobBytes("idle-job", 0)
+	// Inserted directly, not via noteJobBytes, which early-returns on n <= 0 and
+	// would leave no entry at all — an assertion against an absent key passes
+	// whether or not jobsAtRisk filters on n > 0.
+	application.barrierMu.Lock()
+	application.jobBarrierBytes["idle-job"] = 0
+	application.barrierMu.Unlock()
 
 	got := application.jobsAtRisk()
 	if _, ok := got[job.ID]; !ok {
@@ -207,8 +212,11 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 	// A successful barrier takes the accumulator, so the job stops being at risk
 	// without anything having to remember that it was.
 	application.takeJobBytes(job.ID)
-	if got := application.jobsAtRisk(); got != nil {
-		t.Errorf("jobsAtRisk() = %v after the accumulator was taken, want nil", got)
+	// Empty rather than nil: the zero "idle-job" entry above is still present,
+	// so the map is allocated and then filtered down to nothing. Either shape
+	// means the same thing to ClearAllEmitted, which only does lookups.
+	if got := application.jobsAtRisk(); len(got) != 0 {
+		t.Errorf("jobsAtRisk() = %v after the accumulator was taken, want no jobs", got)
 	}
 }
 
