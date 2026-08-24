@@ -30,6 +30,7 @@ import (
 func TestCheckpointJob_ReportsUnsafeWhenTheContextIsAlreadySpent(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -46,6 +47,7 @@ func TestCheckpointJob_ReportsUnsafeWhenTheContextIsAlreadySpent(t *testing.T) {
 func TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 
 	if !application.checkpointJob(t.Context(), job.ID) {
 		t.Error("a successful checkpoint reported the job unsafe to clear, which would " +
@@ -61,6 +63,7 @@ func TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier(t *testing.T) {
 func TestCheckpointJob_ReportsUnsafeWhenNoBarrierRan(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 
 	if err := application.queue.Remove(job.ID); err != nil {
 		t.Fatal(err)
@@ -85,6 +88,7 @@ func TestCheckpointJob_ReportsUnsafeWhenNoBarrierRan(t *testing.T) {
 func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -107,6 +111,7 @@ func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
 func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 	application.barrier = nil
 
 	if !application.checkpointJob(t.Context(), job.ID) {
@@ -128,11 +133,45 @@ func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
 func TestCheckpointAllShare_ReportsTheJobsItCouldNotProtect(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 
 	unsafe := application.checkpointAllShare(t.Context(), time.Nanosecond)
 	if _, ok := unsafe[job.ID]; !ok {
 		t.Errorf("a job the sweep could not ack is absent from the unsafe set %v; the "+
 			"reload would clear its emitted bits and re-fetch bytes already on disk", unsafe)
+	}
+}
+
+// TestCheckpointJob_ReportsSafeWhenNothingWasWrittenSinceTheLastBarrier keeps
+// the withheld set as narrow as the hazard.
+//
+// The skip is per JOB while the hazard is per ARTICLE. An article emitted and
+// then cancelled by the old downloader's Stop was never written and is never
+// acked, so withholding it strands it until a process restart — its file never
+// completing and its job never finalizing. A job with an empty barrier
+// accumulator has written nothing since its last successful barrier, so a clear
+// can strand nothing, whatever happened to this checkpoint.
+//
+// Not exotic: perJobShare divides one budget among the jobs a sweep visits, so
+// a queue with a few dozen open jobs gives each about 200ms and marks many of
+// them unsafe on ordinary hardware.
+func TestCheckpointJob_ReportsSafeWhenNothingWasWrittenSinceTheLastBarrier(t *testing.T) {
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	// Deliberately NO noteJobBytes: nothing is at risk.
+
+	if got := application.pendingBytesFor(job.ID); got != 0 {
+		t.Fatalf("fixture: %d bytes at risk, want 0 — this test is about the empty case", got)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if !application.checkpointJob(ctx, job.ID) {
+		t.Error("a job with nothing written since its last successful barrier was " +
+			"reported unsafe to clear. Withholding it strands articles that were " +
+			"emitted and cancelled but never written, and those are never acked, " +
+			"so the job cannot finalize until the process restarts")
 	}
 }
 
@@ -142,6 +181,7 @@ func TestCheckpointAllShare_ReportsTheJobsItCouldNotProtect(t *testing.T) {
 func TestCheckpointAllShare_ReportsNothingWhenEveryJobIsAcked(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
+	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
 
 	unsafe := application.checkpointAllShare(t.Context(), reloadCheckpointTimeout)
 	if len(unsafe) != 0 {

@@ -97,7 +97,7 @@ neither can protect them. State this in the doc.
 
 **Document the coverage gap, and why it is benign.** The sweep enumerates
 `app.assembler.OpenJobIDs` (`durability.go:701`) — jobs holding an open file —
-while `ClearAllEmitted` iterates every resident job (`queue.go:1628`). The skip
+while `ClearAllEmitted` iterates every resident job (`queue.go:1627`). The skip
 set is therefore always a subset.
 
 State in the doc *why that is not an unclosed instance of #417*, since the

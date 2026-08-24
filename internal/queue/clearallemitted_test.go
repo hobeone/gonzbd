@@ -239,13 +239,29 @@ func TestClearAllEmitted_StillUnfailsASkippedJobsArticles(t *testing.T) {
 
 	// And the emitted article is still withheld, so the two halves really did
 	// take different paths in the same call.
+	//
+	// The exact count is what makes this discriminate. The job has three
+	// articles: one emitted (withheld), one un-failed (offered), one untouched
+	// (offered). A skip that wrongly cleared the emitted bit offers three; one
+	// that wrongly suppressed the un-fail offers one. Asserting merely
+	// "non-zero" passes against both.
+	emittedIdx := artIdxFor(t, q, "j1", artID(0, 0))
 	var offered int
-	q.ForEachUnfinishedArticle(func(UnfinishedArticle) bool {
+	var sawWithheld bool
+	q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {
 		offered++
+		if a.ArtIdx == emittedIdx {
+			sawWithheld = true
+		}
 		return true
 	})
-	if offered == 0 {
-		t.Error("the un-failed article is not offered for re-dispatch, so the skip " +
-			"suppressed more than the emitted clear")
+	if offered != 2 {
+		t.Errorf("%d articles offered for re-dispatch, want 2 (the un-failed one and the "+
+			"untouched one). Three means the emitted bit was cleared anyway; one means "+
+			"the skip suppressed the un-fail too", offered)
+	}
+	if sawWithheld {
+		t.Error("the withheld article is being offered for re-dispatch, which is the " +
+			"re-fetch of bytes already on disk that this skip exists to prevent")
 	}
 }
