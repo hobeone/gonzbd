@@ -1,6 +1,13 @@
 package assembler
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+
+	"github.com/hobeone/gonzbd/internal/testutil"
+)
 
 // TestForgetJob_DropsOnlyTheNamedJobsTombstones pins the control arm.
 //
@@ -147,5 +154,78 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 	if got := f.w.parts(); got != 1 {
 		t.Errorf("the file admitted %d parts after ForgetJob, want 1: a retry still "+
 			"cannot write to a file this process finished earlier", got)
+	}
+}
+
+// TestAssembler_ForgetJob drives the exported wrapper against a running
+// assembler, end to end: a file is completed, its articles are then refused,
+// and after ForgetJob the same file accepts a write again.
+//
+// The wrapper is what RetryHistoryJob calls, and it carries the started/stopped
+// guards and the control-message round trip that the worker-arm tests above
+// bypass.
+func TestAssembler_ForgetJob(t *testing.T) {
+	dir := t.TempDir()
+	testutil.AssertNoFDLeaks(t, dir)
+
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "job1", 0, 4)
+
+	a := New(makeOpts(dir, files), nil)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer a.Stop()
+
+	// One article is the whole file, so writing it completes and tombstones it.
+	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(0), Offset: 0, Data: []byte("AAAA")}
+	if err := writeArticle(t.Context(), a, req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+	if err := a.CloseJobHandles(t.Context(), "job1"); err != nil {
+		t.Fatalf("CloseJobHandles: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("fixture: the file should exist after the close: %v", err)
+	}
+
+	// Now the retry's shape: the same job ID comes back.
+	if err := a.ForgetJob(t.Context(), "job1"); err != nil {
+		t.Fatalf("ForgetJob: %v", err)
+	}
+
+	// A write that would previously have been refused as a late duplicate.
+	again := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(0), Offset: 0, Data: []byte("BBBB")}
+	if err := writeArticle(t.Context(), a, again); err != nil {
+		t.Fatalf("WriteArticle after ForgetJob: %v", err)
+	}
+
+	a.Stop()
+	if err := a.ForgetJob(t.Context(), "job1"); !errors.Is(err, ErrStopped) {
+		t.Errorf("stopped ForgetJob: got %v, want ErrStopped", err)
+	}
+}
+
+func TestAssembler_ForgetJob_Unstarted(t *testing.T) {
+	a := New(makeOpts("", nil), nil)
+	if err := a.ForgetJob(t.Context(), "job1"); !errors.Is(err, ErrNotStarted) {
+		t.Errorf("unstarted ForgetJob: got %v, want ErrNotStarted", err)
+	}
+}
+
+func TestAssembler_ForgetJob_ContextCanceled(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 5)
+	a := New(makeOpts(dir, files), nil)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := a.ForgetJob(ctx, "job1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled ForgetJob: got %v, want context.Canceled", err)
 	}
 }
