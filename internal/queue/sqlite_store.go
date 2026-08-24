@@ -249,26 +249,32 @@ func (s *SQLiteStore) RecordFailedArticles(ctx context.Context, jobID string, ar
 
 // ClearFailedArticles removes every failed-article row for ONE job.
 //
-// A whole-job delete rather than a per-article one, because that is what the
-// THREE reversal sites actually do: Job.ResetForRetry and
-// JobProgress.resetForReload each clear precisely the articles whose failed
-// bit is set, which is precisely the set stored here. Batching is therefore
-// exact rather than approximate.
+// A whole-job delete rather than a per-article one, because that is what its
+// callers actually do: Job.ResetForRetry clears precisely the articles whose
+// failed bit is set, which is precisely the set stored here. Batching is
+// therefore exact rather than approximate.
 //
-// Two of the three are in this package — Queue.ClearAllEmitted and
-// Queue.Retry. The third is Application.RetryHistoryJob, which calls
-// ResetForRetry on a job rebuilt from its NZB backup, outside the queue and
-// before Queue.Add; it calls this method directly for that reason. Its sibling
-// branch drops the rows through Application.dropJobDurability instead, so both
-// of its paths are covered but by different routes.
+// Three callers, enumerated from `git grep -n ClearFailedArticles`. Queue.Retry
+// is in this package. Application.RetryHistoryJob calls ResetForRetry on a job
+// rebuilt from its NZB backup, outside the queue and before Queue.Add, and so
+// calls this method directly; its sibling branch reaches the rows through
+// Application.dropJobDurability instead, so both of its paths are covered but
+// by different routes. Application.dropJobDurability is the third, and it is
+// not a reversal — it drops the rows of a DEPARTING job, where no in-memory
+// state survives for them to disagree with.
 //
-// The SCOPE is what makes that equivalence true. Queue.ClearAllEmitted loops
-// every article of every job holding both a manifest and progress — RESIDENT
-// jobs only — so one job-scoped delete per resident job replaces exactly the
-// per-article clearing it performed. A delete that swept every job would
-// resurrect the permanently failed articles of every NON-resident job as
-// fetchable work, and the symptom is a silent re-download storm rather than an
-// error.
+// Queue.ClearAllEmitted was a third caller until #426 and is not one now. Its
+// per-article reset stopped being exhaustive — JobProgress.resetForReload
+// retains the failed bit of an article whose file is already Complete — so the
+// equivalence above no longer holds for it and a whole-job delete would drop
+// rows for articles that are still failed in memory. It uses
+// ClearFailedArticlesByIdx.
+//
+// The SCOPE is what makes the equivalence true where it does hold: this must
+// be called for a job the caller is actually resetting. A delete that swept
+// every job would resurrect the permanently failed articles of every
+// NON-resident job as fetchable work, and the symptom is a silent re-download
+// storm rather than an error.
 //
 // This reversal has to exist at all only because the record is now a table.
 // job_files.articles_done was re-serialised wholesale on the next store
@@ -278,6 +284,54 @@ func (s *SQLiteStore) RecordFailedArticles(ctx context.Context, jobID string, ar
 func (s *SQLiteStore) ClearFailedArticles(ctx context.Context, jobID string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("sqlite store clear failed articles %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// ClearFailedArticlesByIdx removes the failed-article rows for exactly artIdxs
+// within jobID. See the Store interface for why this form exists.
+//
+// One transaction, so a caller that resets N articles never observes a partial
+// reversal: the alternative leaves memory and the record disagreeing about a
+// subset nobody can name afterwards.
+//
+// Chunked to the same 999-host-parameter budget history.Repository.Delete
+// works to, but at 998 indices per statement rather than 999: jobID is bound
+// too, and it is the total that the limit applies to. The chunking is why this
+// enumerates the rows to REMOVE rather than the rows to keep — a "delete
+// everything except these" form is not chunkable, because the second
+// statement's NOT IN would delete what the first was preserving.
+func (s *SQLiteStore) ClearFailedArticlesByIdx(ctx context.Context, jobID string, artIdxs []int32) error {
+	if len(artIdxs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin clear failed articles %s: %w", jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const chunkSize = 998 // 999 SQLite host parameters, less the one jobID binds
+	for i := 0; i < len(artIdxs); i += chunkSize {
+		chunk := artIdxs[i:min(i+chunkSize, len(artIdxs))]
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, jobID)
+		for _, idx := range chunk {
+			args = append(args, idx)
+		}
+		// The only thing concatenated is a run of "?" placeholders whose
+		// length comes from len(chunk); every artIdx is bound, never
+		// formatted in. A variable-length IN list has no placeholder-free
+		// form, which is why the same exemption sits on
+		// history.Repository.Search's WHERE assembly.
+		placeholders := strings.Repeat(",?", len(chunk)-1)
+		query := `DELETE FROM failed_articles WHERE job_id = ? AND art_idx IN (?` + placeholders + `)` //nolint:gosec // G202: bound placeholders only, no caller data reaches the string
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("sqlite store clear failed articles by idx %s: %w", jobID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite store commit clear failed articles by idx %s: %w", jobID, err)
 	}
 	return nil
 }

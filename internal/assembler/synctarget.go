@@ -41,6 +41,12 @@ const (
 
 	// fileIdxSyncOp carries a durability barrier operation.
 	fileIdxSyncOp = -3
+
+	// fileIdxForgetJob asks the worker to drop a job's tombstones so its
+	// files can be written again. A retry reuses the job ID, and the
+	// tombstone set is keyed on (jobID, fileIdx) and never expires
+	// otherwise — see Assembler.ForgetJob.
+	fileIdxForgetJob = -4
 )
 
 // syncOp is one barrier operation for the worker to perform.

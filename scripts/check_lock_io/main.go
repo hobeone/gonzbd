@@ -107,7 +107,11 @@ var storeMethods = map[string]bool{
 	"ArticleCountsByJob":   true,
 	"RecordFailedArticles": true,
 	"ClearFailedArticles":  true,
-	"Save":                 true,
+	// The per-article reversal ClearAllEmitted uses since #426. Registered
+	// for the same reason as its wholesale sibling: it runs on the reload
+	// path, and the call is deliberately made after q.mu is released.
+	"ClearFailedArticlesByIdx": true,
+	"Save":                     true,
 }
 
 // lockedSuffix is the naming convention this repo uses for "the caller must

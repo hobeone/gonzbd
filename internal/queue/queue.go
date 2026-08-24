@@ -1599,8 +1599,14 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 // teardown (e.g. from context cancellation) are reset to retryable
 // state. Without this, a late assembler flush could race ahead and
 // permanently mark articles as Done+Failed, preventing re-dispatch.
-// Only articles with Failed=true are reset; successfully completed
-// articles (Done=true, Failed=false) are preserved.
+//
+// Two kinds of article keep their resolution. A successfully completed one
+// (Done=true, Failed=false) is finished. A failed one whose file is already
+// Complete has nowhere to be retried to — the file is finalized, truncated and
+// tombstoned in the assembler — so resetting it would count work that
+// ForEachUnfinishedArticle then skips forever (#426). JobProgress.resetForReload
+// owns that decision and reports which articles it cleared, because the stored
+// failed_articles rows must be dropped for exactly those and no others.
 func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
 	// reset collects the jobs whose failed articles this call cleared in
@@ -1609,18 +1615,43 @@ func (q *Queue) ClearAllEmitted() {
 	// the articles_done blob it replaced was, so a row left behind survives
 	// the reload and the next restart marks the re-attempted article failed
 	// again.
-	var reset []string
+	// arts are the articles whose failed bit this call CLEARED, whose rows
+	// must go. retained are the ones it deliberately left failed — an article
+	// on a Complete file — whose rows must stay, and which the generation bump
+	// below can cost an in-flight ack. See the reconciling write.
+	type jobReset struct {
+		id       string
+		arts     []int32
+		retained []int32
+	}
+	var reset []jobReset
+	var anyCleared bool
 	for _, job := range q.jobs {
 		m := job.manifest
 		if m != nil && job.progress != nil {
-			reset = append(reset, job.ID)
+			var cleared, retained []int32
 			for i := range m.NumArticles() {
 				// Reset articles that were marked Failed during the old
 				// downloader's teardown so they can be retried by the
-				// new downloader. Successfully completed articles
-				// (Done && !Failed) are left untouched.
-				job.progress.resetForReload(m, i)
+				// new downloader. Two kinds are left untouched:
+				// successfully completed articles (Done && !Failed), and a
+				// failed article whose file is already Complete, which has
+				// nowhere to land (#426 — see resetForReload).
+				switch {
+				case job.progress.resetForReload(m, i):
+					cleared = append(cleared, int32(i))
+				case job.progress.failed.Get(i):
+					retained = append(retained, int32(i))
+				}
 			}
+			// Only jobs with something to do below. A job that neither
+			// cleared nor retained anything has no rows to drop and none to
+			// re-assert, and carrying it here would buy a store round trip
+			// per resident job on every reload.
+			if len(cleared) > 0 || len(retained) > 0 {
+				reset = append(reset, jobReset{id: job.ID, arts: cleared, retained: retained})
+			}
+			anyCleared = anyCleared || len(cleared) > 0
 			// Recompute pending counters from ground truth after bulk
 			// state reset. Incremental tracking is fragile here because
 			// both Emitted and Failed flags are being cleared in bulk.
@@ -1631,7 +1662,15 @@ func (q *Queue) ClearAllEmitted() {
 	// AckPermanentFailure that captured the previous value has already made
 	// its in-memory mark and will find its own write invalidated below. See
 	// the failedPersistMu/failedGen doc on Queue.
-	q.failedGen.Add(1)
+	//
+	// Only when something was actually cleared. The bump's meaning is "a
+	// reversal has invalidated pending writes", and a reload that reversed
+	// nothing has invalidated nothing — bumping anyway drops the insert of
+	// every ack in flight across the whole queue and loses a permanent failure
+	// that no reversal ever touched.
+	if anyCleared {
+		q.failedGen.Add(1)
+	}
 	// Drain any stale notification (e.g. from AckDurable calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
 	// notification is guaranteed to be delivered.
@@ -1643,42 +1682,91 @@ func (q *Queue) ClearAllEmitted() {
 	q.mu.Unlock()
 	// --- No lock held below this line ---
 
-	// One delete per RESIDENT job, which is exactly the set the loop above
-	// walked: it skips any job without both a manifest and progress. That
-	// scoping is what makes a whole-job delete equivalent to the per-article
-	// clearing it replaces — a sweep over every job would resurrect the
-	// permanently failed articles of every NON-resident job as fetchable
-	// work, and the symptom would be a silent re-download storm rather than
-	// an error.
+	// One delete per RESIDENT job, naming the articles the loop above
+	// actually reset. The scoping to resident jobs is still load-bearing — a
+	// sweep over every job would resurrect the permanently failed articles of
+	// every NON-resident job as fetchable work, and the symptom would be a
+	// silent re-download storm rather than an error.
 	//
-	// Best effort, matching resetForReload's own direction: this runs on a
-	// downloader reload, and a row that outlives it costs one wasted attempt
-	// at an article that fails again.
+	// What is no longer true is that a whole-job delete would do: since #426
+	// the reset skips a failed article whose file is already Complete, so the
+	// cleared set is a strict subset of the job's stored rows. Dropping the
+	// rest would leave that article failed in memory and unrecorded on disk,
+	// and the next restart would load it as outstanding work on a file
+	// ForEachUnfinishedArticle skips — the same strand the guard exists to
+	// prevent, one restart later.
+	//
+	// Best effort: this runs on a downloader reload, and a delete that fails
+	// is logged rather than returned. The cost is not a wasted attempt — it is
+	// the opposite. A row that outlives the clear is reloaded by
+	// resolutionForJob and re-derives its article as Failed+Done, so the
+	// article is NOT re-attempted after a restart, which is what the warning
+	// below tells the operator.
 	//
 	// Under failedPersistMu, which is what stops an AckPermanentFailure that
 	// unlocked mu before this call from landing its INSERT after these
 	// deletes. Exclusion is only half of it — the generation bump above is
 	// what tells that ack its rows are stale.
-	if q.store == nil {
+	//
+	// # Why the retained articles are RE-asserted here
+	//
+	// The generation bump is queue-wide and all-or-nothing: an ack that
+	// captured the old value drops its whole insert, whatever it was about.
+	// That was exact while this loop reversed every failed article, because
+	// then any row the ack meant to write had in fact just been reversed. It
+	// is not exact now — an ack for an article on a Complete file is dropped
+	// by a bump that some unrelated article's reset caused, and the article is
+	// left failed in memory with no row, which is the strand this whole change
+	// removes, arriving by another route.
+	//
+	// Making the drop precise is not available: the ack would have to re-read
+	// the bits under mu while holding failedPersistMu, and the declared lock
+	// order is mu BEFORE failedPersistMu (Queue.Retry takes the latter while
+	// holding the former), so that inverts it.
+	//
+	// Asserting the rows here is exact instead, and it is the same
+	// reconciliation the deletes above perform rather than a second authority
+	// over the table. This call holds the truth: it read every bit under mu,
+	// after any ack that the bump can invalidate had already made its mark. An
+	// ack arriving LATER captures the bumped generation and writes normally.
+	// RecordFailedArticles is INSERT OR IGNORE, so re-asserting a row that
+	// survived costs nothing.
+	//
+	// Nothing to do when no job reversed or retained anything — the common
+	// case, and it also means no bump happened, so no ack was invalidated.
+	if q.store == nil || len(reset) == 0 {
 		return
 	}
 	type clearFailure struct {
 		id  string
 		err error
 	}
-	var failures []clearFailure
+	var failures, retainFailures []clearFailure
 	q.failedPersistMu.Lock()
-	for _, id := range reset {
-		if err := q.store.ClearFailedArticles(context.Background(), id); err != nil { //lockio: failedPersistMu exists to order exactly this delete against AckPermanentFailure's insert; see Queue.failedPersistMu
-			failures = append(failures, clearFailure{id: id, err: err})
+	for _, r := range reset {
+		if err := q.store.ClearFailedArticlesByIdx(context.Background(), r.id, r.arts); err != nil { //lockio: failedPersistMu exists to order exactly this delete against AckPermanentFailure's insert; see Queue.failedPersistMu
+			failures = append(failures, clearFailure{id: r.id, err: err})
+		}
+		// After the delete, never before: the two sets are disjoint by
+		// construction, but ordering the assert second means a bug that ever
+		// made them overlap loses the row rather than resurrecting it, which
+		// is R10's direction.
+		if err := q.store.RecordFailedArticles(context.Background(), r.id, r.retained); err != nil { //lockio: failedPersistMu exists to order this re-assert against AckPermanentFailure's insert; see Queue.failedPersistMu
+			retainFailures = append(retainFailures, clearFailure{id: r.id, err: err})
 		}
 	}
 	q.failedPersistMu.Unlock()
-	// Reported outside the mutex: it is held to order this delete against an
+	// Reported outside the mutex: it is held to order these writes against an
 	// ack's insert, and a logging handler is neither of those.
 	for _, f := range failures {
 		q.log.Warn("could not clear a job's permanently failed articles on downloader reload; "+
 			"they will not be re-attempted after a restart",
+			"job", f.id, "err", f.err)
+	}
+	for _, f := range retainFailures {
+		q.log.Warn("could not re-assert the failed articles a downloader reload kept; if an "+
+			"ack was in flight for one, it may be lost and the article will reload as "+
+			"outstanding work on a file that is already complete",
 			"job", f.id, "err", f.err)
 	}
 }
