@@ -328,7 +328,7 @@ func TestClearAllEmitted(t *testing.T) {
 	default:
 	}
 
-	q.ClearAllEmitted()
+	q.ClearAllEmitted(nil)
 
 	// All articles should now be yielded.
 	countAfter := 0

@@ -585,8 +585,16 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		}
 		if fetchCtx.Err() != nil {
 			// Context cancelled = shutdown or pause. Silently
-			// return; the article will be re-dispatched after
-			// the reload/unpause via ClearAllEmitted.
+			// return; the article is re-dispatched after the
+			// reload/unpause via ClearAllEmitted.
+			//
+			// "After the reload" now has one exception: a job whose
+			// reload checkpoint could not make its written articles
+			// durable keeps its Emitted bits, so its articles wait for
+			// a later barrier or a restart instead (#417). The article
+			// is not lost either way — the delay is the point, since
+			// re-offering bytes already on disk is what that issue
+			// exists to stop.
 			return nil, false
 		}
 		d.log.Warn("dial failed", "server", name, "error", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -200,25 +201,52 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// and stopWorkers acquires reloadMu with no timeout of its own, so a
 	// wedged barrier here delays Shutdown by the same amount. Making that
 	// bound real needs a cancellable acquisition in checkpointJob, which is
-	// its own change — issue #417, which also covers the fact that this
-	// checkpoint is best-effort: it reports no status, so the clear below
-	// runs whether it acked every job or none.
+	// its own change and is still open.
+	//
+	// The checkpoint is still BEST-EFFORT, but it is no longer silent about
+	// it: checkpointAllShare returns the jobs it could not protect, and the
+	// clear below withholds their Emitted bits rather than running over every
+	// job regardless (#417). What remains best-effort is coverage — a job the
+	// budget or a storage fault kept it from acking simply waits for a later
+	// barrier.
 	//
 	// No app.barrier nil check: checkpointAllWithBudget and checkpointJob
 	// each already return early on nil, and a third copy here would gate
 	// nothing that they do not.
 	//
 	// The narrower alternative — teach resetForReload to skip an article the
-	// writer still holds — is not expressible at the queue layer, which
-	// cannot see what the writer is holding. Ordering is the fix.
+	// WRITER still holds — remains inexpressible at the queue layer, which
+	// cannot see what the writer is holding. Ordering is the fix for that.
+	//
+	// Read that as the narrow claim it is. A queue-layer skip keyed on
+	// something the queue CAN be told is expressible, and is what the
+	// skipJobIDs argument below does: the checkpoint reports which jobs it
+	// failed to protect, per job rather than per article, and the queue acts
+	// on that answer without needing to know what any writer holds.
 	cpCtx, cancel := context.WithTimeout(context.Background(), reloadCheckpointTimeout)
-	app.checkpointAllShare(cpCtx, reloadCheckpointTimeout)
+	unprotected := app.checkpointAllShare(cpCtx, reloadCheckpointTimeout)
 	cancel()
 
 	// Now it's safe to clear emitted: no more article resolutions arrive from
 	// old results, so notifyCh won't be consumed between clear and the new
 	// downloader's first dispatch pass.
-	app.queue.ClearAllEmitted()
+	if len(unprotected) > 0 {
+		// The new failure mode this change introduces, said out loud. These
+		// jobs make no visible progress until a later barrier acks them —
+		// ordinarily the next periodic checkpoint — and the stall is only
+		// PARTLY self-clearing: markDone releases an Emitted bit when its
+		// article's bytes reach disk, but an article whose data died with the
+		// old downloader is never acked and needs a restart.
+		//
+		// Without this line the symptom is a job that quietly stops after a
+		// settings change, which is harder to diagnose than the corruption it
+		// replaces.
+		app.log.Warn("some jobs could not be checkpointed before the reload; their in-flight "+
+			"articles keep their emitted bits and will not be re-dispatched until a later "+
+			"barrier acks them, or until a restart",
+			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
+	}
+	app.queue.ClearAllEmitted(unprotected)
 
 	servers := make([]*downloader.Server, len(scs))
 	for i, sc := range scs {

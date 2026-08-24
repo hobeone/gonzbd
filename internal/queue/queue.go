@@ -1595,6 +1595,23 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 // downloader was stopped) would otherwise be permanently skipped by
 // ForEachUnfinishedArticle.
 //
+// skipJobIDs names the jobs whose Emitted bits must be LEFT SET, because the
+// caller's durability checkpoint could not make their written articles durable.
+// Clearing those would offer bytes that are already on disk for re-fetch, and
+// a re-fetch that fails against a changed server set marks the article
+// permanently failed while its data sits there — inflating failedBytes far
+// enough to abort a job whose file was never damaged (#417).
+//
+// The skip is narrow on purpose: it withholds the Emitted clear and nothing
+// else. A skipped job still has its teardown-failed articles un-failed, still
+// recomputes, and still takes part in the stored-row reconciliation, because
+// those act on articles that are failed-and-not-emitted — a disjoint set. See
+// resetForReload for why that disjointness holds.
+//
+// Pass nil to clear everything, which is right at startup: nothing is in
+// flight, and the resume sweep re-derives from the durability record
+// immediately afterwards.
+//
 // Additionally, articles marked Failed during the old downloader's
 // teardown (e.g. from context cancellation) are reset to retryable
 // state. Without this, a late assembler flush could race ahead and
@@ -1607,7 +1624,7 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 // ForEachUnfinishedArticle then skips forever (#426). JobProgress.resetForReload
 // owns that decision and reports which articles it cleared, because the stored
 // failed_articles rows must be dropped for exactly those and no others.
-func (q *Queue) ClearAllEmitted() {
+func (q *Queue) ClearAllEmitted(skipJobIDs map[string]struct{}) {
 	q.mu.Lock()
 	// reset collects the jobs whose failed articles this call cleared in
 	// memory, so their stored rows can be dropped below the lock. A
@@ -1629,6 +1646,12 @@ func (q *Queue) ClearAllEmitted() {
 	for _, job := range q.jobs {
 		m := job.manifest
 		if m != nil && job.progress != nil {
+			// A job the caller's checkpoint could not make durable keeps its
+			// Emitted bits — and ONLY those. Everything else in this loop
+			// still runs for it, because the un-failing below acts on a
+			// disjoint set of articles and withholding it would strand the
+			// old downloader's teardown failures permanently (#417).
+			_, skipEmitted := skipJobIDs[job.ID]
 			var cleared, retained []int32
 			for i := range m.NumArticles() {
 				// Reset articles that were marked Failed during the old
@@ -1638,7 +1661,7 @@ func (q *Queue) ClearAllEmitted() {
 				// failed article whose file is already Complete, which has
 				// nowhere to land (#426 — see resetForReload).
 				switch {
-				case job.progress.resetForReload(m, i):
+				case job.progress.resetForReload(m, i, !skipEmitted):
 					cleared = append(cleared, int32(i))
 				case job.progress.failed.Get(i):
 					retained = append(retained, int32(i))

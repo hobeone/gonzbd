@@ -202,7 +202,7 @@ func TestPendingCounter_ClearAllEmitted(t *testing.T) {
 	verifyPending(t, q, "before ClearAllEmitted")
 
 	// ClearAllEmitted resets Emitted and Failed
-	q.ClearAllEmitted()
+	q.ClearAllEmitted(nil)
 	verifyPending(t, q, "after ClearAllEmitted")
 }
 

@@ -109,7 +109,7 @@ func TestReversalsBumpTheReloadGeneration(t *testing.T) {
 	// drops the insert of every ack in flight across the queue, losing a
 	// permanent failure no reversal ever touched (#426 review).
 	quiet := q.failedGen.Load()
-	q.ClearAllEmitted()
+	q.ClearAllEmitted(nil)
 	if q.failedGen.Load() != quiet {
 		t.Error("ClearAllEmitted moved the reload generation without reversing " +
 			"anything, which invalidates the pending write of every ack in flight")
@@ -120,7 +120,7 @@ func TestReversalsBumpTheReloadGeneration(t *testing.T) {
 		t.Fatalf("AckPermanentFailure: %v", err)
 	}
 	before := q.failedGen.Load()
-	q.ClearAllEmitted()
+	q.ClearAllEmitted(nil)
 	afterClear := q.failedGen.Load()
 	if afterClear == before {
 		t.Error("ClearAllEmitted did not move the reload generation after reversing " +
