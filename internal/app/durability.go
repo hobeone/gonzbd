@@ -551,7 +551,11 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		// The accumulator is deliberately NOT reset, for the reason the
 		// nil-target branch above gives.
 		app.log.Warn("checkpoint could not tell whether the job still holds open files; "+
-			"its emitted articles will not be cleared by a reload",
+			// Conditional, because the return is: nothingAtRisk answers true
+			// for a job that has written nothing since its last successful
+			// barrier, and such a job is cleared normally.
+			"if it holds unacked written bytes, its emitted articles will not be "+
+			"cleared by a reload",
 			"job", jobID, "err", filesErr)
 		return app.nothingAtRisk(jobID)
 	}
