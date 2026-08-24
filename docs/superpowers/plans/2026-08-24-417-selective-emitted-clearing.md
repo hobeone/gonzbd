@@ -230,13 +230,29 @@ against the landed diff, correct what is falsified.
    tracing how it actually fires. Answering from the accumulator withholds
    exactly the at-risk jobs, so neither the strand nor the over-clear happens.
 
-3. **The stall is only PARTLY self-clearing.** `AckDurable` reaches `markDone`
+3. **The stall is only PARTLY self-clearing** — **CLOSED during review, by
+   fixing the owner rather than documenting the gap.**
+
+   The original finding stood: `AckDurable` reaches `markDone`
    (`workset.go:69`) which clears `emitted` (`progress.go:695`), so a later
-   successful barrier releases articles **whose bytes reached disk**. An article
-   that was emitted and whose data died with the old downloader will never be
-   acked, stays `emitted` forever, is invisible to `ForEachUnfinishedArticle`,
-   and needs a restart. The warning text in Task 3 must not claim otherwise.
-   *Probe:* none outstanding — verified in review.
+   barrier releases articles **whose bytes reached disk** — but an article that
+   was emitted and whose result died with the old downloader was never acked,
+   stayed `emitted` forever, and needed a restart.
+
+   What the item got wrong was treating that as a property of the reload to be
+   warned about. It was an owner-model violation in the downloader:
+   `MarkArticleEmittedByIdx` means "a result for this article is on its way to
+   the pipeline", and `emitResult` can drop that result on a cancelled context
+   with nothing to correct the claim. Three of its callers mark immediately
+   before calling it (`dispatch.go:145`, `:697`, `:720`).
+
+   `emitResult` now clears the bit when it drops a result. The class is gone at
+   its source, so every withheld article is one whose bytes are on disk awaiting
+   a barrier — and the stall is fully self-clearing.
+
+   The general lesson is the one Standing Design Rule 2 states: `ClearAllEmitted`
+   was a bulk repair for an invariant the owner failed to maintain, and a bulk
+   repair cannot distinguish the cases the owner could. #417 is the cost of that.
 
 4. **Whether a skipped job absent from `reset` writes anything to the store.**
    RESOLVED: it does not (`queue.go:1745-1756`, `anyCleared` at `:1650`). Moot

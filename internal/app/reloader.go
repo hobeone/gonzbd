@@ -233,17 +233,22 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	if len(unprotected) > 0 {
 		// The new failure mode this change introduces, said out loud. These
 		// jobs make no visible progress until a later barrier acks them —
-		// ordinarily the next periodic checkpoint — and the stall is only
-		// PARTLY self-clearing: markDone releases an Emitted bit when its
-		// article's bytes reach disk, but an article whose data died with the
-		// old downloader is never acked and needs a restart.
+		// ordinarily the next periodic checkpoint.
+		//
+		// The stall IS self-clearing, which it was not when this line was
+		// first written. markDone releases an Emitted bit when its article's
+		// bytes reach disk, and the one class that could not get there — an
+		// article whose result emitResult dropped on a cancelled context, its
+		// bit set and no result coming — is now un-emitted by emitResult
+		// itself. So every withheld article is one whose bytes are on disk
+		// waiting for a barrier, and a barrier is what releases it.
 		//
 		// Without this line the symptom is a job that quietly stops after a
 		// settings change, which is harder to diagnose than the corruption it
 		// replaces.
 		app.log.Warn("some jobs could not be checkpointed before the reload; their in-flight "+ //lockio: reloadMu spans this whole function by design — see ReloadDownloader's doc — and the line must precede the clear it describes
 			"articles keep their emitted bits and will not be re-dispatched until a later "+
-			"barrier acks them, or until a restart",
+			"barrier acks them",
 			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
 	}
 	app.queue.ClearAllEmitted(unprotected)

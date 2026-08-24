@@ -734,13 +734,25 @@ func (app *Application) pendingBytesFor(jobID string) int64 {
 // nevertheless safe to clear, because it has written nothing since its last
 // successful barrier.
 //
-// This is what keeps the withheld set as narrow as the hazard. Without it the
-// skip is per JOB while the hazard is per ARTICLE: an article emitted and then
-// cancelled by the old downloader's Stop was never written, is never acked, and
-// would keep its Emitted bit until a process restart — its file never
-// completing and its job never finalizing. And the trigger is ordinary rather
-// than exotic, since perJobShare divides one budget by the job count, so a
-// queue with a few dozen open jobs gives each about 200ms.
+// This is what keeps the withheld set as narrow as the hazard: the skip is per
+// JOB while the hazard is per ARTICLE, so a job with one unacked article and a
+// thousand untouched ones would withhold all thousand.
+//
+// It is worth being precise about what withholding costs now, because the
+// original justification here named a class that no longer exists. That class
+// was an article whose Emitted bit was set and whose result was then dropped by
+// a cancelled emitResult — never written, never acked, and so never cleared by
+// anything but a restart. emitResult clears the bit itself on that path now
+// (dispatch.go), which is where the owner of that bit is, so withholding cannot
+// strand it.
+//
+// What withholding still costs is delay for articles whose bytes ARE on disk
+// awaiting a barrier — the drainAndClose class. Those are exactly the articles
+// #417 is about, the delay is the point, and a later barrier releases them.
+// This predicate keeps that delay off jobs that have nothing on disk to wait
+// for, which is not rare: perJobShare divides one budget by the job count, so a
+// queue with a few dozen open jobs gives each about 200ms and marks many of
+// them unsafe on ordinary hardware.
 //
 // A job with an empty accumulator has nothing a clear could strand, whatever
 // happened to its barrier. See jobsAtRisk for why the accumulator is the right

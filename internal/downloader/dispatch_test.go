@@ -30,9 +30,14 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		workCh[srv.Cfg().Name] = make(chan *articleRequest, 1)
 	}
 	d := &Downloader{
-		log:          slog.New(slog.DiscardHandler),
-		servers:      servers,
-		workCh:       workCh,
+		log:     slog.New(slog.DiscardHandler),
+		servers: servers,
+		workCh:  workCh,
+		// A real queue rather than nil. emitResult clears the Emitted bit of a
+		// result it drops, so a Downloader without a queue is not a Downloader
+		// any production path constructs — New always supplies one. An empty
+		// queue answers ErrJobNotResident, which that path ignores.
+		queue:        queue.New(),
 		tracker:      newDispatchTracker(),
 		completions:  make(chan *ArticleResult, 10),
 		connActivity: make(map[string]*ConnActivity),
