@@ -250,6 +250,13 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 				"restores the disproven articles",
 				"job", snap.ID, "err", err)
 		}
+		if fault == nil {
+			// Below ReplaceFromRuns because that is what installs the Done
+			// bits this reads, and inside the no-fault arm because a truncate
+			// is the one irreversible act in this sweep — see
+			// completeStrandedFiles for both arguments in full.
+			app.completeStrandedFiles(ctx, snap.ID, m, swept, runs)
+		}
 		if fault != nil {
 			// A1: a failure to READ the disk says nothing about any article.
 			// The job stalls with a surfaced reason and every article stays
@@ -382,4 +389,146 @@ func sweptStatus(s constants.Status) bool {
 	default:
 		return false
 	}
+}
+
+// completeStrandedFiles finishes the finalize a crash interrupted, for every
+// file of one job that a restart would otherwise leave wedged.
+//
+// # The state it repairs
+//
+// The two facts about a finished file survive a crash by different mechanisms,
+// and only one of them is transactional. Article resolution survives through
+// durable_runs, written in the barrier's commit and replayed above by
+// ReplaceFromRuns. The file's Complete flag survives only through
+// job_files.complete, written by the NEXT queue save. A crash between them
+// leaves a file with every article resolved, no Complete flag, and nothing
+// able to re-complete it: completion fires from partsWritten == TotalParts
+// inside the assembler, that counter moves only when the assembler is handed
+// an article to write, and every one of this file's articles is Done so none
+// is dispatched. The job is then not dispatchable, not complete and not
+// failed, across every restart.
+//
+// The in-process form of the same interruption — a stall between "bytes
+// correct" and "file marked complete" — is already handled, by
+// noteUndeliveredCompletion and the stall re-evaluation. That note is in
+// memory, which is exactly why it does not cover the crash.
+//
+// # Why it is a pass here rather than a derived flag
+//
+// Deriving Complete on load from the article bits is the tempting fix and it
+// is wrong. Complete does not mean "every article resolved" — it means the
+// finalize RAN, including the truncate to the durable bound. Barrier.Run acks
+// articles without truncating and only FinalizeFile truncates, so the bits
+// under-determine the flag, and a derived Complete would send untrimmed,
+// pre-allocated files into post-processing. Doing the trim here is what earns
+// the flag rather than assuming it.
+//
+// # Ordering
+//
+// After ReplaceFromRuns, necessarily: that is what installs the Done bits this
+// reads, so before it every file looks unresolved. After §3.4's gate for a
+// second reason — a file the gate found short has had its runs DELETED, so it
+// is no longer complete and must not be trimmed to a bound derived from runs
+// that are gone.
+//
+// Skipped entirely when the sweep raised a storage fault. The job is about to
+// be stalled, the device has already refused one read, and a truncate is the
+// one irreversible thing this whole sweep does. A file left stranded is no
+// worse off than before this pass existed; a file trimmed against a failing
+// mount is not recoverable by trying again later.
+func (app *Application) completeStrandedFiles(ctx context.Context, jobID string, m *queue.Manifest, swept []int32, runs []durability.Run) {
+	snap := app.queue.SnapshotJob(jobID)
+	if snap == nil {
+		return
+	}
+	progress := snap.Progress()
+	for _, f := range swept {
+		fi := int(f)
+		if !strandedComplete(progress, m, fi) {
+			continue
+		}
+		filename := progress.FileFilename(fi)
+		if filename == "" {
+			continue
+		}
+		path := app.pipeline.jobFilePath(snap.Name, filename)
+		bound, err := durability.TrimToRuns(path, runsForFile(runs, f))
+		if err != nil {
+			// Logged and skipped rather than stalled. The file keeps the
+			// state it arrived in, which is the state every start before this
+			// pass existed left it in, so the failure costs the repair and
+			// nothing else. Stalling a job over a repair that is itself
+			// optional would turn a recoverable wedge into a paused job.
+			app.log.Warn("could not finish a finalize a crash interrupted; the file stays "+
+				"incomplete and the job will not progress until this succeeds",
+				"job", jobID, "fileidx", fi, "path", path, "err", err)
+			continue
+		}
+		app.log.Info("finished a finalize a crash interrupted",
+			"job", jobID, "fileidx", fi, "trimmed_to", bound)
+		if err := app.completeFinalizedFile(ctx, FileComplete{JobID: jobID, FileIdx: fi}); err != nil {
+			app.log.Warn("trimmed a stranded file but could not record its completion",
+				"job", jobID, "fileidx", fi, "err", err)
+		}
+	}
+}
+
+// strandedComplete reports whether one file has every article resolved and no
+// Complete flag — the state a crash between the barrier's commit and the
+// following queue save leaves behind.
+//
+// FetchAlways only, matching Job.IsComplete: a deferred or discarded par2
+// recovery volume is never dispatched, so "every article resolved" is
+// vacuously true of it and completing it would claim a file nobody fetched.
+//
+// A file with NO articles is excluded for the same reason and it is not a
+// hypothetical guard: the loop below is vacuously true over an empty range,
+// so without this an empty file range would be reported stranded on every
+// start.
+//
+// "Resolved" is the Done bit, which covers a permanently failed article as
+// well as a successful one. That matches what completion means everywhere
+// else — the assembler's partsWritten counts a permanent failure toward
+// TotalParts — so a file whose last article will never arrive is complete,
+// short, and par2's problem.
+func strandedComplete(p *queue.JobProgress, m *queue.Manifest, fi int) bool {
+	// Bounds-checked here rather than left to the accessors, and the state
+	// that makes it necessary is theirs: JobProgress.FileFetchPolicy
+	// DOCUMENTS that an out-of-range index reports FetchAlways, and
+	// FileComplete reports false. Those two permissive answers combine to
+	// describe an index that does not exist as a file that is fetched and
+	// incomplete — a repair candidate — and Manifest.FileRange then indexes
+	// its offsets slice and panics. Inside the resume sweep that is a panic
+	// during Start.
+	if fi < 0 || fi >= m.NumFiles() {
+		return false
+	}
+	if p.FileFetchPolicy(fi) != queue.FetchAlways || p.FileComplete(fi) {
+		return false
+	}
+	lo, hi := m.FileRange(fi)
+	if hi <= lo {
+		return false
+	}
+	for i := lo; i < hi; i++ {
+		if !p.ArticleDone(i) {
+			return false
+		}
+	}
+	return true
+}
+
+// runsForFile selects one file's runs out of a whole job's.
+//
+// The sweep gathers every file's runs into one slice because ReplaceFromRuns
+// takes them that way, and filtering here rather than re-reading the store
+// keeps this pass to the reads the sweep has already paid for.
+func runsForFile(runs []durability.Run, fileIdx int32) []durability.Run {
+	out := make([]durability.Run, 0, len(runs))
+	for _, r := range runs {
+		if r.FileIdx == fileIdx {
+			out = append(out, r)
+		}
+	}
+	return out
 }

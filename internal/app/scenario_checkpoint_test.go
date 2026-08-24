@@ -92,14 +92,15 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	// flag lives on job_files, which the queue save writes afterwards. So a
 	// probe that watched only the article bits would fire one write earlier
 	// than it used to and pick a crash point where a file has every article
-	// resolved and no Complete flag — a file nothing can re-complete, because
-	// the assembler only fires OnFileComplete for a file it was given
-	// articles to write.
+	// resolved and no Complete flag.
 	//
-	// That window is not new: the old shape committed the same claim in
-	// file_extents inside the same finalize, and the startup sweep adopted it.
-	// What is new is that the article bits reach disk through it, so the probe
-	// can now see the window from outside.
+	// That window is not new — the old shape committed the same claim in
+	// file_extents inside the same finalize — and it is no longer unrecoverable
+	// either: Application.completeStrandedFiles finishes the interrupted
+	// finalize on the next start (durability-contract.md, limitation 6). The
+	// probe stays tight anyway, because this test is about the RE-FETCH after a
+	// crash and landing in the repair path instead would exercise something
+	// else while still going green.
 	if !waitUntil(5*time.Second, func() bool {
 		if server.StallCount() < 1 {
 			return false

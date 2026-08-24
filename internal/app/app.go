@@ -1233,10 +1233,16 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 		// Recorded, not just logged. The barrier has already trimmed this
 		// file, acked its articles and released the handle, and the
 		// assembler's tombstone means OnFileComplete will never fire for it
-		// again — so nothing else can re-trigger this. Dropping it left the
-		// file's Complete flag false forever with every article Done and
-		// nothing left to dispatch: a wedged job, surviving restarts because
-		// the flag is only ever restored from the persisted column.
+		// again — so nothing else IN THIS PROCESS can re-trigger this. Dropping
+		// it leaves the file's Complete flag false with every article Done and
+		// nothing left to dispatch: a wedged job.
+		//
+		// It no longer survives restarts — completeStrandedFiles finishes the
+		// interrupted finalize during the next start's resume sweep — and this
+		// note stays because a restart is not an acceptable recovery for a
+		// condition the running process can fix itself. The retry is what keeps
+		// the repair in-process; the sweep is the backstop for the crash that
+		// takes the note down with it.
 		app.log.Info("completion not delivered; recorded for the stall re-evaluation to retry",
 			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
 		app.noteUndeliveredCompletion(fc.JobID, fc.FileIdx)

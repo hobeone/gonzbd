@@ -1087,6 +1087,38 @@ the manifest, and `Queue.ReplaceFromRuns` hydrates the live job itself to
 apply the correction. Startup is when this is cheapest and safest: nothing else
 holds a manifest and no article is being dispatched.
 
+### The sweep also finishes a finalize a crash interrupted
+
+`Application.completeStrandedFiles` runs per job, after `ReplaceFromRuns` and
+only when the sweep raised no fault. For each file that is `FetchAlways`, has
+**every** article resolved, and is **not** `Complete`, it trims the file to the
+bound its runs imply (`durability.TrimToRuns`) and then hands it to
+`Application.completeFinalizedFile`.
+
+That state is what a crash between the barrier's commit and the following queue
+save leaves behind, and accepted limitation 6 has the full argument for why
+nothing else recovers it. Three things about the shape are load-bearing:
+
+- **The trim earns the flag.** `Complete` means the finalize *ran*, and the
+  truncate is the part of it the article bits cannot witness — `Barrier.Run`
+  acks without truncating, only `FinalizeFile` truncates. So this pass does the
+  trim rather than deriving the flag, and a trim that fails withholds the flag.
+- **After `ReplaceFromRuns`, necessarily.** That call installs the Done bits
+  this reads, and it clears `Complete` itself on any file whose bits it cleared.
+  It is also after §3.4's gate, so a file found short has already had its runs
+  discarded and cannot be trimmed to a bound derived from rows that are gone.
+- **Not on the fault path.** The truncate is the only irreversible act in the
+  whole sweep, and a job that raised a storage fault is about to be stalled. A
+  file left stranded is no worse off than before this pass existed.
+
+`Barrier.FinalizeFile` is not re-run here and cannot be: its first act is
+`Truncator.Drain`, which answers `ErrFileNotOpen` and takes the early exit,
+because nothing reopens a file during the sweep. What the pass needs is only the
+trim — no drain (a fresh process has an empty write cache), no commit (no new
+articles), no ack (the sweep has already re-set the bits). `boundOver` remains
+the single owner of the bound rule; `TrimToRuns` and `FinalizeFile` differ in
+how they *apply* it, not in what it is.
+
 ## Pre-allocation
 
 Pre-allocation reduces per-write filesystem metadata overhead and fragmentation.
@@ -1552,9 +1584,10 @@ recorded here so the next reader does not mistake them for design.
    on the overlap check rather than a defect in it; §4 states it, its two
    bounding arguments, and what is actually lost.
 
-6. **A crash between the barrier's commit and the following queue save can
-   strand a completed file.** The two facts about a finished file survive a
-   crash by *different* mechanisms, and only one of them is transactional:
+6. **A crash between the barrier's commit and the following queue save strands
+   a completed file, and the next start repairs it rather than the window being
+   closed.** The two facts about a finished file survive a crash by *different*
+   mechanisms, and only one of them is transactional:
 
    - **Article resolution** survives through `durable_runs`. The barrier writes
      those rows in the transaction that precedes the ack, and the startup sweep
@@ -1590,51 +1623,40 @@ recorded here so the next reader does not mistake them for design.
    — but nothing in the bits distinguishes that file from one whose finalize has
    not started.
 
-   **The fix shape is decomposition, and most of the seam already exists.**
-   `FinalizeFile` cannot simply be re-run at startup: its first action is
-   `Truncator.Drain`, which returns `ErrFileNotOpen` and takes the early exit,
-   and nothing reopens files during the sweep. But a startup pass needs almost
-   none of it — no drain (a fresh process has an empty write cache), no commit
-   (no new articles), no ack (the sweep has re-set the bits). It needs one step:
-   *trim this path to the bound its runs imply, and fsync it*, which requires a
-   path rather than a live handle. Everything after that is
-   `Application.completeFinalizedFile`, which is **already** split out for the
-   in-process version of this same interruption — a stall between "bytes
-   correct" and "file marked complete", resumed from exactly that boundary by
+   **The repair is `Application.completeStrandedFiles`**, described under
+   *Which jobs the sweep covers*. `FinalizeFile` is not re-run — its first act
+   is `Truncator.Drain`, which answers `ErrFileNotOpen` and takes the early
+   exit — but the pass needs only one step of it, *trim this path to the bound
+   its runs imply and fsync it*, and everything after that is
+   `Application.completeFinalizedFile`, which was **already** split out for the
+   in-process form of this same interruption: a stall between "bytes correct"
+   and "file marked complete", resumed from exactly that boundary by
    `reevaluateStall`. The crash case is the same interruption with the process
-   gone in between. `resumeJobFiles` is also already in the right place: it
-   iterates every file, resolves each path, holds the adopted runs, and runs
-   inside `Start` *before the downloader can dispatch*, so a truncate there
-   cannot race a writer.
+   gone in between.
 
-   Three constraints on doing it:
+   **The window itself is still open, and that is why this stays a limitation.**
+   The repair runs at the *next start*, so a crash still leaves a wedged file
+   until then. That is indistinguishable from atomicity in practice — the wedge
+   only manifests across a restart and the repair also runs at restart — but it
+   is recovery, not prevention, and a reader must not take the entry above as a
+   claim that the two writes are one.
 
-   - **One trim owner, not two.** A second site that trims a file is a second
-     enforcement point for one invariant (Standing Design Rule 2). Extract a
-     single trim-to-bound function and have both `FinalizeFile` and the startup
-     pass call it; adding a parallel implementation is the drift that rule names.
-   - **Order after the resume gate.** A file that failed §3.4's size comparison
-     has had its runs deleted and is no longer complete. Cheap to get right,
-     silent to get wrong.
-   - **`completeFinalizedFile` does more than set the flag.** It emits, may
-     start DirectUnpack, and calls `maybeFinalize` when the job's last file
-     lands — that last one matters, because a pass that only flipped the flag
-     would leave a differently wedged job. DirectUnpack is the part that needs
-     thought: it is a during-download optimisation and the download is over.
+   Two further residuals, both narrow:
+
+   - A trim that fails leaves the file stranded exactly as before, because the
+     trim is what earns the flag. It is logged, not stalled: the file is no
+     worse off than before the pass existed, and stalling a job over an optional
+     repair would turn a recoverable wedge into a paused job.
+   - The pass is skipped for a job whose sweep raised a storage fault. The
+     truncate is the only irreversible act in the sweep and the device has
+     already refused one read.
 
    **The alternative considered and not taken** was folding `Complete` into the
    barrier's own transaction, so it lands with the runs and a restart
-   reconstructs it from the same authority. That closes the window atomically
-   rather than by repair, but it needs a schema change and makes the barrier
-   write state `internal/queue` owns — the line `durable_runs`' own doc draws
-   when it says `failed_articles` is written solely by the queue. Decomposition
-   costs neither. The wedge only *manifests* across a restart and the repair
-   would also run at restart, so recovery is indistinguishable from atomicity
-   from the user's side.
-
-   Not fixed here: it is out of scope for the change that replaced the
-   durability record, and mixing a new ownership question into that commit would
-   have made both harder to review.
+   reconstructs it from the same authority. That would close the window
+   atomically rather than by repair, but it needs a schema change and makes the
+   barrier write state `internal/queue` owns — the line `durable_runs`' own doc
+   draws when it says `failed_articles` is written solely by the queue.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**
@@ -1730,6 +1752,10 @@ a green run does and does not bound.
   with `lastBarrier`/`PendingBytes` surfaced through the API and UI.
 - Authoritative startup sweep (`resumeAllJobs` → `Queue.ReplaceFromRuns`) and
   the additive stall-recovery replay (`SeedFromRuns`).
+- Repair for a finalize a crash interrupted (`completeStrandedFiles` →
+  `durability.TrimToRuns` → `completeFinalizedFile`), which trims the file to
+  its runs' bound and then completes it. See *Accepted limitations* #6 for the
+  window it repairs and the residuals it leaves.
 - Storage-fault stall/fail with a surfaced, actionable reason and interval-based
   re-evaluation.
 - `durable_runs` and `failed_articles` tables (migrations `002`/`003`), which
