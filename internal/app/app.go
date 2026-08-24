@@ -921,7 +921,11 @@ func (app *Application) Start(ctx context.Context) error {
 	// has never done, and that is worth being exact about directly above the
 	// sweep below, because a job's status is what decides whether the sweep
 	// touches it at all.
-	app.queue.ClearAllEmitted()
+	// nil: clear everything. Nothing is in flight at startup, no checkpoint has
+	// run to have partial coverage, and the L3 sweep below re-derives every
+	// DOWNLOADING job from the durability record before a single article can
+	// be dispatched.
+	app.queue.ClearAllEmitted(nil)
 	// L3: re-derive each DOWNLOADING job's work set from what is actually on
 	// stable storage, BEFORE the downloader below can dispatch a single
 	// article. Placed after ClearAllEmitted so the reset cannot undo it, and

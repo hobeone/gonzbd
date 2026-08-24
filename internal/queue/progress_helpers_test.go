@@ -137,7 +137,7 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 		t.Fatal("fixture: markFailed should have recorded failed bytes")
 	}
 
-	p.resetForReload(m, 0)
+	p.resetForReload(m, 0, true)
 
 	if p.emitted.Get(0) {
 		t.Error("Emitted was not cleared")
@@ -182,7 +182,7 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 	remainingBefore := p.RemainingBytes()
 	doneBefore := p.done.Get(0)
 
-	p.resetForReload(m, 0)
+	p.resetForReload(m, 0, true)
 
 	if p.emitted.Get(0) {
 		t.Error("Emitted was not cleared")

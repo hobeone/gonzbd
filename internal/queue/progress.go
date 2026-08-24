@@ -794,8 +794,23 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 // that answer per article to name the stored rows it may drop: now that the
 // reset is not exhaustive, a whole-job delete would forget an article that is
 // still failed in memory.
-func (p *JobProgress) resetForReload(m *Manifest, i int) bool {
-	p.emitted.Clear(i)
+// clearEmitted is false for a job whose reload checkpoint could not make its
+// written articles durable (#417). Only the Emitted clear is withheld — the
+// un-failing below still runs, because the two act on DISJOINT article sets and
+// withholding both would trade one permanent strand for another.
+//
+// The disjointness, since it is what makes the narrow skip correct: markFailed
+// CLEARS emitted as it sets failed, and the un-fail arm below is gated on
+// p.failed.Get(i). So a Failed article is never Emitted, and #417's strand is
+// caused only by the unconditional emitted.Clear on an article that is
+// emitted-and-not-done. Skipping the un-fail instead would leave an article the
+// old downloader's teardown failed — ErrNoServersLeft is terminal — failed
+// forever: markNotDone refuses a permanently failed article, a restart
+// re-applies the persisted row, and only a whole-job retry clears it.
+func (p *JobProgress) resetForReload(m *Manifest, i int, clearEmitted bool) bool {
+	if clearEmitted {
+		p.emitted.Clear(i)
+	}
 	if !p.failed.Get(i) {
 		return false
 	}

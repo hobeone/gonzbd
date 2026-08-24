@@ -141,7 +141,7 @@ func TestClearAllEmitted_ReassertsARetainedRowAnAckLost(t *testing.T) {
 		t.Fatalf("fixture: store should be empty, has %v", got)
 	}
 
-	q.ClearAllEmitted()
+	q.ClearAllEmitted(nil)
 
 	got, err := store.failedArticlesForJob(ctx, "j1")
 	if err != nil {
@@ -187,7 +187,7 @@ func TestClearAllEmitted_KeepsTheStoredRowForARetainedFailedArticle(t *testing.T
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
 
-	q.ClearAllEmitted()
+	q.ClearAllEmitted(nil)
 
 	stored, err = store.failedArticlesForJob(ctx, "j1")
 	if err != nil {

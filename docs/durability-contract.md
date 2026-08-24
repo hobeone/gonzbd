@@ -767,8 +767,9 @@ thing that is stuck.
 *What* a checkpoint means lives in `durability.Barrier`. *When* one happens lives
 in `internal/app`, so that "when to checkpoint" stays a policy question.
 
-R6 names five triggers. Four are implemented; the fifth is listed so its
-absence is visible rather than assumed:
+R6 names five triggers, and the reload adds a sixth that R6 does not name. Five
+of the six are implemented; the unimplemented one is listed so its absence is
+visible rather than assumed:
 
 | Trigger | Implementation | Bound |
 |---|---|---|
@@ -776,7 +777,47 @@ absence is visible rather than assumed:
 | Volume | `noteJobBytes` → `barrierKick` → `checkpointJob` | `downloads.checkpoint_bytes`, default **64 MiB** (`constants.DefaultCheckpointBytes`) |
 | File completion | `Application.handleFileComplete` → `finalizeCompletedFile` → `Barrier.FinalizeFile` | per file |
 | Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAllShare` | `shutdownCheckpointTimeout` (10s) for the **whole sweep**, divided evenly among the jobs it visits |
+| Downloader reload | `Application.ReloadDownloader` → `checkpointAllShare` | `reloadCheckpointTimeout` (10s), same division. See below — this is the one trigger whose *result* is consumed. |
 | Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its buffered bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
+
+### The reload trigger is the one whose coverage is load-bearing
+
+Every other trigger may fail a job silently: the bytes stay on disk, the
+articles stay Outstanding, and the next barrier picks them up. The reload
+trigger is different, because `ReloadDownloader` follows it with
+`Queue.ClearAllEmitted` — and clearing an Emitted bit hands the article back to
+a downloader that is about to be pointed at a **different server set**.
+
+An article the assembler had written but no barrier had acked would then be
+re-fetched; if the new set cannot serve it, it is marked permanently failed
+while its bytes sit on disk, and the inflated `failedBytes` can reach
+`RepairNoCapacity` / `RepairBeyondCapacity`, both `Hopeless()`, aborting a job
+whose file was never damaged. The disagreement is permanent — `markNotDone`
+refuses a permanently failed article, and a restart re-applies the persisted
+row. This was #417.
+
+So `checkpointAllShare` returns the jobs it could **not** protect, and
+`ClearAllEmitted` takes that set and withholds their Emitted bits.
+`checkpointJob`'s bool answers "does this job hold written-but-unacked articles
+that clearing Emitted would strand?" — which is not the same question as "did a
+barrier run": a job with no open files ran none and is still safe, while a job
+whose `OpenFiles` call *errored* may hold megabytes and is not.
+
+Two consequences worth stating, because both are surprising:
+
+- **The skip withholds the Emitted clear and nothing else.** `ClearAllEmitted`
+  also un-fails articles the old downloader's teardown marked failed, and those
+  two act on disjoint articles — `markFailed` clears `emitted` as it sets
+  `failed`. Skipping both would leave a teardown failure permanent, trading one
+  strand for another on the same inflated figure.
+- **The resulting stall is only partly self-clearing.** A later barrier releases
+  an Emitted bit when its article's bytes reach disk, but an article whose data
+  died with the old downloader is never acked and needs a restart. The reload
+  logs a warning naming the affected jobs for that reason.
+
+The checkpoint remains **best-effort in coverage** — a budget expiry or a
+storage fault still leaves a job unacked. What changed is that the caller now
+knows which jobs those are instead of clearing them regardless.
 
 The two bounds answer different failure shapes and neither subsumes the other.
 The time bound is what limits rework on a slow link, where 30 seconds is a few
@@ -800,8 +841,20 @@ checkpoint window.
 
 Three details that have each been got wrong once:
 
-- **The byte accumulator resets before the run, not after.** An article written
-  while the barrier is in flight belongs to the *next* window.
+- **The byte accumulator is retired by the run that EARNS it, and by nothing
+  else.** The barrier reads its window before it runs and subtracts exactly that
+  figure once the run succeeds, so an article written while the barrier is in
+  flight belongs to the *next* window and survives the settle.
+
+  Subtracting on success replaced a read-and-clear before the run plus a
+  put-back on failure. That pair got the arithmetic right and the *window*
+  wrong: between the clear and the put-back the job had no entry at all, so
+  `jobsAtRisk` could not name it — and `jobsAtRisk` is what a reload consults
+  when it cannot list open jobs, which is the wedged-mount case where a
+  background barrier is most likely to be in flight and about to fail. The
+  reload cleared that job's Emitted bits and #417 reproduced through a narrower
+  door. Retiring only on success closes it by construction: there is no interval
+  in which written-but-unacked bytes are invisible.
 - **A dropped kick is not a lost kick.** `barrierKick` is a non-blocking send;
   the accumulator is not reset by `noteJobBytes`, so the next article re-raises
   it and the interval tick covers the job regardless.
@@ -809,10 +862,10 @@ Three details that have each been got wrong once:
   actually ran.** "The barrier ran and failed" and "no barrier ran at all" are
   different facts. Folding the second into the first's nil-error case is how a
   job on a dead mount came to report a fresh stamp every 30 seconds — the exact
-  inversion of what R26 asks that figure to distinguish. When `checkpointJob`
-  finds no sync target it also declines to reset the accumulator, because
-  zeroing it would report zero pending bytes beside a stale timestamp, two
-  figures agreeing that nothing is at risk at the moment when everything is.
+  inversion of what R26 asks that figure to distinguish. A job with no sync
+  target likewise never reaches the settle, so its accumulator stands: zeroing
+  it would report zero pending bytes beside a stale timestamp, two figures
+  agreeing that nothing is at risk at the moment when everything is.
 
 **`bytes_durable` and `bytes_pending` are not in the same unit**, and R26 asks
 only that the rework window be *visible*, not that it be commensurable with the

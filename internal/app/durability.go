@@ -461,9 +461,9 @@ func (app *Application) syncTargetFor(jobID string) durability.SyncTarget {
 // when it happens. The per-job lock and the accumulator reset are the two
 // pieces of that policy the barrier cannot own: it is not reentrant and it
 // does not know what triggered it.
-func (app *Application) checkpointJob(ctx context.Context, jobID string) {
+func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	if app.barrier == nil {
-		return
+		return true
 	}
 	mu := app.jobBarrierLock(jobID)
 	defer app.releaseJobBarrierLock(jobID)
@@ -499,7 +499,10 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 		// nothing is at risk, at the moment when everything written since the
 		// last real barrier is.
 		app.log.Debug("checkpoint skipped, no sync target for the job", "job", jobID)
-		return
+		// UNSAFE to clear. No barrier ran, and the reachable cause — a job
+		// that left the queue while the assembler still holds its handles —
+		// is one where written articles may be sitting unacked (#417).
+		return app.nothingAtRisk(jobID)
 	}
 
 	// A run over NO files claims nothing, and must not be read as a barrier.
@@ -518,24 +521,91 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	// control message to a worker that is about to be asked again. On the
 	// wedged path both are bounded by barrierOpTimeout, and by the per-job
 	// deadline checkpointAll now imposes.
-	if len(tgt.Files()) == 0 {
+	// Asked of the assembler directly rather than through SyncTarget.Files,
+	// which reports ANY error as "no files" because the barrier has nothing
+	// useful to do with one (synctarget.go). Here the difference decides
+	// whether a job's Emitted bits may be cleared, and a wedged mount that
+	// times out is exactly the case that must not be read as "nothing to do"
+	// — it is the case with the most written-but-unacked bytes. #417.
+	//
+	// finalizeCompletedFile asks the same question the same way and for the
+	// same reason, after its own early-return guards.
+	open, filesErr := app.assembler.OpenFiles(ctx, jobID)
+	switch {
+	case errors.Is(filesErr, assembler.ErrAssemblerStopped):
+		// SAFE. The one error meaning "genuinely nothing" rather than
+		// "unknown": the ordinary end of every process. Treating it as
+		// unknown would hold the job's Emitted bits until a restart on every
+		// clean shutdown, and an article whose data died with the old
+		// downloader is never acked, so that stall would not self-clear.
+		mu.Unlock()
+		// --- No lock held below this line ---
+		app.log.Debug("checkpoint skipped, the assembler has stopped", "job", jobID)
+		return true
+	case filesErr != nil:
+		// UNSAFE. We do not know what the job holds, which is not the same as
+		// knowing it holds nothing.
 		mu.Unlock()
 		// --- No lock held below this line ---
 		//
 		// The accumulator is deliberately NOT reset, for the reason the
-		// nil-target branch above gives: two figures agreeing that nothing is
-		// at risk, at the moment when everything written since the last real
-		// barrier is.
+		// nil-target branch above gives.
+		app.log.Warn("checkpoint could not tell whether the job still holds open files; "+
+			// Conditional, because the return is: nothingAtRisk answers true
+			// for a job that has written nothing since its last successful
+			// barrier, and such a job is cleared normally.
+			"if it holds unacked written bytes, its emitted articles will not be "+
+			"cleared by a reload",
+			"job", jobID, "err", filesErr)
+		return app.nothingAtRisk(jobID)
+	}
+	if len(open) == 0 {
+		mu.Unlock()
+		// --- No lock held below this line ---
+		//
+		// SAFE, and NOT because "nothing was written" — that is false. A drain
+		// that closed its handles leaves written articles unacked with their
+		// Emitted bits set (assembler.go's drainAndClose, filewriter.go:449
+		// and :868).
+		//
+		// It is safe because no class that reaches here can be re-dispatched
+		// with unacked bytes behind it. FOUR paths remove a job's files from
+		// the open set — three found by `git grep -n 'delete(open'`
+		// (CancelJob, CloseJobHandles, opClose), plus drainAndCloseAll at
+		// worker exit, which that grep does not find because it discards the
+		// whole set rather than deleting from it. Each is safe for its own
+		// reason:
+		//
+		//   - CloseJobHandles: the job is already StatusVerifying, and
+		//     ForEachUnfinishedArticle skips a PostProc job, so its Emitted
+		//     bits cannot produce a re-fetch whether cleared or not.
+		//   - CancelJob: the job is removed from the queue, so ClearAllEmitted
+		//     never iterates it.
+		//   - opClose, from CloseFile/FinalizeFile: the barrier acked those
+		//     articles before the close.
+		//   - drainAndCloseAll at worker exit: the assembler is stopping, so
+		//     the arm above answers ErrAssemblerStopped and this one is not
+		//     reached.
+		//
+		// One residual, and it is covered elsewhere rather than here: a file
+		// finalized by an EARLIER checkpoint whose ack failed with
+		// ErrJobNotResident can reach this exit with unacked articles.
+		// noteNeedsSeed put that job on the stall list for replay when that
+		// happened, which is the mechanism that resolves it.
+		//
+		// A job that simply never opened a file is safe trivially.
+		//
+		// The accumulator is deliberately NOT reset, for the reason the
+		// nil-target branch above gives.
 		app.log.Debug("checkpoint skipped, the job has no open files to sync", "job", jobID)
-		return
+		return true
 	}
 
-	// Read and reset together, under one acquisition. As two calls, an article
-	// written in the gap was added to the accumulator and then deleted with
-	// it — counted toward neither window, and absent from the figure
-	// restoreJobBytes puts back if this run fails. See takeJobBytes for why
-	// the reset happens before the run at all.
-	pending := app.takeJobBytes(jobID)
+	// Read WITHOUT clearing. The accumulator is retired by settleJobBytes on
+	// the success path below, and by nothing else — a job whose barrier is
+	// still in flight therefore stays visible to jobsAtRisk, which is what
+	// stops a concurrent reload clearing its Emitted bits (#417).
+	pending := app.pendingBytesFor(jobID)
 
 	app.barrierRuns.Add(1)
 	found, err := app.barrier.Run(ctx, jobID, tgt)
@@ -553,10 +623,11 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 	// would introduce no new ordering — there is no deadlock argument here.
 	app.reportPostAnomalies(jobID, found)
 	if err != nil {
-		// The reset this run did not earn is put back, so the figure keeps
-		// describing the bytes still at risk rather than dropping to zero
-		// beside a last_barrier that did not move.
-		app.restoreJobBytes(jobID, pending)
+		// Nothing to put back: the accumulator was never cleared, so it still
+		// describes the bytes at risk. A failed barrier leaves the figure
+		// exactly where it was rather than dropping it to zero beside a
+		// last_barrier that did not move.
+		//
 		// A failed ack is the one failure that DOES claim something. Run
 		// commits the runs and then acks, so ErrJobNotResident means the
 		// articles are on stable record while the live work set still calls
@@ -568,15 +639,23 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) {
 			app.log.Info("checkpoint recorded its durable runs but could not ack a non-resident job; "+
 				"recorded for replay from the durability record", "job", jobID)
 			app.noteNeedsSeed(jobID)
-			return
+			// UNSAFE if anything is at risk. The articles are on stable
+			// record, but the live work set has not been updated to say so —
+			// precisely the state a clear would turn into a re-fetch.
+			return app.nothingAtRisk(jobID)
 		}
 		// Everything else: the fault has already reached the job through
 		// Stallable, and a failed barrier claims nothing — the prior committed
 		// cache is intact and no article was acked.
 		app.log.Warn("checkpoint barrier failed", "job", jobID, "err", err)
-		return
+		// UNSAFE. The barrier claims nothing on this path, so anything written
+		// since the last successful one is still unacked.
+		return app.nothingAtRisk(jobID)
 	}
+	// Retired only now, by the run that actually earned it.
+	app.settleJobBytes(jobID, pending)
 	app.noteBarrierRun(jobID)
+	return true
 }
 
 // noteBarrierRun stamps a job's last successful barrier (R26).
@@ -605,28 +684,42 @@ func (app *Application) hasBarrierStamp(jobID string) bool {
 	return ok
 }
 
-// takeJobBytes reads a job's accumulator and zeroes it, in ONE acquisition.
+// settleJobBytes retires the bytes a SUCCESSFUL barrier made durable, and is
+// the only thing that reduces a job's accumulator.
 //
-// The two were separate calls, and the gap between them lost bytes. An article
-// written after the read and before the reset was added to the accumulator and
-// then deleted with it — counted toward neither window. On the failing path
-// restoreJobBytes then put back less than had been reset, so the "bytes still
-// at risk" figure drifted DOWN over a run of failed barriers, which is the
-// direction R26 most needs it not to drift: it is read as reassurance.
+// It subtracts the figure the barrier read before it ran, rather than clearing
+// the entry, and the difference is the whole point. An article written while
+// the barrier was in flight belongs to the NEXT window — it may or may not have
+// made it into this drain — so it must survive the settle. Clearing would
+// discard exactly those bytes: the most recently written, and the least likely
+// of all to be on disk.
+//
+// It replaced a take-before-the-run plus a restore-on-failure. That pair was
+// correct about the arithmetic and wrong about the WINDOW: between the take and
+// the restore the job had no entry at all, so jobsAtRisk could not name it, and
+// a reload whose OpenJobIDs failed in that window cleared the Emitted bits of a
+// job whose barrier then failed — #417 through a narrower door. Retiring the
+// bytes only on success closes that by construction: there is no interval in
+// which written-but-unacked bytes are invisible, because nothing removes them
+// until they are neither.
 //
 // Called by the barrier itself, so the byte bound measures the window between
 // barriers rather than the window between kicks.
-//
-// The reset belongs before the run, not after. An article written while the
-// barrier is in flight belongs to the NEXT window — it may or may not have made
-// it into this drain, and charging it to the window that just closed would
-// leave it uncounted until the following one.
-func (app *Application) takeJobBytes(jobID string) int64 {
+func (app *Application) settleJobBytes(jobID string, n int64) {
+	if n <= 0 {
+		return
+	}
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
-	n := app.jobBarrierBytes[jobID]
+	// Non-positive rather than zero: settling more than the entry holds is not
+	// reachable today (the figure came from this job's own accumulator, which
+	// only grows between the read and here), but leaving a negative behind
+	// would silently credit the next window.
+	if remaining := app.jobBarrierBytes[jobID] - n; remaining > 0 {
+		app.jobBarrierBytes[jobID] = remaining
+		return
+	}
 	delete(app.jobBarrierBytes, jobID)
-	return n
 }
 
 // pendingBytesFor reports how many bytes have been written for a job since its
@@ -637,20 +730,68 @@ func (app *Application) pendingBytesFor(jobID string) int64 {
 	return app.jobBarrierBytes[jobID]
 }
 
-// restoreJobBytes puts back an accumulator a barrier reset and then did not
-// earn, so the figure keeps describing the bytes still at risk.
+// nothingAtRisk reports whether a job whose checkpoint did NOT succeed is
+// nevertheless safe to clear, because it has written nothing since its last
+// successful barrier.
 //
-// Added rather than subtracted from: articles written while the barrier was in
-// flight have already been charged to the new window, and dropping them to
-// restore the old total would under-report exactly the bytes most recently
-// written.
-func (app *Application) restoreJobBytes(jobID string, n int64) {
-	if n <= 0 {
-		return
-	}
+// This is what keeps the withheld set as narrow as the hazard: the skip is per
+// JOB while the hazard is per ARTICLE, so a job with one unacked article and a
+// thousand untouched ones would withhold all thousand.
+//
+// It is worth being precise about what withholding costs now, because the
+// original justification here named a class that no longer exists. That class
+// was an article whose Emitted bit was set and whose result was then dropped by
+// a cancelled emitResult — never written, never acked, and so never cleared by
+// anything but a restart. emitResult clears the bit itself on that path now
+// (dispatch.go), which is where the owner of that bit is, so withholding cannot
+// strand it.
+//
+// What withholding still costs is delay for articles whose bytes ARE on disk
+// awaiting a barrier — the drainAndClose class. Those are exactly the articles
+// #417 is about, the delay is the point, and a later barrier releases them.
+// This predicate keeps that delay off jobs that have nothing on disk to wait
+// for, which is not rare: perJobShare divides one budget by the job count, so a
+// queue with a few dozen open jobs gives each about 200ms and marks many of
+// them unsafe on ordinary hardware.
+//
+// A job with an empty accumulator has nothing a clear could strand, whatever
+// happened to its barrier. See jobsAtRisk for why the accumulator is the right
+// source.
+func (app *Application) nothingAtRisk(jobID string) bool {
+	return app.pendingBytesFor(jobID) == 0
+}
+
+// jobsAtRisk names every job holding bytes written since its last SUCCESSFUL
+// barrier — the exact set whose Emitted bits a reload must not clear (#417).
+//
+// The accumulator is the right source rather than a convenient one.
+// onArticleWritten feeds it on every accepted write and its own doc says it
+// "counts accepted bytes, not durable ones: it is measuring how much work is at
+// risk between barriers". settleJobBytes is the only thing that reduces it, and
+// only a successful barrier calls it — so an absent entry means a barrier
+// really did make everything durable.
+//
+// That is also why this needs no in-flight case, and why it does not have to
+// take the per-job barrier mutex to be correct. A job whose barrier is running
+// right now still holds its entry; it is retired after the run succeeds, never
+// before. An earlier design read-and-cleared before the run, which left a
+// window where a job at risk had no entry at all — see settleJobBytes.
+//
+// Used where the sweep cannot enumerate jobs itself and so cannot ask
+// checkpointJob about any of them.
+func (app *Application) jobsAtRisk() map[string]struct{} {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
-	app.jobBarrierBytes[jobID] += n
+	if len(app.jobBarrierBytes) == 0 {
+		return nil
+	}
+	at := make(map[string]struct{}, len(app.jobBarrierBytes))
+	for jobID, n := range app.jobBarrierBytes {
+		if n > 0 {
+			at[jobID] = struct{}{}
+		}
+	}
+	return at
 }
 
 // checkpointAll runs a barrier for every job holding an open file.
@@ -660,6 +801,11 @@ func (app *Application) restoreJobBytes(jobID string, n int64) {
 // that set: a barrier fsyncs open files, not every file a job will eventually
 // produce. Deriving the set from job status instead would be a second
 // representation of the same fact, free to drift (S5).
+// It deliberately does NOT propagate the unprotected-jobs set its budgeted form
+// returns. Its callers are the periodic sweep and the tests, and neither clears
+// Emitted bits afterwards — only ReloadDownloader does, and it calls
+// checkpointAllShare. Returning a value nothing reads would be an invitation to
+// read it somewhere it does not apply.
 func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration) {
 	app.checkpointAllWithBudget(ctx, func(int) time.Duration { return perJob })
 }
@@ -678,8 +824,8 @@ func (app *Application) checkpointAll(ctx context.Context, perJob time.Duration)
 // The periodic sweep keeps a fixed per-job budget instead, deliberately: it has
 // no overall deadline to divide, and one job's slow mount must not shrink
 // every other job's budget on every tick.
-func (app *Application) checkpointAllShare(ctx context.Context, total time.Duration) {
-	app.checkpointAllWithBudget(ctx, func(jobs int) time.Duration {
+func (app *Application) checkpointAllShare(ctx context.Context, total time.Duration) map[string]struct{} {
+	return app.checkpointAllWithBudget(ctx, func(jobs int) time.Duration {
 		return perJobShare(total, jobs)
 	})
 }
@@ -694,15 +840,45 @@ func perJobShare(total time.Duration, jobs int) time.Duration {
 
 // checkpointAllWithBudget is the shared loop. budget is asked once, after the
 // job list is known, so a policy can divide by it.
-func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func(jobs int) time.Duration) {
+func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func(jobs int) time.Duration) map[string]struct{} {
+	// The returned set names the jobs this sweep could NOT protect — those
+	// whose checkpointJob reported unsafe. ReloadDownloader withholds their
+	// Emitted bits from ClearAllEmitted (#417); every other caller ignores it,
+	// which Go permits for a call statement, so nothing else needed changing.
+	//
+	// The two early returns below cannot ask checkpointJob about any job,
+	// because neither reaches the loop. They answer from the barrier
+	// accumulator instead, which names the at-risk jobs directly.
+	//
+	// A failed OpenJobIDs is NOT the transient listing error it looks like.
+	// submit bounds that call with barrierOpTimeout, and the way it fails in
+	// production is a worker parked in an fsync on a wedged mount — the state
+	// with the MOST written-but-unacked bytes, and exactly what the per-job
+	// arm below calls unsafe. Answering nil here would let one timed-out
+	// listing clear every job's Emitted bits, with the two arms disagreeing
+	// about identical evidence and the wider one winning.
+	//
+	// A nil barrier is unreachable in production, and nothing accumulates
+	// without one (noteJobBytes is inert), so it answers the empty set.
+	//
+	// COVERAGE, stated so the question does not have to be re-derived: this
+	// sweep visits OpenJobIDs — jobs holding an open file — while
+	// ClearAllEmitted iterates every resident job, so the set is always a
+	// subset. That is not an unclosed instance of #417. A resident job with no
+	// open file either never wrote anything, or had its handles closed by
+	// CloseJobHandles, which runs only on a job already at StatusVerifying;
+	// ForEachUnfinishedArticle skips a PostProc job, so its Emitted bits
+	// cannot produce a re-fetch whether they are cleared or not.
 	if app.barrier == nil {
-		return
+		return app.jobsAtRisk()
 	}
 	jobs, err := app.assembler.OpenJobIDs(ctx)
 	if err != nil {
-		app.log.Warn("checkpoint skipped, could not list jobs with open files", "err", err)
-		return
+		app.log.Warn("checkpoint skipped, could not list jobs with open files; every job "+
+			"holding unacked written bytes keeps its emitted bits", "err", err)
+		return app.jobsAtRisk()
 	}
+	var unsafe map[string]struct{}
 	perJob := budget(len(jobs))
 	for _, jobID := range jobs {
 		// Each job gets its own deadline, and that is what makes B4/R22 true
@@ -730,9 +906,15 @@ func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func
 			// wrong.
 			app.jobCheckpointHook(jobCtx)
 		}
-		app.checkpointJob(jobCtx, jobID)
+		if !app.checkpointJob(jobCtx, jobID) {
+			if unsafe == nil {
+				unsafe = make(map[string]struct{})
+			}
+			unsafe[jobID] = struct{}{}
+		}
 		cancel()
 	}
+	return unsafe
 }
 
 // ErrNotFinalized reports that a completed file's bytes on disk are not known

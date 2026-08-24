@@ -584,9 +584,19 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			return nil, false
 		}
 		if fetchCtx.Err() != nil {
-			// Context cancelled = shutdown or pause. Silently
-			// return; the article will be re-dispatched after
-			// the reload/unpause via ClearAllEmitted.
+			// Context cancelled = shutdown or pause. Silently return.
+			//
+			// Nothing needs clearing here, and the reason is worth stating
+			// because the old comment claimed the opposite: this article has
+			// no Emitted bit set. All three MarkArticleEmittedByIdx sites run
+			// at RESULT-emission time (:145, :697, :720), after the fetch —
+			// what keeps the dispatcher off an article mid-fetch is the
+			// in-flight tracker (tryDispatch's InFlightLocked guard), and
+			// handleRequest's deferred clearInFlight releases it.
+			//
+			// So the next dispatch pass re-offers this article on its own. It
+			// does not wait for ClearAllEmitted, and it is unaffected by
+			// whether its job was withheld from one (#417).
 			return nil, false
 		}
 		d.log.Warn("dial failed", "server", name, "error", err)
@@ -763,6 +773,34 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 	select {
 	case d.completions <- res:
 	case <-ctx.Done():
+		// The result is dropped, and dropping it falsifies a claim three of
+		// this function's callers make just before calling it.
+		//
+		// MarkArticleEmittedByIdx means "a result for this article is on its
+		// way to the pipeline" — it is what stops the dispatcher re-picking
+		// the article between emission and the barrier that acks it. Three
+		// callers set it and then call this function: the exhausted-try-list
+		// path (:145), the terminal-decode-error path (:697), and the ordinary
+		// success path (:720). When the send loses the race to cancellation,
+		// no result arrives, so nothing downstream ever clears that bit:
+		// ForEachUnfinishedArticle skips the article, its file never
+		// completes, and only ClearAllEmitted recovers it.
+		//
+		// That last part is what makes this the owner's job rather than the
+		// sweep's. A bulk clear cannot tell this article — abandoned, nothing
+		// written — from one whose bytes are on disk awaiting a barrier, so it
+		// clears both, and clearing the second re-fetches bytes we already
+		// have (#417). Clearing here is precise, and it costs the withheld set
+		// nothing.
+		//
+		// Unconditional because it is a no-op where no bit was set: the
+		// ErrNoArticle paths (:616, :636) and the CRC-mismatch path (:691)
+		// reach here without marking.
+		if err := d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx); err != nil &&
+			!errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
+			d.log.Warn("clear the emitted bit for a dropped result",
+				"job", req.jobID, "msgid", req.messageID, "err", err)
+		}
 	}
 }
 

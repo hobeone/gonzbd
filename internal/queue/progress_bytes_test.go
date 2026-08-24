@@ -150,7 +150,7 @@ func TestResetForReload_ReturnsFailedBytesToTheFile(t *testing.T) {
 		t.Fatalf("FailedBytes after markFailed = %d, want %d", got, want)
 	}
 
-	p.resetForReload(m, 0)
+	p.resetForReload(m, 0, true)
 	if got, want := p.files[0].FailedBytes, int64(0); got != want {
 		t.Errorf("FailedBytes after resetForReload = %d, want %d", got, want)
 	}
