@@ -94,6 +94,123 @@ func TestAttempt_HoldRejectsAnIllegalDestination(t *testing.T) {
 	}
 }
 
+// TestAttempt_BoundaryHoldsAcrossAHold pins the two-hop escape
+// TestBoundaryIsOneWay (transition_test.go) cannot see. That test enumerates
+// direct edges in legalEdges, but Production -> Waiting -> Correctness is two
+// individually legal edges — a pause into Waiting, then an unconstrained
+// resume out of it — composing into the exact edge the graph forbids
+// directly. Confirmed reachable before the fix this pins: a probe of
+// Extracting -> transition(Waiting) -> transition(Fetching) returned err=nil
+// with state=Fetching.
+func TestAttempt_BoundaryHoldsAcrossAHold(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	if err := a.transition(Waiting); err != nil {
+		t.Fatalf("transition(Waiting): %v", err)
+	}
+	if err := a.transition(Fetching); !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("transition(Fetching) after Production paused, error = %v, want ErrIllegalTransition", err)
+	}
+	if got := a.view().State; got == Fetching {
+		t.Errorf("State = %v, want NOT Fetching; Production must not resume into Correctness", got)
+	}
+}
+
+// TestAttempt_TransitionFromWaitingRequiresNext pins the other half of the
+// same fix: next is validated when hold is taken and then must be honored at
+// resume, not merely consulted for its own sake. Before this check existed,
+// hold(next=Assessing) followed by transition(Repairing) reached Repairing
+// with err=nil — the guard hold installs on next was real, but nothing
+// re-checked it one call later.
+func TestAttempt_TransitionFromWaitingRequiresNext(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.hold(Assessing, NoComputeSlot); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if err := a.transition(Repairing); !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("transition(Repairing) error = %v, want ErrIllegalTransition; next was Assessing", err)
+	}
+	if got := a.view().State; got != Waiting {
+		t.Errorf("State = %v after a rejected resume, want Waiting unchanged", got)
+	}
+	if err := a.transition(Assessing); err != nil {
+		t.Fatalf("transition(Assessing), the declared next, should succeed: %v", err)
+	}
+}
+
+// TestAttempt_HoldRejectsWhenAlreadyWaiting pins the third path into the same
+// hole: hold does not require transition through Waiting at all, so it needs
+// its own guard against being called twice. Confirmed reachable before this
+// check existed: Extracting -> hold(Finalizing) -> hold(Fetching) ->
+// transition(Fetching) succeeded, even with the transition-side next check in
+// place, because the second hold silently overwrote next before transition
+// ever saw the first one.
+func TestAttempt_HoldRejectsWhenAlreadyWaiting(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	if err := a.hold(Finalizing, NoComputeSlot); err != nil {
+		t.Fatalf("hold(Finalizing): %v", err)
+	}
+	if err := a.hold(Fetching, NoComputeSlot); !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("second hold error = %v, want ErrIllegalTransition; a waiting attempt cannot re-declare its destination", err)
+	}
+	if got := a.view().Next; got != Finalizing {
+		t.Errorf("Next = %v after a rejected second hold, want Finalizing unchanged", got)
+	}
+}
+
+// TestAttempt_HoldRejectsResumeIntoFinished pins that finish stays the sole
+// door into Finished even via a hold: without this, hold(Assessing) followed
+// by transition(Repairing) could not reach Finished directly, but nothing
+// stopped hold(Finished, ...) itself from parking an attempt with a destination
+// finish never validated.
+func TestAttempt_HoldRejectsResumeIntoFinished(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.hold(Finished, NoLease); !errors.Is(err, ErrFinishRequired) {
+		t.Errorf("hold(Finished) error = %v, want ErrFinishRequired", err)
+	}
+	if got := a.view().State; got != Fetching {
+		t.Errorf("State = %v after a rejected hold, want Fetching unchanged", got)
+	}
+}
+
+// TestAttempt_HoldRejectsResumeIntoWaiting pins that next == Waiting is
+// refused as self-referential: there is nothing to resume into.
+func TestAttempt_HoldRejectsResumeIntoWaiting(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.hold(Waiting, NoLease); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("hold(Waiting) error = %v, want ErrIllegalTransition", err)
+	}
+	if got := a.view().State; got != Fetching {
+		t.Errorf("State = %v after a rejected hold, want Fetching unchanged", got)
+	}
+}
+
+// TestAttempt_HoldRejectsAfterFinish pins that hold refuses once an attempt
+// is Finished. next is deliberately NOT Finished or Waiting (Extracting
+// instead), so this isolates hold's CanTransition(a.state, next) check from
+// the newer next == Finished / next == Waiting checks above it.
+//
+// Writing this test is what surfaced that hold used to carry a second,
+// separate CanTransition(a.state, Waiting) check ahead of this one — and
+// that it was dead: it could only ever fire when a.state == Finished, and by
+// then next == Finished was already excluded, so CanTransition(Finished,
+// next) below was always false too, for the same reason, one line down. That
+// check has been removed; this test now pins the single check that replaced
+// it, rather than a first-of-two check that never independently rejected
+// anything.
+func TestAttempt_HoldRejectsAfterFinish(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.finish(OutcomeOK, testClock()); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if err := a.hold(Extracting, NoComputeSlot); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("hold(Extracting) after finish, error = %v, want ErrIllegalTransition", err)
+	}
+}
+
 // TestAttempt_TransitionRejectsFinished pins that finish is the only door
 // into Finished. Before this guard existed, transition(Finished, now) set
 // state to Finished without ever assigning an Outcome — confirmed
@@ -110,8 +227,8 @@ func TestAttempt_TransitionRejectsFinished(t *testing.T) {
 	if got := a.view().State; got != Fetching {
 		t.Errorf("State = %v after a rejected transition, want Fetching unchanged", got)
 	}
-	if a.view().State == Finished && a.isOpen() {
-		t.Fatal("state == Finished but isOpen() == true; outcome and state disagree")
+	if !a.isOpen() {
+		t.Error("isOpen() = false after a rejected transition, want true; the attempt never finished")
 	}
 }
 
@@ -175,6 +292,25 @@ func TestAttempt_FinishRejectsPending(t *testing.T) {
 	}
 }
 
+// TestAttempt_FinishClearsNextAndReason pins that finish clears next and
+// reason along with activity. Before this fix, a cancel taken while paused
+// left them at the hold's stale values — {State:Finished, Next:Assessing,
+// Reason:UserPaused} — contradicting StateView's contract that Next and
+// Reason are meaningful only when State is Waiting.
+func TestAttempt_FinishClearsNextAndReason(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.hold(Assessing, UserPaused); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if err := a.finish(OutcomeCancelled, testClock()); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	v := a.view()
+	if v.Next != Waiting || v.Reason != NoLease {
+		t.Errorf("view = %+v after finish; want Next=Waiting Reason=NoLease, not the stale hold values", v)
+	}
+}
+
 // TestAttempt_FinishRejectsUnrecognizedOutcome pins the resolution to a
 // question deferred from Task 5: Outcome.IsSettled() reports true for any
 // value other than OutcomePending, including one no const declares
@@ -192,20 +328,60 @@ func TestAttempt_FinishRejectsUnrecognizedOutcome(t *testing.T) {
 
 // TestAttempt_FinishSucceedsFromAnyOpenState pins that finish reaches
 // Finished from every non-terminal state reachable via legal transitions, not
-// only from Fetching — needed because finish() has no CanTransition(state,
+// only from one — needed because finish() has no CanTransition(state,
 // Finished) guard of its own: CanTransition(s, Finished) is true for every s
 // in AllStates() (legalEdges gives every non-terminal state a cancel edge),
 // so such a guard could never reject anything and was removed rather than
-// kept as an inert check.
+// kept as an inert check. This table IS the coverage that removal relies on,
+// so it walks all six non-terminal states rather than one — Waiting is the
+// boundary case a single-state version of this test previously omitted, and
+// is reached via hold rather than transition since transition cannot produce
+// it directly from Fetching.
 func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
-	a := newAttempt(testClock())
-	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
-	if err := a.finish(OutcomeOK, testClock()); err != nil {
-		t.Fatalf("finish from Extracting: %v", err)
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, a *Attempt)
+	}{
+		{"Fetching", func(t *testing.T, a *Attempt) {}},
+		{"Waiting", func(t *testing.T, a *Attempt) {
+			if err := a.hold(Assessing, NoComputeSlot); err != nil {
+				t.Fatalf("hold: %v", err)
+			}
+		}},
+		{"Assessing", func(t *testing.T, a *Attempt) {
+			mustTransition(t, a, Assessing)
+		}},
+		{"Repairing", func(t *testing.T, a *Attempt) {
+			mustTransition(t, a, Assessing)
+			mustTransition(t, a, Repairing)
+		}},
+		{"Extracting", func(t *testing.T, a *Attempt) {
+			mustTransition(t, a, Assessing)
+			mustTransition(t, a, Extracting)
+		}},
+		{"Finalizing", func(t *testing.T, a *Attempt) {
+			mustTransition(t, a, Assessing)
+			mustTransition(t, a, Extracting)
+			mustTransition(t, a, Finalizing)
+		}},
 	}
-	if got := a.view().State; got != Finished {
-		t.Errorf("State = %v, want Finished", got)
+	// AllStates() has one terminal member (Finished); every other member
+	// must appear above, or this table stops being the coverage the removed
+	// guard relies on without anyone noticing.
+	if want := len(AllStates()) - 1; len(tests) != want {
+		t.Fatalf("table has %d cases, want %d (len(AllStates()) - 1, excluding Finished)", len(tests), want)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newAttempt(testClock())
+			tt.setup(t, &a)
+			if err := a.finish(OutcomeOK, testClock()); err != nil {
+				t.Fatalf("finish from %s: %v", tt.name, err)
+			}
+			if got := a.view().State; got != Finished {
+				t.Errorf("State = %v, want Finished", got)
+			}
+		})
 	}
 }
 

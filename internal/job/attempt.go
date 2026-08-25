@@ -12,12 +12,14 @@ import (
 // second assignment is exactly the mutation the design exists to prevent.
 var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
-// ErrFinishRequired is returned when transition is asked to reach Finished.
-// finish is the only door into that state: it is the only mutator that
-// assigns Outcome, so it must also be the only mutator that can leave an
-// attempt in Finished — otherwise an attempt could reach Finished still
-// carrying OutcomePending, and isOpen() would report an attempt open when
-// nothing is ever going to close it.
+// ErrFinishRequired is returned when transition is asked to reach Finished,
+// or hold is asked to resume into it. finish is the only door into that
+// state: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates every
+// assignment to the unexported outcome field across this package's non-test
+// sources and asserts finish is the only one, so this sentence is checked
+// by a test rather than trusted as prose — otherwise an attempt could reach
+// Finished still carrying OutcomePending, and isOpen() would report an
+// attempt open when nothing is ever going to close it.
 var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call finish instead")
 
 // Attempt is one run of a job through the machine. The state machine lives
@@ -68,12 +70,23 @@ func (a *Attempt) view() StateView {
 // not contain. Activity is cleared, because it describes the state being left:
 // carrying it forward would render a job as "repairing" while it extracts.
 //
-// transition cannot reach Finished — see ErrFinishRequired. It therefore
-// takes no `now`: the only thing `now` was ever used for was timestamping an
-// arrival at Finished, and finish already takes its own.
+// transition cannot reach Finished — see ErrFinishRequired.
+//
+// From Waiting, the only legal `to` is a.next. The destination was decided
+// when hold was taken, and CanTransition(Waiting, to) alone cannot see that:
+// Waiting's legalEdges accept resuming into any non-terminal state, which is
+// what let Production and Correctness compose two individually legal edges —
+// a pause into Waiting, then an unconstrained resume out of it — into the
+// single edge legalEdges forbids directly (Extracting -> Waiting -> Fetching
+// was reachable before this check existed). Requiring to == a.next is what
+// keeps Waiting a non-branching node: it carries the one decision Assessing
+// already made, rather than making a second decision of its own.
 func (a *Attempt) transition(to State) error {
 	if to == Finished {
 		return ErrFinishRequired
+	}
+	if a.state == Waiting && to != a.next {
+		return illegalTransition(a.state, to)
 	}
 	if !CanTransition(a.state, to) {
 		return illegalTransition(a.state, to)
@@ -99,10 +112,40 @@ func (a *Attempt) transition(to State) error {
 // (e.g. Fetching parking with next=Repairing, which no direct Fetching edge
 // permits). Validating against a.state instead makes a hold's destination
 // exactly what the un-paused machine would have allowed.
+//
+// hold refuses when the attempt is already Waiting: the destination was
+// decided by the first hold that parked it there, and a second hold would
+// let that destination be re-declared instead of merely resumed from
+// (Extracting -> hold(Finalizing) -> hold(Fetching) -> transition(Fetching)
+// was reachable before this check existed, even with transition's a.next
+// check in place). The reason a job is waiting may legitimately change while
+// it waits (NoComputeSlot -> GlobalPause); the destination may not, and this
+// method only ever assigns both together — a reason-only update, if one is
+// ever needed, is a different mutator with its own owner, not a second
+// meaning for hold.
+//
+// hold also refuses next == Finished (finish is the sole door, see
+// ErrFinishRequired: hold(Assessing) followed by transition(Repairing) must
+// not be able to reach Finished by a route finish never validated) and
+// next == Waiting (self-referential — there is nothing to resume into).
 func (a *Attempt) hold(next State, r WaitReason) error {
-	if !CanTransition(a.state, Waiting) {
-		return illegalTransition(a.state, Waiting)
+	if a.state == Waiting {
+		return fmt.Errorf("%w: already waiting; hold cannot re-declare the destination once held", ErrIllegalTransition)
 	}
+	if next == Finished {
+		return ErrFinishRequired
+	}
+	if next == Waiting {
+		return fmt.Errorf("%w: cannot hold with next=Waiting", ErrIllegalTransition)
+	}
+	// No separate CanTransition(a.state, Waiting) check: it can only ever
+	// fire when a.state == Finished (every non-terminal state has a pause
+	// edge to Waiting), and next == Finished is already excluded above, so
+	// CanTransition(Finished, next) below is false for every next that
+	// reaches this line — the same rejection, from the same cause, one line
+	// down. A dedicated check here would never independently reject
+	// anything; TestAttempt_HoldRejectsAfterFinish pins that the remaining
+	// check alone still refuses hold once an attempt is Finished.
 	if !CanTransition(a.state, next) {
 		return illegalTransition(a.state, next)
 	}
@@ -129,6 +172,11 @@ func (a *Attempt) setActivity(x Activity) { a.activity = x }
 // is a zero-value check rather than a range check. Recording an unrecognized
 // verdict would be a caller bug, not a legitimate outcome the machine
 // produces, so it is rejected here rather than persisted.
+//
+// next and reason are cleared alongside activity: StateView documents all
+// three as meaningful only when State is Waiting, and without this a cancel
+// taken while paused would leave a Finished attempt reporting the stale hold
+// it was cancelled out of (e.g. Next=Assessing, Reason=UserPaused).
 func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !o.IsSettled() {
 		return fmt.Errorf("job: cannot finish an attempt with outcome %s", o)
@@ -141,6 +189,8 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	}
 	a.state = Finished
 	a.activity = ActNone
+	a.next = Waiting
+	a.reason = NoLease
 	a.outcome = o
 	a.ended = now
 	return nil
