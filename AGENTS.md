@@ -12,12 +12,12 @@ the automated Usenet binary newsreader. It targets fresh installations and is
 implementation lives at `../sabnzbd/`.
 
 - **Module path:** `github.com/hobeone/gonzbd`
-- **Go version:** 1.26.6 (toolchain 1.26.6)
+- **Go version:** 1.27.0 (toolchain 1.27.0)
 - **Status:** Core backend download pipeline and legacy mode-dispatch API
   (`/api?mode=...`) are functional. The Glitter web UI port (Phase 12) is the
   current active focus.
 - **Main technologies:**
-    - **Language:** Go 1.26.6+
+    - **Language:** Go 1.27.0+
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
     - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for both history
       and queue state; gzip-JSON only for per-job manifests
