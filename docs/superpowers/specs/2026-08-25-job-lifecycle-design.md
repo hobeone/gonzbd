@@ -1,8 +1,9 @@
 # Job Lifecycle — Design
 
-**Status:** Direction settled in discussion, and the six questions this
-document opened are now decided (§14). It is the argument the implementation
-plan is written against. Nothing here has been built.
+**Status:** Direction settled in discussion, and eight decisions are recorded
+(§14) — the six questions this document originally opened, plus two that arose
+from settling them. It is the argument the implementation plan is written
+against. Nothing here has been built.
 
 **Scope:** Replaces the job state model in `internal/queue` and the ownership
 boundaries between `app`, `queue`, `downloader`, `durability` and `postproc`.
@@ -237,6 +238,31 @@ own answer:
 - **"Never started" is exact.** `len(attempts) == 0`, rather than a predicate
   over progress. No figure derived from bytes or durable runs can distinguish
   *did not start* from *started and got nowhere*, and those differ.
+
+**The list is unbounded** (D7). Attempts are small and the growth case is
+narrow — a job an automation tool retries on a schedule. Not worth a retention
+policy before there is evidence one is needed; the implementation carries a
+comment at the field recording the case and the two obvious remedies (cap the
+list, or sweep with history retention), so the next person to hit it does not
+have to rediscover the shape.
+
+### 3.1.1 Retry has exactly one meaning
+
+> **A retry resumes this job, re-fetching only what previously failed. There is
+> no full re-fetch.** A user who wants every byte re-downloaded adds the NZB
+> again (D8).
+
+This is worth stating as a rule rather than leaving as a default, because it
+removes a mode. There is no `retry --all` flag, no second code path, and no
+question at any call site about which kind of retry is in progress. It also
+makes the durability retention on a failed job unconditionally correct: retry
+always wants those records, so there is no case in which keeping them is
+wasted.
+
+Re-adding is genuinely a different operation and behaves like one — a new job
+ID, a fresh working directory via `UniqueName`, no inherited durability record.
+It will trip duplicate detection against the original, which is correct: the
+user is told, and proceeds if they meant it.
 
 ### 3.2 Policy replaces the PP integer
 
@@ -706,9 +732,10 @@ Named here so they are decisions rather than omissions.
 
 ## 14. Decisions
 
-The six questions this document opened are settled. Recorded with the reason,
-because the reason is what a later reader needs in order to reopen one
-honestly.
+D1–D6 are the questions this document originally opened. D7 and D8 arose from
+settling them and are recorded here rather than in a follow-up, so the whole
+decision set reads in one place. Each carries its reason, because the reason is
+what a later reader needs in order to reopen one honestly.
 
 | | Question | Decision | Stated at |
 |---|---|---|---|
@@ -718,18 +745,16 @@ honestly.
 | **D4** | PP levels 0–3 | **Resolve to a `Policy` at ingestion.** The integer does not exist past `App`; every state runs at every policy. | §3.2 |
 | **D5** | Where the `Assessor` lives | **`internal/par2`,** which already owns both verification methods over value types. Guardrail: value inputs only. | §7.3 |
 | **D6** | Compute-slot granularity | **One pool.** The long-running-script cost is named and deliberately unsolved. | §8.1 |
+| **D7** | `Attempt` retention | **Unbounded.** The growth case is narrow and the remedies are cheap; the field carries a comment rather than a policy. | §3.1 |
+| **D8** | Full re-fetch | **Not a retry mode.** Retry re-fetches only what failed; re-adding the NZB is how a user asks for everything. | §3.1.1 |
 
 ### 14.1 What is still genuinely open
 
-1. **`Attempt` retention.** Attempts are small, but a job retried nightly by an
-   automation tool accumulates them indefinitely. Cap the list, or let history
-   retention sweep them with the job?
-2. **What a retry re-fetches.** D2 keeps the durability record, so a retry
-   re-fetches only previously-failed articles. Should a user be able to demand
-   a full re-fetch — and if so, is that a different command or a flag on retry?
-3. **`Waiting` and priority changes.** Reordering a job that is `Waiting{Next:
-   Repairing}` is meaningless (it is mid-lifecycle and holds a lease). Should
-   reorder reject, silently no-op, or apply only to the fetch ordering?
+1. **`Waiting` and priority changes.** Reordering a job that is `Waiting{Next:
+   Repairing}` is meaningless — it is mid-lifecycle and holds a lease, so
+   there is no fetch ordering for it to take a position in. Should reorder
+   reject, silently no-op, or apply only to the fetch ordering and be a no-op
+   for everything else?
 
 ---
 
