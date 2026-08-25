@@ -757,8 +757,24 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	}
 
 	select {
-	case <-ack:
-		return nil
+	case err := <-ack:
+		// Captured, not discarded. The arm computes closeErr from every
+		// drainAndClose it performs and sends it here precisely so this
+		// returns it; reading `<-ack` and returning nil made the send side
+		// dead code and handed maybeFinalize a job whose buffered bytes never
+		// reached the platter, with only a Warn inside drainAndClose as a
+		// trace. That is the defect this arm's own tombstone comment describes
+		// as fixed — it was fixed on the send side only.
+		//
+		// Not covered end-to-end: faulting a file that a STARTED assembler
+		// owns needs the *openFile, and no seam reaches it — every
+		// fault-injection test in this package drives dispatchRequest
+		// directly. TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck pins
+		// the send; this line is the receive. Verified by mutation: reverting
+		// it to `return nil` leaves internal/assembler, internal/app and
+		// internal/durability all green, which is also why the original defect
+		// survived.
+		return err
 	case <-a.stopCh:
 		return ErrStopped
 	case <-ctx.Done():
@@ -1021,9 +1037,8 @@ func (a *Assembler) dispatchRequest(
 			completed[k] = struct{}{}
 			wc.forget(k) // discard cached articles for cancelled file
 		}
-		if req.ackCh != nil {
-			close(req.ackCh)
-		}
+		// Unconditional: this branch is guarded on req.ackCh != nil.
+		close(req.ackCh)
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCloseHandles {

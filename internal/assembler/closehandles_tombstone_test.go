@@ -63,12 +63,20 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 	}
 }
 
-// TestCloseJobHandles_ReportsACloseTimeFailureToItsCaller is the other half.
-// The arm computed the error and acked with a bare close, so CloseJobHandles
-// returned nil regardless and maybeFinalize handed the job to par2, unrar and
-// cleanup over a file whose buffered bytes never reached the platter. The only
-// trace was a Warn inside drainAndClose.
-func TestCloseJobHandles_ReportsACloseTimeFailureToItsCaller(t *testing.T) {
+// TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck is the other half.
+// The arm once acked with a bare close, so the fault it had just computed was
+// never sent and maybeFinalize handed the job to par2, unrar and cleanup over
+// a file whose buffered bytes never reached the platter. The only trace was a
+// Warn inside drainAndClose.
+//
+// It pins the SEND, and only the send: it drives dispatchRequest directly and
+// reads the ack itself, so it never calls CloseJobHandles. Under its previous
+// name — ReportsACloseTimeFailureToItsCaller — that read as end-to-end
+// coverage, and it was not: the receiver discarded the value with
+// `case <-ack: return nil` for as long as this test was green. The receive
+// half is one line in CloseJobHandles, and the reason it has no test of its
+// own is recorded there.
+func TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
