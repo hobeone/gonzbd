@@ -1,9 +1,12 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -103,5 +106,138 @@ func TestRemoveJob_NilDownloader(t *testing.T) {
 
 	if err := a.RemoveJob(t.Context(), job.ID, false); err != nil {
 		t.Fatalf("RemoveJob with nil downloader: %v", err)
+	}
+}
+
+// errStoreDeleteRefused is the injected store-level failure. A distinct
+// sentinel rather than a bare errors.New so the assertion below can tell
+// RemoveJob's propagated error apart from any other failure on the path.
+var errStoreDeleteRefused = errors.New("store refused the delete")
+
+// removeRefusingStore fails Remove and delegates everything else to a real
+// store, modelling the store-level delete failure RemoveJob has to survive
+// without having already destroyed the job's files.
+//
+// Remove is the only method overridden: the fixture needs Add, List and
+// IsPaused to behave normally so queue.Load and queue.Add work, and the
+// embedded interface supplies them.
+type removeRefusingStore struct {
+	queue.Store
+}
+
+func (removeRefusingStore) Remove(context.Context, string) error {
+	return errStoreDeleteRefused
+}
+
+// waitForFile blocks until path exists, failing the test if it does not
+// appear. The assembler opens a target file on its own goroutine, so the
+// alternative — stat once, immediately after WriteArticle returns — races
+// the worker and fails on a busy machine.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fixture never created the open file it is about: %s", path)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk pins the ordering
+// #376 is about: the step that can fail must run before the step that cannot
+// be undone.
+//
+// Before the fix RemoveJob ran assembler.CancelJob first, whose control arm
+// unlinks every file it currently holds open for the job, and only then
+// called queue.Remove. A store-delete failure therefore returned an error
+// having already deleted the job's bytes, leaving the job resident and still
+// dispatchable with nothing on disk to write into.
+//
+// The assertion that discriminates is the os.Stat on the file: the job
+// staying resident is true both before and after the fix, because the store
+// delete fails either way. Only the file's survival tells them apart.
+func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
+	application, repo, adminDir := newLifecycleTestApp(t)
+	ctx := t.Context()
+
+	// New applies its option funcs before it builds the queue, so a store
+	// substitution cannot ride in as an option — the queue is replaced after
+	// construction instead. pipeline holds its own *queue.Queue pointer, so
+	// both are swapped together; leaving them pointing at different queues
+	// would make the fixture's write path and RemoveJob disagree about which
+	// jobs exist.
+	stateDir := filepath.Join(adminDir, "queue")
+	refusing := removeRefusingStore{Store: queue.NewSQLiteStore(repo.DB(), stateDir, repo)}
+	q, err := queue.Load(stateDir, queue.WithStore(refusing), queue.WithLogger(application.log))
+	if err != nil {
+		t.Fatalf("queue.Load: %v", err)
+	}
+	application.queue = q
+	application.pipeline.queue = q
+
+	if err := application.assembler.Start(ctx); err != nil {
+		t.Fatalf("assembler.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.assembler.Stop() })
+
+	// Two articles, of which the fixture writes one. A file whose every
+	// article has landed is finalized and leaves the assembler's open map,
+	// and CancelJob only unlinks what is still open — so a single-article
+	// file would make this test pass for the wrong reason, asserting the
+	// survival of a file nothing was ever going to delete.
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject: "held-open.bin",
+		Bytes:   200,
+		Articles: []nzb.Article{
+			{ID: "a0@t", Bytes: 100, Number: 1},
+			{ID: "a1@t", Bytes: 100, Number: 2},
+		},
+	}}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "refused"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := application.queue.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := application.pipeline.registerFile(job.ID, 0); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	info, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	if err != nil {
+		t.Fatalf("resolveFileInfo: %v", err)
+	}
+	ref, req := assemblerWrite(job.ID, 0, 0, 0)
+	if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+	// WriteArticle only enqueues; the worker opens the target file
+	// asynchronously. Wait for it rather than assuming, or the test would
+	// pass vacuously — asserting the survival of a file that was never
+	// created. openTargetFile creates it with O_CREATE before any caching,
+	// so its existence is also what says the entry is in the assembler's
+	// open map and therefore reachable by CancelJob.
+	waitForFile(t, info.Path)
+
+	// deleteFiles=false: the whole-directory sweep is not what is under test,
+	// and it is the API's default besides.
+	err = application.RemoveJob(ctx, job.ID, false)
+	if !errors.Is(err, errStoreDeleteRefused) {
+		t.Fatalf("RemoveJob err = %v, want it to propagate %v — the fixture did not "+
+			"reach the failure it exists to create", err, errStoreDeleteRefused)
+	}
+	if application.queue.SnapshotJob(job.ID) == nil {
+		t.Error("the job left the queue although its store delete failed; " +
+			"the error RemoveJob returned would be describing a removal that happened")
+	}
+	if _, err := os.Stat(info.Path); err != nil {
+		t.Errorf("the job's file is gone after a failed RemoveJob (stat: %v). The job is "+
+			"still resident and still dispatchable, so the downloader will write into a "+
+			"file the assembler has to recreate from zero, against progress counting "+
+			"bytes that no longer exist", err)
 	}
 }

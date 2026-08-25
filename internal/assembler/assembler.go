@@ -937,16 +937,18 @@ func (a *Assembler) dispatchRequest(
 			// kind of thing, so it is reported rather than discarded silently.
 			//
 			// Dropped, not routed. The job is being torn down: its files are
-			// deleted below, its cache forgotten, and RemoveJob ordinarily
-			// removes it from the queue next. Returning these articles to
-			// Outstanding would re-dispatch work for a job that is going away.
+			// deleted below, its cache forgotten, and it has already left the
+			// queue. Returning these articles to Outstanding would re-dispatch
+			// work for a job that is going away.
 			//
-			// "Ordinarily" is exact rather than hedging. RemoveJob can return
-			// early when the queue's store delete fails, leaving the job
-			// resident with its files already gone (#376), so the teardown
-			// this drop assumes is not unconditional. It holds anyway only
-			// because the set is empty — see below — which is why this is a
-			// tripwire and not a disposition anyone should rely on.
+			// "Already" is exact rather than hedging. RemoveJob is the only
+			// production caller of CancelJob — `git grep -n 'CancelJob('
+			// -- '*.go'` outside tests returns this arm's caller at
+			// app.go:737 and the declaration at :548, nothing else — and
+			// since #376 it removes the job from the queue BEFORE calling
+			// in here, returning early if that fails. So a job reaching this
+			// arm has left the queue, where previously it could still be
+			// resident with its files already deleted.
 			//
 			// The set is empty on every reachable path — see FileWriter.Close
 			// — so this branch is a tripwire, not a handler. If it ever fires,
