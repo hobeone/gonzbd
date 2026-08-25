@@ -419,7 +419,7 @@ func TestControlOps_CancelledContextBeatsEveryOtherOutcome(t *testing.T) {
 
 	for name, call := range map[string]func(*Assembler) error{
 		"CloseJobHandles": func(a *Assembler) error { return a.CloseJobHandles(ctx, "job1") },
-		"CancelJob":       func(a *Assembler) error { return a.CancelJob(ctx, "job1") },
+		"CancelJob":       func(a *Assembler) error { return a.CancelJob(ctx, "job1", DeleteFiles) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			// Never started, so ErrNotStarted is the answer if the ctx check

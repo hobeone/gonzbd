@@ -1153,7 +1153,7 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 	}
 
 	cancelDone := make(chan error, 1)
-	go func() { cancelDone <- a.CancelJob(t.Context(), "target") }()
+	go func() { cancelDone <- a.CancelJob(t.Context(), "target", DeleteFiles) }()
 
 	// Negative-observation window: the worker cannot have reached the
 	// cancel control message yet -- it's deterministically still blocked
@@ -1258,7 +1258,7 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 	if err := writeArticle(t.Context(), a, req); !errors.Is(err, ErrStopped) {
 		t.Errorf("WriteArticle after Stop() = %v, want ErrStopped", err)
 	}
-	if err := a.CancelJob(t.Context(), "job1"); !errors.Is(err, ErrStopped) {
+	if err := a.CancelJob(t.Context(), "job1", DeleteFiles); !errors.Is(err, ErrStopped) {
 		t.Errorf("CancelJob after Stop() = %v, want ErrStopped", err)
 	}
 }

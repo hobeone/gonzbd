@@ -694,7 +694,20 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	return nil
 }
 
-// RemoveJob cancels and removes a job from the queue, optionally deleting its download directory.
+// RemoveJob cancels and removes a job from the queue.
+//
+// deleteFiles says what happens to the bytes already on disk, and it governs
+// every one of them: the whole-directory sweep at the end AND the assembler's
+// per-file unlink of whatever it still holds open. Before #433 it gated only
+// the sweep, so a caller asking to keep the job's data still lost the file
+// that was mid-write — the one nothing else holds a copy of.
+//
+// What deleteFiles=false leaves behind is a partial: files preallocated to
+// their expected size with holes where articles never arrived, in a directory
+// nothing will reclaim, with no manifest or durable-run record left to
+// interpret them (see deleteJobDurability below). That is the meaning of
+// asking to keep a removed job's bytes — the caller wanted the data, not a
+// resumable job.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
 	snap := app.queue.SnapshotJob(id)
 	if snap == nil {
@@ -752,7 +765,16 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	//
 	// It must still precede the deleteFiles sweep below: that ordering is
 	// what 910d160d established, and it is unaffected by the swap above.
-	if err := app.assembler.CancelJob(ctx, id); err != nil {
+	//
+	// The disposition is this function's own deleteFiles, which is what makes
+	// the flag mean one thing rather than two (#433). Under KeepFiles the
+	// handles are still closed here, so the ordering above is unchanged and
+	// still bought — it is only the unlink that is suppressed.
+	disposition := assembler.KeepFiles
+	if deleteFiles {
+		disposition = assembler.DeleteFiles
+	}
+	if err := app.assembler.CancelJob(ctx, id, disposition); err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
 			"job", id, "error", err)
 	}

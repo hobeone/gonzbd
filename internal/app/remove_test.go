@@ -168,54 +168,20 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 	application.queue = q
 	application.pipeline.queue = q
 
-	if err := application.assembler.Start(ctx); err != nil {
-		t.Fatalf("assembler.Start: %v", err)
-	}
-	t.Cleanup(func() { _ = application.assembler.Stop() })
+	job, path := removeJobFixture(t, application, "refused")
 
-	// Two articles, of which the fixture writes one, so the job is
-	// mid-download rather than finished — the state a delete actually
-	// interrupts.
+	// deleteFiles=TRUE, and that is load-bearing rather than incidental.
 	//
-	// It is NOT what keeps the file in the assembler's open map. A completed
-	// file's handle is retained too: OnFileComplete's contract leaves it open
-	// until CloseFile. Both production callers of CloseFile — `git grep -n
-	// 'CloseFile(' -- '*.go'` outside tests returns finalizeCompletedFile's
-	// defer at durability.go:1007 and the stall retry at stall.go:542 — sit
-	// behind goroutines that only Start launches, and this fixture never
-	// calls Start. So the entry would be in open either way, and one article
-	// would pin the defect just as well.
-	parsed := &nzb.NZB{Files: []nzb.File{{
-		Subject: "held-open.bin",
-		Bytes:   200,
-		Articles: []nzb.Article{
-			{ID: "a0@t", Bytes: 100, Number: 1},
-			{ID: "a1@t", Bytes: 100, Number: 2},
-		},
-	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "refused"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := application.queue.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	// registerFile, write, and block until the worker has actually opened the
-	// file. The waiting matters: WriteArticle only enqueues, so statting the
-	// path straight after it races the worker, and a test that ran ahead of
-	// the open would assert the survival of a file that was never created.
-	// writeFixtureArticle waits on the assembler's own view of which files
-	// are open, which is the condition this test needs — CancelJob unlinks
-	// what is in that map and nothing else.
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	info, err := application.pipeline.resolveFileInfo(job.ID, 0)
-	if err != nil {
-		t.Fatalf("resolveFileInfo: %v", err)
-	}
-
-	// deleteFiles=false: the whole-directory sweep is not what is under test,
-	// and it is the API's default besides.
-	err = application.RemoveJob(ctx, job.ID, false)
+	// This test pins an ORDERING: queue.Remove must precede the assembler
+	// cancel, so a store-delete failure returns with the job's bytes intact.
+	// It can only detect a violation if the cancel is destructive when it
+	// runs, and since #433 that is exactly what deleteFiles selects. Passing
+	// false would make the cancel keep the file, the assertion below would
+	// hold whatever the order, and the pin would be silently gone.
+	//
+	// The sweep this also enables is not reached: RemoveJob returns at
+	// queue.Remove, well above it.
+	err = application.RemoveJob(ctx, job.ID, true)
 	if !errors.Is(err, errStoreDeleteRefused) {
 		t.Fatalf("RemoveJob err = %v, want it to propagate %v — the fixture did not "+
 			"reach the failure it exists to create", err, errStoreDeleteRefused)
@@ -224,10 +190,111 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 		t.Error("the job left the queue although its store delete failed; " +
 			"the error RemoveJob returned would be describing a removal that happened")
 	}
-	if _, err := os.Stat(info.Path); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		t.Errorf("the job's file is gone after a failed RemoveJob (stat: %v). The job is "+
 			"still resident and still dispatchable, so the downloader will write into a "+
 			"file the assembler has to recreate from zero, against progress counting "+
 			"bytes that no longer exist", err)
+	}
+}
+
+// removeJobFixture adds a two-article job whose single file the assembler is
+// holding open, and returns the job with the resolved path of that file.
+//
+// Two articles of which one is written, so the file is mid-download rather
+// than finished — the state a removal actually interrupts.
+//
+// That is realism, not the mechanism. What keeps the file in the assembler's
+// open map is that nothing has closed it: a FINISHED file's handle is retained
+// too, because OnFileComplete's contract leaves it open until CloseFile, and
+// both production callers of CloseFile — `git grep -n 'CloseFile(' -- '*.go'`
+// outside tests returns finalizeCompletedFile's defer at durability.go and the
+// stall retry at stall.go — sit behind goroutines that only Application.Start
+// launches, which these tests never call. So one article would serve equally.
+//
+// The path must be resolved before RemoveJob runs: RemoveJob's
+// pipeline.forgetJob drops the cached FileInfo it comes from.
+func removeJobFixture(t *testing.T, application *Application, name string) (*queue.Job, string) {
+	t.Helper()
+
+	if err := application.assembler.Start(t.Context()); err != nil {
+		t.Fatalf("assembler.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.assembler.Stop() })
+
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject: name + ".bin",
+		Bytes:   200,
+		Articles: []nzb.Article{
+			{ID: name + "0@t", Bytes: 100, Number: 1},
+			{ID: name + "1@t", Bytes: 100, Number: 2},
+		},
+	}}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := application.queue.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Blocks until the assembler's own view says the file is open, rather
+	// than statting the path — the open map is the set the cancel arm acts
+	// on, so it is the condition these tests actually depend on.
+	writeFixtureArticle(t, application, job.ID, 0, 0)
+	info, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	if err != nil {
+		t.Fatalf("resolveFileInfo: %v", err)
+	}
+	return job, info.Path
+}
+
+// TestRemoveJob_KeepingFilesLeavesAFileTheAssemblerHoldsOpen pins #433.
+//
+// deleteFiles=false gates exactly one step of RemoveJob — the whole-directory
+// sweep at the end. The assembler cancel that runs before it unlinked every
+// file it held open for the job regardless of the flag, so a caller asking to
+// keep the job's bytes got the in-flight file destroyed anyway.
+//
+// The os.Stat is the assertion that discriminates. The job leaves the queue
+// on both the fixed and the unfixed code, so only the file's survival tells
+// them apart.
+func TestRemoveJob_KeepingFilesLeavesAFileTheAssemblerHoldsOpen(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	job, path := removeJobFixture(t, application, "kept")
+
+	if err := application.RemoveJob(t.Context(), job.ID, false); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the job's in-flight file is gone after RemoveJob(deleteFiles=false) "+
+			"(stat: %v). The caller asked to keep the job's bytes and the only file "+
+			"still being written was unlinked anyway, which is the one whose bytes "+
+			"nothing else holds a copy of", err)
+	}
+}
+
+// TestRemoveJob_DeletingFilesRemovesAFileTheAssemblerHoldsOpen is the
+// companion to the test above, and pins the user-visible outcome of
+// deleteFiles=true: the bytes are gone.
+//
+// It deliberately does NOT pin the assembler's own unlink, and cannot —
+// RemoveJob's whole-directory sweep removes the file whatever the cancel arm
+// did, so neutering that unlink entirely leaves this green. Measured, not
+// assumed. TestCancelJob_ClosesOpenFileHandles is what pins the arm, at the
+// layer where the sweep is not in the way.
+//
+// What this covers instead is the pair: that fixing #433 did not quietly
+// invert the true case while making the false case work.
+func TestRemoveJob_DeletingFilesRemovesAFileTheAssemblerHoldsOpen(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	job, path := removeJobFixture(t, application, "swept")
+
+	if err := application.RemoveJob(t.Context(), job.ID, true); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the job's in-flight file survives RemoveJob(deleteFiles=true) "+
+			"(stat err: %v, want IsNotExist). The caller asked for the job's bytes "+
+			"to be removed", err)
 	}
 }

@@ -867,13 +867,24 @@ func (w *FileWriter) Truncate(n int64) error {
 // ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
 // life of the process and only a restart's ClearAllEmitted recovers it.
 //
-// The set is empty at both call sites today, and provably so: every producer
-// of w.faulted is drained before the worker returns to its select loop. This
-// return value does not fix a leak. It converts that emptiness from a property
-// that has to be re-argued across the whole file into one the compiler
-// restates at each call site — the same reason takeFaulted is a take and not a
-// read. A caller that adds a new path into Close now has to say what happens
-// to the articles, instead of silently dropping them.
+// There are two call sites — `grep -n 'w\.Close()' internal/assembler/*.go`
+// outside tests returns the cancel arm and drainAndClose — and the set is
+// empty at both whenever every producer of w.faulted has been drained before
+// the worker returns to its select loop, which is the ordinary case.
+//
+// One path leaves it non-empty on purpose. The cancel arm's KeepFiles branch
+// calls Drain, whose error path calls w.fail on everything it did not attempt,
+// and then deliberately skips the releaseFaulted that would empty the set
+// again — because routing those articles would re-dispatch work for a job
+// that has left the queue. So a non-empty set there is expected rather than a
+// defect, and that arm distinguishes the two cases by whether the drain
+// failed.
+//
+// This return value does not fix a leak. It converts the emptiness from a
+// property that has to be re-argued across the whole file into one the
+// compiler restates at each call site — the same reason takeFaulted is a take
+// and not a read. A caller that adds a new path into Close now has to say what
+// happens to the articles, instead of silently dropping them.
 //
 // Taken rather than read, on takeFaulted's terms: each set must be routed
 // exactly once, and reporting one twice would clear an Emitted bit a later
