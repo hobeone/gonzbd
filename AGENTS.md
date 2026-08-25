@@ -728,7 +728,7 @@ runner's wall-clock time.
 What this means in practice, for agents and humans alike:
 
 - **Do not wait for CI, poll for checks, or run `/watch-ci` on this repo.** A
-  PR whose only check is Security Scan is in the expected state.
+  PR whose only checks are Security Scan and CodeQL is in the expected state.
 - **A PR with no CI run is not broken, not stuck, and not missing a step.** Do
   not investigate it, do not re-push to "trigger" it, and do not ask whether it
   is safe to proceed — it is.
@@ -739,6 +739,20 @@ What this means in practice, for agents and humans alike:
   no other enforcement point.
 - **`security.yml` still triggers on `push` and `pull_request`**, plus a weekly
   cron. It is unaffected by any of the above, and a failure there is real.
+- **`codeql.yml` does too**, on the same two events plus a weekly cron, and a
+  failure there is real for the same reason. It replaced GitHub's default
+  code-scanning setup, which could not analyse Go at all: the extractor builds
+  with `GOTOOLCHAIN=local`, so it used the runner image's pre-installed Go and
+  failed against `go.mod`'s floor from the 1.27 bump onwards. That surfaced as
+  a failing `Analyze (go)` check with no findings — a startup error, which
+  reads as "nothing to report" and actually meant "did not run".
+
+  The general lesson outlives this instance: **raising the floor in `go.mod`
+  can silently disable any tool that pins its own toolchain**, and such a tool
+  fails by not starting rather than by reporting. The 1.27 bump took out both
+  CodeQL and `golangci-lint` this way, neither of which announced itself. After
+  a version bump, check every consumer that builds the module, not only the
+  ones whose config names a version.
 
 To run CI deliberately — worth doing before a release, or when a change touches
 build tags, the workflow files, or anything whose local and runner behaviour

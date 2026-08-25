@@ -1,0 +1,84 @@
+name: CodeQL
+
+# Replaces GitHub's default ("dynamic") code-scanning setup, which cannot
+# analyse this repository's Go code.
+#
+# The Go extractor builds the module with GOTOOLCHAIN=local, so it uses
+# whatever `go` is already on the runner's PATH and is not permitted to
+# fetch another. Default setup gives it the image's pre-installed Go, which
+# has been older than go.mod's floor since the 1.27 bump, so Autobuild fails
+# before any analysis happens:
+#
+#     go: go.mod requires go >= 1.27.0 (running go 1.26.6; GOTOOLCHAIN=local)
+#
+# That is a startup failure rather than a finding, so it reads as "nothing to
+# report" while actually meaning "did not run" — Go analysis was silently off
+# from the bump until this workflow landed. An advanced setup is the only way
+# to put the right toolchain on PATH first, which is what the setup-go step
+# below does.
+#
+# The language list matches what default setup analysed: actions, go, and
+# javascript-typescript (the single extractor covering both JS and TS).
+# Keep it in step if a language is added to the repository.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Weekly, offset from Security Scan's Sunday-midnight cron so the two do
+    # not contend for a runner.
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # MUST precede codeql-action/init, which is what runs the build for
+      # build-mode: autobuild. Ordering it after init would leave the
+      # extractor with the image's default Go and reproduce the failure this
+      # workflow exists to fix.
+      #
+      # go-version-file rather than a literal, for the same reason ci.yml and
+      # release.yml use it: go.mod is the single source of the floor, and a
+      # pinned duplicate here would go stale at the next bump exactly as the
+      # runner's default did.
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
