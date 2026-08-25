@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -196,4 +197,55 @@ func TestWriteSpeedMBPerSec_ContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for already-cancelled context, got nil")
 	}
+}
+
+// TestStatfsFreeBytes covers the arithmetic both callers share.
+//
+// freeBytes and DiskProbe reach it by different routes — one ctx-bounded, one
+// a detached single-flight probe — so a mistake here is wrong in two places at
+// once, and neither caller's own tests look at the multiplication.
+func TestStatfsFreeBytes(t *testing.T) {
+	t.Run("multiplies available blocks by block size", func(t *testing.T) {
+		free, err := statfsFreeBytes("/fake", func(_ string, buf *syscall.Statfs_t) error {
+			buf.Bavail = 1000
+			buf.Bsize = 4096
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("statfsFreeBytes: %v", err)
+		}
+		if want := int64(1000 * 4096); free != want {
+			t.Errorf("free = %d, want %d — Bavail is BLOCKS, not bytes, so a caller "+
+				"comparing this against MinFreeBytes would be off by the block size",
+				free, want)
+		}
+	})
+
+	t.Run("reports zero free space as zero rather than an error", func(t *testing.T) {
+		free, err := statfsFreeBytes("/fake", func(_ string, buf *syscall.Statfs_t) error {
+			buf.Bavail = 0
+			buf.Bsize = 4096
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("statfsFreeBytes: %v", err)
+		}
+		if free != 0 {
+			t.Errorf("free = %d, want 0", free)
+		}
+	})
+
+	t.Run("wraps the statfs error and names the directory", func(t *testing.T) {
+		_, err := statfsFreeBytes("/mnt/gone", func(string, *syscall.Statfs_t) error {
+			return syscall.EACCES
+		})
+		if !errors.Is(err, syscall.EACCES) {
+			t.Fatalf("err = %v, want it to wrap EACCES — the caller classifies storage "+
+				"faults off this error, and an unwrapped one is unclassifiable", err)
+		}
+		if !strings.Contains(err.Error(), "/mnt/gone") {
+			t.Errorf("err = %q, want it to name the directory — the probe runs against "+
+				"several mounts and the message is the only thing that says which", err)
+		}
+	})
 }

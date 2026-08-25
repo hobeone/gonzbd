@@ -52,6 +52,20 @@ func freeBytes(ctx context.Context, dir string, statfs func(path string, buf *sy
 		return 0, errors.New("assembler: FreeBytes requires a cancellable context; " +
 			"statfs can block forever on an unreachable mount")
 	}
+	// An ALREADY-cancelled context resolves here, before the select below, and
+	// that is a correctness requirement rather than a fast path. Both of the
+	// select's cases can be ready at once — statfs on a local mount fills ch
+	// almost immediately — and Go picks uniformly at random among ready cases,
+	// so roughly half the time this reported SUCCESS for a context the caller
+	// had already cancelled.
+	//
+	// It surfaced as TestFreeBytes_ContextCanceled failing only under parallel
+	// load, which reads as a flaky test and is not: the test is right and the
+	// function was wrong. Matches the pre-check convention already used by
+	// WriteSpeedMBPerSec below and by CancelJob.
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("assembler: statfs %s: %w", dir, err)
+	}
 	type result struct {
 		free int64
 		err  error
