@@ -714,15 +714,33 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// job's bytes, leaving the job resident and still dispatchable with
 	// nothing on disk to write into (#376).
 	//
-	// Nothing has been destroyed at this point, so returning here is honest:
-	// the job keeps its files and the caller can retry. Queue.Remove is
-	// itself built this way — fallible store delete, then an eviction that
-	// cannot fail, then the irreversible manifest unlink — so this applies
-	// one level up the rule it already follows for itself.
+	// No FILE has been unlinked at this point, so returning here leaves the
+	// job's bytes intact and the caller can retry. It is not a clean no-op:
+	// abortJob and postProcessor.Cancel above have already dropped this
+	// job's in-memory unpack and post-processing state, and a job wedged
+	// that way stays wedged until a restart's PostProc rescan. That is
+	// unchanged by this swap — both already preceded the fatal step under
+	// the old order. What the swap buys is the bytes, which are the part
+	// nothing can rebuild.
+	//
+	// Queue.Remove is itself built this way — fallible store delete, then an
+	// eviction that cannot fail, then the irreversible manifest unlink — so
+	// this applies one level up the rule it already follows for itself.
 	//
 	// Removing from the queue first also stops dispatch immediately, since
 	// buildDispatchPlan iterates q.jobs: the window in which a job whose
 	// files are gone is still dispatchable closes rather than opening.
+	//
+	// One window opens in exchange. Between here and the worker handling the
+	// cancel, the job is gone from the queue while the assembler still holds
+	// its handles, which was previously unreachable through RemoveJob. A file
+	// whose last article lands in it finalizes against a nil sync target
+	// (syncTargetFor answers nil once SnapshotJob does), so
+	// finalizeCompletedFile returns early and its defer CLOSES the handle
+	// rather than unlinking it: the file survives on disk. That is the same
+	// disposition every already-completed file of a removed job gets, and
+	// MarkFileComplete refuses the completion, so nothing downstream acts
+	// on it.
 	if err := app.queue.Remove(id); err != nil {
 		return err
 	}

@@ -170,6 +170,14 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 	// both are swapped together; leaving them pointing at different queues
 	// would make the fixture's write path and RemoveJob disagree about which
 	// jobs exist.
+	//
+	// Three components keep the queue New built: app.downloader, app.barrier,
+	// and the pipeline's onJobHopeless closure, which captures the queue
+	// directly rather than reading p.queue. None of them runs here — this
+	// test starts no dispatch and no completion consumer — so the fixture is
+	// sound for what it asserts. Anything that later extends it onto either
+	// of those paths must swap them too, or it will exercise the original
+	// queue and pass while testing nothing.
 	stateDir := filepath.Join(adminDir, "queue")
 	refusing := removeRefusingStore{Store: queue.NewSQLiteStore(repo.DB(), stateDir, repo)}
 	q, err := queue.Load(stateDir, queue.WithStore(refusing), queue.WithLogger(application.log))
@@ -184,11 +192,18 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.assembler.Stop() })
 
-	// Two articles, of which the fixture writes one. A file whose every
-	// article has landed is finalized and leaves the assembler's open map,
-	// and CancelJob only unlinks what is still open — so a single-article
-	// file would make this test pass for the wrong reason, asserting the
-	// survival of a file nothing was ever going to delete.
+	// Two articles, of which the fixture writes one, so the job is
+	// mid-download rather than finished — the state a delete actually
+	// interrupts.
+	//
+	// It is NOT what keeps the file in the assembler's open map. A completed
+	// file's handle is retained too: OnFileComplete's contract leaves it open
+	// until CloseFile. Both production callers of CloseFile — `git grep -n
+	// 'CloseFile(' -- '*.go'` outside tests returns finalizeCompletedFile's
+	// defer at durability.go:1007 and the stall retry at stall.go:542 — sit
+	// behind goroutines that only Start launches, and this fixture never
+	// calls Start. So the entry would be in open either way, and one article
+	// would pin the defect just as well.
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject: "held-open.bin",
 		Bytes:   200,
