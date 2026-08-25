@@ -28,7 +28,7 @@ func TestNewAttempt_StartsFetching(t *testing.T) {
 func TestAttempt_TransitionRejectsIllegalEdge(t *testing.T) {
 	a := newAttempt(testClock())
 	// Fetching -> Extracting skips assessment.
-	err := a.transition(Extracting, testClock())
+	err := a.transition(Extracting)
 	if !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("transition(Extracting) error = %v, want ErrIllegalTransition", err)
 	}
@@ -91,6 +91,51 @@ func TestAttempt_HoldRejectsAnIllegalDestination(t *testing.T) {
 	}
 	if got := a.view().State; got != Fetching {
 		t.Errorf("State = %v after a rejected hold, want Fetching unchanged", got)
+	}
+}
+
+// TestAttempt_TransitionRejectsFinished pins that finish is the only door
+// into Finished. Before this guard existed, transition(Finished, now) set
+// state to Finished without ever assigning an Outcome — confirmed
+// empirically: state=Finished outcome=Pending isOpen=true. Rejecting the
+// edge here makes "Finished implies a settled Outcome" true by construction:
+// finish is the only mutator that can produce Finished, and it always
+// assigns Outcome in the same call that assigns state.
+func TestAttempt_TransitionRejectsFinished(t *testing.T) {
+	a := newAttempt(testClock())
+	err := a.transition(Finished)
+	if !errors.Is(err, ErrFinishRequired) {
+		t.Fatalf("transition(Finished) error = %v, want ErrFinishRequired", err)
+	}
+	if got := a.view().State; got != Fetching {
+		t.Errorf("State = %v after a rejected transition, want Fetching unchanged", got)
+	}
+	if a.view().State == Finished && a.isOpen() {
+		t.Fatal("state == Finished but isOpen() == true; outcome and state disagree")
+	}
+}
+
+// TestAttempt_FinishedNeverOpen pins the invariant TestAttempt_
+// TransitionRejectsFinished exists to protect: no reachable sequence of
+// mutators leaves state == Finished while isOpen() still reports true.
+// finish is the only mutator that can reach Finished, and it always assigns
+// Outcome in the same call that assigns state, so the two can never come
+// apart — and the direct route through transition is rejected outright,
+// even once the attempt is already Finished, rather than merely happening
+// not to produce the hole in this particular sequence.
+func TestAttempt_FinishedNeverOpen(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	mustTransition(t, &a, Finalizing)
+	if err := a.finish(OutcomeOK, testClock()); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if a.view().State == Finished && a.isOpen() {
+		t.Fatal("state == Finished but isOpen() == true; outcome and state disagree")
+	}
+	if err := a.transition(Finished); !errors.Is(err, ErrFinishRequired) {
+		t.Fatalf("transition(Finished) after finish, error = %v, want ErrFinishRequired", err)
 	}
 }
 
@@ -166,7 +211,7 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 
 func mustTransition(t *testing.T, a *Attempt, to State) {
 	t.Helper()
-	if err := a.transition(to, testClock()); err != nil {
+	if err := a.transition(to); err != nil {
 		t.Fatalf("transition(%v): %v", to, err)
 	}
 }

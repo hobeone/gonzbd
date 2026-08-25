@@ -12,6 +12,14 @@ import (
 // second assignment is exactly the mutation the design exists to prevent.
 var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
+// ErrFinishRequired is returned when transition is asked to reach Finished.
+// finish is the only door into that state: it is the only mutator that
+// assigns Outcome, so it must also be the only mutator that can leave an
+// attempt in Finished — otherwise an attempt could reach Finished still
+// carrying OutcomePending, and isOpen() would report an attempt open when
+// nothing is ever going to close it.
+var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call finish instead")
+
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own
 // write-once Outcome, so a retry appends a verdict rather than revising one
@@ -59,7 +67,14 @@ func (a *Attempt) view() StateView {
 // transition moves the attempt to `to`, rejecting any edge the machine does
 // not contain. Activity is cleared, because it describes the state being left:
 // carrying it forward would render a job as "repairing" while it extracts.
-func (a *Attempt) transition(to State, now time.Time) error {
+//
+// transition cannot reach Finished — see ErrFinishRequired. It therefore
+// takes no `now`: the only thing `now` was ever used for was timestamping an
+// arrival at Finished, and finish already takes its own.
+func (a *Attempt) transition(to State) error {
+	if to == Finished {
+		return ErrFinishRequired
+	}
 	if !CanTransition(a.state, to) {
 		return illegalTransition(a.state, to)
 	}
@@ -72,9 +87,6 @@ func (a *Attempt) transition(to State, now time.Time) error {
 		// first-pass download from a re-entry fetching recovery volumes,
 		// which is what upstream's "Fetching" status means.
 		a.assessed = true
-	}
-	if to == Finished && a.outcome == OutcomePending {
-		a.ended = now
 	}
 	return nil
 }
