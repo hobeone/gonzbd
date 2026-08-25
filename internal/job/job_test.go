@@ -12,6 +12,64 @@ func newTestJob(t *testing.T) *Job {
 	return New("abc123", "Test.Job", PolicyFromPP(3))
 }
 
+// TestJob_Accessors pins the three plain getters against the values New was
+// given — the only thing there is to assert about them.
+func TestJob_Accessors(t *testing.T) {
+	wantPolicy := PolicyFromPP(3)
+	j := New("abc123", "Test.Job", wantPolicy)
+	if got := j.ID(); got != "abc123" {
+		t.Errorf("ID() = %q, want %q", got, "abc123")
+	}
+	if got := j.Name(); got != "Test.Job" {
+		t.Errorf("Name() = %q, want %q", got, "Test.Job")
+	}
+	if got := j.Policy(); got != wantPolicy {
+		t.Errorf("Policy() = %+v, want %+v", got, wantPolicy)
+	}
+}
+
+// TestJob_CurrentLockedAndWithOpenAttempt calls the two unexported helpers
+// underlying every mutator directly, rather than only through the exported
+// methods that already exercise them: currentLocked's nil-on-empty branch and
+// withOpenAttempt's ErrNoOpenAttempt branch are otherwise only reached
+// indirectly.
+func TestJob_CurrentLockedAndWithOpenAttempt(t *testing.T) {
+	j := newTestJob(t)
+
+	j.mu.RLock()
+	if got := j.currentLocked(); got != nil {
+		j.mu.RUnlock()
+		t.Fatalf("currentLocked() on a job with no attempts = %v, want nil", got)
+	}
+	j.mu.RUnlock()
+
+	if err := j.withOpenAttempt(func(*Attempt) error { return nil }); !errors.Is(err, ErrNoOpenAttempt) {
+		t.Errorf("withOpenAttempt on a job with no open attempt = %v, want ErrNoOpenAttempt", err)
+	}
+
+	mustBegin(t, j)
+	j.mu.RLock()
+	got := j.currentLocked()
+	j.mu.RUnlock()
+	if got == nil {
+		t.Fatal("currentLocked() after BeginAttempt = nil, want the open attempt")
+	}
+
+	called := false
+	if err := j.withOpenAttempt(func(a *Attempt) error {
+		called = true
+		if a != got {
+			t.Errorf("withOpenAttempt passed %p, want the same attempt currentLocked returned (%p)", a, got)
+		}
+		return nil
+	}); err != nil {
+		t.Errorf("withOpenAttempt on a job with an open attempt: %v", err)
+	}
+	if !called {
+		t.Error("withOpenAttempt did not invoke fn")
+	}
+}
+
 // TestJob_NeverRunReportsWaitingForALease pins D1: there is no Queued state,
 // and a job that has never run has no attempt record at all.
 func TestJob_NeverRunReportsWaitingForALease(t *testing.T) {

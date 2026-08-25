@@ -103,3 +103,26 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 		}
 	}
 }
+
+// TestFinishedStatus_MapsEveryOutcome calls finishedStatus directly rather
+// than only through ToSABnzbd(State: Finished, ...), since that is the sole
+// caller and this pins its own per-Outcome table against a drift in
+// ToSABnzbd's routing.
+func TestFinishedStatus_MapsEveryOutcome(t *testing.T) {
+	cases := []struct {
+		o    Outcome
+		want constants.Status
+	}{
+		{OutcomeOK, constants.StatusCompleted},
+		{OutcomeCancelled, constants.StatusDeleted},
+		{OutcomeFailed, constants.StatusFailed},
+		{OutcomeUnrecoverable, constants.StatusFailed},
+		{OutcomePending, constants.StatusFailed},
+		{Outcome(255), constants.StatusFailed}, // out-of-range: same safe direction as OutcomePending
+	}
+	for _, c := range cases {
+		if got := finishedStatus(c.o); got != c.want {
+			t.Errorf("finishedStatus(%v) = %v, want %v", c.o, got, c.want)
+		}
+	}
+}
