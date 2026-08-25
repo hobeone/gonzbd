@@ -2,9 +2,12 @@ package job
 
 import "fmt"
 
-// Activity is what is executing right now. It is NOT a state: nothing
-// branches on it, no transition consults it, and it is written by whichever
-// component is doing the work. It exists for the UI, the API and the log.
+// Activity is what is executing right now. It is NOT a state:
+// CanTransition(from, to State) and legalEdges are keyed on State alone, so
+// an Activity value has no way to reach a transition decision even after
+// other types (StateView, Attempt, Job) grow an Activity field of their own.
+// It is written by whichever component is doing the work, and exists for the
+// UI, the API and the log.
 //
 // This is where the old model's post-processing stages went. They were states
 // there, which is why its transition table needed a near-complete subgraph

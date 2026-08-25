@@ -45,4 +45,8 @@ func TestAllActivities_EveryEntryHasAStringArm(t *testing.T) {
 			t.Errorf("Activity(%d) is in AllActivities() but falls to the default String() arm", a)
 		}
 	}
+	if len(AllActivities()) != 10 {
+		t.Errorf("AllActivities() has %d entries, expected 10; a new activity needs a String() arm, "+
+			"a row in TestActivity_String, and this count updated", len(AllActivities()))
+	}
 }
