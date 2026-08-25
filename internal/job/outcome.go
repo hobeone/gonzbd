@@ -18,13 +18,20 @@ const (
 	OutcomePending Outcome = iota
 	// OutcomeOK means the job produced its files.
 	OutcomeOK
-	// OutcomeFailed means production ran and something in it failed.
+	// OutcomeFailed means the attempt reached Finished having failed. It is
+	// the typical case for a Production-stage failure, but finish does not
+	// enforce IsProduction(state) for this outcome the way it does for
+	// OutcomeUnrecoverable below — a Correctness-stage giving-up (e.g.
+	// exhausting a policy's repair attempts) is also recorded here, and
+	// nothing in this package currently distinguishes the two by state.
 	OutcomeFailed
 	// OutcomeUnrecoverable means the verdict was Unrecoverable, so the job
 	// never crossed the boundary. Its files are still in the working
 	// directory and it is still retryable (D3) — which is the whole reason
 	// this is a distinct outcome from OutcomeFailed rather than folded into
-	// it.
+	// it. finish rejects assigning this outcome to an attempt whose state
+	// is IsProduction (see ErrUnrecoverableAfterBoundary in attempt.go), so
+	// this sentence is enforced rather than only stated.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled

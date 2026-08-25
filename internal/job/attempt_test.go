@@ -357,6 +357,25 @@ func TestAttempt_FinishRejectsUnrecognizedOutcome(t *testing.T) {
 	}
 }
 
+// TestAttempt_FinishRejectsUnrecoverableInProduction pins the invariant
+// OutcomeUnrecoverable's doc comment claims: the verdict means the job never
+// crossed the Correctness/Production boundary, so finish must refuse it once
+// the attempt's state is IsProduction. Probe (pre-fix): finish(Unrecoverable)
+// from Finalizing returned a nil error.
+func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	mustTransition(t, &a, Finalizing)
+	err := a.finish(OutcomeUnrecoverable, testClock())
+	if !errors.Is(err, ErrUnrecoverableAfterBoundary) {
+		t.Fatalf("finish(Unrecoverable) from Finalizing error = %v, want ErrUnrecoverableAfterBoundary", err)
+	}
+	if got := a.view(); got.State == Finished || got.Outcome != OutcomePending {
+		t.Errorf("view = %+v after a rejected finish, want unchanged (Finalizing, Pending)", got)
+	}
+}
+
 // TestAttempt_FinishSucceedsFromAnyOpenState pins that finish reaches
 // Finished from every non-terminal state reachable via legal transitions, not
 // only from one — needed because finish() has no CanTransition(state,

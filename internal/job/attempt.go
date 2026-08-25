@@ -12,6 +12,18 @@ import (
 // second assignment is exactly the mutation the design exists to prevent.
 var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
+// ErrUnrecoverableAfterBoundary is returned when finish is asked to record
+// OutcomeUnrecoverable for an attempt whose state is in Production
+// (IsProduction). D3 defines OutcomeUnrecoverable as "the job never crossed
+// the boundary" specifically so its files stay in the working directory and
+// the job stays retryable — a verdict finish must not let contradict where
+// the attempt actually is. This is a sentinel rather than a plain
+// fmt.Errorf: a caller that reaches Production and then gets an
+// Unrecoverable verdict from downstream (e.g. par2 misclassifying a
+// Production-stage fault) has a caller bug to fix, not a job to fail, and
+// distinguishing that case with errors.Is is the whole reason to name it.
+var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable for an attempt past the Correctness/Production boundary")
+
 // ErrFinishRequired is returned when transition is asked to reach Finished,
 // or hold is asked to resume into it. finish is the only door into that
 // state: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates every
@@ -212,6 +224,9 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	}
 	if !slices.Contains(AllOutcomes(), o) {
 		return fmt.Errorf("job: cannot finish an attempt with unrecognized outcome %s", o)
+	}
+	if o == OutcomeUnrecoverable && IsProduction(a.state) {
+		return fmt.Errorf("%w: state is %s", ErrUnrecoverableAfterBoundary, a.state)
 	}
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", ErrOutcomeAlreadySet, a.outcome, o)
