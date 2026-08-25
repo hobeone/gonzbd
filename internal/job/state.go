@@ -1,7 +1,3 @@
-// Package job holds the lifecycle vocabulary for a download job's attempts:
-// State, transitions, wait reasons, activity, outcome, policy, and the
-// Attempt/Job types built from them. This file, state.go, is the first
-// piece; see later files in this package for the rest.
 package job
 
 import "fmt"

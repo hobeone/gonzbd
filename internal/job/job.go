@@ -14,13 +14,21 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 // Job owns its state. Every field is unexported and guarded by mu; there is
 // no path to a Job's state that does not go through a method here.
 //
-// The lock ordering rule for the whole system is that a Job method never
-// calls a Queue method — Queue is strictly the caller, Job strictly the
-// callee, so the order is always Queue.mu then Job.mu and cannot invert. That
-// is why this file imports nothing from the rest of the daemon.
+// What is established now: a Job method never calls any other repository
+// package's method, because this package imports nothing from the rest of
+// the daemon except internal/constants (in sabnzbd.go only) — see doc.go and
+// `go list -deps ./internal/job/`. In particular Job cannot call Queue,
+// because Job cannot see Queue.
 //
-// Job does no I/O. It exposes State() and the attempt accessors; a
-// Checkpointer reads those and is the sole writer to the database.
+// What is intent for a later plan, not yet built or enforced: a Queue type
+// that always locks Queue.mu before calling into Job.mu, giving the system a
+// single lock order. Nothing in this repository defines Queue yet, so that
+// half of the ordering claim has no enforcement point until it does.
+//
+// Job does no I/O. It exposes State() and the attempt accessors. The later
+// plan's design intent is a Checkpointer that reads those and writes the
+// database; no such type exists in this repository today
+// (`grep -rn Checkpointer internal/job/` is empty).
 type Job struct {
 	mu sync.RWMutex
 

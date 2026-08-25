@@ -92,9 +92,11 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					got := ToSABnzbd(StateView{State: s, Activity: a, Outcome: o, Reason: r})
-					if !declared[got] {
-						t.Errorf("ToSABnzbd emitted %q, which is not in constants.AllStatuses()", got)
+					for _, assessed := range []bool{false, true} {
+						got := ToSABnzbd(StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed})
+						if !declared[got] {
+							t.Errorf("ToSABnzbd emitted %q, which is not in constants.AllStatuses()", got)
+						}
 					}
 				}
 			}
