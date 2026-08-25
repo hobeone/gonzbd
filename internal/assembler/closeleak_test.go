@@ -5,17 +5,24 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
 // The faulted set at Close, and the branches that exist so it cannot be
 // dropped in silence.
 //
-// Every test here installs the set by hand. That is not a shortcut around a
-// reachable state — the set is empty at both call sites on every path the
-// worker can take, because each producer is drained before the worker returns
-// to its select loop. These pin the CONTRACT: if a future change adds a
-// producer that nothing drains, the articles are reported rather than lost.
+// Most tests here install the set by hand. That is not a shortcut around a
+// reachable state: on every path but one the set is empty at both call sites,
+// because each producer is drained before the worker returns to its select
+// loop. Those pin the CONTRACT — if a future change adds a producer that
+// nothing drains, the articles are reported rather than lost.
+//
+// The exception is the cancel arm's KeepFiles branch, where a FAILED drain
+// rolls articles back into the set and the arm deliberately skips the
+// releaseFaulted that would empty it again. That one is reachable, and
+// TestDispatchRequest_CancelKeepingFilesReportsAFailedDrainWithoutTripping
+// reaches it for real rather than installing anything.
 
 // TestFileWriter_CloseHandsBackTheUnroutedFaultedSet is the pin on the return
 // value itself.
@@ -197,12 +204,18 @@ func TestDrainAndClose_RoutesADisplacedArticleAsPermanentlyFailed(t *testing.T) 
 //
 // The two dispositions are deliberately different and neither implies the
 // other. drainAndClose routes its set — that file is closing normally and its
-// articles are still wanted. The cancel arm must NOT: the file is unlinked on
-// the next line, its cache is forgotten, and the job is leaving the queue, so
-// returning the articles to Outstanding re-dispatches work for a job that is
-// going away. What it owes instead is a report, because the set is empty on
-// every reachable path and a non-empty one means a producer was added that
-// nothing drains.
+// articles are still wanted. The cancel arm must NOT: its cache is forgotten
+// and the job is leaving the queue, so returning the articles to Outstanding
+// re-dispatches work for a job that is going away. That holds under both
+// dispositions — keeping a removed job's bytes does not make its articles
+// wanted again — though this test exercises DeleteFiles, where the file is
+// unlinked as well.
+//
+// What it owes instead is a report. At Error here: with no drain error the
+// set is empty on every reachable path, so a non-empty one means a producer
+// was added that nothing drains. The KeepFiles path can populate it
+// legitimately (a failed Drain rolls articles back and the arm skips the
+// releaseFaulted that would empty it again), and reports at Warn instead.
 func TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt(t *testing.T) {
 	var logs bytes.Buffer
 	a := newHelperAssembler()
@@ -226,7 +239,17 @@ func TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt(t *testing.T) {
 		// ackCh is what marks this a control message; CancelJob always sets
 		// one, and the worker discriminates on it rather than on the sentinel
 		// alone so that no request built outside the package can pose as one.
-		WriteRequest{FileIdx: fileIdxCancelJob, MessageID: key.jobID, ackCh: make(chan error, 1)},
+		//
+		// disposition must be stated because this builds the request by hand
+		// instead of going through CancelJob, and its zero value is KeepFiles
+		// — the non-destructive default the exported API wants, which is the
+		// opposite of what the os.Stat below asserts.
+		WriteRequest{
+			FileIdx:     fileIdxCancelJob,
+			MessageID:   key.jobID,
+			ackCh:       make(chan error, 1),
+			disposition: DeleteFiles,
+		},
 		open, completed, map[string]struct{}{}, newWriteCache(0))
 
 	if _, still := open[key]; still {
@@ -244,5 +267,125 @@ func TestDispatchRequest_CancelDropsTheFaultedSetButReportsIt(t *testing.T) {
 		t.Errorf("the dropped articles were not reported by index; log was:\n%s\n"+
 			"this arm DROPS the set, so the log line is the only record of which "+
 			"articles were stranded", logs.String())
+	}
+}
+
+// TestDispatchRequest_CancelKeepingFilesStillDropsTheFaultedSet is the
+// KeepFiles half of the test above, and it is the reason the keep branch calls
+// f.w.Drain rather than a.drainAndClose.
+//
+// drainAndClose calls releaseFaulted and routes whatever Close returns, which
+// would fire both callbacks below. That is right for its own caller, where the
+// file is going to post-processing and its articles are still wanted. It is
+// wrong here for the same reason it is wrong on the DeleteFiles path: the job
+// has left the queue, so returning its articles to Outstanding re-dispatches
+// work for a job that is going away. Keeping the bytes does not change that.
+//
+// Without this test the substitution is invisible — every other KeepFiles
+// assertion passes with drainAndClose in place.
+func TestDispatchRequest_CancelKeepingFilesStillDropsTheFaultedSet(t *testing.T) {
+	a := newHelperAssembler()
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		t.Errorf("OnArticlesUnwritten(%v) on the KeepFiles cancel path — the job is "+
+			"leaving the queue whether or not its bytes are kept, so returning its "+
+			"articles to Outstanding re-dispatches work for a job that is going away", arts)
+	}
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		t.Errorf("OnArticleRejected(%d) on the KeepFiles cancel path", artIdx)
+	}
+
+	f := newHelperFile(t, t.TempDir(), "kept.dat", 0)
+	f.w.faulted = []faultedArticle{{id: articleID{msgID: "a5", artIdx: 5}}}
+	key := f.w.key
+	open := map[fileKey]*openFile{key: f}
+
+	a.dispatchRequest(
+		WriteRequest{
+			FileIdx:     fileIdxCancelJob,
+			MessageID:   key.jobID,
+			ackCh:       make(chan error, 1),
+			disposition: KeepFiles,
+		},
+		open, map[fileKey]struct{}{}, map[string]struct{}{}, newWriteCache(0))
+
+	if _, still := open[key]; still {
+		t.Error("the cancelled job's file is still in the open map under KeepFiles — " +
+			"the handle must be released whatever happens to the bytes")
+	}
+	if _, err := os.Stat(f.info.Path); err != nil {
+		t.Errorf("os.Stat(%s) = %v, want the file to exist — KeepFiles suppresses the "+
+			"unlink, and this is the assertion that separates it from DeleteFiles",
+			f.info.Path, err)
+	}
+	if got := f.w.takeFaulted(); len(got) != 0 {
+		t.Errorf("takeFaulted() = %v after the cancel — Close must TAKE the set, or a "+
+			"later reader routes an article this drop already accounted for", got)
+	}
+}
+
+// TestDispatchRequest_CancelKeepingFilesReportsAFailedDrainWithoutTripping is
+// the one test in this file that reaches a non-empty faulted set for real
+// instead of installing one.
+//
+// The KeepFiles branch drains before closing. When that drain fails, Drain
+// calls w.fail on every article it did not attempt, which appends to
+// w.faulted, and the arm deliberately skips the releaseFaulted that would
+// empty it again. So the set is legitimately non-empty at Close on this path —
+// the only path where that is true.
+//
+// The tripwire must therefore not fire. Its Error line accuses a future change
+// of adding "a producer that nothing drains"; here the producer is the drain
+// this very branch performs, and naming that as the cause would send the next
+// reader hunting a defect that does not exist.
+func TestDispatchRequest_CancelKeepingFilesReportsAFailedDrainWithoutTripping(t *testing.T) {
+	var logs bytes.Buffer
+	dir := t.TempDir()
+	a := newHelperAssembler()
+	// Level=Error, so the buffer collects the tripwire and nothing else. The
+	// branch under test logs at Warn, which is filtered out — an empty buffer
+	// is the assertion.
+	a.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError}))
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		t.Errorf("OnArticlesUnwritten(%v) after a failed drain on the KeepFiles cancel "+
+			"path — the job has left the queue, so these articles must be dropped "+
+			"rather than returned to Outstanding", arts)
+	}
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		t.Errorf("OnArticleRejected(%d) after a failed drain on the cancel path", artIdx)
+	}
+
+	wc := newWriteCache(1 << 20)
+	f := newHelperFile(t, dir, "kept_drain_fault.dat", 0)
+	f.w.wc = wc
+	key := f.w.key
+	open := map[fileKey]*openFile{key: f}
+
+	// Buffer a real article, then fault the writer so the drain that follows
+	// cannot land it.
+	if !a.handleSuccessArticle(f, WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
+	}) {
+		t.Fatal("the article was not accepted, so the fixture never buffered it")
+	}
+	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
+
+	a.dispatchRequest(
+		WriteRequest{
+			FileIdx:     fileIdxCancelJob,
+			MessageID:   key.jobID,
+			ackCh:       make(chan error, 1),
+			disposition: KeepFiles,
+		},
+		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
+
+	if _, err := os.Stat(f.info.Path); err != nil {
+		t.Errorf("the kept file is gone after a failed drain (%v) — a drain that could "+
+			"not land its bytes is not a reason to destroy the ones already there", err)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("the tripwire fired at Error after a failed drain:\n%s\n"+
+			"a failed drain is a KNOWN producer of the faulted set here, so reporting "+
+			"it as a producer nothing drains names the wrong cause and sends the next "+
+			"reader after a defect that is not there", logs.String())
 	}
 }

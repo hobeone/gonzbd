@@ -97,14 +97,33 @@ type WriteRequest struct {
 	FatalErr error
 
 	// ackCh, when non-nil, is closed by the worker immediately after this
-	// control message (cancel) has been fully processed -- i.e. after the
-	// job's open file handles have been closed and removed. Set only by
-	// CancelJob; never used by ordinary write requests.
+	// control message has been fully processed -- for a cancel, after the
+	// job's open file handles have been closed and its files disposed of.
+	// Never used by ordinary write requests. Set by the three control-message
+	// senders and nothing else: `grep -n 'ackCh:' internal/assembler/*.go`
+	// outside tests returns CancelJob, CloseJobHandles and ForgetJob.
+	//
 	// It carries an error for the control messages that can fail. A sender
 	// with nothing to report closes it without sending, so a receiver reading
-	// `<-ackCh` gets a nil error either way — which is what lets the cancel
-	// arm, which cannot fail, stay a bare close.
+	// `<-ackCh` gets a nil error either way — which is what lets an arm with
+	// nothing to report stay a bare close.
 	ackCh chan error
+
+	// disposition says what the cancel arm does with the files it closes.
+	// Ignored everywhere else: `grep -n 'req\.disposition'
+	// internal/assembler/*.go` returns exactly one read, in the
+	// fileIdxCancelJob arm of dispatchRequest, which passes it to
+	// closeCancelledFile.
+	//
+	// Unexported for the reason the block above dispatchRequest gives for
+	// ackCh and syncOp: JobID and FileIdx are exported and overwritten from
+	// the caller's ArticleRef, so a sentinel alone is an encoding rather than
+	// a proof. A caller outside this package cannot set this field, so it
+	// cannot direct the worker to unlink a file.
+	//
+	// The zero value is KeepFiles, so a control message that failed to say
+	// what it wanted destroys nothing.
+	disposition FileDisposition
 
 	// syncOp, when non-nil, carries a barrier operation for the worker to
 	// perform on its own goroutine. Set only by jobSyncTarget; never used by
@@ -537,15 +556,44 @@ func (a *Assembler) WriteArticle(ctx context.Context, ref ArticleRef, req WriteR
 	}
 }
 
+// FileDisposition says what CancelJob does with the files it closes.
+//
+// It is a named type rather than a bare bool because the call sites read
+// better for it: `CancelJob(ctx, id, KeepFiles)` says at the call what
+// `CancelJob(ctx, id, false)` would have made a reader open this file to
+// learn. The distinction is the whole subject of #433, where a flag that did
+// not say what it meant deleted files a caller had asked to keep.
+type FileDisposition bool
+
+const (
+	// KeepFiles closes the job's handles and leaves its files on disk. It is
+	// the zero value deliberately: the non-destructive outcome is the one a
+	// value that never got set should get.
+	//
+	// What survives is a partial: preallocated to the file's expected size
+	// with holes where articles never arrived, and — since the caller that
+	// wants this has also removed the job from the queue — with no manifest
+	// or durable-run record left that could interpret it. That is the
+	// documented meaning of asking to keep a removed job's bytes, not an
+	// oversight.
+	KeepFiles FileDisposition = false
+	// DeleteFiles unlinks each file as it is closed.
+	DeleteFiles FileDisposition = true
+)
+
 // CancelJob sends a control message to the worker goroutine to close all
 // open file handles for the given job, and blocks until the worker has
 // actually done so. This prevents FD leaks when a job is removed from the
-// queue while articles are still being assembled, and lets callers safely
-// delete the job's directory immediately after CancelJob returns without
-// racing the worker's Close()+Remove() of files still inside it (which on
-// NFS-mounted directories produces .nfsXXXXXX silly-rename artifacts and a
-// directory the caller's delete can't remove).
-func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
+// queue while articles are still being assembled.
+//
+// With DeleteFiles it also unlinks them, which lets callers safely delete the
+// job's directory immediately after CancelJob returns without racing the
+// worker's Close()+Remove() of files still inside it (which on NFS-mounted
+// directories produces .nfsXXXXXX silly-rename artifacts and a directory the
+// caller's delete can't remove). With KeepFiles the handles are still closed
+// before this returns, so a caller that deletes the directory anyway is no
+// worse off — it is only the unlink that the disposition suppresses.
+func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition FileDisposition) error {
 	// A context that is ALREADY cancelled resolves here, before the selects
 	// below, and that is a correctness requirement rather than a fast path.
 	//
@@ -589,10 +637,11 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 	// which control message this is.
 	ack := make(chan error, 1)
 	control := WriteRequest{
-		JobID:     "",
-		FileIdx:   fileIdxCancelJob,
-		MessageID: jobID,
-		ackCh:     ack,
+		JobID:       "",
+		FileIdx:     fileIdxCancelJob,
+		MessageID:   jobID,
+		ackCh:       ack,
+		disposition: disposition,
 	}
 	select {
 	case a.reqs <- control:
@@ -607,13 +656,29 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 	// dispatchRequest), so this is never left blocking indefinitely.
 	select {
 	case err := <-ack:
-		// A close-time failure on THIS path is not merely informational.
-		// maybeFinalize is the only production caller, and it is about to
-		// hand the job to par2, unrar and cleanup — over a file whose
-		// buffered bytes never reached the platter. It used to be dropped
-		// entirely: the arm computed the error and the ack was a bare close,
-		// so this returned nil regardless and the only trace was a Warn
-		// inside drainAndClose.
+		// The cancel arm acks with a bare close, so this is nil today. It is
+		// read as an error rather than a signal because the arm is one of
+		// several that share ackCh's contract, and because a future arm that
+		// does report would otherwise be silently dropped here.
+		//
+		// A drain failure on the KeepFiles path is deliberately NOT reported
+		// this way, and the consequence is worth stating plainly: a caller
+		// that asked to keep a job's bytes can be handed a file short by
+		// everything the write cache held, and this returns nil. The only
+		// record is the Warn in closeCancelledFile. THE CALLER HAS NO WAY TO
+		// LEARN IT.
+		//
+		// That asymmetry against CloseJobHandles, which does surface its drain
+		// failure on the ack, is deliberate. RemoveJob — the only production
+		// caller of this method — treats a non-nil return as "the handles are
+		// not confirmed closed", which is true of a context cancellation and
+		// false of a failed drain, whose handles closeCancelledFile closes
+		// immediately afterwards regardless. Routing one into the other would
+		// make the caller's warning say something untrue about FD state, which
+		// is the thing that ordering actually depends on.
+		//
+		// If a caller ever needs to know, the fix is a distinct signal, not
+		// this one.
 		return err
 	case <-a.stopCh:
 		return ErrStopped
@@ -692,8 +757,24 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	}
 
 	select {
-	case <-ack:
-		return nil
+	case err := <-ack:
+		// Captured, not discarded. The arm computes closeErr from every
+		// drainAndClose it performs and sends it here precisely so this
+		// returns it; reading `<-ack` and returning nil made the send side
+		// dead code and handed maybeFinalize a job whose buffered bytes never
+		// reached the platter, with only a Warn inside drainAndClose as a
+		// trace. That is the defect this arm's own tombstone comment describes
+		// as fixed — it was fixed on the send side only.
+		//
+		// Not covered end-to-end: faulting a file that a STARTED assembler
+		// owns needs the *openFile, and no seam reaches it — every
+		// fault-injection test in this package drives dispatchRequest
+		// directly. TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck pins
+		// the send; this line is the receive. Verified by mutation: reverting
+		// it to `return nil` leaves internal/assembler, internal/app and
+		// internal/durability all green, which is also why the original defect
+		// survived.
+		return err
 	case <-a.stopCh:
 		return ErrStopped
 	case <-ctx.Done():
@@ -924,58 +1005,40 @@ func (a *Assembler) dispatchRequest(
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
-		// Control message: cancel a job. Close and remove all
-		// open files for the job encoded in MessageID.
+		// Control message: cancel a job. Close every open file for the job
+		// encoded in MessageID, and unlink them or leave them on disk
+		// according to req.disposition.
+		//
+		// The job-level tombstone is set under BOTH dispositions, and it has
+		// to be: it gates article admission for the WHOLE job at the bottom of
+		// this function, including files that were never opened, and
+		// openTargetFile performs no queue-membership check before creating
+		// and preallocating one. RemoveJob's pipeline.forgetJob closes that
+		// hole too, but only after this returns, and not for requests already
+		// queued behind this message.
+		//
+		// TestCancelJob_KeepFilesStillTombstonesTheWholeJob is the pin, and it
+		// has to reach for a file that was never opened to be one: for a file
+		// this arm actually closed, the per-file completed[k] tombstone below
+		// already drops late articles, so a test writing to that file stays
+		// green with this line removed.
 		cancelID := req.MessageID
 		cancelledJobs[cancelID] = struct{}{}
 		for k, f := range open {
 			if k.jobID != cancelID {
 				continue
 			}
-			// The close error is genuinely best-effort here — the file is
-			// removed on the next line — but the faulted set is not the same
-			// kind of thing, so it is reported rather than discarded silently.
-			//
-			// Dropped, not routed. The job is being torn down: its files are
-			// deleted below, its cache forgotten, and it has already left the
-			// queue. Returning these articles to Outstanding would re-dispatch
-			// work for a job that is going away.
-			//
-			// "Already" is exact rather than hedging. RemoveJob is the only
-			// production caller of CancelJob — `git grep -n 'CancelJob('
-			// -- '*.go'` outside tests returns Application.RemoveJob and
-			// this declaration, nothing else — and
-			// since #376 it removes the job from the queue BEFORE calling
-			// in here, returning early if that fails. So a job reaching this
-			// arm has left the queue, where previously it could still be
-			// resident with its files already deleted.
-			//
-			// The set is empty on every reachable path — see FileWriter.Close
-			// — so this branch is a tripwire, not a handler. If it ever fires,
-			// a producer has been added that the worker does not drain.
-			leaked, _ := f.w.Close()
-			if len(leaked) > 0 {
-				// The indices, not just a count. This arm DROPS the set, so
-				// this line is the only record left of which articles were
-				// stranded — a count names nothing an operator or a bug report
-				// could act on.
-				a.log.Error("articles were rolled back and never routed before a "+
-					"cancelled job's file was closed; they keep their Emitted bit and "+
-					"will not be re-dispatched until a restart",
-					"job", k.jobID, "fileidx", k.fileIdx,
-					"articles", len(leaked), "artidxs", faultedIndices(leaked))
-			}
-			if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
-				a.log.Warn("failed to remove cancelled file",
-					"path", f.info.Path, "error", err)
-			}
+			a.closeCancelledFile(k, f, req.disposition)
+			// Dispatcher-level bookkeeping, and unconditional. What happens to
+			// the BYTES is the disposition's business and lives in the helper;
+			// which keys this worker still tracks is this loop's, and a kept
+			// file has left the open map exactly as a deleted one has.
 			delete(open, k)
 			completed[k] = struct{}{}
 			wc.forget(k) // discard cached articles for cancelled file
 		}
-		if req.ackCh != nil {
-			close(req.ackCh)
-		}
+		// Unconditional: this branch is guarded on req.ackCh != nil.
+		close(req.ackCh)
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCloseHandles {
@@ -1172,6 +1235,101 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 		return permanent
 	}
 	return first
+}
+
+// closeCancelledFile releases one open file of a cancelled job, and disposes
+// of its bytes according to disposition. Runs on the worker goroutine, which
+// owns every handle (X1).
+//
+// It is the cancel counterpart to drainAndClose, and deliberately not a call
+// to it. drainAndClose does two further things that are right for its own
+// caller and wrong here:
+//
+//   - It calls releaseFaulted and routes whatever Close returns, firing
+//     OnArticlesUnwritten and OnArticleRejected. This path DROPS that set. The
+//     job is being torn down and has already left the queue, so returning its
+//     articles to Outstanding would re-dispatch work for a job that is going
+//     away — true under both dispositions, since keeping a job's bytes does
+//     not make its articles wanted again. closeleak_test.go pins it with
+//     t.Errorf on both callbacks, for each disposition.
+//   - It calls Sync. CloseJobHandles needs that fsync because par2 and unrar
+//     are about to read the file. Nothing reads a removed job's files, and an
+//     fsync here would stall ingest for every other job on the one worker
+//     goroutine in exchange for nothing.
+//
+// "Already left the queue" is exact rather than hedging: RemoveJob is the only
+// production caller of CancelJob — `git grep -n 'CancelJob(' -- '*.go'`
+// outside tests and outside this file's own doc comments returns
+// Application.RemoveJob alone — and since #376 it removes the job from the
+// queue BEFORE calling in, returning early if that fails.
+//
+// The caller keeps the bookkeeping: the open-map delete, the per-file
+// completed tombstone, and the write-cache eviction are all unconditional and
+// none of them is this function's business.
+func (a *Assembler) closeCancelledFile(k fileKey, f *openFile, disposition FileDisposition) {
+	// Flush what the write cache still holds, so a file being KEPT contains
+	// every byte that actually arrived. Without this the caller's wc.forget
+	// pools those articles and they never reach the platter — the file would
+	// survive short by whatever was buffered out of order, which is exactly
+	// the content the caller asked to keep.
+	//
+	// DeleteFiles must not drain: it would write bytes into a file this
+	// function unlinks a few lines below.
+	var drainErr error
+	if disposition == KeepFiles {
+		if _, err := f.w.Drain(); err != nil {
+			drainErr = err
+			a.log.Warn("failed to flush a cancelled job's cached articles into a "+
+				"file that is being kept; the file is short by whatever the "+
+				"cache still held",
+				"path", f.info.Path, "error", err)
+		}
+	}
+	// The close error is best-effort only under DeleteFiles, where the file is
+	// unlinked below and nothing it failed to flush could ever be read. Under
+	// KeepFiles the file survives, so the same error means a kept file may be
+	// missing bytes, and it is logged rather than discarded.
+	leaked, cerr := f.w.Close()
+	if cerr != nil && disposition == KeepFiles {
+		a.log.Warn("failed to close a cancelled job's file that is being kept; "+
+			"buffered bytes may not have reached the platter",
+			"path", f.info.Path, "error", cerr)
+	}
+	if len(leaked) > 0 {
+		// The indices, not just a count. This path DROPS the set, so this line
+		// is the only record left of which articles were stranded — a count
+		// names nothing an operator or a bug report could act on.
+		//
+		// The level depends on whether the set has a known producer. After a
+		// FAILED drain it does: Drain's error path calls w.fail on everything
+		// it did not attempt, and this function deliberately skips the
+		// releaseFaulted that would have emptied the set again. A non-empty
+		// set is expected there and says nothing new.
+		//
+		// With no drain error the standing reasoning holds — every producer of
+		// w.faulted is drained before the worker returns to its select loop —
+		// so a non-empty set means a producer has been added that nothing
+		// drains, and that is a tripwire.
+		if drainErr != nil {
+			a.log.Warn("a cancelled job's file was kept with articles the failed "+
+				"drain rolled back; they keep their Emitted bit and will not be "+
+				"re-dispatched until a restart",
+				"job", k.jobID, "fileidx", k.fileIdx,
+				"articles", len(leaked), "artidxs", faultedIndices(leaked))
+		} else {
+			a.log.Error("articles were rolled back and never routed before a "+
+				"cancelled job's file was closed; they keep their Emitted bit and "+
+				"will not be re-dispatched until a restart",
+				"job", k.jobID, "fileidx", k.fileIdx,
+				"articles", len(leaked), "artidxs", faultedIndices(leaked))
+		}
+	}
+	if disposition == DeleteFiles {
+		if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
+			a.log.Warn("failed to remove cancelled file",
+				"path", f.info.Path, "error", err)
+		}
+	}
 }
 
 // drainAndCloseAll drains and closes every remaining open file. Called on

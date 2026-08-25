@@ -1393,7 +1393,7 @@ the encoding, and the names are what the code reads.
 
 | Control | Encoding | Worker behaviour |
 |---|---|---|
-| **CancelJob** | `JobID=""`, `FileIdx=fileIdxCancelJob` (-1), `MessageID=jobID` | closes and *deletes* all open files for the job, tombstones the job in `cancelledJobs`, discards cached articles, closes `ackCh` |
+| **CancelJob** | `JobID=""`, `FileIdx=fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles` (draining the cache first, so a kept file holds every byte that arrived — written, not fsynced, so a crash can still lose them); tombstones the job in `cancelledJobs` and discards cached articles under **both**; closes `ackCh` |
 | **CloseJobHandles** | `JobID=""`, `FileIdx=fileIdxCloseHandles` (-2), `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing or par2 repair |
 | **Barrier op** | `JobID=""`, `FileIdx=fileIdxSyncOp` (-3), `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
 
@@ -1577,9 +1577,22 @@ articles or sparse regions.
   `OnArticlesUnwritten`, and the fault is routed. The file is never opened and
   never appears in `open`, so no barrier operation can ever surface it — which
   is why this path routes for itself rather than leaving it to the barrier.
-- **CancelJob** — closes and deletes open files, tombstones the job so subsequent
+- **CancelJob** — closes open files and tombstones the job so subsequent
   articles are discarded. The `ackCh` synchronisation lets the caller delete the
   job directory the moment `CancelJob` returns.
+
+  Whether the files themselves are deleted is the caller's `FileDisposition`.
+  `DeleteFiles` unlinks each as it closes; `KeepFiles` drains the write cache
+  into it and leaves it. `KeepFiles` does **not** `Sync`: nothing reads a
+  removed job's files, so the fsync would only stall ingest for every other
+  job on the single worker goroutine. The kept bytes are therefore
+  page-cache-durable, not platter-durable, and no `durable_runs` record covers
+  them. The tombstone is set either way — it gates admission
+  for the whole job, including files never opened, and `openTargetFile` makes
+  no queue-membership check — so keeping a job's bytes never makes its
+  articles admissible again. What `KeepFiles` leaves is a partial: preallocated
+  to the expected size with holes, and (since its caller has also removed the
+  job) with no manifest or `durable_runs` record left to interpret it.
 - **Shutdown (`Stop`)** — closes `stopCh`, waits for in-flight senders, drains
   remaining channel items, flushes the write cache, and closes all open files.
   Partial files are closed without firing `OnFileComplete`.
