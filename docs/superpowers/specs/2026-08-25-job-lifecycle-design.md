@@ -794,23 +794,35 @@ consequences were not chased.
 
 ## 15. Implementation decomposition
 
-Seven phases. Each must leave the tree green. Phases 1–3 are behaviour-
-preserving refactors; 4–7 change behaviour.
+**Rip and replace, not migrate.** This supersedes an earlier seven-phase
+decomposition that staged the work as behaviour-preserving refactors with the
+old model surviving alongside the new one. That approach was rejected on
+direction: it buys a smaller blast radius per commit by carrying dead code and
+adapters for the length of the project, and Standing Design Rule 1 means we
+owe nothing to the old shapes. Prefer deleting a structure and rebuilding it
+to preserving it carefully.
 
-| # | Phase | Delivers | Depends on |
+Three plans. The distinction that matters is **build-beside versus swap**:
+plan 1 adds a package nothing imports, plan 2 swaps the world onto it and
+deletes the old model in the same change, plan 3 follows behind. Building
+beside is not staging a migration — nothing in plan 1 is an adapter, a dual
+path, or a compatibility layer. It is the target vocabulary, written first so
+that plan 2's deletions have somewhere to land.
+
+| # | Plan | Delivers | Deletes |
 |---|---|---|---|
-| 1 | **State surface** | `State`/`Activity`/`Outcome`, **`Policy` (D4)**, the transition function, `ToSABnzbd` shim, contract test against the existing API | — |
-| 2 | **Job owns its lock** | job state mutation moves inside `Job`; **the machine moves onto `Attempt` (D2)**; `Queue` becomes an ordered index; §7.1 rule enforced | 1 |
-| 3 | **Lease** | `Manifest` + `StorageBarrier` reachable only through a `Lease`; retires §1.3 | 2 |
-| 4 | **Assessor** | one verdict implementation; `Fetching ⇄ Assessing` loop; `NeedRequeue` and the `quickcheck` stage both deleted | 3 |
-| 5 | **Pools and `Waiting`** | two pools, reservation, unified `Waiting`, pause-as-gate, cancel semantics | 4 |
-| 6 | **Dispatch inversion** | `job.NextArticle()` / `job.AddArticle()`; Queue-owned dispatcher over `LeasedJobs` | 5 |
-| 7 | **Speculation** | DirectUnpack writes to a speculative area; promote/discard at the verdict | 4, 6 |
+| 1 | **Lifecycle core** — `internal/job` | `State`/`Activity`/`Outcome`/`Policy`/`WaitReason`, the transition machine, `Attempt`, `Job` with its own lock, `ToSABnzbd` | nothing — the package is standalone and unimported |
+| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; `Assess` + `Verdict` in `internal/par2`; the new `Queue` with two pools and lease issuance; `Checkpointer`; barrier self-reconciliation; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, `par2NeedsRecovery`, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage, `NeedRequeue`/`RequeueBlocksNeeded`, `resumeAllJobs`, `shouldSkipForPP`, `Job.PostProc` |
+| 3 | **Dispatch and speculation** | `job.NextArticle()`/`AddArticle()`, the Queue-owned dispatcher over `LeasedJobs`, DirectUnpack promote/discard | `dispatchPass`'s queue-walking article loop, `duOrch`'s current wiring |
 
-Phase 3 is the one that pays for the whole exercise on its own. Phase 4 is the
-one that removes a shipped duplication.
+Plan 2 is large and deliberately so. It is the commit where the daemon stops
+running the old model, and splitting it would mean shipping exactly the
+adapters this decomposition exists to avoid. It is also where §1.3 is retired
+— the `Lease` makes residency an object the compiler can see — and where §1.2's
+duplicated verification decision is deleted rather than deprecated.
 
-**Each phase gets its own implementation plan and its own PR.** This document
-is too large to be a single plan, and the phases have real dependencies — a
-plan written for phase 5 before phase 4 lands would be written against a
-verdict function that does not exist yet.
+**Each plan is written only after its predecessor lands.** A plan for the swap
+written today would reference signatures that do not exist yet, and would be
+speculation formatted as instructions.
+
+`docs/superpowers/plans/2026-08-25-job-lifecycle-core.md` is plan 1.
