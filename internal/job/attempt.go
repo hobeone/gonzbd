@@ -22,6 +22,18 @@ var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 // attempt open when nothing is ever going to close it.
 var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call finish instead")
 
+// ErrHoldRequired is returned when transition is asked to reach Waiting.
+// hold is the only door into that state: transition has neither a
+// destination-with-a-reason argument nor a next field to fill in on its own,
+// so entering Waiting through transition instead of hold left an attempt
+// with next equal to Waiting itself — unable to resume (transition's a.next
+// check accepts only next as a destination, and Waiting is not a work state)
+// and unable to be re-parked (hold refuses whenever the attempt is already
+// Waiting). Only finish could ever move it again. Refusing here is the fix,
+// not defaulting to some next: you cannot pause without saying where you are
+// going and why, and transition is never given either.
+var ErrHoldRequired = errors.New("job: transition cannot reach Waiting; call hold instead")
+
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own
 // write-once Outcome, so a retry appends a verdict rather than revising one
@@ -70,7 +82,21 @@ func (a *Attempt) view() StateView {
 // not contain. Activity is cleared, because it describes the state being left:
 // carrying it forward would render a job as "repairing" while it extracts.
 //
-// transition cannot reach Finished — see ErrFinishRequired.
+// Each non-work state has exactly one door, and this is the whole contract:
+//
+//	hold        -> Waiting
+//	finish      -> Finished
+//	transition  -> every other (work) state
+//
+// transition refuses both Waiting (ErrHoldRequired) and Finished
+// (ErrFinishRequired) as destinations, because pausing and finishing each
+// need something transition does not carry: hold takes a destination AND a
+// reason, finish takes a verdict, and transition has neither. You cannot
+// pause without saying where you are going and why. Entering Waiting through
+// transition instead of hold was reachable before this check existed, and it
+// stranded the attempt: transition's own a.next check (below) then accepted
+// nothing but Waiting itself as a resume target, and hold refuses to re-park
+// an attempt that is already Waiting — only finish could still move it.
 //
 // From Waiting, the only legal `to` is a.next. The destination was decided
 // when hold was taken, and CanTransition(Waiting, to) alone cannot see that:
@@ -84,6 +110,9 @@ func (a *Attempt) view() StateView {
 func (a *Attempt) transition(to State) error {
 	if to == Finished {
 		return ErrFinishRequired
+	}
+	if to == Waiting {
+		return ErrHoldRequired
 	}
 	if a.state == Waiting && to != a.next {
 		return illegalTransition(a.state, to)

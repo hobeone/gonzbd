@@ -94,20 +94,44 @@ func TestAttempt_HoldRejectsAnIllegalDestination(t *testing.T) {
 	}
 }
 
+// TestAttempt_TransitionRejectsWaiting pins that hold is the only door into
+// Waiting. Before this check existed, Extracting -> transition(Waiting) ->
+// transition(Fetching) reached Fetching with err=nil at both hops — the
+// second hop was later closed by the a.next check below, but the first hop
+// itself stayed open, and taking it stranded the attempt: transition's own
+// a.next check then accepted nothing but Waiting itself as a destination,
+// and hold refuses to re-park an attempt that is already Waiting, so only
+// finish could still move it. Confirmed via a probe:
+// Fetching -> transition(Waiting) => state=Waiting next=Waiting reason=NoLease,
+// then hold(Assessing) and transition(Assessing) both refused, finish the
+// only move left.
+func TestAttempt_TransitionRejectsWaiting(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	if err := a.transition(Waiting); !errors.Is(err, ErrHoldRequired) {
+		t.Fatalf("transition(Waiting) error = %v, want ErrHoldRequired", err)
+	}
+	if got := a.view().State; got != Extracting {
+		t.Errorf("State = %v after a rejected transition, want Extracting unchanged", got)
+	}
+}
+
 // TestAttempt_BoundaryHoldsAcrossAHold pins the two-hop escape
-// TestBoundaryIsOneWay (transition_test.go) cannot see. That test enumerates
-// direct edges in legalEdges, but Production -> Waiting -> Correctness is two
-// individually legal edges — a pause into Waiting, then an unconstrained
-// resume out of it — composing into the exact edge the graph forbids
-// directly. Confirmed reachable before the fix this pins: a probe of
-// Extracting -> transition(Waiting) -> transition(Fetching) returned err=nil
-// with state=Fetching.
+// TestBoundaryIsOneWay (transition_test.go) cannot see, now exercised through
+// hold — the only door into Waiting, per TestAttempt_TransitionRejectsWaiting
+// above. That test enumerates direct edges in legalEdges, but
+// Production -> Waiting -> Correctness is two individually legal edges — a
+// pause into Waiting, then an unconstrained resume out of it — composing
+// into the exact edge the graph forbids directly. This confirms the
+// boundary survives the round trip through the legitimate door, not only
+// through the one transition itself now refuses.
 func TestAttempt_BoundaryHoldsAcrossAHold(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
 	mustTransition(t, &a, Extracting)
-	if err := a.transition(Waiting); err != nil {
-		t.Fatalf("transition(Waiting): %v", err)
+	if err := a.hold(Finalizing, NoComputeSlot); err != nil {
+		t.Fatalf("hold(Finalizing): %v", err)
 	}
 	if err := a.transition(Fetching); !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("transition(Fetching) after Production paused, error = %v, want ErrIllegalTransition", err)
@@ -136,6 +160,13 @@ func TestAttempt_TransitionFromWaitingRequiresNext(t *testing.T) {
 	}
 	if err := a.transition(Assessing); err != nil {
 		t.Fatalf("transition(Assessing), the declared next, should succeed: %v", err)
+	}
+	// Leaving Waiting still clears next/reason to their zero values — this
+	// resume took the declared path rather than being refused, so it is the
+	// case that exercises the clearing lines rather than skipping them.
+	v := a.view()
+	if v.Next != Waiting || v.Reason != NoLease {
+		t.Errorf("view = %+v after a successful resume; want Next=Waiting Reason=NoLease cleared", v)
 	}
 }
 
