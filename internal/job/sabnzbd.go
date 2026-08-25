@@ -5,11 +5,16 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // ToSABnzbd translates our internal machine into the legacy status vocabulary
 // the /api?mode=queue contract exposes to third-party clients.
 //
-// This is the ONLY file in the package that imports internal/constants — Task
-// 10's whole-package `go list -deps` gate is what checks that, not this
-// comment — and the translation is one-way: nothing reads a constants.Status
-// back into the machine. That is the whole point of having a shim rather than
-// storing the upstream vocabulary — see spec §12.
+// This is the only NON-TEST file in the package that imports
+// internal/constants — TestOnlyOneNonTestFileImportsConstants
+// (sabnzbd_test.go) is what checks that, not this comment. sabnzbd_test.go
+// itself also imports internal/constants (it needs constants.Status to
+// write its table), which is exactly why the check is scoped to non-test
+// sources rather than claiming to be the only importer full stop; `go list
+// -deps` cannot see test files at all, so it could never have caught that
+// distinction on its own. The translation is one-way: nothing reads a
+// constants.Status back into the machine. That is the whole point of having
+// a shim rather than storing the upstream vocabulary — see spec §12.
 //
 // It is total by construction: every State arm returns, and the Finished and
 // Waiting arms delegate to helpers that also return on every input via a

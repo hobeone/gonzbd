@@ -16,9 +16,12 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 //
 // What is established now: a Job method never calls any other repository
 // package's method, because this package imports nothing from the rest of
-// the daemon except internal/constants (in sabnzbd.go only) — see doc.go and
-// `go list -deps ./internal/job/`. In particular Job cannot call Queue,
-// because Job cannot see Queue.
+// the daemon except internal/constants, imported only by sabnzbd.go among
+// this package's non-test sources — see doc.go and
+// TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go), which is what
+// checks that; `go list -deps` cannot, since it does not see test files, and
+// sabnzbd_test.go itself imports internal/constants. In particular Job
+// cannot call Queue, because Job cannot see Queue.
 //
 // What is intent for a later plan, not yet built or enforced: a Queue type
 // that always locks Queue.mu before calling into Job.mu, giving the system a

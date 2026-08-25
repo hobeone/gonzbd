@@ -1,6 +1,11 @@
 package job
 
 import (
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -101,6 +106,63 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestOnlyOneNonTestFileImportsConstants is the standing check behind
+// sabnzbd.go's and doc.go's claim that sabnzbd.go is the only NON-TEST file
+// in the package that imports internal/constants. `go list -deps` cannot
+// make this check at all — it does not see test files — and a one-time
+// manual run of it (as this package's Task 10 review did) is a snapshot,
+// not an enforcement point: nothing would catch a second non-test file
+// gaining the import later. This test parses the package's own non-test
+// sources from scratch on every run and asserts the importer set by name,
+// the same shape as scanOutcomeWriters in
+// outcome_writer_enumeration_test.go.
+func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
+	const wantImporter = "sabnzbd.go"
+	const constantsImportPath = `"github.com/hobeone/gonzbd/internal/constants"`
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	var importers []string
+	var scanned int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		scanned++
+		for _, imp := range file.Imports {
+			if imp.Path.Value == constantsImportPath {
+				importers = append(importers, name)
+			}
+		}
+	}
+
+	// A parse that matched no files would report an empty importers slice,
+	// which reads identically to "nobody imports constants" rather than
+	// "the scan broke" — the same failure mode scanOutcomeWriters guards
+	// against.
+	if scanned == 0 {
+		t.Fatal("no non-test sources parsed; the scan found nothing to check " +
+			"and its empty result would otherwise look like a real answer")
+	}
+
+	if len(importers) != 1 || importers[0] != wantImporter {
+		t.Errorf("non-test files importing internal/constants = %v, want [%s]\n\n"+
+			"sabnzbd.go's and doc.go's comments claim sabnzbd.go is the only "+
+			"non-test file that imports internal/constants. If a second file "+
+			"needs it, that claim is now false at two comments — update them "+
+			"and this list together.", importers, wantImporter)
 	}
 }
 

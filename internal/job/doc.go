@@ -50,10 +50,16 @@
 // # What this package does not do
 //
 // No I/O, no locking beyond its own Job.mu, and no import of any other
-// package in this repository except internal/constants — which appears in
-// sabnzbd.go alone, for the one-way translation to the legacy API
-// vocabulary. `go list -deps ./internal/job/ | grep hobeone` is the check;
-// it names exactly internal/constants and internal/job itself.
+// package in this repository except internal/constants — which, among this
+// package's non-test sources, appears in sabnzbd.go alone, for the one-way
+// translation to the legacy API vocabulary.
+// `go list -deps ./internal/job/ | grep hobeone` names exactly
+// internal/constants and internal/job itself, but that check is blind to
+// test files by construction — sabnzbd_test.go is package job and also
+// imports internal/constants, which `go list -deps` cannot see either way.
+// TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go) is the check that
+// covers the sentence above, including the test files `go list -deps`
+// cannot.
 //
 // A Job method never calls a Queue method. That holds structurally today
 // because this package cannot see a Queue — nothing here imports it. Whether
