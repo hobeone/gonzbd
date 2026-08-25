@@ -122,3 +122,52 @@ func TestZoneClassification(t *testing.T) {
 		})
 	}
 }
+
+// TestEdgeCountsMatchTheStatedPartition classifies every edge in legalEdges
+// by the partition rule stated in the doc comment above legalEdges — Cancel
+// (target Finished), Pause (target Waiting), Resume (source Waiting, target
+// not Finished), Work spine (everything else) — and pins the bucket sizes and
+// their total. This is what keeps that comment from drifting silently again:
+// a hand-counted breakdown in prose contradicted itself (claimed 22, summed
+// to 20, and double-counted two edges) and nothing caught it until review.
+func TestEdgeCountsMatchTheStatedPartition(t *testing.T) {
+	var cancel, pause, resume, spine int
+	total := 0
+	for from, tos := range legalEdges {
+		for _, to := range tos {
+			total++
+			switch {
+			case to == Finished:
+				cancel++
+			case to == Waiting:
+				pause++
+			case from == Waiting:
+				resume++
+			default:
+				spine++
+			}
+		}
+	}
+
+	wantCancel, wantPause, wantResume, wantSpine := 6, 5, 5, 6
+	if cancel != wantCancel {
+		t.Errorf("cancel edges (target Finished) = %d, want %d", cancel, wantCancel)
+	}
+	if pause != wantPause {
+		t.Errorf("pause edges (target Waiting) = %d, want %d", pause, wantPause)
+	}
+	if resume != wantResume {
+		t.Errorf("resume edges (source Waiting, target not Finished) = %d, want %d", resume, wantResume)
+	}
+	if spine != wantSpine {
+		t.Errorf("work spine edges = %d, want %d", spine, wantSpine)
+	}
+
+	wantTotal := wantCancel + wantPause + wantResume + wantSpine
+	if total != wantTotal {
+		t.Errorf("total edges = %d, want %d", total, wantTotal)
+	}
+	if got := cancel + pause + resume + spine; got != total {
+		t.Errorf("bucket sizes sum to %d, but classified %d edges; an edge fell into no bucket or more than one", got, total)
+	}
+}

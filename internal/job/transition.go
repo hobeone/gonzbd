@@ -10,21 +10,35 @@ import (
 // edge in the machine below.
 var ErrIllegalTransition = errors.New("job: illegal state transition")
 
-// legalEdges is the lifecycle as a directed graph. 22 edges, and every one is
+// legalEdges is the lifecycle as a directed graph: 22 edges, and every one is
 // reachable — there are no fan-out blocks, because "still producing, doing
 // something else now" is an Activity write rather than a transition.
 //
-// Three shapes account for all of it:
+// A hand-counted breakdown of the 22 by shape is exactly the kind of claim
+// Standing Design Rule 4 forbids stating in prose: an earlier version of this
+// comment recited "8 spine + 6 pause + 6 cancel", which both undercounts (the
+// listed spine edges alone number nine) and double-counts (Assessing→Finished
+// and Finalizing→Finished were claimed under both spine and cancel). Rather
+// than recite a corrected set of numbers that can drift the same way, this
+// comment states the partition RULE, and
+// TestEdgeCountsMatchTheStatedPartition classifies every edge in the map
+// below by it and asserts the bucket sizes and their total — so a change to
+// legalEdges that shifts a count fails the test instead of leaving stale
+// numbers here. Every edge falls into exactly one bucket, checked in this
+// order:
 //
-//   - The work spine (8 edges): Waiting→Fetching, Fetching→Assessing,
-//     Assessing→{Fetching, Repairing, Extracting, Finished},
-//     Repairing→Assessing, Extracting→Finalizing, Finalizing→Finished.
-//   - Pause (6 edges): every non-terminal state may enter Waiting, and
-//     Waiting may re-enter any state that can be a StateView.Next.
-//   - Cancel (6 edges): every non-terminal state may reach Finished.
+//  1. Cancel — target is Finished (6 edges: one per non-terminal source).
+//  2. Pause — target is Waiting (5 edges: one per non-Waiting, non-terminal
+//     source).
+//  3. Resume — source is Waiting, target is not Finished (5 edges: Waiting
+//     may resume into any of the other five non-terminal states).
+//  4. Work spine — everything else (6 edges): Fetching→Assessing,
+//     Assessing→Fetching, Assessing→Repairing, Assessing→Extracting,
+//     Repairing→Assessing, Extracting→Finalizing.
 //
-// A self-transition is always legal and is treated as an idempotent no-op by
-// CanTransition, so callers need not special-case it.
+// Self-transitions are not in this graph at all: CanTransition's from == to
+// early return makes every one of the seven states self-transition
+// idempotently, without a self-edge appearing in legalEdges.
 //
 // The one edge the graph must NOT contain is any return from Production to
 // Correctness. TestBoundaryIsOneWay enumerates AllStates() and fails if one
