@@ -45,11 +45,11 @@ All under `internal/job/`. One file per concept, because these are the types eve
 | `transition.go` | `legalEdges`, `CanTransition`, `ErrIllegalTransition`, the boundary assertion |
 | `wait.go` | `WaitReason`, `StateView` |
 | `activity.go` | `Activity` enum, `AllActivities()`, `String()` |
-| `outcome.go` | `Outcome` enum, `AllOutcomes()`, `String()`, `IsTerminal()` |
+| `outcome.go` | `Outcome` enum, `AllOutcomes()`, `String()`, `IsSettled()` |
 | `policy.go` | `Policy`, `PolicyFromPP` |
 | `attempt.go` | `Attempt`, its open/close rules |
 | `job.go` | `Job` — identity, `policy`, `attempts`, `sync.RWMutex`, all mutators |
-| `sabnzbd.go` | `ToSABnzbd` — the only file importing `internal/constants` |
+| `sabnzbd.go` | `ToSABnzbd` — the only non-test file importing `internal/constants` |
 
 ---
 
@@ -2413,6 +2413,20 @@ The next plan is the swap, and it is where the deletion happens. It must be writ
 5. **The swap**: rewire `app`, `downloader` and `postproc`; delete `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, `par2NeedsRecovery`, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage, `NeedRequeue`/`RequeueBlocksNeeded`, `resumeAllJobs`, `shouldSkipForPP` and `Job.PostProc`.
 
 Dispatch inversion (§10) and DirectUnpack speculation (§11) are a third plan after that.
+
+**A known gap this plan leaves open: `NoComputeSlot -> GlobalPause` cannot be
+recorded.** `hold` refuses to re-declare a destination once an attempt is
+already `Waiting` (`internal/job/attempt.go`, `Attempt.hold`) — correctly, per
+that method's own doc comment: re-declaring the destination was a boundary
+escape reachable before the refusal existed. But the refusal's consequence is
+that a global pause arriving while a job is already waiting for a compute slot
+has nowhere to go: the job's `Reason` stays `NoComputeSlot`, and `ToSABnzbd`
+reports `Queued` for a queue that is, in fact, paused. The next plan's `Queue`
+work is where a global pause becomes a real, queue-wide control, so this is
+where the gap is closed: it needs a reason-only mutator with its own owner —
+never a second meaning for `hold`, which is exactly the shape `hold`'s
+refusal exists to keep out. This is deferred work with a named owner, not a
+hypothetical: the next plan's `Queue` is expected to exercise it.
 
 ## Self-review
 

@@ -196,6 +196,14 @@ type Attempt struct {
     Outcome  Outcome   // write-once, on entering Finished
     Started  time.Time
     Ended    time.Time
+    // Assessed is per-attempt state added during Task 7 of the
+    // implementation plan and not part of this original sketch: it latches
+    // true the first time the attempt enters Assessing and stays true for
+    // the rest of the attempt. §12's ToSABnzbd needs it to tell a
+    // first-pass download from a re-entry fetching recovery volumes — both
+    // are State Fetching, and nothing else on this struct distinguishes
+    // them.
+    Assessed bool
 }
 
 type Job struct {
@@ -716,6 +724,17 @@ a total function at the API boundary:
 ```go
 func ToSABnzbd(s State, a Activity, o Outcome, w WaitReason) constants.Status
 ```
+
+> **Deviation from the built code.** The signature above cannot express the
+> `Fetching, re-entered for recovery volumes` row directly below: telling that
+> case apart from a first-pass download needs the attempt's `Assessed` flag
+> (§3), which none of `s`, `a`, `o`, `w` carries — `s` is `Fetching` either
+> way. `internal/job/sabnzbd.go` builds `func ToSABnzbd(v StateView)
+> constants.Status` instead, taking the whole `StateView` (which does carry
+> `Assessed`) rather than four separate arguments. The built signature is
+> correct and this one is superseded; kept here so the table below still has
+> a function signature to sit under, and so a future reader comparing the two
+> understands why they differ rather than assuming a drift bug.
 
 | Ours | SABnzbd |
 |---|---|

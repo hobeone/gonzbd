@@ -10,6 +10,14 @@ import (
 // ErrOutcomeAlreadySet is returned when a settled attempt is finished again.
 // The write-once rule is enforced here rather than by convention, because a
 // second assignment is exactly the mutation the design exists to prevent.
+//
+// This error is reachable only from an in-package caller of Attempt.finish
+// directly (e.g. this package's own tests). Job.Finish goes through
+// withOpenAttempt, whose !a.isOpen() check fires first on a settled attempt
+// and returns ErrNoOpenAttempt instead — a strict superset of this check,
+// since isOpen() is itself defined as outcome == OutcomePending. A caller
+// outside this package that writes errors.Is(err, ErrOutcomeAlreadySet)
+// against a Job.Finish error is testing a branch Job can never take.
 var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
@@ -67,8 +75,15 @@ type Attempt struct {
 	activity Activity
 	outcome  Outcome
 	assessed bool
-	started  time.Time
-	ended    time.Time
+	// started and ended have no reader yet in this package or its tests
+	// beyond TestNewAttempt_StartsFetching's check of started — that is
+	// expected for a package built ahead of its consumers (see doc.go, "What
+	// this package does not do"). The next plan's history/durability surface
+	// is the intended consumer: per-attempt start/end timestamps are what a
+	// retried job's history entry needs to show each attempt's own duration,
+	// rather than only the job's.
+	started time.Time
+	ended   time.Time
 }
 
 // newAttempt opens an attempt in Fetching. There is no arm for opening in any
@@ -162,9 +177,14 @@ func (a *Attempt) transition(to State) error {
 // was reachable before this check existed, even with transition's a.next
 // check in place). The reason a job is waiting may legitimately change while
 // it waits (NoComputeSlot -> GlobalPause); the destination may not, and this
-// method only ever assigns both together — a reason-only update, if one is
-// ever needed, is a different mutator with its own owner, not a second
-// meaning for hold.
+// method only ever assigns both together — a reason-only update is deferred
+// to the next plan's Queue work, not hypothetical: this package cannot
+// express NoComputeSlot -> GlobalPause today (hold's own refusal above is
+// what blocks it), and a global-pause arriving while a job waits for a
+// compute slot needs to be recordable. The fix is a reason-only mutator with
+// its own owner, never a second meaning for hold — see
+// docs/superpowers/plans/2026-08-25-job-lifecycle-core.md, "What this plan
+// does not deliver, and what comes next".
 //
 // hold also refuses next == Finished (finish is the sole door, see
 // ErrFinishRequired: hold(Assessing) followed by transition(Repairing) must
