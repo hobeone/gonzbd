@@ -22,7 +22,7 @@ func (s *artifactOrderStore) DeleteJobArtifacts(ctx context.Context, id string) 
 	if _, err := s.q.Get(id); err == nil {
 		// The job is still in q.byID while its on-disk artifacts are being
 		// unlinked — exactly the window that lets a concurrent
-		// Queue.Snapshot clone the job (under RLock) and then hydrate it
+		// Queue.SnapshotJob clone the job (under RLock) and then hydrate it
 		// from a manifest file that has already been deleted.
 		s.jobStillPresentAtDelete = true
 	}

@@ -703,22 +703,61 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// Abort any active DirectUnpacker for this job before removing files.
 	app.duOrch.abortJob(id)
 
-	// Cancel in-flight post-processing and assembler file handles before
-	// removing files to prevent the PP from operating on a deleted directory.
+	// Cancel in-flight post-processing before any file is removed, so the PP
+	// is not left operating on a directory that is being deleted.
 	app.postProcessor.Cancel(id)
+	// Remove from the queue BEFORE the assembler cancel, because this is the
+	// only step in the function whose failure is fatal and the cancel below
+	// is irreversible: its control arm unlinks every file it currently holds
+	// open for the job. Running the destructive half first meant a
+	// store-delete failure returned an error having already deleted the
+	// job's bytes, leaving the job resident and still dispatchable with
+	// nothing on disk to write into (#376).
+	//
+	// No FILE has been unlinked at this point, so returning here leaves the
+	// job's bytes intact and the caller can retry. It is not a clean no-op:
+	// abortJob and postProcessor.Cancel above have already dropped this
+	// job's in-memory unpack and post-processing state, and a job wedged
+	// that way stays wedged until a restart's PostProc rescan. That is
+	// unchanged by this swap — both already preceded the fatal step under
+	// the old order. What the swap buys is the bytes, which are the part
+	// nothing can rebuild.
+	//
+	// Queue.Remove is itself built this way — fallible store delete, then an
+	// eviction that cannot fail, then the irreversible manifest unlink — so
+	// this applies one level up the rule it already follows for itself.
+	//
+	// Removing from the queue first also stops dispatch immediately, since
+	// buildDispatchPlan iterates q.jobs: the window in which a job whose
+	// files are gone is still dispatchable closes rather than opening.
+	//
+	// One window opens in exchange. Between here and the worker handling the
+	// cancel, the job is gone from the queue while the assembler still holds
+	// its handles, which was previously unreachable through RemoveJob. A file
+	// whose last article lands in it finalizes against a nil sync target
+	// (syncTargetFor answers nil once SnapshotJob does), so
+	// finalizeCompletedFile returns early and its defer CLOSES the handle
+	// rather than unlinking it: the file survives on disk. That is the same
+	// disposition every already-completed file of a removed job gets, and
+	// MarkFileComplete refuses the completion, so nothing downstream acts
+	// on it.
+	if err := app.queue.Remove(id); err != nil {
+		return err
+	}
 	// CancelJob blocks until the assembler has actually closed the job's
 	// open file handles. If it returns an error (ctx cancelled, assembler
 	// not started/stopped), we have no such guarantee -- warn so a
 	// subsequent directory-delete failure (e.g. .nfsXXXXXX on NFS mounts)
 	// is traceable back to this race instead of looking unexplained.
+	//
+	// It must still precede the deleteFiles sweep below: that ordering is
+	// what 910d160d established, and it is unaffected by the swap above.
 	if err := app.assembler.CancelJob(ctx, id); err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
 			"job", id, "error", err)
 	}
-	// Remove from queue and pipeline so no more articles are dispatched.
-	if err := app.queue.Remove(id); err != nil {
-		return err
-	}
+	// Forget the pipeline's cached file info now that no more articles can
+	// be dispatched for this job.
 	app.pipeline.forgetJob(id)
 	app.forgetJobBarrierState(id)
 	// The job is gone from the queue, so nothing will ever read its durable

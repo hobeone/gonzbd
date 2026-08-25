@@ -206,10 +206,10 @@ func TestSQLiteStore_MoveToHistory(t *testing.T) {
 	}
 
 	// MoveToHistory is now DB-only. The unlink moved to DeleteJobArtifacts so
-	// it can run after the job has left the queue's byID map: Queue.Snapshot
-	// clones under the read lock and hydrates from disk after releasing it,
-	// so unlinking while the job is still reachable lets a snapshot catch a
-	// job whose manifest has already gone.
+	// it can run after the job has left the queue's byID map:
+	// Queue.SnapshotJob clones under the read lock and hydrates from disk
+	// after releasing it, so unlinking while the job is still reachable lets
+	// a snapshot catch a job whose manifest has already gone.
 	if _, err := os.Stat(manifestPath); err != nil {
 		t.Errorf("manifest must survive MoveToHistory, stat err=%v", err)
 	}

@@ -266,11 +266,19 @@ memory figures ever change, only the dropping and the type remain to build.
 
 The fallible surface is manifest-bearing mutation, and nothing else.
 
-**Recovery paths never hydrate.** `RemoveJob`, `queueDelete("all")` and
-`Application.Start` are header-tier. Removing a job does not require reading
+**Recovery paths never DEPEND on hydration.** `RemoveJob`, `queueDelete("all")`
+and `Application.Start` are header-tier. Removing a job does not require reading
 what is being deleted, and enumerating IDs does not require loading manifests.
 A damaged job must remain removable, and one damaged manifest must never
 prevent the daemon from starting.
+
+"Depend on", not "never touch". `RemoveJob` opens with `SnapshotJob`, which
+does hydrate a non-resident job — it wants only the header field `Name`, for
+the directory delete, and gets a manifest read along with it. That is not a
+counterexample to the tier: `hydrateSnapshot` records an unreadable manifest
+on the clone and returns, so `SnapshotJob` answers non-nil either way and
+`RemoveJob`'s `snap == nil` guard fires only for a job that is genuinely
+absent. A job whose manifest cannot be read is still removed.
 
 **A hydration failure has exactly one meaning:** a job that needs its manifest
 in order to download cannot load it. Fail that job — transition to `Failed`
