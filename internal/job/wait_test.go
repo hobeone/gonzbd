@@ -72,7 +72,9 @@ func TestAllWaitReasons_HaveStringArms(t *testing.T) {
 
 func TestStateView_ZeroValueIsWaitingForALease(t *testing.T) {
 	var v StateView
-	if v.State != Waiting || v.Next != Waiting || v.Reason != NoLease {
-		t.Errorf("zero StateView = %+v; want State=Waiting Next=Waiting Reason=NoLease", v)
+	if v.State != Waiting || v.Next != Waiting || v.Reason != NoLease ||
+		v.Activity != ActNone || v.Outcome != OutcomePending {
+		t.Errorf("zero StateView = %+v; want State=Waiting Next=Waiting Reason=NoLease "+
+			"Activity=ActNone Outcome=OutcomePending", v)
 	}
 }

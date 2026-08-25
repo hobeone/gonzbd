@@ -58,9 +58,11 @@ func (r WaitReason) IsPause() bool {
 //
 // The zero value is a job that has never run: Waiting for a lease.
 type StateView struct {
-	State  State
-	Next   State
-	Reason WaitReason
+	State    State
+	Next     State
+	Reason   WaitReason
+	Activity Activity
+	Outcome  Outcome
 	// Assessed reports whether this attempt has already been through
 	// Assessing. It exists so ToSABnzbd can tell a first-pass download from a
 	// re-entry that is fetching recovery volumes — which is exactly what
