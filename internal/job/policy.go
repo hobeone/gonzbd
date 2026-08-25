@@ -30,12 +30,19 @@ type Policy struct {
 	Delete bool
 }
 
-// PolicyFromPP resolves an upstream PP level to a Policy. Out-of-range input
-// clamps: PP arrives from config, from an API query parameter and from an NZB
-// meta tag, none of which we control, and clamping is preferable to
-// synthesising a combination nobody designed.
+// PolicyFromPP resolves an upstream PP level to a Policy. PP arrives from
+// config, from an API query parameter and from an NZB meta tag, none of
+// which we control, so out-of-range input must resolve to a policy someone
+// designed rather than an arbitrary combination.
+//
+// No explicit clamp is needed: each field's cumulative ">=" comparison
+// already saturates at both ends for any int. A pp below 0 fails every
+// comparison, matching pp==0's Policy{}; a pp above 3 satisfies every
+// comparison, matching pp==3's all-true Policy. TestPolicyFromPP's
+// "negative clamps to pp0" and "above range clamps to pp3" rows are what pin
+// this — they are the only thing asserting out-of-range behaviour, so do not
+// remove them as redundant with the in-range rows.
 func PolicyFromPP(pp int) Policy {
-	pp = min(max(pp, 0), 3)
 	return Policy{
 		Verify: pp >= 1,
 		Repair: pp >= 1,
