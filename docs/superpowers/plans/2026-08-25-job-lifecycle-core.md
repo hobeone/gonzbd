@@ -23,7 +23,7 @@
 
 ## Scope
 
-**In:** the `internal/job` package — enums, transition table, `WaitState`, `Policy`, `Attempt`, `Job`, `StateView`, `ToSABnzbd`.
+**In:** the `internal/job` package — enums, transition table, `Policy`, `Attempt`, `Job`, `StateView`, `ToSABnzbd`.
 
 **Out, and deferred to the next plan** (each named so nobody wonders whether it was forgotten):
 
@@ -43,7 +43,7 @@ All under `internal/job/`. One file per concept, because these are the types eve
 | `doc.go` | Package doc: the three axes, the boundary, the single-decider property |
 | `state.go` | `State` enum, `AllStates()`, `String()` |
 | `transition.go` | `legalEdges`, `CanTransition`, `ErrIllegalTransition`, the boundary assertion |
-| `wait.go` | `WaitReason`, `WaitState`, `StateView` |
+| `wait.go` | `WaitReason`, `StateView` |
 | `activity.go` | `Activity` enum, `AllActivities()`, `String()` |
 | `outcome.go` | `Outcome` enum, `AllOutcomes()`, `String()`, `IsTerminal()` |
 | `policy.go` | `Policy`, `PolicyFromPP` |
@@ -200,7 +200,7 @@ type State uint8
 
 const (
 	// Waiting holds no lease and no compute slot. It knows where it is going
-	// (WaitState.Next) and why it is held (WaitState.Reason); it never
+	// (StateView.Next) and why it is held (StateView.Reason); it never
 	// decides anything itself.
 	Waiting State = iota
 	// Fetching is downloading articles. Holds a lease.
@@ -474,7 +474,7 @@ var ErrIllegalTransition = errors.New("job: illegal state transition")
 //     Assessing→{Fetching, Repairing, Extracting, Finished},
 //     Repairing→Assessing, Extracting→Finalizing, Finalizing→Finished.
 //   - Pause (6 edges): every non-terminal state may enter Waiting, and
-//     Waiting may re-enter any state that can be a WaitState.Next.
+//     Waiting may re-enter any state that can be a StateView.Next.
 //   - Cancel (6 edges): every non-terminal state may reach Finished.
 //
 // A self-transition is always legal and is treated as an idempotent no-op by
@@ -564,7 +564,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: `WaitReason`, `WaitState`, `StateView`
+### Task 3: `WaitReason` and `StateView`
 
 **Files:**
 - Create: `internal/job/wait.go`
@@ -583,7 +583,10 @@ Create `internal/job/wait_test.go`:
 ```go
 package job
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestWaitReason_String(t *testing.T) {
 	for _, tc := range []struct {
@@ -632,7 +635,7 @@ func TestWaitReason_IsPause(t *testing.T) {
 // failure rather than a UI bug.
 func TestAllWaitReasons_CoveredByIsPause(t *testing.T) {
 	for _, r := range AllWaitReasons() {
-		if r.String() == "WaitReason("+itoa(uint8(r))+")" {
+		if r.String() == "WaitReason("+strconv.Itoa(int(r))+")" {
 			t.Errorf("WaitReason(%d) is in AllWaitReasons() but has no String() arm", r)
 		}
 	}
@@ -647,24 +650,6 @@ func TestStateView_ZeroValueIsWaitingForALease(t *testing.T) {
 	if v.State != Waiting || v.Next != Waiting || v.Reason != NoLease {
 		t.Errorf("zero StateView = %+v; want State=Waiting Next=Waiting Reason=NoLease", v)
 	}
-}
-```
-
-Add the tiny helper the exhaustiveness test uses, in the same file:
-
-```go
-func itoa(v uint8) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [3]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
 }
 ```
 
@@ -756,7 +741,7 @@ type StateView struct {
 Run: `goimports -w internal/job/wait.go && go build ./... && go test -count=1 ./internal/job/ -v`
 Expected: PASS. `TestStateView_ZeroValueIsWaitingForALease` requires `Waiting`, `NoLease` and `ActNone`/`OutcomePending` to all be the zero value of their types — Tasks 4 and 5 must preserve that.
 
-Note: this task will not compile until Tasks 4 and 5 define `Activity` and `Outcome`. Implement Tasks 4 and 5 before running Step 4, then return here. If you are executing strictly in order, write `wait.go` without the `Activity` and `Outcome` fields, add them in Task 5's step 3, and run this test then.
+**Do not write the `Activity` and `Outcome` fields in this task.** Their types are defined by Tasks 4 and 5, so writing them here would not compile. Declare `StateView` with `State`, `Next`, `Reason` and `Assessed` only; Task 5 adds the other two. The doc comment above the struct still describes all six, because it describes the finished shape. This task's tests do not reference either field, so the package builds and tests green as committed.
 
 - [ ] **Step 5: Commit**
 
@@ -796,7 +781,10 @@ Create `internal/job/activity_test.go`:
 ```go
 package job
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestActivity_String(t *testing.T) {
 	for _, tc := range []struct {
@@ -834,7 +822,7 @@ func TestActivity_NoneIsZero(t *testing.T) {
 
 func TestAllActivities_EveryEntryHasAStringArm(t *testing.T) {
 	for _, a := range AllActivities() {
-		if got := a.String(); got == "Activity("+itoa(uint8(a))+")" {
+		if got := a.String(); got == "Activity("+strconv.Itoa(int(a))+")" {
 			t.Errorf("Activity(%d) is in AllActivities() but falls to the default String() arm", a)
 		}
 	}
@@ -957,7 +945,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Create: `internal/job/outcome.go`
 - Test: `internal/job/outcome_test.go`
-- Modify: `internal/job/wait.go` — add the `Activity` and `Outcome` fields to `StateView` if Task 3 deferred them.
+- Modify: `internal/job/wait.go` — add the `Activity` and `Outcome` fields to `StateView`. Task 3 deliberately omits them (their types do not exist yet); this task adds them. Not conditional.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -970,7 +958,10 @@ Create `internal/job/outcome_test.go`:
 ```go
 package job
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestOutcome_String(t *testing.T) {
 	for _, tc := range []struct {
@@ -1028,7 +1019,7 @@ func TestOutcome_IsSettled(t *testing.T) {
 
 func TestAllOutcomes_EveryEntryHasAStringArm(t *testing.T) {
 	for _, o := range AllOutcomes() {
-		if got := o.String(); got == "Outcome("+itoa(uint8(o))+")" {
+		if got := o.String(); got == "Outcome("+strconv.Itoa(int(o))+")" {
 			t.Errorf("Outcome(%d) is in AllOutcomes() but falls to the default String() arm", o)
 		}
 	}
@@ -1108,9 +1099,9 @@ func (o Outcome) IsSettled() bool {
 }
 ```
 
-- [ ] **Step 4: Ensure `StateView` carries both new fields**
+- [ ] **Step 4: Add both new fields to `StateView`**
 
-If Task 3 deferred them, add to `StateView` in `internal/job/wait.go`:
+Add to `StateView` in `internal/job/wait.go` (Task 3 omitted them because `Activity` and `Outcome` did not exist yet):
 
 ```go
 	Activity Activity
