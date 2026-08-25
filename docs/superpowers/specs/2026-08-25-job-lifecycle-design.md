@@ -1,0 +1,613 @@
+# Job Lifecycle — Design
+
+**Status:** Direction settled in discussion. This document is the argument the
+implementation plan is written against. Nothing here has been built.
+
+**Scope:** Replaces the job state model in `internal/queue` and the ownership
+boundaries between `app`, `queue`, `downloader`, `durability` and `postproc`.
+
+> **This is not a migration.** Per Standing Design Rule 1, no part of this
+> design owes anything to state an earlier build wrote or to parity with any
+> other implementation. Where the current code is cited below it is cited as
+> *evidence about the problem*, never as a constraint on the answer.
+
+---
+
+## 1. The problem
+
+The current model has 17 `constants.Status` values, a 15-key transition table
+with 66 directed edges, and a separate 5-value `JobPhase` derived from it. The
+value count is not the problem. Three specific defects are, and each is
+structural — the model cannot not have them.
+
+### 1.1 One string carries three orthogonal facts
+
+`Status` conflates lifecycle position, current sub-activity, and terminal
+outcome:
+
+| Axis | Values tangled into `Status` today |
+|---|---|
+| Position | `Queued`, `Downloading`, `Paused`, `Completed` |
+| Sub-activity | `Verifying`, `Repairing`, `Extracting`, `Moving`, `Running`, `QuickCheck` |
+| Outcome | `Completed` vs `Failed` |
+
+`Verifying` is a position (inside post-processing) *and* an activity (par2
+verify is running). That conflation is most of why the edge table needs 66
+entries: the post-processing block is not modelling transitions, it is
+enumerating which activity might come next. Every processing state has an edge
+to every later processing state because the model has no way to say "still
+post-processing, doing something else now".
+
+The consequence that matters is testability. Six states each making their own
+routing decision gives a test surface that is the *product* of those decisions
+— which is why the current pipeline needs a self-gating matrix of flag
+combinations (`ParError`, `UnpackError`, `QuickCheck`, PP level) rather than a
+set of cases.
+
+### 1.2 The verification decision has two implementations
+
+`Application.par2NeedsRecovery` decides, at download completion, whether a job's
+deferred par2 recovery volumes must be fetched. Its doc comment states the
+duplication outright:
+
+> *"It mirrors the post-processing QuickCheck stage: it parses the par2 index
+> files already on disk in dir and…"*
+
+The same question — *are these bytes intact?* — is answered once in
+`internal/app` and again as the `quickcheck` stage in `internal/postproc`. Two
+enforcement points for one invariant is precisely what Standing Design Rule 2
+forbids.
+
+The related loop is worse. `postproc`'s repair stage sets `NeedRequeue` and
+`RequeueBlocksNeeded` when par2 reports insufficient blocks, but
+`postproc.go:512` records that this "is recorded for informational purposes
+(history/UI) but no longer aborts the pipeline". So *"we need more par2, go get
+it"* is a live path in one place, a dead flag in the other, and a reader cannot
+tell which from the type system.
+
+### 1.3 Residency is a property three functions must agree about
+
+`docs/queue-lifecycle.md` states the intended design and records that it was
+never built:
+
+> Four phases replace the 14 statuses, with residency as a function of phase —
+> Active/Processing if and only if the manifest is resident — rather than a
+> parallel `inflated` axis. That structural choice is what removes the
+> silent-nil defect class.
+
+The memory optimization shipped; the structural choice did not.
+`JobPhase.IsResident()` declares the invariant and nothing enforces it, while
+residency is decided independently in `Queue.Add`, `evictJobLocked` and
+`PromoteNext`. The document attributes eight issues and four pull requests to
+this, and notes that the existing property test passed through all of them
+because it walks one job down the happy path.
+
+**A property that three functions must agree about is not an invariant.** The
+fix is not a fourth check.
+
+---
+
+## 2. The design in one page
+
+```
+        ┌───────────────────┐
+        │      Waiting      │  holds nothing; knows where it is going
+        └─┬───────────────┬─┘
+          │               │
+          ▼               ▼
+   ╔══════════════════════════════════════════════════════╗
+   ║  CORRECTNESS — reversible, idempotent                ║
+   ║                                                      ║
+   ║   Fetching ─────────► Assessing ◄────► Repairing     ║
+   ║      ▲                 │      │                      ║
+   ║      └─────────────────┘      └──► Finished(Unrec.)  ║
+   ║          NeedsMore            │                      ║
+   ╚═══════════════════════════════╪══════════════════════╝
+                                   │
+                                   ▼   ◄══ THE IRREVERSIBLE BOUNDARY
+   ╔══════════════════════════════════════════════════════╗
+   ║  PRODUCTION — forward only, destructive              ║
+   ║                                                      ║
+   ║   Extracting ─────────► Finalizing ─────► Finished   ║
+   ╚══════════════════════════════════════════════════════╝
+```
+
+Seven states on one axis, two orthogonal axes beside it, one branching node,
+one irreversible edge.
+
+Resource holding, which cuts across the boundary rather than along it:
+
+| State | Lease (pool A) | Compute slot (pool B) |
+|---|---|---|
+| `Waiting` | — | — |
+| `Fetching` | held | — |
+| `Assessing` | held | held |
+| `Repairing` | held | held |
+| `Extracting` | — | held |
+| `Finalizing` | — | held |
+| `Finished` | — | — |
+
+The lease is surrendered on crossing the boundary, not on leaving `Fetching`
+(§6, §8.1).
+
+```go
+type State uint8
+const (
+    Waiting State = iota  // holds nothing; knows where it is going
+    Fetching              // holds a Lease
+    Assessing             // holds a Lease + a compute slot   ← the only decider
+    Repairing             // holds a Lease + a compute slot
+    Extracting            // holds a compute slot
+    Finalizing            // holds a compute slot
+    Finished              // terminal
+)
+
+type Activity uint8   // what is running right now; NOT a state
+type Outcome  uint8   // write-once, set only on entering Finished
+```
+
+---
+
+## 3. Three axes, not one enum
+
+**`State`** is the machine. It answers *where in its life is this job, and what
+may happen next*. Seven values, listed above.
+
+**`Activity`** is what is executing right now: `Par2Verify`, `CRCCheck`,
+`Unpack`, `VolumeRecovery`, `Deobfuscate`, `Move`, `Script`, and so on. It is a
+field the running component writes, never a transition. It exists for the UI,
+the API and the log — nothing branches on it.
+
+**`Outcome`** is the verdict, and it is **write-once**, assigned only on the
+edge into `Finished`: `OK`, `Failed`, `Unrecoverable`, `Cancelled`.
+
+Write-once matters more than it looks. Today `Failed → Queued` is a legal edge,
+so *"did this job fail?"* is a question whose answer can change, and
+`Queue.Retry` has to reconstruct the distinction between "failed, retry me" and
+"done, keep me" from `failed[]` bits. With a write-once outcome, a retry is
+unambiguously a **new attempt**, not a mutation of an old verdict.
+
+**Consequence for the transition table.** With position separated from
+activity, the edge set collapses from 66 to the handful drawn in §2, and every
+remaining edge is genuinely reachable. There are no fan-out blocks because
+"still post-processing, doing something else" is an `Activity` write rather
+than a transition.
+
+---
+
+## 4. The reversibility boundary
+
+This is the central invariant of the design. Everything else follows from it.
+
+|  | **Correctness** | **Production** |
+|---|---|---|
+| States | `Fetching`, `Assessing`, `Repairing` | `Extracting`, `Finalizing` |
+| Goal | have the correct bytes | turn bytes into final files |
+| Consumes | network, then CPU + our own working dir | CPU + disk **outside** the working dir |
+| Side effects | none observable outside the job | deletes archives, moves files, runs user scripts |
+| Idempotent? | yes — refetching costs bandwidth, nothing else | **no** |
+| Can go back? | yes, freely | **no** |
+
+> **A job crosses from Correctness to Production exactly once, and never
+> returns.**
+
+The asymmetry that makes this safe to model is that acquisition is idempotent
+and production is not. Re-downloading an article you already have wastes
+bandwidth. Unpacking twice, or deleting archives you still need, is
+destructive.
+
+This one line does four separate jobs in the design:
+
+1. It defines **pause granularity** (§8).
+2. It defines **cancel semantics** (§8).
+3. It defines the **lease lifetime** (§6).
+4. It defines which failures are **recoverable** — everything before the
+   boundary is restartable from the same files.
+
+---
+
+## 5. `Assessing` is the only decider
+
+Every other state does work and returns. `Assessing` is the sole branching node
+in the machine, and its verdict is total:
+
+| Verdict | Next state |
+|---|---|
+| `Complete` | `Extracting` — cross the boundary |
+| `Repairable` | `Repairing`, then back to `Assessing` to re-verify |
+| `NeedsMore(blocks)` | `Fetching` — acquire recovery volumes |
+| `Unrecoverable` | `Finished(Unrecoverable)` |
+
+Two properties follow.
+
+**Repair never fails for insufficiency.** par2 verify computes block
+sufficiency *before* any repair runs, so the decision to enter `Repairing` is
+made with complete information. "We needed more blocks" is a verdict, never a
+repair failure. `NeedRequeue` ceases to exist as a concept — it becomes an
+ordinary edge.
+
+**Verification method is an implementation detail.** The cheap CRC path and the
+full par2 verify are two ways for one `Assessor` to reach one verdict. There is
+no `QuickCheck` state and no "bypass"; there is one component that answers *are
+these bytes right?* and is free to answer cheaply when it can. This is the
+single implementation that §1.2's duplication is missing.
+
+**Testability.** Every path through a job is `Fetching → Assessing → {one of
+four}`. The test surface is the verdict function, not the graph.
+
+---
+
+## 6. The Lease
+
+Three things have exactly the same lifetime — from a job beginning to fetch
+until it crosses the irreversible boundary:
+
+| | lifetime |
+|---|---|
+| pool-A capacity (reserved across the whole correctness loop) | Fetching → crossing |
+| the resident `Manifest` | needs to be resident for exactly that span |
+| the `StorageBarrier` | writes downloaded articles; useless after crossing |
+
+Three things with one lifetime are one object.
+
+```go
+// Issued by Queue. Held by Job for the whole correctness loop.
+// Surrendered on crossing into Extracting.
+// There is no other way to obtain a Manifest or a StorageBarrier.
+type Lease struct {
+    manifest *Manifest
+    barrier  *StorageBarrier
+}
+
+func (j *Job) BeginFetch(l *Lease) error  // cannot be called without one
+func (j *Job) Surrender() *Lease          // called on crossing
+```
+
+**This is what actually retires §1.3.** Residency stops being a property three
+functions must agree about and becomes an object you either hold or do not.
+There is no code path that produces a nil manifest, because there is no path to
+a manifest except through a lease you were handed. The compiler sees it.
+
+The `Manifest`/`JobProgress` split also stops needing a rule. `JobProgress` is
+job state, always present, owned by the `Job`. `Manifest` is leased. That is
+not something to remember; it is which struct the field lives in.
+
+**A lease is unpersistable by construction** — in-process capacity, an
+in-memory manifest, a live barrier. §10 depends on this.
+
+---
+
+## 7. Ownership map
+
+Every piece of state has exactly one owner and exactly one mutation path.
+Everything else reads.
+
+| Component | Owns | Never does |
+|---|---|---|
+| **App** | NZB ingestion and validation; process construction; reading persisted rows into `Job`s | resume or recovery logic (§10) |
+| **Queue** | the priority-ordered job list; lease issuance; compute-slot issuance; the dispatcher | mutate job state except through `Job` methods |
+| **Job** | all of its own state, behind its own `sync.RWMutex`; answers `IsDone()`; holds its `Lease` | call any `Queue` method (§7.1) |
+| **Lease** | the grant of manifest + barrier + pool-A capacity | outlive the crossing |
+| **StorageBarrier** | persisting article bytes to durable storage; write caching; reconciling its own record against the disk at construction | mark an article done without an fsync |
+| **Assessor** | the verdict — the single answer to *are these bytes right?* | mutate the job; it returns a verdict |
+| **Dispatcher** | server pools, connection lending, per-article retry and penalty policy | hold per-job state of its own (§9) |
+| **Checkpointer** | writing job state to SQLite; sole DB writer for job rows | read anything but snapshots |
+| **PostProcessor** | the production stage sequence; writes `Activity` | decide anything the `Assessor` decides |
+
+### 7.1 The lock-ordering rule
+
+`Job` holds a real lock, so lock ordering is a proof obligation. One rule
+discharges it:
+
+> **A `Job` method never calls a `Queue` method.**
+
+Queue is strictly the caller, Job strictly the callee, and the order is always
+`Queue.mu → Job.mu`. Anything that walks the queue takes `q.mu`, snapshots, and
+releases before touching job locks.
+
+### 7.2 Snapshots are the only read path
+
+Every consumer that is not mutating — the API, metrics, the checkpointer, the
+UI, the dispatcher — takes an immutable `JobSnapshot` and never holds a job
+lock.
+
+This bounds the cost of per-job locking honestly: **cross-job aggregates are
+snapshot-based and slightly stale.** Job A is read at T₀ and job B at T₁. For
+reporting that is correct and already effectively true. For decisions it is
+not, so lease issuance reads fresh under `q.mu`.
+
+`Manifest` is immutable after parse and is shared by reference into snapshots.
+`JobProgress` is deep-copied. That is what a snapshot *is*, rather than a rule
+callers must remember.
+
+---
+
+## 8. Scheduling, pause, and cancel
+
+### 8.1 Two pools, one ordering
+
+- **Pool A — acquisition leases.** Bounds how many jobs may be working toward
+  correct bytes. Held across the entire correctness loop, *including* while
+  assessing and repairing.
+- **Pool B — compute slots.** Bounds concurrent CPU/disk work: `Assessing`,
+  `Repairing`, `Extracting`, `Finalizing`.
+
+Pool A is reserved rather than released-and-reacquired. A job re-entering
+`Fetching` from `Assessing` never waits, so the correctness loop is provably
+non-starving. The cost is real and accepted: acquisition capacity sits idle
+while a leased job assesses or repairs.
+
+The Queue keeps **one priority-ordered list with two consumers**:
+
+```
+Queue owns the priority-ordered job list
+   ├── lease issuance:  top N by that order get leases
+   └── dispatch:        serve leased jobs in that same order
+```
+
+Priority therefore has exactly one meaning in the system. A second fairness
+policy governing bandwidth would have to re-derive priority in order not to
+contradict the lease order; there is no second policy.
+
+### 8.2 `Waiting` unifies pause and slot-waiting
+
+Waiting for a lease, waiting for a compute slot, and being paused are the same
+situation: the job is at a known boundary, holds nothing, decides nothing, and
+is blocked on permission. Only the reason differs.
+
+```go
+type WaitState struct {
+    Next   State       // already decided; Waiting never decides
+    Reason WaitReason  // NoLease | NoComputeSlot | UserPaused | GlobalPause
+}
+```
+
+`Waiting` does not add a branching node — the next state was already chosen, by
+`Assessing` or by the natural forward edge — so §5's single-decider property
+survives. The UI gains honesty: "waiting to repair" and "waiting for a download
+slot" and "paused" are one shape rendered three ways, instead of `Paused`
+meaning four things depending on what the job was doing.
+
+### 8.3 Pause is a gate, not an interrupt
+
+Pause closes the gate at state transitions. Work in flight runs to the end of
+its state and the job then enters `Waiting`. Granularity differs only in how
+often the gate is checked: per-article in `Fetching`, per-state elsewhere.
+
+This removes a whole failure class: **partially-applied work**. If pause could
+interrupt an unpack, resume would have to answer "what state is the extraction
+directory in?", which is unanswerable in general because external tools do not
+checkpoint. Gating at boundaries means every state is entered and left
+atomically, so resume is always "start the next state", never "resume the
+middle of one".
+
+The cost is honest: pausing mid-repair on a large set does nothing for minutes.
+The fix is to *show* that ("finishing repair, then pausing"), not to make
+repair interruptible.
+
+### 8.4 Cancel is an interrupt before the boundary, a gate after
+
+| State | Cancel behaviour |
+|---|---|
+| `Waiting`, `Fetching` | abort immediately |
+| `Assessing` | abort immediately |
+| `Repairing` | kill the repair, abort immediately |
+| `Extracting`, `Finalizing` | finish the current state, then stop |
+
+Before the boundary, everything is restartable from the same files and nothing
+external was touched, so cancel means *stop now*. After it, there is no clean
+stop for half-moved files or a half-run user script, so cancel degrades to a
+gate.
+
+**In-flight articles for a cancelled job must be dropped, not written.**
+`Job.AddArticle` on a cancelled job returns `ErrNotAccepting`. The `Job` owns
+that decision because it is the `Job`'s state that says "cancelled".
+
+---
+
+## 9. Dispatch
+
+One dispatcher, owned by the `Queue`, serving leased jobs in priority order.
+
+```go
+// Everything the dispatcher needs, and nothing more.
+type LeasedJobs interface {
+    InPriorityOrder() []*Job  // snapshot; caller holds no lock
+}
+```
+
+The `Job` still owns what is outstanding — `job.NextArticle()` is the only way
+to learn it and `job.AddArticle()` the only way to resolve it. The dispatcher
+is a **worker, not state**, and workers may be shared as long as they mutate
+only through the owner's methods.
+
+**The line to hold:** the dispatcher reads snapshots and holds no per-job state
+of its own. Any work-conserving scheduler must see all candidates — that is
+inherent to scheduling, not a coupling smell. The discipline is that the thing
+which sees everything only *reads*.
+
+Three properties fall out:
+
+- **Work-conserving without policy.** A job holds the dispatcher only while it
+  has a *dispatchable* article. In-flight, already-emitted and permanently
+  failed articles are not dispatchable, so the loop falls through to the next
+  job automatically. "Serve the top job until it cannot use the capacity" is
+  emergent, not written.
+- **Higher throughput than round-robin.** Consecutive articles from one job
+  share a newsgroup and have related Message-IDs, so a connection that stays on
+  one job pipelines deeper and hits server-side caching. Interleaving across
+  jobs destroys that.
+- **Global concerns have one home.** Speed limiting, idle-disconnect, server
+  penalties and the all-servers-exhausted verdict are inherently cross-job.
+
+The dispatcher lives in its own package, not inside `internal/queue`, and
+depends only on the read-only interface above.
+
+---
+
+## 10. Persistence and restart
+
+**Nothing persists a lease.** A lease is in-process capacity, an in-memory
+manifest and a live barrier — none of it survives a restart.
+
+> **Therefore every persisted job restores to `Waiting`. There is no other
+> legal option.**
+
+`Waiting{Next: Fetching}` for one that was fetching, `Waiting{Next:
+Extracting}` for one past the boundary. The Queue then issues leases up to the
+pool limits in priority order, exactly as at any other moment.
+
+**Restart is not a special code path.** It is the ordinary scheduler starting
+from a cold pool. This is forced rather than remembered: the thing you would
+need in order to be in any other state cannot be deserialized.
+
+### 10.1 The barrier reconciles itself
+
+Something must reconcile *what the durability record claims* against *what is
+actually on disk* after a crash. That belongs to the component whose stated
+purpose is owning durable storage.
+
+**The `StorageBarrier` reconciles at construction** — it reads its own record,
+stats the files it claims, drops any claim longer than reality, and only then
+is handed over inside a lease. That happens on **every** lease issuance, of
+which the first after a restart is merely one instance.
+
+Two consequences: `App` never has resume logic, and "crash recovery" stops
+being a distinct concern. A crash is just a restart where the record disagrees
+with the disk, and resolving that disagreement is the barrier's normal
+constructor. Exceptional paths that run rarely are exactly the ones that rot.
+
+### 10.2 The Checkpointer is the sole DB writer
+
+`Job` does no I/O. It exposes `Snapshot()`; one `Checkpointer` reads snapshots
+and batches writes to SQLite.
+
+This keeps the single-writer property, preserves batching, leaves `Job`
+trivially testable with no store dependency, and upholds §7.1 — `Job` never
+calls out. The cost is that `JobSnapshot` is a second shape of job state that
+must stay honest.
+
+Article done/failed state remains **derived, not stored**, reconstructed from
+the durability record and the failed-article record. Storing it would create a
+second authority, and the stored copy is the one that drifts.
+
+---
+
+## 11. DirectUnpack: speculation with discard
+
+DirectUnpack is a production activity running during acquisition — which
+appears to violate §4's one-way boundary. It does not, because **the boundary
+governs *committing* output, not *computing* it.**
+
+Extraction may run during `Fetching`, writing to a **speculative area**.
+`Assessing`'s verdict then either:
+
+- **promotes** it — verdict `Complete`, the extraction is already done, so
+  `Extracting` is a no-op; or
+- **discards** it — verdict `Repairable` or `NeedsMore`, so the speculative
+  output is thrown away, the job repairs, and extraction runs properly
+  afterwards.
+
+Nothing speculative reaches final output without passing through the hub, so
+the invariant holds exactly. DirectUnpack failing degrades to "no speculation
+happened", which needs no modelling. Speculative execution with a discard path
+is the standard shape for doing work before you are entitled to trust it.
+
+---
+
+## 12. Translation to SABnzbd
+
+Our states are internal. The legacy `/api?mode=queue` contract is satisfied by
+a total function at the API boundary:
+
+```go
+func ToSABnzbd(s State, a Activity, o Outcome, w WaitReason) constants.Status
+```
+
+| Ours | SABnzbd |
+|---|---|
+| `Waiting{NoLease}`, never started | `Queued` |
+| `Waiting{NoComputeSlot}` | `Queued` |
+| `Waiting{UserPaused \| GlobalPause}` | `Paused` |
+| `Fetching`, first pass | `Downloading` |
+| `Fetching`, re-entered for recovery volumes | `Fetching` |
+| `Assessing`, cheap method | `QuickCheck` |
+| `Assessing`, full par2 | `Verifying` |
+| `Repairing` | `Repairing` |
+| `Extracting` | `Extracting` |
+| `Finalizing`, activity `Move` | `Moving` |
+| `Finalizing`, activity `Script` | `Running` |
+| `Finished(OK)` | `Completed` |
+| `Finished(Failed \| Unrecoverable)` | `Failed` |
+| `Finished(Cancelled)` | `Deleted` |
+
+The four SABnzbd statuses that no current code path assigns — `Grabbing`,
+`Fetching`, `Propagating`, `Checking` — become **output values the shim may
+emit**, never states we store or transition through. `Fetching` in particular
+finally means what upstream documents it to mean: *downloading extra par2 files
+for repair*, which is exactly our `Assessing → Fetching` edge.
+
+---
+
+## 13. Deliberately not built
+
+Named here so they are decisions rather than omissions.
+
+- **Anti-starvation floor on dispatch.** Strict priority means a low-priority
+  job at 99% can sit indefinitely behind a high-priority job that keeps getting
+  work. That is what priority *means*. The obvious fix — boosting jobs
+  re-entering `Fetching` because they are near completion — introduces a second
+  ordering and undoes §8.1's single-ordering property. Not built.
+- **Interruptible production.** See §8.3. The cost of a slow pause is accepted
+  in exchange for never representing partially-applied external work.
+- **Per-job dispatchers.** Rejected in §9; the composition benefit is worth
+  less than the single-ordering property.
+- **A migration path.** Standing Design Rule 1.
+
+---
+
+## 14. Open questions
+
+1. **Does `Queued` collapse into `Waiting{Next: Fetching, Reason: NoLease}`?**
+   A newly-added job is definitionally waiting for a lease, which takes the
+   machine to six states. The argument against is that a never-started job
+   holds nothing at all — no working directory, no partial files — and can be
+   reordered or discarded for free. But that may be progress state rather than
+   lifecycle state.
+2. **Retry semantics.** With a write-once `Outcome`, a retry is a new attempt.
+   Is it a new `Job` with a new ID, or the same `Job` reset to `Waiting` with
+   the outcome cleared? The latter re-introduces a mutable verdict; the former
+   complicates history and the on-disk partial file it must reuse.
+3. **Partial success.** When `Assessing` returns `Unrecoverable` but usable
+   content exists, does the job still cross into production for what it has?
+4. **PP levels 0–3.** These currently gate *stages*. With stages demoted to
+   `Activity`, do they gate states (`Assessing`/`Repairing`/`Extracting`) or
+   remain a per-activity filter?
+5. **Where the `Assessor` lives.** Its own package, or inside `par2`?
+6. **Compute-slot granularity.** Is one pool right, or do CPU-bound par2 work
+   and I/O-bound moving deserve separate bounds?
+
+---
+
+## 15. Implementation decomposition
+
+Seven phases. Each must leave the tree green. Phases 1–3 are behaviour-
+preserving refactors; 4–7 change behaviour.
+
+| # | Phase | Delivers | Depends on |
+|---|---|---|---|
+| 1 | **State surface** | `State`/`Activity`/`Outcome`, the transition function, `ToSABnzbd` shim, contract test against the existing API | — |
+| 2 | **Job owns its lock** | job state mutation moves inside `Job`; `Queue` becomes an ordered index; §7.1 rule enforced | 1 |
+| 3 | **Lease** | `Manifest` + `StorageBarrier` reachable only through a `Lease`; retires §1.3 | 2 |
+| 4 | **Assessor** | one verdict implementation; `Fetching ⇄ Assessing` loop; `NeedRequeue` and the `quickcheck` stage both deleted | 3 |
+| 5 | **Pools and `Waiting`** | two pools, reservation, unified `Waiting`, pause-as-gate, cancel semantics | 4 |
+| 6 | **Dispatch inversion** | `job.NextArticle()` / `job.AddArticle()`; Queue-owned dispatcher over `LeasedJobs` | 5 |
+| 7 | **Speculation** | DirectUnpack writes to a speculative area; promote/discard at the verdict | 4, 6 |
+
+Phase 3 is the one that pays for the whole exercise on its own. Phase 4 is the
+one that removes a shipped duplication.
+
+**Each phase gets its own implementation plan and its own PR.** This document
+is too large to be a single plan, and the phases have real dependencies — a
+plan written for phase 5 before phase 4 lands would be written against a
+verdict function that does not exist yet.
