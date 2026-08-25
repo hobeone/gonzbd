@@ -943,8 +943,8 @@ func (a *Assembler) dispatchRequest(
 			//
 			// "Already" is exact rather than hedging. RemoveJob is the only
 			// production caller of CancelJob — `git grep -n 'CancelJob('
-			// -- '*.go'` outside tests returns this arm's caller at
-			// app.go:737 and the declaration at :548, nothing else — and
+			// -- '*.go'` outside tests returns Application.RemoveJob and
+			// this declaration, nothing else — and
 			// since #376 it removes the job from the queue BEFORE calling
 			// in here, returning early if that fails. So a job reaching this
 			// arm has left the queue, where previously it could still be

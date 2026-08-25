@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -129,24 +128,6 @@ func (removeRefusingStore) Remove(context.Context, string) error {
 	return errStoreDeleteRefused
 }
 
-// waitForFile blocks until path exists, failing the test if it does not
-// appear. The assembler opens a target file on its own goroutine, so the
-// alternative — stat once, immediately after WriteArticle returns — races
-// the worker and fails on a busy machine.
-func waitForFile(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fixture never created the open file it is about: %s", path)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 // TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk pins the ordering
 // #376 is about: the step that can fail must run before the step that cannot
 // be undone.
@@ -219,24 +200,18 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 	if err := application.queue.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := application.pipeline.registerFile(job.ID, 0); err != nil {
-		t.Fatalf("registerFile: %v", err)
-	}
+	// registerFile, write, and block until the worker has actually opened the
+	// file. The waiting matters: WriteArticle only enqueues, so statting the
+	// path straight after it races the worker, and a test that ran ahead of
+	// the open would assert the survival of a file that was never created.
+	// writeFixtureArticle waits on the assembler's own view of which files
+	// are open, which is the condition this test needs — CancelJob unlinks
+	// what is in that map and nothing else.
+	writeFixtureArticle(t, application, job.ID, 0, 0)
 	info, err := application.pipeline.resolveFileInfo(job.ID, 0)
 	if err != nil {
 		t.Fatalf("resolveFileInfo: %v", err)
 	}
-	ref, req := assemblerWrite(job.ID, 0, 0, 0)
-	if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
-		t.Fatalf("WriteArticle: %v", err)
-	}
-	// WriteArticle only enqueues; the worker opens the target file
-	// asynchronously. Wait for it rather than assuming, or the test would
-	// pass vacuously — asserting the survival of a file that was never
-	// created. openTargetFile creates it with O_CREATE before any caching,
-	// so its existence is also what says the entry is in the assembler's
-	// open map and therefore reachable by CancelJob.
-	waitForFile(t, info.Path)
 
 	// deleteFiles=false: the whole-directory sweep is not what is under test,
 	// and it is the API's default besides.
