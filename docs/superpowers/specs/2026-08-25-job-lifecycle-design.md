@@ -1,7 +1,8 @@
 # Job Lifecycle — Design
 
-**Status:** Direction settled in discussion. This document is the argument the
-implementation plan is written against. Nothing here has been built.
+**Status:** Direction settled in discussion, and the six questions this
+document opened are now decided (§14). It is the argument the implementation
+plan is written against. Nothing here has been built.
 
 **Scope:** Replaces the job state model in `internal/queue` and the ownership
 boundaries between `app`, `queue`, `downloader`, `durability` and `postproc`.
@@ -146,12 +147,20 @@ type Activity uint8   // what is running right now; NOT a state
 type Outcome  uint8   // write-once, set only on entering Finished
 ```
 
+**`Queued` is not among them, and that is the decision rather than an
+oversight** (D1). A newly added job is `Waiting{Next: Fetching, Reason:
+NoLease}` — the same situation as any other job blocked on capacity. Nothing
+distinguishes a never-started job at the level of the machine; "has this ever
+run" is `len(attempts) == 0` (§3.1), and deletion is unconditional and
+idempotent rather than conditional on the answer.
+
 ---
 
 ## 3. Three axes, not one enum
 
-**`State`** is the machine. It answers *where in its life is this job, and what
-may happen next*. Seven values, listed above.
+**`State`** is the machine. It answers *where in its current attempt is this
+job, and what may happen next*. Seven values, listed above. The field lives on
+the attempt rather than the job (§3.1).
 
 **`Activity`** is what is executing right now: `Par2Verify`, `CRCCheck`,
 `Unpack`, `VolumeRecovery`, `Deobfuscate`, `Move`, `Script`, and so on. It is a
@@ -172,6 +181,89 @@ activity, the edge set collapses from 66 to the handful drawn in §2, and every
 remaining edge is genuinely reachable. There are no fan-out blocks because
 "still post-processing, doing something else" is an `Activity` write rather
 than a transition.
+
+### 3.1 Attempts: the machine lives on the attempt, not the Job
+
+A write-once `Outcome` and a retryable job are in tension only if the job has
+one outcome. It does not — it has a list of attempts, each with its own (D2).
+
+```go
+type Attempt struct {
+    State    State
+    Activity Activity
+    Outcome  Outcome   // write-once, on entering Finished
+    Started  time.Time
+    Ended    time.Time
+}
+
+type Job struct {
+    // identity and progress
+    attempts []Attempt   // the machine; current attempt is the last
+}
+```
+
+> **An `Attempt` opens when a lease is first issued and no attempt is open. It
+> closes when the job reaches `Finished`.**
+
+Pause and resume inside an attempt do not end it: the lease is surrendered and
+later re-taken, and the attempt persists across that. A retry from `Finished`
+opens a new one.
+
+`Job.State()` is therefore derived, not stored:
+
+```go
+func (j *Job) State() StateView {
+    if len(j.attempts) == 0 {
+        return StateView{State: Waiting, Next: Fetching, Reason: NoLease}
+    }
+    return j.attempts[len(j.attempts)-1].StateView()
+}
+```
+
+The zero-attempt arm is a constant, not a special case: a job that has never
+run needs no attempt record because nothing has happened to it.
+
+Three things follow, and each retires a question that would otherwise need its
+own answer:
+
+- **Retry costs nothing structurally.** Job identity is stable, so the
+  durability record, the manifest path and the partial file on disk are all
+  still keyed correctly. Today a failed job deliberately *keeps* those rows so
+  a retry re-fetches only what failed; here that is a consequence rather than
+  an exception.
+- **`Outcome` stays genuinely write-once.** A verdict is never revised, only
+  superseded by the next attempt's. This is the ledger move: do not mutate the
+  balance, append an entry.
+- **"Never started" is exact.** `len(attempts) == 0`, rather than a predicate
+  over progress. No figure derived from bytes or durable runs can distinguish
+  *did not start* from *started and got nowhere*, and those differ.
+
+### 3.2 Policy replaces the PP integer
+
+SABnzbd's PP levels 0–3 are a cumulative integer mask, and they are the same
+*kind* of thing as its status strings: external vocabulary that should be
+translated at the boundary and never stored internally (D4).
+
+```go
+// Resolved once at ingestion from PP plus the job's category.
+// The integer does not exist past App.
+type Policy struct {
+    Verify bool   // run a real verdict rather than a trivial Complete
+    Repair bool
+    Unpack bool
+    Delete bool
+}
+```
+
+**Every state runs at every policy.** At `Verify: false` the `Assessor` returns
+`Complete` without doing work, and the job crosses the boundary immediately.
+This matters structurally: gating *states* on PP would mean skipping
+`Assessing` at PP=0, which removes the only state that decides and leaves
+nothing to authorize the crossing. A second decider would have to be
+reintroduced — the exact thing this design exists to avoid.
+
+The machine's shape is therefore policy-independent, which is what keeps it
+exhaustively testable, and per-category overrides stop being a special case.
 
 ---
 
@@ -232,6 +324,22 @@ no `QuickCheck` state and no "bypass"; there is one component that answers *are
 these bytes right?* and is free to answer cheaply when it can. This is the
 single implementation that §1.2's duplication is missing.
 
+**An `Unrecoverable` job never crosses the boundary** (D3). Its files stay in
+the working directory and the job is `Finished(Unrecoverable)`.
+
+The reason is not that partial output is worthless — for a post of independent
+files it is genuinely useful. The reason is what crossing *costs*. Crossing is
+irreversible: archives are deleted, files are moved, and the inputs a later
+attempt would need are consumed. **Not crossing keeps the job retryable**, and
+a missing article may well be available next month, or from a server the user
+adds next week. Preserving that is worth more than salvaging the intact subset,
+and it is the whole point of having a boundary.
+
+Delivering the intact files only when no archive set is implicated is the
+sophisticated alternative. It was rejected: it requires classifying files into
+archive sets *before* extraction, which is a new inference with its own failure
+modes, in service of a case that is uncommon on binary Usenet.
+
 **Testability.** Every path through a job is `Fetching → Assessing → {one of
 four}`. The test surface is the verdict function, not the graph.
 
@@ -289,7 +397,7 @@ Everything else reads.
 | **Job** | all of its own state, behind its own `sync.RWMutex`; answers `IsDone()`; holds its `Lease` | call any `Queue` method (§7.1) |
 | **Lease** | the grant of manifest + barrier + pool-A capacity | outlive the crossing |
 | **StorageBarrier** | persisting article bytes to durable storage; write caching; reconciling its own record against the disk at construction | mark an article done without an fsync |
-| **Assessor** | the verdict — the single answer to *are these bytes right?* | mutate the job; it returns a verdict |
+| **Assessor** (`internal/par2`) | the verdict — the single answer to *are these bytes right?* | mutate the job, or accept a `queue` type (§7.3) |
 | **Dispatcher** | server pools, connection lending, per-article retry and penalty policy | hold per-job state of its own (§9) |
 | **Checkpointer** | writing job state to SQLite; sole DB writer for job rows | read anything but snapshots |
 | **PostProcessor** | the production stage sequence; writes `Activity` | decide anything the `Assessor` decides |
@@ -320,6 +428,27 @@ not, so lease issuance reads fresh under `q.mu`.
 `JobProgress` is deep-copied. That is what a snapshot *is*, rather than a rule
 callers must remember.
 
+### 7.3 The Assessor lives in `internal/par2`, and takes only values
+
+`par2` already owns both verification methods and already expresses them over
+value types rather than queue types — `VerifyCRCs(files []AssembledFile, sets
+[]Set, …) CRCVerifyResult`, `QuickCheck(dir string, sets []Set, …)`, and
+`GoVerify`. Neither `par2` nor `queue` imports the other today. The `Assessor`
+is not a new component with new dependencies; it is a function unifying three
+things that already live there into one verdict, and it belongs with them
+(D5).
+
+The guardrail that keeps this true:
+
+> **The Assessor's inputs are value types — `[]AssembledFile`, `[]Set`, a
+> `Policy`, and a speculation-evidence value. Never `*queue.Manifest`.**
+
+That is the line between `par2` remaining a format-and-verification library and
+acquiring a queue dependency by accident. Everything the Assessor needs about
+the job — which files are recovery volumes, their expected sizes and CRCs, what
+DirectUnpack managed to extract — is expressible as data, and passing it as
+data is what keeps the verdict independently testable with no queue at all.
+
 ---
 
 ## 8. Scheduling, pause, and cancel
@@ -330,7 +459,16 @@ callers must remember.
   correct bytes. Held across the entire correctness loop, *including* while
   assessing and repairing.
 - **Pool B — compute slots.** Bounds concurrent CPU/disk work: `Assessing`,
-  `Repairing`, `Extracting`, `Finalizing`.
+  `Repairing`, `Extracting`, `Finalizing`. **One pool, not split by resource
+  class** (D6) — "max concurrent post-processing" is the knob users already
+  understand, and splitting it doubles the tuning surface for a benefit nobody
+  has measured.
+
+  **The known cost, named and not solved:** a user script in `Finalizing` is
+  arbitrary code of arbitrary duration, and it holds a compute slot while
+  consuming none of what the pool exists to bound. If that turns out to block
+  real work in practice, the fix is to run the script outside the pool — a
+  small change, and better made against evidence than against speculation.
 
 Pool A is reserved rather than released-and-reacquired. A job re-entering
 `Fetching` from `Assessing` never waits, so the correctness loop is provably
@@ -566,26 +704,32 @@ Named here so they are decisions rather than omissions.
 
 ---
 
-## 14. Open questions
+## 14. Decisions
 
-1. **Does `Queued` collapse into `Waiting{Next: Fetching, Reason: NoLease}`?**
-   A newly-added job is definitionally waiting for a lease, which takes the
-   machine to six states. The argument against is that a never-started job
-   holds nothing at all — no working directory, no partial files — and can be
-   reordered or discarded for free. But that may be progress state rather than
-   lifecycle state.
-2. **Retry semantics.** With a write-once `Outcome`, a retry is a new attempt.
-   Is it a new `Job` with a new ID, or the same `Job` reset to `Waiting` with
-   the outcome cleared? The latter re-introduces a mutable verdict; the former
-   complicates history and the on-disk partial file it must reuse.
-3. **Partial success.** When `Assessing` returns `Unrecoverable` but usable
-   content exists, does the job still cross into production for what it has?
-4. **PP levels 0–3.** These currently gate *stages*. With stages demoted to
-   `Activity`, do they gate states (`Assessing`/`Repairing`/`Extracting`) or
-   remain a per-activity filter?
-5. **Where the `Assessor` lives.** Its own package, or inside `par2`?
-6. **Compute-slot granularity.** Is one pool right, or do CPU-bound par2 work
-   and I/O-bound moving deserve separate bounds?
+The six questions this document opened are settled. Recorded with the reason,
+because the reason is what a later reader needs in order to reopen one
+honestly.
+
+| | Question | Decision | Stated at |
+|---|---|---|---|
+| **D1** | Does `Queued` exist separately from `Waiting`? | **No.** A new job is `Waiting{Next: Fetching, Reason: NoLease}`. Nothing distinguishes it at the level of the machine, delete is unconditional, and freshness is `len(attempts) == 0`. | §2, §3.1 |
+| **D2** | Retry semantics | **Attempts are a list.** Same `Job`, same ID, a new `Attempt` per run, each with its own write-once `Outcome`. | §3.1 |
+| **D3** | Partial success on `Unrecoverable` | **Never cross the boundary.** Files stay in the working directory; the job stays retryable, which is worth more than salvaging an intact subset. | §5 |
+| **D4** | PP levels 0–3 | **Resolve to a `Policy` at ingestion.** The integer does not exist past `App`; every state runs at every policy. | §3.2 |
+| **D5** | Where the `Assessor` lives | **`internal/par2`,** which already owns both verification methods over value types. Guardrail: value inputs only. | §7.3 |
+| **D6** | Compute-slot granularity | **One pool.** The long-running-script cost is named and deliberately unsolved. | §8.1 |
+
+### 14.1 What is still genuinely open
+
+1. **`Attempt` retention.** Attempts are small, but a job retried nightly by an
+   automation tool accumulates them indefinitely. Cap the list, or let history
+   retention sweep them with the job?
+2. **What a retry re-fetches.** D2 keeps the durability record, so a retry
+   re-fetches only previously-failed articles. Should a user be able to demand
+   a full re-fetch — and if so, is that a different command or a flag on retry?
+3. **`Waiting` and priority changes.** Reordering a job that is `Waiting{Next:
+   Repairing}` is meaningless (it is mid-lifecycle and holds a lease). Should
+   reorder reject, silently no-op, or apply only to the fetch ordering?
 
 ---
 
@@ -596,8 +740,8 @@ preserving refactors; 4–7 change behaviour.
 
 | # | Phase | Delivers | Depends on |
 |---|---|---|---|
-| 1 | **State surface** | `State`/`Activity`/`Outcome`, the transition function, `ToSABnzbd` shim, contract test against the existing API | — |
-| 2 | **Job owns its lock** | job state mutation moves inside `Job`; `Queue` becomes an ordered index; §7.1 rule enforced | 1 |
+| 1 | **State surface** | `State`/`Activity`/`Outcome`, **`Policy` (D4)**, the transition function, `ToSABnzbd` shim, contract test against the existing API | — |
+| 2 | **Job owns its lock** | job state mutation moves inside `Job`; **the machine moves onto `Attempt` (D2)**; `Queue` becomes an ordered index; §7.1 rule enforced | 1 |
 | 3 | **Lease** | `Manifest` + `StorageBarrier` reachable only through a `Lease`; retires §1.3 | 2 |
 | 4 | **Assessor** | one verdict implementation; `Fetching ⇄ Assessing` loop; `NeedRequeue` and the `quickcheck` stage both deleted | 3 |
 | 5 | **Pools and `Waiting`** | two pools, reservation, unified `Waiting`, pause-as-gate, cancel semantics | 4 |
