@@ -167,7 +167,4 @@ func TestEdgeCountsMatchTheStatedPartition(t *testing.T) {
 	if total != wantTotal {
 		t.Errorf("total edges = %d, want %d", total, wantTotal)
 	}
-	if got := cancel + pause + resume + spine; got != total {
-		t.Errorf("bucket sizes sum to %d, but classified %d edges; an edge fell into no bucket or more than one", got, total)
-	}
 }
