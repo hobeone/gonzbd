@@ -196,12 +196,16 @@ type Store interface {
 	// Callers must only invoke this after id has already left the queue's
 	// in-memory index (q.byID) and its row(s) in the jobs/job_files tables —
 	// never before or concurrently with that removal. Doing so earlier is
-	// exactly the race this method exists to avoid: Queue.Snapshot clones a
-	// job under q.mu.RLock, releases the lock, and only then hydrates its
+	// exactly the race this method exists to avoid: Queue.SnapshotJob clones
+	// a job under q.mu.RLock, releases the lock, and only then hydrates its
 	// manifest/progress from disk outside the lock. If the on-disk artifacts
 	// are unlinked while the job is still reachable through q.byID, a
-	// concurrent Snapshot can observe the job present but its manifest
+	// concurrent SnapshotJob can observe the job present but its manifest
 	// already gone.
+	//
+	// SnapshotJob, not Snapshot: the plural form stopped hydrating and says
+	// so at its own declaration, which leaves SnapshotJob as the only reader
+	// this ordering still protects.
 	//
 	// Returns an error (rather than swallowing it internally) so callers and
 	// tests can observe a failed unlink instead of the method silently doing

@@ -598,10 +598,14 @@ func (q *Queue) Remove(id string) error {
 	// Unlink the manifest/progress artifacts only now that id has left
 	// q.byID (evictJobLocked + delete above already ran under q.mu). Doing
 	// this earlier — or under q.mu, which check_lock_io flags as I/O — would
-	// reopen the exact race this ordering exists to close: Queue.Snapshot
+	// reopen the exact race this ordering exists to close: Queue.SnapshotJob
 	// clones a job under RLock and hydrates it from disk after releasing the
 	// lock, so an unlink that races ahead of the job's removal from q.byID
 	// can catch a snapshot mid-hydration.
+	//
+	// SnapshotJob, not Snapshot: the plural form stopped hydrating and says
+	// so at its own declaration, which leaves SnapshotJob as the only reader
+	// this ordering still protects.
 	if q.store != nil {
 		if err := q.store.DeleteJobArtifacts(context.Background(), id); err != nil {
 			q.log.Warn("failed to delete job artifacts after remove", "job_id", id, "err", err)
