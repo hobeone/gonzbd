@@ -27,8 +27,9 @@ var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable
 // ErrFinishRequired is returned when transition is asked to reach Finished,
 // or hold is asked to resume into it. finish is the only door into that
 // state: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates every
-// assignment to the unexported outcome field across this package's non-test
-// sources and asserts finish is the only one, so this sentence is checked
+// site that sets the unexported outcome field — a plain `=` assignment and a
+// `outcome: x` composite-literal key alike — across this package's non-test
+// sources, and asserts finish is the only one, so this sentence is checked
 // by a test rather than trusted as prose — otherwise an attempt could reach
 // Finished still carrying OutcomePending, and isOpen() would report an
 // attempt open when nothing is ever going to close it.

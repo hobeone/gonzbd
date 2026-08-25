@@ -32,9 +32,10 @@ import (
 // count alone would go green against a write that moved from finish to some
 // other function, which is exactly the drift this exists to catch.
 
-// outcomeWriters is every function in this package that assigns (Tok ==
-// token.ASSIGN) the unexported outcome field. `:=` declarations and `==`
-// comparisons are not assignments to an existing field and are not counted.
+// outcomeWriters is every function in this package that sets the unexported
+// outcome field, either via `Tok == token.ASSIGN` or via a `outcome: x` key
+// in a composite literal. `:=` declarations and `==` comparisons are not
+// assignments to an existing field and are not counted.
 var outcomeWriters = []string{"finish"}
 
 func TestOutcomeWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
@@ -52,8 +53,8 @@ func TestOutcomeWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 }
 
 // scanOutcomeWriters parses this package's non-test sources and returns the
-// sorted, deduplicated names of the functions that assign to a field named
-// outcome via `=`.
+// sorted, deduplicated names of the functions that set a field named outcome,
+// via a plain `=` assignment or via a `outcome: x` composite-literal key.
 //
 // It reads the directory rather than taking a file list so that a source
 // file added later (job.go, in Task 8) is covered without anyone
@@ -86,13 +87,30 @@ func scanOutcomeWriters(t *testing.T) []string {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				assign, ok := n.(*ast.AssignStmt)
-				if !ok || assign.Tok != token.ASSIGN {
-					return true
-				}
-				for _, lhs := range assign.Lhs {
-					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "outcome" {
-						writers = append(writers, fn.Name.Name)
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					if node.Tok != token.ASSIGN {
+						return true
+					}
+					for _, lhs := range node.Lhs {
+						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "outcome" {
+							writers = append(writers, fn.Name.Name)
+						}
+					}
+				case *ast.CompositeLit:
+					// &Attempt{outcome: x} sets the field without an
+					// AssignStmt at all — the ASSIGN-only scan above cannot
+					// see it, which is exactly the gap
+					// TestOutcomeWrites_MatchTheEnumerationStatedInProse's
+					// doc comment did not disclose.
+					for _, elt := range node.Elts {
+						kv, ok := elt.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == "outcome" {
+							writers = append(writers, fn.Name.Name)
+						}
 					}
 				}
 				return true
