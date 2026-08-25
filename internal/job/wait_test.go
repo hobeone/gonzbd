@@ -27,30 +27,38 @@ func TestWaitReason_String(t *testing.T) {
 }
 
 // TestWaitReason_IsPause pins the split that ToSABnzbd depends on: a job held
-// for capacity renders as Queued, a job held by a pause renders as Paused.
+// for capacity renders as Queued, a job held by a pause renders as Paused. It
+// drives off AllWaitReasons() rather than a hand-written table, so a reason
+// added without an entry in wantIsPause fails here — the earlier literal
+// slice-of-structs table stayed in sync with AllWaitReasons() only by hand.
 func TestWaitReason_IsPause(t *testing.T) {
-	for _, tc := range []struct {
-		r    WaitReason
-		want bool
-	}{
-		{NoLease, false},
-		{NoComputeSlot, false},
-		{UserPaused, true},
-		{GlobalPause, true},
-	} {
-		t.Run(tc.r.String(), func(t *testing.T) {
-			if got := tc.r.IsPause(); got != tc.want {
-				t.Errorf("IsPause() = %v, want %v", got, tc.want)
+	wantIsPause := map[WaitReason]bool{
+		NoLease:       false,
+		NoComputeSlot: false,
+		UserPaused:    true,
+		GlobalPause:   true,
+	}
+	for _, r := range AllWaitReasons() {
+		t.Run(r.String(), func(t *testing.T) {
+			want, ok := wantIsPause[r]
+			if !ok {
+				t.Fatalf("WaitReason %s (%d) has no IsPause expectation declared in wantIsPause; "+
+					"a new reason needs an explicit IsPause() decision, not the zero-value false default",
+					r, uint8(r))
+			}
+			if got := r.IsPause(); got != want {
+				t.Errorf("IsPause() = %v, want %v", got, want)
 			}
 		})
 	}
 }
 
-// TestAllWaitReasons_CoveredByIsPause fails if a reason is added without
-// IsPause being taught about it. A new reason defaults to false there, which
-// would silently render a paused job as Queued; this makes that a test
-// failure rather than a UI bug.
-func TestAllWaitReasons_CoveredByIsPause(t *testing.T) {
+// TestAllWaitReasons_HaveStringArms fails if a reason is added to
+// AllWaitReasons() without a matching arm in String() (falling through to the
+// "WaitReason(N)" fallback), or if the declared count drifts from the const
+// block. It does not exercise IsPause(); TestWaitReason_IsPause owns that
+// coverage by iterating this same enumeration.
+func TestAllWaitReasons_HaveStringArms(t *testing.T) {
 	for _, r := range AllWaitReasons() {
 		if r.String() == "WaitReason("+strconv.Itoa(int(r))+")" {
 			t.Errorf("WaitReason(%d) is in AllWaitReasons() but has no String() arm", r)
@@ -58,7 +66,7 @@ func TestAllWaitReasons_CoveredByIsPause(t *testing.T) {
 	}
 	if len(AllWaitReasons()) != 4 {
 		t.Errorf("AllWaitReasons() has %d entries, expected 4; a new reason needs a String() arm, "+
-			"an IsPause() decision, and a row in TestWaitReason_IsPause", len(AllWaitReasons()))
+			"an IsPause() expectation in TestWaitReason_IsPause, and this count updated", len(AllWaitReasons()))
 	}
 }
 
