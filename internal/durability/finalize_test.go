@@ -160,10 +160,10 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 			return &faultyTruncTarget{drainErr: syscall.ENOSPC}
 		}},
 		{"sync", func() *faultyTruncTarget {
-			return &faultyTruncTarget{truncTarget: truncTarget{drained: drained}, syncErr: syscall.EIO}
+			return &faultyTruncTarget{drained: drained, syncErr: syscall.EIO}
 		}},
 		{"truncate", func() *faultyTruncTarget {
-			return &faultyTruncTarget{truncTarget: truncTarget{drained: drained}, truncErr: syscall.EIO}
+			return &faultyTruncTarget{drained: drained, truncErr: syscall.EIO}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

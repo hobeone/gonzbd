@@ -174,8 +174,7 @@ func TestFileWriter_DirectWriteFailureIsNotReported(t *testing.T) {
 	if err == nil {
 		t.Fatal("Accept returned nil error after EIO on an uncached write")
 	}
-	var f *storagefault.Fault
-	if !errors.As(err, &f) {
+	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
 		t.Fatalf("Accept error = %T, want *storagefault.Fault", err)
 	}
 	if got := w.writtenSoFar(); len(got) != 0 {
@@ -454,8 +453,7 @@ func TestFileWriter_StatOnAClosedHandleIsAStorageFault(t *testing.T) {
 	if err == nil {
 		t.Fatal("Stat on a closed handle returned nil error; a zero size would read as an empty file")
 	}
-	var f *storagefault.Fault
-	if !errors.As(err, &f) {
+	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
 		t.Fatalf("Stat error = %T, want *storagefault.Fault", err)
 	}
 }
@@ -501,8 +499,7 @@ func TestFileWriter_CoalescedRunWriteFailureReportsNothing(t *testing.T) {
 	if lastErr == nil {
 		t.Fatal("no coalesced flush fired; the fixture never reached contiguousRunSize")
 	}
-	var f *storagefault.Fault
-	if !errors.As(lastErr, &f) {
+	if _, ok := errors.AsType[*storagefault.Fault](lastErr); !ok {
 		t.Fatalf("run write error = %T, want *storagefault.Fault", lastErr)
 	}
 	if got := w.writtenSoFar(); len(got) != 0 {

@@ -380,8 +380,8 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		CommandLine: cmdLine,
 		Stdout:      output,
 		Stderr:      "", // combined into Stdout now
+		Status:      parseStatus(output),
 	}
-	res.Status = parseStatus(output)
 
 	// Propagate only system-level errors, not par2's repair-required exit codes.
 	if runErr != nil {

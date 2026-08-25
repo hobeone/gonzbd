@@ -181,10 +181,10 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 // by hand to avoid file 0's offsets.
 func assemblerWrite(jobID string, fileIdx, globalArt int, offset int64) (assembler.ArticleRef, assembler.WriteRequest) {
 	return assembler.ArticleRef{
-			JobID: jobID, FileIdx: fileIdx, ArtIdx: int32(globalArt), //nolint:gosec // G115: test article counts are tiny
-			MessageID: string(rune('a'+globalArt)) + "@t",
-		}, assembler.WriteRequest{
-			Offset: offset,
-			Data:   make([]byte, 100),
-		}
+		JobID: jobID, FileIdx: fileIdx, ArtIdx: int32(globalArt), //nolint:gosec // G115: test article counts are tiny
+		MessageID: string(rune('a'+globalArt)) + "@t",
+	}, assembler.WriteRequest{
+		Offset: offset,
+		Data:   make([]byte, 100),
+	}
 }

@@ -60,8 +60,7 @@ func TestSetState(t *testing.T) {
 					t.Errorf("state = %v after a rejected transition, want %v unchanged",
 						got, tc.from)
 				}
-				var invalid errInvalidTransition
-				if !errors.As(err, &invalid) {
+				if _, ok := errors.AsType[errInvalidTransition](err); !ok {
 					t.Errorf("err = %v, want errInvalidTransition", err)
 				}
 				return
@@ -126,8 +125,7 @@ func TestExpectGreetingReadError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expectGreeting() = nil, want an error")
 	}
-	var se *ServerError
-	if errors.As(err, &se) {
+	if _, ok := errors.AsType[*ServerError](err); ok {
 		t.Errorf("err = %v, want a read error rather than a ServerError", err)
 	}
 }

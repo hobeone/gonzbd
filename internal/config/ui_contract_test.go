@@ -138,7 +138,7 @@ func TestAllFlatConfigTagsAreSettable(t *testing.T) {
 			if tag == "" || tag == "-" {
 				continue
 			}
-			keyword := strings.Split(tag, ",")[0]
+			keyword, _, _ := strings.Cut(tag, ",")
 			if keyword == "" || keyword == "-" {
 				continue
 			}

@@ -91,8 +91,7 @@ func TestCloseJobHandles_ReportsACloseTimeFailureToItsCaller(t *testing.T) {
 		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
 
 	err := <-ack
-	var fault *storagefault.Fault
-	if !errors.As(err, &fault) {
+	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
 		t.Fatalf("the ack carried %v, want the close-time fault — maybeFinalize is "+
 			"about to hand this job to par2, unrar and cleanup over bytes that never "+
 			"reached the platter", err)

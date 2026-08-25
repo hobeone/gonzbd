@@ -225,10 +225,15 @@ func (u *UnpackStage) extractPendingArchives(
 		processed[a.MainFile] = true
 
 		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
-		if failErr := cmp.Or(err, res.Err); failErr != nil {
+		failErr := err
+		if failErr == nil {
+			failErr = res.Err
+		}
+		if failErr != nil {
 			recordUnpackFailure(ctx, log, job, a, res, failErr, firstErr)
 			continue
 		}
+
 		logf(ctx, log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
 		// Record command line in stage log for successful extractions too.
 		if res.CommandLine != "" {
@@ -459,7 +464,11 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 		}
 	}
 
-	if goErr := cmp.Or(err, res.Err); goErr != nil && d.fallback {
+	goErr := err
+	if goErr == nil {
+		goErr = res.Err
+	}
+	if goErr != nil && d.fallback {
 		extBin, binErr := d.findBin(opts)
 		if binErr == nil {
 			logf(ctx, log, job, slog.LevelWarn,

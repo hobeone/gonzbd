@@ -22,11 +22,11 @@ func buildCorpus(b *testing.B, numJobs, filesPerJob, articlesPerFile int, mostly
 		parsed.Files = make([]nzb.File, filesPerJob)
 		for f := range filesPerJob {
 			file := nzb.File{
-				Subject: fmt.Sprintf("job%d-file%d.bin (1/1)", j, f),
-				Date:    now,
-				Groups:  []string{"alt.binaries.bench"},
+				Subject:  fmt.Sprintf("job%d-file%d.bin (1/1)", j, f),
+				Date:     now,
+				Groups:   []string{"alt.binaries.bench"},
+				Articles: make([]nzb.Article, articlesPerFile),
 			}
-			file.Articles = make([]nzb.Article, articlesPerFile)
 			for a := range articlesPerFile {
 				file.Articles[a] = nzb.Article{
 					ID:     fmt.Sprintf("art%d-%d-%d@bench.test", j, f, a),

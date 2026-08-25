@@ -1916,7 +1916,7 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 		},
 	}
 	app := mockApp{
-		NopApp:   apitest.NopApp{Queue: q},
+		Queue:    q,
 		statuses: statuses,
 	}
 
@@ -2036,7 +2036,7 @@ func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
 
 	calls := 0
 	app := callCountingDUApp{
-		NopApp:           apitest.NopApp{Queue: q},
+		Queue:            q,
 		statuses:         statuses,
 		statusesCallsPtr: &calls,
 	}
@@ -2241,7 +2241,7 @@ func TestQueue_CoverageGaps(t *testing.T) {
 
 		// addfile with errorApp on AddJob
 		q := queue.New()
-		errApp := errorAddJobApp{NopApp: apitest.NopApp{Queue: q}, err: errors.New("add job failed")}
+		errApp := errorAddJobApp{Queue: q, err: errors.New("add job failed")}
 		dir2 := t.TempDir()
 		sErr := New(Options{
 			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: dir2}},
@@ -2366,7 +2366,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 	t.Run("pause_all_and_resume_all_with_app", func(t *testing.T) {
 		t.Parallel()
 		q := queue.New()
-		spy := &queueSpyApp{NopApp: apitest.NopApp{Queue: q}}
+		spy := &queueSpyApp{Queue: q}
 		s := New(Options{
 			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
 			Version: "1.0.0-test",
