@@ -604,8 +604,12 @@ func (q *Queue) Remove(id string) error {
 	// can catch a snapshot mid-hydration.
 	//
 	// SnapshotJob, not Snapshot: the plural form stopped hydrating and says
-	// so at its own declaration, which leaves SnapshotJob as the only reader
-	// this ordering still protects.
+	// so at its own declaration.
+	//
+	// SnapshotJob is the only reader this ordering PROTECTS, not the only one
+	// that reads a manifest unlocked — PromoteNext does too, at the Step 2
+	// read below, and defends itself instead by re-checking q.byID after
+	// re-acquiring the lock and skipping a job that vanished meanwhile.
 	if q.store != nil {
 		if err := q.store.DeleteJobArtifacts(context.Background(), id); err != nil {
 			q.log.Warn("failed to delete job artifacts after remove", "job_id", id, "err", err)

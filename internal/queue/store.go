@@ -204,8 +204,12 @@ type Store interface {
 	// already gone.
 	//
 	// SnapshotJob, not Snapshot: the plural form stopped hydrating and says
-	// so at its own declaration, which leaves SnapshotJob as the only reader
-	// this ordering still protects.
+	// so at its own declaration.
+	//
+	// SnapshotJob is the only reader this ordering PROTECTS, not the only one
+	// that reads a manifest unlocked — Queue.PromoteNext does too, and
+	// defends itself instead by re-checking q.byID after re-acquiring the
+	// lock and skipping a job that vanished meanwhile.
 	//
 	// Returns an error (rather than swallowing it internally) so callers and
 	// tests can observe a failed unlink instead of the method silently doing
