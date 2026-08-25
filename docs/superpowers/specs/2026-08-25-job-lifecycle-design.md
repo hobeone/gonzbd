@@ -1,9 +1,10 @@
 # Job Lifecycle — Design
 
-**Status:** Direction settled in discussion, and eight decisions are recorded
-(§14) — the six questions this document originally opened, plus two that arose
-from settling them. It is the argument the implementation plan is written
-against. Nothing here has been built.
+**Status:** Direction settled in discussion, and nine decisions are recorded
+(§14) — the six questions this document originally opened, plus three that
+arose from settling them. No question it raised is still open. It is the
+argument the implementation plans are written against. Nothing here has been
+built.
 
 **Scope:** Replaces the job state model in `internal/queue` and the ownership
 boundaries between `app`, `queue`, `downloader`, `durability` and `postproc`.
@@ -513,6 +514,34 @@ Priority therefore has exactly one meaning in the system. A second fairness
 policy governing bandwidth would have to re-derive priority in order not to
 contradict the lease order; there is no second policy.
 
+### 8.1.1 Reorder is defined over fetch ordering, and is total
+
+Both consumers of the list above are fetch concerns, so reorder is defined
+against that and nothing else (D9):
+
+> **Reorder sets the job's position in the priority-ordered list. The change is
+> always recorded, and takes effect whenever the job next competes for fetch
+> capacity — which for some states is immediately, for others later, and for
+> some never.**
+
+| Job's state when reordered | When the new position takes effect |
+|---|---|
+| `Waiting{Next: Fetching}` | at the next lease issuance |
+| `Fetching` | immediately — it changes dispatch precedence |
+| `Assessing`, `Repairing` | on re-entering `Fetching`, if the verdict is `NeedsMore` |
+| `Extracting`, `Finalizing`, `Finished` | never — the job will not fetch again |
+
+The alternatives were to reject the call or to silently no-op for
+mid-lifecycle jobs. Both are worse for the same reason: they make reorder a
+*partial* operation whose success depends on state the caller would have to
+inspect first, which is a race by construction. Recording unconditionally makes
+it total — every call succeeds, there is no error arm to document, and the API
+needs no state check.
+
+"Never" is not a failure. A job past the boundary has no remaining fetch
+ordering to take a position in, and recording a position that will not be
+consulted costs one integer.
+
 ### 8.2 `Waiting` unifies pause and slot-waiting
 
 Waiting for a lease, waiting for a compute slot, and being paused are the same
@@ -747,14 +776,19 @@ what a later reader needs in order to reopen one honestly.
 | **D6** | Compute-slot granularity | **One pool.** The long-running-script cost is named and deliberately unsolved. | §8.1 |
 | **D7** | `Attempt` retention | **Unbounded.** The growth case is narrow and the remedies are cheap; the field carries a comment rather than a policy. | §3.1 |
 | **D8** | Full re-fetch | **Not a retry mode.** Retry re-fetches only what failed; re-adding the NZB is how a user asks for everything. | §3.1.1 |
+| **D9** | Reorder on a mid-lifecycle job | **Always recorded, effect deferred.** Reorder is defined over fetch ordering and is total — no error arm, no state check. | §8.1.1 |
 
-### 14.1 What is still genuinely open
+### 14.1 Status of the question set
 
-1. **`Waiting` and priority changes.** Reordering a job that is `Waiting{Next:
-   Repairing}` is meaningless — it is mid-lifecycle and holds a lease, so
-   there is no fetch ordering for it to take a position in. Should reorder
-   reject, silently no-op, or apply only to the fetch ordering and be a no-op
-   for everything else?
+**No question this document raised is still open.** That is a statement about
+this document, not a claim that the design is complete: writing the phase plans
+will raise questions of its own, and those belong in the plans rather than
+here.
+
+Three of the nine came from settling the others — D7 and D8 from D2's attempt
+model, D9 from D1's collapse of `Queued` into `Waiting`. That is the expected
+shape. A decision that generates no follow-on questions usually means the
+consequences were not chased.
 
 ---
 
