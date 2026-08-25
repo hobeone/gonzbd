@@ -1,0 +1,151 @@
+package job
+
+import (
+	"errors"
+	"sync"
+	"time"
+)
+
+// ErrNoOpenAttempt is returned by every mutator when the job has no attempt
+// in flight — either it has never run, or its last attempt is settled. The
+// caller's fix is BeginAttempt, which is the only door into the machine.
+var ErrNoOpenAttempt = errors.New("job: no open attempt")
+
+// Job owns its state. Every field is unexported and guarded by mu; there is
+// no path to a Job's state that does not go through a method here.
+//
+// The lock ordering rule for the whole system is that a Job method never
+// calls a Queue method — Queue is strictly the caller, Job strictly the
+// callee, so the order is always Queue.mu then Job.mu and cannot invert. That
+// is why this file imports nothing from the rest of the daemon.
+//
+// Job does no I/O. It exposes State() and the attempt accessors; a
+// Checkpointer reads those and is the sole writer to the database.
+type Job struct {
+	mu sync.RWMutex
+
+	id     string
+	name   string
+	policy Policy
+
+	// attempts is the machine. The current attempt is the last element, and
+	// an empty slice means the job has never run — which is what HasRun
+	// reports and what makes "never started" exact rather than a predicate
+	// over byte counters (D1).
+	//
+	// Deliberately unbounded (D7). The growth case is one job an automation
+	// tool retries on a schedule; each Attempt is a handful of words, and the
+	// two remedies if it ever bites are a cap here or a sweep alongside
+	// history retention. Not worth a policy before there is evidence.
+	attempts []Attempt
+}
+
+// New builds a job that has never run. It has no attempt record, because
+// nothing has happened to it yet.
+func New(id, name string, p Policy) *Job {
+	return &Job{id: id, name: name, policy: p}
+}
+
+// ID returns the job's identifier.
+func (j *Job) ID() string { return j.id }
+
+// Name returns the job's display name.
+func (j *Job) Name() string { return j.name }
+
+// Policy returns the job's retry/repair policy.
+func (j *Job) Policy() Policy { return j.policy }
+
+// State returns the current attempt's view. For a job that has never run the
+// answer is a constant rather than a special case: it is waiting for a lease,
+// which is exactly what is true.
+func (j *Job) State() StateView {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if len(j.attempts) == 0 {
+		return StateView{State: Waiting, Next: Fetching, Reason: NoLease}
+	}
+	return j.attempts[len(j.attempts)-1].view()
+}
+
+// HasRun reports whether this job has ever held a lease. Exact, where any
+// predicate over bytes or durable runs would conflate "did not start" with
+// "started and got nowhere".
+func (j *Job) HasRun() bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return len(j.attempts) > 0
+}
+
+// Attempts returns how many times this job has run.
+func (j *Job) Attempts() int {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return len(j.attempts)
+}
+
+// AttemptAt returns a view of the i'th attempt. Panics on an out-of-range
+// index, matching slice semantics — callers bound i with Attempts().
+func (j *Job) AttemptAt(i int) StateView {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.attempts[i].view()
+}
+
+// BeginAttempt opens an attempt if none is open, and is a no-op if one
+// already is. That is the rule that stops a pause/resume cycle — which
+// surrenders and later re-takes a lease — from being counted as a retry.
+func (j *Job) BeginAttempt(now time.Time) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if a := j.currentLocked(); a != nil && a.isOpen() {
+		return nil
+	}
+	j.attempts = append(j.attempts, newAttempt(now))
+	return nil
+}
+
+// Transition moves the open attempt to the given state. It surfaces
+// ErrHoldRequired and ErrFinishRequired unchanged when to is Waiting or
+// Finished respectively — those states each have their own door (Hold,
+// Finish) and Transition is not one of them.
+func (j *Job) Transition(to State) error {
+	return j.withOpenAttempt(func(a *Attempt) error { return a.transition(to) })
+}
+
+// Hold parks the open attempt at a boundary, to resume at next for reason r.
+func (j *Job) Hold(next State, r WaitReason) error {
+	return j.withOpenAttempt(func(a *Attempt) error { return a.hold(next, r) })
+}
+
+// SetActivity records what the open attempt is currently executing.
+func (j *Job) SetActivity(x Activity) error {
+	return j.withOpenAttempt(func(a *Attempt) error { a.setActivity(x); return nil })
+}
+
+// Finish assigns the verdict and closes the open attempt.
+func (j *Job) Finish(o Outcome, now time.Time) error {
+	return j.withOpenAttempt(func(a *Attempt) error { return a.finish(o, now) })
+}
+
+// withOpenAttempt is the single door every mutator goes through: take the
+// write lock, resolve the open attempt or fail, apply. One door rather than
+// four copies of the same preamble, so "must there be an open attempt?" has
+// one answer that cannot drift between mutators.
+func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	a := j.currentLocked()
+	if a == nil || !a.isOpen() {
+		return ErrNoOpenAttempt
+	}
+	return fn(a)
+}
+
+// currentLocked returns a pointer to the last attempt, or nil if there are
+// none. Must hold mu.
+func (j *Job) currentLocked() *Attempt {
+	if len(j.attempts) == 0 {
+		return nil
+	}
+	return &j.attempts[len(j.attempts)-1]
+}
