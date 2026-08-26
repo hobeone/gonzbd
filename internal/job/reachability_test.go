@@ -32,10 +32,17 @@ import (
 // against a real *Job through the exported doors, rather than by reading the
 // edge map. The oracle it judges with must not be the same predicate the code
 // under test decided with, or a wrong predicate would agree with itself: the
-// assertions below use IsCorrectness, which `git grep -n 'IsCorrectness'
-// internal/job/` shows has no non-test caller at all — it is defined in
-// transition.go and consulted only from tests, where transition and finish
-// decide with CanTransition and IsProduction instead. That independence is a
+// assertions below use IsCorrectness, which has no non-test caller at all:
+// `git grep -n 'Is[C]orrectness(' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns exactly one line, its own definition at
+// transition.go:84. It is consulted only from tests, where transition and
+// finish decide with CanTransition and IsProduction instead.
+//
+// That citation is shaped three ways on purpose: the bracketed C stops it
+// matching its own text, the trailing paren excludes the four prose mentions
+// of the name in this very comment block, and the _test.go exclusion is what
+// turns eleven lines a reader must filter into the one line that actually
+// carries the claim. That independence is a
 // property of the current tree, not something enforced; if a door ever starts
 // branching on IsCorrectness, this test needs a different oracle.
 //

@@ -265,11 +265,16 @@ func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
 }
 
 // TestFinishedStatus_MapsEveryOutcome calls finishedStatus directly rather
-// than only through ToSABnzbd(State: Finished, ...), since ToSABnzbd is the
-// sole non-test caller (`git grep -n 'finishedStatus(' internal/job` shows
-// the definition, ToSABnzbd's call in sabnzbd.go, and this test's own call —
-// no other non-test site calls it) and this pins its own per-Outcome table
-// against a drift in ToSABnzbd's routing.
+// than only through ToSABnzbd(State: Finished, ...), since ToSABnzbd is its
+// sole non-test caller — `git grep -n 'finished[S]tatus(' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns exactly two lines, the definition at
+// sabnzbd.go:103 and ToSABnzbd's call at sabnzbd.go:47. This pins its own
+// per-Outcome table against a drift in ToSABnzbd's routing.
+//
+// The bracketed S and the _test.go exclusion are both load-bearing. Without
+// the brackets this citation matches its own text; without the exclusion it
+// also returns this test's call and its error-format string, and a reader
+// checking the claim has to filter before the count means anything.
 func TestFinishedStatus_MapsEveryOutcome(t *testing.T) {
 	cases := []struct {
 		o    Outcome
