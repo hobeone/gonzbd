@@ -92,11 +92,14 @@ type Attempt struct {
 	// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, D3). Not on
 	// StateView — nothing outside this package needs it.
 	crossed bool
-	// started and ended have no reader yet in this package or its tests
-	// beyond TestNewAttempt_StartsFetching's check of started — that is
-	// expected for a package built ahead of its consumers (see doc.go, "What
-	// this package does not do"). The next plan's history/durability surface
-	// is the intended consumer: per-attempt start/end timestamps are what a
+	// started and ended have no reader yet in this package outside their own
+	// tests — TestNewAttempt_StartsFetching checks started, and
+	// TestAttempt_FinishIsWriteOnce checks ended (`git grep -n
+	// '\.ended\|\.started' internal/job/*_test.go` returns exactly these
+	// four lines). That is expected for a package built ahead of its
+	// consumers (see doc.go, "What this package does not do"). The next
+	// plan's history/durability surface is the intended consumer:
+	// per-attempt start/end timestamps are what a
 	// retried job's history entry needs to show each attempt's own duration,
 	// rather than only the job's.
 	started time.Time
