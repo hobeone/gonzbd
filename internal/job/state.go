@@ -21,8 +21,11 @@ const (
 	// Assessing decides whether the bytes are correct. Holds a lease and a
 	// compute slot. Within the Correctness zone it is the only state with
 	// more than one non-pause, non-cancel work successor — every other
-	// Correctness or Production state has at most one.
-	// TestOnlyAssessingBranchesWithinCorrectness pins it.
+	// Correctness state has at most one.
+	// TestOnlyAssessingBranchesWithinCorrectness pins this for the
+	// Correctness zone specifically; it does not examine Production
+	// (Extracting, Finalizing), where the same property happens to hold
+	// today but is unenforced — see doc.go.
 	Assessing
 	// Repairing runs par2 repair. Holds a lease and a compute slot.
 	Repairing
