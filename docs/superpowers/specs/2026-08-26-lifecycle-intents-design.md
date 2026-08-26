@@ -1,8 +1,8 @@
 # Lifecycle Intents — Design
 
-**Status:** proposed, revision 3. Revisions 1 and 2 were each reviewed
-externally; §10 records what changed and why. Revision 2 was found to have a
-data-losing flaw, described in §10.
+**Status:** proposed, revision 4. Revisions 1, 2 and 3 were each reviewed
+externally; §10 records what changed and why. Revision 2 had a data-losing
+flaw and revision 3 a lease-leaking one; both are described there.
 
 **Amends** `docs/superpowers/specs/2026-08-25-job-lifecycle-design.md`:
 
@@ -12,7 +12,7 @@ data-losing flaw, described in §10.
 | §10 (every persisted job restores to `Waiting`) | superseded — §3.8 |
 | §3.1 / D1 (`State()` for a never-run job) | superseded — §3.2 |
 | §8.1.1 (reorder table keys on `Waiting{Next: Fetching}`) | superseded — §4.7 |
-| §6 (`BeginFetch(l *Lease)`) | amended — folded into `BeginAttempt`, §3.5 |
+| §6 (`BeginFetch(l *Lease)`) | amended — the lease is granted by the Queue, not required to open an attempt; §3.5 |
 | §8.3, §8.4, §12 | narrowed |
 
 Everything else stands. §6's argument is not merely preserved but load-bearing
@@ -151,9 +151,15 @@ because the pause was a statement about the job, not about one run of it.
 unpause" cannot revive a cancelled job. `IntentRun ↔ IntentPause` is freely
 reversible.
 
-`SetIntent` is legal while an attempt is open or none has run, and refused once
-the current attempt is settled: a settled job's next move is a decision for the
-user, not an intent to record.
+`SetIntent` is legal in every state, including once the current attempt is
+settled. Revision 3 refused it there, reasoning by analogy with `setReason` —
+a wait *reason* is meaningless when nothing is being waited for. An *intent* is
+not: a settled job may be retried, and the intent it carries governs what
+happens when it is. Refusing left a real trap — pause a job, let it fail, and
+it could be neither unpaused nor usefully retried, because the retry produced
+an attempt gated by an intent that could no longer be cleared.
+
+Only the `IntentCancel` latch restricts transitions.
 
 ### 3.2 `Waiting` is removed; `StateUnset` becomes the zero
 
@@ -220,6 +226,27 @@ done" and "recorded done" does not exist. A crash before that single call means
 the work was never recorded, and restart re-runs `Finalizing` — the same
 guarantee every other state has, and `docs/durability-contract.md`'s concern,
 not this document's.
+
+**When a state's work FAILS rather than completes**, `SetNext` is not called —
+the biconditional in the rule above is about *finishing*, and a failed state has
+not finished. Two paths, by zone:
+
+| Failure in | Path |
+|---|---|
+| `Fetching`, `Repairing` | `SetNext(Assessing)` — the work stopped, and §5 makes `Assessing` the only thing entitled to decide what that means |
+| `Assessing` | settle directly: `Finish(OutcomeFailed)` or `Finish(OutcomeUnrecoverable)` |
+| `Extracting`, `Finalizing` | settle directly: `Finish(OutcomeFailed)`. Crossing is irreversible, so there is nowhere to go back to |
+
+A failed `Fetching` therefore looks exactly like a successful one to the machine
+— articles were attempted, some are missing, and whether that is recoverable is
+par2's question, not the state machine's. This is Standing Design Rule 3 ("a bad
+article costs only its own bytes") applied one level up.
+
+**The `Assessing → Repairing → Assessing` loop is bounded by the Assessor, not
+by this machine.** Nothing in `internal/job` counts repair attempts, and
+deliberately so: how many repairs are worth attempting is a `Policy` question
+that `internal/par2`'s verdict owns (prior spec D5). Named here because an
+unbounded loop is the obvious failure and it should be clear whose it is.
 
 Three rules on `SetNext`:
 
@@ -307,7 +334,8 @@ func (q *Queue) gatedBy(j *job.Job) (job.WaitReason, bool) {
 func (q *Queue) waitReason(j *job.Job) (job.WaitReason, bool) {
     if q.running(j) { return 0, false }
     if r, gated := q.gatedBy(j); gated { return r, true }
-    if !j.HoldsLease() { return job.NoLease, true }
+    s := j.State().State
+    if needsLease(s) && !j.HoldsLease() { return job.NoLease, true }
     return job.NoComputeSlot, true
 }
 
@@ -315,6 +343,11 @@ func (q *Queue) waitReason(j *job.Job) (job.WaitReason, bool) {
 // happens ONLY here.
 func (q *Queue) grantFor(j *job.Job, s job.State) bool
 ```
+
+`needsLease(s)` is load-bearing rather than decorative. `Extracting` and
+`Finalizing` legitimately hold no lease — it was surrendered at the crossing —
+so an unconditional `!j.HoldsLease()` reports `NoLease` for a post-boundary job
+that is in fact waiting for a compute slot. Revision 3 had exactly that bug.
 
 `IntentCancel` is absent from `gatedBy`: `advance` handles it first, so no
 cancel value reaches the render path.
@@ -324,17 +357,30 @@ cancel value reaches the render path.
 Revision 2 had three. Tracing the crossing (§5, scenario 3) showed it needs its
 own, for the same reason `finish` has one.
 
-| Door | Produces | Sole writer of |
-|---|---|---|
-| `BeginAttempt(l *Lease, now)` | an open attempt at `Fetching` | `attempts` |
-| `transition(to)` | ordinary spine moves | — |
-| `Cross(to) (*Lease, error)` | the one boundary edge | `crossed` |
-| `finish(o, now)` | `Finished` | `outcome` |
+| Door | Produces | Sole writer of | Yields the lease |
+|---|---|---|---|
+| `BeginAttempt(now)` | an open attempt at `Fetching`, holding nothing | `attempts` | — |
+| `transition(to)` | ordinary spine moves | — | — |
+| `Cross(to) (*Lease, error)` | the one boundary edge | `crossed` | yes |
+| `finish(o, now) (*Lease, error)` | `Finished` | `outcome` | yes |
 
-**`BeginAttempt` now takes the lease.** An attempt opens at `Fetching`,
-`Fetching` requires a lease, so opening one without a lease should not compile.
-This folds prior spec §6's `BeginFetch` in, turning its prose rule *"cannot be
-called without one"* into a signature. `ErrBoundaryConsumed` still guards it.
+**`BeginAttempt` does NOT take a lease.** Revision 3 changed it to
+`BeginAttempt(l *Lease, now)`, reasoning that `Fetching` requires a lease so
+opening an attempt without one should not compile. That is wrong on this
+design's own terms: `Fetching` **holding nothing** is a legal, representable
+state — it is exactly what a paused fetch and a restarted fetch look like
+(§3.8). Requiring a lease to *reach* `Fetching` contradicts the model that makes
+those two states expressible.
+
+Prior spec §6's rule survives where it actually bites: **the downloader** cannot
+obtain a `Manifest` or `StorageBarrier` without a lease. You cannot *fetch*
+without one; you can be *at* `Fetching` without one, and not be fetching.
+
+Reverting this fixes three problems revision 3 created: a retry when pool A is
+full has nowhere to strand (the attempt simply opens and waits for a grant), a
+lease passed to a `BeginAttempt` that returns `ErrBoundaryConsumed` cannot be
+orphaned, and neither can one passed to a `BeginAttempt` that no-ops because an
+attempt is already open. `ErrBoundaryConsumed` still guards it.
 
 **`Cross` is new.** Count the Correctness→Production edges in the six-edge
 spine (§4.1): `Assessing → Extracting`, and no other. Doing it as two calls
@@ -359,9 +405,18 @@ func (j *Job) Cross(to State) (*Lease, error)
 ```
 
 `Cross` does not release the lease itself — it calls `Surrender`, which stays
-the **sole releaser**. Pause releases through the same call (§3.8). Two
-independent paths nulling one handle would be two writers of the same field, and
-the whole point of `Cross` is to remove a coordination, not add one.
+the **sole releaser**. Pause and `finish` release through the same call (§3.9).
+Two independent paths nulling one handle would be two writers of the same field,
+and the whole point of `Cross` is to remove a coordination, not add one.
+
+**`Cross` makes the leak a single call site, not unrepresentable.** Revision 3
+claimed the stronger thing and was wrong. The caller still receives a `*Lease`
+and can still drop it — by panicking, by an early return, or by forgetting. What
+`Cross` removes is the *coordination*: it is no longer possible to change state
+without also being handed the lease. That is worth having and it is a guard, not
+a proof. A callback form (`j.Cross(to, q.reclaim)`) would close it, and is
+rejected: it would take `Queue.mu` while `Job.mu` is held, inverting prior spec
+§7.1's lock order.
 
 `transition` correspondingly refuses `IsCorrectness(from) && IsProduction(to)`.
 The design's central invariant gets a door proportionate to it.
@@ -369,21 +424,27 @@ The design's central invariant gets a door proportionate to it.
 ### 3.6 `advance`
 
 ```go
+// advance runs under q.mu, per prior spec §7.1's lock order (Queue.mu before
+// Job.mu). It is never called concurrently for the same job; without that,
+// two calls could each read next and race to take it, and the loser's
+// Transition would fail on the to == next check.
 func (q *Queue) advance(j *job.Job) error {
     if j.Intent() == job.IntentCancel {
         return q.finishCancel(j)                     // §3.7
     }
     v := j.State()
 
-    // 1. Never run: start, if permitted. A SETTLED attempt is never reopened
-    //    here — retry is an explicit user action, not something that resumes
-    //    on its own.
+    // 1. Never run: start it, if permitted. No lease is needed or taken here;
+    //    branch 2 grants it, exactly as for a paused or restarted job.
     if v.State == job.StateUnset {
         if _, gated := q.gatedBy(j); gated { return nil }
-        l, ok := q.takeLease(j)
-        if !ok { return nil }
-        return j.BeginAttempt(l, q.now())
+        return j.BeginAttempt(q.now())
     }
+    // A SETTLED attempt is never reopened here. Retry is an explicit user
+    // action — q.Retry(j) calls BeginAttempt directly — not something a
+    // scheduling tick decides. Because BeginAttempt needs no lease (D-I12),
+    // a retry cannot fail for want of capacity: it opens the attempt and
+    // branch 2 grants when capacity frees.
     if v.Outcome.IsSettled() { return nil }
 
     // 2. Current state's work is unfinished: make it runnable. This is the
@@ -400,8 +461,8 @@ func (q *Queue) advance(j *job.Job) error {
     if job.IsCorrectness(v.State) && job.IsProduction(v.Next) {
         l, err := j.Cross(v.Next)
         if err != nil { return err }
-        q.poolA.put(l)
-        q.grantFor(j, v.Next)
+        q.reclaim(l)                                 // no-ops on nil; see §3.9
+        q.grantFor(j, v.Next)                        // may fail; branch 2 retries
         return nil
     }
     if !q.grantFor(j, v.Next) { return nil }
@@ -413,10 +474,11 @@ func (q *Queue) advance(j *job.Job) error {
 costs a tick, never a verdict. **It takes no target** — the target is `next`,
 written by the worker that finished the state.
 
-Crossing before acquiring the slot is deliberate: the decision was already made
-and recorded in `next`, crossing only *adds* pool-A capacity, and a job that
-crosses and then fails to get a slot is simply not running until it does. It
-cannot go back, and does not need to.
+Crossing before acquiring the slot is deliberate, and branch 3 deliberately
+ignores `grantFor`'s result there: the decision was already made and recorded in
+`next`, crossing only *adds* pool-A capacity, and a job that crosses and then
+fails to get a slot is simply not running until it does. Branch 2 grants it on a
+later tick. It cannot go back, and does not need to.
 
 **Resume needs no notification.** `SetIntent(IntentRun)` writes a flag; the
 scheduling loop calls `advance` on its ordinary cadence and picks it up. `Job`
@@ -434,17 +496,44 @@ func (q *Queue) Cancel(j *job.Job) error {
 
 func (q *Queue) finishCancel(j *job.Job) error {
     v := j.State()
-    if job.IsProduction(v.State) && v.Next == job.StateUnset {
-        return nil    // gate: work still in flight, let it reach the boundary
+    if v.State == job.StateUnset {
+        return q.discard(j)          // never ran: no attempt to settle; drop it
     }
-    return j.Finish(job.OutcomeCancelled, q.now())
+    if v.Outcome.IsSettled() {
+        return nil                   // already closed, by cancel or otherwise
+    }
+    if job.IsProduction(v.State) && q.running(j) {
+        return nil                   // gate: work IN FLIGHT reaches the boundary
+    }
+    l, err := j.Finish(job.OutcomeCancelled, q.now())
+    q.reclaim(l)
+    return err
 }
 ```
 
-The guard is `IsProduction && !workDone`, not `IsProduction` alone. Revision 2
-used the latter, and both call sites then hit it forever: a post-boundary cancel
-never completed, and a normally-completing `Finalizing` would record
-`OutcomeOK` on a cancelled job (§10).
+**The gate is `IsProduction && running`, not `IsProduction && !workDone`.**
+Revision 3 used the latter and it failed three ways, all because `Finalizing`
+never sets `next` (§3.3) so `!workDone` is permanently true there:
+
+- a `Finalizing` job could never be cancelled at all;
+- a post-boundary job **restored from a restart**, holding nothing, gated
+  forever — `advance` handles cancel before granting, so the work that would
+  have set `next` never ran;
+- a `Finalizing` job waiting for a compute slot gated forever, though no work
+  was in flight to protect.
+
+`running(j)` asks the question §8.4 actually poses — *is work in flight?* —
+rather than a proxy that one state cannot express.
+
+**A never-run job cannot be settled**, because `Outcome` lives on the `Attempt`
+and there is none: `Job.Finish` routes through `withOpenAttempt` and returns
+`ErrNoOpenAttempt` (`internal/job/job.go`). Cancelling a queued job therefore
+**removes it from the queue** rather than settling it, which is what upstream
+does and what a user means. `discard` is the Queue's, and is named here only so
+the case is not silently unhandled.
+
+**Cancelling a running `Finalizing` job lets it complete as `OutcomeOK`** — see
+§9, D-I11.
 
 ### 3.8 Restart, and why it is the pause path
 
@@ -478,6 +567,47 @@ manifests, so a global pause evicts at most pool-A-many.
 
 **Not releasing the lease on pause is a deadlock, not an optimisation.** With
 pool A = 3 and three paused jobs, no job could ever fetch again.
+
+### 3.9 The lease has one releaser and one reclaimer
+
+Revision 3 specified two lease lifetimes in a two-row table and leaked on five
+separate paths (§10). The rule that closes them:
+
+> **Every door that can end the job's need for a lease yields it, and the Queue
+> reclaims through one call that no-ops on nil.**
+
+```go
+func (j *Job) Surrender() *Lease                              // nil if none held — SOLE releaser
+func (j *Job) Cross(to State) (*Lease, error)                 // calls Surrender
+func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) // calls Surrender
+
+func (q *Queue) reclaim(l *Lease)                             // no-op on nil — SOLE reclaimer
+```
+
+Every exit, and why each one needs to be there:
+
+| Exit | Yields | Revision 3's behaviour |
+|---|---|---|
+| Cross into Production | `Cross` | correct |
+| Settle after a pre-boundary failure | `Finish` | **leaked** — `Finish` returned no lease and `advance` skips settled attempts, so every failed download lost a pool-A slot until restart |
+| Settle with `Unrecoverable` from `Assessing` | `Finish` | **leaked**, same cause |
+| Cancel | `Finish` | **leaked**, same cause |
+| Pause | `Surrender` | correct |
+| Cross a job that was paused before crossing | `Cross` → `Surrender` → `nil` | **`q.poolA.put(nil)`** — the pause had already surrendered it |
+
+That last row is why `Surrender` returns `nil` rather than asserting, and why
+`reclaim` no-ops on `nil`. A job may legitimately reach the crossing holding no
+lease: it was paused at `Assessing{next: Extracting}`, surrendered, and resumed.
+It does not need one to cross, because crossing is where it would have given the
+lease up anyway.
+
+**`reclaim` no-ops on nil rather than the callers checking.** Every exit in the
+table above is a call site, and each one testing for nil itself is another
+chance to forget; one function that accepts nil is none. The count is
+deliberately not stated here — it is a property of Half B's code, which does not
+exist yet, and a number written now would be stale before it was true.
+
+---
 
 ---
 
@@ -585,14 +715,14 @@ The four never-produced statuses stay never-produced.
 | `crossed` | `Attempt` | `Cross` — sole writer |
 | `outcome` | `Attempt` | `finish` — sole writer |
 | `attempts` | `Job` | `BeginAttempt` — sole writer |
-| the `Lease` | `Job` | `BeginAttempt` acquires; `Surrender` releases — sole releaser, called by `Cross` and by pause |
+| the `Lease` | `Job` | `Grant` acquires; `Surrender` releases — sole releaser, called by `Cross`, `Finish` and pause |
 | running-ness, wait reason | derived | nobody |
 
 ### 4.6 Resource lifetimes
 
 | | Acquired | Released |
 |---|---|---|
-| Lease (pool A) | `BeginAttempt` | `Surrender` — via `Cross` at the crossing, directly on pause or settle |
+| Lease (pool A) | `grantFor`, once per attempt | `Surrender` — via `Cross`, via `Finish`, or directly on pause. See §3.9 |
 | Compute slot (pool B) | `grantFor`, per state | when that state's work completes |
 
 Pool A is reserved across the correctness loop and **not** released between
@@ -607,7 +737,8 @@ no longer exists. It is superseded by:
 |---|---|
 | `StateUnset`, or `Fetching` with work unfinished and holding nothing | at the next lease issuance |
 | `Fetching`, running | immediately — it changes dispatch precedence |
-| `Assessing`, `Repairing` | on re-entering `Fetching`, if the verdict is `NeedsMore` |
+| `Assessing`, `Repairing`, holding a lease | on re-entering `Fetching`, if the verdict is `NeedsMore` |
+| `Assessing`, `Repairing`, holding nothing (restored, or paused) | at the next lease issuance — it must reacquire before it can do anything |
 | `Extracting`, `Finalizing`, `Finished` | never — the job will not fetch again |
 
 Reorder remains total and unconditionally recorded, for the reason §8.1.1 gives.
@@ -734,6 +865,83 @@ Finalizing  —   Run    slot     → "Moving"
 There is no such thing as a paused `Finalizing` job that must resume: pause can
 only hold a job *before* `Finalizing` starts. Revision 2 had this stuck forever.
 
+### 5.8 A pre-boundary failure returns the lease
+
+```
+Fetching    —   Run   lease            → "Downloading"
+  every server exhausted for some articles; fetch STOPS, not completes
+  SetNext(Assessing)                     — §5 says only Assessing may decide
+Fetching    Assessing  Run  lease
+  ... Assessing verdict Unrecoverable
+  l, _ := Finish(OutcomeUnrecoverable); q.reclaim(l)   ← lease returned
+Finished    —   Run   —                → "Failed"
+```
+
+Revision 3 leaked the lease here on every failed download.
+
+### 5.9 Retry when pool A is exhausted
+
+```
+Finished  —  Run  —   Outcome=Failed          → "Failed"
+  user retries → q.Retry(j) → BeginAttempt(now)          (no lease needed)
+Fetching  —  Run  —   holds nothing           → "Queued"
+  ... capacity frees → branch 2 → grantFor(Fetching)
+Fetching  —  Run  lease                        → "Downloading"
+```
+
+Revision 3 dropped this retry permanently: `BeginAttempt` demanded a lease that
+could not be taken, and nothing could record that a retry was wanted.
+
+### 5.10 Paused, then failed, then retried
+
+```
+Fetching  —  Pause  —          → "Paused"
+  ... a prior attempt settles Failed
+Finished  —  Pause  —          → "Failed"
+  user unpauses: SetIntent(IntentRun)   — legal on a settled attempt (§3.1)
+  user retries  → q.Retry(j) → BeginAttempt; branch 2 grants
+Fetching  —  Run    lease      → "Downloading"
+```
+
+Revision 3 refused `SetIntent` on a settled attempt, so this job could be
+neither unpaused nor usefully retried.
+
+### 5.11 Cancelling a never-run job
+
+```
+StateUnset  —  Run  —          → "Queued"
+  Cancel → SetIntent(IntentCancel); finishCancel sees StateUnset → q.discard(j)
+```
+
+No attempt exists, so there is nothing to carry `OutcomeCancelled`. Revision 3
+called `Finish` here and got `ErrNoOpenAttempt`.
+
+### 5.12 Cancelling a post-boundary job restored from a restart
+
+```
+persisted: Extracting  —  crossed=true   holds nothing
+  Cancel → IsProduction, but running(j) is FALSE (holds no slot)
+        → Finish(OutcomeCancelled); reclaim(nil)          → "Deleted"
+```
+
+Revision 3 gated on `!workDone` and deadlocked: `advance` handles cancel before
+granting, so the extraction that would have set `next` never ran.
+
+### 5.13 Cancelling a running `Finalizing` job
+
+```
+Finalizing  —  Run     slot       → "Moving"
+  Cancel → IsProduction && running → gate
+  the move and the user script complete; worker calls Finish(OutcomeOK)
+Finished    —  Cancel  —          → "Completed", Intent still IntentCancel
+```
+
+The cancel arrived after the last gate. §8.4 degrades post-boundary cancel to a
+gate, and there is no gate after `Finalizing`. Recording `Cancelled` would be
+false — the files moved and the script ran — so the outcome is honest and the
+surviving `IntentCancel` is what the UI reads to say the request came too late
+(D-I11).
+
 ---
 
 ## 6. Testing
@@ -746,14 +954,20 @@ only hold a job *before* `Finalizing` starts. Revision 2 had this stuck forever.
    holdsSlot × State` and assert `waitReason` matches §3.4 at every point.
 3. **`advance`'s three branches**, one test each, and one asserting a settled
    attempt is never reopened.
-4. **Each scenario in §5 is a test.** They are the regression suite for three
-   revisions of defects; 5.1, 5.4, 5.5 and 5.7 each pin a data-losing or
-   deadlocking bug from revision 2.
+4. **Each scenario in §5 is a test.** They are the regression suite for four
+   revisions of defects. 5.1, 5.4, 5.5 and 5.7 pin revision 2's; 5.8 through
+   5.13 pin revision 3's.
+4b. **No path settles or crosses without reclaiming the lease.** Walk every
+   exit in §3.9's table and assert pool-A occupancy returns to its starting
+   value. This is the cluster that revision 3 leaked on five separate paths, and
+   the only test that would have caught all five at once.
 5. **`SetNext`'s three rules**, one test each. Write-once-per-visit is defect
    3's pin and must be mutation-verified.
 6. **`Cross` is atomic.** Assert it is impossible to reach a Production state
    with a lease still held, by enumeration over the doors — and that
-   `transition` refuses the `Assessing → Extracting` edge.
+   `transition` refuses the `Assessing → Extracting` edge. Note what this does
+   NOT prove: a caller may still drop the `*Lease` `Cross` returns (§3.5), and
+   no test in this package can see that.
 7. **`TestBoundaryIsUnreachableByAnyPath` is rewritten, not deleted.** Action
    set changes (`Hold` out; `SetIntent`, `SetNext`, `Cross` in); config key
    gains `Intent` and `next`. Must stay mutation-verified — reverting
@@ -815,10 +1029,53 @@ only hold a job *before* `Finalizing` starts. Revision 2 had this stuck forever.
 | **D-I8** | `Cross` is a fourth door owning the one boundary edge, sole writer of `crossed`, and the only way to surrender the lease at the crossing. |
 | **D-I9** | Every persisted job restores to its persisted state holding nothing; `state`, `next`, `crossed` and `Intent` persist. Pause and restart are one path. |
 | **D-I10** | Half A lands before Half B. |
+| **D-I11** | Cancelling a *running* `Finalizing` job lets it complete as `OutcomeOK`. §8.4 degrades post-boundary cancel to a gate and there is no gate after `Finalizing`; the files have moved and the script has run, so `Cancelled` would be false. `Intent` survives on the finished job for the UI to read. |
+| **D-I12** | `BeginAttempt` does **not** take a lease. `Fetching` holding nothing is a legal state, so requiring one to reach it contradicts the model. §6's rule binds the downloader, which cannot obtain a `Manifest` without one. |
+| **D-I13** | Every door that can end the need for a lease yields it; `Surrender` is the sole releaser and `q.reclaim` the sole reclaimer, no-opping on nil. |
+| **D-I14** | `SetIntent` is legal in every state, including on a settled attempt. Only the `IntentCancel` latch restricts transitions. |
 
 ---
 
 ## 10. Revision history
+
+**Revision 3 → 4.** A third adversarial review returned twelve findings. Unlike
+the previous rounds they were concentrated rather than spread: the state machine
+produced nothing new, and **five of the twelve were one problem** — nobody
+returned the lease.
+
+| Leak path | Cause |
+|---|---|
+| Pre-boundary failure → `Finish(Failed)` | `Finish` yielded no lease and `advance` skips settled attempts |
+| `Assessing → Finish(Unrecoverable)` | same |
+| Cancel → `Finish(Cancelled)` | same |
+| `BeginAttempt` returning `ErrBoundaryConsumed`, or no-opping | the lease passed in was orphaned |
+| Cross after a pause that already surrendered | `q.poolA.put(nil)` |
+
+§3.9 is the answer, and D-I12 removed the fourth by removing the parameter.
+
+Four findings were not about leases:
+
+| Finding | Fix |
+|---|---|
+| The `Finalizing` exemption leaked into `finishCancel`: `Finalizing` never sets `next`, so an `IsProduction && !workDone` gate was permanently true there. A `Finalizing` job could never be cancelled, and a running one's `Finish(OutcomeOK)` silently discarded the cancel | §3.7 gates on `IsProduction && running` — the question §8.4 actually asks |
+| Cancelling a never-run job called `Finish` and got `ErrNoOpenAttempt` | §3.7 discards it; there is no attempt to carry an `Outcome` |
+| Cancelling a restored post-boundary job gated forever, since `advance` handles cancel before granting the slot whose work would set `next` | same `running` fix |
+| `waitReason` reported `NoLease` for `Extracting`/`Finalizing` jobs waiting on a slot, which hold no lease by design | §3.4 guards on `needsLease(state)` |
+
+Two claims were withdrawn rather than defended. **`Cross` does not make lease
+leaks unrepresentable** — it makes them one call site; the caller can still drop
+the returned `*Lease`, and a callback form that would close it is rejected on
+lock-order grounds (§3.5). That is the third revision running in which
+"unrepresentable" was claimed where "guarded" was earned. And **revision 3's
+`BeginAttempt(l *Lease, now)` was wrong** (D-I12) — it contradicted the model
+that makes a paused or restarted fetch expressible, and reverting it closed
+three findings at once.
+
+Independently of the review, §3.3 gained the failure paths it had never
+specified — it described who writes `next` when a state *completes* and said
+nothing about when one *fails* — and named the `Assessing → Repairing` loop as
+the Assessor's to bound, not this machine's. §3.6 states its concurrency
+contract.
 
 **Revision 2 → 3.** A second adversarial review found revision 2 had a
 data-losing flaw with three symptoms, all one root cause: removing `Waiting`
