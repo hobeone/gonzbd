@@ -2,6 +2,7 @@ package job
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -28,6 +29,13 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 // existed. The user-facing path for a full redo is D8's re-added NZB, which
 // starts a new Job, not a new Attempt on this one.
 var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior attempt crossed the Correctness/Production boundary")
+
+// ErrIntentLatched is returned by SetIntent when the job has already been
+// cancelled. Cancel is final for a Job: it renders as Deleted, and prior spec
+// D8 makes a full redo a re-added NZB starting a NEW Job rather than a new
+// attempt on this one. Clearing the latch would let a job the user deleted
+// come back through a path that never re-asked them.
+var ErrIntentLatched = errors.New("job: intent is latched; this job is cancelled")
 
 // Job owns its state. Every field is unexported. The lifecycle fields —
 // attempts and pending — are guarded by mu, and there is no path to either
@@ -72,6 +80,12 @@ type Job struct {
 	// two remedies if it ever bites are a cap here or a sweep alongside
 	// history retention. Not worth a policy before there is evidence.
 	attempts []Attempt
+
+	// intent is what a person has asked of this job. Guarded by mu. Sole
+	// writer: SetIntent — enforced by
+	// TestIntentWrites_MatchTheEnumerationStatedInProse (task 7), not by this
+	// comment.
+	intent Intent
 
 	// pending is the wait reason a job carries before its first attempt
 	// exists. A never-run job has no Attempt to hold a reason on — Attempt's
@@ -252,4 +266,28 @@ func (j *Job) currentLocked() *Attempt {
 		return nil
 	}
 	return &j.attempts[len(j.attempts)-1]
+}
+
+// Intent reports what has been asked of this job.
+func (j *Job) Intent() Intent {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.intent
+}
+
+// SetIntent records what is being asked of this job. Legal in every state,
+// including once the current attempt is settled: a settled job may be retried,
+// and the intent it carries governs what happens when it is.
+//
+// Refuses only when the job is already cancelled, and only for a DIFFERENT
+// intent — re-asserting cancel is an idempotent no-op rather than an error,
+// since a retrying caller repeating itself is not a mistake to report.
+func (j *Job) SetIntent(i Intent) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.intent.IsLatched() && i != j.intent {
+		return fmt.Errorf("%w: cannot replace %s with %s", ErrIntentLatched, j.intent, i)
+	}
+	j.intent = i
+	return nil
 }
