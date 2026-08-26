@@ -56,12 +56,12 @@ func (r WaitReason) IsPause() bool {
 // ActNone unless work is executing. Outcome is OutcomePending until the
 // attempt reaches Finished.
 //
-// The zero value is Waiting, holding nothing (Next: Waiting, itself), for
-// Reason NoLease. That is not the shape Job.State() returns for a job that
-// has never run — Job.State() fills in Next: Fetching, since a never-run job
-// is waiting to resume there, not waiting on itself. Job.State() owns that
-// shape; see it for the never-run case rather than reading it off the zero
-// value here.
+// The zero value is StateUnset in both State and Next, for Reason NoLease.
+// That is deliberately not any real state (see StateUnset in state.go), so an
+// uninitialized view is inert rather than plausible. It is also not the shape
+// Job.State() returns for a job that has never run: that case is still
+// Waiting{Next: Fetching}, constructed at job.go:120. Job.State() owns that
+// shape; read the never-run case there rather than off the zero value here.
 type StateView struct {
 	State    State
 	Next     State

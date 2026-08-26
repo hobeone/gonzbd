@@ -13,9 +13,17 @@ type State uint8
 
 const (
 	// StateUnset is not a state. It is the zero value, and exists so that a
-	// zero StateView cannot be mistaken for a job in a real state — see
-	// Job.State(), which returns it for a job with no attempt. No door
-	// accepts it as a destination and AllStates() does not list it.
+	// zero StateView cannot be mistaken for a job in a real state: without
+	// it, removing Waiting would promote Fetching to zero and an
+	// uninitialized view would read as an active download.
+	//
+	// No door accepts it as a destination — `grep -n 'StateUnset'
+	// internal/job/transition.go` returns nothing, so it is neither a key
+	// nor a value in legalEdges — and AllStates() does not list it, which
+	// TestAllStates_Exhaustive asserts by name rather than by count.
+	//
+	// Job.State() does NOT yet return it for a job with no attempt; that
+	// case is still Waiting{Next: Fetching}, constructed at job.go:120.
 	StateUnset State = iota
 	// Waiting holds no lease and no compute slot. It knows where it is going
 	// (StateView.Next) and why it is held (StateView.Reason); it never
