@@ -1,0 +1,83 @@
+# CodeRabbit configuration.
+#
+# Note on auto-review: this file deliberately does NOT set
+# reviews.auto_review.enabled. Auto-review is currently disabled for this
+# repository and every PR is triggered by posting `@coderabbitai review`.
+# Setting it here would change behaviour for every future PR, which is a
+# separate decision from the path filters and instructions below.
+language: en-US
+
+reviews:
+  # The plans under docs/superpowers/plans/ are build artifacts: task-by-task
+  # instructions written for one-shot implementers, carrying verbatim code and
+  # per-task red-green procedures. They are a record of what was instructed,
+  # not living documentation, and reviewing them costs attention that belongs
+  # on the code. The specs alongside them ARE reviewable and are not filtered.
+  path_filters:
+    - "!docs/superpowers/plans/**"
+
+  path_instructions:
+    - path: "internal/job/**"
+      instructions: |
+        This package is a job-lifecycle state machine. Nothing outside it
+        imports it yet — that is deliberate, and "this is unused" is not a
+        finding. A later plan does the wiring.
+
+        Review against these invariants, which generic Go review will not
+        surface:
+
+        1. THREE ORTHOGONAL AXES. `State` is where the current attempt is
+           (7 values). `Activity` is what is executing (10 values) and is NOT
+           a state — "still producing, doing something else now" is an
+           Activity write, never a transition. `Outcome` is how the attempt
+           ended (5 values) and is write-once. Anything that lets one axis
+           branch on another is a finding.
+
+        2. THE IRREVERSIBLE BOUNDARY. The Correctness zone (Fetching,
+           Assessing, Repairing) is idempotent and re-enterable. The
+           Production zone (Extracting, Finalizing) is destructive. Once
+           crossed, never returned — including across attempts, and including
+           via multi-step paths through Waiting. Two separate escapes were
+           found here by earlier reviewers; both were multi-hop, and neither
+           was visible as a single illegal edge. Reason about sequences, not
+           edges.
+
+        3. ONE DOOR PER NON-WORK STATE. `hold` is the only way into Waiting,
+           `finish` the only way into Finished, and `transition` moves between
+           work states only. This is an owner model, not a convention: each
+           door is the sole writer of the state it produces. A second writer
+           of any of them is a finding even if it looks correct.
+
+        4. SINGLE DECIDER. `Assessing` is the only state with more than one
+           work successor.
+
+        5. TWO-LAYER LOCKING. `Job` owns a sync.RWMutex; `Attempt` does no
+           locking and is called only under it. An exported `Attempt` method,
+           a `Job` method touching an attempt outside `withOpenAttempt`, or an
+           `*Attempt` escaping the lock are all findings.
+
+        Two defect classes have accounted for most real findings here, and are
+        worth hunting specifically:
+
+        - A GUARD NO INPUT CAN REACH. Several have shipped in this package and
+          each read as enforcement while doing nothing. For each `if`, name an
+          input that reaches it; if you cannot, say so.
+
+        - A COMMENT QUANTIFYING OVER A POPULATION WITH NOTHING ENFORCING IT.
+          Several have shipped. The trigger words are "only", "sole", "never",
+          "always", "every", "nothing", and any count. AGENTS.md Standing
+          Design Rule 4 requires such a claim to name the enumeration that
+          establishes it, and where the population is machine-enumerable, to
+          be a test instead of a sentence. Check every such claim in the diff
+          against the code it sits on.
+
+        Tests are held to the same bar as code: a test whose name or doc
+        comment promises more than its body asserts is a finding, as is a loop
+        that asserts nothing when the collection it iterates is empty, and an
+        assertion whose truth does not depend on the code under test.
+
+    - path: "docs/superpowers/specs/**"
+      instructions: |
+        These are design specs, reviewed as prose. Check for internal
+        contradiction, for claims the implementation does not deliver, and for
+        sections the code has since falsified. Do not flag style or formatting.
