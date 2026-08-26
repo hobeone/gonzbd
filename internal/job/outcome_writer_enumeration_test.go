@@ -33,9 +33,14 @@ import (
 // other function, which is exactly the drift this exists to catch.
 
 // outcomeWriters is every function in this package that sets the unexported
-// outcome field, either via `Tok == token.ASSIGN` or via a `outcome: x` key
-// in a composite literal. `:=` declarations and `==` comparisons are not
-// assignments to an existing field and are not counted.
+// outcome field, via a plain or compound `=` assignment (`a.outcome = x`,
+// `a.outcome += x`), `a.outcome++`/`--`, or a keyed `outcome: x` element in a
+// composite literal whose type is Attempt. `:=` declarations and `==`
+// comparisons are not assignments to an existing field and are not counted.
+// An unkeyed Attempt{...} literal fails the test outright rather than being
+// silently miscounted — see the CompositeLit case in scanOutcomeWriters.
+// Not covered: a write reached through a second pointer/alias to the same
+// Attempt, or reflection.
 var outcomeWriters = []string{"finish"}
 
 func TestOutcomeWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
@@ -89,7 +94,14 @@ func scanOutcomeWriters(t *testing.T) []string {
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.AssignStmt:
-					if node.Tok != token.ASSIGN {
+					// node.Tok == token.DEFINE (`:=`) never applies here:
+					// `:=` cannot target an existing selector expression, so
+					// every remaining AssignStmt token — ASSIGN and every
+					// compound form (+=, |=, ...) — is a write to whatever
+					// selector it targets. outcome is a uint8-based enum, so
+					// `a.outcome += x` is legal Go even though nothing in
+					// this package does it today.
+					if node.Tok == token.DEFINE {
 						return true
 					}
 					for _, lhs := range node.Lhs {
@@ -97,20 +109,55 @@ func scanOutcomeWriters(t *testing.T) []string {
 							writers = append(writers, fn.Name.Name)
 						}
 					}
+				case *ast.IncDecStmt:
+					// a.outcome++ / a.outcome-- write the field without
+					// being an AssignStmt at all.
+					if sel, ok := node.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "outcome" {
+						writers = append(writers, fn.Name.Name)
+					}
 				case *ast.CompositeLit:
 					// &Attempt{outcome: x} sets the field without an
 					// AssignStmt at all — the ASSIGN-only scan above cannot
 					// see it, which is exactly the gap
 					// TestOutcomeWrites_MatchTheEnumerationStatedInProse's
-					// doc comment did not disclose.
+					// doc comment did not disclose. Only a literal whose
+					// type is Attempt counts: a bare Ident type check, not
+					// "any composite literal with a key or element named
+					// outcome" — otherwise an unrelated struct that happens
+					// to have its own field called outcome would be
+					// misattributed as a write to Attempt.outcome.
+					ident, ok := node.Type.(*ast.Ident)
+					if !ok || ident.Name != "Attempt" {
+						return true
+					}
+					var unkeyed bool
 					for _, elt := range node.Elts {
 						kv, ok := elt.(*ast.KeyValueExpr)
 						if !ok {
+							unkeyed = true
 							continue
 						}
-						if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == "outcome" {
+						if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "outcome" {
 							writers = append(writers, fn.Name.Name)
 						}
+					}
+					// An unkeyed Attempt{...} literal sets fields by
+					// position, including outcome, without any key this
+					// scan can match against — it would slip past silently
+					// rather than being (correctly) counted as a write.
+					// Nothing in this package uses one (only newAttempt's
+					// keyed Attempt{state: ..., started: ...} exists), so
+					// refusing it outright is cheaper and safer than
+					// resolving Attempt's field order to a positional
+					// index: field order is not otherwise a population this
+					// package enumerates or protects, and this scan should
+					// not become the thing that breaks if that order
+					// changes for an unrelated reason.
+					if unkeyed && len(node.Elts) > 0 {
+						t.Fatalf("%s: function %s constructs an unkeyed Attempt{...} composite literal; "+
+							"this scan cannot see which field a positional element sets, so it cannot "+
+							"tell whether it writes outcome — use keyed fields (Attempt{state: ...}) instead",
+							name, fn.Name.Name)
 					}
 				}
 				return true
