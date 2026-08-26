@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,6 +110,45 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 	}
 }
 
+// TestToSABnzbd_NeverEmitsUnproducedStatuses is what sabnzbd.go's doc
+// comment on ToSABnzbd actually needs cited: it walks the same product space
+// as TestToSABnzbd_IsTotal and TestToSABnzbd_EmitsOnlyDeclaredStatuses and
+// asserts none of the four upstream statuses this design has no analogue for
+// — Idle, Grabbing, Propagating, Checking — ever comes out of ToSABnzbd.
+// TestToSABnzbd_EmitsOnlyDeclaredStatuses cannot catch this: it checks
+// membership in constants.AllStatuses(), which contains all four, so a
+// ToSABnzbd branch that started returning one of them would pass that test
+// silently. Guarded against a vacuous pass the same way IsTotal is: an empty
+// enumeration axis fails loudly instead of the loop running zero times.
+func TestToSABnzbd_NeverEmitsUnproducedStatuses(t *testing.T) {
+	unproduced := map[constants.Status]bool{
+		constants.StatusIdle:        true,
+		constants.StatusGrabbing:    true,
+		constants.StatusPropagating: true,
+		constants.StatusChecking:    true,
+	}
+	states, activities, outcomes, reasons := AllStates(), AllActivities(), AllOutcomes(), AllWaitReasons()
+	if len(states) == 0 || len(activities) == 0 || len(outcomes) == 0 || len(reasons) == 0 {
+		t.Fatalf("one of the enumeration axes is empty: states=%d activities=%d outcomes=%d reasons=%d",
+			len(states), len(activities), len(outcomes), len(reasons))
+	}
+	for _, s := range states {
+		for _, a := range activities {
+			for _, o := range outcomes {
+				for _, r := range reasons {
+					for _, assessed := range []bool{false, true} {
+						got := ToSABnzbd(StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed})
+						if unproduced[got] {
+							t.Errorf("ToSABnzbd(%+v) = %q, which this design has no analogue for and should never produce",
+								StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed}, got)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // TestOnlyOneNonTestFileImportsConstants is the standing check behind
 // sabnzbd.go's and doc.go's claim that sabnzbd.go is the only NON-TEST file
 // in the package that imports internal/constants. `go list -deps` cannot
@@ -121,7 +161,7 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 // outcome_writer_enumeration_test.go.
 func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
 	const wantImporter = "sabnzbd.go"
-	const constantsImportPath = `"github.com/hobeone/gonzbd/internal/constants"`
+	const constantsImportPath = "github.com/hobeone/gonzbd/internal/constants"
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -142,7 +182,16 @@ func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
 		}
 		scanned++
 		for _, imp := range file.Imports {
-			if imp.Path.Value == constantsImportPath {
+			// imp.Path.Value is the raw string literal, quotes and all
+			// (`"github.com/..."`), and Go also permits a backtick-quoted
+			// import path — strconv.Unquote handles both, where a bare `==`
+			// against a double-quoted literal would silently pass a
+			// backtick-quoted import straight through the check.
+			path, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				t.Fatalf("%s: unquote import path %s: %v", name, imp.Path.Value, err)
+			}
+			if path == constantsImportPath {
 				importers = append(importers, name)
 			}
 		}

@@ -26,10 +26,13 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // rather than as a crash here.
 //
 // Four upstream statuses — Idle, Grabbing, Propagating and Checking — are
-// statuses this function never produces: TestToSABnzbd_EmitsOnlyDeclaredStatuses
+// statuses this function never produces: TestToSABnzbd_NeverEmitsUnproducedStatuses
 // walks the same product space and would fail the moment any of the four
-// appeared in ToSABnzbd's output. They stay unreachable because nothing in
-// this design corresponds to them: GoNZBD's Assessing state is what upstream
+// appeared in ToSABnzbd's output. (TestToSABnzbd_EmitsOnlyDeclaredStatuses
+// cannot make this claim — it checks membership in constants.AllStatuses(),
+// which declares all four, so it would pass even if ToSABnzbd started
+// emitting one of them.) They stay unreachable because nothing in this
+// design corresponds to them: GoNZBD's Assessing state is what upstream
 // calls verification (mapped below to Verifying/QuickCheck, never to
 // Checking), and Grabbing, Idle and Propagating have no GoNZBD analogue at
 // all. Fetching finally means what upstream documents it to mean —
