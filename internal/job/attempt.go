@@ -272,6 +272,17 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !slices.Contains(AllOutcomes(), o) {
 		return fmt.Errorf("job: cannot finish an attempt with unrecognized outcome %s", o)
 	}
+	// Write-once is checked before the boundary guard below: an attempt that
+	// is both already settled AND crossed the boundary has its more
+	// fundamental invariant violated first — a second finish call is wrong
+	// regardless of which outcome it carries, while the boundary guard only
+	// ever has something to say about OutcomeUnrecoverable specifically.
+	// Checking the boundary first would report "state is Finished" (from the
+	// crossed guard, since a first finish to Finished sets a.state =
+	// Finished) for what is really a write-once violation.
+	if a.outcome.IsSettled() {
+		return fmt.Errorf("%w: %s, refusing to overwrite with %s", ErrOutcomeAlreadySet, a.outcome, o)
+	}
 	// Guard on a.crossed, not IsProduction(a.state): hold sets a.state to
 	// Waiting, so a state-based check would miss an attempt that crossed
 	// into Production and was then held there — Unrecoverable must stay
@@ -285,9 +296,6 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	// two writes — see the crossed field's doc comment.
 	if o == OutcomeUnrecoverable && a.crossed {
 		return fmt.Errorf("%w: state is %s", ErrUnrecoverableAfterBoundary, a.state)
-	}
-	if a.outcome.IsSettled() {
-		return fmt.Errorf("%w: %s, refusing to overwrite with %s", ErrOutcomeAlreadySet, a.outcome, o)
 	}
 	a.state = Finished
 	a.activity = ActNone

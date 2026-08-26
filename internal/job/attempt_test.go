@@ -287,6 +287,32 @@ func TestAttempt_FinishedNeverOpen(t *testing.T) {
 	}
 }
 
+// TestAttempt_FinishReportsWriteOnceBeforeBoundary pins the check ordering in
+// finish: an attempt that BOTH crossed the boundary AND is already settled
+// must report the write-once sentinel, not ErrUnrecoverableAfterBoundary.
+// Write-once is the more fundamental invariant — a second finish call is
+// wrong regardless of which outcome it carries — while the boundary guard
+// only ever has something to say about OutcomeUnrecoverable specifically.
+// Before this ordering fix, this exact sequence returned
+// "cannot record Unrecoverable for an attempt past the ... boundary: state
+// is Finished", which misreports a second-finish bug as a boundary bug.
+func TestAttempt_FinishReportsWriteOnceBeforeBoundary(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	mustTransition(t, &a, Finalizing)
+	if err := a.finish(OutcomeOK, testClock()); err != nil {
+		t.Fatalf("first finish: %v", err)
+	}
+	err := a.finish(OutcomeUnrecoverable, testClock())
+	if !errors.Is(err, ErrOutcomeAlreadySet) {
+		t.Fatalf("second finish (crossed + settled) error = %v, want ErrOutcomeAlreadySet", err)
+	}
+	if errors.Is(err, ErrUnrecoverableAfterBoundary) {
+		t.Errorf("second finish error = %v, must not also report ErrUnrecoverableAfterBoundary; write-once is checked first", err)
+	}
+}
+
 func TestAttempt_FinishIsWriteOnce(t *testing.T) {
 	a := newAttempt(testClock())
 	later := testClock().Add(time.Minute)
