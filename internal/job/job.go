@@ -114,7 +114,9 @@ type Job struct {
 
 	// lease is the admission token this job currently holds, or nil. Guarded
 	// by mu. Granted by Grant; released by surrenderLocked, which is the sole
-	// writer of nil into this field. At this commit Surrender is its only
+	// writer of nil into this field — `git grep -n 'j\.lease[ \t]*='
+	// -- 'internal/job/*.go'` returns two hits, Grant writing l and
+	// surrenderLocked writing nil. At this commit Surrender is its only
 	// caller — Cross does not yet exist in this package (it is task 6) and
 	// Finish does not yet touch lease at all (its signature changes to yield
 	// one, also task 6); both are wired through surrenderLocked then.
