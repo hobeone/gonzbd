@@ -376,6 +376,34 @@ func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
 	}
 }
 
+// TestAttempt_FinishRejectsUnrecoverableAfterCrossingThenHold pins that the
+// guard in finish tracks the latch (a.crossed), not the transient state: hold
+// sets a.state to Waiting, so a guard reading IsProduction(a.state) would see
+// a held attempt as Correctness-zone and let Unrecoverable through even
+// though the attempt already crossed the boundary in this same attempt.
+// Probe (pre-fix): an attempt that transitions into Extracting (Production,
+// crossed latches true), then hold(Finalizing, ...) (state becomes Waiting),
+// then finish(OutcomeUnrecoverable) returned err=nil — recording a verdict
+// that means "never crossed" on an attempt that had.
+func TestAttempt_FinishRejectsUnrecoverableAfterCrossingThenHold(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	mustTransition(t, &a, Extracting)
+	if err := a.hold(Finalizing, NoComputeSlot); err != nil {
+		t.Fatalf("hold(Finalizing): %v", err)
+	}
+	if got := a.view().State; got != Waiting {
+		t.Fatalf("State = %v after hold, want Waiting", got)
+	}
+	err := a.finish(OutcomeUnrecoverable, testClock())
+	if !errors.Is(err, ErrUnrecoverableAfterBoundary) {
+		t.Fatalf("finish(Unrecoverable) while held after crossing, error = %v, want ErrUnrecoverableAfterBoundary", err)
+	}
+	if got := a.view(); got.State == Finished || got.Outcome != OutcomePending {
+		t.Errorf("view = %+v after a rejected finish, want unchanged (Waiting, Pending)", got)
+	}
+}
+
 // TestAttempt_FinishSucceedsFromAnyOpenState pins that finish reaches
 // Finished from every non-terminal state reachable via legal transitions, not
 // only from one — needed because finish() has no CanTransition(state,

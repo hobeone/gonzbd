@@ -29,9 +29,11 @@ const (
 	// never crossed the boundary. Its files are still in the working
 	// directory and it is still retryable (D3) — which is the whole reason
 	// this is a distinct outcome from OutcomeFailed rather than folded into
-	// it. finish rejects assigning this outcome to an attempt whose state
-	// is IsProduction (see ErrUnrecoverableAfterBoundary in attempt.go), so
-	// this sentence is enforced rather than only stated.
+	// it. finish rejects assigning this outcome to an attempt that has
+	// crossed into Production at any point (a.crossed, not merely
+	// IsProduction(a.state) — a held attempt reads back as Waiting; see
+	// ErrUnrecoverableAfterBoundary in attempt.go), so this sentence is
+	// enforced rather than only stated.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled

@@ -21,13 +21,15 @@ import (
 var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
-// OutcomeUnrecoverable for an attempt whose state is in Production
-// (IsProduction). D3 defines OutcomeUnrecoverable as "the job never crossed
-// the boundary" specifically so its files stay in the working directory and
-// the job stays retryable — a verdict finish must not let contradict where
-// the attempt actually is. This is a sentinel rather than a plain
-// fmt.Errorf: a caller that reaches Production and then gets an
-// Unrecoverable verdict from downstream (e.g. par2 misclassifying a
+// OutcomeUnrecoverable for an attempt that has crossed into Production
+// (a.crossed), whether or not it is still there — a held attempt reads back
+// as Waiting, not as the Production state it crossed at, so the guard tracks
+// the latch rather than the transient state. D3 defines OutcomeUnrecoverable
+// as "the job never crossed the boundary" specifically so its files stay in
+// the working directory and the job stays retryable — a verdict finish must
+// not let contradict where the attempt actually crossed. This is a sentinel
+// rather than a plain fmt.Errorf: a caller that reaches Production and then
+// gets an Unrecoverable verdict from downstream (e.g. par2 misclassifying a
 // Production-stage fault) has a caller bug to fix, not a job to fail, and
 // distinguishing that case with errors.Is is the whole reason to name it.
 var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable for an attempt past the Correctness/Production boundary")
@@ -78,13 +80,14 @@ type Attempt struct {
 	// crossed latches once this attempt actually arrives in Production
 	// (IsProduction(state)) via transition — not merely holds toward it:
 	// hold(next: Extracting) sets a.state to Waiting, not to Extracting, so
-	// it never runs the line that sets this. finish's a.state = Finished
-	// erases the state the attempt crossed at, which is why this cannot be
-	// read back from the final state and has to be latched when it happens,
-	// the same reason `assessed` exists. BeginAttempt is the only reader —
-	// `git grep -n '\.crossed' internal/job/*.go` returns two lines, the
-	// write in transition above and that one read. It refuses to open a
-	// fresh attempt once a prior one crossed, because D3
+	// it never runs the line that sets this. Both finish's a.state =
+	// Finished and hold's a.state = Waiting erase the state the attempt
+	// crossed at, which is why this cannot be read back from a.state and
+	// has to be latched when it happens, the same reason `assessed` exists.
+	// Two field reads (this comment and other comments mentioning it are
+	// not reads): finish, below in this file, guards OutcomeUnrecoverable
+	// past the boundary even across a hold; and job.go's BeginAttempt
+	// refuses to open a fresh attempt once a prior one crossed, because D3
 	// says crossing consumes what a retry would need (spec
 	// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, D3). Not on
 	// StateView — nothing outside this package needs it.
@@ -266,7 +269,18 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !slices.Contains(AllOutcomes(), o) {
 		return fmt.Errorf("job: cannot finish an attempt with unrecognized outcome %s", o)
 	}
-	if o == OutcomeUnrecoverable && IsProduction(a.state) {
+	// Guard on a.crossed, not IsProduction(a.state): hold sets a.state to
+	// Waiting, so a state-based check would miss an attempt that crossed
+	// into Production and was then held there — Unrecoverable must stay
+	// refused across a hold, since D3's "never crossed the boundary" verdict
+	// would otherwise contradict BeginAttempt's separate refusal to open a
+	// fresh attempt once crossed (ErrBoundaryConsumed, job.go). a.crossed
+	// alone is equivalent to `a.crossed || IsProduction(a.state)`: transition
+	// is the only place a.state is ever set to a Production state (newAttempt
+	// starts at Fetching; hold only ever writes Waiting), and transition sets
+	// a.crossed = true in the same call, with no early return between the
+	// two writes — see the crossed field's doc comment.
+	if o == OutcomeUnrecoverable && a.crossed {
 		return fmt.Errorf("%w: state is %s", ErrUnrecoverableAfterBoundary, a.state)
 	}
 	if a.outcome.IsSettled() {
