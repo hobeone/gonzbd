@@ -1,6 +1,6 @@
 # Lifecycle Intents — Design
 
-**Status:** proposed, revision 4. Revisions 1, 2 and 3 were each reviewed
+**Status:** proposed, revision 5. Revisions 1, 2 and 3 were each reviewed
 externally; §10 records what changed and why. Revision 2 had a data-losing
 flaw and revision 3 a lease-leaking one; both are described there.
 
@@ -332,10 +332,12 @@ func (q *Queue) gatedBy(j *job.Job) (job.WaitReason, bool) {
 // waitReason explains why j is not running — about its CURRENT state. PURE,
 // so it is safe on the render path.
 func (q *Queue) waitReason(j *job.Job) (job.WaitReason, bool) {
-    if q.running(j) { return 0, false }
+    v := j.State()
+    if v.Outcome.IsSettled() { return 0, false }   // terminal: not waiting for anything
+    if q.running(j)          { return 0, false }
     if r, gated := q.gatedBy(j); gated { return r, true }
-    s := j.State().State
-    if needsLease(s) && !j.HoldsLease() { return job.NoLease, true }
+    if v.State == job.StateUnset { return job.NoLease, true }   // waiting to start
+    if needsLease(v.State) && !j.HoldsLease() { return job.NoLease, true }
     return job.NoComputeSlot, true
 }
 
@@ -343,6 +345,14 @@ func (q *Queue) waitReason(j *job.Job) (job.WaitReason, bool) {
 // happens ONLY here.
 func (q *Queue) grantFor(j *job.Job, s job.State) bool
 ```
+
+The two early returns before the resource checks are not decoration.
+`running(j)` is false for a settled attempt and for a never-run job alike —
+both require nothing, so `holds` is vacuously true but the attempt is not open
+— and `needsLease` is false for `Finished` and `StateUnset` too. Without them
+both fall through to `NoComputeSlot`: a terminal job reported as waiting for a
+compute slot, and a never-run job reported as waiting for one when it is
+waiting for a lease.
 
 `needsLease(s)` is load-bearing rather than decorative. `Extracting` and
 `Finalizing` legitimately hold no lease — it was surrendered at the crossing —
@@ -451,13 +461,13 @@ func (q *Queue) advance(j *job.Job) error {
     //    resume path AND the restart path — they are the same path.
     if v.Next == job.StateUnset {
         if q.holds(j) { return nil }                 // already working
-        if _, gated := q.gatedBy(j); gated { return nil }
+        if _, gated := q.gatedBy(j); gated { return q.park(j) }
         q.grantFor(j, v.State)
         return nil
     }
 
     // 3. Work is finished: move.
-    if _, gated := q.gatedBy(j); gated { return nil }
+    if _, gated := q.gatedBy(j); gated { return q.park(j) }
     if job.IsCorrectness(v.State) && job.IsProduction(v.Next) {
         l, err := j.Cross(v.Next)
         if err != nil { return err }
@@ -473,6 +483,22 @@ func (q *Queue) advance(j *job.Job) error {
 `advance` writes no job state on any blocked path, so a lost acquisition race
 costs a tick, never a verdict. **It takes no target** — the target is `next`,
 written by the worker that finished the state.
+
+```go
+// park releases what a gated job must not keep holding. Both gated paths go
+// through it: §3.8's deadlock is not hypothetical, and a `return nil` that
+// merely declines to move leaves a paused job holding a pool-A lease forever.
+func (q *Queue) park(j *job.Job) error {
+    q.reclaim(j.Surrender())   // no-ops when nothing is held
+    return nil
+}
+```
+
+Only the lease needs releasing at a gate, and that follows from §8.3 rather
+than being a separate rule: gating never interrupts work, so a job holding a
+compute slot is by definition mid-state and not yet gated. By the time it is
+gated its worker has finished and released the slot. A job gated at
+`Extracting{next: Finalizing}` holds neither — the lease went at the crossing.
 
 Crossing before acquiring the slot is deliberate, and branch 3 deliberately
 ignores `grantFor`'s result there: the decision was already made and recorded in
@@ -686,13 +712,22 @@ first**, because a running job's intent must not change its status:
 |---|---|
 | `Finished` | per `finishedStatus(Outcome)`, unchanged |
 | running | its state's status, per the rows below |
-| not running, `IntentPause` | `Paused` |
+| not running, `waitReason` satisfies `IsPause()` | `Paused` |
 | not running, otherwise (incl. `StateUnset`) | `Queued` |
 
-Ordering matters: a never-run job with `IntentPause` must match the `Paused` row,
-not a `StateUnset` row. Revision 2 listed `StateUnset → Queued` first and
-rendered such a job `Queued`, failing `TestJob_PausedRendersAsStatusPaused`
-(`job_test.go:415`).
+**The `Paused` row keys on the wait reason, not on `Intent`.** An earlier draft
+keyed it on `IntentPause` alone, which silently dropped queue-wide pause: under
+a global pause each job still carries `IntentRun`, so every one of them would
+have matched the `Queued` row. `waitReason` returns `UserPaused` or
+`GlobalPause` from `gatedBy`, and `WaitReason.IsPause()` already covers both —
+so routing through it costs nothing and cannot omit one. This is a live API
+contract, not a hypothetical: `TestJob_PausedRendersAsStatusPaused`'s subtest
+`"parked on a compute slot, then globally paused"` (`job_test.go:425`) asserts
+`StatusPaused` for exactly that case.
+
+Ordering matters too: a never-run job that is paused must match the `Paused`
+row, not the `StateUnset` catch-all. Revision 2 listed `StateUnset → Queued`
+first and rendered such a job `Queued`.
 
 Rows for a running job are unchanged from today: `Fetching` + `Assessed` →
 `Fetching`, else `Downloading`; `Assessing` + `ActCRCCheck` → `QuickCheck`, else
@@ -751,12 +786,13 @@ replaces. So this lands in two halves.
 
 | Half | Contains | Lands |
 |---|---|---|
-| **A — `internal/job`** | remove `Waiting`; add `StateUnset`; add `Intent`; `next` as completion marker with its three rules; `Cross`; `BeginAttempt(l, now)`; delete the §4.2 list; narrow `legalEdges`; rewrite affected tests | its own plan, next |
+| **A — `internal/job`** | remove `Waiting`; add `StateUnset`; add `Intent`; `next` as completion marker with its three rules; `Cross`; `Finish` and `Surrender` yielding the lease; delete the §4.2 list; narrow `legalEdges`; rewrite affected tests | its own plan, next |
 | **B — `Queue`** | `gatedBy`, `waitReason`, `grantFor`, `advance`, `Cancel`, the composed view, `ToSABnzbd`'s inputs, the pools | amendment to the swap plan's item 3 |
 
-Half A depends on `Lease` existing as a **type**, which `Cross` and
-`BeginAttempt` both name. That is smaller than the swap plan's item 1 (which
-also moves `Manifest` and wires the barrier), but it is not nothing: Half A's
+Half A depends on `Lease` existing as a **type**, which `Cross`, `Finish` and
+`Surrender` name in their signatures (`BeginAttempt` does not — D-I12). That is
+smaller than the swap plan's item 1, which also moves `Manifest` and wires the
+barrier, but it is not nothing: Half A's
 plan must either define `Lease` or take an opaque handle. **Decide that in Half
 A's plan**, and prefer defining the type — §6's argument is that the lease,
 manifest and barrier are one object, and an opaque placeholder would be a second
@@ -839,13 +875,18 @@ The completion marker survives the crash and distinguishes the two.
 
 ```
 Extracting  —            Run     slot
-  Cancel → intent=Cancel; IsProduction && !workDone → gate, return nil
-  unpacker finishes → SetNext(Finalizing); slot released
-Extracting  Finalizing   Cancel                    workDone
-  advance → finishCancel: workDone → Finish(Cancelled)     → "Deleted"
+  Cancel → intent=Cancel; IsProduction && running(j) → gate, return nil
+  unpacker finishes → slot released, SetNext(Finalizing)
+Extracting  Finalizing   Cancel   holds nothing    running(j) == false
+  advance → finishCancel: not running → Finish(Cancelled)  → "Deleted"
 ```
 
-Revision 2 deadlocked here and would then have recorded `OutcomeOK`.
+`running(j)` goes false for two independent reasons once the unpacker finishes
+— the slot is released and `next` is set — and either alone is sufficient. The
+gate opens because work is no longer in flight, which is the question §8.4
+poses. Revision 2 deadlocked here and would then have recorded `OutcomeOK`; an
+earlier draft of this trace still described the gate as `!workDone`, which
+`Finalizing` cannot express.
 
 ### 5.6 Contention at a boundary
 
@@ -968,10 +1009,30 @@ surviving `IntentCancel` is what the UI reads to say the request came too late
    `transition` refuses the `Assessing → Extracting` edge. Note what this does
    NOT prove: a caller may still drop the `*Lease` `Cross` returns (§3.5), and
    no test in this package can see that.
-7. **`TestBoundaryIsUnreachableByAnyPath` is rewritten, not deleted.** Action
-   set changes (`Hold` out; `SetIntent`, `SetNext`, `Cross` in); config key
-   gains `Intent` and `next`. Must stay mutation-verified — reverting
-   `BeginAttempt`'s `crossed` refusal must still turn it red.
+7. **`TestBoundaryIsUnreachableByAnyPath` is rewritten, and needs a NEW
+   ORACLE.** Action set changes (`Hold` out; `SetIntent`, `SetNext`, `Cross`
+   in); config key gains `Intent` and `next`; must stay mutation-verified —
+   reverting `BeginAttempt`'s `crossed` refusal must still turn it red.
+
+   The oracle change is not cosmetic. That test currently judges with
+   `IsCorrectness`, and its own doc comment says why that was legitimate and
+   states the condition under which it stops being so:
+
+   > *"if a door ever starts branching on `IsCorrectness`, this test needs a
+   > different oracle."*
+
+   **This design creates that condition.** `transition` refuses
+   `IsCorrectness(from) && IsProduction(to)` (§3.5) and `advance` branch 3
+   selects the crossing with it (§3.6). Judging those doors with the predicate
+   they decide by means a wrong predicate would agree with itself — the exact
+   failure the comment was written to prevent.
+
+   The replacement must share no code with the doors: enumerate the Correctness
+   states as a **literal set** in the test (`Fetching`, `Assessing`,
+   `Repairing`), with a guard asserting `AllStates()` has not grown members the
+   literal does not classify. A literal cannot drift silently the way a shared
+   predicate can, and the guard is what makes adding a state fail loudly here
+   rather than quietly widening the oracle.
 8. **Writer enumerations carry forward and extend.** `outcome` and `attempts`
    tests stay. Add: `SetIntent` sole writer of `Intent`; `Cross` sole writer of
    `crossed`; `SetNext`/`transition`/`Cross` the only writers of `next`.
@@ -1037,6 +1098,30 @@ surviving `IntentCancel` is what the UI reads to say the request came too late
 ---
 
 ## 10. Revision history
+
+**Revision 4 → 5.** A fourth review — the first run through a review *skill*
+(`deep-pr-review`) rather than a hand-written prompt — returned six findings,
+all confirmed. Two were sweep failures from revision 4's own edits, which is the
+failure mode `AGENTS.md` names directly: *"sweep against the diff the commit
+will land as, not the diff that motivated the edit."*
+
+| Finding | Fix |
+|---|---|
+| `waitReason` fell through to `NoComputeSlot` for both settled attempts and never-run jobs, since `needsLease` is false for `Finished` and `StateUnset` alike | §3.4 returns early for a settled attempt and reports `NoLease` for `StateUnset` |
+| **`ToSABnzbd` ignored queue-wide pause entirely.** Under a global pause every job still carries `IntentRun`, so a table keyed on `IntentPause` rendered them all `Queued` | §4.4's `Paused` row keys on `waitReason` satisfying `IsPause()`, which covers both |
+| **Neither gated path in `advance` surrendered the lease**, so a paused job held pool-A capacity forever — the deadlock §3.8 warns about, present in the same document's own pseudocode | §3.6 routes both through `park` |
+| §5.5's trace still described the cancel gate as `!workDone` | rewritten to `running(j)` |
+| §4.8 and §10 still carried `BeginAttempt(l, now)` after D-I12 reverted it | corrected, and §10 now records the revert beside the change |
+| **The reachability test's oracle is no longer independent** | §6.7 specifies a literal-set replacement |
+
+That last one is the sharpest finding any of the four rounds produced, and it
+was caught by a comment rather than by a reviewer's insight.
+`reachability_test.go` chose `IsCorrectness` as its oracle because no door
+branched on it, and stated the condition under which that stops being true:
+*"if a door ever starts branching on `IsCorrectness`, this test needs a
+different oracle."* This design creates that condition — `transition` refuses
+`IsCorrectness(from) && IsProduction(to)` and `advance` selects the crossing
+with it. A comment written to survive its own obsolescence did exactly that.
 
 **Revision 3 → 4.** A third adversarial review returned twelve findings. Unlike
 the previous rounds they were concentrated rather than spread: the state machine
@@ -1117,7 +1202,8 @@ for rewrite.
 
 **From tracing rather than review.** §5's scenarios were built to game the fix
 out, and produced four changes no review had asked for: `Cross` as a fourth door
-(§3.5), `BeginAttempt` taking the lease (§3.5), the pause/restart path
-equivalence (§3.8), and the rejection of a separate `workComplete` flag (§3.3).
+(§3.5), `BeginAttempt` taking the lease (§3.5 — **subsequently reverted in
+revision 4, D-I12**), the pause/restart path equivalence (§3.8), and the
+rejection of a separate `workComplete` flag (§3.3).
 
 **Revision 1 → 2** is recorded in this file's git history.
