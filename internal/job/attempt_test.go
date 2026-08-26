@@ -506,6 +506,44 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 	}
 }
 
+// TestAttempt_SetReasonUpdatesReasonOnly pins that setReason writes only
+// a.reason: a parked attempt must be able to record NoComputeSlot ->
+// GlobalPause (a global pause arriving while it already waits for a compute
+// slot) without hold's re-declare-the-destination refusal getting in the
+// way, and without setReason silently smuggling a destination change past
+// that refusal either.
+func TestAttempt_SetReasonUpdatesReasonOnly(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.hold(Assessing, NoComputeSlot); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	if err := a.setReason(GlobalPause); err != nil {
+		t.Fatalf("setReason: %v", err)
+	}
+	v := a.view()
+	if v.Reason != GlobalPause {
+		t.Errorf("Reason = %v, want GlobalPause", v.Reason)
+	}
+	if v.Next != Assessing {
+		t.Errorf("Next = %v after setReason, want Assessing unchanged; setReason must not alter the destination", v.Next)
+	}
+	if v.State != Waiting {
+		t.Errorf("State = %v after setReason, want Waiting unchanged", v.State)
+	}
+}
+
+// TestAttempt_SetReasonRejectsWhenNotWaiting pins that a reason for waiting
+// is meaningless when nothing is being waited for.
+func TestAttempt_SetReasonRejectsWhenNotWaiting(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.setReason(UserPaused); !errors.Is(err, ErrNotWaiting) {
+		t.Errorf("setReason on a Fetching (non-Waiting) attempt = %v, want ErrNotWaiting", err)
+	}
+	if got := a.view().Reason; got != NoLease {
+		t.Errorf("Reason = %v after a rejected setReason, want NoLease unchanged", got)
+	}
+}
+
 func mustTransition(t *testing.T, a *Attempt, to State) {
 	t.Helper()
 	if err := a.transition(to); err != nil {

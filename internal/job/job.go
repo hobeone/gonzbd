@@ -61,12 +61,23 @@ type Job struct {
 	// two remedies if it ever bites are a cap here or a sweep alongside
 	// history retention. Not worth a policy before there is evidence.
 	attempts []Attempt
+
+	// pending is the wait reason a job carries before its first attempt
+	// exists. A never-run job has no Attempt to hold a reason on — Attempt's
+	// own reason field only exists once an attempt has been opened — so a
+	// pause arriving before BeginAttempt has nowhere to record itself
+	// without this field. Sole writer: SetWaitReason (`git grep -n
+	// 'j\.pending' internal/job/*.go` returns this declaration and
+	// SetWaitReason's one assignment).
+	pending WaitReason
 }
 
 // New builds a job that has never run. It has no attempt record, because
-// nothing has happened to it yet.
+// nothing has happened to it yet. pending starts at NoLease, matching the
+// constant State() has always reported for a never-run job — a fresh Job's
+// behavior is unchanged unless SetWaitReason is called.
 func New(id, name string, p Policy) *Job {
-	return &Job{id: id, name: name, policy: p}
+	return &Job{id: id, name: name, policy: p, pending: NoLease}
 }
 
 // ID returns the job's identifier.
@@ -79,13 +90,17 @@ func (j *Job) Name() string { return j.name }
 func (j *Job) Policy() Policy { return j.policy }
 
 // State returns the current attempt's view. For a job that has never run the
-// answer is a constant rather than a special case: it is waiting for a lease,
-// which is exactly what is true.
+// answer is a constant shape rather than a special case: it is waiting for a
+// lease, which is exactly what is true. Reason comes from j.pending rather
+// than a hardcoded NoLease, so a pause recorded via SetWaitReason before the
+// job's first attempt (e.g. UserPaused) is visible here — New initializes
+// pending to NoLease, so this is unchanged from before unless SetWaitReason
+// has been called.
 func (j *Job) State() StateView {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	if len(j.attempts) == 0 {
-		return StateView{State: Waiting, Next: Fetching, Reason: NoLease}
+		return StateView{State: Waiting, Next: Fetching, Reason: j.pending}
 	}
 	return j.attempts[len(j.attempts)-1].view()
 }
@@ -168,6 +183,36 @@ func (j *Job) SetActivity(x Activity) error {
 // Finish assigns the verdict and closes the open attempt.
 func (j *Job) Finish(o Outcome, now time.Time) error {
 	return j.withOpenAttempt(func(a *Attempt) error { return a.finish(o, now) })
+}
+
+// SetWaitReason records why the job is waiting, covering the two shapes
+// nothing else in this package can update in place:
+//
+//   - No attempt exists yet (HasRun() == false): there is no Attempt to
+//     carry a reason, so this writes j.pending directly.
+//   - An attempt is open and parked (State() == Waiting): Hold already
+//     decided the destination (next), and its own doc comment explains why
+//     that must not be re-declared by a second Hold call — but the REASON
+//     legitimately changes while parked (NoComputeSlot -> GlobalPause, when
+//     a global pause arrives while a job already waits for a compute slot).
+//     This delegates to setReason, which writes only a.reason.
+//
+// Deliberately NOT routed through withOpenAttempt: that helper's !a.isOpen()
+// check would reject the never-run case outright — no attempt is ever open
+// before the first BeginAttempt — which is half of what this method exists
+// to cover. An attempt that is open but not Waiting (mid-work) still fails,
+// via setReason's own ErrNotWaiting: SetWaitReason cannot alter a.next, only
+// a.reason, so there is nothing for it to do while an attempt is actively
+// running.
+func (j *Job) SetWaitReason(r WaitReason) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	a := j.currentLocked()
+	if a == nil {
+		j.pending = r
+		return nil
+	}
+	return a.setReason(r)
 }
 
 // withOpenAttempt is the single door every mutator goes through: take the

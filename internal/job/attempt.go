@@ -68,6 +68,15 @@ var ErrHoldRequired = errors.New("job: transition cannot reach Waiting; call hol
 // finish failures needs a sentinel to match against.
 var ErrInvalidOutcome = errors.New("job: invalid outcome")
 
+// ErrNotWaiting is returned by setReason when the attempt is not currently
+// Waiting. A wait reason is meaningless when nothing is being waited for.
+// This is deliberately not ErrIllegalTransition: that sentinel names a
+// rejected edge in the State graph, and setReason never touches a.state at
+// all — the two failures are different shapes, and reusing the transition
+// sentinel here would mislead a caller matching on it into thinking a state
+// change was attempted.
+var ErrNotWaiting = errors.New("job: attempt is not waiting")
+
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own
 // write-once Outcome, so a retry appends a verdict rather than revising one
@@ -252,6 +261,28 @@ func (a *Attempt) hold(next State, r WaitReason) error {
 	a.next = next
 	a.reason = r
 	a.activity = ActNone
+	return nil
+}
+
+// setReason updates the reason the attempt is parked, leaving a.next
+// untouched. hold refuses to re-declare next once an attempt is already
+// Waiting (see hold's doc comment) — the DESTINATION must not be
+// re-declared, since that is what let Extracting -> hold(Finalizing) ->
+// hold(Fetching) -> transition(Fetching) strand the attempt before that
+// guard existed. But the REASON a job is waiting legitimately changes while
+// it waits (e.g. NoComputeSlot -> GlobalPause, when a global pause arrives
+// while a job is already parked waiting for a compute slot), and hold has no
+// way to record that without also being asked to re-declare next. setReason
+// is the narrower door: it writes only a.reason.
+//
+// Errors (ErrNotWaiting) if the attempt is not Waiting: a reason for waiting
+// is meaningless when nothing is being waited for, and there is no
+// destination here to preserve a mistaken call against.
+func (a *Attempt) setReason(r WaitReason) error {
+	if a.state != Waiting {
+		return fmt.Errorf("%w: cannot set a wait reason on an attempt in state %s", ErrNotWaiting, a.state)
+	}
+	a.reason = r
 	return nil
 }
 

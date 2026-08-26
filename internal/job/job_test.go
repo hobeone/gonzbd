@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 func newTestJob(t *testing.T) *Job {
@@ -281,6 +283,126 @@ func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) 
 	if err := j.Finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
+}
+
+// TestJob_SetWaitReasonOnNeverRunJob pins the never-run half of
+// SetWaitReason: a job with no attempt at all has nowhere to record a pause
+// reason except j.pending, so a UserPaused arriving before the first
+// BeginAttempt must still be visible through State().
+func TestJob_SetWaitReasonOnNeverRunJob(t *testing.T) {
+	j := newTestJob(t)
+	if err := j.SetWaitReason(UserPaused); err != nil {
+		t.Fatalf("SetWaitReason: %v", err)
+	}
+	v := j.State()
+	if v.State != Waiting || v.Next != Fetching || v.Reason != UserPaused {
+		t.Errorf("State() = %+v; want State=Waiting Next=Fetching Reason=UserPaused", v)
+	}
+}
+
+// TestJob_SetWaitReasonOnParkedAttempt pins the parked-attempt half: hold
+// refuses to re-declare a destination once an attempt is already Waiting
+// (that refusal is correct — see Hold's doc comment), but the REASON must
+// still be updatable, e.g. NoComputeSlot -> GlobalPause when a global pause
+// arrives while the job already waits for a compute slot.
+func TestJob_SetWaitReasonOnParkedAttempt(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	if err := j.Hold(Assessing, NoComputeSlot); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if err := j.SetWaitReason(GlobalPause); err != nil {
+		t.Fatalf("SetWaitReason: %v", err)
+	}
+	v := j.State()
+	if v.State != Waiting || v.Next != Assessing || v.Reason != GlobalPause {
+		t.Errorf("State() = %+v; want State=Waiting Next=Assessing Reason=GlobalPause", v)
+	}
+}
+
+// TestJob_SetWaitReasonRejectsMidWork pins that SetWaitReason is not a
+// general-purpose reason setter: an attempt that is open but actively
+// working (not Waiting) has no reason field meaningful to update.
+func TestJob_SetWaitReasonRejectsMidWork(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	if err := j.SetWaitReason(UserPaused); !errors.Is(err, ErrNotWaiting) {
+		t.Errorf("SetWaitReason on an open, working (Fetching) attempt = %v, want ErrNotWaiting", err)
+	}
+}
+
+// TestJob_SetWaitReasonCannotChangeNext is the stranding check named in the
+// review: SetWaitReason must never be usable to change where a parked
+// attempt resumes, only why it is parked.
+func TestJob_SetWaitReasonCannotChangeNext(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	if err := j.Transition(Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	if err := j.Hold(Repairing, NoComputeSlot); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if err := j.SetWaitReason(GlobalPause); err != nil {
+		t.Fatalf("SetWaitReason: %v", err)
+	}
+	if got := j.State().Next; got != Repairing {
+		t.Errorf("Next = %v after SetWaitReason, want Repairing unchanged", got)
+	}
+	// The parked attempt must still resume to its declared next afterward.
+	if err := j.Transition(Repairing); err != nil {
+		t.Fatalf("Transition(Repairing) after SetWaitReason: %v", err)
+	}
+}
+
+// TestJob_BeginAttemptAfterSetWaitReasonOnNeverRunJob pins that a never-run
+// job carrying a non-default pending reason still opens normally: pending
+// is a Job-level field consulted only by State() when there is no attempt,
+// and BeginAttempt does not read it at all.
+func TestJob_BeginAttemptAfterSetWaitReasonOnNeverRunJob(t *testing.T) {
+	j := newTestJob(t)
+	if err := j.SetWaitReason(UserPaused); err != nil {
+		t.Fatalf("SetWaitReason: %v", err)
+	}
+	if err := j.BeginAttempt(testClock()); err != nil {
+		t.Fatalf("BeginAttempt after SetWaitReason: %v", err)
+	}
+	if got := j.State().State; got != Fetching {
+		t.Errorf("State = %v after BeginAttempt, want Fetching", got)
+	}
+}
+
+// TestJob_PausedRendersAsStatusPaused is the end-to-end property both review
+// comments actually care about: a job that cannot record why it is waiting
+// renders as Queued instead of Paused through the legacy status shim. This
+// covers both gaps SetWaitReason closes — a never-run job, and a parked
+// attempt whose pause reason changes while it waits.
+func TestJob_PausedRendersAsStatusPaused(t *testing.T) {
+	t.Run("never run, user paused", func(t *testing.T) {
+		j := newTestJob(t)
+		if err := j.SetWaitReason(UserPaused); err != nil {
+			t.Fatalf("SetWaitReason: %v", err)
+		}
+		if got := ToSABnzbd(j.State()); got != constants.StatusPaused {
+			t.Errorf("ToSABnzbd(State()) = %q, want StatusPaused", got)
+		}
+	})
+	t.Run("parked on a compute slot, then globally paused", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		if err := j.Hold(Assessing, NoComputeSlot); err != nil {
+			t.Fatalf("Hold: %v", err)
+		}
+		if got := ToSABnzbd(j.State()); got != constants.StatusQueued {
+			t.Fatalf("ToSABnzbd(State()) before the global pause arrives = %q, want StatusQueued (NoComputeSlot is not a pause)", got)
+		}
+		if err := j.SetWaitReason(GlobalPause); err != nil {
+			t.Fatalf("SetWaitReason: %v", err)
+		}
+		if got := ToSABnzbd(j.State()); got != constants.StatusPaused {
+			t.Errorf("ToSABnzbd(State()) = %q, want StatusPaused", got)
+		}
+	})
 }
 
 func mustBegin(t *testing.T, j *Job) {
