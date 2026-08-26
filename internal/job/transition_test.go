@@ -81,8 +81,8 @@ func TestOnlyAssessingBranchesWithinCorrectness(t *testing.T) {
 				successors = append(successors, to)
 			}
 		}
-		if len(successors) > 1 {
-			t.Errorf("%s has %d work successors %v; only Assessing may branch (spec §5)",
+		if len(successors) != 1 {
+			t.Errorf("%s has %d work successors %v; every non-Assessing Correctness state must have exactly one (spec §5)",
 				from, len(successors), successors)
 		}
 	}
