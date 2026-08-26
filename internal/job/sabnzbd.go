@@ -12,25 +12,30 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // write its table), which is exactly why the check is scoped to non-test
 // sources rather than claiming to be the only importer full stop; `go list
 // -deps` cannot see test files at all, so it could never have caught that
-// distinction on its own. The translation is one-way: nothing reads a
-// constants.Status back into the machine. That is the whole point of having
-// a shim rather than storing the upstream vocabulary — see spec §12.
+// distinction on its own. ToSABnzbd's own translation is one-way: it never
+// reads a constants.Status back into the machine. That is the whole point of
+// having a shim rather than storing the upstream vocabulary — see spec §12;
+// this package makes no claim about whether some other, unrelated code in
+// the repository ever converts a constants.Status back.
 //
-// It is total by construction: every State arm returns, and the Finished and
-// Waiting arms delegate to helpers that also return on every input via a
-// default case. TestToSABnzbd_IsTotal walks the product space of every axis
-// to prove no combination yields an empty string, because an unhandled
-// combination shows up as a blank status in somebody's Sonarr rather than as
-// a crash here.
+// ToSABnzbd is total by construction: every State arm returns, and the
+// Finished and Waiting arms delegate to helpers that also return on every
+// input via a default case. TestToSABnzbd_IsTotal walks the product space of
+// every axis to prove no combination yields an empty string, because an
+// unhandled combination shows up as a blank status in somebody's Sonarr
+// rather than as a crash here.
 //
-// Four upstream statuses that no code path of ours assigns are OUTPUTS here
-// and nothing more: Grabbing and Checking are unreachable (nothing in this
-// design corresponds to them — GoNZBD's Assessing state is what upstream
-// calls verification, mapped below), Idle and Propagating are likewise never
-// produced by this function. Fetching finally means what upstream documents
-// it to mean — downloading extra par2 files for repair, which is exactly our
-// Assessing → Fetching re-entry, told apart from a first-pass download by the
-// attempt's latched Assessed flag.
+// Four upstream statuses — Idle, Grabbing, Propagating and Checking — are
+// statuses this function never produces: TestToSABnzbd_EmitsOnlyDeclaredStatuses
+// walks the same product space and would fail the moment any of the four
+// appeared in ToSABnzbd's output. They stay unreachable because nothing in
+// this design corresponds to them: GoNZBD's Assessing state is what upstream
+// calls verification (mapped below to Verifying/QuickCheck, never to
+// Checking), and Grabbing, Idle and Propagating have no GoNZBD analogue at
+// all. Fetching finally means what upstream documents it to mean —
+// downloading extra par2 files for repair, which is exactly our Assessing →
+// Fetching re-entry, told apart from a first-pass download by the attempt's
+// latched Assessed flag.
 func ToSABnzbd(v StateView) constants.Status {
 	switch v.State {
 	case Waiting:

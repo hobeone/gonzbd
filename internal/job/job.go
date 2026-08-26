@@ -23,8 +23,11 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 // starts a new Job, not a new Attempt on this one.
 var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior attempt crossed the Correctness/Production boundary")
 
-// Job owns its state. Every field is unexported and guarded by mu; there is
-// no path to a Job's state that does not go through a method here.
+// Job owns its state. Every field is unexported. The lifecycle fields —
+// attempts and pending — are guarded by mu, and there is no path to either
+// that does not go through a method here. id, name and policy are not
+// guarded: they are set once in New and never written again, so ID, Name and
+// Policy read them without taking the lock.
 //
 // What is established now: a Job method never calls any other repository
 // package's method, because this package imports nothing from the rest of

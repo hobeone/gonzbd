@@ -37,8 +37,24 @@ var ErrIllegalTransition = errors.New("job: illegal state transition")
 //     Repairing→Assessing, Extracting→Finalizing.
 //
 // Self-transitions are not in this graph at all: CanTransition's from == to
-// early return makes every one of the seven states self-transition
-// idempotently, without a self-edge appearing in legalEdges.
+// early return reports every one of the seven states as legally
+// self-transitioning, without a self-edge appearing in legalEdges. That is a
+// property of CanTransition, not of the doors that actually drive a change:
+// Attempt.transition rejects to == Waiting and to == Finished outright
+// (ErrHoldRequired, ErrFinishRequired) before it ever compares a.state to
+// to, so those two states can never actually be self-transitioned through
+// transition, even though CanTransition(Waiting, Waiting) and
+// CanTransition(Finished, Finished) both report true.
+//
+// One consequence of that self-transition legality is worth naming: it is
+// what keeps the Finalizing → Waiting pause edge reachable at all.
+// legalEdges[Finalizing] is {Waiting, Finished}, and hold validates a pause's
+// next against CanTransition(a.state, next) after already excluding
+// next == Finished (ErrFinishRequired) and next == Waiting (self-referential
+// hold is refused). From Finalizing, the only next value left that
+// CanTransition(Finalizing, next) accepts is Finalizing itself, via this
+// same from == to return — so a Finalizing attempt can only ever pause to
+// resume back into Finalizing, never into any other state.
 //
 // The one edge the graph must NOT contain is any return from Production to
 // Correctness. TestBoundaryIsOneWay enumerates AllStates() and fails if one

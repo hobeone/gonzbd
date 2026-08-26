@@ -167,9 +167,11 @@ func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
 }
 
 // TestFinishedStatus_MapsEveryOutcome calls finishedStatus directly rather
-// than only through ToSABnzbd(State: Finished, ...), since that is the sole
-// caller and this pins its own per-Outcome table against a drift in
-// ToSABnzbd's routing.
+// than only through ToSABnzbd(State: Finished, ...), since ToSABnzbd is the
+// sole non-test caller (`git grep -n 'finishedStatus(' internal/job` shows
+// the definition, ToSABnzbd's call in sabnzbd.go, and this test's own call —
+// no other non-test site calls it) and this pins its own per-Outcome table
+// against a drift in ToSABnzbd's routing.
 func TestFinishedStatus_MapsEveryOutcome(t *testing.T) {
 	cases := []struct {
 		o    Outcome

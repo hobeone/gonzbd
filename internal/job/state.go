@@ -19,7 +19,10 @@ const (
 	// Fetching is downloading articles. Holds a lease.
 	Fetching
 	// Assessing decides whether the bytes are correct. Holds a lease and a
-	// compute slot. It is the only branching state in the machine.
+	// compute slot. Within the Correctness zone it is the only state with
+	// more than one non-pause, non-cancel work successor — every other
+	// Correctness or Production state has at most one.
+	// TestOnlyAssessingBranchesWithinCorrectness pins it.
 	Assessing
 	// Repairing runs par2 repair. Holds a lease and a compute slot.
 	Repairing

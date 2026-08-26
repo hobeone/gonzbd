@@ -28,12 +28,16 @@
 //
 // # One decider
 //
-// Assessing is the only branching state. Everything else does work and
-// returns, so every path through a job is Fetching → Assessing → one of four
-// destinations, and the test surface is the verdict function rather than the
-// graph. TestOnlyAssessingBranchesWithinCorrectness pins it, and
-// TestEdgeCountsMatchTheStatedPartition pins the edge counts the partition
-// implies.
+// Within the Correctness zone, Assessing is the only state with more than
+// one non-pause, non-cancel work successor — Fetching and Repairing each
+// have exactly one. Every path through a job's Correctness zone is therefore
+// Fetching → Assessing → one of Assessing's own destinations, and the test
+// surface there is the verdict function rather than the graph.
+// TestOnlyAssessingBranchesWithinCorrectness pins this for the Correctness
+// zone specifically — it does not examine Production (Extracting,
+// Finalizing), where the same property happens to hold today but is
+// unenforced. TestEdgeCountsMatchTheStatedPartition pins the edge counts the
+// partition implies.
 //
 // # Attempts
 //

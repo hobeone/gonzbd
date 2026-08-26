@@ -25,7 +25,7 @@ func TestCanTransition(t *testing.T) {
 		{"resume into extracting", Waiting, Extracting, true},
 		{"cancel while waiting", Waiting, Finished, true},
 
-		{"self is legal and idempotent", Fetching, Fetching, true},
+		{"self is a legal edge", Fetching, Fetching, true},
 
 		{"no reverse across the boundary", Extracting, Assessing, false},
 		{"no reverse across the boundary, far", Finalizing, Fetching, false},

@@ -36,14 +36,23 @@ var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable for an attempt past the Correctness/Production boundary")
 
 // ErrFinishRequired is returned when transition is asked to reach Finished,
-// or hold is asked to resume into it. finish is the only door into that
-// state: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates every
-// site that sets the unexported outcome field — a plain `=` assignment and a
-// `outcome: x` composite-literal key alike — across this package's non-test
-// sources, and asserts finish is the only one, so this sentence is checked
-// by a test rather than trusted as prose — otherwise an attempt could reach
-// Finished still carrying OutcomePending, and isOpen() would report an
-// attempt open when nothing is ever going to close it.
+// or hold is asked to resume into it. finish is the intended sole door into
+// that state. What is actually test-enforced is narrower than the door
+// claim itself: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates
+// every site that sets the unexported outcome field — a plain `=` assignment
+// and an `outcome: x` composite-literal key alike — across this package's
+// non-test sources, and asserts finish is the only one. That test says
+// nothing about writes to the state field; it would not catch a second
+// function assigning that field the Finished value while leaving outcome
+// untouched. Checked but not enforced: below, in this same file's finish
+// method, is currently the only non-test assignment site for that field to
+// that value — a fact confirmed by inspection at the time this comment was
+// written, not by a test, so nothing fails the build if a second writer is
+// added later. What the outcome-writer test does guarantee is the property
+// this error message actually protects against — an attempt cannot reach
+// Finished through finish without also being assigned a settled Outcome in
+// the same call, so isOpen() cannot report an attempt open when nothing is
+// ever going to close it.
 var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call finish instead")
 
 // ErrHoldRequired is returned when transition is asked to reach Waiting.
