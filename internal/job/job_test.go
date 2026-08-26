@@ -2,6 +2,7 @@ package job
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -336,6 +337,32 @@ func TestJob_SetWaitReasonRejectsMidWork(t *testing.T) {
 	mustBegin(t, j)
 	if err := j.SetWaitReason(UserPaused); !errors.Is(err, ErrNotWaiting) {
 		t.Errorf("SetWaitReason on an open, working (Fetching) attempt = %v, want ErrNotWaiting", err)
+	}
+}
+
+// TestJob_SetWaitReasonRejectsSettledJob pins the Critical review finding
+// this round settled rather than fixed: a job whose only attempt settled
+// with OutcomeUnrecoverable cannot record a pause reason, and that refusal
+// is correct, not a gap. OutcomeUnrecoverable comes from exactly one place —
+// an Assessing verdict, spec §5 — and such a job renders Failed; it is not
+// sitting in a queue awaiting a lease, so there is no wait state for a
+// reason to attach to. The message names why, not just that.
+func TestJob_SetWaitReasonRejectsSettledJob(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	if err := j.Finish(OutcomeUnrecoverable, testClock()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	err := j.SetWaitReason(UserPaused)
+	if !errors.Is(err, ErrNotWaiting) {
+		t.Fatalf("SetWaitReason on a settled job = %v, want ErrNotWaiting", err)
+	}
+	const wantSubstring = "no wait state"
+	if !strings.Contains(err.Error(), wantSubstring) {
+		t.Errorf("SetWaitReason error = %q, want it to explain why via %q", err.Error(), wantSubstring)
+	}
+	if got := j.State().Reason; got != NoLease {
+		t.Errorf("Reason = %v after a rejected SetWaitReason, want unchanged (NoLease)", got)
 	}
 }
 

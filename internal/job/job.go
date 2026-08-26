@@ -6,9 +6,15 @@ import (
 	"time"
 )
 
-// ErrNoOpenAttempt is returned by every mutator when the job has no attempt
-// in flight — either it has never run, or its last attempt is settled. The
-// caller's fix is BeginAttempt, which is the only door into the machine.
+// ErrNoOpenAttempt is returned by the four mutators withOpenAttempt wraps —
+// Transition, Hold, SetActivity and Finish — when the job has no attempt in
+// flight, either because it has never run or because its last attempt is
+// settled. BeginAttempt and SetWaitReason are also mutators but do not go
+// through withOpenAttempt and so never return this error: BeginAttempt is
+// what opens an attempt in the first place, and SetWaitReason's never-run
+// case (see its own doc comment) exists specifically to write j.pending
+// while no attempt is open. The caller's fix for this error is BeginAttempt,
+// which is the only door into the machine.
 var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
 // ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
@@ -46,7 +52,9 @@ var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior a
 // Job does no I/O. It exposes State() and the attempt accessors. The later
 // plan's design intent is a Checkpointer that reads those and writes the
 // database; no such type exists in this repository today
-// (`grep -rn Checkpointer internal/job/` is empty).
+// (`git grep -n 'type[ ]Checkpointer'`, run from the repository root,
+// returns nothing — the bracketed space is so this citation, quoted
+// verbatim, does not match its own quoted text).
 type Job struct {
 	mu sync.RWMutex
 
@@ -69,9 +77,13 @@ type Job struct {
 	// exists. A never-run job has no Attempt to hold a reason on — Attempt's
 	// own reason field only exists once an attempt has been opened — so a
 	// pause arriving before BeginAttempt has nowhere to record itself
-	// without this field. Sole writer: SetWaitReason (`git grep -n
-	// 'j\.pending' internal/job/*.go` returns this declaration and
-	// SetWaitReason's one assignment).
+	// without this field. Exactly two writes — New's initializer and
+	// SetWaitReason's assignment — confirmed by `git grep -n 'pending[:][
+	// ]NoLease\|[.]pending[ ]=' -- internal/job/*.go`, which returns those
+	// two lines and nothing else. The bracketed single-character classes
+	// around the colon, the space and the dot are there so this citation,
+	// quoted verbatim inside this comment, does not match its own quoted
+	// text as a substring the way an earlier draft of this comment did.
 	pending WaitReason
 }
 
@@ -102,10 +114,10 @@ func (j *Job) Policy() Policy { return j.policy }
 func (j *Job) State() StateView {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
-	if len(j.attempts) == 0 {
-		return StateView{State: Waiting, Next: Fetching, Reason: j.pending}
+	if a := j.currentLocked(); a != nil {
+		return a.view()
 	}
-	return j.attempts[len(j.attempts)-1].view()
+	return StateView{State: Waiting, Next: Fetching, Reason: j.pending}
 }
 
 // HasRun reports whether this job has ever held a lease. Exact, where any

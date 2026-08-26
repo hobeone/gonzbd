@@ -287,7 +287,21 @@ func (a *Attempt) hold(next State, r WaitReason) error {
 // Errors (ErrNotWaiting) if the attempt is not Waiting: a reason for waiting
 // is meaningless when nothing is being waited for, and there is no
 // destination here to preserve a mistaken call against.
+//
+// A settled attempt (a.state == Finished) gets its own message rather than
+// the generic mid-work one. This was raised as a Critical review finding —
+// a settled retryable job appears unable to record a pause — and the fix is
+// deliberately NOT to let a Finished attempt take a reason. OutcomeUnrecoverable
+// arises from exactly one place, an Assessing verdict (spec §5), and such a
+// job renders as Failed: the server and article budget for that attempt are
+// spent, and it is up to the user to decide whether to retry, not something
+// that resumes on its own. A finished job is not sitting in a queue awaiting
+// a lease — pause gates work that is still in flight, and a settled job has
+// none. Refusing here is correct; only the message was worth improving.
 func (a *Attempt) setReason(r WaitReason) error {
+	if a.state == Finished {
+		return fmt.Errorf("%w: attempt is Finished, which has no wait state — pause gates in-flight work, and a settled attempt's next move (retry or not) is a decision for the user, not a reason to record", ErrNotWaiting)
+	}
 	if a.state != Waiting {
 		return fmt.Errorf("%w: cannot set a wait reason on an attempt in state %s", ErrNotWaiting, a.state)
 	}
@@ -328,9 +342,9 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	// fundamental invariant violated first — a second finish call is wrong
 	// regardless of which outcome it carries, while the boundary guard only
 	// ever has something to say about OutcomeUnrecoverable specifically.
-	// Checking the boundary first would report "state is Finished" (from the
-	// crossed guard, since a first finish to Finished sets a.state =
-	// Finished) for what is really a write-once violation.
+	// Checking the boundary first would report the crossing (from the
+	// crossed guard, which stays true after a first finish settles the
+	// attempt) for what is really a write-once violation.
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
@@ -346,7 +360,7 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	// a.crossed = true in the same call, with no early return between the
 	// two writes — see the crossed field's doc comment.
 	if o == OutcomeUnrecoverable && a.crossed {
-		return fmt.Errorf("%w: state is %s", ErrUnrecoverableAfterBoundary, a.state)
+		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
 	}
 	a.state = Finished
 	a.activity = ActNone
