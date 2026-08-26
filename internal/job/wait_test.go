@@ -70,11 +70,11 @@ func TestAllWaitReasons_HaveStringArms(t *testing.T) {
 	}
 }
 
-func TestStateView_ZeroValueIsWaitingForALease(t *testing.T) {
+func TestStateView_ZeroValueIsUnset(t *testing.T) {
 	var v StateView
-	if v.State != Waiting || v.Next != Waiting || v.Reason != NoLease ||
+	if v.State != StateUnset || v.Next != StateUnset || v.Reason != NoLease ||
 		v.Activity != ActNone || v.Outcome != OutcomePending {
-		t.Errorf("zero StateView = %+v; want State=Waiting Next=Waiting Reason=NoLease "+
+		t.Errorf("zero StateView = %+v; want State=StateUnset Next=StateUnset Reason=NoLease "+
 			"Activity=ActNone Outcome=OutcomePending", v)
 	}
 }

@@ -48,18 +48,33 @@ func TestAllStates_Exhaustive(t *testing.T) {
 		t.Fatal("parsed no State constants from state.go; the parser below no longer matches the file's shape, so this test would pass vacuously")
 	}
 
+	// StateUnset is declared and deliberately unlisted: it is a sentinel zero,
+	// not a state, and AllStates() drives exhaustive walks that must not visit
+	// it. Naming it here rather than subtracting one from a count is what makes
+	// a SECOND sentinel fail — someone adding one has to come and write it down.
+	const sentinel = "StateUnset"
+	if _, ok := declared[sentinel]; !ok {
+		t.Fatalf("%s is no longer declared in state.go; if the sentinel was removed, delete this exception rather than leaving it asserting nothing", sentinel)
+	}
+
 	listed := make(map[State]bool, len(AllStates()))
 	for _, s := range AllStates() {
 		listed[s] = true
 	}
 	for name, value := range declared {
+		if name == sentinel {
+			if listed[value] {
+				t.Errorf("%s is listed in AllStates(); the sentinel must not be walked as a real state", name)
+			}
+			continue
+		}
 		if !listed[value] {
 			t.Errorf("%s is declared in state.go but missing from AllStates(); add it there and give it edges in transition.go", name)
 		}
 	}
-	if len(AllStates()) != len(declared) {
-		t.Errorf("AllStates() has %d entries, state.go declares %d; the list has a duplicate or an entry that is no longer declared",
-			len(AllStates()), len(declared))
+	if want := len(declared) - 1; len(AllStates()) != want {
+		t.Errorf("AllStates() has %d entries, state.go declares %d real states plus %s; the list has a duplicate or an entry that is no longer declared",
+			len(AllStates()), want, sentinel)
 	}
 }
 
@@ -160,6 +175,22 @@ const (
 	for name, wantVal := range want {
 		if gotVal, ok := got[name]; !ok || gotVal != wantVal {
 			t.Errorf("stateConstantsFromSource(fixture)[%q] = %v (ok=%v), want %v", name, gotVal, ok, wantVal)
+		}
+	}
+}
+
+// TestStateUnset_IsTheZeroValue pins the property the sentinel exists for: a
+// zero State — and therefore a zero StateView — is not a real state. Without
+// it, removing Waiting in a later change silently promotes Fetching to zero
+// and an unstarted job reads as an active download.
+func TestStateUnset_IsTheZeroValue(t *testing.T) {
+	var zero State
+	if zero != StateUnset {
+		t.Errorf("zero State = %v, want StateUnset", zero)
+	}
+	for _, s := range AllStates() {
+		if s == StateUnset {
+			t.Errorf("AllStates() contains StateUnset; it is a sentinel, not a state")
 		}
 	}
 }

@@ -12,10 +12,15 @@ import "fmt"
 type State uint8
 
 const (
+	// StateUnset is not a state. It is the zero value, and exists so that a
+	// zero StateView cannot be mistaken for a job in a real state — see
+	// Job.State(), which returns it for a job with no attempt. No door
+	// accepts it as a destination and AllStates() does not list it.
+	StateUnset State = iota
 	// Waiting holds no lease and no compute slot. It knows where it is going
 	// (StateView.Next) and why it is held (StateView.Reason); it never
 	// decides anything itself.
-	Waiting State = iota
+	Waiting
 	// Fetching is downloading articles. Holds a lease.
 	Fetching
 	// Assessing decides whether the bytes are correct. Holds a lease and a
@@ -57,6 +62,8 @@ func AllStates() []State {
 
 func (s State) String() string {
 	switch s {
+	case StateUnset:
+		return "StateUnset"
 	case Waiting:
 		return "Waiting"
 	case Fetching:
