@@ -63,9 +63,17 @@ In `internal/job/state.go`, insert above `Waiting`:
 
 ```go
 	// StateUnset is not a state. It is the zero value, and exists so that a
-	// zero StateView cannot be mistaken for a job in a real state — see
-	// Job.State(), which returns it for a job with no attempt. No door
-	// accepts it as a destination and AllStates() does not list it.
+	// zero StateView cannot be mistaken for a job in a real state: without
+	// it, removing Waiting would promote Fetching to zero and an
+	// uninitialized view would read as an active download.
+	//
+	// No door accepts it as a destination — `grep -n 'StateUnset'
+	// internal/job/transition.go` returns nothing, so it is neither a key
+	// nor a value in legalEdges — and AllStates() does not list it, which
+	// TestAllStates_Exhaustive asserts by name rather than by count.
+	//
+	// Job.State() does NOT yet return it for a job with no attempt; that
+	// case is still Waiting{Next: Fetching}, constructed at job.go:120.
 	StateUnset State = iota
 	// Waiting holds no lease and no compute slot. It knows where it is going
 	// (StateView.Next) and why it is held (StateView.Reason); it never
@@ -1328,6 +1336,13 @@ func (j *Job) SetNext(n State) error {
 - [ ] **Step 8: Drop `Reason` from `StateView`**
 
 In `internal/job/wait.go`, delete the `Reason` field and update the doc comment: `Next` is meaningful when set and means the current state's work has ended; the wait reason now lives on `RenderView` (task 4), because it is derived by the Queue rather than stored.
+
+**Sweep the whole `StateView` doc comment, not only the sentence about `Reason`.** Two other claims in that block are falsified by this task and neither contains the word `Reason`:
+
+- "Next and Reason are meaningful only when State is Waiting" — `Waiting` no longer exists, and `Next`'s meaning is now "this state's work has ended", which is the redefinition this very step makes.
+- The zero-value paragraph names `job.go:120` and says the never-run case is `Waiting{Next: Fetching}`. Step 7 of this task changes that line to return `StateUnset`, so the paragraph must lose the exception it describes — the zero value and the never-run shape become the same thing.
+
+The same forward reference exists in `state.go`'s `StateUnset` block ("Job.State() does NOT yet return it for a job with no attempt"). That sentence was true when task 1 wrote it and is falsified here; delete it and say the sentinel IS the never-run shape.
 
 Keep `WaitReason`, `AllWaitReasons` and `IsPause` — `RenderView` uses them.
 
