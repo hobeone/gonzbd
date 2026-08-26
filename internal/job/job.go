@@ -31,10 +31,16 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior attempt crossed the Correctness/Production boundary")
 
 // ErrIntentLatched is returned by SetIntent when the job has already been
-// cancelled. Cancel is final for a Job: it renders as Deleted, and prior spec
-// D8 makes a full redo a re-added NZB starting a NEW Job rather than a new
-// attempt on this one. Clearing the latch would let a job the user deleted
-// come back through a path that never re-asked them.
+// cancelled. Cancel is final for a Job because of where it leads, not
+// because of what it renders as: the intent is not consulted by rendering
+// at all (`git grep -n 'Intent' internal/job/sabnzbd.go` exits 1). What
+// reaches the user as StatusDeleted is the settled verdict OutcomeCancelled,
+// mapped at sabnzbd.go:100 — the sole arm returning it.
+//
+// The latch is one-way because prior spec D8 makes a full redo a re-added
+// NZB starting a NEW Job rather than a new attempt on this one. Clearing the
+// latch would let a job the user deleted come back through a path that never
+// re-asked them.
 var ErrIntentLatched = errors.New("job: intent is latched; this job is cancelled")
 
 // Job owns its state. Every field is unexported. The lifecycle fields —
