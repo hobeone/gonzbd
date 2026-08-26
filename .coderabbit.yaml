@@ -59,12 +59,12 @@ reviews:
         Two defect classes have accounted for most real findings here, and are
         worth hunting specifically:
 
-        - A GUARD NO INPUT CAN REACH. Five have shipped in this package and
+        - A GUARD NO INPUT CAN REACH. Several have shipped in this package and
           each read as enforcement while doing nothing. For each `if`, name an
           input that reaches it; if you cannot, say so.
 
         - A COMMENT QUANTIFYING OVER A POPULATION WITH NOTHING ENFORCING IT.
-          Eleven have shipped. The trigger words are "only", "sole", "never",
+          Several have shipped. The trigger words are "only", "sole", "never",
           "always", "every", "nothing", and any count. AGENTS.md Standing
           Design Rule 4 requires such a claim to name the enumeration that
           establishes it, and where the population is machine-enumerable, to
