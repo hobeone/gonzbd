@@ -331,6 +331,15 @@ This one line does four separate jobs in the design:
 4. It defines which failures are **recoverable** — everything before the
    boundary is restartable from the same files.
 
+The one-way rule is a property of a single `Attempt`, but a job is a *list* of
+attempts (§3.1), and crossing ends the job's retryability, not just the
+attempt's: D3's "the inputs a later attempt would need are consumed" is true
+of the job as a whole, so once any attempt has crossed, no further attempt on
+that job is a legal way to retry it — the boundary would otherwise be
+re-crossable by opening a fresh attempt after a crossed one finishes. The
+path to a full redo is D8's re-added NZB, which starts a new `Job`, not
+another `Attempt` on this one.
+
 ---
 
 ## 5. `Assessing` is the only decider

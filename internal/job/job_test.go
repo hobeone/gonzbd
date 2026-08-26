@@ -215,6 +215,74 @@ func TestJob_ConcurrentReadsAndWrites(t *testing.T) {
 	wg.Wait()
 }
 
+// TestJob_BeginAttemptRefusesAfterCrossing pins the finding: an attempt that
+// reached Production (IsProduction) and then finished must not let a later
+// BeginAttempt walk the job back into Correctness. The state machine's
+// one-way boundary is enforced inside a single Attempt (TestBoundaryIsOneWay),
+// but Job holds a LIST of attempts, and appending a fresh one was previously
+// unguarded — the exact probe this test encodes: an attempt that reached
+// Extracting, then Finished with OutcomeOK, let BeginAttempt open a second
+// attempt back at Fetching with err == nil.
+func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	if err := j.Transition(Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	if err := j.Transition(Extracting); err != nil {
+		t.Fatalf("Transition(Extracting): %v", err)
+	}
+	if err := j.Transition(Finalizing); err != nil {
+		t.Fatalf("Transition(Finalizing): %v", err)
+	}
+	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if got := j.Attempts(); got != 1 {
+		t.Fatalf("Attempts() before retry = %d, want 1", got)
+	}
+
+	err := j.BeginAttempt(testClock().Add(time.Hour))
+	if !errors.Is(err, ErrBoundaryConsumed) {
+		t.Errorf("BeginAttempt after crossing = %v, want ErrBoundaryConsumed", err)
+	}
+	if got := j.Attempts(); got != 1 {
+		t.Errorf("Attempts() after refused retry = %d, want 1 (no attempt appended)", got)
+	}
+	if got := j.State().State; got != Finished {
+		t.Errorf("State() after refused retry = %v, want Finished (unchanged)", got)
+	}
+}
+
+// TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed pins the
+// ordering: the open-attempt no-op check must run before the crossed check,
+// so a still-open attempt that already crossed does not turn a routine
+// pause/resume BeginAttempt call into an error.
+func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	if err := j.Transition(Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	if err := j.Transition(Extracting); err != nil {
+		t.Fatalf("Transition(Extracting): %v", err)
+	}
+	// Extracting is Production, but this attempt is still open (unfinished).
+	if err := j.BeginAttempt(testClock().Add(time.Hour)); err != nil {
+		t.Errorf("BeginAttempt on an open crossed attempt = %v, want nil (no-op)", err)
+	}
+	if got := j.Attempts(); got != 1 {
+		t.Errorf("Attempts() = %d, want 1 (still the same open attempt)", got)
+	}
+	// It must still be possible to finish this attempt normally afterward.
+	if err := j.Transition(Finalizing); err != nil {
+		t.Fatalf("Transition(Finalizing): %v", err)
+	}
+	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+}
+
 func mustBegin(t *testing.T, j *Job) {
 	t.Helper()
 	if err := j.BeginAttempt(testClock()); err != nil {

@@ -11,6 +11,18 @@ import (
 // caller's fix is BeginAttempt, which is the only door into the machine.
 var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
+// ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
+// attempt crossed into Production (IsProduction). D3 says crossing deletes
+// archives, moves files, and consumes the inputs a later attempt would need
+// — "not crossing keeps the job retryable" — so a fresh attempt on THIS job
+// is no longer a legal way to retry it once one has crossed. The Attempt
+// state machine's one-way boundary (TestBoundaryIsOneWay) holds only within
+// a single Attempt; Job holds a LIST of them, and appending a new one was
+// how a crossed job could walk back into Correctness before this guard
+// existed. The user-facing path for a full redo is D8's re-added NZB, which
+// starts a new Job, not a new Attempt on this one.
+var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior attempt crossed the Correctness/Production boundary")
+
 // Job owns its state. Every field is unexported and guarded by mu; there is
 // no path to a Job's state that does not go through a method here.
 //
@@ -105,11 +117,31 @@ func (j *Job) AttemptAt(i int) StateView {
 // BeginAttempt opens an attempt if none is open, and is a no-op if one
 // already is. That is the rule that stops a pause/resume cycle — which
 // surrenders and later re-takes a lease — from being counted as a retry.
+//
+// It refuses (ErrBoundaryConsumed) instead of appending when the most
+// recent attempt crossed into Production, even though that attempt is
+// closed. The open check runs first and returns nil before the crossed
+// check is even reached, so an open attempt that has crossed still no-ops
+// here rather than erroring — idempotence while a lease is held takes
+// priority over the boundary refusal, and the boundary refusal only ever
+// applies to starting a NEW attempt.
+//
+// Checking only the most recent attempt, rather than every element of
+// j.attempts, is enough: this method is the only place attempts is
+// appended to (`git grep -n 'j.attempts = append' internal/job/*.go`
+// returns this one line), so once this guard exists, no attempt can ever
+// be appended after one that crossed — an attempt that crossed is
+// therefore always last, and checking the last one is checking all of
+// them.
 func (j *Job) BeginAttempt(now time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if a := j.currentLocked(); a != nil && a.isOpen() {
+	a := j.currentLocked()
+	if a != nil && a.isOpen() {
 		return nil
+	}
+	if a != nil && a.crossed {
+		return ErrBoundaryConsumed
 	}
 	j.attempts = append(j.attempts, newAttempt(now))
 	return nil

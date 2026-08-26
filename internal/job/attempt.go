@@ -75,6 +75,18 @@ type Attempt struct {
 	activity Activity
 	outcome  Outcome
 	assessed bool
+	// crossed latches once this attempt actually arrives in Production
+	// (IsProduction(state)) via transition — not merely holds toward it:
+	// hold(next: Extracting) sets a.state to Waiting, not to Extracting, so
+	// it never runs the line that sets this. finish's a.state = Finished
+	// erases the state the attempt crossed at, which is why this cannot be
+	// read back from the final state and has to be latched when it happens,
+	// the same reason `assessed` exists. BeginAttempt is the only reader: it
+	// refuses to open a fresh attempt once a prior one crossed, because D3
+	// says crossing consumes what a retry would need (spec
+	// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, D3). Not on
+	// StateView — nothing outside this package needs it.
+	crossed bool
 	// started and ended have no reader yet in this package or its tests
 	// beyond TestNewAttempt_StartsFetching's check of started — that is
 	// expected for a package built ahead of its consumers (see doc.go, "What
@@ -157,6 +169,12 @@ func (a *Attempt) transition(to State) error {
 		// first-pass download from a re-entry fetching recovery volumes,
 		// which is what upstream's "Fetching" status means.
 		a.assessed = true
+	}
+	if IsProduction(to) {
+		// See the crossed field's doc comment: this is the one place an
+		// attempt actually arrives in Production, as opposed to merely
+		// holding toward it.
+		a.crossed = true
 	}
 	return nil
 }
