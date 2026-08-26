@@ -81,8 +81,10 @@ type Attempt struct {
 	// it never runs the line that sets this. finish's a.state = Finished
 	// erases the state the attempt crossed at, which is why this cannot be
 	// read back from the final state and has to be latched when it happens,
-	// the same reason `assessed` exists. BeginAttempt is the only reader: it
-	// refuses to open a fresh attempt once a prior one crossed, because D3
+	// the same reason `assessed` exists. BeginAttempt is the only reader —
+	// `git grep -n '\.crossed' internal/job/*.go` returns two lines, the
+	// write in transition above and that one read. It refuses to open a
+	// fresh attempt once a prior one crossed, because D3
 	// says crossing consumes what a retry would need (spec
 	// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, D3). Not on
 	// StateView — nothing outside this package needs it.
