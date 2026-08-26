@@ -714,7 +714,8 @@ object. Half A defines the type and the Job's ownership of it; Half B fills
 it and issues it from pool A.
 
 surrenderLocked exists because j.mu is a sync.RWMutex and Go mutexes are not
-reentrant. Cross and Finish reach the attempt through withOpenAttempt, which
+reentrant. The doors that will end a job's need for a lease - Cross and
+Finish, both task 6 - will reach the attempt through withOpenAttempt, which
 holds j.mu across its callback - a door calling the exported Surrender()
 from there would take the lock a second time and deadlock the job
 permanently, with no error and no timeout."
