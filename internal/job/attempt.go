@@ -7,18 +7,19 @@ import (
 	"time"
 )
 
-// ErrOutcomeAlreadySet is returned when a settled attempt is finished again.
+// errOutcomeAlreadySet is returned when a settled attempt is finished again.
 // The write-once rule is enforced here rather than by convention, because a
 // second assignment is exactly the mutation the design exists to prevent.
 //
-// This error is reachable only from an in-package caller of Attempt.finish
-// directly (e.g. this package's own tests). Job.Finish goes through
-// withOpenAttempt, whose !a.isOpen() check fires first on a settled attempt
-// and returns ErrNoOpenAttempt instead — a strict superset of this check,
-// since isOpen() is itself defined as outcome == OutcomePending. A caller
-// outside this package that writes errors.Is(err, ErrOutcomeAlreadySet)
-// against a Job.Finish error is testing a branch Job can never take.
-var ErrOutcomeAlreadySet = errors.New("job: attempt outcome already set")
+// Unexported: this error is reachable only from an in-package caller of
+// Attempt.finish directly (e.g. this package's own tests). Job.Finish goes
+// through withOpenAttempt, whose !a.isOpen() check fires first on a settled
+// attempt and returns ErrNoOpenAttempt instead — a strict superset of this
+// check, since isOpen() is itself defined as outcome == OutcomePending. No
+// external caller can ever reach this branch through the public API, so
+// exporting it would be a dead sentinel — see withOpenAttempt in job.go,
+// which deliberately does not surface this error.
+var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
 // OutcomeUnrecoverable for an attempt that has crossed into Production
@@ -281,7 +282,7 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	// crossed guard, since a first finish to Finished sets a.state =
 	// Finished) for what is really a write-once violation.
 	if a.outcome.IsSettled() {
-		return fmt.Errorf("%w: %s, refusing to overwrite with %s", ErrOutcomeAlreadySet, a.outcome, o)
+		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
 	// Guard on a.crossed, not IsProduction(a.state): hold sets a.state to
 	// Waiting, so a state-based check would miss an attempt that crossed

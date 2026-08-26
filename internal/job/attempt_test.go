@@ -305,8 +305,8 @@ func TestAttempt_FinishReportsWriteOnceBeforeBoundary(t *testing.T) {
 		t.Fatalf("first finish: %v", err)
 	}
 	err := a.finish(OutcomeUnrecoverable, testClock())
-	if !errors.Is(err, ErrOutcomeAlreadySet) {
-		t.Fatalf("second finish (crossed + settled) error = %v, want ErrOutcomeAlreadySet", err)
+	if !errors.Is(err, errOutcomeAlreadySet) {
+		t.Fatalf("second finish (crossed + settled) error = %v, want errOutcomeAlreadySet", err)
 	}
 	if errors.Is(err, ErrUnrecoverableAfterBoundary) {
 		t.Errorf("second finish error = %v, must not also report ErrUnrecoverableAfterBoundary; write-once is checked first", err)
@@ -331,8 +331,8 @@ func TestAttempt_FinishIsWriteOnce(t *testing.T) {
 	}
 
 	err := a.finish(OutcomeOK, later.Add(time.Minute))
-	if !errors.Is(err, ErrOutcomeAlreadySet) {
-		t.Fatalf("second finish error = %v, want ErrOutcomeAlreadySet", err)
+	if !errors.Is(err, errOutcomeAlreadySet) {
+		t.Fatalf("second finish error = %v, want errOutcomeAlreadySet", err)
 	}
 	if got := a.view().Outcome; got != OutcomeCancelled {
 		t.Errorf("Outcome = %v after a rejected second finish, want Cancelled unchanged", got)
