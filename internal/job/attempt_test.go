@@ -263,14 +263,14 @@ func TestAttempt_TransitionRejectsFinished(t *testing.T) {
 	}
 }
 
-// TestAttempt_FinishedNeverOpen pins the invariant TestAttempt_
-// TransitionRejectsFinished exists to protect: no reachable sequence of
-// mutators leaves state == Finished while isOpen() still reports true.
-// finish is the only mutator that can reach Finished, and it always assigns
-// Outcome in the same call that assigns state, so the two can never come
-// apart — and the direct route through transition is rejected outright,
-// even once the attempt is already Finished, rather than merely happening
-// not to produce the hole in this particular sequence.
+// TestAttempt_FinishedNeverOpen walks one sequence (Assessing, Extracting,
+// Finalizing, finish) and pins that it leaves state == Finished with
+// isOpen() reporting false — finish is the only mutator that can reach
+// Finished, and it always assigns Outcome in the same call that assigns
+// state, so the two can never come apart on this path. It does not claim
+// this holds over every reachable sequence; see the door-ownership tests
+// (TestAttempt_TransitionRejectsFinished and friends) for that broader
+// property.
 func TestAttempt_FinishedNeverOpen(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
@@ -279,8 +279,15 @@ func TestAttempt_FinishedNeverOpen(t *testing.T) {
 	if err := a.finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	if a.view().State == Finished && a.isOpen() {
-		t.Fatal("state == Finished but isOpen() == true; outcome and state disagree")
+	// Asserted unconditionally, not as the left half of a "state == Finished
+	// && isOpen()" check: that guarded form would pass silently if finish
+	// ever stopped setting Finished at all, since the right-hand isOpen()
+	// check would never even run.
+	if got := a.view().State; got != Finished {
+		t.Fatalf("State = %v, want Finished", got)
+	}
+	if a.isOpen() {
+		t.Error("isOpen() = true after finish reached Finished, want false")
 	}
 	if err := a.transition(Finished); !errors.Is(err, ErrFinishRequired) {
 		t.Fatalf("transition(Finished) after finish, error = %v, want ErrFinishRequired", err)

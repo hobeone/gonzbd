@@ -51,16 +51,24 @@ func TestJob_CurrentLockedAndWithOpenAttempt(t *testing.T) {
 
 	mustBegin(t, j)
 	j.mu.RLock()
-	got := j.currentLocked()
-	j.mu.RUnlock()
-	if got == nil {
+	if got := j.currentLocked(); got == nil {
+		j.mu.RUnlock()
 		t.Fatal("currentLocked() after BeginAttempt = nil, want the open attempt")
 	}
+	j.mu.RUnlock()
 
+	// The comparison target is fetched INSIDE the withOpenAttempt callback,
+	// under the lock withOpenAttempt already holds, rather than captured
+	// once via an earlier RLock/RUnlock and compared later — a pointer read
+	// outside the lock and compared after release is not something the lock
+	// protects, even though j.attempts (a slice) is never reallocated by any
+	// mutator in this specific sequence. currentLocked itself takes no lock
+	// (must hold mu, per its doc comment); calling it here is safe because
+	// withOpenAttempt's Lock is already held by this goroutine.
 	called := false
 	if err := j.withOpenAttempt(func(a *Attempt) error {
 		called = true
-		if a != got {
+		if got := j.currentLocked(); a != got {
 			t.Errorf("withOpenAttempt passed %p, want the same attempt currentLocked returned (%p)", a, got)
 		}
 		return nil
