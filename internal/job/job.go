@@ -142,12 +142,13 @@ func (j *Job) AttemptAt(i int) StateView {
 // applies to starting a NEW attempt.
 //
 // Checking only the most recent attempt, rather than every element of
-// j.attempts, is enough: this method is the only place attempts is
-// appended to (`git grep -n 'j.attempts = append' internal/job/*.go`
-// returns this one line), so once this guard exists, no attempt can ever
-// be appended after one that crossed — an attempt that crossed is
-// therefore always last, and checking the last one is checking all of
-// them.
+// j.attempts, is enough: this method is the only place attempts is written
+// to. TestAttemptsWrites_MatchTheEnumerationStatedInProse
+// (attempts_writer_enumeration_test.go) parses the package's non-test
+// sources and enforces that as a population, not a one-time grep frozen in
+// prose, so once this guard exists, no attempt can ever be appended after
+// one that crossed — an attempt that crossed is therefore always last, and
+// checking the last one is checking all of them.
 func (j *Job) BeginAttempt(now time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
