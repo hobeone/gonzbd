@@ -43,6 +43,12 @@ var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior a
 // re-asked them.
 var ErrIntentLatched = errors.New("job: intent is latched; this job is cancelled")
 
+// ErrAlreadyLeased is returned by Grant when the job already holds a lease.
+// Pool-A capacity is reserved across the whole correctness loop (prior spec
+// §8.1), so a job re-entering Fetching from Assessing still holds the one it
+// was given; a second grant would mean the Queue had issued capacity twice.
+var ErrAlreadyLeased = errors.New("job: already holds a lease")
+
 // Job owns its state. Every field is unexported. The lifecycle fields —
 // attempts and pending — are guarded by mu, and there is no path to either
 // that does not go through a method here. id, name and policy are not
@@ -105,6 +111,14 @@ type Job struct {
 	// quoted verbatim inside this comment, does not match its own quoted
 	// text as a substring the way an earlier draft of this comment did.
 	pending WaitReason
+
+	// lease is the admission token this job currently holds, or nil. Guarded
+	// by mu. Granted by Grant; released by surrenderLocked, which is the sole
+	// writer of nil into this field. At this commit Surrender is its only
+	// caller — Cross does not yet exist in this package (it is task 6) and
+	// Finish does not yet touch lease at all (its signature changes to yield
+	// one, also task 6); both are wired through surrenderLocked then.
+	lease *Lease
 }
 
 // New builds a job that has never run. It has no attempt record, because
@@ -296,4 +310,55 @@ func (j *Job) SetIntent(i Intent) error {
 	}
 	j.intent = i
 	return nil
+}
+
+// HoldsLease reports whether this job currently holds its admission token.
+// This is half of what makes a job "running" — see the design's §3.4.
+func (j *Job) HoldsLease() bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.lease != nil
+}
+
+// Grant hands this job an admission token. Refuses nil, which would be
+// indistinguishable from holding none, and refuses a second lease.
+func (j *Job) Grant(l *Lease) error {
+	if l == nil {
+		return fmt.Errorf("job: Grant(nil): a nil lease is indistinguishable from holding none")
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.lease != nil {
+		return ErrAlreadyLeased
+	}
+	j.lease = l
+	return nil
+}
+
+// Surrender yields the lease, or nil if none is held. Callers that already
+// hold j.mu must use surrenderLocked instead — see its comment.
+func (j *Job) Surrender() *Lease {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.surrenderLocked()
+}
+
+// surrenderLocked is the sole releaser of j.lease. Must hold mu.
+//
+// It exists because j.mu is a sync.RWMutex and Go mutexes are NOT reentrant.
+// The doors that will end a job's need for a lease — Cross and Finish — will
+// reach the attempt through withOpenAttempt, which takes j.mu.Lock() and
+// holds it across its callback. A door calling the exported Surrender() from
+// there would take j.mu a second time and deadlock the job permanently, with
+// no error and no timeout. Routing releases through this helper keeps one
+// releaser without reacquiring anything.
+//
+// Not yet true at this commit: Cross does not exist in this package (task 6
+// adds it), and Finish does not call this method — Finish's signature
+// changes to yield the lease, also in task 6. Today Surrender is this
+// method's only caller.
+func (j *Job) surrenderLocked() *Lease {
+	l := j.lease
+	j.lease = nil
+	return l
 }
