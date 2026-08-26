@@ -39,9 +39,10 @@ func TestAttemptsWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 
 // scanAttemptsWriters parses this package's non-test sources and returns the
 // sorted, deduplicated names of the functions that write to a field named
-// attempts, via a plain `=` assignment (which covers `j.attempts =
-// append(j.attempts, ...)`, the shape BeginAttempt uses) or via an
-// `attempts: x` composite-literal key.
+// attempts, via a plain `=` assignment to `j.attempts` (which covers
+// `j.attempts = append(j.attempts, ...)`, the shape BeginAttempt uses) or to
+// `j.attempts[i]` (an IndexExpr on the same selector), or via an
+// `attempts: x` composite-literal key on a literal whose type is Job.
 //
 // It reads the directory rather than taking a file list so that a source
 // file added later is covered without anyone remembering to add it here —
@@ -80,17 +81,37 @@ func scanAttemptsWriters(t *testing.T) []string {
 						return true
 					}
 					for _, lhs := range node.Lhs {
-						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "attempts" {
+						// A plain `j.attempts = ...` is a SelectorExpr on the
+						// left. `j.attempts[i] = ...` is an IndexExpr whose
+						// .X is that same SelectorExpr — the SelectorExpr
+						// case alone never matches an IndexExpr node, so a
+						// single-element write via indexing was invisible to
+						// this scan before this case was added.
+						sel, ok := lhs.(*ast.SelectorExpr)
+						if idx, isIndex := lhs.(*ast.IndexExpr); isIndex {
+							sel, ok = idx.X.(*ast.SelectorExpr)
+						}
+						if ok && sel.Sel.Name == "attempts" {
 							writers = append(writers, fn.Name.Name)
 						}
 					}
 				case *ast.CompositeLit:
+					// Only a literal whose type is Job counts — matching any
+					// "attempts: x" key regardless of the literal's type
+					// would misattribute an unrelated struct that happens to
+					// have its own field called attempts, the same gap
+					// scanOutcomeWriters' CompositeLit case closes for
+					// Attempt.outcome (outcome_writer_enumeration_test.go).
+					ident, ok := node.Type.(*ast.Ident)
+					if !ok || ident.Name != "Job" {
+						return true
+					}
 					for _, elt := range node.Elts {
 						kv, ok := elt.(*ast.KeyValueExpr)
 						if !ok {
 							continue
 						}
-						if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == "attempts" {
+						if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "attempts" {
 							writers = append(writers, fn.Name.Name)
 						}
 					}
