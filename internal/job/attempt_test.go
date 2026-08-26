@@ -70,178 +70,6 @@ func TestAttempt_ActivityClearsOnTransition(t *testing.T) {
 	}
 }
 
-func TestAttempt_HoldRecordsNextAndReason(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.hold(Assessing, NoComputeSlot); err != nil {
-		t.Fatalf("hold: %v", err)
-	}
-	v := a.view()
-	if v.State != Waiting || v.Next != Assessing || v.Reason != NoComputeSlot {
-		t.Errorf("view = %+v; want State=Waiting Next=Assessing Reason=NoComputeSlot", v)
-	}
-}
-
-func TestAttempt_HoldRejectsAnIllegalDestination(t *testing.T) {
-	a := newAttempt(testClock())
-	// Fetching cannot resume into Repairing, so it must not be able to wait
-	// for it either — otherwise the hold defers an illegal edge instead of
-	// rejecting it.
-	if err := a.hold(Repairing, NoComputeSlot); !errors.Is(err, ErrIllegalTransition) {
-		t.Errorf("hold(Repairing) error = %v, want ErrIllegalTransition", err)
-	}
-	if got := a.view().State; got != Fetching {
-		t.Errorf("State = %v after a rejected hold, want Fetching unchanged", got)
-	}
-}
-
-// TestAttempt_TransitionRejectsWaiting pins that hold is the only door into
-// Waiting. Before this check existed, Extracting -> transition(Waiting) ->
-// transition(Fetching) reached Fetching with err=nil at both hops — the
-// second hop was later closed by the a.next check below, but the first hop
-// itself stayed open, and taking it stranded the attempt: transition's own
-// a.next check then accepted nothing but Waiting itself as a destination,
-// and hold refuses to re-park an attempt that is already Waiting, so only
-// finish could still move it. Confirmed via a probe:
-// Fetching -> transition(Waiting) => state=Waiting next=Waiting reason=NoLease,
-// then hold(Assessing) and transition(Assessing) both refused, finish the
-// only move left.
-func TestAttempt_TransitionRejectsWaiting(t *testing.T) {
-	a := newAttempt(testClock())
-	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
-	if err := a.transition(Waiting); !errors.Is(err, ErrHoldRequired) {
-		t.Fatalf("transition(Waiting) error = %v, want ErrHoldRequired", err)
-	}
-	if got := a.view().State; got != Extracting {
-		t.Errorf("State = %v after a rejected transition, want Extracting unchanged", got)
-	}
-}
-
-// TestAttempt_BoundaryHoldsAcrossAHold pins the two-hop escape
-// TestBoundaryIsOneWay (transition_test.go) cannot see, now exercised through
-// hold — the only door into Waiting, per TestAttempt_TransitionRejectsWaiting
-// above. That test enumerates direct edges in legalEdges, but
-// Production -> Waiting -> Correctness is two individually legal edges — a
-// pause into Waiting, then an unconstrained resume out of it — composing
-// into the exact edge the graph forbids directly. This confirms the
-// boundary survives the round trip through the legitimate door, not only
-// through the one transition itself now refuses.
-func TestAttempt_BoundaryHoldsAcrossAHold(t *testing.T) {
-	a := newAttempt(testClock())
-	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
-	if err := a.hold(Finalizing, NoComputeSlot); err != nil {
-		t.Fatalf("hold(Finalizing): %v", err)
-	}
-	if err := a.transition(Fetching); !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("transition(Fetching) after Production paused, error = %v, want ErrIllegalTransition", err)
-	}
-	if got := a.view().State; got == Fetching {
-		t.Errorf("State = %v, want NOT Fetching; Production must not resume into Correctness", got)
-	}
-}
-
-// TestAttempt_TransitionFromWaitingRequiresNext pins the other half of the
-// same fix: next is validated when hold is taken and then must be honored at
-// resume, not merely consulted for its own sake. Before this check existed,
-// hold(next=Assessing) followed by transition(Repairing) reached Repairing
-// with err=nil — the guard hold installs on next was real, but nothing
-// re-checked it one call later.
-func TestAttempt_TransitionFromWaitingRequiresNext(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.hold(Assessing, NoComputeSlot); err != nil {
-		t.Fatalf("hold: %v", err)
-	}
-	if err := a.transition(Repairing); !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("transition(Repairing) error = %v, want ErrIllegalTransition; next was Assessing", err)
-	}
-	if got := a.view().State; got != Waiting {
-		t.Errorf("State = %v after a rejected resume, want Waiting unchanged", got)
-	}
-	if err := a.transition(Assessing); err != nil {
-		t.Fatalf("transition(Assessing), the declared next, should succeed: %v", err)
-	}
-	// Leaving Waiting still clears next/reason to their zero values — this
-	// resume took the declared path rather than being refused, so it is the
-	// case that exercises the clearing lines rather than skipping them.
-	v := a.view()
-	if v.Next != Waiting || v.Reason != NoLease {
-		t.Errorf("view = %+v after a successful resume; want Next=Waiting Reason=NoLease cleared", v)
-	}
-}
-
-// TestAttempt_HoldRejectsWhenAlreadyWaiting pins the third path into the same
-// hole: hold does not require transition through Waiting at all, so it needs
-// its own guard against being called twice. Confirmed reachable before this
-// check existed: Extracting -> hold(Finalizing) -> hold(Fetching) ->
-// transition(Fetching) succeeded, even with the transition-side next check in
-// place, because the second hold silently overwrote next before transition
-// ever saw the first one.
-func TestAttempt_HoldRejectsWhenAlreadyWaiting(t *testing.T) {
-	a := newAttempt(testClock())
-	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
-	if err := a.hold(Finalizing, NoComputeSlot); err != nil {
-		t.Fatalf("hold(Finalizing): %v", err)
-	}
-	if err := a.hold(Fetching, NoComputeSlot); !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("second hold error = %v, want ErrIllegalTransition; a waiting attempt cannot re-declare its destination", err)
-	}
-	if got := a.view().Next; got != Finalizing {
-		t.Errorf("Next = %v after a rejected second hold, want Finalizing unchanged", got)
-	}
-}
-
-// TestAttempt_HoldRejectsResumeIntoFinished pins that finish stays the sole
-// door into Finished even via a hold: without this, hold(Assessing) followed
-// by transition(Repairing) could not reach Finished directly, but nothing
-// stopped hold(Finished, ...) itself from parking an attempt with a destination
-// finish never validated.
-func TestAttempt_HoldRejectsResumeIntoFinished(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.hold(Finished, NoLease); !errors.Is(err, ErrFinishRequired) {
-		t.Errorf("hold(Finished) error = %v, want ErrFinishRequired", err)
-	}
-	if got := a.view().State; got != Fetching {
-		t.Errorf("State = %v after a rejected hold, want Fetching unchanged", got)
-	}
-}
-
-// TestAttempt_HoldRejectsResumeIntoWaiting pins that next == Waiting is
-// refused as self-referential: there is nothing to resume into.
-func TestAttempt_HoldRejectsResumeIntoWaiting(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.hold(Waiting, NoLease); !errors.Is(err, ErrIllegalTransition) {
-		t.Errorf("hold(Waiting) error = %v, want ErrIllegalTransition", err)
-	}
-	if got := a.view().State; got != Fetching {
-		t.Errorf("State = %v after a rejected hold, want Fetching unchanged", got)
-	}
-}
-
-// TestAttempt_HoldRejectsAfterFinish pins that hold refuses once an attempt
-// is Finished. next is deliberately NOT Finished or Waiting (Extracting
-// instead), so this isolates hold's CanTransition(a.state, next) check from
-// the newer next == Finished / next == Waiting checks above it.
-//
-// Writing this test is what surfaced that hold used to carry a second,
-// separate CanTransition(a.state, Waiting) check ahead of this one — and
-// that it was dead: it could only ever fire when a.state == Finished, and by
-// then next == Finished was already excluded, so CanTransition(Finished,
-// next) below was always false too, for the same reason, one line down. That
-// check has been removed; this test now pins the single check that replaced
-// it, rather than a first-of-two check that never independently rejected
-// anything.
-func TestAttempt_HoldRejectsAfterFinish(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.finish(OutcomeOK, testClock()); err != nil {
-		t.Fatalf("finish: %v", err)
-	}
-	if err := a.hold(Extracting, NoComputeSlot); !errors.Is(err, ErrIllegalTransition) {
-		t.Errorf("hold(Extracting) after finish, error = %v, want ErrIllegalTransition", err)
-	}
-}
-
 // TestAttempt_TransitionRejectsFinished pins that finish is the only door
 // into Finished. Before this guard existed, transition(Finished, now) set
 // state to Finished without ever assigning an Outcome — confirmed
@@ -357,25 +185,6 @@ func TestAttempt_FinishRejectsPending(t *testing.T) {
 	}
 }
 
-// TestAttempt_FinishClearsNextAndReason pins that finish clears next and
-// reason along with activity. Before this fix, a cancel taken while paused
-// left them at the hold's stale values — {State:Finished, Next:Assessing,
-// Reason:UserPaused} — contradicting StateView's contract that Next and
-// Reason are meaningful only when State is Waiting.
-func TestAttempt_FinishClearsNextAndReason(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.hold(Assessing, UserPaused); err != nil {
-		t.Fatalf("hold: %v", err)
-	}
-	if err := a.finish(OutcomeCancelled, testClock()); err != nil {
-		t.Fatalf("finish: %v", err)
-	}
-	v := a.view()
-	if v.Next != Waiting || v.Reason != NoLease {
-		t.Errorf("view = %+v after finish; want Next=Waiting Reason=NoLease, not the stale hold values", v)
-	}
-}
-
 // TestAttempt_FinishRejectsUnrecognizedOutcome pins the resolution to a
 // question deferred from Task 5: Outcome.IsSettled() reports true for any
 // value other than OutcomePending, including one no const declares
@@ -426,56 +235,22 @@ func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
 	}
 }
 
-// TestAttempt_FinishRejectsUnrecoverableAfterCrossingThenHold pins that the
-// guard in finish tracks the latch (a.crossed), not the transient state: hold
-// sets a.state to Waiting, so a guard reading IsProduction(a.state) would see
-// a held attempt as Correctness-zone and let Unrecoverable through even
-// though the attempt already crossed the boundary in this same attempt.
-// Probe (pre-fix): an attempt that transitions into Extracting (Production,
-// crossed latches true), then hold(Finalizing, ...) (state becomes Waiting),
-// then finish(OutcomeUnrecoverable) returned err=nil — recording a verdict
-// that means "never crossed" on an attempt that had.
-func TestAttempt_FinishRejectsUnrecoverableAfterCrossingThenHold(t *testing.T) {
-	a := newAttempt(testClock())
-	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
-	if err := a.hold(Finalizing, NoComputeSlot); err != nil {
-		t.Fatalf("hold(Finalizing): %v", err)
-	}
-	if got := a.view().State; got != Waiting {
-		t.Fatalf("State = %v after hold, want Waiting", got)
-	}
-	err := a.finish(OutcomeUnrecoverable, testClock())
-	if !errors.Is(err, ErrUnrecoverableAfterBoundary) {
-		t.Fatalf("finish(Unrecoverable) while held after crossing, error = %v, want ErrUnrecoverableAfterBoundary", err)
-	}
-	if got := a.view(); got.State == Finished || got.Outcome != OutcomePending {
-		t.Errorf("view = %+v after a rejected finish, want unchanged (Waiting, Pending)", got)
-	}
-}
-
 // TestAttempt_FinishSucceedsFromAnyOpenState pins that finish reaches
 // Finished from every non-terminal state reachable via legal transitions, not
 // only from one — needed because finish() has no CanTransition(state,
-// Finished) guard of its own: CanTransition(s, Finished) is true for every s
-// in AllStates() (legalEdges gives every non-terminal state a cancel edge),
-// so such a guard could never reject anything and was removed rather than
-// kept as an inert check. This table IS the coverage that removal relies on,
-// so it walks all six non-terminal states rather than one — Waiting is the
-// boundary case a single-state version of this test previously omitted, and
-// is reached via hold rather than transition since transition cannot produce
-// it directly from Fetching.
+// Finished) guard of its own (an earlier one was removed as dead: cancelling
+// out of any open state is a door finish alone owns, entirely bypassing
+// legalEdges). That bypass is even more pronounced now that Waiting is gone —
+// legalEdges no longer has an edge into Finished from anywhere at all —
+// `git grep -n 'Finished' internal/job/transition.go` shows it only as a map
+// key with an empty successor list. This table IS the coverage that bypass
+// relies on, so it walks all five non-terminal, non-sentinel states.
 func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 	tests := []struct {
 		name  string
 		setup func(t *testing.T, a *Attempt)
 	}{
 		{"Fetching", func(t *testing.T, a *Attempt) {}},
-		{"Waiting", func(t *testing.T, a *Attempt) {
-			if err := a.hold(Assessing, NoComputeSlot); err != nil {
-				t.Fatalf("hold: %v", err)
-			}
-		}},
 		{"Assessing", func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
 		}},
@@ -513,47 +288,126 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 	}
 }
 
-// TestAttempt_SetReasonUpdatesReasonOnly pins that setReason writes only
-// a.reason: a parked attempt must be able to record NoComputeSlot ->
-// GlobalPause (a global pause arriving while it already waits for a compute
-// slot) without hold's re-declare-the-destination refusal getting in the
-// way, and without setReason silently smuggling a destination change past
-// that refusal either.
-func TestAttempt_SetReasonUpdatesReasonOnly(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.hold(Assessing, NoComputeSlot); err != nil {
-		t.Fatalf("hold: %v", err)
-	}
-	if err := a.setReason(GlobalPause); err != nil {
-		t.Fatalf("setReason: %v", err)
-	}
-	v := a.view()
-	if v.Reason != GlobalPause {
-		t.Errorf("Reason = %v, want GlobalPause", v.Reason)
-	}
-	if v.Next != Assessing {
-		t.Errorf("Next = %v after setReason, want Assessing unchanged; setReason must not alter the destination", v.Next)
-	}
-	if v.State != Waiting {
-		t.Errorf("State = %v after setReason, want Waiting unchanged", v.State)
-	}
-}
-
-// TestAttempt_SetReasonRejectsWhenNotWaiting pins that a reason for waiting
-// is meaningless when nothing is being waited for.
-func TestAttempt_SetReasonRejectsWhenNotWaiting(t *testing.T) {
-	a := newAttempt(testClock())
-	if err := a.setReason(UserPaused); !errors.Is(err, ErrNotWaiting) {
-		t.Errorf("setReason on a Fetching (non-Waiting) attempt = %v, want ErrNotWaiting", err)
-	}
-	if got := a.view().Reason; got != NoLease {
-		t.Errorf("Reason = %v after a rejected setReason, want NoLease unchanged", got)
-	}
-}
-
 func mustTransition(t *testing.T, a *Attempt, to State) {
 	t.Helper()
 	if err := a.transition(to); err != nil {
 		t.Fatalf("transition(%v): %v", to, err)
+	}
+}
+
+// TestAttempt_SetNextRecordsTheDestination pins the marker's basic contract.
+func TestAttempt_SetNextRecordsTheDestination(t *testing.T) {
+	a := newAttempt(testClock())
+	if a.next != StateUnset {
+		t.Fatalf("a fresh attempt has next = %v, want StateUnset (its work has not ended)", a.next)
+	}
+	if err := a.setNext(Assessing); err != nil {
+		t.Fatalf("setNext(Assessing) from Fetching: %v", err)
+	}
+	if a.next != Assessing {
+		t.Errorf("next = %v, want Assessing", a.next)
+	}
+}
+
+// TestAttempt_SetNextIsWriteOncePerVisit is defect 3's pin, carried into the
+// door that replaced hold. Without it a verdict of Repairing could be
+// overwritten with Extracting and the job would cross the boundary SKIPPING
+// REPAIR. Re-declaring the same value is a no-op, so a caller retrying is not
+// punished.
+func TestAttempt_SetNextIsWriteOncePerVisit(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if err := a.setNext(Repairing); err != nil {
+		t.Fatalf("setNext(Repairing): %v", err)
+	}
+	if err := a.setNext(Extracting); !errors.Is(err, ErrNextAlreadySet) {
+		t.Fatalf("setNext(Extracting) over a Repairing verdict, error = %v, want ErrNextAlreadySet", err)
+	}
+	if a.next != Repairing {
+		t.Fatalf("next = %v after a refused setNext; the refusal must not have partially applied", a.next)
+	}
+	if err := a.setNext(Repairing); err != nil {
+		t.Errorf("setNext(Repairing) twice = %v, want nil (idempotent re-assertion)", err)
+	}
+}
+
+// TestAttempt_SetNextRejectsANonEdge pins that a destination the current state
+// could not reach directly cannot be recorded either.
+func TestAttempt_SetNextRejectsANonEdge(t *testing.T) {
+	a := newAttempt(testClock()) // Fetching
+	if err := a.setNext(Finalizing); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("setNext(Finalizing) from Fetching, error = %v, want ErrIllegalTransition", err)
+	}
+	if err := a.setNext(StateUnset); err == nil {
+		t.Error("setNext(StateUnset) = nil; the sentinel is not a destination")
+	}
+}
+
+// TestAttempt_TransitionClearsNext pins §3.3 rule 3: the move consumes the
+// marker, so an attempt that never re-enters Assessing cannot carry a stale
+// verdict for the rest of its life.
+func TestAttempt_TransitionClearsNext(t *testing.T) {
+	a := newAttempt(testClock())
+	if err := a.setNext(Assessing); err != nil {
+		t.Fatalf("setNext: %v", err)
+	}
+	if err := a.transition(Assessing); err != nil {
+		t.Fatalf("transition(Assessing): %v", err)
+	}
+	if a.next != StateUnset {
+		t.Errorf("next = %v after the move was taken, want StateUnset", a.next)
+	}
+}
+
+// TestAttempt_TransitionRequiresNextWhenSet pins the single-decider property.
+// From Assessing, legalEdges permits Fetching, Repairing and Extracting; once a
+// verdict is recorded, nothing else may choose. This is transition's to == next
+// check, whose ONLY remaining purpose this is now that Waiting is gone.
+func TestAttempt_TransitionRequiresNextWhenSet(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if err := a.setNext(Repairing); err != nil {
+		t.Fatalf("setNext(Repairing): %v", err)
+	}
+	if err := a.transition(Extracting); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("transition(Extracting) against a Repairing verdict, error = %v, want ErrIllegalTransition; "+
+			"Assessing is the only decider and its verdict must not be bypassable", err)
+	}
+	if err := a.transition(Repairing); err != nil {
+		t.Errorf("transition(Repairing) matching the verdict: %v", err)
+	}
+}
+
+// TestAttempt_TransitionAcceptsAnyLegalEdgeWhenNextIsUnset pins the other half:
+// with no verdict recorded, the edge map alone decides.
+func TestAttempt_TransitionAcceptsAnyLegalEdgeWhenNextIsUnset(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if a.next != StateUnset {
+		t.Fatalf("next = %v, want StateUnset", a.next)
+	}
+	if err := a.transition(Repairing); err != nil {
+		t.Errorf("transition(Repairing) with no verdict recorded: %v", err)
+	}
+}
+
+// TestAttempt_FinishClearsNext is Ruling A's pin: TestAttempt_FinishClearsNextAndReason
+// is deleted (Reason no longer exists on Attempt), but finish clearing a
+// stale next on the settled attempt is a property that must not silently
+// vanish along with it. Before this fix would-be-Ruling-A regression: a
+// cancel taken with a recorded verdict (e.g. Assessing having set
+// next=Repairing) could leave a Finished attempt reporting a destination it
+// will never move to.
+func TestAttempt_FinishClearsNext(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if err := a.setNext(Repairing); err != nil {
+		t.Fatalf("setNext(Repairing): %v", err)
+	}
+	if err := a.finish(OutcomeCancelled, testClock()); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if a.next != StateUnset {
+		t.Errorf("next = %v after finish on a settled attempt, want StateUnset", a.next)
 	}
 }

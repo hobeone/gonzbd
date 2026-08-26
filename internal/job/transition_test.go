@@ -2,6 +2,7 @@ package job
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -11,28 +12,21 @@ func TestCanTransition(t *testing.T) {
 		from, to State
 		want     bool
 	}{
-		{"promote", Waiting, Fetching, true},
 		{"fetch done", Fetching, Assessing, true},
 		{"needs more blocks", Assessing, Fetching, true},
 		{"repairable", Assessing, Repairing, true},
 		{"re-verify after repair", Repairing, Assessing, true},
 		{"cross the boundary", Assessing, Extracting, true},
 		{"produce", Extracting, Finalizing, true},
-		{"done", Finalizing, Finished, true},
-		{"unrecoverable", Assessing, Finished, true},
-		{"pause mid-fetch", Fetching, Waiting, true},
-		{"pause mid-extract", Extracting, Waiting, true},
-		{"resume into extracting", Waiting, Extracting, true},
-		{"cancel while waiting", Waiting, Finished, true},
 
-		{"self is a legal edge", Fetching, Fetching, true},
+		{"self is not a legal edge", Fetching, Fetching, false},
 
 		{"no reverse across the boundary", Extracting, Assessing, false},
 		{"no reverse across the boundary, far", Finalizing, Fetching, false},
 		{"no skipping assessment", Fetching, Extracting, false},
 		{"no repair without a verdict", Fetching, Repairing, false},
-		{"finished is terminal", Finished, Waiting, false},
-		{"finished is terminal, to fetching", Finished, Fetching, false},
+		{"finished is terminal", Finished, Fetching, false},
+		{"nothing moves into Finished", Assessing, Finished, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := CanTransition(tc.from, tc.to); got != tc.want {
@@ -65,8 +59,8 @@ func TestBoundaryIsOneWay(t *testing.T) {
 
 // TestOnlyAssessingBranchesWithinCorrectness pins the single-decider
 // property. Within the Correctness zone, only Assessing may have more than
-// one non-Waiting, non-Finished successor — every other state does work and
-// returns to the hub.
+// one non-Finished successor — every other state does work and returns to
+// the hub.
 func TestOnlyAssessingBranchesWithinCorrectness(t *testing.T) {
 	for _, from := range AllStates() {
 		if !IsCorrectness(from) || from == Assessing {
@@ -74,7 +68,7 @@ func TestOnlyAssessingBranchesWithinCorrectness(t *testing.T) {
 		}
 		var successors []State
 		for _, to := range AllStates() {
-			if to == from || to == Waiting || to == Finished {
+			if to == from || to == Finished {
 				continue
 			}
 			if CanTransition(from, to) {
@@ -104,7 +98,6 @@ func TestZoneClassification(t *testing.T) {
 		s                       State
 		correctness, production bool
 	}{
-		{Waiting, false, false},
 		{Fetching, true, false},
 		{Assessing, true, false},
 		{Repairing, true, false},
@@ -123,48 +116,56 @@ func TestZoneClassification(t *testing.T) {
 	}
 }
 
-// TestEdgeCountsMatchTheStatedPartition classifies every edge in legalEdges
-// by the partition rule stated in the doc comment above legalEdges — Cancel
-// (target Finished), Pause (target Waiting), Resume (source Waiting, target
-// not Finished), Work spine (everything else) — and pins the bucket sizes and
-// their total. This is what keeps that comment from drifting silently again:
-// a hand-counted breakdown in prose contradicted itself (claimed 22, summed
-// to 20, and double-counted two edges) and nothing caught it until review.
-func TestEdgeCountsMatchTheStatedPartition(t *testing.T) {
-	var cancel, pause, resume, spine int
-	total := 0
+// TestLegalEdgesIsTheWorkSpine asserts the graph's exact contents. The previous
+// partition test classified edges into cancel/pause/resume/spine buckets; with
+// Waiting and the -> Finished edges gone there is one bucket, so a partition
+// rule would be a tautology. A literal is honest at this size and fails loudly
+// when an edge moves.
+func TestLegalEdgesIsTheWorkSpine(t *testing.T) {
+	want := map[State][]State{
+		Fetching:   {Assessing},
+		Assessing:  {Fetching, Repairing, Extracting},
+		Repairing:  {Assessing},
+		Extracting: {Finalizing},
+		Finalizing: {},
+		Finished:   {},
+	}
+	if len(legalEdges) != len(want) {
+		t.Fatalf("legalEdges has %d sources, want %d", len(legalEdges), len(want))
+	}
+	for from, wantTo := range want {
+		if !slices.Equal(legalEdges[from], wantTo) {
+			t.Errorf("legalEdges[%v] = %v, want %v", from, legalEdges[from], wantTo)
+		}
+	}
+	var n int
+	for _, to := range legalEdges {
+		n += len(to)
+	}
+	if n != 6 {
+		t.Errorf("legalEdges has %d edges, want 6 (the work spine)", n)
+	}
+
+	// Exactly one edge crosses the boundary. Cross owns that ONE edge, which is
+	// only proportionate if there is only one.
+	var crossings int
 	for from, tos := range legalEdges {
 		for _, to := range tos {
-			total++
-			switch {
-			case to == Finished:
-				cancel++
-			case to == Waiting:
-				pause++
-			case from == Waiting:
-				resume++
-			default:
-				spine++
+			if IsCorrectness(from) && IsProduction(to) {
+				crossings++
 			}
 		}
 	}
+	if crossings != 1 {
+		t.Errorf("legalEdges has %d Correctness->Production edges, want exactly 1 (Assessing->Extracting)", crossings)
+	}
+}
 
-	wantCancel, wantPause, wantResume, wantSpine := 6, 5, 5, 6
-	if cancel != wantCancel {
-		t.Errorf("cancel edges (target Finished) = %d, want %d", cancel, wantCancel)
-	}
-	if pause != wantPause {
-		t.Errorf("pause edges (target Waiting) = %d, want %d", pause, wantPause)
-	}
-	if resume != wantResume {
-		t.Errorf("resume edges (source Waiting, target not Finished) = %d, want %d", resume, wantResume)
-	}
-	if spine != wantSpine {
-		t.Errorf("work spine edges = %d, want %d", spine, wantSpine)
-	}
-
-	wantTotal := wantCancel + wantPause + wantResume + wantSpine
-	if total != wantTotal {
-		t.Errorf("total edges = %d, want %d", total, wantTotal)
+// TestCanTransition_NoSelfEdges pins the removal of the from == to arm.
+func TestCanTransition_NoSelfEdges(t *testing.T) {
+	for _, s := range AllStates() {
+		if CanTransition(s, s) {
+			t.Errorf("CanTransition(%v, %v) is true; self-transitions are not edges and no door requests one", s, s)
+		}
 	}
 }

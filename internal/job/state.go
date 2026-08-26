@@ -13,8 +13,8 @@ type State uint8
 
 const (
 	// StateUnset is not a state. It is the zero value, and exists so that a
-	// zero StateView cannot be mistaken for a job in a real state: without
-	// it, removing Waiting would promote Fetching to zero and an
+	// zero StateView cannot be mistaken for a job in a real state: with
+	// Waiting removed, a zero State would otherwise BE Fetching, and an
 	// uninitialized view would read as an active download.
 	//
 	// No door accepts it as a destination — `grep -n 'StateUnset'
@@ -22,13 +22,13 @@ const (
 	// nor a value in legalEdges — and AllStates() does not list it, which
 	// TestAllStates_Exhaustive asserts by name rather than by count.
 	//
-	// Job.State() does NOT yet return it for a job with no attempt; that
-	// case is still Waiting{Next: Fetching}, constructed at job.go:120.
+	// StateUnset IS the never-run shape: Job.State() returns a zero
+	// StateView (State and Next both StateUnset) for a job with no attempt,
+	// constructed at job.go's State() method. There is no longer an
+	// exception to reach for — the old Waiting{Next: Fetching} answer
+	// claimed a position the job had not reached, and it is gone along with
+	// Waiting itself.
 	StateUnset State = iota
-	// Waiting holds no lease and no compute slot. It knows where it is going
-	// (StateView.Next) and why it is held (StateView.Reason); it never
-	// decides anything itself.
-	Waiting
 	// Fetching is downloading articles. Holds a lease.
 	Fetching
 	// Assessing decides whether the bytes are correct. Holds a lease and a
@@ -58,7 +58,6 @@ const (
 // without appearing here.
 func AllStates() []State {
 	return []State{
-		Waiting,
 		Fetching,
 		Assessing,
 		Repairing,
@@ -72,8 +71,6 @@ func (s State) String() string {
 	switch s {
 	case StateUnset:
 		return "StateUnset"
-	case Waiting:
-		return "Waiting"
 	case Fetching:
 		return "Fetching"
 	case Assessing:

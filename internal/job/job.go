@@ -8,14 +8,12 @@ import (
 )
 
 // ErrNoOpenAttempt is returned by the four mutators withOpenAttempt wraps —
-// Transition, Hold, SetActivity and Finish — when the job has no attempt in
-// flight, either because it has never run or because its last attempt is
-// settled. BeginAttempt and SetWaitReason are also mutators but do not go
-// through withOpenAttempt and so never return this error: BeginAttempt is
-// what opens an attempt in the first place, and SetWaitReason's never-run
-// case (see its own doc comment) exists specifically to write j.pending
-// while no attempt is open. The caller's fix for this error is BeginAttempt,
-// which is the only door into the machine.
+// Transition, SetNext, SetActivity and Finish — when the job has no attempt
+// in flight, either because it has never run or because its last attempt is
+// settled. BeginAttempt is also a mutator but does not go through
+// withOpenAttempt and so never returns this error: it is what opens an
+// attempt in the first place. The caller's fix for this error is
+// BeginAttempt, which is the only door into the machine.
 var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
 // ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
@@ -49,11 +47,11 @@ var ErrIntentLatched = errors.New("job: intent is latched; this job is cancelled
 // was given; a second grant would mean the Queue had issued capacity twice.
 var ErrAlreadyLeased = errors.New("job: already holds a lease")
 
-// Job owns its state. Every field is unexported. The lifecycle fields —
-// attempts and pending — are guarded by mu, and there is no path to either
-// that does not go through a method here. id, name and policy are not
-// guarded: they are set once in New and never written again, so ID, Name and
-// Policy read them without taking the lock.
+// Job owns its state. Every field is unexported. The lifecycle field —
+// attempts — is guarded by mu, and there is no path to it that does not go
+// through a method here. id, name and policy are not guarded: they are set
+// once in New and never written again, so ID, Name and Policy read them
+// without taking the lock.
 //
 // What is established now: a Job method never calls any other repository
 // package's method, because this package imports nothing from the rest of
@@ -99,19 +97,6 @@ type Job struct {
 	// comment.
 	intent Intent
 
-	// pending is the wait reason a job carries before its first attempt
-	// exists. A never-run job has no Attempt to hold a reason on — Attempt's
-	// own reason field only exists once an attempt has been opened — so a
-	// pause arriving before BeginAttempt has nowhere to record itself
-	// without this field. Exactly two writes — New's initializer and
-	// SetWaitReason's assignment — confirmed by `git grep -n 'pending[:][
-	// ]NoLease\|[.]pending[ ]=' -- internal/job/*.go`, which returns those
-	// two lines and nothing else. The bracketed single-character classes
-	// around the colon, the space and the dot are there so this citation,
-	// quoted verbatim inside this comment, does not match its own quoted
-	// text as a substring the way an earlier draft of this comment did.
-	pending WaitReason
-
 	// lease is the admission token this job currently holds, or nil. Guarded
 	// by mu. Granted by Grant; released by surrenderLocked, which is the sole
 	// writer of nil into this field — `git grep -n 'j\.lease[ \t]*='
@@ -124,11 +109,9 @@ type Job struct {
 }
 
 // New builds a job that has never run. It has no attempt record, because
-// nothing has happened to it yet. pending starts at NoLease, matching the
-// constant State() has always reported for a never-run job — a fresh Job's
-// behavior is unchanged unless SetWaitReason is called.
+// nothing has happened to it yet.
 func New(id, name string, p Policy) *Job {
-	return &Job{id: id, name: name, policy: p, pending: NoLease}
+	return &Job{id: id, name: name, policy: p}
 }
 
 // ID returns the job's identifier.
@@ -140,20 +123,17 @@ func (j *Job) Name() string { return j.name }
 // Policy returns the job's retry/repair policy.
 func (j *Job) Policy() Policy { return j.policy }
 
-// State returns the current attempt's view. For a job that has never run the
-// answer is a constant shape rather than a special case: it is waiting for a
-// lease, which is exactly what is true. Reason comes from j.pending rather
-// than a hardcoded NoLease, so a pause recorded via SetWaitReason before the
-// job's first attempt (e.g. UserPaused) is visible here — New initializes
-// pending to NoLease, so this is unchanged from before unless SetWaitReason
-// has been called.
+// State returns the current attempt's view, or a StateUnset view for a job that
+// has never run. A job with no attempt is not AT a state — the old model
+// answered Waiting{Next: Fetching}, which claimed a position the job had not
+// reached. HasRun() distinguishes the two cases for a caller that needs to.
 func (j *Job) State() StateView {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	if a := j.currentLocked(); a != nil {
 		return a.view()
 	}
-	return StateView{State: Waiting, Next: Fetching, Reason: j.pending}
+	return StateView{}
 }
 
 // HasRun reports whether this job has ever held a lease. Exact, where any
@@ -215,16 +195,16 @@ func (j *Job) BeginAttempt(now time.Time) error {
 }
 
 // Transition moves the open attempt to the given state. It surfaces
-// ErrHoldRequired and ErrFinishRequired unchanged when to is Waiting or
-// Finished respectively — those states each have their own door (Hold,
-// Finish) and Transition is not one of them.
+// ErrFinishRequired unchanged when to is Finished — that state has its own
+// door (Finish) and Transition is not it.
 func (j *Job) Transition(to State) error {
 	return j.withOpenAttempt(func(a *Attempt) error { return a.transition(to) })
 }
 
-// Hold parks the open attempt at a boundary, to resume at next for reason r.
-func (j *Job) Hold(next State, r WaitReason) error {
-	return j.withOpenAttempt(func(a *Attempt) error { return a.hold(next, r) })
+// SetNext records that the open attempt's current state has finished its work,
+// and where it continues to. See Attempt.setNext.
+func (j *Job) SetNext(n State) error {
+	return j.withOpenAttempt(func(a *Attempt) error { return a.setNext(n) })
 }
 
 // SetActivity records what the open attempt is currently executing.
@@ -235,36 +215,6 @@ func (j *Job) SetActivity(x Activity) error {
 // Finish assigns the verdict and closes the open attempt.
 func (j *Job) Finish(o Outcome, now time.Time) error {
 	return j.withOpenAttempt(func(a *Attempt) error { return a.finish(o, now) })
-}
-
-// SetWaitReason records why the job is waiting, covering the two shapes
-// nothing else in this package can update in place:
-//
-//   - No attempt exists yet (HasRun() == false): there is no Attempt to
-//     carry a reason, so this writes j.pending directly.
-//   - An attempt is open and parked (State() == Waiting): Hold already
-//     decided the destination (next), and its own doc comment explains why
-//     that must not be re-declared by a second Hold call — but the REASON
-//     legitimately changes while parked (NoComputeSlot -> GlobalPause, when
-//     a global pause arrives while a job already waits for a compute slot).
-//     This delegates to setReason, which writes only a.reason.
-//
-// Deliberately NOT routed through withOpenAttempt: that helper's !a.isOpen()
-// check would reject the never-run case outright — no attempt is ever open
-// before the first BeginAttempt — which is half of what this method exists
-// to cover. An attempt that is open but not Waiting (mid-work) still fails,
-// via setReason's own ErrNotWaiting: SetWaitReason cannot alter a.next, only
-// a.reason, so there is nothing for it to do while an attempt is actively
-// running.
-func (j *Job) SetWaitReason(r WaitReason) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	a := j.currentLocked()
-	if a == nil {
-		j.pending = r
-		return nil
-	}
-	return a.setReason(r)
 }
 
 // withOpenAttempt is the single door every mutator goes through: take the

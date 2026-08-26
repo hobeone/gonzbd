@@ -36,8 +36,7 @@
 // TestOnlyAssessingBranchesWithinCorrectness pins this for the Correctness
 // zone specifically — it does not examine Production (Extracting,
 // Finalizing), where the same property happens to hold today but is
-// unenforced. TestEdgeCountsMatchTheStatedPartition pins the edge counts the
-// partition implies.
+// unenforced. TestLegalEdgesIsTheWorkSpine pins legalEdges' exact contents.
 //
 // # Attempts
 //

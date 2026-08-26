@@ -14,7 +14,6 @@ func TestState_String(t *testing.T) {
 		s    State
 		want string
 	}{
-		{Waiting, "Waiting"},
 		{Fetching, "Fetching"},
 		{Assessing, "Assessing"},
 		{Repairing, "Repairing"},
@@ -181,8 +180,8 @@ const (
 
 // TestStateUnset_IsTheZeroValue pins the property the sentinel exists for: a
 // zero State — and therefore a zero StateView — is not a real state. Without
-// it, removing Waiting in a later change silently promotes Fetching to zero
-// and an unstarted job reads as an active download.
+// it, Waiting's removal (task 5) would have silently promoted Fetching to
+// zero, and an unstarted job would read as an active download.
 func TestStateUnset_IsTheZeroValue(t *testing.T) {
 	var zero State
 	if zero != StateUnset {

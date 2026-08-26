@@ -23,9 +23,10 @@ var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
 // OutcomeUnrecoverable for an attempt that has crossed into Production
-// (a.crossed), whether or not it is still there — a held attempt reads back
-// as Waiting, not as the Production state it crossed at, so the guard tracks
-// the latch rather than the transient state. D3 defines OutcomeUnrecoverable
+// (a.crossed), whether or not it is still there — finish is about to
+// overwrite a.state with Finished in the same call, which erases the
+// Production state the attempt actually crossed at, so the guard tracks the
+// latch rather than the transient state. D3 defines OutcomeUnrecoverable
 // as "the job never crossed the boundary" specifically so its files stay in
 // the working directory and the job stays retryable — a verdict finish must
 // not let contradict where the attempt actually crossed. This is a sentinel
@@ -35,9 +36,9 @@ var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 // distinguishing that case with errors.Is is the whole reason to name it.
 var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable for an attempt past the Correctness/Production boundary")
 
-// ErrFinishRequired is returned when transition is asked to reach Finished,
-// or hold is asked to resume into it. finish is the intended sole door into
-// that state. What is actually test-enforced is narrower than the door
+// ErrFinishRequired is returned when transition is asked to reach Finished.
+// finish is the intended sole door into that state. What is actually
+// test-enforced is narrower than the door
 // claim itself: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates
 // every site that sets the unexported outcome field — a plain `=` assignment
 // and an `outcome: x` composite-literal key alike — across this package's
@@ -55,18 +56,6 @@ var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable
 // ever going to close it.
 var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call finish instead")
 
-// ErrHoldRequired is returned when transition is asked to reach Waiting.
-// hold is the only door into that state: transition has neither a
-// destination-with-a-reason argument nor a next field to fill in on its own,
-// so entering Waiting through transition instead of hold left an attempt
-// with next equal to Waiting itself — unable to resume (transition's a.next
-// check accepts only next as a destination, and Waiting is not a work state)
-// and unable to be re-parked (hold refuses whenever the attempt is already
-// Waiting). Only finish could ever move it again. Refusing here is the fix,
-// not defaulting to some next: you cannot pause without saying where you are
-// going and why, and transition is never given either.
-var ErrHoldRequired = errors.New("job: transition cannot reach Waiting; call hold instead")
-
 // ErrInvalidOutcome is returned when finish is asked to record a verdict
 // that is not a legitimate outcome the machine produces — either
 // OutcomePending (not a verdict at all) or a value AllOutcomes() does not
@@ -77,14 +66,11 @@ var ErrHoldRequired = errors.New("job: transition cannot reach Waiting; call hol
 // finish failures needs a sentinel to match against.
 var ErrInvalidOutcome = errors.New("job: invalid outcome")
 
-// ErrNotWaiting is returned by setReason when the attempt is not currently
-// Waiting. A wait reason is meaningless when nothing is being waited for.
-// This is deliberately not ErrIllegalTransition: that sentinel names a
-// rejected edge in the State graph, and setReason never touches a.state at
-// all — the two failures are different shapes, and reusing the transition
-// sentinel here would mislead a caller matching on it into thinking a state
-// change was attempted.
-var ErrNotWaiting = errors.New("job: attempt is not waiting")
+// ErrNextAlreadySet is returned by setNext when a different destination is
+// already recorded. This is defect 3's guard, carried into the door that
+// replaced hold: without it a verdict of Repairing could be overwritten with
+// Extracting and the job would cross the boundary skipping repair.
+var ErrNextAlreadySet = errors.New("job: next is already set to a different destination")
 
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own
@@ -102,20 +88,19 @@ var ErrNotWaiting = errors.New("job: attempt is not waiting")
 type Attempt struct {
 	state    State
 	next     State
-	reason   WaitReason
 	activity Activity
 	outcome  Outcome
 	assessed bool
 	// crossed latches once this attempt actually arrives in Production
-	// (IsProduction(state)) via transition — not merely holds toward it:
-	// hold(next: Extracting) sets a.state to Waiting, not to Extracting, so
-	// it never runs the line that sets this. Both finish's a.state =
-	// Finished and hold's a.state = Waiting erase the state the attempt
-	// crossed at, which is why this cannot be read back from a.state and
-	// has to be latched when it happens, the same reason `assessed` exists.
-	// Two field reads (this comment and other comments mentioning it are
-	// not reads): finish, below in this file, guards OutcomeUnrecoverable
-	// past the boundary even across a hold; and job.go's BeginAttempt
+	// (IsProduction(state)) via transition. Both finish's a.state = Finished
+	// and, before this task, hold's a.state = Waiting erased the state the
+	// attempt crossed at, which is why this cannot be read back from a.state
+	// and has to be latched when it happens, the same reason `assessed`
+	// exists — hold is gone now, but finish still erases a.state on the same
+	// call that could settle a verdict, so the latch stays required for that
+	// case alone. Two field reads (this comment and other comments mentioning
+	// it are not reads): finish, below in this file, guards
+	// OutcomeUnrecoverable past the boundary; and job.go's BeginAttempt
 	// refuses to open a fresh attempt once a prior one crossed, because D3
 	// says crossing consumes what a retry would need (spec
 	// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, D3). Not on
@@ -148,50 +133,61 @@ func (a *Attempt) view() StateView {
 	return StateView{
 		State:    a.state,
 		Next:     a.next,
-		Reason:   a.reason,
 		Activity: a.activity,
 		Outcome:  a.outcome,
 		Assessed: a.assessed,
 	}
 }
 
-// transition moves the attempt to `to`, rejecting any edge the machine does
-// not contain. Activity is cleared, because it describes the state being left:
-// carrying it forward would render a job as "repairing" while it extracts.
+// setNext records that this state's work has ENDED and where the job continues
+// to. It is the marker Waiting used to carry, and the fact it carries is not
+// derivable: "has this download finished?" is about the world, not the graph.
 //
-// Each non-work state has exactly one door, and this is the whole contract:
+// Ended, not succeeded — a Fetching that exhausts every server has ended, and
+// Assessing decides what that means. Work that ends without continuing settles
+// via finish instead and leaves next unset, which is why Finalizing never sets
+// it and is not an exception to the rule.
 //
-//	hold        -> Waiting
-//	finish      -> Finished
-//	transition  -> every other (work) state
+// Three guards, each closing a specific hole:
+//   - the destination must be a legal edge from the current state;
+//   - the sentinel is not a destination;
+//   - write-once per visit: a DIFFERENT destination is refused, the same one
+//     is a no-op. transition clears next when it takes the move, so re-entering
+//     a state permits a fresh verdict.
+func (a *Attempt) setNext(n State) error {
+	if n == StateUnset {
+		return fmt.Errorf("%w: StateUnset is not a destination", ErrIllegalTransition)
+	}
+	if !CanTransition(a.state, n) {
+		return illegalTransition(a.state, n)
+	}
+	if a.next != StateUnset && a.next != n {
+		return fmt.Errorf("%w: %s is recorded, refusing to replace it with %s", ErrNextAlreadySet, a.next, n)
+	}
+	a.next = n
+	return nil
+}
+
+// transition moves the attempt to `to`. Activity is cleared, because it
+// describes the state being left. next is cleared, because the move consumes it.
 //
-// transition refuses both Waiting (ErrHoldRequired) and Finished
-// (ErrFinishRequired) as destinations, because pausing and finishing each
-// need something transition does not carry: hold takes a destination AND a
-// reason, finish takes a verdict, and transition has neither. You cannot
-// pause without saying where you are going and why. Entering Waiting through
-// transition instead of hold was reachable before this check existed, and it
-// stranded the attempt: transition's own a.next check (below) then accepted
-// nothing but Waiting itself as a resume target, and hold refuses to re-park
-// an attempt that is already Waiting — only finish could still move it.
+// When next is SET, to must equal it. That check no longer guards the boundary
+// — with Waiting gone, legalEdges does that alone — and its sole remaining
+// purpose is enforcing that once a state's work has decided where to go,
+// nothing else may choose. From Assessing, legalEdges permits Fetching,
+// Repairing and Extracting, so without this check a caller could ignore a
+// NeedsRepair verdict and cross into Production having skipped repair.
 //
-// From Waiting, the only legal `to` is a.next. The destination was decided
-// when hold was taken, and CanTransition(Waiting, to) alone cannot see that:
-// Waiting's legalEdges accept resuming into any non-terminal state, which is
-// what let Production and Correctness compose two individually legal edges —
-// a pause into Waiting, then an unconstrained resume out of it — into the
-// single edge legalEdges forbids directly (Extracting -> Waiting -> Fetching
-// was reachable before this check existed). Requiring to == a.next is what
-// keeps Waiting a non-branching node: it carries the one decision Assessing
-// already made, rather than making a second decision of its own.
+// When next is UNSET the edge map alone decides, which is the ordinary
+// forward move of a state that has just started.
 func (a *Attempt) transition(to State) error {
 	if to == Finished {
 		return ErrFinishRequired
 	}
-	if to == Waiting {
-		return ErrHoldRequired
+	if to == StateUnset {
+		return fmt.Errorf("%w: StateUnset is not a destination", ErrIllegalTransition)
 	}
-	if a.state == Waiting && to != a.next {
+	if a.next != StateUnset && to != a.next {
 		return illegalTransition(a.state, to)
 	}
 	if !CanTransition(a.state, to) {
@@ -199,113 +195,13 @@ func (a *Attempt) transition(to State) error {
 	}
 	a.state = to
 	a.activity = ActNone
-	a.next = Waiting
-	a.reason = NoLease
+	a.next = StateUnset
 	if to == Assessing {
-		// Latches for the life of the attempt. ToSABnzbd reads it to tell a
-		// first-pass download from a re-entry fetching recovery volumes,
-		// which is what upstream's "Fetching" status means.
 		a.assessed = true
 	}
 	if IsProduction(to) {
-		// See the crossed field's doc comment: this is the one place an
-		// attempt actually arrives in Production, as opposed to merely
-		// holding toward it.
 		a.crossed = true
 	}
-	return nil
-}
-
-// hold parks the attempt at a boundary. next is where it will resume, and is
-// validated against the CURRENT state, not against Waiting — Waiting itself
-// accepts a resume into any non-terminal state (it is the universal resume
-// point in legalEdges), so checking CanTransition(Waiting, next) would let a
-// hold defer an edge the pre-wait state could never have reached directly
-// (e.g. Fetching parking with next=Repairing, which no direct Fetching edge
-// permits). Validating against a.state instead makes a hold's destination
-// exactly what the un-paused machine would have allowed.
-//
-// hold refuses when the attempt is already Waiting: the destination was
-// decided by the first hold that parked it there, and a second hold would
-// let that destination be re-declared instead of merely resumed from
-// (Extracting -> hold(Finalizing) -> hold(Fetching) -> transition(Fetching)
-// was reachable before this check existed, even with transition's a.next
-// check in place). The reason a job is waiting may legitimately change while
-// it waits (NoComputeSlot -> GlobalPause); the destination may not, and this
-// method only ever assigns both together — a reason-only update is deferred
-// to the next plan's Queue work, not hypothetical: this package cannot
-// express NoComputeSlot -> GlobalPause today (hold's own refusal above is
-// what blocks it), and a global-pause arriving while a job waits for a
-// compute slot needs to be recordable. The fix is a reason-only mutator with
-// its own owner, never a second meaning for hold — see
-// docs/superpowers/plans/2026-08-25-job-lifecycle-core.md, "What this plan
-// does not deliver, and what comes next".
-//
-// hold also refuses next == Finished (finish is the sole door, see
-// ErrFinishRequired: hold(Assessing) followed by transition(Repairing) must
-// not be able to reach Finished by a route finish never validated) and
-// next == Waiting (self-referential — there is nothing to resume into).
-func (a *Attempt) hold(next State, r WaitReason) error {
-	if a.state == Waiting {
-		return fmt.Errorf("%w: already waiting; hold cannot re-declare the destination once held", ErrIllegalTransition)
-	}
-	if next == Finished {
-		return ErrFinishRequired
-	}
-	if next == Waiting {
-		return fmt.Errorf("%w: cannot hold with next=Waiting", ErrIllegalTransition)
-	}
-	// No separate CanTransition(a.state, Waiting) check: it can only ever
-	// fire when a.state == Finished (every non-terminal state has a pause
-	// edge to Waiting), and next == Finished is already excluded above, so
-	// CanTransition(Finished, next) below is false for every next that
-	// reaches this line — the same rejection, from the same cause, one line
-	// down. A dedicated check here would never independently reject
-	// anything; TestAttempt_HoldRejectsAfterFinish pins that the remaining
-	// check alone still refuses hold once an attempt is Finished.
-	if !CanTransition(a.state, next) {
-		return illegalTransition(a.state, next)
-	}
-	a.state = Waiting
-	a.next = next
-	a.reason = r
-	a.activity = ActNone
-	return nil
-}
-
-// setReason updates the reason the attempt is parked, leaving a.next
-// untouched. hold refuses to re-declare next once an attempt is already
-// Waiting (see hold's doc comment) — the DESTINATION must not be
-// re-declared, since that is what let Extracting -> hold(Finalizing) ->
-// hold(Fetching) -> transition(Fetching) strand the attempt before that
-// guard existed. But the REASON a job is waiting legitimately changes while
-// it waits (e.g. NoComputeSlot -> GlobalPause, when a global pause arrives
-// while a job is already parked waiting for a compute slot), and hold has no
-// way to record that without also being asked to re-declare next. setReason
-// is the narrower door: it writes only a.reason.
-//
-// Errors (ErrNotWaiting) if the attempt is not Waiting: a reason for waiting
-// is meaningless when nothing is being waited for, and there is no
-// destination here to preserve a mistaken call against.
-//
-// A settled attempt (a.state == Finished) gets its own message rather than
-// the generic mid-work one. This was raised as a Critical review finding —
-// a settled retryable job appears unable to record a pause — and the fix is
-// deliberately NOT to let a Finished attempt take a reason. OutcomeUnrecoverable
-// arises from exactly one place, an Assessing verdict (spec §5), and such a
-// job renders as Failed: the server and article budget for that attempt are
-// spent, and it is up to the user to decide whether to retry, not something
-// that resumes on its own. A finished job is not sitting in a queue awaiting
-// a lease — pause gates work that is still in flight, and a settled job has
-// none. Refusing here is correct; only the message was worth improving.
-func (a *Attempt) setReason(r WaitReason) error {
-	if a.state == Finished {
-		return fmt.Errorf("%w: attempt is Finished, which has no wait state — pause gates in-flight work, and a settled attempt's next move (retry or not) is a decision for the user, not a reason to record", ErrNotWaiting)
-	}
-	if a.state != Waiting {
-		return fmt.Errorf("%w: cannot set a wait reason on an attempt in state %s", ErrNotWaiting, a.state)
-	}
-	a.reason = r
 	return nil
 }
 
@@ -326,10 +222,10 @@ func (a *Attempt) setActivity(x Activity) { a.activity = x }
 // verdict would be a caller bug, not a legitimate outcome the machine
 // produces, so it is rejected here rather than persisted.
 //
-// next and reason are cleared alongside activity: StateView documents all
-// three as meaningful only when State is Waiting, and without this a cancel
-// taken while paused would leave a Finished attempt reporting the stale hold
-// it was cancelled out of (e.g. Next=Assessing, Reason=UserPaused).
+// next is cleared alongside activity: without this, a cancel taken after
+// Assessing had already recorded a verdict (e.g. next=Repairing) would leave
+// a Finished attempt still reporting a destination it will never move to —
+// see TestAttempt_FinishClearsNext.
 func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !o.IsSettled() {
 		return fmt.Errorf("%w: cannot finish an attempt with outcome %s", ErrInvalidOutcome, o)
@@ -348,24 +244,20 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
-	// Guard on a.crossed, not IsProduction(a.state): hold sets a.state to
-	// Waiting, so a state-based check would miss an attempt that crossed
-	// into Production and was then held there — Unrecoverable must stay
-	// refused across a hold, since D3's "never crossed the boundary" verdict
-	// would otherwise contradict BeginAttempt's separate refusal to open a
-	// fresh attempt once crossed (ErrBoundaryConsumed, job.go). a.crossed
-	// alone is equivalent to `a.crossed || IsProduction(a.state)`: transition
-	// is the only place a.state is ever set to a Production state (newAttempt
-	// starts at Fetching; hold only ever writes Waiting), and transition sets
-	// a.crossed = true in the same call, with no early return between the
-	// two writes — see the crossed field's doc comment.
+	// Guard on a.crossed, not IsProduction(a.state): finish is about to
+	// overwrite a.state with Finished below, which erases the state the
+	// attempt crossed at — that is exactly why the latch exists rather than
+	// reading a.state directly (see the crossed field's doc comment).
+	// job.go's BeginAttempt reads this same latch after finish has already
+	// run, when a.state == Finished and IsProduction(a.state) would read
+	// false; a.crossed alone is what still says D3's "never crossed the
+	// boundary" at that point.
 	if o == OutcomeUnrecoverable && a.crossed {
 		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
 	}
 	a.state = Finished
 	a.activity = ActNone
-	a.next = Waiting
-	a.reason = NoLease
+	a.next = StateUnset
 	a.outcome = o
 	a.ended = now
 	return nil

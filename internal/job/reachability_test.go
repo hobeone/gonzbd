@@ -196,22 +196,19 @@ type action struct {
 }
 
 func allActions() []action {
-	// 2 job-level doors + one Transition and one Hold per state + one Finish
-	// per outcome. Sized rather than grown so the walk's branching factor is
-	// stated in one place.
-	acts := make([]action, 0, 2+2*len(AllStates())+len(AllOutcomes()))
+	// 1 job-level door + one Transition per state + one Finish per outcome.
+	// Sized rather than grown so the walk's branching factor is stated in one
+	// place. Hold and SetWaitReason are gone with Waiting (task 5); task 7
+	// rebuilds this oracle and adds whatever new actions it needs, rather
+	// than this task growing it further.
+	acts := make([]action, 0, 1+len(AllStates())+len(AllOutcomes()))
 	acts = append(acts,
 		action{"BeginAttempt", func(j *Job, now time.Time) { _ = j.BeginAttempt(now) }},
-		action{"SetWaitReason(GlobalPause)", func(j *Job, _ time.Time) { _ = j.SetWaitReason(GlobalPause) }},
 	)
 	for _, s := range AllStates() {
 		acts = append(acts, action{
 			name:  fmt.Sprintf("Transition(%s)", s),
 			apply: func(j *Job, _ time.Time) { _ = j.Transition(s) },
-		})
-		acts = append(acts, action{
-			name:  fmt.Sprintf("Hold(%s)", s),
-			apply: func(j *Job, _ time.Time) { _ = j.Hold(s, NoComputeSlot) },
 		})
 	}
 	for _, o := range AllOutcomes() {
@@ -227,16 +224,17 @@ func allActions() []action {
 // decision, plus the attempt count. A field omitted here would collapse two
 // genuinely different configurations into one and silently prune whichever
 // arrived second — so this deliberately includes the latches (assessed,
-// crossed, pending) that StateView does not carry.
+// crossed) that StateView does not carry. j.pending is gone with Waiting
+// (task 5): a never-run job no longer carries a wait reason of its own.
 func configKey(j *Job) string {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	key := fmt.Sprintf("n=%d/pending=%v", len(j.attempts), j.pending)
+	key := fmt.Sprintf("n=%d", len(j.attempts))
 	for i := range j.attempts {
 		a := &j.attempts[i]
-		key += fmt.Sprintf("|%v,%v,%v,%v,%v,%v,%v",
-			a.state, a.next, a.reason, a.activity, a.outcome, a.assessed, a.crossed)
+		key += fmt.Sprintf("|%v,%v,%v,%v,%v,%v",
+			a.state, a.next, a.activity, a.outcome, a.assessed, a.crossed)
 	}
 	return key
 }

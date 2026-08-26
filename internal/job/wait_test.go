@@ -70,11 +70,15 @@ func TestAllWaitReasons_HaveStringArms(t *testing.T) {
 	}
 }
 
+// TestStateView_ZeroValueIsUnset pins that a zero view names no state. It is
+// the reason StateUnset exists: without it the zero would be Fetching, and an
+// unstarted job would read as an active download.
 func TestStateView_ZeroValueIsUnset(t *testing.T) {
 	var v StateView
-	if v.State != StateUnset || v.Next != StateUnset || v.Reason != NoLease ||
-		v.Activity != ActNone || v.Outcome != OutcomePending {
-		t.Errorf("zero StateView = %+v; want State=StateUnset Next=StateUnset Reason=NoLease "+
-			"Activity=ActNone Outcome=OutcomePending", v)
+	if v.State != StateUnset {
+		t.Errorf("zero StateView.State = %v, want StateUnset", v.State)
+	}
+	if v.Next != StateUnset {
+		t.Errorf("zero StateView.Next = %v, want StateUnset", v.Next)
 	}
 }

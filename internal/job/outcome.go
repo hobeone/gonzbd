@@ -31,9 +31,10 @@ const (
 	// this is a distinct outcome from OutcomeFailed rather than folded into
 	// it. finish rejects assigning this outcome to an attempt that has
 	// crossed into Production at any point (a.crossed, not merely
-	// IsProduction(a.state) — a held attempt reads back as Waiting; see
-	// ErrUnrecoverableAfterBoundary in attempt.go), so this sentence is
-	// enforced rather than only stated.
+	// IsProduction(a.state) — finish overwrites a.state with Finished in
+	// the same call, which erases the Production state a settled attempt
+	// crossed at; see ErrUnrecoverableAfterBoundary in attempt.go), so this
+	// sentence is enforced rather than only stated.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled

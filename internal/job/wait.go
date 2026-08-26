@@ -52,20 +52,24 @@ func (r WaitReason) IsPause() bool {
 // Job.State() returns and the only thing consumers outside this package see —
 // no consumer holds a job lock, and no consumer reaches a mutable field.
 //
-// Next and Reason are meaningful only when State is Waiting. Activity is
-// ActNone unless work is executing. Outcome is OutcomePending until the
-// attempt reaches Finished.
+// Next is meaningful when set, and means the current state's work has ended
+// and the job continues to the named state (§3.3) — it is not, as under the
+// old Waiting model, a destination waiting for permission to resume. The wait
+// reason that used to live here is gone along with Waiting; RenderView (task
+// 4) carries it instead, because it is derived by the Queue rather than
+// stored on the attempt. Activity is ActNone unless work is executing.
+// Outcome is OutcomePending until the attempt reaches Finished.
 //
-// The zero value is StateUnset in both State and Next, for Reason NoLease.
-// That is deliberately not any real state (see StateUnset in state.go), so an
-// uninitialized view is inert rather than plausible. It is also not the shape
-// Job.State() returns for a job that has never run: that case is still
-// Waiting{Next: Fetching}, constructed at job.go:120. Job.State() owns that
-// shape; read the never-run case there rather than off the zero value here.
+// The zero value is StateUnset in both State and Next. That is deliberately
+// not any real state (see StateUnset in state.go), so an uninitialized view
+// is inert rather than plausible. It is also exactly the shape Job.State()
+// returns for a job that has never run — StateUnset IS the never-run shape,
+// with no exception left to carve out: the old model's Waiting{Next:
+// Fetching} answer claimed a position the job had not reached, and it is gone
+// along with Waiting itself.
 type StateView struct {
 	State    State
 	Next     State
-	Reason   WaitReason
 	Activity Activity
 	Outcome  Outcome
 	// Assessed reports whether this attempt has already been through
