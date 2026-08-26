@@ -341,8 +341,9 @@ func TestAttempt_FinishIsWriteOnce(t *testing.T) {
 
 func TestAttempt_FinishRejectsPending(t *testing.T) {
 	a := newAttempt(testClock())
-	if err := a.finish(OutcomePending, testClock()); err == nil {
-		t.Error("finish(OutcomePending) = nil, want an error; Pending is not a verdict")
+	err := a.finish(OutcomePending, testClock())
+	if !errors.Is(err, ErrInvalidOutcome) {
+		t.Fatalf("finish(OutcomePending) error = %v, want ErrInvalidOutcome; Pending is not a verdict", err)
 	}
 	if a.view().State == Finished {
 		t.Error("attempt reached Finished with a Pending outcome")
@@ -375,11 +376,27 @@ func TestAttempt_FinishClearsNextAndReason(t *testing.T) {
 // finish must not persist a verdict the machine never produces.
 func TestAttempt_FinishRejectsUnrecognizedOutcome(t *testing.T) {
 	a := newAttempt(testClock())
-	if err := a.finish(Outcome(42), testClock()); err == nil {
-		t.Error("finish(Outcome(42)) = nil, want an error; 42 is not a declared outcome")
+	err := a.finish(Outcome(42), testClock())
+	if !errors.Is(err, ErrInvalidOutcome) {
+		t.Fatalf("finish(Outcome(42)) error = %v, want ErrInvalidOutcome; 42 is not a declared outcome", err)
 	}
 	if got := a.view(); got.State == Finished || got.Outcome != OutcomePending {
 		t.Errorf("view = %+v after a rejected finish, want unchanged (Fetching, Pending)", got)
+	}
+}
+
+// TestAttempt_FinishInvalidOutcomeMessagesAreDistinct pins that the two
+// ErrInvalidOutcome cases stay tellable apart in the message, even though
+// both wrap the same sentinel: Pending is a well-formed zero value that
+// simply is not a verdict, while 42 is not a declared outcome at all, and a
+// caller reading the error text needs to see which one happened.
+func TestAttempt_FinishInvalidOutcomeMessagesAreDistinct(t *testing.T) {
+	a := newAttempt(testClock())
+	pendingErr := a.finish(OutcomePending, testClock())
+	b := newAttempt(testClock())
+	unrecognizedErr := b.finish(Outcome(42), testClock())
+	if pendingErr.Error() == unrecognizedErr.Error() {
+		t.Errorf("finish(Pending) and finish(42) produced the same message %q; want distinct text for each case", pendingErr.Error())
 	}
 }
 

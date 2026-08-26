@@ -58,6 +58,16 @@ var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call 
 // going and why, and transition is never given either.
 var ErrHoldRequired = errors.New("job: transition cannot reach Waiting; call hold instead")
 
+// ErrInvalidOutcome is returned when finish is asked to record a verdict
+// that is not a legitimate outcome the machine produces — either
+// OutcomePending (not a verdict at all) or a value AllOutcomes() does not
+// declare. Exported, unlike errOutcomeAlreadySet: an external caller of
+// Job.Finish can pass an arbitrary Outcome and observe this branch directly
+// (withOpenAttempt's !a.isOpen() guard does not shadow it the way it shadows
+// the write-once case), so a caller distinguishing "bad argument" from other
+// finish failures needs a sentinel to match against.
+var ErrInvalidOutcome = errors.New("job: invalid outcome")
+
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own
 // write-once Outcome, so a retry appends a verdict rather than revising one
@@ -268,10 +278,10 @@ func (a *Attempt) setActivity(x Activity) { a.activity = x }
 // it was cancelled out of (e.g. Next=Assessing, Reason=UserPaused).
 func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !o.IsSettled() {
-		return fmt.Errorf("job: cannot finish an attempt with outcome %s", o)
+		return fmt.Errorf("%w: cannot finish an attempt with outcome %s", ErrInvalidOutcome, o)
 	}
 	if !slices.Contains(AllOutcomes(), o) {
-		return fmt.Errorf("job: cannot finish an attempt with unrecognized outcome %s", o)
+		return fmt.Errorf("%w: cannot finish an attempt with unrecognized outcome %s", ErrInvalidOutcome, o)
 	}
 	// Write-once is checked before the boundary guard below: an attempt that
 	// is both already settled AND crossed the boundary has its more
