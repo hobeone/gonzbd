@@ -3,8 +3,12 @@
 **Status:** Direction settled in discussion, and nine decisions are recorded
 (§14) — the six questions this document originally opened, plus three that
 arose from settling them. No question it raised is still open. It is the
-argument the implementation plans are written against. Nothing here has been
-built.
+argument the implementation plans are written against. `internal/job` is now
+built — the vocabulary (`State`, `Activity`, `Outcome`, `Policy`,
+`WaitReason`), the transition machine, `Attempt`, `Job`, and the `ToSABnzbd`
+translation. What remains is everything downstream of it: moving `Lease` and
+`Manifest` onto this design, the `Queue` rewrite and the deletions it
+implies, and inverting dispatch to call into this machine.
 
 **Scope:** Replaces the job state model in `internal/queue` and the ownership
 boundaries between `app`, `queue`, `downloader`, `durability` and `postproc`.

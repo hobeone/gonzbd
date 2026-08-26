@@ -53,7 +53,7 @@ could therefore start a fresh attempt at `Fetching`.
 
 Confirmed by probe before acceptance:
 
-```
+```text
 attempt 1 reached Extracting (IsProduction=true)
 BeginAttempt after crossing: err=<nil> -> attempts=2 state=Fetching next=Waiting
 ```
@@ -77,7 +77,7 @@ Finding 1.
 `IsProduction(a.state)`. But `hold` writes `a.state = Waiting`, so a
 crossed-then-paused attempt slipped past:
 
-```
+```text
 state=Extracting   crossed=true   IsProduction(state)=true
 after hold:        state=Waiting  crossed=true  IsProduction(state)=false
 finish(Unrecoverable) while held in Production: err=<nil>
