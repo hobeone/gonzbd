@@ -1,6 +1,6 @@
 # Lifecycle Intents — Design
 
-**Status:** proposed, revision 5. Revisions 1, 2 and 3 were each reviewed
+**Status:** proposed, revision 6. Revisions 1, 2 and 3 were each reviewed
 externally; §10 records what changed and why. Revision 2 had a data-losing
 flaw and revision 3 a lease-leaking one; both are described there.
 
@@ -189,15 +189,31 @@ avoided by accident.
 spec §3.1 and D1**, which specify `StateView{State: Waiting, Next: Fetching,
 Reason: NoLease}`.
 
-`TestAllStates_Exhaustive` parses `state.go` by AST (`stateConstantsFromSource`)
-and asserts `len(AllStates()) == len(declared)`. It must be updated to expect
-`StateUnset` as declared-but-unlisted, deliberately — not by relaxing the
-check.
+`TestAllStates_Exhaustive` parses `state.go` by AST
+(`stateConstantsFromSource`), rejects any declared constant missing from
+`AllStates()`, and asserts `len(AllStates()) == len(declared)`. `StateUnset` is
+declared and deliberately unlisted, so both halves fail as written.
+
+**Relaxing either half is not the fix** — that would let a genuinely forgotten
+state slip through. Instead the test asserts the exception by name:
+
+> `declared` must equal `AllStates()` ∪ `{StateUnset}`, exactly.
+
+A second sentinel, or a real state omitted from `AllStates()`, still fails. The
+sentinel is named in the assertion rather than subtracted by a count, so the
+test says *which* constant is exempt and why, and adding another requires
+someone to write it down here.
 
 ### 3.3 `next` marks completion, and carries the verdict
 
-> **`next` is set ⟺ the current state's work is finished.**
-> **Its value is where the job goes next.**
+> **`next` is set ⟺ the current state's work has ENDED and the job continues
+> to another work state.** Its value is where it continues to. When work ends
+> and the job does *not* continue, `finish` settles the attempt instead, and
+> `next` stays unset.
+
+*Ended*, not *succeeded*. A `Fetching` that exhausts every server has ended —
+every article was attempted — and `Assessing` is entitled to decide what the
+result means. Failure is not a separate contract.
 
 This is the fact `Waiting` was carrying, and it is the correction that defines
 this revision. Revision 2 confined `next` to `Assessing` on the grounds that
@@ -216,9 +232,12 @@ that work.
 | `Extracting` | `SetNext(Finalizing)` |
 | `Finalizing` | `Finish(OutcomeOK)` — see below |
 
-**`Finalizing` is the one exception, and deliberately so.** Its completion and
-its settlement are the same act, so it calls `Finish` rather than `SetNext`. An
-earlier draft added a separate `workComplete` flag to make the marker uniform;
+**`Finalizing` is not an exception to that rule — it is an instance of its
+second clause.** Its work ends and the job continues nowhere, so it settles via
+`Finish` and never sets `next`. Revisions 3 to 5 described it as an exception,
+which made it look like a special case needing special handling in `advance`,
+`finishCancel` and `waitReason`; it is not, and stating the rule in two clauses
+removes the appearance. An earlier draft added a separate `workComplete` flag to make the marker uniform;
 it does not help, because `advance` would then need a special case for
 "`Finalizing` + complete → `Finish(OK)`" — `next` cannot carry an `Outcome`. The
 special case only moves. Keeping `Finish` atomic means the window between "work
@@ -227,15 +246,14 @@ the work was never recorded, and restart re-runs `Finalizing` — the same
 guarantee every other state has, and `docs/durability-contract.md`'s concern,
 not this document's.
 
-**When a state's work FAILS rather than completes**, `SetNext` is not called —
-the biconditional in the rule above is about *finishing*, and a failed state has
-not finished. Two paths, by zone:
+**When a state's work fails**, the rule above applies unchanged: work has
+ended, and what follows depends only on whether the job continues.
 
 | Failure in | Path |
 |---|---|
-| `Fetching`, `Repairing` | `SetNext(Assessing)` — the work stopped, and §5 makes `Assessing` the only thing entitled to decide what that means |
-| `Assessing` | settle directly: `Finish(OutcomeFailed)` or `Finish(OutcomeUnrecoverable)` |
-| `Extracting`, `Finalizing` | settle directly: `Finish(OutcomeFailed)`. Crossing is irreversible, so there is nowhere to go back to |
+| `Fetching`, `Repairing` | continues → `SetNext(Assessing)`. §5 makes `Assessing` the only thing entitled to decide what a failure means |
+| `Assessing` | does not continue → `Finish(OutcomeFailed)` or `Finish(OutcomeUnrecoverable)` |
+| `Extracting`, `Finalizing` | does not continue → `Finish(OutcomeFailed)`. Crossing is irreversible, so there is nowhere to go back to |
 
 A failed `Fetching` therefore looks exactly like a successful one to the machine
 — articles were attempted, some are missing, and whether that is recoverable is
@@ -494,6 +512,29 @@ func (q *Queue) park(j *job.Job) error {
 }
 ```
 
+**Branch 2 checks `q.holds(j)` before the gate, and that order is deliberate.**
+`holds` means a worker owns the job's resources and is using them — the
+`Manifest` and `StorageBarrier` come with the lease (§6). Surrendering while a
+downloader is mid-article would pull them out from under it. Gating never
+interrupts work (§8.3), so a gated job that still holds keeps holding until its
+worker yields.
+
+**The yield is what hands the resources back, and it needs an owner.** For every
+state but `Fetching`, §8.3 gates per-state: the worker runs to the end, sets
+`next` or settles, and releases its slot — after which branch 3 gates and parks.
+`Fetching` is the one state that gates *per-article*, so its worker stops
+without its work having ended and `next` stays unset. That yield is not a
+completion and must not be reported as one:
+
+> **A worker that stops on a gate without ending its work reports `yielded`, and
+> the dispatcher calls `q.park(j)`.** `advance` cannot do it — branch 2 correctly
+> declines to touch a job a worker still holds.
+
+Half B owns the dispatcher side. Named here because the alternative is a paused
+`Fetching` job holding a pool-A lease forever, which §3.8 says is a deadlock,
+and because prose in §3.8 and scenario 5.1 described this handoff without ever
+giving it a caller.
+
 Only the lease needs releasing at a gate, and that follows from §8.3 rather
 than being a separate rule: gating never interrupts work, so a job holding a
 compute slot is by definition mid-state and not yet gated. By the time it is
@@ -570,8 +611,19 @@ The argument behind it is unchanged and is what the new rule preserves:
 **nothing persists a lease.**
 
 > **Every persisted job restores to the state it was persisted at, holding
-> nothing.** `state`, `next`, `crossed` and `Intent` persist — all are
-> decisions, none is a resource.
+> nothing.** `state`, `next`, `crossed`, `outcome` and `Intent` persist — all
+> are decisions, none is a resource.
+
+Persistence stores the **raw `Attempt` fields**, not a derived view. So a
+settled attempt persists and restores as `Finished` with its `Outcome`, and
+`advance` declines it at the `v.Outcome.IsSettled()` check exactly as it would
+have before the restart. **`StateUnset` means one thing only: the job has no
+attempt at all.** It is never what a settled attempt restores to.
+
+§4.3 says `finish` "erases `state`" — that is shorthand for *overwrites it with
+`Finished`*, which is why a crossed-then-settled attempt's crossing is
+recoverable only from the `crossed` latch. Nothing is unset, and restart,
+rendering and retry all read the same stored `Finished`.
 
 Restoring `next` is what makes this correct rather than destructive. A job
 persisted mid-`Extracting` restores with `next` unset, so `advance` branch 2
@@ -1082,7 +1134,7 @@ surviving `IntentCancel` is what the UI reads to say the request came too late
 |---|---|
 | **D-I1** | `Intent` is a fourth orthogonal axis, on the `Job`, with `IntentCancel` latching. |
 | **D-I2** | `Waiting` is removed; `StateUnset` becomes an invalid zero. |
-| **D-I3** | `next` is set ⟺ the current state's work is finished; its value is the next move. Written by the worker that completes the state; `Finalizing` excepted, settling via `Finish`. |
+| **D-I3** | `next` is set ⟺ the current state's work has *ended* and the job continues to another work state; its value is where. Work that ends without continuing settles via `Finish`. Failure is not a separate contract, and `Finalizing` is not an exception. |
 | **D-I4** | Running-ness is about the CURRENT state and derived from what the job holds; grantability is about the NEXT state. They are different predicates. |
 | **D-I5** | `gatedBy` and `waitReason` are pure; acquisition happens only in `grantFor`; `advance` writes no job state on any blocked path. |
 | **D-I6** | Gate precedence is pause > global pause > lease > compute slot; cancel is handled before the gate. |
@@ -1098,6 +1150,30 @@ surviving `IntentCancel` is what the UI reads to say the request came too late
 ---
 
 ## 10. Revision history
+
+**Revision 5 → 6.** CodeRabbit reviewed the pre-revision-5 commit and returned
+six findings; two were already fixed by revision 5 and four were new. Three of
+the four are contradictions this document introduced about itself.
+
+| Finding | Fix |
+|---|---|
+| **§3.3's prose said `SetNext` is not called on failure; its own table then calls `SetNext(Assessing)` for a failed `Fetching`** | the rule is restated in two clauses — see below |
+| §3.2 required `StateUnset` to be declared-but-unlisted *and* said not to relax `TestAllStates_Exhaustive`, which asserts equal lengths. Both cannot hold | §3.2 asserts the exception by name: `declared` = `AllStates()` ∪ `{StateUnset}`, exactly |
+| The pause handoff that releases a lease was described in §3.8 and scenario 5.1 but had **no caller**; branch 2 short-circuits on `holds` before the gate | §3.6 specifies the `yielded` contract and gives the dispatcher the `park` call |
+| §3.8 restores the persisted `state`, but §4.3 says `finish` "erases" it — leaving restart, rendering and retry able to disagree | §3.8 states persistence stores raw `Attempt` fields; `StateUnset` means *no attempt*, never a settled one |
+
+The failure-contract finding is the one worth dwelling on. Revision 4 added the
+failure paths and wrote a sentence flatly contradicting the table directly below
+it, and three subsequent reviews did not catch it. The resolution is not a
+patch: the rule was stated as a biconditional over *finishing*, and the accurate
+statement is over **ending** —
+
+> `next` is set ⟺ work has ended AND the job continues to another work state.
+
+— which also dissolves the `Finalizing` "exception" that revisions 3 through 5
+carried. `Finalizing` is not special; its work ends and it continues nowhere, so
+it settles. Stating the rule in two clauses is what stopped it needing a
+carve-out in `advance`, `finishCancel` and `waitReason`.
 
 **Revision 4 → 5.** A fourth review — the first run through a review *skill*
 (`deep-pr-review`) rather than a hand-written prompt — returned six findings,
