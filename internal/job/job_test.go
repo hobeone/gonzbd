@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 func newTestJob(t *testing.T) *Job {
@@ -405,39 +403,6 @@ func TestJob_BeginAttemptAfterSetWaitReasonOnNeverRunJob(t *testing.T) {
 	if got := j.State().State; got != Fetching {
 		t.Errorf("State = %v after BeginAttempt, want Fetching", got)
 	}
-}
-
-// TestJob_PausedRendersAsStatusPaused is the end-to-end property both review
-// comments actually care about: a job that cannot record why it is waiting
-// renders as Queued instead of Paused through the legacy status shim. This
-// covers both gaps SetWaitReason closes — a never-run job, and a parked
-// attempt whose pause reason changes while it waits.
-func TestJob_PausedRendersAsStatusPaused(t *testing.T) {
-	t.Run("never run, user paused", func(t *testing.T) {
-		j := newTestJob(t)
-		if err := j.SetWaitReason(UserPaused); err != nil {
-			t.Fatalf("SetWaitReason: %v", err)
-		}
-		if got := ToSABnzbd(j.State()); got != constants.StatusPaused {
-			t.Errorf("ToSABnzbd(State()) = %q, want StatusPaused", got)
-		}
-	})
-	t.Run("parked on a compute slot, then globally paused", func(t *testing.T) {
-		j := newTestJob(t)
-		mustBegin(t, j)
-		if err := j.Hold(Assessing, NoComputeSlot); err != nil {
-			t.Fatalf("Hold: %v", err)
-		}
-		if got := ToSABnzbd(j.State()); got != constants.StatusQueued {
-			t.Fatalf("ToSABnzbd(State()) before the global pause arrives = %q, want StatusQueued (NoComputeSlot is not a pause)", got)
-		}
-		if err := j.SetWaitReason(GlobalPause); err != nil {
-			t.Fatalf("SetWaitReason: %v", err)
-		}
-		if got := ToSABnzbd(j.State()); got != constants.StatusPaused {
-			t.Errorf("ToSABnzbd(State()) = %q, want StatusPaused", got)
-		}
-	})
 }
 
 func mustBegin(t *testing.T, j *Job) {

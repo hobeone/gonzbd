@@ -64,10 +64,10 @@
 // TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go) enforces the
 // narrower, actual claim: sabnzbd.go is the sole NON-TEST file importing
 // internal/constants. It explicitly skips every "_test.go" file while
-// scanning, so job_test.go's own import of internal/constants (job_test.go
-// asserts against constants.StatusPaused and constants.StatusQueued) is
-// outside that test's scope — and outside what `go list -deps` can see
-// either way, for the same reason.
+// scanning, so a _test.go file's own import of internal/constants — as
+// sabnzbd_test.go has, to write its constants.Status table — is outside that
+// test's scope, and outside what `go list -deps` can see either way, for the
+// same reason.
 //
 // A Job method never calls a Queue method. That holds structurally today
 // because this package cannot see a Queue — nothing here imports it. Whether

@@ -15,33 +15,42 @@ import (
 func TestToSABnzbd(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		v    StateView
+		v    RenderView
 		want constants.Status
 	}{
-		{"never run", StateView{State: Waiting, Next: Fetching, Reason: NoLease}, constants.StatusQueued},
-		{"waiting for a compute slot", StateView{State: Waiting, Next: Assessing, Reason: NoComputeSlot}, constants.StatusQueued},
-		{"user paused", StateView{State: Waiting, Next: Fetching, Reason: UserPaused}, constants.StatusPaused},
-		{"globally paused", StateView{State: Waiting, Next: Extracting, Reason: GlobalPause}, constants.StatusPaused},
+		{"never run", RenderView{State: StateUnset}, constants.StatusQueued},
+		{"never run, paused", RenderView{State: StateUnset, Reason: UserPaused, Intent: IntentPause}, constants.StatusPaused},
 
-		{"first-pass download", StateView{State: Fetching}, constants.StatusDownloading},
-		{"fetching recovery volumes", StateView{State: Fetching, Assessed: true}, constants.StatusFetching},
+		{"waiting for a lease", RenderView{State: Fetching, Reason: NoLease}, constants.StatusQueued},
+		{"waiting for a compute slot", RenderView{State: Fetching, Reason: NoComputeSlot}, constants.StatusQueued},
+		{"user paused", RenderView{State: Fetching, Reason: UserPaused, Intent: IntentPause}, constants.StatusPaused},
+		{"globally paused", RenderView{State: Extracting, Reason: GlobalPause, Intent: IntentRun}, constants.StatusPaused},
 
-		{"cheap verification", StateView{State: Assessing, Activity: ActCRCCheck}, constants.StatusQuickCheck},
-		{"full verification", StateView{State: Assessing, Activity: ActPar2Verify}, constants.StatusVerifying},
-		{"assessing, no activity yet", StateView{State: Assessing}, constants.StatusVerifying},
+		{"first-pass download", RenderView{State: Fetching, Running: true}, constants.StatusDownloading},
+		{"fetching recovery volumes", RenderView{State: Fetching, Assessed: true, Running: true}, constants.StatusFetching},
 
-		{"repairing", StateView{State: Repairing, Activity: ActPar2Repair}, constants.StatusRepairing},
-		{"extracting", StateView{State: Extracting, Activity: ActUnpack}, constants.StatusExtracting},
-		{"volume recovery is still extracting", StateView{State: Extracting, Activity: ActVolumeRecovery}, constants.StatusExtracting},
+		{"cheap verification", RenderView{State: Assessing, Activity: ActCRCCheck, Running: true}, constants.StatusQuickCheck},
+		{"full verification", RenderView{State: Assessing, Activity: ActPar2Verify, Running: true}, constants.StatusVerifying},
+		{"assessing, no activity yet", RenderView{State: Assessing, Running: true}, constants.StatusVerifying},
 
-		{"finalizing, moving", StateView{State: Finalizing, Activity: ActMove}, constants.StatusMoving},
-		{"finalizing, script", StateView{State: Finalizing, Activity: ActScript}, constants.StatusRunning},
-		{"finalizing, cleanup", StateView{State: Finalizing, Activity: ActCleanup}, constants.StatusMoving},
+		{"repairing", RenderView{State: Repairing, Activity: ActPar2Repair, Running: true}, constants.StatusRepairing},
+		{"extracting", RenderView{State: Extracting, Activity: ActUnpack, Running: true}, constants.StatusExtracting},
+		{"volume recovery is still extracting", RenderView{State: Extracting, Activity: ActVolumeRecovery, Running: true}, constants.StatusExtracting},
 
-		{"completed", StateView{State: Finished, Outcome: OutcomeOK}, constants.StatusCompleted},
-		{"failed", StateView{State: Finished, Outcome: OutcomeFailed}, constants.StatusFailed},
-		{"unrecoverable renders as failed", StateView{State: Finished, Outcome: OutcomeUnrecoverable}, constants.StatusFailed},
-		{"cancelled renders as deleted", StateView{State: Finished, Outcome: OutcomeCancelled}, constants.StatusDeleted},
+		{"finalizing, moving", RenderView{State: Finalizing, Activity: ActMove, Running: true}, constants.StatusMoving},
+		{"finalizing, script", RenderView{State: Finalizing, Activity: ActScript, Running: true}, constants.StatusRunning},
+		{"finalizing, cleanup", RenderView{State: Finalizing, Activity: ActCleanup, Running: true}, constants.StatusMoving},
+
+		// A RUNNING job with IntentPause renders as its state, not Paused. It
+		// is still repairing; the pause takes effect at the next gate. This is
+		// the whole point of the axis — see design §1.1.
+		{"running, pause requested", RenderView{State: Repairing, Activity: ActPar2Repair, Running: true, Intent: IntentPause}, constants.StatusRepairing},
+		{"running, cancel requested", RenderView{State: Extracting, Activity: ActUnpack, Running: true, Intent: IntentCancel}, constants.StatusExtracting},
+
+		{"completed", RenderView{State: Finished, Outcome: OutcomeOK}, constants.StatusCompleted},
+		{"failed", RenderView{State: Finished, Outcome: OutcomeFailed}, constants.StatusFailed},
+		{"unrecoverable renders as failed", RenderView{State: Finished, Outcome: OutcomeUnrecoverable}, constants.StatusFailed},
+		{"cancelled renders as deleted", RenderView{State: Finished, Outcome: OutcomeCancelled}, constants.StatusDeleted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ToSABnzbd(tc.v); got != tc.want {
@@ -62,14 +71,21 @@ func TestToSABnzbd_IsTotal(t *testing.T) {
 		t.Fatalf("one of the enumeration axes is empty: states=%d activities=%d outcomes=%d reasons=%d",
 			len(states), len(activities), len(outcomes), len(reasons))
 	}
-	for _, s := range states {
+	for _, s := range append(states, StateUnset) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					for _, assessed := range []bool{false, true} {
-						v := StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed}
-						if got := ToSABnzbd(v); got == "" {
-							t.Errorf("ToSABnzbd(%+v) returned the empty status", v)
+					for _, in := range AllIntents() {
+						for _, assessed := range []bool{false, true} {
+							for _, running := range []bool{false, true} {
+								v := RenderView{
+									State: s, Activity: a, Outcome: o, Assessed: assessed,
+									Running: running, Reason: r, Intent: in,
+								}
+								if got := ToSABnzbd(v); got == "" {
+									t.Errorf("ToSABnzbd(%+v) returned the empty status", v)
+								}
+							}
 						}
 					}
 				}
@@ -94,14 +110,22 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 		t.Fatalf("one of the enumeration axes is empty: states=%d activities=%d outcomes=%d reasons=%d",
 			len(states), len(activities), len(outcomes), len(reasons))
 	}
-	for _, s := range states {
+	for _, s := range append(states, StateUnset) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					for _, assessed := range []bool{false, true} {
-						got := ToSABnzbd(StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed})
-						if !declared[got] {
-							t.Errorf("ToSABnzbd emitted %q, which is not in constants.AllStatuses()", got)
+					for _, in := range AllIntents() {
+						for _, assessed := range []bool{false, true} {
+							for _, running := range []bool{false, true} {
+								v := RenderView{
+									State: s, Activity: a, Outcome: o, Assessed: assessed,
+									Running: running, Reason: r, Intent: in,
+								}
+								got := ToSABnzbd(v)
+								if !declared[got] {
+									t.Errorf("ToSABnzbd emitted %q, which is not in constants.AllStatuses()", got)
+								}
+							}
 						}
 					}
 				}
@@ -132,19 +156,44 @@ func TestToSABnzbd_NeverEmitsUnproducedStatuses(t *testing.T) {
 		t.Fatalf("one of the enumeration axes is empty: states=%d activities=%d outcomes=%d reasons=%d",
 			len(states), len(activities), len(outcomes), len(reasons))
 	}
-	for _, s := range states {
+	for _, s := range append(states, StateUnset) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					for _, assessed := range []bool{false, true} {
-						got := ToSABnzbd(StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed})
-						if unproduced[got] {
-							t.Errorf("ToSABnzbd(%+v) = %q, which this design has no analogue for and should never produce",
-								StateView{State: s, Activity: a, Outcome: o, Reason: r, Assessed: assessed}, got)
+					for _, in := range AllIntents() {
+						for _, assessed := range []bool{false, true} {
+							for _, running := range []bool{false, true} {
+								v := RenderView{
+									State: s, Activity: a, Outcome: o, Assessed: assessed,
+									Running: running, Reason: r, Intent: in,
+								}
+								got := ToSABnzbd(v)
+								if unproduced[got] {
+									t.Errorf("ToSABnzbd(%+v) = %q, which this design has no analogue for and should never produce",
+										v, got)
+								}
+							}
 						}
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestToSABnzbd_GlobalPauseRendersAsPaused is the regression pin for the one
+// finding in this area that reached a shipped revision of the design: a table
+// keyed on Intent renders a globally-paused queue as Queued, because each job
+// still carries IntentRun. Keyed on WaitReason.IsPause() it cannot.
+func TestToSABnzbd_GlobalPauseRendersAsPaused(t *testing.T) {
+	for _, s := range AllStates() {
+		if s == Finished {
+			continue // settled jobs are not waiting for anything
+		}
+		v := RenderView{State: s, Running: false, Reason: GlobalPause, Intent: IntentRun}
+		if got := ToSABnzbd(v); got != constants.StatusPaused {
+			t.Errorf("ToSABnzbd(%+v) = %q, want StatusPaused; a queue-wide pause leaves every job at IntentRun, "+
+				"so a table keyed on Intent would report the whole queue as Queued", v, got)
 		}
 	}
 }
