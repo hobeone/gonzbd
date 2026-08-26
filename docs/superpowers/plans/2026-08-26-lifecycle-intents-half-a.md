@@ -621,8 +621,10 @@ Add to the `Job` struct, guarded by `mu`:
 ```go
 	// lease is the admission token this job currently holds, or nil. Guarded
 	// by mu. Granted by Grant; released by surrenderLocked, which is the sole
-	// writer of nil into this field — Surrender, Cross and Finish all route
-	// through it.
+	// writer of nil into this field. At this commit Surrender is its only
+	// caller — Cross does not yet exist in this package (it is task 6) and
+	// Finish does not yet touch lease at all (its signature changes to yield
+	// one, also task 6); both are wired through surrenderLocked then.
 	lease *Lease
 ```
 
@@ -673,12 +675,17 @@ func (j *Job) Surrender() *Lease {
 // surrenderLocked is the sole releaser of j.lease. Must hold mu.
 //
 // It exists because j.mu is a sync.RWMutex and Go mutexes are NOT reentrant.
-// The doors that end a job's need for a lease — Cross and Finish — reach the
-// attempt through withOpenAttempt, which takes j.mu.Lock() and holds it across
-// its callback. A door calling the exported Surrender() from there would take
-// j.mu a second time and deadlock the job permanently, with no error and no
-// timeout. Routing both through this helper keeps one releaser without
-// reacquiring anything.
+// The doors that will end a job's need for a lease — Cross and Finish — will
+// reach the attempt through withOpenAttempt, which takes j.mu.Lock() and
+// holds it across its callback. A door calling the exported Surrender() from
+// there would take j.mu a second time and deadlock the job permanently, with
+// no error and no timeout. Routing releases through this helper keeps one
+// releaser without reacquiring anything.
+//
+// Not yet true at this commit: Cross does not exist in this package (task 6
+// adds it), and Finish does not call this method — Finish's signature
+// changes to yield the lease, also in task 6. Today Surrender is this
+// method's only caller.
 func (j *Job) surrenderLocked() *Lease {
 	l := j.lease
 	j.lease = nil
