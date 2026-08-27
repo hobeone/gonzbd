@@ -92,7 +92,7 @@ func TestJob_BeginAttemptOpensOne(t *testing.T) {
 }
 
 // TestJob_BeginAttemptIsIdempotentWhileOneIsOpen pins the rule that a second
-// BeginAttempt on a job whose current attempt is still open (not Finished) is
+// BeginAttempt on a job whose current attempt is still open (not settled) is
 // a no-op rather than a fresh attempt — a job that is not running is still at
 // the state it last occupied (design §3.2), so a lease re-issued after a
 // pool-B wait must not be counted as a retry.
@@ -104,7 +104,7 @@ func TestJob_BeginAttemptIsIdempotentWhileOneIsOpen(t *testing.T) {
 	}
 	if got := j.Attempts(); got != 1 {
 		t.Errorf("Attempts() = %d after a second BeginAttempt on an open attempt, want 1; "+
-			"an attempt closes only at Finished", got)
+			"an attempt closes only when finish assigns its verdict", got)
 	}
 }
 
@@ -169,7 +169,7 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 // dropped the second half would still pass the first. Cross is the door that
 // proves it — with !a.isOpen() removed from Cross and a == nil kept, the whole
 // package passed, because Cross on a settled attempt falls through to a.cross,
-// which finds no edge out of Finished and returns ErrIllegalTransition
+// which finds no edge out of Finalizing and returns ErrIllegalTransition
 // instead. The wrong error, and no test to say so.
 func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
 	for _, tc := range []struct {
@@ -192,19 +192,6 @@ func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
 				t.Errorf("%s after Finish = %v, want ErrNoOpenAttempt", tc.name, err)
 			}
 		})
-	}
-}
-
-// TestJob_TransitionSurfacesFinishRequired pins that Job.Transition does not
-// translate, wrap, or swallow Attempt's ErrFinishRequired — it surfaces it
-// unchanged. Waiting is gone, so ErrHoldRequired's half of what this test
-// used to cover no longer has a door to pin: finish is now the only
-// non-work-spine door transition still refuses on Attempt's behalf.
-func TestJob_TransitionSurfacesFinishRequired(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.Transition(Finished); !errors.Is(err, ErrFinishRequired) {
-		t.Errorf("Transition(Finished) = %v, want ErrFinishRequired", err)
 	}
 }
 
@@ -242,7 +229,7 @@ func TestJob_ConcurrentReadsAndWrites(t *testing.T) {
 // one-way boundary is enforced inside a single Attempt (TestBoundaryIsOneWay),
 // but Job holds a LIST of attempts, and appending a fresh one was previously
 // unguarded — the exact probe this test encodes: an attempt that reached
-// Extracting, then Finished with OutcomeOK, let BeginAttempt open a second
+// Extracting, then settled with OutcomeOK, let BeginAttempt open a second
 // attempt back at Fetching with err == nil.
 func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	j := newTestJob(t)
@@ -273,8 +260,11 @@ func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	if got := j.Attempts(); got != 1 {
 		t.Errorf("Attempts() after refused retry = %d, want 1 (no attempt appended)", got)
 	}
-	if got := j.State().State; got != Finished {
-		t.Errorf("State() after refused retry = %v, want Finished (unchanged)", got)
+	// Finalizing, not some terminal value: the refused retry left the settled
+	// attempt exactly where it was, which is also what makes crossed()
+	// answerable without a latch.
+	if got := j.State().State; got != Finalizing {
+		t.Errorf("State() after refused retry = %v, want Finalizing (unchanged)", got)
 	}
 }
 
@@ -421,4 +411,16 @@ func TestJob_WithOpenAttemptLease(t *testing.T) {
 			t.Errorf("lease = %p, want nil on an error path", l)
 		}
 	})
+}
+
+// currentCrossedForTest reports the current attempt's crossed() under the
+// job's own read lock. The reachability walk needs it because crossed() lives
+// on Attempt and the walk only holds a *Job; going through State() would not
+// do, since crossed is deliberately not on StateView — nothing outside this
+// package needs it.
+func (j *Job) currentCrossedForTest() bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	a := j.currentLocked()
+	return a != nil && a.crossed()
 }

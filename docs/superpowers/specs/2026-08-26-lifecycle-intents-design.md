@@ -187,9 +187,42 @@ const (
     Repairing
     Extracting
     Finalizing
-    Finished
 )
 ```
+
+> **Superseded during implementation (change 03). This note scopes the whole
+> document, not just this block.**
+>
+> `Finished` is no longer a `State`, and the `crossed` field no longer exists.
+> Both are gone for one reason: `finish` used to write `a.state = Finished`,
+> which **erased the position the attempt settled at**, so `IsProduction(state)`
+> stopped answering after settling and a shadow latch had to remember what the
+> state had forgotten. `finish` no longer touches `a.state`, so:
+>
+> - **Settledness is an `Outcome` fact.** `isOpen()` is `outcome ==
+>   OutcomePending` and always was; assigning the verdict is what closes the
+>   attempt. A settled attempt keeps its position — `Finalizing` + `OutcomeOK`,
+>   not `Finished` + `OutcomeOK`, which is strictly more information and is what
+>   a history view wants: *where did this attempt end?*
+> - **`crossed` is derived**: `IsProduction(a.state)`. Sound only because no
+>   edge runs from Production back to Correctness, so
+>   `TestBoundaryIsUnreachableByAnyPath` now asserts the derivation against
+>   replayed history at every reachable configuration rather than leaving it
+>   assumed.
+> - **`ErrFinishRequired` is deleted.** `transition` cannot be asked to reach
+>   settledness because no `State` names it: a runtime error became a compile
+>   error.
+> - **A settled attempt can be in a Correctness state.** `OutcomeFailed` from
+>   `Fetching` settles at `Fetching`. Anything below that treats "settled" and
+>   "in a Correctness state" as mutually exclusive describes the old model.
+>
+> **Read every occurrence of `Finished`-as-a-State or `crossed`-as-a-field
+> below as the superseded model.** They are left in place because the arguments
+> around them — why the latch was needed, what the two escapes were, how
+> rendering keys — remain the record of how the design got here, and rewriting
+> them would destroy that record while pretending the reasoning was always this
+> shape. Where a statement below would lead a reader to *act* wrongly rather
+> than merely read history, it is corrected in place and says so.
 
 `StateUnset` exists because removing `Waiting` would otherwise make `Fetching`
 the zero value, so a zero `StateView` would read as an active download —
@@ -874,7 +907,7 @@ first**, because a running job's intent must not change its status:
 
 | Composed view | Status |
 |---|---|
-| `Finished` | per `finishedStatus(Outcome)`, unchanged |
+| *settled* (`Outcome.IsSettled()`, any position) | per `finishedStatus(Outcome)`, unchanged — **corrected by change 03**: keyed on the Outcome axis, not on a `Finished` state |
 | running | its state's status, per the rows below |
 | not running, `waitReason` satisfies `IsPause()` | `Paused` |
 | not running, otherwise (incl. `StateUnset`) | `Queued` |

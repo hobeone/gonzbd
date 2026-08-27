@@ -20,7 +20,7 @@ import "github.com/hobeone/gonzbd/internal/constants"
 //
 // ToSABnzbd takes a RenderView, not a StateView: Running and Reason are facts
 // only a Queue can supply (§4.4), and this package has none yet — Half A
-// constructs them directly in tests. A Finished attempt short-circuits to
+// constructs them directly in tests. A settled attempt short-circuits to
 // finishedStatus regardless of Running; everything else is keyed on Running
 // first, then on Reason while not running, then on State while running, with
 // a default case at each switch. TestToSABnzbd_IsTotal walks the product
@@ -43,7 +43,11 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // Fetching re-entry, told apart from a first-pass download by the attempt's
 // latched Assessed flag.
 func ToSABnzbd(v RenderView) constants.Status {
-	if v.State == Finished {
+	// Settledness is an Outcome fact, not a State one. There is no Finished
+	// state to key on: a settled attempt keeps the position it settled at, so
+	// asking State here would have to enumerate every position instead of
+	// asking the one axis that actually records the verdict.
+	if v.Outcome.IsSettled() {
 		return finishedStatus(v.Outcome)
 	}
 	if !v.Running {
@@ -93,7 +97,7 @@ func ToSABnzbd(v RenderView) constants.Status {
 	}
 }
 
-// finishedStatus maps a Finished attempt's verdict to the status shown once a
+// finishedStatus maps a settled attempt's verdict to the status shown once a
 // job leaves the queue. o is normally settled (finish rejects OutcomePending
 // and any value AllOutcomes() does not declare — see Attempt.finish), but
 // TestToSABnzbd_IsTotal constructs StateView values directly rather than

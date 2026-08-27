@@ -47,7 +47,6 @@ var legalEdges = map[State][]edge{
 	Repairing:  {{Assessing, byTransition}},
 	Extracting: {{Finalizing, byTransition}},
 	Finalizing: {},
-	Finished:   {},
 }
 
 // edge is one entry in legalEdges: a destination and the door that may take it.

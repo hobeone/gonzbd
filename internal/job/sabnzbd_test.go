@@ -49,10 +49,17 @@ func TestToSABnzbd(t *testing.T) {
 		{"running, pause requested", RenderView{State: Repairing, Activity: ActPar2Repair, Running: true, Intent: IntentPause}, constants.StatusRepairing},
 		{"running, cancel requested", RenderView{State: Extracting, Activity: ActUnpack, Running: true, Intent: IntentCancel}, constants.StatusExtracting},
 
-		{"completed", RenderView{State: Finished, Outcome: OutcomeOK}, constants.StatusCompleted},
-		{"failed", RenderView{State: Finished, Outcome: OutcomeFailed}, constants.StatusFailed},
-		{"unrecoverable renders as failed", RenderView{State: Finished, Outcome: OutcomeUnrecoverable}, constants.StatusFailed},
-		{"cancelled renders as deleted", RenderView{State: Finished, Outcome: OutcomeCancelled}, constants.StatusDeleted},
+		// Settled rows, each carrying a DIFFERENT position, because
+		// settledness is now read off Outcome and the position is whatever the
+		// attempt happened to reach. A single shared state here would have
+		// hidden the change: these four would still pass if ToSABnzbd secretly
+		// keyed on that one state. Each is also a position the outcome can
+		// really settle from — OutcomeOK only past the boundary,
+		// OutcomeUnrecoverable only before it (see finish).
+		{"completed", RenderView{State: Finalizing, Outcome: OutcomeOK}, constants.StatusCompleted},
+		{"failed while fetching", RenderView{State: Fetching, Outcome: OutcomeFailed}, constants.StatusFailed},
+		{"unrecoverable renders as failed", RenderView{State: Assessing, Outcome: OutcomeUnrecoverable}, constants.StatusFailed},
+		{"cancelled renders as deleted", RenderView{State: Repairing, Outcome: OutcomeCancelled}, constants.StatusDeleted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ToSABnzbd(tc.v); got != tc.want {
@@ -188,10 +195,10 @@ func TestToSABnzbd_NeverEmitsUnproducedStatuses(t *testing.T) {
 // keyed on Intent renders a globally-paused queue as Queued, because each job
 // still carries IntentRun. Keyed on WaitReason.IsPause() it cannot.
 func TestToSABnzbd_GlobalPauseRendersAsPaused(t *testing.T) {
+	// Every state, with no exception to carve out: settling is an Outcome
+	// fact, so a zero Outcome here means every position below is genuinely
+	// unsettled and genuinely waiting.
 	for _, s := range mustAllStates(t) {
-		if s == Finished {
-			continue // settled jobs are not waiting for anything
-		}
 		v := RenderView{State: s, Running: false, Reason: GlobalPause, Intent: IntentRun}
 		if got := ToSABnzbd(v); got != constants.StatusPaused {
 			t.Errorf("ToSABnzbd(%+v) = %q, want StatusPaused; a queue-wide pause leaves every job at IntentRun, "+
@@ -267,7 +274,7 @@ func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
 }
 
 // TestFinishedStatus_MapsEveryOutcome calls finishedStatus directly rather
-// than only through ToSABnzbd(State: Finished, ...), since ToSABnzbd is its
+// than only through ToSABnzbd on a settled view, since ToSABnzbd is its
 // sole non-test caller — `git grep -n 'finished[S]tatus(' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'` returns exactly two lines, the definition at
 // sabnzbd.go:103 and ToSABnzbd's call at sabnzbd.go:47. This pins its own

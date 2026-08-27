@@ -70,7 +70,7 @@ func (r WaitReason) IsPause() bool {
 // reason that used to live here is gone along with Waiting; RenderView (task
 // 4) carries it instead, because it is derived by the Queue rather than
 // stored on the attempt. Activity is ActNone unless work is executing.
-// Outcome is OutcomePending until the attempt reaches Finished.
+// Outcome is OutcomePending until finish settles the attempt.
 //
 // The zero value is StateUnset in both State and Next. That is deliberately
 // not any real state (see StateUnset in state.go), so an uninitialized view

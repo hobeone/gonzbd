@@ -37,7 +37,6 @@ import (
 var fieldOwner = map[string]string{
 	"outcome":  "Attempt",
 	"next":     "Attempt",
-	"crossed":  "Attempt",
 	"attempts": "Job",
 	"intent":   "Job",
 	"lease":    "Job",
@@ -241,24 +240,6 @@ func scanWriters(t *testing.T, field string) []string {
 
 	slices.Sort(writers)
 	return slices.Compact(writers)
-}
-
-// TestCrossedWrites_MatchTheEnumerationStatedInProse asserts cross is the
-// sole writer of a.crossed. Before this design, transition wrote it; the
-// boundary door now owns it, and the whole argument for Cross existing is
-// that entering Production and surrendering the lease cannot be separated. A
-// second writer would separate them again.
-func TestCrossedWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
-	writers := scanWriters(t, "crossed")
-	want := []string{"cross"}
-	if !slices.Equal(writers, want) {
-		t.Errorf("functions assigning crossed = %v, want %v\n\n"+
-			"the crossed field's doc comment (attempt.go) claims cross is the sole writer "+
-			"of this latch. If a second writer is correct, say so at that comment AND "+
-			"update this list together — a comment that still says \"the sole writer\" "+
-			"once a second one exists is worse than no comment at all.",
-			writers, want)
-	}
 }
 
 // TestIntentWrites_MatchTheEnumerationStatedInProse asserts SetIntent is the

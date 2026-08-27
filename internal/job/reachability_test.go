@@ -50,13 +50,10 @@ var productionStates = map[State]bool{
 // classification. Without this, a new state is silently non-Correctness to
 // checkReachableConfig and silently non-Production to the walk's
 // everProduction accumulator, so the boundary walk stops checking it while
-// still reporting PASS. Finished is skipped because it is terminal and belongs
-// to neither zone.
+// still reporting PASS. There is no terminal member to skip: settling is an
+// Outcome fact, so every State belongs to one zone or the other.
 func TestReachabilityOracleClassifiesEveryState(t *testing.T) {
 	for _, s := range AllStates() {
-		if s == Finished {
-			continue
-		}
 		if !correctnessStates[s] && !productionStates[s] {
 			t.Errorf("%s is in AllStates() but classified by neither the oracle's Correctness set "+
 				"nor its Production set; classify it deliberately rather than letting it default", s)
@@ -93,28 +90,36 @@ func TestReachabilityOracleClassifiesEveryState(t *testing.T) {
 // correctnessStates above for why that oracle is now a literal rather than
 // IsCorrectness itself.
 //
-// Two invariants are asserted at every reachable configuration. Each is a
-// history property that a.state alone cannot express, which is why each needed
-// a latch and why each latch's boundary is where a defect lived:
+// Three invariants are asserted at every reachable configuration:
 //
+//  0. A job that reached Production during the sequence reports crossed().
+//     This is the assertion change 03 owes. crossed() was a latch — a bool
+//     nothing could clear — and is now IsProduction(a.state), which is only
+//     equivalent because no edge runs from Production back to Correctness.
+//     Asserting it against REPLAYED history rather than against the predicate
+//     itself is what keeps that from being a claim the code checks about
+//     itself.
 //  1. Once ANY attempt of this job has crossed, the current state is not in
 //     the oracle's Correctness set. (The central claim; both escapes above
 //     violated it.)
 //  2. Once any attempt has crossed, finish(OutcomeUnrecoverable) is refused.
-//     D3 defines that verdict as "never crossed the boundary", and finish
-//     overwrites a.state with Finished on the very call that could settle
-//     it — so a state-based guard misses an attempt that crossed and then
-//     settled. This is what the second external reviewer found in finish,
-//     back when the state that erased the crossing was Waiting rather than
-//     Finished; the latch this test checks is what survived that rename.
+//     D3 defines that verdict as "never crossed the boundary". This needed a
+//     latch for as long as finish overwrote a.state on the very call that
+//     settled the attempt, erasing the crossing a state-based guard would have
+//     read — the defect a second external reviewer found in finish, back when
+//     the erasing state was Waiting. finish no longer overwrites a.state at
+//     all, so the position survives settling and the state-based guard is
+//     correct. That is precisely what made the latch deletable.
 //
 // A third was drafted and deleted rather than shipped: "a settled attempt is
-// never also in a Correctness state" reads as an invariant but is
-// unsatisfiable as written — the oracle's Correctness set names only
-// Fetching, Assessing and Repairing, so `State == Finished &&
-// correctnessStates[State]` can never fire. It would have sat here asserting
-// nothing, which is worse than its absence, since a reader counting
-// assertions would credit it.
+// never also in a Correctness state". It was unsatisfiable when drafted,
+// because a settled attempt was in a terminal state that the Correctness set
+// did not name, so the conjunction could never fire — it would have sat here
+// asserting nothing, which is worse than its absence, since a reader counting
+// assertions would credit it. It is now worse than unsatisfiable: it is FALSE.
+// An attempt that settles OutcomeFailed from Fetching is settled AND in a
+// Correctness state, which is exactly the shape TestToSABnzbd's settled rows
+// now exercise.
 //
 // What this test does NOT cover, stated so its green is not read as wider
 // than it is: it says nothing about STRANDING (an attempt reachable only by
@@ -263,6 +268,27 @@ func checkReachableConfig(t *testing.T, j *Job, seq []action) bool {
 
 	v := j.State()
 
+	// (0) crossed() must agree with what actually happened.
+	//
+	// This is the assertion change 03 owes. crossed() used to be a latch,
+	// independent of the graph; it is now IsProduction(a.state), which agrees
+	// with history ONLY because no edge runs from Production back to
+	// Correctness. BeginAttempt's reopen refusal reads it, so if the
+	// derivation and the history could ever disagree, a job that had written
+	// files could be reopened.
+	//
+	// everProduction is accumulated by REPLAYING the sequence through the real
+	// doors and testing each position against the literal productionStates
+	// map. It is not read back from crossed(), so this compares two
+	// independently-derived answers rather than one answer with itself — the
+	// same reason assertion (1) below replays rather than reading the latch.
+	if !j.currentCrossedForTest() {
+		t.Errorf("reachable configuration reached Production during the sequence but reports "+
+			"crossed() == false: %s\nthe job is now in %s. crossed() is derived from the "+
+			"position, so this means the position no longer records a crossing that happened — "+
+			"BeginAttempt would reopen a job that has already written files", trace(seq), v.State)
+	}
+
 	// (1) the central claim: crossed once, never back in a Correctness state
 	// as classified by the literal oracle above, not by IsCorrectness itself.
 	if correctnessStates[v.State] {
@@ -273,10 +299,9 @@ func checkReachableConfig(t *testing.T, j *Job, seq []action) bool {
 			"this just as surely", trace(seq), v.State)
 	}
 
-	// (2) Unrecoverable must stay refused past the boundary, including across
-	// a settle that has overwritten a.state with Finished. Probed on a
-	// REPLAYED job so the attempt is not consumed for the walk's other
-	// successors.
+	// (2) Unrecoverable must stay refused past the boundary, including after
+	// the attempt has settled. Probed on a REPLAYED job so the attempt is not
+	// consumed for the walk's other successors.
 	_, err := probe.Finish(OutcomeUnrecoverable, base.Add(time.Hour))
 	if err == nil {
 		t.Errorf("reachable configuration accepted OutcomeUnrecoverable after crossing: %s\n"+
@@ -368,7 +393,7 @@ func configKey(j *Job) string {
 	for i := range j.attempts {
 		a := &j.attempts[i]
 		key += fmt.Sprintf("|%v,%v,%v,%v,%v,%v",
-			a.state, a.next, a.activity, a.outcome, a.assessed, a.crossed)
+			a.state, a.next, a.activity, a.outcome, a.assessed, a.crossed())
 	}
 	return key
 }

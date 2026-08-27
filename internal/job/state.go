@@ -48,9 +48,6 @@ const (
 	// Finalizing renames, cleans, moves and runs the user script. Holds a
 	// compute slot.
 	Finalizing
-	// Finished is terminal. The attempt's Outcome is assigned on the edge
-	// into it and never revised.
-	Finished
 )
 
 // AllStates returns every declared State. TestAllStates_Exhaustive fails if
@@ -63,7 +60,6 @@ func AllStates() []State {
 		Repairing,
 		Extracting,
 		Finalizing,
-		Finished,
 	}
 }
 
@@ -81,8 +77,6 @@ func (s State) String() string {
 		return "Extracting"
 	case Finalizing:
 		return "Finalizing"
-	case Finished:
-		return "Finished"
 	default:
 		return fmt.Sprintf("State(%d)", uint8(s))
 	}

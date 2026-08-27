@@ -26,8 +26,6 @@ func TestCanTransition(t *testing.T) {
 		{"no reverse across the boundary, far", Finalizing, Fetching, false},
 		{"no skipping assessment", Fetching, Extracting, false},
 		{"no repair without a verdict", Fetching, Repairing, false},
-		{"finished is terminal", Finished, Fetching, false},
-		{"nothing moves into Finished", Assessing, Finished, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := CanTransition(tc.from, tc.to); got != tc.want {
@@ -60,7 +58,7 @@ func TestBoundaryIsOneWay(t *testing.T) {
 
 // TestOnlyAssessingBranchesWithinCorrectness pins the single-decider
 // property. Within the Correctness zone, only Assessing may have more than
-// one non-Finished successor — every other state does work and returns to
+// one successor — every other state does work and returns to
 // the hub.
 func TestOnlyAssessingBranchesWithinCorrectness(t *testing.T) {
 	for _, from := range AllStates() {
@@ -69,7 +67,7 @@ func TestOnlyAssessingBranchesWithinCorrectness(t *testing.T) {
 		}
 		var successors []State
 		for _, to := range AllStates() {
-			if to == from || to == Finished {
+			if to == from {
 				continue
 			}
 			if CanTransition(from, to) {
@@ -104,7 +102,6 @@ func TestZoneClassification(t *testing.T) {
 		{Repairing, true, false},
 		{Extracting, false, true},
 		{Finalizing, false, true},
-		{Finished, false, false},
 	} {
 		t.Run(tc.s.String(), func(t *testing.T) {
 			if got := IsCorrectness(tc.s); got != tc.correctness {
@@ -119,7 +116,7 @@ func TestZoneClassification(t *testing.T) {
 
 // TestLegalEdgesIsTheWorkSpine asserts the graph's exact contents. The previous
 // partition test classified edges into cancel/pause/resume/spine buckets; with
-// Waiting and the -> Finished edges gone there is one bucket, so a partition
+// Waiting and the settled state gone there is one bucket, so a partition
 // rule would be a tautology. A literal is honest at this size and fails loudly
 // when an edge moves.
 func TestLegalEdgesIsTheWorkSpine(t *testing.T) {
@@ -129,7 +126,6 @@ func TestLegalEdgesIsTheWorkSpine(t *testing.T) {
 		Repairing:  {{Assessing, byTransition}},
 		Extracting: {{Finalizing, byTransition}},
 		Finalizing: {},
-		Finished:   {},
 	}
 	if len(legalEdges) != len(want) {
 		t.Fatalf("legalEdges has %d sources, want %d", len(legalEdges), len(want))

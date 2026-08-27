@@ -95,36 +95,23 @@ func TestAttempt_ActivityClearsOnTransition(t *testing.T) {
 	}
 }
 
-// TestAttempt_TransitionRejectsFinished pins that finish is the only door
-// into Finished. Before this guard existed, transition(Finished, now) set
-// state to Finished without ever assigning an Outcome — confirmed
-// empirically: state=Finished outcome=Pending isOpen=true. Rejecting the
-// edge here makes "Finished implies a settled Outcome" true by construction:
-// finish is the only mutator that can produce Finished, and it always
-// assigns Outcome in the same call that assigns state.
-func TestAttempt_TransitionRejectsFinished(t *testing.T) {
-	a := newAttempt(testClock())
-	err := a.transition(Finished)
-	if !errors.Is(err, ErrFinishRequired) {
-		t.Fatalf("transition(Finished) error = %v, want ErrFinishRequired", err)
-	}
-	if got := a.view().State; got != Fetching {
-		t.Errorf("State = %v after a rejected transition, want Fetching unchanged", got)
-	}
-	if !a.isOpen() {
-		t.Error("isOpen() = false after a rejected transition, want true; the attempt never finished")
-	}
-}
-
-// TestAttempt_FinishedNeverOpen walks one sequence (Assessing, Extracting,
-// Finalizing, finish) and pins that it leaves state == Finished with
-// isOpen() reporting false — finish is the only mutator that can reach
-// Finished, and it always assigns Outcome in the same call that assigns
-// state, so the two can never come apart on this path. It does not claim
-// this holds over every reachable sequence; see the door-ownership tests
-// (TestAttempt_TransitionRejectsFinished and friends) for that broader
-// property.
-func TestAttempt_FinishedNeverOpen(t *testing.T) {
+// TestAttempt_SettlingKeepsThePosition walks one sequence (Assessing,
+// Extracting, Finalizing, finish) and pins the two facts that replaced the
+// Finished state.
+//
+// Settledness is an Outcome fact: isOpen() is outcome == OutcomePending, so
+// assigning the verdict is what closes the attempt, and finish is the only
+// mutator that assigns it — enforced by
+// TestOutcomeWrites_MatchTheEnumerationStatedInProse, not by a guard on a
+// state value. There is no longer a door into settledness for transition to be
+// refused at, because there is no longer a State naming it: what used to be
+// ErrFinishRequired is now a compile error.
+//
+// The position SURVIVES settling, and that is the point of the change. While
+// finish overwrote a.state, the attempt forgot where it had got to, and a
+// shadow latch had to remember for it. Asserting Finalizing here is asserting
+// that the latch is not needed.
+func TestAttempt_SettlingKeepsThePosition(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
 	mustCross(t, &a, Extracting)
@@ -132,18 +119,22 @@ func TestAttempt_FinishedNeverOpen(t *testing.T) {
 	if err := a.finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	// Asserted unconditionally, not as the left half of a "state == Finished
-	// && isOpen()" check: that guarded form would pass silently if finish
-	// ever stopped setting Finished at all, since the right-hand isOpen()
-	// check would never even run.
-	if got := a.view().State; got != Finished {
-		t.Fatalf("State = %v, want Finished", got)
+	// Each asserted unconditionally rather than as halves of one condition: a
+	// guarded form would pass silently if the first half stopped holding,
+	// because the second would never run.
+	if got := a.view().State; got != Finalizing {
+		t.Errorf("State = %v after finish, want Finalizing — settling records a verdict, "+
+			"it does not move the attempt or erase where it got to", got)
 	}
 	if a.isOpen() {
-		t.Error("isOpen() = true after finish reached Finished, want false")
+		t.Error("isOpen() = true after finish, want false")
 	}
-	if err := a.transition(Finished); !errors.Is(err, ErrFinishRequired) {
-		t.Fatalf("transition(Finished) after finish, error = %v, want ErrFinishRequired", err)
+	if !a.crossed() {
+		t.Error("crossed() = false for a settled attempt that reached Finalizing; " +
+			"the position is what answers this now, and it survived settling")
+	}
+	if got := a.view().Outcome; got != OutcomeOK {
+		t.Errorf("Outcome = %v, want OutcomeOK", got)
 	}
 }
 
@@ -155,7 +146,7 @@ func TestAttempt_FinishedNeverOpen(t *testing.T) {
 // only ever has something to say about OutcomeUnrecoverable specifically.
 // Before this ordering fix, this exact sequence returned
 // "cannot record Unrecoverable for an attempt past the ... boundary: state
-// is Finished", which misreports a second-finish bug as a boundary bug.
+// has crossed", which misreports a second-finish bug as a boundary bug.
 func TestAttempt_FinishReportsWriteOnceBeforeBoundary(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
@@ -180,8 +171,8 @@ func TestAttempt_FinishIsWriteOnce(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 	v := a.view()
-	if v.State != Finished || v.Outcome != OutcomeCancelled {
-		t.Fatalf("view = %+v; want State=Finished Outcome=Cancelled", v)
+	if v.State != Fetching || v.Outcome != OutcomeCancelled {
+		t.Fatalf("view = %+v; want State=Fetching (unchanged by settling) Outcome=Cancelled", v)
 	}
 	if a.isOpen() {
 		t.Error("isOpen() = true after finish, want false")
@@ -205,8 +196,8 @@ func TestAttempt_FinishRejectsPending(t *testing.T) {
 	if !errors.Is(err, ErrInvalidOutcome) {
 		t.Fatalf("finish(OutcomePending) error = %v, want ErrInvalidOutcome; Pending is not a verdict", err)
 	}
-	if a.view().State == Finished {
-		t.Error("attempt reached Finished with a Pending outcome")
+	if !a.isOpen() {
+		t.Error("attempt settled with a Pending outcome")
 	}
 }
 
@@ -221,7 +212,7 @@ func TestAttempt_FinishRejectsUnrecognizedOutcome(t *testing.T) {
 	if !errors.Is(err, ErrInvalidOutcome) {
 		t.Fatalf("finish(Outcome(42)) error = %v, want ErrInvalidOutcome; 42 is not a declared outcome", err)
 	}
-	if got := a.view(); got.State == Finished || got.Outcome != OutcomePending {
+	if got := a.view(); !a.isOpen() || got.Outcome != OutcomePending {
 		t.Errorf("view = %+v after a rejected finish, want unchanged (Fetching, Pending)", got)
 	}
 }
@@ -255,19 +246,20 @@ func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
 	if !errors.Is(err, ErrUnrecoverableAfterBoundary) {
 		t.Fatalf("finish(Unrecoverable) from Finalizing error = %v, want ErrUnrecoverableAfterBoundary", err)
 	}
-	if got := a.view(); got.State == Finished || got.Outcome != OutcomePending {
+	if got := a.view(); !a.isOpen() || got.Outcome != OutcomePending {
 		t.Errorf("view = %+v after a rejected finish, want unchanged (Finalizing, Pending)", got)
 	}
 }
 
 // TestAttempt_FinishSucceedsFromAnyOpenState pins that finish reaches
-// Finished from every non-terminal state reachable via legal transitions, not
+// settling from every state reachable via legal transitions, not
 // only from one — needed because finish() has no CanTransition(state,
-// Finished) guard of its own (an earlier one was removed as dead: cancelling
+// settled) guard of its own (an earlier one was removed as dead: cancelling
 // out of any open state is a door finish alone owns, entirely bypassing
 // legalEdges). That bypass is even more pronounced now that Waiting is gone —
-// legalEdges no longer has an edge into Finished from anywhere at all —
-// `git grep -n 'Finished' internal/job/transition.go` shows it only as a map
+// legalEdges has no notion of settling at all — there is no State naming it,
+// so `git grep -n 'Finishe[d]' internal/job/transition.go` returns nothing; it
+// was once a map
 // key with an empty successor list. This table IS the coverage that bypass
 // relies on, so it walks all five non-terminal, non-sentinel states.
 func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
@@ -300,11 +292,12 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 			mustTransition(t, a, Finalizing)
 		}},
 	}
-	// AllStates() has one terminal member (Finished); every other member
-	// must appear above, or this table stops being the coverage the removed
-	// guard relies on without anyone noticing.
-	if want := len(AllStates()) - 1; len(tests) != want {
-		t.Fatalf("table has %d cases, want %d (len(AllStates()) - 1, excluding Finished)", len(tests), want)
+	// Every member of AllStates() must appear above, or this table stops
+	// being the coverage the removed guard relies on without anyone noticing.
+	// There is no terminal member to exclude now: settling is an Outcome fact,
+	// so every State is a state an attempt can settle FROM.
+	if want := len(AllStates()); len(tests) != want {
+		t.Fatalf("table has %d cases, want %d (len(AllStates()))", len(tests), want)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -313,8 +306,8 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 			if err := a.finish(tt.outcome, testClock()); err != nil {
 				t.Fatalf("finish(%v) from %s: %v", tt.outcome, tt.name, err)
 			}
-			if got := a.view().State; got != Finished {
-				t.Errorf("State = %v, want Finished", got)
+			if a.isOpen() {
+				t.Errorf("isOpen() = true after finish from %s, want false", tt.name)
 			}
 		})
 	}
@@ -462,7 +455,7 @@ func TestAttempt_TransitionAcceptsAnyLegalEdgeWhenNextIsUnset(t *testing.T) {
 // stale next on the settled attempt is a property that must not silently
 // vanish along with it. Before this fix would-be-Ruling-A regression: a
 // cancel taken with a recorded verdict (e.g. Assessing having set
-// next=Repairing) could leave a Finished attempt reporting a destination it
+// next=Repairing) could leave a settled attempt reporting a destination it
 // will never move to.
 func TestAttempt_FinishClearsNext(t *testing.T) {
 	a := newAttempt(testClock())

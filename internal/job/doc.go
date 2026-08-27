@@ -4,7 +4,7 @@
 //
 // State is where a job's current attempt is and what may happen next.
 // Activity is what is executing right now and nothing branches on it.
-// Outcome is the attempt's verdict, assigned once on the edge into Finished
+// Outcome is the attempt's verdict, assigned once by finish
 // and never revised — TestOutcomeWrites_MatchTheEnumerationStatedInProse
 // enumerates Outcome's writers and pins that finish is the only one. Intent
 // is what a person has asked of this job — IntentRun, IntentPause or the
@@ -96,7 +96,7 @@
 // BeginAttempt does not take a lease. Fetching holding nothing is a legal,
 // representable state: it is exactly what a paused or restarted fetch looks
 // like, and requiring a lease to reach it (rather than to actually fetch)
-// would contradict that. An attempt closes when it reaches Finished — pause
+// would contradict that. An attempt closes when finish assigns its verdict — pause
 // and resume, which surrender and later re-take a lease, do not end it.
 //
 // A Job with no attempts has never run. That is what HasRun reports, and it

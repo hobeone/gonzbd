@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// ErrFinishRequired's doc comment claims finish is the only mutator that
+// The outcome field's doc comment claims finish is the only mutator that
 // assigns Outcome. That is a claim about the whole package's population of
 // assignments to the unexported outcome field, not just this file's — and
 // job.go has access to the same unexported field, so the claim can be
@@ -41,7 +41,7 @@ func TestOutcomeWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 	writers := scanWriters(t, "outcome")
 	if !slices.Equal(writers, outcomeWriters) {
 		t.Errorf("functions assigning outcome = %v, want %v\n\n"+
-			"ErrFinishRequired's doc comment claims finish is the only "+
+			"the outcome field's doc comment (attempt.go) claims finish is the only "+
 			"mutator that assigns Outcome. If a second writer is correct, "+
 			"say so at that comment AND update this list together — a "+
 			"comment that still says \"the only mutator\" once a second one "+

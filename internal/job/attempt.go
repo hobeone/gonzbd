@@ -25,7 +25,7 @@ var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
 // OutcomeUnrecoverable for an attempt that has crossed into Production
 // (a.crossed), whether or not it is still there — finish is about to
-// overwrite a.state with Finished in the same call, which erases the
+// overwrite a.state in the same call, which used to erase the
 // Production state the attempt actually crossed at, so the guard tracks the
 // latch rather than the transient state. D3 defines OutcomeUnrecoverable
 // as "the job never crossed the boundary" specifically so its files stay in
@@ -36,26 +36,6 @@ var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 // Production-stage fault) has a caller bug to fix, not a job to fail, and
 // distinguishing that case with errors.Is is the whole reason to name it.
 var ErrUnrecoverableAfterBoundary = errors.New("job: cannot record Unrecoverable for an attempt past the Correctness/Production boundary")
-
-// ErrFinishRequired is returned when transition is asked to reach Finished.
-// finish is the intended sole door into that state. What is actually
-// test-enforced is narrower than the door
-// claim itself: TestOutcomeWrites_MatchTheEnumerationStatedInProse enumerates
-// every site that sets the unexported outcome field — a plain `=` assignment
-// and an `outcome: x` composite-literal key alike — across this package's
-// non-test sources, and asserts finish is the only one. That test says
-// nothing about writes to the state field; it would not catch a second
-// function assigning that field the Finished value while leaving outcome
-// untouched. Checked but not enforced: below, in this same file's finish
-// method, is currently the only non-test assignment site for that field to
-// that value — a fact confirmed by inspection at the time this comment was
-// written, not by a test, so nothing fails the build if a second writer is
-// added later. What the outcome-writer test does guarantee is the property
-// this error message actually protects against — an attempt cannot reach
-// Finished through finish without also being assigned a settled Outcome in
-// the same call, so isOpen() cannot report an attempt open when nothing is
-// ever going to close it.
-var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call finish instead")
 
 // ErrInvalidOutcome is returned when finish is asked to record a verdict
 // that is not a legitimate outcome the machine produces — either
@@ -85,7 +65,7 @@ var ErrCrossRequired = errors.New("job: transition cannot cross the boundary; ca
 // (spec §3.1).
 //
 // An attempt opens when BeginAttempt is called and no attempt is open, and
-// closes when it reaches Finished. It opens holding nothing: D-I12 decoupled
+// closes when finish assigns its verdict. It opens holding nothing: D-I12 decoupled
 // opening from the lease, so a job can have a live attempt in Fetching with
 // j.lease still nil (see newAttempt below). Pause and resume inside an attempt do not
 // end it — the lease is surrendered and later re-taken, and the attempt
@@ -120,27 +100,27 @@ type Attempt struct {
 	// enumeration above goes stale; a.state has no such test.
 	next     State
 	activity Activity
+	// outcome is the attempt's verdict, and its being set is what "settled"
+	// means — isOpen() is defined as outcome == OutcomePending, so this field
+	// alone decides whether the attempt is still live. There is no Finished
+	// state; a settled attempt keeps the position it settled at.
+	//
+	// finish is the only mutator that assigns it, and that is enforced rather
+	// than asserted: TestOutcomeWrites_MatchTheEnumerationStatedInProse
+	// enumerates every site in this package's non-test sources that sets this
+	// field — a plain `=` assignment and an `outcome: x` composite-literal key
+	// alike — and requires finish be the only one. The claim lived on
+	// ErrFinishRequired until change 03 deleted both that error and the
+	// Finished state it guarded; transition can no longer be asked to reach
+	// settledness, because there is no longer a State value naming it, so what
+	// was a runtime error is now a compile error.
+	//
+	// What the enumeration guarantees is the property that error protected:
+	// an attempt cannot settle without being assigned a settled Outcome in the
+	// same call, so isOpen() cannot report an attempt open when nothing is
+	// ever going to close it.
 	outcome  Outcome
 	assessed bool
-	// crossed latches once this attempt actually arrives in Production
-	// (IsProduction(state)) via cross, the sole writer of this field to true
-	// (`git grep -n 'crosse[d] = true' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-	// returns exactly one line, in cross's body below; the bracket is what
-	// keeps this citation from matching its own text and reporting two).
-	// Both finish's a.state = Finished
-	// and, before this task, hold's a.state = Waiting erased the state the
-	// attempt crossed at, which is why this cannot be read back from a.state
-	// and has to be latched when it happens, the same reason `assessed`
-	// exists — hold is gone now, but finish still erases a.state on the same
-	// call that could settle a verdict, so the latch stays required for that
-	// case alone. Two field reads (this comment and other comments mentioning
-	// it are not reads): finish, below in this file, guards
-	// OutcomeUnrecoverable past the boundary; and job.go's BeginAttempt
-	// refuses to open a fresh attempt once a prior one crossed, because D3
-	// says crossing consumes what a retry would need (spec
-	// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, D3). Not on
-	// StateView — nothing outside this package needs it.
-	crossed bool
 	// started and ended have no reader yet in this package outside their own
 	// tests — TestNewAttempt_StartsFetching checks started, and
 	// TestAttempt_FinishIsWriteOnce checks ended (`git grep -n
@@ -172,6 +152,32 @@ func newAttempt(now time.Time) Attempt {
 }
 
 func (a *Attempt) isOpen() bool { return a.outcome == OutcomePending }
+
+// crossed reports whether this attempt reached Production. It is DERIVED from
+// the position, not stored.
+//
+// It used to be a latch: a bool that cross set true and nothing ever cleared.
+// The latch existed for one reason — finish overwrote a.state with a Finished
+// value, erasing where the attempt had got to, so the position could no longer
+// answer. finish no longer does that, so the position answers directly and the
+// shadow field is gone.
+//
+// What this costs, stated plainly because it is a real trade. A latch is
+// independent of the graph; this is not. The two agree only because no edge
+// runs from Production back to Correctness — add one, and a job could cross,
+// return, and report crossed() false, at which point BeginAttempt would reopen
+// a job that has already written files. So the reopen guard now DEPENDS on the
+// boundary invariant instead of being a second, independent mechanism
+// enforcing it.
+//
+// That dependency is deliberate and covered rather than merely assumed:
+// TestBoundaryIsOneWay pins the absence of a reverse edge directly, and
+// TestBoundaryIsUnreachableByAnyPath walks every reachable configuration and
+// asserts that any job which has been in Production still reports crossed()
+// true. The second is the one that matters — it re-derives the property from
+// replayed history rather than from this function, so it does not agree with
+// this function by construction.
+func (a *Attempt) crossed() bool { return IsProduction(a.state) }
 
 func (a *Attempt) view() StateView {
 	return StateView{
@@ -229,9 +235,6 @@ func (a *Attempt) setNext(n State) error {
 // When next is UNSET the edge map alone decides, which is the ordinary
 // forward move of a state that has just started.
 func (a *Attempt) transition(to State) error {
-	if to == Finished {
-		return ErrFinishRequired
-	}
 	if to == StateUnset {
 		return fmt.Errorf("%w: StateUnset is not a destination", ErrIllegalTransition)
 	}
@@ -305,7 +308,6 @@ func (a *Attempt) cross(to State) error {
 	a.state = to
 	a.activity = ActNone
 	a.next = StateUnset
-	a.crossed = true
 	return nil
 }
 
@@ -328,7 +330,7 @@ func (a *Attempt) setActivity(x Activity) { a.activity = x }
 //
 // next is cleared alongside activity: without this, a cancel taken after
 // Assessing had already recorded a verdict (e.g. next=Repairing) would leave
-// a Finished attempt still reporting a destination it will never move to —
+// a settled attempt still reporting a destination it will never move to —
 // see TestAttempt_FinishClearsNext.
 func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !o.IsSettled() {
@@ -348,38 +350,23 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
-	// Guard on a.crossed, not IsProduction(a.state). At THIS line the two
-	// agree: with Waiting gone an open attempt that crossed is necessarily in
-	// Extracting or Finalizing, and the overwrite to Finished happens below,
-	// after this check. So the choice is not forced here — it is forced by
-	// what the latch has to survive.
-	//
-	// finish erases the crossing from a.state on the next line. job.go's
-	// BeginAttempt then reads this same latch, when a.state == Finished and
-	// IsProduction(a.state) reads false; a.crossed alone is what still says
-	// D3's "never crossed the boundary" at that point. Reading the latch here
-	// too keeps one recorded fact answering the question at both call sites,
-	// rather than one site reading the fact and the other re-deriving it from
-	// a state that happens to still carry it (see the crossed field's doc
-	// comment).
-	//
-	// This is not Rule 1 residue: a.crossed is written by this build, on this
-	// attempt, during this run. Rule 1 governs state an EARLIER BUILD wrote.
 	// OutcomeOK means "the job produced its files" (outcome.go), which cannot
 	// be true before the boundary — production happens in Extracting and
 	// Finalizing. Without this, Finish(OutcomeOK) settles an attempt in
-	// Fetching with a.crossed still false, and BeginAttempt — which refuses a
-	// reopen only on that latch — then happily opens a SECOND attempt on a job
-	// already declared complete. Guarding here rather than in BeginAttempt
-	// keeps one owner for the invariant: the door that assigns the verdict is
-	// the one that decides which verdicts are assignable.
-	if o == OutcomeOK && !a.crossed {
+	// Fetching, and BeginAttempt — which refuses a reopen only for an attempt
+	// that crossed — then opens a SECOND attempt on a job already declared
+	// complete. Guarding here rather than in BeginAttempt keeps one owner:
+	// the door that assigns the verdict decides which verdicts are assignable.
+	//
+	// Both guards read a.crossed(), which is now IsProduction(a.state) rather
+	// than a latch. finish no longer overwrites a.state, so the position
+	// survives settling and answers the question directly.
+	if o == OutcomeOK && !a.crossed() {
 		return fmt.Errorf("%w: OutcomeOK claims the job produced its files, but this attempt never crossed into Production", ErrInvalidOutcome)
 	}
-	if o == OutcomeUnrecoverable && a.crossed {
+	if o == OutcomeUnrecoverable && a.crossed() {
 		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
 	}
-	a.state = Finished
 	a.activity = ActNone
 	a.next = StateUnset
 	a.outcome = o

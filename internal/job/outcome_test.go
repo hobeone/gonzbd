@@ -28,7 +28,7 @@ func TestOutcome_String(t *testing.T) {
 }
 
 // TestOutcome_PendingIsZeroAndNotSettled pins the property the write-once
-// rule rests on: an attempt that has not reached Finished carries the zero
+// rule rests on: an attempt that has not settled carries the zero
 // Outcome, and the zero Outcome is not a verdict.
 func TestOutcome_PendingIsZeroAndNotSettled(t *testing.T) {
 	var o Outcome

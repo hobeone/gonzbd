@@ -28,7 +28,7 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
 // ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
 // attempt crossed into Production. The guard reads a.crossed, deliberately
-// NOT IsProduction(a.state): finish overwrites a.state with Finished, so by
+// NOT IsProduction(a.state) — this was true while finish overwrote a.state, so by
 // the time BeginAttempt looks, IsProduction would read false on exactly the
 // attempts this must refuse. D3 says crossing deletes
 // archives, moves files, and consumes the inputs a later attempt would need
@@ -215,7 +215,7 @@ func (j *Job) BeginAttempt(now time.Time) error {
 	if a != nil && a.isOpen() {
 		return nil
 	}
-	if a != nil && a.crossed {
+	if a != nil && a.crossed() {
 		return ErrBoundaryConsumed
 	}
 	j.attempts = append(j.attempts, newAttempt(now))
@@ -223,7 +223,7 @@ func (j *Job) BeginAttempt(now time.Time) error {
 }
 
 // Transition moves the open attempt to the given state. It surfaces
-// ErrFinishRequired unchanged when to is Finished — that state has its own
+// its errors unchanged — the settling door has its own
 // door (Finish) and Transition is not it.
 func (j *Job) Transition(to State) error {
 	return j.withOpenAttempt(func(a *Attempt) error { return a.transition(to) })
@@ -267,7 +267,7 @@ func (j *Job) Cross(to State) (*Lease, error) {
 //
 // It yields the lease because every settling path ends the job's need for it:
 // a pre-boundary failure, an Unrecoverable verdict from Assessing, and a
-// cancel all reach Finished without passing through Cross. An earlier design
+// cancel all settle without passing through Cross. An earlier design
 // returned only an error, and leaked a pool-A slot on all three.
 func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) {
 	return j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {

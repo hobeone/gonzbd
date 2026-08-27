@@ -21,7 +21,6 @@ func TestState_String(t *testing.T) {
 		{Repairing, "Repairing"},
 		{Extracting, "Extracting"},
 		{Finalizing, "Finalizing"},
-		{Finished, "Finished"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			if got := tc.s.String(); got != tc.want {
