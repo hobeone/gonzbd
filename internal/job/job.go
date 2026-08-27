@@ -446,3 +446,43 @@ func (j *Job) surrenderLocked() *Lease {
 	j.lease = nil
 	return l
 }
+
+// Snapshot is every fact about a job that a scheduling decision needs, read
+// under ONE lock acquisition.
+//
+// It exists because the Queue's questions are composite. running(j) is "the
+// attempt is open AND it holds what its state requires AND next is unset" —
+// three facts that State(), HasRun() and HoldsLease() each lock for
+// separately, so a door landing between two of them yields an answer about a
+// configuration the job was never in. Half A gave every FIELD an owner and
+// left the composite questions unowned; this is that gap closed.
+//
+// It is also what makes the render path's purity structural rather than
+// asserted (spec §6, test 1): a predicate over a Snapshot has no *Job to
+// acquire anything from.
+type Snapshot struct {
+	State      StateView
+	Intent     Intent
+	HoldsLease bool
+	HasRun     bool
+}
+
+// IsOpen reports whether an attempt is live — begun and not yet settled. It is
+// on Snapshot rather than Job because every caller asking it is asking about a
+// consistent moment, and Job has no exported isOpen for exactly that reason.
+func (s Snapshot) IsOpen() bool { return s.HasRun && !s.State.Outcome.IsSettled() }
+
+// Snapshot reads every scheduling-relevant fact under one RLock.
+func (j *Job) Snapshot() Snapshot {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	s := Snapshot{
+		Intent:     j.intent,
+		HoldsLease: j.lease != nil,
+		HasRun:     len(j.attempts) > 0,
+	}
+	if a := j.currentLocked(); a != nil {
+		s.State = a.view()
+	}
+	return s
+}

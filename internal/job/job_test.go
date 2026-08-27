@@ -424,3 +424,91 @@ func (j *Job) currentCrossedForTest() bool {
 	a := j.currentLocked()
 	return a != nil && a.crossed()
 }
+
+// TestJob_SnapshotIsAtomic pins that a snapshot is taken under one lock
+// acquisition, by racing it against the doors and requiring the result be
+// internally consistent at every observation.
+//
+// The consistency rule chosen is the one the Queue actually depends on: a
+// settled attempt has HasRun true, and a job that has never run has a
+// StateUnset position with a Pending outcome. Composing State() and HasRun()
+// separately can observe HasRun false with a real position, which is a job
+// configuration that has never existed.
+func TestJob_SnapshotIsAtomic(t *testing.T) {
+	j := newTestJob(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 2000 {
+			_ = j.BeginAttempt(testClock())
+			_ = j.Transition(Assessing)
+			_, _ = j.Finish(OutcomeFailed, testClock())
+		}
+	}()
+	for range 20000 {
+		s := j.Snapshot()
+		// The invariant, as a BICONDITIONAL: a job has run if and only if it is
+		// at a position. newAttempt starts an attempt at Fetching, and settling
+		// no longer moves it, so every job with an attempt has a position and
+		// every job without one has StateUnset.
+		//
+		// Stated both ways deliberately. An earlier draft asserted only
+		// `position set && !HasRun`, which is VACUOUS: Go evaluates a composite
+		// literal's fields left to right, so the torn version reads HasRun
+		// strictly after State, and len(attempts) never shrinks — so HasRun can
+		// never be observed false once a position has been seen. The tear that
+		// IS observable is the other direction, State read before the first
+		// append and HasRun after it. A biconditional catches both and does not
+		// depend on the field order, which a reader should not have to reason
+		// about to trust this test.
+		if s.HasRun != (s.State.State != StateUnset) {
+			t.Fatalf("torn snapshot: HasRun=%v but position=%v; a job has run if and only if "+
+				"it is at a position", s.HasRun, s.State.State)
+		}
+	}
+	<-done
+}
+
+// TestSnapshot_IsOpen covers the predicate in two complementary ways, because
+// each alone leaves a real gap.
+//
+// The door-driven half proves the three shapes a real job actually reaches, so
+// the predicate is exercised against configurations the machine produces
+// rather than ones a test invented. The total half walks every Outcome and
+// pins the arithmetic — IsOpen is HasRun AND not settled — which a
+// three-case test cannot, since a new Outcome would slip through it silently.
+// Snapshot is a plain value and IsOpen reads two of its fields, so
+// constructing one here tests the predicate rather than the machine; that is
+// the point of splitting them.
+func TestSnapshot_IsOpen(t *testing.T) {
+	t.Run("shapes a real job reaches", func(t *testing.T) {
+		j := newTestJob(t)
+		if s := j.Snapshot(); s.IsOpen() {
+			t.Errorf("IsOpen() = true for a job that has never run (HasRun=%v)", s.HasRun)
+		}
+		mustBegin(t, j)
+		if s := j.Snapshot(); !s.IsOpen() {
+			t.Errorf("IsOpen() = false for a begun, unsettled attempt (HasRun=%v, outcome=%v)",
+				s.HasRun, s.State.Outcome)
+		}
+		if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		if s := j.Snapshot(); s.IsOpen() {
+			t.Errorf("IsOpen() = true for a settled attempt (outcome=%v)", s.State.Outcome)
+		}
+	})
+
+	t.Run("total over HasRun x Outcome", func(t *testing.T) {
+		for _, hasRun := range []bool{false, true} {
+			for _, o := range AllOutcomes() {
+				s := Snapshot{HasRun: hasRun, State: StateView{Outcome: o}}
+				want := hasRun && !o.IsSettled()
+				if got := s.IsOpen(); got != want {
+					t.Errorf("Snapshot{HasRun:%v, Outcome:%v}.IsOpen() = %v, want %v",
+						hasRun, o, got, want)
+				}
+			}
+		}
+	})
+}
