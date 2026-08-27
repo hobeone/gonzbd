@@ -1875,9 +1875,11 @@ Finish now yields the lease too. Every settling path ends the job's need for
 it - a pre-boundary failure, an Unrecoverable verdict, a cancel - and none
 passes through Cross. Returning only an error leaked a slot on all three.
 
-Both call surrenderLocked, not Surrender: withOpenAttempt holds j.mu across
-its callback and sync.RWMutex is not reentrant, so the exported form would
-hang the job permanently with no error and no timeout.
+Both call surrenderLocked, not Surrender: each takes j.mu.Lock() in its own
+body and sync.RWMutex is not reentrant, so the exported form would hang the
+job permanently with no error and no timeout. (Cross and Finish do not route
+through withOpenAttempt at all - its callback returns only an error and these
+must return a lease.)
 
 BREAKING CHANGE: Job.Finish returns (*Lease, error).
 
