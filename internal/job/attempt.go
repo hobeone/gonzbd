@@ -99,8 +99,10 @@ type Attempt struct {
 	assessed bool
 	// crossed latches once this attempt actually arrives in Production
 	// (IsProduction(state)) via cross, the sole writer of this field to true
-	// (`git grep -n 'crossed = true' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-	// returns exactly one line, in cross's body below). Both finish's a.state = Finished
+	// (`git grep -n 'crosse[d] = true' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
+	// returns exactly one line, in cross's body below; the bracket is what
+	// keeps this citation from matching its own text and reporting two).
+	// Both finish's a.state = Finished
 	// and, before this task, hold's a.state = Waiting erased the state the
 	// attempt crossed at, which is why this cannot be read back from a.state
 	// and has to be latched when it happens, the same reason `assessed`
