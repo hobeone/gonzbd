@@ -96,9 +96,22 @@ func illegalTransition(from, to State) error {
 	return fmt.Errorf("%w: %s → %s", ErrIllegalTransition, from, to)
 }
 
+// ErrTransitionRequired is returned when cross is asked to take an edge that
+// belongs to transition. It is the exported counterpart of ErrCrossRequired,
+// and it exists because being a counterpart in prose is not the same as being
+// one to errors.Is: without it, a caller could distinguish "wrong door" from
+// "not an edge" in one direction and not the other.
+//
+// It wraps ErrIllegalTransition, as ErrCrossRequired does, so a caller that
+// only wants to know a state change was refused matches one sentinel and gets
+// every refusal including both wrong-door cases.
+var ErrTransitionRequired = fmt.Errorf("%w: cross cannot take a transition edge; call Transition instead", ErrIllegalTransition)
+
 // wrongDoor reports an edge that exists but belongs to the other door. It is
 // the counterpart of ErrCrossRequired, which transition returns for the same
-// situation in the other direction.
+// situation in the other direction — and the counterpart claim is enforced
+// rather than only stated: TestWrongDoorErrorsAreMatchable requires both
+// directions to carry a distinct sentinel AND to match ErrIllegalTransition.
 func wrongDoor(from, to State) error {
-	return fmt.Errorf("%w: %s → %s is an edge, but transition takes it, not cross", ErrIllegalTransition, from, to)
+	return fmt.Errorf("%w: %s → %s is an edge, but transition takes it, not cross", ErrTransitionRequired, from, to)
 }

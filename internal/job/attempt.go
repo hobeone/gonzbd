@@ -57,7 +57,13 @@ var ErrNextAlreadySet = errors.New("job: next is already set to a different dest
 // Correctness -> Production edge. Cross is the sole door across the
 // irreversible boundary, because entering Production and surrendering the
 // lease must happen together — see Job.Cross.
-var ErrCrossRequired = errors.New("job: transition cannot cross the boundary; call Cross instead")
+//
+// It wraps ErrIllegalTransition so that a caller matching that one sentinel
+// catches every refused state change. Without the wrap, the boundary edge —
+// the single most consequential refusal the machine issues — was the one case
+// such a caller would miss, while transition.go's wrongDoor, which reports the
+// same mistake in the other direction, matched.
+var ErrCrossRequired = fmt.Errorf("%w: transition cannot cross the boundary; call Cross instead", ErrIllegalTransition)
 
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own

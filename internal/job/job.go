@@ -70,6 +70,18 @@ var ErrInvalidIntent = errors.New("job: invalid intent")
 // was given; a second grant would mean the Queue had issued capacity twice.
 var ErrAlreadyLeased = errors.New("job: already holds a lease")
 
+// ErrNilLease is returned by Grant when handed a nil lease. A nil lease is
+// indistinguishable from holding none, so accepting one would leave the job
+// reporting HoldsLease() false while believing it had been admitted.
+//
+// A sentinel rather than a bare fmt.Errorf because Grant has two refusals and
+// they mean opposite things to the caller: ErrAlreadyLeased says the job is
+// already admitted and the grant is redundant, this says the caller passed
+// nothing and has a bug. It was also the last ad-hoc error string in the
+// package — every other refusal here is matchable, and one that is not reads
+// as an oversight rather than a decision.
+var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable from holding none")
+
 // Job owns its state. Every field is unexported. The lifecycle field —
 // attempts — is guarded by mu, and there is no path to it that does not go
 // through a method here. id, name and policy are not guarded: they are set
@@ -379,7 +391,7 @@ func (j *Job) HoldsLease() bool {
 // indistinguishable from holding none, and refuses a second lease.
 func (j *Job) Grant(l *Lease) error {
 	if l == nil {
-		return fmt.Errorf("job: Grant(nil): a nil lease is indistinguishable from holding none")
+		return ErrNilLease
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()

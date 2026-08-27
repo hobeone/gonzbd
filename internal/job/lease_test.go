@@ -52,8 +52,11 @@ func TestJob_GrantRefusesASecondLease(t *testing.T) {
 
 func TestJob_GrantRefusesNil(t *testing.T) {
 	j := newTestJob(t)
-	if err := j.Grant(nil); err == nil {
-		t.Error("Grant(nil) = nil; a nil lease is indistinguishable from holding none")
+	// Matched on the sentinel rather than on non-nil-ness. Grant has two
+	// refusals — this one and ErrAlreadyLeased — and an `err == nil` check
+	// passes for either, so it would not notice the two being confused.
+	if err := j.Grant(nil); !errors.Is(err, ErrNilLease) {
+		t.Errorf("Grant(nil) = %v, want ErrNilLease; a nil lease is indistinguishable from holding none", err)
 	}
 }
 

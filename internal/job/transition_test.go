@@ -246,3 +246,51 @@ func TestWrongDoor(t *testing.T) {
 		}
 	}
 }
+
+// TestWrongDoorErrorsAreMatchable pins that both wrong-door refusals carry a
+// sentinel a caller can match on, and that both also match the general
+// ErrIllegalTransition.
+//
+// The two are counterparts — one for each direction — and wrongDoor's own
+// comment says so, but only one of them was matchable. ErrCrossRequired was a
+// bare errors.New, so a caller written as
+//
+//	if errors.Is(err, ErrIllegalTransition) { ... }
+//
+// handled every refused state change EXCEPT the boundary edge, which is the
+// one most worth handling. The asymmetry was invisible from either site: each
+// error reads correctly on its own, and only holding both up together shows
+// that one wraps and the other does not.
+func TestWrongDoorErrorsAreMatchable(t *testing.T) {
+	t.Run("transition onto the cross edge", func(t *testing.T) {
+		a := newAttempt(testClock())
+		mustTransition(t, &a, Assessing)
+		err := a.transition(Extracting)
+		if !errors.Is(err, ErrCrossRequired) {
+			t.Errorf("transition(Extracting) = %v, want ErrCrossRequired", err)
+		}
+		if !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("transition(Extracting) = %v, want it to also match ErrIllegalTransition — "+
+				"a caller handling refused state changes generally must not have to know "+
+				"the boundary edge is a special case", err)
+		}
+	})
+	t.Run("cross onto a transition edge", func(t *testing.T) {
+		a := newAttempt(testClock())
+		mustTransition(t, &a, Assessing)
+		err := a.cross(Repairing)
+		if !errors.Is(err, ErrTransitionRequired) {
+			t.Errorf("cross(Repairing) = %v, want ErrTransitionRequired", err)
+		}
+		if !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("cross(Repairing) = %v, want it to also match ErrIllegalTransition", err)
+		}
+	})
+	// The two sentinels must stay distinct, or matching one would silently
+	// catch the other and "which door do I call" stops being answerable.
+	t.Run("the two do not match each other", func(t *testing.T) {
+		if errors.Is(ErrCrossRequired, ErrTransitionRequired) || errors.Is(ErrTransitionRequired, ErrCrossRequired) {
+			t.Error("ErrCrossRequired and ErrTransitionRequired match each other; each names the door to call instead, so they must be distinguishable")
+		}
+	})
+}
