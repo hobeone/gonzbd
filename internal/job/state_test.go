@@ -124,6 +124,8 @@ const (
 	Beta
 	Gamma, Delta State = iota, iota // one spec, two names, same iota
 	Epsilon
+	Zeta = 99 // untyped WITH a value: Go does not inherit the preceding type
+	Eta       // no type and no value: inherits Zeta's spec, so untyped too
 )
 `
 	dir := t.TempDir()
@@ -133,12 +135,23 @@ const (
 	}
 
 	got := stateConstantsFromSource(t, path)
+	// Zeta and Eta are deliberately absent. A spec with expressions and no
+	// type starts a fresh, untyped run — it does not inherit State from the
+	// spec above it — and Eta then inherits ZETA's spec, not Epsilon's. A scan
+	// that only ever SETS currentType and never clears it reports both as
+	// States, which would make an exhaustiveness test fail while naming
+	// constants that are not members of the type at all.
 	want := map[string]State{
 		"Alpha":   1,
 		"Beta":    2,
 		"Gamma":   3,
 		"Delta":   3,
 		"Epsilon": 4,
+	}
+	for _, notAState := range []string{"Zeta", "Eta"} {
+		if v, ok := got[notAState]; ok {
+			t.Errorf("stateConstantsFromSource(fixture)[%q] = %v; %s is untyped and is not a State", notAState, v, notAState)
+		}
 	}
 	if len(got) != len(want) {
 		t.Fatalf("stateConstantsFromSource(fixture) = %v, want %v", got, want)

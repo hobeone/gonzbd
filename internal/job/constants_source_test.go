@@ -15,6 +15,12 @@ import (
 // TestAllIntents_Exhaustive — assert the same property about different types,
 // and a second copy of the walk is a second thing to keep correct.
 //
+// Type inheritance follows Go's rule rather than "the last type seen": an
+// omitted type inherits only when the spec omits its VALUES too, because such
+// a spec repeats the previous one wholesale. A spec that states a value
+// without a type begins a fresh untyped run.
+// TestStateConstantsFromSource_IotaSemantics' fixture has both shapes.
+//
 // The value is the constant's index among ALL specs in its const block, not
 // among the ones this walk keeps. That distinction is the whole subtlety: iota
 // advances for every spec, including a blank `_` and a spec of some other
@@ -41,8 +47,18 @@ func constantsOfType(t *testing.T, filename, typeName string) map[string]int {
 			if !ok {
 				continue
 			}
-			if vs.Type != nil {
+			// A spec's type carries forward only across specs that state
+			// NOTHING — the bare continuation lines of an iota run. A spec with
+			// expressions and no type starts a fresh, untyped run in Go, so the
+			// carried type must be cleared rather than left standing. Without
+			// this, `Zeta = 99` after a State run is reported as a State, and
+			// reported with the iota-position VALUE, which aliases silently onto
+			// whichever real member sits at that index.
+			switch {
+			case vs.Type != nil:
 				currentType = vs.Type
+			case len(vs.Values) > 0:
+				currentType = nil
 			}
 			ident, ok := currentType.(*ast.Ident)
 			if !ok || ident.Name != typeName {
