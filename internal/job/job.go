@@ -3,6 +3,7 @@ package job
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
@@ -54,6 +55,11 @@ var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior a
 // latch would let a job the user deleted come back through a path that never
 // re-asked them.
 var ErrIntentLatched = errors.New("job: intent is latched; this job is cancelled")
+
+// ErrInvalidIntent is returned when SetIntent is given a value that is not a
+// declared Intent. TestAllIntents_Exhaustive keeps AllIntents() equal to
+// intent.go's declarations, so this rejects exactly the undeclared values.
+var ErrInvalidIntent = errors.New("job: invalid intent")
 
 // ErrAlreadyLeased is returned by Grant when the job already holds a lease.
 // Pool-A capacity is reserved across the whole correctness loop (prior spec
@@ -150,9 +156,12 @@ func (j *Job) State() StateView {
 	return StateView{}
 }
 
-// HasRun reports whether this job has ever held a lease. Exact, where any
-// predicate over bytes or durable runs would conflate "did not start" with
-// "started and got nowhere".
+// HasRun reports whether this job has ever begun an attempt — len(attempts) >
+// 0, nothing more. NOT whether it ever held a lease: D-I12 decoupled the two,
+// so a job that has begun an attempt and is still waiting for pool A returns
+// true here while j.lease is nil. Exact, where any predicate over bytes or
+// durable runs would conflate "did not start" with "started and got
+// nowhere".
 func (j *Job) HasRun() bool {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -182,8 +191,10 @@ func (j *Job) AttemptAt(i int) StateView {
 // recent attempt crossed into Production, even though that attempt is
 // closed. The open check runs first and returns nil before the crossed
 // check is even reached, so an open attempt that has crossed still no-ops
-// here rather than erroring — idempotence while a lease is held takes
-// priority over the boundary refusal, and the boundary refusal only ever
+// here rather than erroring — idempotence while an attempt is OPEN takes
+// priority over the boundary refusal (open, not "holding a lease": Cross
+// surrenders the lease at the boundary, so an open attempt past it holds a
+// compute slot and no lease), and the boundary refusal only ever
 // applies to starting a NEW attempt.
 //
 // Checking only the most recent attempt, rather than every element of
@@ -320,6 +331,14 @@ func (j *Job) Intent() Intent {
 func (j *Job) SetIntent(i Intent) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	// Membership first, mirroring finish's slices.Contains(AllOutcomes(), o).
+	// An out-of-range Intent stored here is not merely cosmetic: IsLatched()
+	// is false for it, so the cancel latch never engages, and every gate that
+	// compares against IntentPause or IntentCancel reads the job as un-gated
+	// while telemetry publishes "Intent(99)".
+	if !slices.Contains(AllIntents(), i) {
+		return fmt.Errorf("%w: %s is not a declared intent", ErrInvalidIntent, i)
+	}
 	if j.intent.IsLatched() && i != j.intent {
 		return fmt.Errorf("%w: cannot replace %s with %s", ErrIntentLatched, j.intent, i)
 	}

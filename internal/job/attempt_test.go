@@ -3,6 +3,7 @@ package job
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,10 +30,14 @@ func TestNewAttempt_StartsFetching(t *testing.T) {
 func TestAttempt_TransitionRejectsIllegalEdge(t *testing.T) {
 	a := newAttempt(testClock())
 	// Fetching -> Repairing is not an edge in legalEdges, and both states are
-	// Correctness, so this exercises the plain illegal-edge rejection rather
-	// than ErrCrossRequired — see TestAttempt_TransitionRefusesTheBoundaryEdge
-	// for the boundary-specific case (Fetching -> Extracting), which is a
-	// Correctness -> Production pair and is refused for a DIFFERENT reason.
+	// Correctness, so this exercises the plain illegal-edge rejection. The
+	// boundary-specific case is Assessing -> Extracting — the ONLY
+	// Correctness -> Production edge legalEdges has — and it is refused for a
+	// different reason (ErrCrossRequired); see
+	// TestAttempt_TransitionRefusesTheBoundaryEdge. Every other
+	// Correctness -> Production PAIR, Fetching -> Extracting included, is not
+	// an edge at all and lands here instead, which
+	// TestAttempt_TransitionRejectsNonEdgesIntoProduction pins.
 	err := a.transition(Repairing)
 	if !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("transition(Repairing) error = %v, want ErrIllegalTransition", err)
@@ -266,23 +271,30 @@ func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
 // key with an empty successor list. This table IS the coverage that bypass
 // relies on, so it walks all five non-terminal, non-sentinel states.
 func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
+	// The outcome varies by zone and that is part of the property, not a
+	// detail. finish refuses OutcomeOK before the boundary — "produced its
+	// files" cannot be true of an attempt that never entered Production — so
+	// the pre-boundary cases settle Failed. What this table pins is that NO
+	// open state strands: every one of them can be settled with SOME legal
+	// verdict, which is why finish consults neither legalEdges nor next.
 	tests := []struct {
-		name  string
-		setup func(t *testing.T, a *Attempt)
+		name    string
+		outcome Outcome
+		setup   func(t *testing.T, a *Attempt)
 	}{
-		{"Fetching", func(t *testing.T, a *Attempt) {}},
-		{"Assessing", func(t *testing.T, a *Attempt) {
+		{"Fetching", OutcomeFailed, func(t *testing.T, a *Attempt) {}},
+		{"Assessing", OutcomeFailed, func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
 		}},
-		{"Repairing", func(t *testing.T, a *Attempt) {
+		{"Repairing", OutcomeFailed, func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
 			mustTransition(t, a, Repairing)
 		}},
-		{"Extracting", func(t *testing.T, a *Attempt) {
+		{"Extracting", OutcomeOK, func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
 			mustCross(t, a, Extracting)
 		}},
-		{"Finalizing", func(t *testing.T, a *Attempt) {
+		{"Finalizing", OutcomeOK, func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
 			mustCross(t, a, Extracting)
 			mustTransition(t, a, Finalizing)
@@ -298,8 +310,8 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := newAttempt(testClock())
 			tt.setup(t, &a)
-			if err := a.finish(OutcomeOK, testClock()); err != nil {
-				t.Fatalf("finish from %s: %v", tt.name, err)
+			if err := a.finish(tt.outcome, testClock()); err != nil {
+				t.Fatalf("finish(%v) from %s: %v", tt.outcome, tt.name, err)
 			}
 			if got := a.view().State; got != Finished {
 				t.Errorf("State = %v, want Finished", got)
@@ -642,7 +654,7 @@ func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
 		name string
 		run  func(*Job) error
 	}{
-		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeFailed, testClock()); return err }},
 		{"Cross", func(j *Job) error {
 			// Setup errors are RETURNED, not raised with t.Fatalf. This
 			// closure runs on the spawned goroutine below, and t.Fatalf from
@@ -678,6 +690,244 @@ func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatalf("%s did not return within 5s — it is almost certainly taking j.mu twice; "+
 					"the doors must call surrenderLocked, not the exported Surrender", tc.name)
+			}
+		})
+	}
+}
+
+// TestAttempt_ActivityClearsOnEveryStateChange covers all three mutators that
+// assign a.state, not just one.
+//
+// Its predecessor drove only cross — commit c84b3fa6 changed the call from
+// mustTransition to mustCross when the boundary got its own door, and the test
+// went on being named for transition. Commenting out `a.activity = ActNone` in
+// transition AND in finish left the whole package green, so two of the three
+// writers were unasserted while a test named for one of them passed.
+func TestAttempt_ActivityClearsOnEveryStateChange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(t *testing.T, a *Attempt)
+	}{
+		{"transition", func(t *testing.T, a *Attempt) { mustTransition(t, a, Repairing) }},
+		{"cross", func(t *testing.T, a *Attempt) {
+			if err := a.setNext(Extracting); err != nil {
+				t.Fatalf("setNext: %v", err)
+			}
+			mustCross(t, a, Extracting)
+		}},
+		{"finish", func(t *testing.T, a *Attempt) {
+			if err := a.finish(OutcomeFailed, testClock()); err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAttempt(testClock())
+			mustTransition(t, &a, Assessing)
+			a.setActivity(ActPar2Verify)
+			if got := a.view().Activity; got != ActPar2Verify {
+				t.Fatalf("Activity = %v, want ActPar2Verify", got)
+			}
+			tc.act(t, &a)
+			if got := a.view().Activity; got != ActNone {
+				t.Errorf("Activity = %v after %s, want ActNone — the state changed, so what was executing is over", got, tc.name)
+			}
+		})
+	}
+}
+
+// TestAttempt_RejectsTheSentinelAsDestination discriminates the sentinel guard
+// from the graph guard.
+//
+// Asserting only "some error" cannot tell them apart: StateUnset is in no
+// state's legalEdges, so CanTransition rejects it too, and deleting BOTH
+// sentinel guards left the package green. Matching the message is what makes
+// the guard's own removal visible.
+func TestAttempt_RejectsTheSentinelAsDestination(t *testing.T) {
+	const want = "StateUnset is not a destination"
+	for _, tc := range []struct {
+		name string
+		call func(a *Attempt) error
+	}{
+		{"transition", func(a *Attempt) error { return a.transition(StateUnset) }},
+		{"setNext", func(a *Attempt) error { return a.setNext(StateUnset) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAttempt(testClock())
+			err := tc.call(&a)
+			if !errors.Is(err, ErrIllegalTransition) {
+				t.Fatalf("%s(StateUnset) = %v, want ErrIllegalTransition", tc.name, err)
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s(StateUnset) = %q, want it to name the sentinel (%q); "+
+					"a bare ErrIllegalTransition would also come from CanTransition, "+
+					"so this assertion is what pins the sentinel guard itself", tc.name, err, want)
+			}
+		})
+	}
+}
+
+// TestAttempt_CrossWithoutARecordedDestination pins that cross distinguishes
+// "nothing recorded" from "something else recorded". Falling through to the
+// mismatch arm formats "StateUnset is recorded", asserting a verdict setNext
+// refuses to store.
+func TestAttempt_CrossWithoutARecordedDestination(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	err := a.cross(Extracting)
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("cross with no verdict = %v, want ErrIllegalTransition", err)
+	}
+	if strings.Contains(err.Error(), "StateUnset is recorded") {
+		t.Errorf("cross reports %q — StateUnset is never recorded; setNext rejects it outright", err)
+	}
+	if !strings.Contains(err.Error(), "no destination is recorded") {
+		t.Errorf("cross = %q, want it to say no destination is recorded", err)
+	}
+}
+
+// TestAttempt_TransitionRejectsNonEdgesIntoProduction pins the guard ORDER.
+//
+// With the boundary test ahead of CanTransition, every Correctness→Production
+// pair answered ErrCrossRequired — "call Cross instead" — including four pairs
+// that are not edges at all. A caller obeying that got ErrIllegalTransition
+// from cross, which is legal only from Assessing. Only the real edge may reach
+// the boundary guard.
+func TestAttempt_TransitionRejectsNonEdgesIntoProduction(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		from State
+		to   State
+	}{
+		{"Fetching to Extracting", Fetching, Extracting},
+		{"Fetching to Finalizing", Fetching, Finalizing},
+		{"Repairing to Extracting", Repairing, Extracting},
+		{"Repairing to Finalizing", Repairing, Finalizing},
+		{"Assessing to Finalizing", Assessing, Finalizing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAttempt(testClock())
+			if tc.from != Fetching {
+				mustTransition(t, &a, Assessing)
+			}
+			if tc.from == Repairing {
+				mustTransition(t, &a, Repairing)
+			}
+			err := a.transition(tc.to)
+			if errors.Is(err, ErrCrossRequired) {
+				t.Errorf("transition(%v) from %v = ErrCrossRequired, telling the caller to use Cross — "+
+					"but %v→%v is not an edge, and cross would refuse it too", tc.to, tc.from, tc.from, tc.to)
+			}
+			if !errors.Is(err, ErrIllegalTransition) {
+				t.Errorf("transition(%v) from %v = %v, want ErrIllegalTransition", tc.to, tc.from, err)
+			}
+		})
+	}
+	// The one real crossing edge still routes to Cross.
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if err := a.transition(Extracting); !errors.Is(err, ErrCrossRequired) {
+		t.Errorf("transition(Extracting) from Assessing = %v, want ErrCrossRequired — reordering must not lose the real edge", err)
+	}
+}
+
+// TestAttempt_TransitionReportsTheRecordedVerdict pins that a refusal caused
+// by next says so, rather than naming a pair that is a legal edge.
+func TestAttempt_TransitionReportsTheRecordedVerdict(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if err := a.setNext(Repairing); err != nil {
+		t.Fatalf("setNext: %v", err)
+	}
+	err := a.transition(Fetching)
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("transition(Fetching) with Repairing recorded = %v, want ErrIllegalTransition", err)
+	}
+	if !strings.Contains(err.Error(), "Repairing is recorded") {
+		t.Errorf("transition = %q, want it to name the recorded verdict; Assessing → Fetching IS a "+
+			"legal edge (transition.go), so reporting it as an illegal edge hides the real reason", err)
+	}
+}
+
+// TestAttempt_FinishRefusesOKBeforeTheBoundary pins the guard AND the reopen it
+// prevents. Without it, Finish(OutcomeOK) from Fetching settles the attempt
+// with crossed still false, and BeginAttempt — which refuses a reopen only on
+// that latch — opens a second attempt on a job already declared complete.
+func TestAttempt_FinishRefusesOKBeforeTheBoundary(t *testing.T) {
+	for _, from := range []State{Fetching, Assessing, Repairing} {
+		t.Run(from.String(), func(t *testing.T) {
+			a := newAttempt(testClock())
+			if from != Fetching {
+				mustTransition(t, &a, Assessing)
+			}
+			if from == Repairing {
+				mustTransition(t, &a, Repairing)
+			}
+			if err := a.finish(OutcomeOK, testClock()); !errors.Is(err, ErrInvalidOutcome) {
+				t.Errorf("finish(OutcomeOK) from %v = %v, want ErrInvalidOutcome", from, err)
+			}
+		})
+	}
+	t.Run("a job settled OK cannot reopen", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		mustJobTransition(t, j, Assessing)
+		if err := j.SetNext(Extracting); err != nil {
+			t.Fatalf("SetNext: %v", err)
+		}
+		if _, err := j.Cross(Extracting); err != nil {
+			t.Fatalf("Cross: %v", err)
+		}
+		if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
+			t.Fatalf("Finish(OutcomeOK) after crossing: %v", err)
+		}
+		if err := j.BeginAttempt(testClock()); err == nil {
+			t.Error("BeginAttempt reopened a job that produced its files")
+		}
+	})
+}
+
+// TestJob_FailedCrossAndFinishKeepTheLease pins that the lease is yielded only
+// on the SUCCESS path of each door.
+//
+// Moving surrenderLocked ahead of the error check in Cross left the package
+// green: no subtest of the door-error tests granted a lease, so a regression
+// that stripped a job's pool-A admission token while stranding it in Assessing
+// was invisible. (*Lease, error) must never mean "failed, and here is a lease".
+func TestJob_FailedCrossAndFinishKeepTheLease(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(t *testing.T, j *Job) error
+	}{
+		{"Cross with no verdict recorded", func(t *testing.T, j *Job) error {
+			mustJobTransition(t, j, Assessing)
+			_, err := j.Cross(Extracting)
+			return err
+		}},
+		{"Cross from a non-Assessing state", func(t *testing.T, j *Job) error {
+			_, err := j.Cross(Extracting)
+			return err
+		}},
+		{"Finish with an unrecognized outcome", func(t *testing.T, j *Job) error {
+			_, err := j.Finish(Outcome(200), testClock())
+			return err
+		}},
+		{"Finish(OutcomeOK) before the boundary", func(t *testing.T, j *Job) error {
+			_, err := j.Finish(OutcomeOK, testClock())
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := newTestJob(t)
+			mustBegin(t, j)
+			if err := j.Grant(&Lease{}); err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
+			if err := tc.call(t, j); err == nil {
+				t.Fatalf("%s returned no error; this case must fail for the assertion below to mean anything", tc.name)
+			}
+			if !j.HoldsLease() {
+				t.Errorf("%s surrendered the lease on an error path; the job is still in Correctness and still needs it", tc.name)
 			}
 		})
 	}

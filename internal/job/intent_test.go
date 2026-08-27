@@ -136,3 +136,49 @@ func TestAllIntents_Exhaustive(t *testing.T) {
 			len(AllIntents()), len(declared))
 	}
 }
+
+// TestIntent_String was cited by TestAllIntents_EveryEntryHasAStringArm's
+// failure text — "a new intent needs ... a row in TestIntent_String" — before
+// it existed. Every sibling enum has one (TestState_String, TestActivity_String,
+// TestOutcome_String, TestWaitReason_String); Intent's exact renderings were
+// asserted nowhere, while the arm-coverage test only checked that each value
+// avoided the default arm.
+func TestIntent_String(t *testing.T) {
+	for _, tc := range []struct {
+		i    Intent
+		want string
+	}{
+		{IntentRun, "IntentRun"},
+		{IntentPause, "IntentPause"},
+		{IntentCancel, "IntentCancel"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			if got := tc.i.String(); got != tc.want {
+				t.Errorf("String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if want := len(AllIntents()); want != 3 {
+		t.Errorf("this table has 3 rows but AllIntents() has %d; add the missing row", want)
+	}
+}
+
+// TestJob_SetIntentRejectsUndeclared pins the membership check. An undeclared
+// value stored in j.intent is not cosmetic: IsLatched() is false for it, so the
+// cancel latch never engages and every gate comparing against IntentPause or
+// IntentCancel reads the job as un-gated.
+func TestJob_SetIntentRejectsUndeclared(t *testing.T) {
+	j := newTestJob(t)
+	if err := j.SetIntent(Intent(99)); !errors.Is(err, ErrInvalidIntent) {
+		t.Fatalf("SetIntent(Intent(99)) = %v, want ErrInvalidIntent", err)
+	}
+	if got := j.Intent(); got != IntentRun {
+		t.Errorf("Intent() = %v after a rejected SetIntent, want IntentRun unchanged", got)
+	}
+	for _, i := range AllIntents() {
+		j := newTestJob(t)
+		if err := j.SetIntent(i); err != nil {
+			t.Errorf("SetIntent(%v) = %v, want nil — every declared intent must be accepted", i, err)
+		}
+	}
+}

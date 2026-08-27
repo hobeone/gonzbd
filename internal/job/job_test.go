@@ -143,7 +143,7 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 		{"Transition", func(j *Job) error { return j.Transition(Assessing) }},
 		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
 		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
-		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeFailed, testClock()); return err }},
 		// Cross belongs here even though it can never succeed from a never-run
 		// job for a second reason (it is legal only from Assessing): the door
 		// checks for an open attempt FIRST, and it is one of the two doors
@@ -177,13 +177,13 @@ func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
 		{"Transition", func(j *Job) error { return j.Transition(Fetching) }},
 		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
 		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
-		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeFailed, testClock()); return err }},
 		{"Cross", func(j *Job) error { _, err := j.Cross(Extracting); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t)
 			mustBegin(t, j)
-			if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
+			if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
 				t.Fatalf("Finish: %v", err)
 			}
 			if err := tc.call(j); !errors.Is(err, ErrNoOpenAttempt) {
@@ -257,7 +257,7 @@ func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	if err := j.Transition(Finalizing); err != nil {
 		t.Fatalf("Transition(Finalizing): %v", err)
 	}
-	if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if got := j.Attempts(); got != 1 {
@@ -303,7 +303,7 @@ func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) 
 	if err := j.Transition(Finalizing); err != nil {
 		t.Fatalf("Transition(Finalizing): %v", err)
 	}
-	if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 }

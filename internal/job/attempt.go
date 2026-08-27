@@ -84,8 +84,10 @@ var ErrCrossRequired = errors.New("job: transition cannot cross the boundary; ca
 // write-once Outcome, so a retry appends a verdict rather than revising one
 // (spec §3.1).
 //
-// An attempt opens when a lease is first issued and no attempt is open, and
-// closes when it reaches Finished. Pause and resume inside an attempt do not
+// An attempt opens when BeginAttempt is called and no attempt is open, and
+// closes when it reaches Finished. It opens holding nothing: D-I12 decoupled
+// opening from the lease, so a job can have a live attempt in Fetching with
+// j.lease still nil (see newAttempt below). Pause and resume inside an attempt do not
 // end it — the lease is surrendered and later re-taken, and the attempt
 // persists across that.
 //
@@ -231,14 +233,32 @@ func (a *Attempt) transition(to State) error {
 	if to == StateUnset {
 		return fmt.Errorf("%w: StateUnset is not a destination", ErrIllegalTransition)
 	}
-	if IsCorrectness(a.state) && IsProduction(to) {
-		return ErrCrossRequired
-	}
+	// A recorded verdict refuses a different destination BEFORE the graph is
+	// consulted, and says so. Reporting illegalTransition here would name a
+	// pair that is often perfectly legal — Assessing → Fetching is an edge —
+	// and hide the real reason, which is that next already says Repairing.
 	if a.next != StateUnset && to != a.next {
-		return illegalTransition(a.state, to)
+		return fmt.Errorf("%w: %s is recorded; transition cannot take %s instead", ErrIllegalTransition, a.next, to)
 	}
+	// CanTransition runs BEFORE the boundary guard, not after. Ordered the
+	// other way, every Correctness→Production PAIR answered ErrCrossRequired —
+	// "call Cross instead" — including the four that are not edges at all
+	// (Fetching→Extracting, Fetching→Finalizing, Repairing→Extracting,
+	// Repairing→Finalizing) plus Assessing→Finalizing. A caller that obeyed
+	// that directive got ErrIllegalTransition from cross, which is legal only
+	// from Assessing. Consulting the graph first means only a real edge can
+	// reach the boundary guard, so ErrCrossRequired is only ever advice a
+	// caller can act on.
+	//
+	// The guard stays a zone test rather than a literal `a.state == Assessing
+	// && to == Extracting`: that pair is already written down in legalEdges,
+	// and a second copy here would be a second thing to keep correct if the
+	// map ever gains another crossing edge.
 	if !CanTransition(a.state, to) {
 		return illegalTransition(a.state, to)
+	}
+	if IsCorrectness(a.state) && IsProduction(to) {
+		return ErrCrossRequired
 	}
 	a.state = to
 	a.activity = ActNone
@@ -263,6 +283,13 @@ func (a *Attempt) cross(to State) error {
 	}
 	if a.state != Assessing {
 		return fmt.Errorf("%w: cross is legal only from Assessing, not %s", ErrIllegalTransition, a.state)
+	}
+	// Nothing recorded is its own case. Falling through to the mismatch below
+	// would format "StateUnset is recorded", asserting a verdict that setNext
+	// explicitly refuses to store — the sentinel is never a destination, so it
+	// can never have been recorded.
+	if a.next == StateUnset {
+		return fmt.Errorf("%w: no destination is recorded; SetNext must record one before crossing", ErrIllegalTransition)
 	}
 	if a.next != to {
 		return fmt.Errorf("%w: %s is recorded; cross cannot take %s instead", ErrIllegalTransition, a.next, to)
@@ -347,6 +374,17 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	//
 	// This is not Rule 1 residue: a.crossed is written by this build, on this
 	// attempt, during this run. Rule 1 governs state an EARLIER BUILD wrote.
+	// OutcomeOK means "the job produced its files" (outcome.go), which cannot
+	// be true before the boundary — production happens in Extracting and
+	// Finalizing. Without this, Finish(OutcomeOK) settles an attempt in
+	// Fetching with a.crossed still false, and BeginAttempt — which refuses a
+	// reopen only on that latch — then happily opens a SECOND attempt on a job
+	// already declared complete. Guarding here rather than in BeginAttempt
+	// keeps one owner for the invariant: the door that assigns the verdict is
+	// the one that decides which verdicts are assignable.
+	if o == OutcomeOK && !a.crossed {
+		return fmt.Errorf("%w: OutcomeOK claims the job produced its files, but this attempt never crossed into Production", ErrInvalidOutcome)
+	}
 	if o == OutcomeUnrecoverable && a.crossed {
 		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
 	}
