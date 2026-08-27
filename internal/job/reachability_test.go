@@ -174,7 +174,7 @@ func checkReachableConfig(t *testing.T, j *Job, seq []action) {
 	for i, a := range seq {
 		a.apply(probe, base.Add(time.Duration(i)*time.Second))
 	}
-	err := probe.Finish(OutcomeUnrecoverable, base.Add(time.Hour))
+	_, err := probe.Finish(OutcomeUnrecoverable, base.Add(time.Hour))
 	if err == nil {
 		t.Errorf("reachable configuration accepted OutcomeUnrecoverable after crossing: %s\n"+
 			"D3 defines Unrecoverable as \"never crossed the boundary\"; recording it here "+
@@ -214,7 +214,7 @@ func allActions() []action {
 	for _, o := range AllOutcomes() {
 		acts = append(acts, action{
 			name:  fmt.Sprintf("Finish(%s)", o),
-			apply: func(j *Job, now time.Time) { _ = j.Finish(o, now) },
+			apply: func(j *Job, now time.Time) { _, _ = j.Finish(o, now) },
 		})
 	}
 	return acts

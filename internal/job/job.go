@@ -101,10 +101,10 @@ type Job struct {
 	// by mu. Granted by Grant; released by surrenderLocked, which is the sole
 	// writer of nil into this field — `git grep -n 'j\.lease[ \t]*='
 	// -- 'internal/job/*.go'` returns two hits, Grant writing l and
-	// surrenderLocked writing nil. At this commit Surrender is its only
-	// caller — Cross does not yet exist in this package (it is task 6) and
-	// Finish does not yet touch lease at all (its signature changes to yield
-	// one, also task 6); both are wired through surrenderLocked then.
+	// surrenderLocked writing nil. Cross and Finish both settle a job's need
+	// for its lease and both yield it by calling surrenderLocked, not the
+	// exported Surrender — see surrenderLocked's comment for why the
+	// exported form would deadlock from either door.
 	lease *Lease
 }
 
@@ -212,9 +212,50 @@ func (j *Job) SetActivity(x Activity) error {
 	return j.withOpenAttempt(func(a *Attempt) error { a.setActivity(x); return nil })
 }
 
-// Finish assigns the verdict and closes the open attempt.
-func (j *Job) Finish(o Outcome, now time.Time) error {
-	return j.withOpenAttempt(func(a *Attempt) error { return a.finish(o, now) })
+// Cross is the sole door across the irreversible boundary. It sets state,
+// latches crossed, clears next and yields the lease in ONE call — there is no
+// way to do one without the others.
+//
+// The lease may be nil: a job can legitimately reach the crossing holding
+// none, having been paused at Assessing{next: Extracting} and resumed. It does
+// not need one to cross, because crossing is where it would have given the
+// lease up anyway. The Queue's reclaimer no-ops on nil rather than each caller
+// testing for it.
+//
+// Not routed through withOpenAttempt, because it must surrender under the same
+// lock it mutates the attempt under — see surrenderLocked for why calling the
+// exported Surrender from a locked door deadlocks.
+func (j *Job) Cross(to State) (*Lease, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	a := j.currentLocked()
+	if a == nil || !a.isOpen() {
+		return nil, ErrNoOpenAttempt
+	}
+	if err := a.cross(to); err != nil {
+		return nil, err
+	}
+	return j.surrenderLocked(), nil
+}
+
+// Finish assigns the verdict, closes the open attempt, and yields the lease if
+// one is held.
+//
+// It yields the lease because every settling path ends the job's need for it:
+// a pre-boundary failure, an Unrecoverable verdict from Assessing, and a
+// cancel all reach Finished without passing through Cross. An earlier design
+// returned only an error, and leaked a pool-A slot on all three.
+func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	a := j.currentLocked()
+	if a == nil || !a.isOpen() {
+		return nil, ErrNoOpenAttempt
+	}
+	if err := a.finish(o, now); err != nil {
+		return nil, err
+	}
+	return j.surrenderLocked(), nil
 }
 
 // withOpenAttempt is the single door every mutator goes through: take the
@@ -298,17 +339,17 @@ func (j *Job) Surrender() *Lease {
 // surrenderLocked is the sole releaser of j.lease. Must hold mu.
 //
 // It exists because j.mu is a sync.RWMutex and Go mutexes are NOT reentrant.
-// The doors that will end a job's need for a lease — Cross and Finish — will
-// reach the attempt through withOpenAttempt, which takes j.mu.Lock() and
-// holds it across its callback. A door calling the exported Surrender() from
-// there would take j.mu a second time and deadlock the job permanently, with
-// no error and no timeout. Routing releases through this helper keeps one
-// releaser without reacquiring anything.
+// Cross and Finish, the two doors that end a job's need for a lease, each
+// take j.mu.Lock() themselves and hold it across their own body rather than
+// going through withOpenAttempt — so a call to the exported Surrender() from
+// either would take j.mu a second time and deadlock the job permanently, with
+// no error and no timeout. Both call this helper instead, which needs no lock
+// of its own.
 //
-// Not yet true at this commit: Cross does not exist in this package (task 6
-// adds it), and Finish does not call this method — Finish's signature
-// changes to yield the lease, also in task 6. Today Surrender is this
-// method's only caller.
+// Three callers of surrenderLocked as of this commit: Surrender (above),
+// Cross and Finish (job.go) — `git grep -n 'surrender[L]ocked()' --
+// 'internal/job/*.go' ':!internal/job/*_test.go'` returns four lines, one
+// being this method's own definition.
 func (j *Job) surrenderLocked() *Lease {
 	l := j.lease
 	j.lease = nil

@@ -72,6 +72,12 @@ var ErrInvalidOutcome = errors.New("job: invalid outcome")
 // Extracting and the job would cross the boundary skipping repair.
 var ErrNextAlreadySet = errors.New("job: next is already set to a different destination")
 
+// ErrCrossRequired is returned when transition is asked to take the one
+// Correctness -> Production edge. Cross is the sole door across the
+// irreversible boundary, because entering Production and surrendering the
+// lease must happen together — see Job.Cross.
+var ErrCrossRequired = errors.New("job: transition cannot cross the boundary; call Cross instead")
+
 // Attempt is one run of a job through the machine. The state machine lives
 // here, not on Job: a job has a LIST of attempts, each carrying its own
 // write-once Outcome, so a retry appends a verdict rather than revising one
@@ -92,7 +98,9 @@ type Attempt struct {
 	outcome  Outcome
 	assessed bool
 	// crossed latches once this attempt actually arrives in Production
-	// (IsProduction(state)) via transition. Both finish's a.state = Finished
+	// (IsProduction(state)) via cross, the sole writer of this field to true
+	// (`git grep -n 'crossed = true' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
+	// returns exactly one line, in cross's body below). Both finish's a.state = Finished
 	// and, before this task, hold's a.state = Waiting erased the state the
 	// attempt crossed at, which is why this cannot be read back from a.state
 	// and has to be latched when it happens, the same reason `assessed`
@@ -171,12 +179,16 @@ func (a *Attempt) setNext(n State) error {
 // transition moves the attempt to `to`. Activity is cleared, because it
 // describes the state being left. next is cleared, because the move consumes it.
 //
-// When next is SET, to must equal it. That check no longer guards the boundary
-// — with Waiting gone, legalEdges does that alone — and its sole remaining
-// purpose is enforcing that once a state's work has decided where to go,
-// nothing else may choose. From Assessing, legalEdges permits Fetching,
-// Repairing and Extracting, so without this check a caller could ignore a
-// NeedsRepair verdict and cross into Production having skipped repair.
+// Refuses the one Correctness -> Production edge outright (ErrCrossRequired):
+// crossing must surrender the lease in the same call, which only Cross can
+// do, so transition is not a door onto that edge at all — not even when next
+// already names it.
+//
+// When next is SET for any edge transition still permits, to must equal it.
+// Its purpose is enforcing that once a state's work has decided where to go,
+// nothing else may choose. From Assessing, legalEdges also permits Fetching
+// and Repairing, so without this check a caller could ignore a NeedsRepair
+// verdict and take Fetching or Repairing instead.
 //
 // When next is UNSET the edge map alone decides, which is the ordinary
 // forward move of a state that has just started.
@@ -186,6 +198,9 @@ func (a *Attempt) transition(to State) error {
 	}
 	if to == StateUnset {
 		return fmt.Errorf("%w: StateUnset is not a destination", ErrIllegalTransition)
+	}
+	if IsCorrectness(a.state) && IsProduction(to) {
+		return ErrCrossRequired
 	}
 	if a.next != StateUnset && to != a.next {
 		return illegalTransition(a.state, to)
@@ -199,9 +214,34 @@ func (a *Attempt) transition(to State) error {
 	if to == Assessing {
 		a.assessed = true
 	}
-	if IsProduction(to) {
-		a.crossed = true
+	return nil
+}
+
+// cross moves the attempt across the irreversible boundary. Must hold j.mu;
+// the lease is released by the CALLER through surrenderLocked, which is why
+// this returns nothing about it.
+//
+// It validates exactly what transition would have, and both checks matter:
+// without them Cross would be a hole in the single-decider property that
+// transition's to == next check exists to protect — a caller could cross from
+// anywhere, to anywhere in Production, ignoring the verdict Assessing recorded.
+func (a *Attempt) cross(to State) error {
+	if !IsProduction(to) {
+		return fmt.Errorf("%w: %s is not a Production state; cross owns the boundary edge only", ErrIllegalTransition, to)
 	}
+	if a.state != Assessing {
+		return fmt.Errorf("%w: cross is legal only from Assessing, not %s", ErrIllegalTransition, a.state)
+	}
+	if a.next != to {
+		return fmt.Errorf("%w: %s is recorded; cross cannot take %s instead", ErrIllegalTransition, a.next, to)
+	}
+	if !CanTransition(a.state, to) {
+		return illegalTransition(a.state, to)
+	}
+	a.state = to
+	a.activity = ActNone
+	a.next = StateUnset
+	a.crossed = true
 	return nil
 }
 

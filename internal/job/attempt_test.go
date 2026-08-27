@@ -27,13 +27,32 @@ func TestNewAttempt_StartsFetching(t *testing.T) {
 
 func TestAttempt_TransitionRejectsIllegalEdge(t *testing.T) {
 	a := newAttempt(testClock())
-	// Fetching -> Extracting skips assessment.
-	err := a.transition(Extracting)
+	// Fetching -> Repairing is not an edge in legalEdges, and both states are
+	// Correctness, so this exercises the plain illegal-edge rejection rather
+	// than ErrCrossRequired — see TestAttempt_TransitionRefusesTheBoundaryEdge
+	// for the boundary-specific case (Fetching -> Extracting), which is a
+	// Correctness -> Production pair and is refused for a DIFFERENT reason.
+	err := a.transition(Repairing)
 	if !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("transition(Extracting) error = %v, want ErrIllegalTransition", err)
+		t.Fatalf("transition(Repairing) error = %v, want ErrIllegalTransition", err)
 	}
 	if got := a.view().State; got != Fetching {
 		t.Errorf("State = %v after a rejected transition, want Fetching unchanged", got)
+	}
+}
+
+// TestAttempt_TransitionRefusesTheBoundaryEdge pins that transition refuses
+// the one Correctness -> Production edge with ErrCrossRequired even when the
+// edge itself is legal in legalEdges (Assessing -> Extracting) — the caller
+// must use Cross instead, because only Cross also yields the lease.
+func TestAttempt_TransitionRefusesTheBoundaryEdge(t *testing.T) {
+	a := newAttempt(testClock())
+	mustTransition(t, &a, Assessing)
+	if err := a.transition(Extracting); !errors.Is(err, ErrCrossRequired) {
+		t.Fatalf("transition(Extracting) from Assessing, error = %v, want ErrCrossRequired", err)
+	}
+	if got := a.view().State; got != Assessing {
+		t.Errorf("State = %v after a refused transition, want Assessing unchanged", got)
 	}
 }
 
@@ -64,7 +83,7 @@ func TestAttempt_ActivityClearsOnTransition(t *testing.T) {
 	if got := a.view().Activity; got != ActPar2Verify {
 		t.Fatalf("Activity = %v, want ActPar2Verify", got)
 	}
-	mustTransition(t, &a, Extracting)
+	mustCross(t, &a, Extracting)
 	if got := a.view().Activity; got != ActNone {
 		t.Errorf("Activity = %v after a transition, want ActNone", got)
 	}
@@ -102,7 +121,7 @@ func TestAttempt_TransitionRejectsFinished(t *testing.T) {
 func TestAttempt_FinishedNeverOpen(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
+	mustCross(t, &a, Extracting)
 	mustTransition(t, &a, Finalizing)
 	if err := a.finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("finish: %v", err)
@@ -134,7 +153,7 @@ func TestAttempt_FinishedNeverOpen(t *testing.T) {
 func TestAttempt_FinishReportsWriteOnceBeforeBoundary(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
+	mustCross(t, &a, Extracting)
 	mustTransition(t, &a, Finalizing)
 	if err := a.finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("first finish: %v", err)
@@ -224,7 +243,7 @@ func TestAttempt_FinishInvalidOutcomeMessagesAreDistinct(t *testing.T) {
 func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
-	mustTransition(t, &a, Extracting)
+	mustCross(t, &a, Extracting)
 	mustTransition(t, &a, Finalizing)
 	err := a.finish(OutcomeUnrecoverable, testClock())
 	if !errors.Is(err, ErrUnrecoverableAfterBoundary) {
@@ -260,11 +279,11 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 		}},
 		{"Extracting", func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
-			mustTransition(t, a, Extracting)
+			mustCross(t, a, Extracting)
 		}},
 		{"Finalizing", func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
-			mustTransition(t, a, Extracting)
+			mustCross(t, a, Extracting)
 			mustTransition(t, a, Finalizing)
 		}},
 	}
@@ -285,6 +304,20 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 				t.Errorf("State = %v, want Finished", got)
 			}
 		})
+	}
+}
+
+// mustCross records to as next and then crosses to it — cross requires a.next
+// already name the destination it is given, so a bare a.cross(to) call
+// without a prior setNext would fail these tests' own precondition, not the
+// thing they mean to exercise.
+func mustCross(t *testing.T, a *Attempt, to State) {
+	t.Helper()
+	if err := a.setNext(to); err != nil {
+		t.Fatalf("setNext(%v): %v", to, err)
+	}
+	if err := a.cross(to); err != nil {
+		t.Fatalf("cross(%v): %v", to, err)
 	}
 }
 
@@ -363,14 +396,22 @@ func TestAttempt_TransitionClearsNext(t *testing.T) {
 // From Assessing, legalEdges permits Fetching, Repairing and Extracting; once a
 // verdict is recorded, nothing else may choose. This is transition's to == next
 // check, whose ONLY remaining purpose this is now that Waiting is gone.
+//
+// Uses Fetching as the alternative destination, not Extracting: a Repairing
+// verdict tried against Extracting would now be refused by the boundary check
+// (ErrCrossRequired) before transition's to == next check is even reached,
+// since Assessing is Correctness and Extracting is Production — see
+// TestJob_CrossEnforcesTheVerdict's "refuses a destination the verdict did
+// not name" subtest for that case. Fetching keeps this test isolated to the
+// single-decider property alone.
 func TestAttempt_TransitionRequiresNextWhenSet(t *testing.T) {
 	a := newAttempt(testClock())
 	mustTransition(t, &a, Assessing)
 	if err := a.setNext(Repairing); err != nil {
 		t.Fatalf("setNext(Repairing): %v", err)
 	}
-	if err := a.transition(Extracting); !errors.Is(err, ErrIllegalTransition) {
-		t.Errorf("transition(Extracting) against a Repairing verdict, error = %v, want ErrIllegalTransition; "+
+	if err := a.transition(Fetching); !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("transition(Fetching) against a Repairing verdict, error = %v, want ErrIllegalTransition; "+
 			"Assessing is the only decider and its verdict must not be bypassable", err)
 	}
 	if err := a.transition(Repairing); err != nil {
@@ -409,5 +450,176 @@ func TestAttempt_FinishClearsNext(t *testing.T) {
 	}
 	if a.next != StateUnset {
 		t.Errorf("next = %v after finish on a settled attempt, want StateUnset", a.next)
+	}
+}
+
+// TestJob_CrossYieldsTheLeaseAtomically pins §3.5: state, crossed, next and the
+// lease all move in ONE call. As two calls this is defect 5's shape — forgetting
+// the surrender leaks a pool-A slot permanently and silently.
+func TestJob_CrossYieldsTheLeaseAtomically(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	l := &Lease{}
+	if err := j.Grant(l); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if err := j.Transition(Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+
+	got, err := j.Cross(Extracting)
+	if err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
+	}
+	if got != l {
+		t.Errorf("Cross yielded %p, want the held lease %p", got, l)
+	}
+	if j.HoldsLease() {
+		t.Error("the job still holds a lease after crossing; Extracting holds only a compute slot")
+	}
+	v := j.State()
+	if v.State != Extracting {
+		t.Errorf("State = %v, want Extracting", v.State)
+	}
+	if v.Next != StateUnset {
+		t.Errorf("Next = %v after the move was taken, want StateUnset", v.Next)
+	}
+}
+
+// TestJob_CrossEnforcesTheVerdict pins that Cross is not a hole in the
+// single-decider property transition's to == next check protects. Without it a
+// caller could cross from anywhere, to anywhere in Production, ignoring the
+// verdict Assessing recorded.
+func TestJob_CrossEnforcesTheVerdict(t *testing.T) {
+	t.Run("refuses a destination the verdict did not name", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		mustJobTransition(t, j, Assessing)
+		if err := j.SetNext(Repairing); err != nil {
+			t.Fatalf("SetNext(Repairing): %v", err)
+		}
+		if _, err := j.Cross(Extracting); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("Cross(Extracting) against a Repairing verdict, error = %v, want ErrIllegalTransition", err)
+		}
+	})
+	t.Run("refuses from a state that is not Assessing", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j) // Fetching
+		if _, err := j.Cross(Extracting); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("Cross(Extracting) from Fetching, error = %v, want ErrIllegalTransition", err)
+		}
+	})
+	t.Run("refuses a non-Production destination", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		mustJobTransition(t, j, Assessing)
+		if _, err := j.Cross(Repairing); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("Cross(Repairing), error = %v, want ErrIllegalTransition; Cross owns the boundary edge only", err)
+		}
+	})
+}
+
+// TestJob_CrossYieldsNilWhenNoLeaseIsHeld pins the case §3.9 calls out: a job
+// may legitimately reach the crossing holding nothing, having been paused at
+// Assessing{next: Extracting} and resumed. Cross must report that rather than
+// assert, so the Queue's sole reclaimer can no-op on nil.
+func TestJob_CrossYieldsNilWhenNoLeaseIsHeld(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	mustJobTransition(t, j, Assessing)
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext: %v", err)
+	}
+	got, err := j.Cross(Extracting)
+	if err != nil {
+		t.Fatalf("Cross with no lease held: %v", err)
+	}
+	if got != nil {
+		t.Errorf("Cross yielded %p, want nil", got)
+	}
+	if j.State().State != Extracting {
+		t.Error("the crossing did not happen; holding no lease must not block it")
+	}
+}
+
+// TestJob_TransitionRefusesTheBoundaryEdge pins that Cross is the SOLE door.
+func TestJob_TransitionRefusesTheBoundaryEdge(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	mustJobTransition(t, j, Assessing)
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext: %v", err)
+	}
+	if err := j.Transition(Extracting); !errors.Is(err, ErrCrossRequired) {
+		t.Errorf("Transition(Extracting), error = %v, want ErrCrossRequired", err)
+	}
+	if j.State().State != Assessing {
+		t.Error("the refused Transition moved the attempt anyway")
+	}
+}
+
+// TestJob_FinishYieldsTheLease pins §3.9's largest leak: revision 3's Finish
+// yielded nothing, so every pre-boundary failure, every Unrecoverable verdict
+// and every cancel lost a pool-A slot until restart.
+func TestJob_FinishYieldsTheLease(t *testing.T) {
+	j := newTestJob(t)
+	mustBegin(t, j)
+	l := &Lease{}
+	if err := j.Grant(l); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	got, err := j.Finish(OutcomeFailed, testClock())
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if got != l {
+		t.Errorf("Finish yielded %p, want the held lease %p", got, l)
+	}
+	if j.HoldsLease() {
+		t.Error("the job still holds a lease after settling")
+	}
+}
+
+// TestJob_CrossAndFinishDoNotDeadlock is the pin for the reason surrenderLocked
+// exists. withOpenAttempt takes j.mu and holds it across its callback, and
+// sync.RWMutex is not reentrant: a door calling the exported Surrender() from
+// there would hang the job permanently, with no error and no timeout. A
+// deadlocked test does not fail, it hangs, so this runs under a watchdog.
+func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*Job) error
+	}{
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
+		{"Cross", func(j *Job) error {
+			mustJobTransition(t, j, Assessing)
+			if err := j.SetNext(Extracting); err != nil {
+				return err
+			}
+			_, err := j.Cross(Extracting)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := newTestJob(t)
+			mustBegin(t, j)
+			if err := j.Grant(&Lease{}); err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.run(j) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s did not return within 5s — it is almost certainly taking j.mu twice; "+
+					"the doors must call surrenderLocked, not the exported Surrender", tc.name)
+			}
+		})
 	}
 }

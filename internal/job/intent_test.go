@@ -87,7 +87,7 @@ func TestJob_SetIntentIsLegalInEveryState(t *testing.T) {
 	if err := j.SetIntent(IntentRun); err != nil {
 		t.Fatalf("SetIntent on an open attempt: %v", err)
 	}
-	if err := j.Finish(OutcomeFailed, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if err := j.SetIntent(IntentPause); err != nil {

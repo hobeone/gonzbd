@@ -113,7 +113,7 @@ func TestJob_BeginAttemptIsIdempotentWhileOneIsOpen(t *testing.T) {
 func TestJob_RetryAppendsAnAttempt(t *testing.T) {
 	j := newTestJob(t)
 	mustBegin(t, j)
-	if err := j.Finish(OutcomeUnrecoverable, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeUnrecoverable, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if got := j.State().Outcome; got != OutcomeUnrecoverable {
@@ -143,7 +143,7 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 		{"Transition", func(j *Job) error { return j.Transition(Assessing) }},
 		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
 		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
-		{"Finish", func(j *Job) error { return j.Finish(OutcomeOK, testClock()) }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t)
@@ -157,7 +157,7 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
 	j := newTestJob(t)
 	mustBegin(t, j)
-	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if err := j.Transition(Fetching); !errors.Is(err, ErrNoOpenAttempt) {
@@ -220,13 +220,16 @@ func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	if err := j.Transition(Assessing); err != nil {
 		t.Fatalf("Transition(Assessing): %v", err)
 	}
-	if err := j.Transition(Extracting); err != nil {
-		t.Fatalf("Transition(Extracting): %v", err)
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+	if _, err := j.Cross(Extracting); err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
 	}
 	if err := j.Transition(Finalizing); err != nil {
 		t.Fatalf("Transition(Finalizing): %v", err)
 	}
-	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if got := j.Attempts(); got != 1 {
@@ -255,8 +258,11 @@ func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) 
 	if err := j.Transition(Assessing); err != nil {
 		t.Fatalf("Transition(Assessing): %v", err)
 	}
-	if err := j.Transition(Extracting); err != nil {
-		t.Fatalf("Transition(Extracting): %v", err)
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+	if _, err := j.Cross(Extracting); err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
 	}
 	// Extracting is Production, but this attempt is still open (unfinished).
 	if err := j.BeginAttempt(testClock().Add(time.Hour)); err != nil {
@@ -269,7 +275,7 @@ func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) 
 	if err := j.Transition(Finalizing); err != nil {
 		t.Fatalf("Transition(Finalizing): %v", err)
 	}
-	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 }
@@ -305,5 +311,12 @@ func mustBegin(t *testing.T, j *Job) {
 	t.Helper()
 	if err := j.BeginAttempt(testClock()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
+	}
+}
+
+func mustJobTransition(t *testing.T, j *Job, to State) {
+	t.Helper()
+	if err := j.Transition(to); err != nil {
+		t.Fatalf("Transition(%v): %v", to, err)
 	}
 }
