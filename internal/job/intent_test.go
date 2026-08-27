@@ -108,3 +108,31 @@ func TestJob_SetIntentIsLegalInEveryState(t *testing.T) {
 		t.Fatalf("SetIntent on a SETTLED attempt: %v — a settled job may be retried, and its intent governs that retry", err)
 	}
 }
+
+// TestAllIntents_Exhaustive fails when intent.go declares an Intent that
+// AllIntents() does not list. The count check in TestAllIntents_HaveStringArms
+// cannot do this: it compares AllIntents() against a number, so a constant
+// added to intent.go and forgotten in AllIntents() leaves both in agreement at
+// three and every table driven by the enumeration silently stops covering it.
+// State has had this enforcement since TestAllStates_Exhaustive; Intent did
+// not, and the asymmetry is the whole finding.
+func TestAllIntents_Exhaustive(t *testing.T) {
+	declared := constantsOfType(t, "intent.go", "Intent")
+	if len(declared) == 0 {
+		t.Fatal("parsed no Intent constants from intent.go; the walk no longer matches the file's shape, so this test would pass vacuously")
+	}
+
+	listed := make(map[string]bool, len(AllIntents()))
+	for _, in := range AllIntents() {
+		listed[in.String()] = true
+	}
+	for name := range declared {
+		if !listed[name] {
+			t.Errorf("%s is declared in intent.go but missing from AllIntents(); add it there, give it a String() arm and an IsLatched() decision", name)
+		}
+	}
+	if len(AllIntents()) != len(declared) {
+		t.Errorf("AllIntents() has %d entries, intent.go declares %d; the list has a duplicate or an entry that is no longer declared",
+			len(AllIntents()), len(declared))
+	}
+}

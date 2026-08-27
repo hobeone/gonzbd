@@ -1,10 +1,12 @@
 package job
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,7 +77,7 @@ func TestToSABnzbd_IsTotal(t *testing.T) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					for _, in := range AllIntents() {
+					for _, in := range mustAllIntents(t) {
 						for _, assessed := range []bool{false, true} {
 							for _, running := range []bool{false, true} {
 								v := RenderView{
@@ -114,7 +116,7 @@ func TestToSABnzbd_EmitsOnlyDeclaredStatuses(t *testing.T) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					for _, in := range AllIntents() {
+					for _, in := range mustAllIntents(t) {
 						for _, assessed := range []bool{false, true} {
 							for _, running := range []bool{false, true} {
 								v := RenderView{
@@ -160,7 +162,7 @@ func TestToSABnzbd_NeverEmitsUnproducedStatuses(t *testing.T) {
 		for _, a := range activities {
 			for _, o := range outcomes {
 				for _, r := range reasons {
-					for _, in := range AllIntents() {
+					for _, in := range mustAllIntents(t) {
 						for _, assessed := range []bool{false, true} {
 							for _, running := range []bool{false, true} {
 								v := RenderView{
@@ -186,7 +188,7 @@ func TestToSABnzbd_NeverEmitsUnproducedStatuses(t *testing.T) {
 // keyed on Intent renders a globally-paused queue as Queued, because each job
 // still carries IntentRun. Keyed on WaitReason.IsPause() it cannot.
 func TestToSABnzbd_GlobalPauseRendersAsPaused(t *testing.T) {
-	for _, s := range AllStates() {
+	for _, s := range mustAllStates(t) {
 		if s == Finished {
 			continue // settled jobs are not waiting for anything
 		}
@@ -271,6 +273,10 @@ func TestOnlyOneNonTestFileImportsConstants(t *testing.T) {
 // sabnzbd.go:103 and ToSABnzbd's call at sabnzbd.go:47. This pins its own
 // per-Outcome table against a drift in ToSABnzbd's routing.
 //
+// TestFinishedStatus_HasOneNonTestCaller enforces that population rather than
+// leaving it to a reader who runs the grep: the citation says what is true
+// today, the test is what fails when it stops being.
+//
 // The bracketed S and the _test.go exclusion are both load-bearing. Without
 // the brackets this citation matches its own text; without the exclusion it
 // also returns this test's call and its error-format string, and a reader
@@ -291,5 +297,83 @@ func TestFinishedStatus_MapsEveryOutcome(t *testing.T) {
 		if got := finishedStatus(c.o); got != c.want {
 			t.Errorf("finishedStatus(%v) = %v, want %v", c.o, got, c.want)
 		}
+	}
+}
+
+// mustAllIntents and mustAllStates exist because a loop over an empty
+// enumeration asserts nothing while still reporting PASS — the exact shape
+// that let a boundary walk explore 508 configurations and cross in none of
+// them for two tasks. Every table below is driven by one of these
+// enumerations, so an empty one would silently retire the whole table rather
+// than fail it.
+func mustAllIntents(t *testing.T) []Intent {
+	t.Helper()
+	all := AllIntents()
+	if len(all) == 0 {
+		t.Fatal("AllIntents() is empty; every loop it drives would assert nothing and still pass")
+	}
+	return all
+}
+
+func mustAllStates(t *testing.T) []State {
+	t.Helper()
+	all := AllStates()
+	if len(all) == 0 {
+		t.Fatal("AllStates() is empty; every loop it drives would assert nothing and still pass")
+	}
+	return all
+}
+
+// TestFinishedStatus_HasOneNonTestCaller turns TestFinishedStatus_MapsEveryOutcome's
+// sole-caller sentence into something that fails when it stops being true.
+//
+// That sentence is load-bearing: it is the stated reason the per-Outcome table
+// is driven through finishedStatus directly rather than only through
+// ToSABnzbd. If a second non-test caller appeared, the direct table would stop
+// covering the routing it was written to cover, and the comment would go on
+// saying otherwise. A citation a reader must run by hand does not fail; this
+// does.
+func TestFinishedStatus_HasOneNonTestCaller(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	var callers []string
+	var scanned int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		scanned++
+		var enclosing string
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.FuncDecl:
+				enclosing = node.Name.Name
+			case *ast.CallExpr:
+				if id, ok := node.Fun.(*ast.Ident); ok && id.Name == "finishedStatus" {
+					callers = append(callers, enclosing)
+				}
+			}
+			return true
+		})
+	}
+
+	if scanned == 0 {
+		t.Fatal("scanned no non-test files; this test would pass vacuously")
+	}
+	if want := []string{"ToSABnzbd"}; !slices.Equal(callers, want) {
+		t.Errorf("non-test callers of finishedStatus = %v, want %v. "+
+			"TestFinishedStatus_MapsEveryOutcome calls it directly BECAUSE ToSABnzbd is its "+
+			"only non-test caller; a second one means that direct table no longer covers the "+
+			"routing it was written for. Update both the claim and this list together.",
+			callers, want)
 	}
 }

@@ -1,9 +1,6 @@
 package job
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +11,11 @@ func TestState_String(t *testing.T) {
 		s    State
 		want string
 	}{
+		// The sentinel prints too, and readers match on it: setNext's and
+		// transition's error text names "StateUnset". Without this row,
+		// deleting that String() arm leaves State(0) rendering as "State(0)"
+		// and no test fails.
+		{StateUnset, "StateUnset"},
 		{Fetching, "Fetching"},
 		{Assessing, "Assessing"},
 		{Repairing, "Repairing"},
@@ -96,38 +98,9 @@ func TestAllStates_Exhaustive(t *testing.T) {
 // once, from gd.Specs[0].
 func stateConstantsFromSource(t *testing.T, filename string) map[string]State {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, filename, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", filename, err)
-	}
-
 	found := make(map[string]State)
-	for _, decl := range f.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.CONST {
-			continue
-		}
-		var currentType ast.Expr
-		for i, spec := range gd.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			if vs.Type != nil {
-				currentType = vs.Type
-			}
-			ident, ok := currentType.(*ast.Ident)
-			if !ok || ident.Name != "State" {
-				continue
-			}
-			for _, name := range vs.Names {
-				if name.Name == "_" {
-					continue
-				}
-				found[name.Name] = State(i)
-			}
-		}
+	for name, v := range constantsOfType(t, filename, "State") {
+		found[name] = State(v)
 	}
 	return found
 }

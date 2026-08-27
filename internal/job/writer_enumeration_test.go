@@ -312,3 +312,81 @@ func TestLeaseWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 			writers, want)
 	}
 }
+
+// TestFieldOwners_AreTheOnlyDeclarers enforces the population fieldOwner
+// merely asserts.
+//
+// scanWriters is asymmetric, and this closes the gap. Its CompositeLit case
+// checks the literal's type against fieldOwner, so `Policy{outcome: x}` is
+// correctly ignored. Its AssignStmt and IncDecStmt cases match on the
+// SELECTOR NAME alone — `anything.outcome = x` counts, whatever `anything`
+// is — because resolving the receiver's type needs go/types, which this scan
+// does not run. That is fine exactly as long as no other struct in the package
+// declares one of these six names, which was a sentence in fieldOwner's
+// comment backed by a git grep a reader had to run by hand.
+//
+// It is now a test, because the population is machine-enumerable and a
+// sentence fails silently: a struct added tomorrow with its own `outcome`
+// field would make an unrelated assignment appear as a second writer, failing
+// an ownership test in a file nobody touched, with an error message pointing
+// at the wrong thing entirely.
+func TestFieldOwners_AreTheOnlyDeclarers(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+
+	// declarers[field] = every struct type declaring a field of that name.
+	declarers := make(map[string][]string)
+	fset := token.NewFileSet()
+	var scanned int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		scanned++
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok || st.Fields == nil {
+				return true
+			}
+			for _, f := range st.Fields.List {
+				for _, fn := range f.Names {
+					if _, tracked := fieldOwner[fn.Name]; tracked {
+						declarers[fn.Name] = append(declarers[fn.Name], ts.Name.Name)
+					}
+				}
+			}
+			return true
+		})
+	}
+
+	if scanned == 0 {
+		t.Fatal("scanned no non-test files; this test would pass vacuously")
+	}
+
+	for field, owner := range fieldOwner {
+		got := declarers[field]
+		if len(got) == 0 {
+			t.Errorf("no struct in this package declares %q, but fieldOwner maps it to %s; "+
+				"the field was renamed or removed and fieldOwner was not updated", field, owner)
+			continue
+		}
+		if len(got) != 1 || got[0] != owner {
+			t.Errorf("%q is declared by %v, but fieldOwner names %s as its only owner. "+
+				"scanWriters attributes a selector write by field name alone, so a second "+
+				"declarer makes an unrelated assignment count as a writer of this field. "+
+				"Either rename the new field, or teach scanWriters to resolve receiver "+
+				"types — a sentence in fieldOwner's comment is not enough.", field, got, owner)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package job
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -427,8 +428,20 @@ func TestAttempt_TransitionAcceptsAnyLegalEdgeWhenNextIsUnset(t *testing.T) {
 	if a.next != StateUnset {
 		t.Fatalf("next = %v, want StateUnset", a.next)
 	}
-	if err := a.transition(Repairing); err != nil {
-		t.Errorf("transition(Repairing) with no verdict recorded: %v", err)
+	// Both work successors, not one. legalEdges permits Assessing → Fetching
+	// and Assessing → Repairing without a verdict (Extracting is Cross's and
+	// is refused here by design). Driving only Repairing would leave a
+	// narrowing of transition to that single edge undetected, while the
+	// test's name went on promising every legal edge.
+	for _, to := range []State{Fetching, Repairing} {
+		a := newAttempt(testClock())
+		mustTransition(t, &a, Assessing)
+		if err := a.transition(to); err != nil {
+			t.Errorf("transition(%v) with no verdict recorded: %v", to, err)
+		}
+	}
+	if err := a.transition(Extracting); !errors.Is(err, ErrCrossRequired) {
+		t.Errorf("transition(Extracting) = %v, want ErrCrossRequired — the boundary edge is Cross's alone", err)
 	}
 }
 
@@ -631,9 +644,19 @@ func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
 	}{
 		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
 		{"Cross", func(j *Job) error {
-			mustJobTransition(t, j, Assessing)
+			// Setup errors are RETURNED, not raised with t.Fatalf. This
+			// closure runs on the spawned goroutine below, and t.Fatalf from
+			// a goroutine other than the test's own calls runtime.Goexit on
+			// that goroutine alone: nothing would be sent on done, the 5s
+			// watchdog would fire, and its message positively asserts a
+			// diagnosis — "almost certainly taking j.mu twice" — that would
+			// be wrong. A setup failure must travel the same channel as a
+			// door failure so the watchdog only ever speaks about a hang.
+			if err := j.Transition(Assessing); err != nil {
+				return fmt.Errorf("setup: Transition(Assessing): %w", err)
+			}
 			if err := j.SetNext(Extracting); err != nil {
-				return err
+				return fmt.Errorf("setup: SetNext(Extracting): %w", err)
 			}
 			_, err := j.Cross(Extracting)
 			return err
