@@ -85,6 +85,11 @@ var ErrAlreadyLeased = errors.New("job: already holds a lease")
 // as an oversight rather than a decision.
 var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable from holding none")
 
+// ErrUnidentifiedLease is returned by Grant for a lease carrying LeaseUnset —
+// one nobody issued. Distinct from ErrNilLease: that one says the caller
+// passed nothing, this says the caller passed something it built itself.
+var ErrUnidentifiedLease = errors.New("job: Grant: lease has no id; only an issuing pool may mint one")
+
 // Job owns its state. Every field is unexported. The lifecycle field —
 // attempts — is guarded by mu, and there is no path to it that does not go
 // through a method here. id, name and policy are not guarded: they are set
@@ -398,6 +403,9 @@ func (j *Job) HoldsLease() bool {
 func (j *Job) Grant(l *Lease) error {
 	if l == nil {
 		return ErrNilLease
+	}
+	if l.id == LeaseUnset {
+		return ErrUnidentifiedLease
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()

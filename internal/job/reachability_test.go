@@ -344,7 +344,13 @@ func allActions() []action {
 	acts := make([]action, 0, 2+3*len(AllStates())+len(AllOutcomes())+len(AllIntents()))
 	acts = append(acts,
 		action{"BeginAttempt", func(j *Job, now time.Time) { _ = j.BeginAttempt(now) }},
-		action{"Grant", func(j *Job, _ time.Time) { _ = j.Grant(&Lease{}) }},
+		// A MINTED lease, not &Lease{}: the id guard refuses an unidentified
+		// one, so this action would never grant anything and every
+		// lease-holding configuration would drop out of the walk silently.
+		// The configs floor below is set far under the observed count and is
+		// structurally unable to notice a narrowing this size — it stayed
+		// green while this action was inert.
+		action{"Grant", func(j *Job, _ time.Time) { _ = j.Grant(NewLease(1)) }},
 	)
 	for _, s := range AllStates() {
 		acts = append(acts, action{

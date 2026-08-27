@@ -480,7 +480,7 @@ func TestAttempt_FinishClearsNext(t *testing.T) {
 func TestJob_CrossYieldsTheLeaseAtomically(t *testing.T) {
 	j := newTestJob(t)
 	mustBegin(t, j)
-	l := &Lease{}
+	l := NewLease(1)
 	if err := j.Grant(l); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestJob_TransitionRefusesTheBoundaryEdge(t *testing.T) {
 func TestJob_FinishYieldsTheLease(t *testing.T) {
 	j := newTestJob(t)
 	mustBegin(t, j)
-	l := &Lease{}
+	l := NewLease(1)
 	if err := j.Grant(l); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t)
 			mustBegin(t, j)
-			if err := j.Grant(&Lease{}); err != nil {
+			if err := j.Grant(NewLease(1)); err != nil {
 				t.Fatalf("Grant: %v", err)
 			}
 			done := make(chan error, 1)
@@ -940,7 +940,7 @@ func TestJob_FailedCrossAndFinishKeepTheLease(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t)
 			mustBegin(t, j)
-			if err := j.Grant(&Lease{}); err != nil {
+			if err := j.Grant(NewLease(1)); err != nil {
 				t.Fatalf("Grant: %v", err)
 			}
 			if err := tc.call(t, j); err == nil {
