@@ -30,10 +30,15 @@ var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior a
 
 // ErrIntentLatched is returned by SetIntent when the job has already been
 // cancelled. Cancel is final for a Job because of where it leads, not
-// because of what it renders as: the intent is not consulted by rendering
-// at all (`git grep -n 'Intent' internal/job/sabnzbd.go` exits 1). What
-// reaches the user as StatusDeleted is the settled verdict OutcomeCancelled,
-// mapped at sabnzbd.go:100 — the sole arm returning it.
+// because of what it renders as: ToSABnzbd never reads the intent field —
+// `git grep -n 'v\.[I]ntent' internal/job/sabnzbd.go` exits 1 (the bracket
+// stops the pattern matching this citation's own text; RenderView.Intent
+// does appear in that file's comments, which a bare 'Intent' grep would also
+// have matched). What reaches the user as that deleted status is the settled
+// verdict OutcomeCancelled, mapped at sabnzbd.go:108 — its return statement
+// is the only non-test site in this package that returns it (`git grep -n
+// 'return constants.Status[D]eleted' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns exactly that one line).
 //
 // The latch is one-way because prior spec D8 makes a full redo a re-added
 // NZB starting a NEW Job rather than a new attempt on this one. Clearing the

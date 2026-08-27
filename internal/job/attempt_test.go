@@ -506,16 +506,48 @@ func TestJob_CrossEnforcesTheVerdict(t *testing.T) {
 		}
 	})
 	t.Run("refuses from a state that is not Assessing", func(t *testing.T) {
+		// Fetching cannot stand in for "not Assessing" here: setNext requires
+		// CanTransition(a.state, n), and Fetching's only successor is
+		// Assessing, so SetNext(Extracting) from Fetching would itself be
+		// refused before Cross is even called — guard 3 (a.next != to) would
+		// then fire on the empty next, which is exactly the false-pass this
+		// subtest must not repeat (see the comment below). Drive the job to
+		// Extracting instead and attempt the NEXT Production edge from
+		// there: guard 1 (IsProduction(Finalizing)) passes, guard 3
+		// (next == Finalizing) passes because SetNext recorded it, so guard 2
+		// (a.state != Assessing) is what actually fires — the attempt is in
+		// Extracting, not Assessing. This also pins something stronger than
+		// the subtest's name alone: Cross cannot be used to walk deeper into
+		// Production once it has already crossed once.
 		j := newTestJob(t)
 		mustBegin(t, j) // Fetching
-		if _, err := j.Cross(Extracting); !errors.Is(err, ErrIllegalTransition) {
-			t.Errorf("Cross(Extracting) from Fetching, error = %v, want ErrIllegalTransition", err)
+		mustJobTransition(t, j, Assessing)
+		if err := j.SetNext(Extracting); err != nil {
+			t.Fatalf("SetNext(Extracting): %v", err)
+		}
+		if _, err := j.Cross(Extracting); err != nil {
+			t.Fatalf("Cross(Extracting): %v", err)
+		}
+		if err := j.SetNext(Finalizing); err != nil {
+			t.Fatalf("SetNext(Finalizing): %v", err)
+		}
+		if _, err := j.Cross(Finalizing); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("Cross(Finalizing) from Extracting, error = %v, want ErrIllegalTransition", err)
 		}
 	})
 	t.Run("refuses a non-Production destination", func(t *testing.T) {
+		// SetNext(Repairing) first, so guard 3 (a.next != to) passes and
+		// guard 1 (!IsProduction(to)) is the one that actually fires. Without
+		// it, a.next stays StateUnset and guard 3 fires first on the SAME
+		// error (ErrIllegalTransition) the assertion accepts, so the subtest
+		// would pass even with guard 1 deleted outright — which mutation
+		// testing confirmed it did.
 		j := newTestJob(t)
 		mustBegin(t, j)
 		mustJobTransition(t, j, Assessing)
+		if err := j.SetNext(Repairing); err != nil {
+			t.Fatalf("SetNext(Repairing): %v", err)
+		}
 		if _, err := j.Cross(Repairing); !errors.Is(err, ErrIllegalTransition) {
 			t.Errorf("Cross(Repairing), error = %v, want ErrIllegalTransition; Cross owns the boundary edge only", err)
 		}
