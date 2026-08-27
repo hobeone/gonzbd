@@ -222,7 +222,7 @@ const (
 > as history" does not stop someone writing a lease gate or a SQLite schema
 > keyed on a state row two hundred lines below. The corrected sites are §3.4's
 > resource table and the two `holds`/`needsLease` arguments around it, §3.6's
-> door table, and §6.2's persistence shape.
+> door table, and §3.8's persistence shape.
 >
 > **Read every REMAINING occurrence of `Finished`-as-a-State or
 > `crossed`-as-a-field below as the superseded model.** They are left in place because the arguments
