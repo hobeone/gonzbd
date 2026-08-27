@@ -170,7 +170,7 @@ This plan is **B1: the decision core, standing alone.** It produces working, tes
 | `queue.go` | `Queue` struct, `holds`, `running`, `gatedBy`, `waitReason` — the pure predicates — plus the two resource-return owners, `reclaim` (pool A) and `releaseFor` (pool B). |
 | `cancel.go` | `Cancel`, `finishCancel`. Lands before `advance.go`, which calls into it. |
 | `advance.go` | `advance`'s three branches, `park`, `grantFor`, `Retry`. |
-| `scenario_test.go` | Each of spec §5.1–5.13 as a named test. |
+| `scenario_test.go` | Each of spec §5.1–5.13 as a named test, plus the two-pool exit walk over §3.9. |
 
 ---
 
@@ -2018,14 +2018,14 @@ git commit  # feat(sched): add advance, grantFor and park
 
 ---
 
-## Task 8: The scenario suite and the lease-conservation walk
+## Task 8: The scenario suite and the two-pool exit walk
 
 **Files:**
 - Create: `internal/sched/scenario_test.go`
 
 This is spec §6 test 4 ("each scenario in §5 is a test") and test 4b ("no path settles or crosses without reclaiming the lease"). §5.1, 5.4, 5.5 and 5.7 pin revision 2's defects; 5.8 through 5.13 pin revision 3's.
 
-- [ ] **Step 1: Write the conservation walk**
+- [ ] **Step 1: Write the exit walk**
 
 ```go
 // TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b — the only test that
@@ -2187,7 +2187,7 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 
 - [ ] **Step 2: Run it**
 
-Run: `go test -race -count=1 -run TestLeasesAreConserved ./internal/sched/`
+Run: `go test -race -count=1 -run TestBothPoolsAreAccounted ./internal/sched/`
 Expected: PASS.
 
 - [ ] **Step 3: Mutate `Advance` to drop a lease, and confirm the walk catches it**
@@ -2265,7 +2265,7 @@ The same technique as `constantsOfType`, for the same reason.
 
 ```bash
 git add internal/sched/scenario_test.go
-git commit  # test(sched): pin every §5 scenario and the lease-conservation walk
+git commit  # test(sched): pin every §5 scenario and the two-pool exit walk
 ```
 
 ---
@@ -2337,7 +2337,8 @@ three**, and the answers are recorded here rather than left open:
    This is the one that changed the plan. The answer to "is the lease audit
    enough" was yes, and the question was aimed at the wrong pool — see "What the
    RFC review round changed". Pool B now has `releaseFor` as its owner and its
-   half of the conservation walk.
+   own half of the exit walk — a state-matching rule, not a conservation law,
+   which took a second round to state correctly.
 
 What is still worth attacking:
 
