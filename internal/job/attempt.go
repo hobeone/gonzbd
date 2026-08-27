@@ -86,16 +86,18 @@ type Attempt struct {
 	// writes a.state (`git grep -n 'nex[t] = ' -- 'internal/job/*.go'
 	// ':!internal/job/*_test.go'` returns exactly four lines, one in each of
 	// those bodies; the bracket keeps this citation from matching its own
-	// text). That every mutator of a.state also clears next is the cross-field
-	// invariant cross's fourth guard exists to notice. Three mutators assign
-	// a.state after construction — transition, cross and finish (`git grep -n
-	// 'stat[e] = ' -- 'internal/job/*.go' ':!internal/job/*_test.go'` returns
-	// five lines: those three assignments and two lines of this file's crossed
-	// comment quoting them). newAttempt is a fourth site but not a mutator: it
-	// builds Attempt{state: Fetching} with next left at its StateUnset zero,
-	// which is already the cleared value. The rule is therefore spread across
-	// three bodies rather than held by one owner, which is why the guard that
-	// would notice a fourth forgetting it is kept.
+	// text). TWO mutators assign a.state after construction — transition and
+	// cross (`git grep -n 'stat[e] = ' -- 'internal/job/*.go'
+	// ':!internal/job/*_test.go'` returns exactly those two lines). finish
+	// used to be a third and is not any more: change 03 stopped it
+	// overwriting the position, which is what let the crossed latch be
+	// deleted. It still clears next, which is why the next enumeration above
+	// names four functions and this one names two.
+	//
+	// newAttempt is a construction site, not a mutator: it builds
+	// Attempt{state: Fetching} with next left at its StateUnset zero, which is
+	// already the cleared value.
+	//
 	// TestNextWrites_MatchTheEnumerationStatedInProse fails if the next
 	// enumeration above goes stale; a.state has no such test.
 	next     State

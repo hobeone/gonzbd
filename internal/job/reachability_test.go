@@ -15,13 +15,16 @@ import (
 // judging that refusal with the predicate it decides by would let a wrong
 // predicate agree with itself. This test's previous doc comment named
 // exactly that condition as the point at which it would need a different
-// oracle (IsCorrectness is defined at transition.go:44), and task 6's
-// ErrCrossRequired guard created it: `git grep -n 'Is[C]orrectness(' --
-// 'internal/job/*.go' ':!internal/job/*_test.go'` now returns two lines, the
-// definition and that one caller, where it previously returned only the
-// definition. cross itself (also attempt.go) does not call IsCorrectness —
-// it hardcodes `a.state != Assessing` — so it is not a second instance of
-// this problem; it is transition's refusal alone that now shares code with
+// oracle, and task 6's ErrCrossRequired guard created it by making transition
+// branch on IsCorrectness.
+//
+// That caller is GONE: change 02 moved the door into the edge table, so
+// transition resolves edgeFrom(a.state, to) and checks e.door instead. `git
+// grep -n 'Is[C]orrectness(' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
+// now returns one line, the definition alone. The literal oracle stays
+// regardless — it was adopted because a shared predicate CAN agree with
+// itself, and reverting it every time the last caller happens to disappear
+// would make the test's independence a matter of luck. What follows describes
 // the oracle.
 //
 // A literal cannot drift silently the way a shared predicate can.

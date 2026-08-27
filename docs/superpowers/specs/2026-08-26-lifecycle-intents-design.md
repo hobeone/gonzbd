@@ -216,8 +216,16 @@ const (
 >   `Fetching` settles at `Fetching`. Anything below that treats "settled" and
 >   "in a Correctness state" as mutually exclusive describes the old model.
 >
-> **Read every occurrence of `Finished`-as-a-State or `crossed`-as-a-field
-> below as the superseded model.** They are left in place because the arguments
+> **Every NORMATIVE occurrence — the tables and rules Half B will build code
+> from — has been corrected in place and says so.** An external review was
+> right that this note alone is not enough for them: a blanket "read the rest
+> as history" does not stop someone writing a lease gate or a SQLite schema
+> keyed on a state row two hundred lines below. The corrected sites are §3.4's
+> resource table and the two `holds`/`needsLease` arguments around it, §3.6's
+> door table, and §6.2's persistence shape.
+>
+> **Read every REMAINING occurrence of `Finished`-as-a-State or
+> `crossed`-as-a-field below as the superseded model.** They are left in place because the arguments
 > around them — why the latch was needed, what the two escapes were, how
 > rendering keys — remain the record of how the design got here, and rewriting
 > them would destroy that record while pretending the reasoning was always this
@@ -364,7 +372,16 @@ func (j *Job) Surrender() *Lease          // called on crossing
 | `Fetching` | lease |
 | `Assessing`, `Repairing` | lease + compute slot |
 | `Extracting`, `Finalizing` | compute slot (the lease was surrendered at crossing) |
-| `Finished`, `StateUnset` | nothing |
+| `StateUnset` | nothing |
+| *any state, once settled* | nothing |
+
+> **Corrected by change 03 — this row is normative and the scoping note above
+> is not enough for it.** There is no `Finished` state. A settled attempt keeps
+> the position it settled at, so it can be sitting in `Fetching` or `Assessing`
+> and require **nothing**. Any gate written as `needsLease(state)` alone will
+> therefore request a lease for a settled job. **Settledness must be checked
+> first** — `!a.isOpen()`, i.e. `Outcome.IsSettled()` — and only then the
+> position consulted.
 
 ```
 holds(j)   ≡ j holds everything its CURRENT state requires
@@ -373,9 +390,14 @@ running(j) ≡ the attempt is open && holds(j) && next is unset
 
 All three conjuncts are load-bearing. A job holding a slot whose work is
 finished is not running, it is waiting to move — that is the `next` clause. And
-the open-attempt clause is not redundant: `Finished` and `StateUnset` require
-nothing, so `holds` is *vacuously true* for them and `next` is unset, and
-without it a settled job would report as running. An earlier draft of this
+the open-attempt clause is not redundant — and change 03 made it MORE
+load-bearing, not less. It was written when a settled attempt sat in a
+`Finished` state that required nothing, so `holds` was vacuously true for it.
+A settled attempt now keeps its position, so one settled at `Fetching`
+requires a lease and `holds` is **not** vacuous: it may be genuinely false, or
+genuinely true if the lease was never reclaimed. Either way the attempt is not
+open, and only the open-attempt clause says so. Without it a settled job would
+report as running. An earlier draft of this
 section omitted it and was saved only by §4.4's table ordering, which is exactly
 the kind of accidental correctness this document exists to remove.
 
@@ -423,9 +445,13 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool
 ```
 
 The two early returns before the resource checks are not decoration.
-`running(j)` is false for a settled attempt and for a never-run job alike —
-both require nothing, so `holds` is vacuously true but the attempt is not open
-— and `needsLease` is false for `Finished` and `StateUnset` too. Without them
+`running(j)` is false for a settled attempt and for a never-run job alike, but
+after change 03 for two DIFFERENT reasons: a never-run job requires nothing, so
+`holds` is vacuously true and only the open-attempt clause excludes it, while a
+settled attempt keeps its position and may require a lease it does or does not
+hold. `needsLease` is false for `StateUnset`, and is whatever the settled
+position says — **it must not be consulted for a settled attempt at all.**
+Without these returns
 both fall through to `NoComputeSlot`: a terminal job reported as waiting for a
 compute slot, and a never-run job reported as waiting for one when it is
 waiting for a lease.
@@ -456,8 +482,8 @@ own, for the same reason `finish` has one.
 |---|---|---|---|
 | `BeginAttempt(now)` | an open attempt at `Fetching`, holding nothing | `attempts` | — |
 | `transition(to)` | ordinary spine moves | — | — |
-| `Cross(to) (*Lease, error)` | the one boundary edge | `crossed` | yes |
-| `finish(o, now) (*Lease, error)` | `Finished` | `outcome` | yes |
+| `Cross(to) (*Lease, error)` | the one boundary edge | `state` (with `transition`) | yes |
+| `finish(o, now) (*Lease, error)` | a settled attempt — `state` **unchanged** | `outcome` | yes |
 
 **`BeginAttempt` does NOT take a lease.** Revision 3 changed it to
 `BeginAttempt(l *Lease, now)`, reasoning that `Fetching` requires a lease so
@@ -719,15 +745,25 @@ its download over — wrong to every API client, and wrong in a way no error
 surfaces.
 
 Persistence stores the **raw `Attempt` fields**, not a derived view. So a
-settled attempt persists and restores as `Finished` with its `Outcome`, and
-`advance` declines it at the `v.Outcome.IsSettled()` check exactly as it would
-have before the restart. **`StateUnset` means one thing only: the job has no
-attempt at all.** It is never what a settled attempt restores to.
+settled attempt persists and restores with the position it settled at plus its
+`Outcome`, and `advance` declines it at the `v.Outcome.IsSettled()` check
+exactly as it would have before the restart. **`StateUnset` means one thing
+only: the job has no attempt at all.** It is never what a settled attempt
+restores to.
 
-§4.3 says `finish` "erases `state`" — that is shorthand for *overwrites it with
-`Finished`*, which is why a crossed-then-settled attempt's crossing is
-recoverable only from the `crossed` latch. Nothing is unset, and restart,
-rendering and retry all read the same stored `Finished`.
+> **Corrected by change 03 — normative, and a schema will be built from it.**
+> This section previously said a settled attempt persists as `Finished`, and
+> that a crossed-then-settled attempt's crossing was recoverable *only* from
+> the `crossed` latch. Neither holds. `finish` no longer touches `state`, there
+> is no `Finished` value to store, and `crossed` is not a column: it is
+> `IsProduction(state)`, derived on read.
+>
+> For Half B this means the persisted shape is **`state` + `outcome`, with no
+> crossing flag**. A schema carrying a `crossed` boolean would be storing a
+> value recomputable from a column beside it — the redundancy this change
+> existed to remove — and the stored copy is the one that would drift.
+>
+> §4.3's "`finish` erases `state`" is likewise superseded: it erases nothing.
 
 Restoring `next` is what makes this correct rather than destructive. A job
 persisted mid-`Extracting` restores with `next` unset, so `advance` branch 2

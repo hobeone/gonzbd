@@ -409,8 +409,12 @@ func (j *Job) Surrender() *Lease {
 //
 // Three callers of surrenderLocked as of this commit: Surrender (above),
 // Cross and Finish (job.go) — `git grep -n 'surrender[L]ocked()' --
-// 'internal/job/*.go' ':!internal/job/*_test.go'` returns four lines, one
-// being this method's own definition.
+// 'internal/job/*.go' ':!internal/job/*_test.go'` returns FIVE lines: those
+// three calls, this method's own definition, and one prose mention in
+// withOpenAttemptLease's comment. The bracket hides this citation from itself
+// but cannot hide it from other comments that name the function, which is a
+// limit of the technique worth knowing: escaping makes a citation
+// self-consistent, not prose-proof.
 func (j *Job) surrenderLocked() *Lease {
 	l := j.lease
 	j.lease = nil

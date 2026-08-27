@@ -16,14 +16,18 @@ import (
 // package's writer-enumeration tests scans for. scanWriters uses it to tell
 // a keyed `field: x` composite-literal element that legitimately sets the
 // field apart from an unrelated struct that happens to reuse the same field
-// name — outcome, next and crossed are Attempt's; attempts, intent and lease
-// are Job's. The claim that no OTHER struct here declares any of these six
-// names is established by reading the declarations, not by grepping the
-// names: `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go'
-// ':!internal/job/*_test.go'` returns six types — Attempt, Job, Lease, Policy,
-// RenderView, StateView — and only the first two declare any of these fields.
-// A grep for the six field names themselves (`git grep -n -E
-// 'outcome|next|crossed|attempts|intent|lease' -- 'internal/job/*.go'
+// name — outcome and next are Attempt's; attempts, intent and lease are
+// Job's. (crossed was a sixth until change 03 deleted the field; it is a
+// method now, and a method has no writers to enumerate.) The claim that no
+// OTHER struct here declares any of these five names is established by
+// reading the declarations, not by grepping the names: `git grep -n '^typ[e]
+// [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
+// returns seven types — Attempt, Job, Lease, Policy, RenderView, StateView,
+// and edge, which change 02 added — and only the first two declare any of
+// these fields. TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
+// that, so this sentence is orientation rather than the guarantee.
+// A grep for the five field names themselves (`git grep -n -E
+// 'outcome|next|attempts|intent|lease' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'`) returns well over a hundred lines of comments
 // and error strings that no reader can filter into an answer, which is why it
 // is not the citation. The exact figure is deliberately a bound rather than a
