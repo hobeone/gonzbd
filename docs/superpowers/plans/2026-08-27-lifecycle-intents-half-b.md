@@ -66,7 +66,7 @@ The comment **enumerated both Production states** while the guard checked the *z
 | `OutcomeUnrecoverable` × zone | `attempt.go` `finish` | correct |
 | new attempt × prior position | `job.go` `BeginAttempt` | correct |
 | settled × position, for render | `sabnzbd.go` `ToSABnzbd` | correct |
-| **lease × zone** | — | **missing** (spec §6.6) |
+| **lease × zone** | — | **missing** (spec §3.4, tested by §6.6) |
 | **`IntentCancel` × `OutcomeOK`** | — | **missing** (D-I11) |
 
 Four implemented, one wrong through two reviews; two missing. **The Queue is what adds the two missing ones** — `Grant` after crossing is admission, cancel-during-`Finalizing` is scheduling. Building it before the rules have an owner repeats the failure at a layer with concurrency in it.
@@ -1438,7 +1438,7 @@ package sched
 import "github.com/hobeone/gonzbd/internal/job"
 
 // Cancel latches the job's intent and then settles it if nothing is in flight.
-// §8.4 makes cancel an interrupt before the boundary and a gate after it.
+// Prior spec §8.4 makes cancel an interrupt before the boundary and a gate after it.
 func (q *Queue) Cancel(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -2027,7 +2027,7 @@ Named so a reviewer can argue for pulling one in, rather than finding it missing
 - **A citation checker.** Sixteen comments in `internal/job` embed a literal `git grep` and a stated count, and that class produced 7 of 22 findings. Every enumeration that became a test has stayed true; every one that stayed prose has gone stale at least once. A `scripts/check_citations` that extracts and runs them would retire the class outright. It is tooling, not Half B, and belongs in its own change.
 - **`q.discard`** for cancelling a never-run job — needs the store, which is B2.
 - **The dispatcher's `yielded` report** (§3.6). `Fetching` gates per-article, so its worker stops without its work having ended; that yield needs a caller for `q.park(j)`. B1 defines `Workers.Abort`; B2 adds the yield path.
-- **Persistence** of `State`, `Outcome` and `Intent` (spec §6.2), and **reorder** (§4.7).
+- **Persistence** of `State`, `Outcome` and `Intent` (spec §3.8), and **reorder** (§4.7).
 - **`ToSABnzbd`'s composed view** — it cannot compute its new inputs until the Queue exists to supply running-ness and `WaitReason`.
 
 ---
