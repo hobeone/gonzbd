@@ -952,3 +952,64 @@ func TestJob_FailedCrossAndFinishKeepTheLease(t *testing.T) {
 		})
 	}
 }
+
+// TestAttempt_CrossReportsTheRecordedVerdictBeforeTheGraph pins cross's check
+// ORDER against transition's, which documents the principle: a recorded
+// verdict refuses a different destination BEFORE the graph is consulted,
+// because naming the pair hides the real reason.
+//
+// cross had the two inverted, so an Assessing attempt holding next=Extracting
+// answered cross(Fetching) with "Assessing → Fetching is an edge, but
+// transition takes it, not cross". That is true and it is the wrong advice:
+// the caller does as told, calls transition(Fetching), and is refused again
+// because next says Extracting. Two errors to learn one fact.
+//
+// The third subtest is the reason this is NOT a wholesale reorder. Moving the
+// next == StateUnset check up as well would answer "no destination is
+// recorded" for a pair that is not an edge at all, which is the same class of
+// mistake in the other direction. transition does not have that problem
+// because its verdict check is guarded by next != StateUnset and so only fires
+// when a verdict actually exists; cross now matches that shape exactly.
+func TestAttempt_CrossReportsTheRecordedVerdictBeforeTheGraph(t *testing.T) {
+	t.Run("a recorded verdict outranks the door", func(t *testing.T) {
+		a := newAttempt(testClock())
+		mustTransition(t, &a, Assessing)
+		if err := a.setNext(Extracting); err != nil {
+			t.Fatalf("setNext: %v", err)
+		}
+		err := a.cross(Fetching)
+		if !errors.Is(err, ErrIllegalTransition) {
+			t.Fatalf("cross(Fetching) = %v, want ErrIllegalTransition", err)
+		}
+		if !strings.Contains(err.Error(), "Extracting is recorded") {
+			t.Errorf("cross(Fetching) = %q, want it to name the recorded verdict; sending the "+
+				"caller to transition instead just earns them a second refusal from the "+
+				"to == next check there", err)
+		}
+		if errors.Is(err, ErrTransitionRequired) {
+			t.Errorf("cross(Fetching) = %v, reported as a wrong-door error; the door is not "+
+				"the caller's problem here, the recorded verdict is", err)
+		}
+	})
+	t.Run("a non-edge is still reported as a non-edge", func(t *testing.T) {
+		a := newAttempt(testClock())
+		err := a.cross(Fetching) // Fetching → Fetching is not an edge at all
+		if !errors.Is(err, ErrIllegalTransition) {
+			t.Fatalf("cross(Fetching) from Fetching = %v, want ErrIllegalTransition", err)
+		}
+		if strings.Contains(err.Error(), "no destination is recorded") {
+			t.Errorf("cross(Fetching) from Fetching = %q; the missing verdict is not the "+
+				"reason — this pair is not an edge, and saying otherwise sends the caller "+
+				"off to SetNext for a move that would still be refused", err)
+		}
+	})
+	t.Run("a missing verdict is still reported on a real cross edge", func(t *testing.T) {
+		a := newAttempt(testClock())
+		mustTransition(t, &a, Assessing)
+		err := a.cross(Extracting) // the byCross edge, but nothing recorded
+		if !strings.Contains(err.Error(), "no destination is recorded") {
+			t.Errorf("cross(Extracting) with next unset = %q, want it to name the missing "+
+				"verdict", err)
+		}
+	})
+}

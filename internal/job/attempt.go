@@ -289,6 +289,22 @@ func (a *Attempt) transition(to State) error {
 // transition's to == next check exists to protect — a caller could cross from
 // anywhere, to anywhere in Production, ignoring the verdict Assessing recorded.
 func (a *Attempt) cross(to State) error {
+	// A recorded verdict refuses a different destination BEFORE the graph is
+	// consulted, exactly as transition does and for the same reason. Reporting
+	// wrongDoor here would name the door for a pair that is often a perfectly
+	// legal transition edge — Assessing → Fetching is one — and send the
+	// caller to transition, which then refuses it again from its own to ==
+	// next check. Two errors to learn one fact, and the second one is the
+	// fact.
+	//
+	// Guarded by next != StateUnset, which is what keeps this from swallowing
+	// the two cases below. The unset case is NOT hoisted with it: "no
+	// destination is recorded" would then answer a pair that is not an edge at
+	// all, sending the caller to SetNext for a move that would still be
+	// refused after they got there.
+	if a.next != StateUnset && a.next != to {
+		return fmt.Errorf("%w: %s is recorded; cross cannot take %s instead", ErrIllegalTransition, a.next, to)
+	}
 	// The same single lookup transition uses. It replaces three guards that
 	// each re-derived a fact legalEdges already holds: "to must be a
 	// Production state", "a.state must be Assessing", and a CanTransition
@@ -303,15 +319,14 @@ func (a *Attempt) cross(to State) error {
 	if e.door != byCross {
 		return wrongDoor(a.state, to)
 	}
-	// Nothing recorded is its own case. Falling through to the mismatch below
-	// would format "StateUnset is recorded", asserting a verdict that setNext
-	// explicitly refuses to store — the sentinel is never a destination, so it
-	// can never have been recorded.
+	// Nothing recorded is its own case, and it is reported only once the move
+	// is known to be the cross edge — so the advice it gives ("call SetNext")
+	// is advice that will actually work. Folding it into the mismatch check
+	// above would format "StateUnset is recorded", asserting a verdict that
+	// setNext explicitly refuses to store: the sentinel is never a
+	// destination, so it can never have been recorded.
 	if a.next == StateUnset {
 		return fmt.Errorf("%w: no destination is recorded; SetNext must record one before crossing", ErrIllegalTransition)
-	}
-	if a.next != to {
-		return fmt.Errorf("%w: %s is recorded; cross cannot take %s instead", ErrIllegalTransition, a.next, to)
 	}
 	a.state = to
 	a.activity = ActNone
