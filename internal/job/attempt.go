@@ -24,10 +24,12 @@ var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
 // OutcomeUnrecoverable for an attempt that has crossed into Production. The
-// guard is a.crossed(), which reads the position — settling no longer moves
-// the attempt, so where it crossed is still there when finish looks. This
-// needed a latch for as long as finish overwrote a.state in the same call,
-// erasing exactly the fact the guard depends on. D3 defines OutcomeUnrecoverable
+// rule is now a row in admissibleAt (admissibility.go) naming the Correctness
+// zone, and inadmissible() produces this sentinel for it; finish no longer
+// spells the condition out itself. What the row depends on is unchanged:
+// settling does not move the attempt, so where it crossed is still there when
+// finish looks. That needed a latch for as long as finish overwrote a.state in
+// the same call, erasing exactly the fact the rule depends on. D3 defines OutcomeUnrecoverable
 // as "the job never crossed the boundary" specifically so its files stay in
 // the working directory and the job stays retryable — a verdict finish must
 // not let contradict where the attempt actually crossed. This is a sentinel
@@ -374,41 +376,17 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
-	// OutcomeOK means "the job produced its files" (outcome.go), and the state
-	// where that becomes true is Finalizing, not Production generally. Design
-	// §3.3's work-spine table gives each state one completion, and Extracting's
-	// is SetNext(Finalizing); Finish(OutcomeOK) appears on Finalizing's row
-	// alone. At Extracting the archives are unpacked into the working
-	// directory and nothing has been moved to the destination or run a user
-	// script, so settling OK there reports a complete job whose output is
-	// stranded in a temporary unpack directory.
+	// One consultation, not one condition per outcome. The rules live in
+	// admissibleAt (admissibility.go) because they relate two axes, and a rule
+	// relating two axes written as an `if` here is invisible from the other
+	// axis: outcome.go documented OutcomeOK's rule correctly while this
+	// function implemented a weaker one, and nothing could see the disagreement.
 	//
-	// This is deliberately NOT a.crossed(). The zone predicate is too weak
-	// here by exactly one state, and it read as correct because the guard it
-	// replaced was written when the question was "did this attempt reach
-	// Production at all". Without the guard at all, Finish(OutcomeOK) settles
-	// an attempt in Fetching, and BeginAttempt — which refuses a reopen only
-	// for an attempt that crossed — then opens a SECOND attempt on a job
-	// already declared complete. Guarding here rather than in BeginAttempt
-	// keeps one owner: the door that assigns the verdict decides which
-	// verdicts are assignable.
-	//
-	// Consulting a.state is not consulting legalEdges. finish still reads
-	// neither the edge map nor next, which is what keeps every open attempt in
-	// every reachable state settleable — an attempt at Extracting can still
-	// settle Failed, Cancelled or (before crossing) Unrecoverable. What this
-	// narrows is which VERDICT a position admits, not whether it can settle.
-	if o == OutcomeOK && a.state != Finalizing {
-		return fmt.Errorf("%w: OutcomeOK claims the job produced its files, but this attempt settled at %s, not Finalizing", ErrInvalidOutcome, a.state)
-	}
-	// This one is still the zone question, and correctly so: D3 defines
-	// Unrecoverable as "never crossed the boundary", which is Production
-	// generally rather than any single state. a.crossed() is
-	// IsProduction(a.state) now rather than a latch — finish no longer
-	// overwrites a.state, so the position survives settling and answers
-	// directly.
-	if o == OutcomeUnrecoverable && a.crossed() {
-		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
+	// finish still consults neither legalEdges nor next. This narrows which
+	// VERDICT a position admits, never whether a position can settle at all —
+	// TestAttempt_FinishSucceedsFromAnyOpenState is what keeps those apart.
+	if !admits(o, a.state) {
+		return inadmissible(o, a.state)
 	}
 	a.activity = ActNone
 	a.next = StateUnset
