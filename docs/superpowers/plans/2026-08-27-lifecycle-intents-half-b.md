@@ -71,7 +71,7 @@ The comment **enumerated both Production states** while the guard checked the *z
 
 Four implemented, one wrong through two reviews; two missing. **The Queue is what adds the two missing ones** — `Grant` after crossing is admission, cancel-during-`Finalizing` is scheduling. Building it before the rules have an owner repeats the failure at a layer with concurrency in it.
 
-Hence: Tasks 1–4 give the cross-axis rules, lease identity and composite reads their owners. Tasks 5–10 build the Queue on them.
+Hence: Tasks 1–3 give the cross-axis rules, lease identity and composite reads their owners, in `internal/job`. Tasks 4–9 build the decision core on them, in `internal/sched` — Task 4 the resource table and pools, Tasks 5–8 the Queue and its tests, Task 9 the documentation sweep.
 
 **"One owner" means one computed rule, not one location.** A single `if` in the right function satisfies "one place" perfectly and is still folklore. The test is whether the population is enumerable and whether a test fails when it changes.
 
