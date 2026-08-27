@@ -653,8 +653,10 @@ hold one alongside the lease (§3.4), and an earlier revision reclaimed only the
 lease, leaking pool-B capacity on every cancel from those two states.
 
 **A never-run job cannot be settled**, because `Outcome` lives on the `Attempt`
-and there is none: `Job.Finish` routes through `withOpenAttempt` and returns
-`ErrNoOpenAttempt` (`internal/job/job.go`). Cancelling a queued job therefore
+and there is none: `Job.Finish` returns `ErrNoOpenAttempt`
+(`internal/job/job.go`). It reaches that check inline rather than through
+`withOpenAttempt` — the callback returns only `error`, and `Finish` must return
+a `*Lease` — but the answer for a never-run job is the same either way. Cancelling a queued job therefore
 **removes it from the queue** rather than settling it, which is what upstream
 does and what a user means. `discard` is the Queue's, and is named here only so
 the case is not silently unhandled.
@@ -731,11 +733,22 @@ func (q *Queue) reclaim(l *Lease)                              // no-op on nil �
 ```
 
 **`Cross` and `Finish` must call `surrenderLocked`, not `Surrender`.** `Job.mu`
-is a `sync.RWMutex` and Go's mutexes are not reentrant. `Job.Finish` routes
-through `withOpenAttempt`, which takes `j.mu.Lock()` and holds it across the
-callback (`internal/job/job.go`) — so a `finish` that called the exported
-`Surrender()` would take `j.mu` a second time and **deadlock the job
-permanently**, with no error and no timeout. `Cross` has the same shape.
+is a `sync.RWMutex` and Go's mutexes are not reentrant. Both doors take
+`j.mu.Lock()` in their own bodies and hold it across the attempt mutation
+(`internal/job/job.go`) — so either one calling the exported `Surrender()`
+would take `j.mu` a second time and **deadlock the job permanently**, with no
+error and no timeout.
+
+> **Corrected during implementation (Half A).** This paragraph originally
+> derived the hazard from `Job.Finish` routing through `withOpenAttempt`.
+> `Finish` does not route through it, and neither does `Cross`: that helper's
+> callback returns only `error`, while both doors must return a `*Lease`. Each
+> therefore locks inline. The conclusion is unchanged and the reason is
+> stronger — the lock these doors must not re-take is one they hold
+> *themselves*, so no helper stands between the door and the deadlock. The
+> other four mutators (`Transition`, `SetNext`, `SetActivity`, and the
+> `Surrender` path for a holder with no open attempt) are the ones
+> `withOpenAttempt` covers.
 
 The single-releaser property is unaffected: `surrenderLocked` is still the only
 code that clears `j.lease`, and `Surrender` is a thin lock-taking wrapper over
@@ -886,7 +899,7 @@ The four never-produced statuses stay never-produced.
 |---|---|---|
 | `Intent` | `Job` | `SetIntent` |
 | `state` | `Attempt` | `transition`, `Cross`, `finish` |
-| `next` | `Attempt` | `SetNext`; cleared by `transition` and `Cross` |
+| `next` | `Attempt` | `SetNext`; cleared by `transition`, `Cross` and `finish` |
 | `crossed` | `Attempt` | `Cross` — sole writer |
 | `outcome` | `Attempt` | `finish` — sole writer |
 | `attempts` | `Job` | `BeginAttempt` — sole writer |
@@ -1263,7 +1276,7 @@ alone, and both were verified against source before being accepted:
 
 | Finding | Evidence |
 |---|---|
-| **`Cross` and `Finish` calling the exported `Surrender` self-deadlocks.** `withOpenAttempt` takes `j.mu.Lock()` and holds it across its callback, and Go mutexes are not reentrant — the job would hang permanently, with no error and no timeout | `internal/job/job.go`; §3.9 now specifies `surrenderLocked` |
+| **`Cross` and `Finish` calling the exported `Surrender` self-deadlocks.** Each takes `j.mu.Lock()` in its own body and holds it across the attempt mutation, and Go mutexes are not reentrant — the job would hang permanently, with no error and no timeout | `internal/job/job.go`; §3.9 now specifies `surrenderLocked`, and see the correction there on where the lock is taken |
 | **§4.1's own verification command does not run.** It was written as `git grep -n 'CanTransition(' internal/ --include='*.go'`, which errors: *"option '--include=*.go' must come before non-option arguments"*. The `grep -rn` form had been executed and transcribed as `git grep` | re-run against this commit; §4.1 corrected and the failure recorded |
 
 That second one is Rule 4's failure in its purest form. A citation exists so the
@@ -1412,7 +1425,7 @@ Also fixed in revision 3:
 | `finishCancel`'s `IsProduction`-only guard hit at both call sites forever; a completing `Finalizing` would record `OutcomeOK` on a cancelled job | §3.7's guard is `IsProduction && !workDone` |
 | Render table matched `StateUnset` before `IntentPause`, so a never-run paused job rendered `Queued` | §4.4 keys on running-ness and intent first |
 | Prior spec §3.1, D1 and §8.1.1 were broken without being declared superseded | declared in the header; §4.7 supersedes the reorder table |
-| `next`-clearing stated twice, redundantly and inconsistently | §3.3 rule 3: `transition` and `Cross` clear it, nothing else |
+| `next`-clearing stated twice, redundantly and inconsistently | §3.3 rule 3 — but see the correction there: `finish` clears it as well, so the writers are `setNext`, `transition`, `Cross` and `finish` |
 | `StateUnset` breaks `TestAllStates_Exhaustive`'s AST check | named in §3.2 with the required fix |
 
 **Rejected.** The claim that removing the `→ Finished` edges breaks completion,

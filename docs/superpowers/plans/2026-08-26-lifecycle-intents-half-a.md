@@ -675,12 +675,12 @@ func (j *Job) Surrender() *Lease {
 // surrenderLocked is the sole releaser of j.lease. Must hold mu.
 //
 // It exists because j.mu is a sync.RWMutex and Go mutexes are NOT reentrant.
-// The doors that will end a job's need for a lease — Cross and Finish — will
-// reach the attempt through withOpenAttempt, which takes j.mu.Lock() and
-// holds it across its callback. A door calling the exported Surrender() from
-// there would take j.mu a second time and deadlock the job permanently, with
-// no error and no timeout. Routing releases through this helper keeps one
-// releaser without reacquiring anything.
+// The doors that will end a job's need for a lease — Cross and Finish — take
+// j.mu.Lock() in their own bodies and hold it across the attempt mutation. A
+// door calling the exported Surrender() from there would take j.mu a second
+// time and deadlock the job permanently, with no error and no timeout.
+// Routing releases through this helper keeps one releaser without
+// reacquiring anything.
 //
 // Not yet true at this commit: Cross does not exist in this package (task 6
 // adds it), and Finish does not call this method — Finish's signature
@@ -715,13 +715,22 @@ it and issues it from pool A.
 
 surrenderLocked exists because j.mu is a sync.RWMutex and Go mutexes are not
 reentrant. The doors that will end a job's need for a lease - Cross and
-Finish, both task 6 - will reach the attempt through withOpenAttempt, which
-holds j.mu across its callback - a door calling the exported Surrender()
-from there would take the lock a second time and deadlock the job
-permanently, with no error and no timeout."
+Finish, both task 6 - take j.mu.Lock() in their own bodies and hold it across
+the attempt mutation - a door calling the exported Surrender() from there
+would take the lock a second time and deadlock the job permanently, with no
+error and no timeout."
 ```
 
 ---
+> **Corrected after task 6 (Half A).** Both passages above originally
+> predicted that `Cross` and `Finish` would reach the attempt through
+> `withOpenAttempt`. Task 6 established that neither can: that helper's
+> callback returns only `error`, and both doors must return a `*Lease`, so
+> each locks inline. The deadlock hazard and the need for `surrenderLocked`
+> are unchanged — the lock is simply taken one frame closer. Task 6's own
+> template was corrected in `b8b4342d`; these two are task 5's copies of the
+> same prediction.
+
 
 ## Task 4: `RenderView`, and `ToSABnzbd` keyed on running-ness
 
@@ -1663,10 +1672,11 @@ func TestJob_FinishYieldsTheLease(t *testing.T) {
 }
 
 // TestJob_CrossAndFinishDoNotDeadlock is the pin for the reason surrenderLocked
-// exists. withOpenAttempt takes j.mu and holds it across its callback, and
-// sync.RWMutex is not reentrant: a door calling the exported Surrender() from
-// there would hang the job permanently, with no error and no timeout. A
-// deadlocked test does not fail, it hangs, so this runs under a watchdog.
+// exists. Cross and Finish take j.mu in their own bodies and hold it while
+// they mutate the attempt and yield the lease; sync.RWMutex is not reentrant,
+// so either one calling the exported Surrender() — which takes j.mu itself —
+// would hang the job permanently, with no error and no timeout. A deadlocked
+// test does not fail, it hangs, so this runs under a watchdog.
 func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
 	for _, tc := range []struct {
 		name string

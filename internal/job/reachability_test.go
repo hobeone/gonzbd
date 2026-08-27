@@ -45,9 +45,13 @@ var productionStates = map[State]bool{
 }
 
 // TestReachabilityOracleClassifiesEveryState fails when AllStates() grows a
-// member correctnessStates does not name. Without it, a new state defaults
-// to "not Correctness" in checkReachableConfig and the boundary walk
-// silently stops checking it.
+// member that NEITHER correctnessStates nor productionStates names — naming it
+// in either one satisfies the test, because either is a deliberate
+// classification. Without this, a new state is silently non-Correctness to
+// checkReachableConfig and silently non-Production to the walk's
+// everProduction accumulator, so the boundary walk stops checking it while
+// still reporting PASS. Finished is skipped because it is terminal and belongs
+// to neither zone.
 func TestReachabilityOracleClassifiesEveryState(t *testing.T) {
 	for _, s := range AllStates() {
 		if s == Finished {

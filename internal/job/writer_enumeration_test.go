@@ -22,9 +22,16 @@ import (
 // names: `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'` returns six types — Attempt, Job, Lease, Policy,
 // RenderView, StateView — and only the first two declare any of these fields.
-// A grep for the field names themselves returns ~50 lines of comments and
-// error strings that no reader can filter into an answer, which is why it is
-// not the citation. Matching on the field name alone would therefore still be
+// A grep for the six field names themselves (`git grep -n -E
+// 'outcome|next|crossed|attempts|intent|lease' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'`) returns well over a hundred lines of comments
+// and error strings that no reader can filter into an answer, which is why it
+// is not the citation. The exact figure is deliberately a bound rather than a
+// number: it moves with every edit to any non-test file in this package —
+// three times while this very comment was being corrected — so a precise
+// count here would be a stale citation by its own next commit. Where a
+// quantity is that volatile, a bound that stays true beats a number that was
+// true once. Matching on the field name alone would therefore still be
 // correct today; this table exists so that stops being an accident if a
 // seventh type is added later.
 var fieldOwner = map[string]string{
@@ -280,9 +287,11 @@ func TestNextWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 	want := []string{"cross", "finish", "setNext", "transition"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("functions assigning next = %v, want %v\n\n"+
-			"setNext's doc comment (attempt.go) claims these four functions, and only "+
-			"these four, ever write a.next. If a different writer is correct, say so at "+
-			"that comment AND update this list together.",
+			"the next field's doc comment (attempt.go) claims these four functions, "+
+			"and only these four, ever write a.next. If a different writer is correct, "+
+			"say so at that comment AND update this list together — a comment that "+
+			"still says \"only these four\" once a fifth exists is worse than no "+
+			"comment at all.",
 			writers, want)
 	}
 }
