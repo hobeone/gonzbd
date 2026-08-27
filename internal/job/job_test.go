@@ -168,9 +168,9 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 // through a == nil and the settled case through !a.isOpen(), so a door that
 // dropped the second half would still pass the first. Cross is the door that
 // proves it — with !a.isOpen() removed from Cross and a == nil kept, the whole
-// package passed, because Cross on a settled attempt falls through to
-// a.cross, whose "legal only from Assessing" guard rejects Finished with
-// ErrIllegalTransition instead. The wrong error, and no test to say so.
+// package passed, because Cross on a settled attempt falls through to a.cross,
+// which finds no edge out of Finished and returns ErrIllegalTransition
+// instead. The wrong error, and no test to say so.
 func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
 	for _, tc := range []struct {
 		name string

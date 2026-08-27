@@ -3,6 +3,7 @@ package job
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -122,11 +123,11 @@ func TestZoneClassification(t *testing.T) {
 // rule would be a tautology. A literal is honest at this size and fails loudly
 // when an edge moves.
 func TestLegalEdgesIsTheWorkSpine(t *testing.T) {
-	want := map[State][]State{
-		Fetching:   {Assessing},
-		Assessing:  {Fetching, Repairing, Extracting},
-		Repairing:  {Assessing},
-		Extracting: {Finalizing},
+	want := map[State][]edge{
+		Fetching:   {{Assessing, byTransition}},
+		Assessing:  {{Fetching, byTransition}, {Repairing, byTransition}, {Extracting, byCross}},
+		Repairing:  {{Assessing, byTransition}},
+		Extracting: {{Finalizing, byTransition}},
 		Finalizing: {},
 		Finished:   {},
 	}
@@ -146,18 +147,36 @@ func TestLegalEdgesIsTheWorkSpine(t *testing.T) {
 		t.Errorf("legalEdges has %d edges, want 6 (the work spine)", n)
 	}
 
-	// Exactly one edge crosses the boundary. Cross owns that ONE edge, which is
-	// only proportionate if there is only one.
-	var crossings int
+	// Exactly one edge crosses the boundary, and it is the one marked byCross.
+	//
+	// Both halves matter, and they are checked against each OTHER rather than
+	// each against the literal above. The door is now what routes: transition
+	// refuses an edge it may not take and cross refuses one it may not take,
+	// neither consulting a zone predicate. So a byCross marking that drifted
+	// away from the zone geometry would silently move the boundary while every
+	// other test still passed. Deriving one from the zone predicates and one
+	// from the table, then requiring they name the SAME edge, is what makes
+	// that drift loud.
+	var byZone, byMark []string
 	for from, tos := range legalEdges {
-		for _, to := range tos {
-			if IsCorrectness(from) && IsProduction(to) {
-				crossings++
+		for _, e := range tos {
+			if IsCorrectness(from) && IsProduction(e.to) {
+				byZone = append(byZone, from.String()+"->"+e.to.String())
+			}
+			if e.door == byCross {
+				byMark = append(byMark, from.String()+"->"+e.to.String())
 			}
 		}
 	}
-	if crossings != 1 {
-		t.Errorf("legalEdges has %d Correctness->Production edges, want exactly 1 (Assessing->Extracting)", crossings)
+	slices.Sort(byZone)
+	slices.Sort(byMark)
+	if len(byZone) != 1 {
+		t.Errorf("edges crossing zones = %v, want exactly one (Assessing->Extracting)", byZone)
+	}
+	if !slices.Equal(byZone, byMark) {
+		t.Errorf("edges marked byCross = %v, but edges that actually cross the zones = %v; "+
+			"the door is what routes now, so a marking that disagrees with the geometry "+
+			"moves the boundary without any other test noticing", byMark, byZone)
 	}
 }
 
@@ -166,6 +185,68 @@ func TestCanTransition_NoSelfEdges(t *testing.T) {
 	for _, s := range AllStates() {
 		if CanTransition(s, s) {
 			t.Errorf("CanTransition(%v, %v) is true; self-transitions are not edges and no door requests one", s, s)
+		}
+	}
+}
+
+// TestEdgeFrom is the lookup both moving doors now depend on, so its failure
+// modes are theirs. Three of them matter: a missing edge must be reported as
+// missing rather than as a zero edge (which would name StateUnset as a legal
+// destination); a source with no outgoing edges must not panic; and the door
+// must come back attached, since that is the whole reason the table changed
+// shape.
+func TestEdgeFrom(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to State
+		wantOK   bool
+		wantDoor door
+	}{
+		{"ordinary work edge", Fetching, Assessing, true, byTransition},
+		{"the boundary edge", Assessing, Extracting, true, byCross},
+		{"backward within Correctness", Assessing, Fetching, true, byTransition},
+		{"inside Production", Extracting, Finalizing, true, byTransition},
+		{"non-edge across the zones", Fetching, Extracting, false, 0},
+		{"non-edge within a zone", Fetching, Repairing, false, 0},
+		{"reverse of the boundary edge", Extracting, Assessing, false, 0},
+		{"out of a source with no edges", Finalizing, Fetching, false, 0},
+		{"the sentinel is never a destination", Assessing, StateUnset, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, ok := edgeFrom(tc.from, tc.to)
+			if ok != tc.wantOK {
+				t.Fatalf("edgeFrom(%v, %v) ok = %v, want %v", tc.from, tc.to, ok, tc.wantOK)
+			}
+			if !ok {
+				if e != (edge{}) {
+					t.Errorf("a missing edge returned %+v, want the zero edge; a caller reading .to "+
+						"would be told %v is a legal destination", e, e.to)
+				}
+				return
+			}
+			if e.to != tc.to {
+				t.Errorf("edgeFrom(%v, %v).to = %v, want %v", tc.from, tc.to, e.to, tc.to)
+			}
+			if e.door != tc.wantDoor {
+				t.Errorf("edgeFrom(%v, %v).door = %v, want %v — the door is what routes, so this "+
+					"decides which of transition and cross may take the edge", tc.from, tc.to, e.door, tc.wantDoor)
+			}
+		})
+	}
+}
+
+// TestWrongDoor pins that cross's refusal of an edge belonging to transition
+// is an ErrIllegalTransition naming both states — a caller that matched only
+// on the sentinel would otherwise be told nothing about which move it asked
+// for, and this is the arm that replaced three separate messages.
+func TestWrongDoor(t *testing.T) {
+	err := wrongDoor(Assessing, Fetching)
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("wrongDoor = %v, want it to wrap ErrIllegalTransition", err)
+	}
+	for _, want := range []string{"Assessing", "Fetching", "transition takes it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("wrongDoor = %q, want it to contain %q", err, want)
 		}
 	}
 }

@@ -240,24 +240,22 @@ func (a *Attempt) transition(to State) error {
 	if a.next != StateUnset && to != a.next {
 		return fmt.Errorf("%w: %s is recorded; transition cannot take %s instead", ErrIllegalTransition, a.next, to)
 	}
-	// CanTransition runs BEFORE the boundary guard, not after. Ordered the
-	// other way, every Correctness→Production PAIR answered ErrCrossRequired —
-	// "call Cross instead" — including the four that are not edges at all
-	// (Fetching→Extracting, Fetching→Finalizing, Repairing→Extracting,
-	// Repairing→Finalizing) plus Assessing→Finalizing. A caller that obeyed
-	// that directive got ErrIllegalTransition from cross, which is legal only
-	// from Assessing. Consulting the graph first means only a real edge can
-	// reach the boundary guard, so ErrCrossRequired is only ever advice a
-	// caller can act on.
+	// One lookup answers both questions, and they cannot disagree: does this
+	// move exist, and who may take it. There is no zone predicate here to put
+	// in the wrong order — the earlier bug was a separate boundary test that
+	// ran before the graph, so every Correctness→Production PAIR answered
+	// ErrCrossRequired, including the four that are not edges at all.
 	//
-	// The guard stays a zone test rather than a literal `a.state == Assessing
-	// && to == Extracting`: that pair is already written down in legalEdges,
-	// and a second copy here would be a second thing to keep correct if the
-	// map ever gains another crossing edge.
-	if !CanTransition(a.state, to) {
+	// These two checks are disjoint by construction: an edge either exists or
+	// it does not, and if it exists it carries exactly one door. The verdict
+	// check above is NOT disjoint from them — a recorded verdict and a
+	// non-edge can both be true — and is deliberately first because it names
+	// the more specific reason.
+	e, ok := edgeFrom(a.state, to)
+	if !ok {
 		return illegalTransition(a.state, to)
 	}
-	if IsCorrectness(a.state) && IsProduction(to) {
+	if e.door != byTransition {
 		return ErrCrossRequired
 	}
 	a.state = to
@@ -278,11 +276,19 @@ func (a *Attempt) transition(to State) error {
 // transition's to == next check exists to protect — a caller could cross from
 // anywhere, to anywhere in Production, ignoring the verdict Assessing recorded.
 func (a *Attempt) cross(to State) error {
-	if !IsProduction(to) {
-		return fmt.Errorf("%w: %s is not a Production state; cross owns the boundary edge only", ErrIllegalTransition, to)
+	// The same single lookup transition uses. It replaces three guards that
+	// each re-derived a fact legalEdges already holds: "to must be a
+	// Production state", "a.state must be Assessing", and a CanTransition
+	// check that was unreachable because the first two implied it. There is
+	// exactly one byCross edge, so being on it IS being at Assessing headed
+	// for Extracting — the door check subsumes the state check rather than
+	// duplicating it.
+	e, ok := edgeFrom(a.state, to)
+	if !ok {
+		return illegalTransition(a.state, to)
 	}
-	if a.state != Assessing {
-		return fmt.Errorf("%w: cross is legal only from Assessing, not %s", ErrIllegalTransition, a.state)
+	if e.door != byCross {
+		return wrongDoor(a.state, to)
 	}
 	// Nothing recorded is its own case. Falling through to the mismatch below
 	// would format "StateUnset is recorded", asserting a verdict that setNext
@@ -293,23 +299,6 @@ func (a *Attempt) cross(to State) error {
 	}
 	if a.next != to {
 		return fmt.Errorf("%w: %s is recorded; cross cannot take %s instead", ErrIllegalTransition, a.next, to)
-	}
-	// Unreachable today, and kept deliberately. To get here, to must be a
-	// Production state, a.state must be Assessing, and a.next must equal to —
-	// and setNext only admits an n with CanTransition(a.state, n), which from
-	// Assessing means {Fetching, Repairing, Extracting}. Intersect those and
-	// to can only be Extracting, for which CanTransition(Assessing,
-	// Extracting) is true. Deleting this block changes no test, because no
-	// test can construct a case that reaches it with a false condition.
-	//
-	// It stays because what makes it unreachable is not one owner but a
-	// cross-field invariant — "a.next is always consistent with the a.state it
-	// was validated against" — maintained by every writer of a.state clearing
-	// next (transition, cross, finish). Rule 2 prefers an owner to a check
-	// precisely because a rule spread across several writers can be forgotten
-	// by one of them, and this is the check that would notice.
-	if !CanTransition(a.state, to) {
-		return illegalTransition(a.state, to)
 	}
 	a.state = to
 	a.activity = ActNone
