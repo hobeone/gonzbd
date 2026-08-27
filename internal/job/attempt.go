@@ -130,9 +130,12 @@ type Attempt struct {
 	ended   time.Time
 }
 
-// newAttempt opens an attempt in Fetching. There is no arm for opening in any
-// other state: an attempt begins when a lease is issued, and a lease is what
-// Fetching requires.
+// newAttempt opens an attempt in Fetching, holding nothing. There is no arm
+// for opening in any other state — BeginAttempt is the sole caller and always
+// starts here — and no lease is required to reach it: D-I12 makes Fetching
+// holding nothing a legal, representable state (a paused or restarted fetch
+// looks exactly like this), so requiring one to open the attempt would
+// contradict the model that makes those two states expressible.
 func newAttempt(now time.Time) Attempt {
 	return Attempt{state: Fetching, started: now}
 }

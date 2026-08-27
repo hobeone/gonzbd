@@ -1,14 +1,24 @@
 // Package job is the lifecycle machine for a download.
 //
-// # Three axes
+// # Four axes
 //
 // State is where a job's current attempt is and what may happen next.
 // Activity is what is executing right now and nothing branches on it.
 // Outcome is the attempt's verdict, assigned once on the edge into Finished
 // and never revised — TestOutcomeWrites_MatchTheEnumerationStatedInProse
-// enumerates Outcome's writers and pins that finish is the only one. Keeping
-// the three apart is what collapses the transition table: "still producing,
-// doing something else now" is an Activity write rather than a state change.
+// enumerates Outcome's writers and pins that finish is the only one. Intent
+// is what a person has asked of this job — IntentRun, IntentPause or the
+// latching IntentCancel — independent of where the job is, what it is
+// executing, or how its last attempt ended;
+// TestIntentWrites_MatchTheEnumerationStatedInProse pins SetIntent as its
+// sole writer. Keeping the four apart is what collapses the transition
+// table: "still producing, doing something else now" is an Activity write
+// rather than a state change, and "stop at the next gate" is an Intent write
+// rather than a state one.
+//
+// State lives on the current Attempt; Intent lives on the Job, because a
+// paused job that is retried stays paused — the request was about the job,
+// not about one run of it.
 //
 // # The boundary
 //
@@ -26,6 +36,28 @@
 // semantics, the acquisition lease's lifetime, and which failures are
 // recoverable.
 //
+// # next, and the boundary's own door
+//
+// next records that the open attempt's current state has ENDED and where it
+// continues to — the marker the removed Waiting state used to carry. Work
+// that ends without continuing settles via Finish instead and leaves next
+// unset; Finalizing is not an exception to that rule. SetNext writes it once
+// per visit; Transition, Cross and Finish each clear it when they take the
+// move they were asked for — see ErrNextAlreadySet.
+//
+// Transition, SetNext, SetActivity and Finish share one precondition — an
+// open attempt — enforced by withOpenAttempt, the single door all four go
+// through (see ErrNoOpenAttempt). Cross does not: it is the sole door across
+// the irreversible boundary, and it takes j.mu itself rather than going
+// through withOpenAttempt because it must yield the lease under the same
+// lock it mutates the attempt under — entering Production and giving up the
+// lease cannot happen as two separate calls without a window where one could
+// be forgotten. Transition refuses the one Correctness→Production edge
+// outright (ErrCrossRequired) precisely so Cross is the only way to take it.
+// TestCrossedWrites_ and TestOutcomeWrites_MatchTheEnumerationStatedInProse
+// pin Cross and Finish as the sole writers of crossed and outcome
+// respectively.
+//
 // # One decider
 //
 // Within the Correctness zone, Assessing is the only state with more than
@@ -42,9 +74,13 @@
 //
 // The machine lives on the current Attempt, not on the Job. A Job holds a
 // list of attempts, each with its own write-once Outcome, so a retry appends
-// a verdict instead of revising one. An attempt opens when a lease is first
-// issued and no attempt is open, and closes when it reaches Finished — pause
-// and resume inside it do not end it.
+// a verdict instead of revising one. An attempt opens on the first call to
+// BeginAttempt while none is open, in Fetching, holding nothing —
+// BeginAttempt does not take a lease. Fetching holding nothing is a legal,
+// representable state: it is exactly what a paused or restarted fetch looks
+// like, and requiring a lease to reach it (rather than to actually fetch)
+// would contradict that. An attempt closes when it reaches Finished — pause
+// and resume, which surrender and later re-take a lease, do not end it.
 //
 // A Job with no attempts has never run. That is what HasRun reports, and it
 // is exact where any predicate over byte counters would conflate "did not
@@ -74,5 +110,8 @@
 // a design intent for a later plan, not something this package can enforce
 // or has enforced.
 //
-// The design this implements is docs/superpowers/specs/2026-08-25-job-lifecycle-design.md.
+// The design this implements is
+// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, as amended by
+// docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md — the source
+// of Intent, next, Cross and the removal of Waiting described above.
 package job
