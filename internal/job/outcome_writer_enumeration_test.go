@@ -30,8 +30,11 @@ import (
 // comparisons are not assignments to an existing field and are not counted.
 // An unkeyed Attempt{...} literal fails the test outright rather than being
 // silently miscounted — see scanWriters' CompositeLit case.
-// Not covered: a write reached through a second pointer/alias to the same
-// Attempt, or reflection.
+// An aliased write — `b := a; b.outcome = OutcomeOK` — IS counted: the scan
+// matches on the selector's field name, so the receiver's spelling does not
+// matter. What it cannot do is confirm that receiver is an Attempt, which is
+// why fieldOwner exists and why TestFieldOwners_AreTheOnlyDeclarers asserts no
+// other package struct declares one of these names. Not covered: reflection.
 var outcomeWriters = []string{"finish"}
 
 func TestOutcomeWrites_MatchTheEnumerationStatedInProse(t *testing.T) {

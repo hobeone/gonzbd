@@ -472,8 +472,10 @@ forgettable, failing without an error. That is a check where an owner is owed:
 func (j *Job) Cross(to State) (*Lease, error)
 ```
 
-`Cross` does not release the lease itself — it calls `Surrender`, which stays
-the **sole releaser**. Pause and `finish` release through the same call (§3.9).
+`Cross` does not null the handle itself — it calls `surrenderLocked`, which
+stays the **sole releaser**. Pause and `finish` release through the same call,
+and the exported `Surrender` is a lock-taking wrapper around it for a holder
+with no open attempt (§3.9).
 Two independent paths nulling one handle would be two writers of the same field,
 and the whole point of `Cross` is to remove a coordination, not add one.
 
@@ -903,14 +905,14 @@ The four never-produced statuses stay never-produced.
 | `crossed` | `Attempt` | `Cross` — sole writer |
 | `outcome` | `Attempt` | `finish` — sole writer |
 | `attempts` | `Job` | `BeginAttempt` — sole writer |
-| the `Lease` | `Job` | `Grant` acquires; `Surrender` releases — sole releaser, called by `Cross`, `Finish` and pause |
+| the `Lease` | `Job` | `Grant` acquires; `surrenderLocked` releases — sole releaser, called by `Cross`, `Finish`, pause, and the exported `Surrender` wrapper |
 | running-ness, wait reason | derived | nobody |
 
 ### 4.6 Resource lifetimes
 
 | | Acquired | Released |
 |---|---|---|
-| Lease (pool A) | `grantFor`, once per attempt | `Surrender` — via `Cross`, via `Finish`, or directly on pause. See §3.9 |
+| Lease (pool A) | `grantFor`, once per attempt | `surrenderLocked` — via `Cross`, via `Finish`, via the exported `Surrender`, or directly on pause. See §3.9 |
 | Compute slot (pool B) | `grantFor`, per state | when that state's work completes |
 
 Pool A is reserved across the correctness loop and **not** released between

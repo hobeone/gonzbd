@@ -154,8 +154,12 @@ type Attempt struct {
 }
 
 // newAttempt opens an attempt in Fetching, holding nothing. There is no arm
-// for opening in any other state — BeginAttempt is the sole caller and always
-// starts here — and no lease is required to reach it: D-I12 makes Fetching
+// for opening in any other state — BeginAttempt is the sole NON-TEST caller
+// and always starts here (`git grep -n 'newAttemp[t](' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns two lines, this declaration and
+// BeginAttempt's call at job.go:207; this package's own tests construct
+// attempts directly, which is how the attempt-level guards get exercised
+// without a Job around them) — and no lease is required to reach it: D-I12 makes Fetching
 // holding nothing a legal, representable state (a paused or restarted fetch
 // looks exactly like this), so requiring one to open the attempt would
 // contradict the model that makes those two states expressible.

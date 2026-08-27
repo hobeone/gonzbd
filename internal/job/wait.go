@@ -11,7 +11,11 @@ import "fmt"
 // reason. That state is gone: a job that cannot proceed now stays in its work
 // state and is simply not running, and the reason is derived by the Queue
 // rather than stored on the attempt — it reaches consumers as a field on
-// RenderView (render.go), not StateView. Nothing in this package writes it.
+// RenderView (render.go), not StateView. No non-test code in this package
+// writes it (`git grep -n 'Reaso[n]:' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns nothing); sabnzbd_test.go builds
+// RenderView literals that set it, which is how the render table is driven
+// without a Queue to derive it.
 type WaitReason uint8
 
 const (
