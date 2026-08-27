@@ -144,6 +144,12 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
 		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
 		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
+		// Cross belongs here even though it can never succeed from a never-run
+		// job for a second reason (it is legal only from Assessing): the door
+		// checks for an open attempt FIRST, and it is one of the two doors
+		// that check inline rather than through withOpenAttempt, so it is
+		// exactly the one that could drift from the other four unnoticed.
+		{"Cross", func(j *Job) error { _, err := j.Cross(Extracting); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t)

@@ -28,9 +28,21 @@
 // they delete archives, move files and run user scripts.
 //
 // A job crosses from Correctness to Production exactly once and never
-// returns. TestBoundaryIsOneWay enumerates AllStates() and fails if any edge
-// violates that, so the invariant is pinned by a test rather than by this
-// sentence.
+// returns — and that holds across ATTEMPTS, not merely within one, because a
+// Job holds a list of them and a fresh attempt opens in Fetching.
+//
+// Two tests pin it, and the distinction between them is the whole reason the
+// second exists. TestBoundaryIsOneWay (transition_test.go) enumerates
+// AllStates() and fails if any single EDGE runs Production→Correctness: that
+// is a property of legalEdges. The invariant above is a property of
+// REACHABILITY, and two individually legal edges can compose into the transit
+// the edge map forbids directly — which is exactly how both escapes found on
+// this branch got through, with TestBoundaryIsOneWay green throughout.
+// TestBoundaryIsUnreachableByAnyPath (reachability_test.go) is what actually
+// pins the sentence above: it replays action sequences through the exported
+// doors and asserts the invariant at every reachable configuration. Cite that
+// one when you mean the invariant; cite TestBoundaryIsOneWay only when you
+// mean the edge map.
 //
 // That one property defines four others: pause granularity, cancel
 // semantics, the acquisition lease's lifetime, and which failures are
@@ -45,18 +57,23 @@
 // per visit; Transition, Cross and Finish each clear it when they take the
 // move they were asked for — see ErrNextAlreadySet.
 //
-// Transition, SetNext, SetActivity and Finish share one precondition — an
-// open attempt — enforced by withOpenAttempt, the single door all four go
-// through (see ErrNoOpenAttempt). Cross does not: it is the sole door across
+// Transition, SetNext, SetActivity, Cross and Finish share one precondition —
+// an open attempt (see ErrNoOpenAttempt). The first three get it from
+// withOpenAttempt; Cross and Finish check inline, because each returns a
+// *Lease and that callback returns only an error. Cross is also the sole door across
 // the irreversible boundary, and it takes j.mu itself rather than going
 // through withOpenAttempt because it must yield the lease under the same
 // lock it mutates the attempt under — entering Production and giving up the
 // lease cannot happen as two separate calls without a window where one could
 // be forgotten. Transition refuses the one Correctness→Production edge
 // outright (ErrCrossRequired) precisely so Cross is the only way to take it.
-// TestCrossedWrites_ and TestOutcomeWrites_MatchTheEnumerationStatedInProse
-// pin Cross and Finish as the sole writers of crossed and outcome
-// respectively.
+// TestCrossedWrites_MatchTheEnumerationStatedInProse and
+// TestOutcomeWrites_MatchTheEnumerationStatedInProse (writer_enumeration_test.go)
+// pin the sole writers of crossed and outcome. Note what they name: the
+// unexported Attempt methods cross and finish, not the exported Job doors
+// Cross and Finish. The doors take the lock and yield the lease; the methods
+// are what actually assign the fields, and the enumeration asserts against
+// the assignment, so it is the method names that appear in it.
 //
 // # One decider
 //

@@ -34,12 +34,21 @@ var correctnessStates = map[State]bool{
 	Repairing: true,
 }
 
+// productionStates is the other half of the oracle, and is package-level for
+// the same reason correctnessStates is: checkReachableConfig judges "has this
+// job been in Production" with it, replaying the sequence rather than reading
+// a.crossed, so the code's own latch is not both the thing under test and the
+// thing testing it.
+var productionStates = map[State]bool{
+	Extracting: true,
+	Finalizing: true,
+}
+
 // TestReachabilityOracleClassifiesEveryState fails when AllStates() grows a
 // member correctnessStates does not name. Without it, a new state defaults
 // to "not Correctness" in checkReachableConfig and the boundary walk
 // silently stops checking it.
 func TestReachabilityOracleClassifiesEveryState(t *testing.T) {
-	productionStates := map[State]bool{Extracting: true, Finalizing: true}
 	for _, s := range AllStates() {
 		if s == Finished {
 			continue
@@ -213,14 +222,38 @@ func TestBoundaryIsUnreachableByAnyPath(t *testing.T) {
 func checkReachableConfig(t *testing.T, j *Job, seq []action) bool {
 	t.Helper()
 
-	var everCrossed bool
-	for i := range j.attempts {
-		if j.attempts[i].crossed {
-			everCrossed = true
-			break
+	// The oracle for "this job has been in Production" is REPLAYED HISTORY
+	// judged by the literal productionStates map — deliberately not
+	// a.crossed. Reading the latch would repeat, one level deeper, the
+	// mistake the correctnessStates literal exists to avoid: crossed is
+	// written by cross and by nothing else (TestCrossedWrites_… pins that),
+	// so a latch-based oracle can only see escapes that went THROUGH Cross.
+	// An escape that reaches Extracting by some other route leaves crossed
+	// false, this function returns early, and both assertions below run on
+	// nothing — on precisely the configurations that constitute the escape.
+	//
+	// That is not hypothetical. Deleting transition's ErrCrossRequired guard
+	// (attempt.go) opens exactly that route, and against a latch-based oracle
+	// this test walked 1999 configurations, reported the same 76 crossed, and
+	// PASSED, while
+	//   BeginAttempt → Transition(Assessing) → Transition(Extracting)
+	//   → Transition(Finalizing) → Finish(OK) → BeginAttempt
+	// left a job in Fetching having been in Production — escape #2's shape.
+	// Only the two single-edge tests went red, which is the same class of
+	// test that missed both prior escapes.
+	//
+	// Replaying costs O(depth) per configuration and the walk runs in ~20ms,
+	// so the price of an independent oracle is not worth optimising away.
+	base := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
+	probe := New("probe", "probe", Policy{})
+	var everProduction bool
+	for i, a := range seq {
+		a.apply(probe, base.Add(time.Duration(i)*time.Second))
+		if productionStates[probe.State().State] {
+			everProduction = true
 		}
 	}
-	if !everCrossed {
+	if !everProduction {
 		return false
 	}
 
@@ -230,19 +263,16 @@ func checkReachableConfig(t *testing.T, j *Job, seq []action) bool {
 	// as classified by the literal oracle above, not by IsCorrectness itself.
 	if correctnessStates[v.State] {
 		t.Errorf("reachable configuration violates the one-way boundary: %s\n"+
-			"an attempt of this job crossed into Production, yet the job is now in %s, "+
-			"which is a Correctness state (spec §4)", trace(seq), v.State)
+			"this job reached a Production state during the sequence above, yet it is now in %s, "+
+			"which is a Correctness state (spec §4). Note the premise is a REPLAYED Production "+
+			"visit, not a.crossed — a route into Production that never sets the latch violates "+
+			"this just as surely", trace(seq), v.State)
 	}
 
 	// (2) Unrecoverable must stay refused past the boundary, including across
 	// a settle that has overwritten a.state with Finished. Probed on a
 	// REPLAYED job so the attempt is not consumed for the walk's other
 	// successors.
-	probe := New("probe", "probe", Policy{})
-	base := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
-	for i, a := range seq {
-		a.apply(probe, base.Add(time.Duration(i)*time.Second))
-	}
 	_, err := probe.Finish(OutcomeUnrecoverable, base.Add(time.Hour))
 	if err == nil {
 		t.Errorf("reachable configuration accepted OutcomeUnrecoverable after crossing: %s\n"+

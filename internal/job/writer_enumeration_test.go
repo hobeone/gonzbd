@@ -17,11 +17,15 @@ import (
 // a keyed `field: x` composite-literal element that legitimately sets the
 // field apart from an unrelated struct that happens to reuse the same field
 // name — outcome, next and crossed are Attempt's; attempts, intent and lease
-// are Job's. `git grep -n '\boutcome\b\|\bnext\b\|\bcrossed\b\|\battempts\b\|\bintent\b\|\blease\b' --
-// 'internal/job/*.go' ':!internal/job/*_test.go'` shows no OTHER struct in
-// this package declaring a field with any of these six names, which is why
-// matching on the field name alone (ignoring the literal's type) would still
-// be correct today — this table exists so that stops being an accident if a
+// are Job's. The claim that no OTHER struct here declares any of these six
+// names is established by reading the declarations, not by grepping the
+// names: `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns six types — Attempt, Job, Lease, Policy,
+// RenderView, StateView — and only the first two declare any of these fields.
+// A grep for the field names themselves returns ~50 lines of comments and
+// error strings that no reader can filter into an answer, which is why it is
+// not the citation. Matching on the field name alone would therefore still be
+// correct today; this table exists so that stops being an accident if a
 // seventh type is added later.
 var fieldOwner = map[string]string{
 	"outcome":  "Attempt",
@@ -133,6 +137,30 @@ func scanWriters(t *testing.T, field string) []string {
 				// "any composite literal with a key or element named
 				// field" — otherwise an unrelated struct that happens to
 				// have its own field called field would be misattributed.
+				// An elided type — the inner literal of []Attempt{{...}} or
+				// map[K]Attempt{k: {...}} — parses with node.Type == nil.
+				// Skipping those silently is the hole this scan exists to
+				// close: a write through one would not be counted and the
+				// enumeration would pass while a second writer existed. The
+				// type cannot be resolved without go/types, so attribute
+				// nothing and fail loudly instead, but only when the literal
+				// actually names the field — transition.go's legalEdges rows
+				// ({Assessing}) are elided too and name nothing.
+				if node.Type == nil {
+					for _, elt := range node.Elts {
+						kv, ok := elt.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						if key, ok := kv.Key.(*ast.Ident); ok && key.Name == field {
+							t.Fatalf("%s: %s builds a composite literal with an elided type that "+
+								"sets %s; this scan cannot tell which type it constructs, so it "+
+								"can neither attribute nor dismiss the write — name the element "+
+								"type explicitly at that literal", name, label, field)
+						}
+					}
+					return true
+				}
 				ident, ok := node.Type.(*ast.Ident)
 				if !ok || ident.Name != owner {
 					return true

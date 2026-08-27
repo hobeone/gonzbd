@@ -616,10 +616,14 @@ func TestJob_FinishYieldsTheLease(t *testing.T) {
 }
 
 // TestJob_CrossAndFinishDoNotDeadlock is the pin for the reason surrenderLocked
-// exists. withOpenAttempt takes j.mu and holds it across its callback, and
-// sync.RWMutex is not reentrant: a door calling the exported Surrender() from
-// there would hang the job permanently, with no error and no timeout. A
-// deadlocked test does not fail, it hangs, so this runs under a watchdog.
+// exists. Cross and Finish take j.mu in their own bodies and hold it while
+// they mutate the attempt and yield the lease; sync.RWMutex is not reentrant,
+// so either one calling the exported Surrender() — which takes j.mu itself —
+// would hang the job permanently, with no error and no timeout. (They hold the
+// lock directly rather than through withOpenAttempt, whose callback returns
+// only an error and so cannot hand back the lease; the hazard is the same
+// either way, but it is their own Lock() that creates it here.) A deadlocked
+// test does not fail, it hangs, so this runs under a watchdog.
 func TestJob_CrossAndFinishDoNotDeadlock(t *testing.T) {
 	for _, tc := range []struct {
 		name string

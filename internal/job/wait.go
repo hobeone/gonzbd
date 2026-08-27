@@ -2,16 +2,24 @@ package job
 
 import "fmt"
 
-// WaitReason is why a job is held at a state boundary. Waiting for a lease,
-// waiting for a compute slot, and being paused are the same situation — the
-// job is at a known boundary, holds nothing, decides nothing, and is blocked
-// on permission — so they are one state with a reason rather than three
-// states (spec §8.2).
+// WaitReason is why a job is not running. Waiting for a lease, waiting for a
+// compute slot, and being paused are the same situation — the job holds
+// nothing, decides nothing, and is blocked on permission — so they are one
+// reason-carrying value rather than three states.
+//
+// They were once literally one State, called Waiting, with this as its
+// reason. That state is gone: a job that cannot proceed now stays in its work
+// state and is simply not running, and the reason is derived by the Queue
+// rather than stored on the attempt — it reaches consumers as a field on
+// RenderView (render.go), not StateView. Nothing in this package writes it.
 type WaitReason uint8
 
 const (
-	// NoLease means no acquisition lease is available. This is also the
-	// reason a job that has never run is waiting.
+	// NoLease means no acquisition lease is available. It is the zero
+	// WaitReason, which suits a job that is not running for want of one.
+	// Note a never-run job no longer carries a reason of its own — with
+	// Waiting removed there is no pre-attempt state to hold one, and
+	// Job.State() reports StateUnset for that case.
 	NoLease WaitReason = iota
 	// NoComputeSlot means no compute slot is available.
 	NoComputeSlot

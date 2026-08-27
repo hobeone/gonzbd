@@ -2,6 +2,7 @@ package job
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -18,9 +19,22 @@ func TestAllIntents_EveryEntryHasAStringArm(t *testing.T) {
 		t.Fatal("AllIntents() is empty")
 	}
 	for _, i := range all {
-		if got := i.String(); got == "" || got[0] == 'I' && got == "Intent(" {
-			t.Errorf("Intent(%d).String() = %q, which is not a declared arm", uint8(i), got)
+		// Compare against the exact fallback String() would produce for this
+		// value. The earlier form — `got == "" || got[0] == 'I' && got ==
+		// "Intent("` — asserted nothing: && binds tighter than ||, and no
+		// value can render as the bare prefix "Intent(", so the whole
+		// condition collapsed to `got == ""`, which String() never returns.
+		// Deleting IntentPause's arm left that version green. This is the
+		// idiom the three sibling enum tests in this package already use
+		// (outcome_test.go, activity_test.go, wait_test.go).
+		if got := i.String(); got == "Intent("+strconv.Itoa(int(i))+")" {
+			t.Errorf("Intent(%d) is in AllIntents() but falls to the default String() arm (%q); "+
+				"every declared intent needs its own case", uint8(i), got)
 		}
+	}
+	if len(all) != 3 {
+		t.Errorf("AllIntents() has %d entries, expected 3; a new intent needs a String() arm, "+
+			"a row in TestIntent_String, an IsLatched() decision, and this count updated", len(all))
 	}
 	if got := Intent(200).String(); got != "Intent(200)" {
 		t.Errorf("Intent(200).String() = %q, want the fallback form", got)

@@ -7,17 +7,26 @@ import (
 	"time"
 )
 
-// ErrNoOpenAttempt is returned by the four mutators withOpenAttempt wraps —
-// Transition, SetNext, SetActivity and Finish — when the job has no attempt
-// in flight, either because it has never run or because its last attempt is
-// settled. BeginAttempt is also a mutator but does not go through
-// withOpenAttempt and so never returns this error: it is what opens an
+// ErrNoOpenAttempt is returned by every door that needs an attempt already in
+// flight, when the job has none — either because it has never run or because
+// its last attempt is settled. Five doors return it, by two different routes:
+// Transition, SetNext and SetActivity through withOpenAttempt (`git grep -n
+// 'withOpenAttempt(fun[c]' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
+// returns those three call sites and nothing else; the bracket keeps this
+// citation from matching its own text, and the pathspec drops the tests that
+// call the helper directly), and Cross and Finish from their own inline check, because
+// each must yield the lease under the lock it mutates under and
+// withOpenAttempt's callback returns only an error. BeginAttempt is also a
+// mutator but never returns this error: it is what opens an
 // attempt in the first place. The caller's fix for this error is
 // BeginAttempt, which is the only door into the machine.
 var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
 // ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
-// attempt crossed into Production (IsProduction). D3 says crossing deletes
+// attempt crossed into Production. The guard reads a.crossed, deliberately
+// NOT IsProduction(a.state): finish overwrites a.state with Finished, so by
+// the time BeginAttempt looks, IsProduction would read false on exactly the
+// attempts this must refuse. D3 says crossing deletes
 // archives, moves files, and consumes the inputs a later attempt would need
 // — "not crossing keeps the job retryable" — so a fresh attempt on THIS job
 // is no longer a legal way to retry it once one has crossed. The Attempt
@@ -263,10 +272,18 @@ func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) {
 	return j.surrenderLocked(), nil
 }
 
-// withOpenAttempt is the single door every mutator goes through: take the
-// write lock, resolve the open attempt or fail, apply. One door rather than
-// four copies of the same preamble, so "must there be an open attempt?" has
-// one answer that cannot drift between mutators.
+// withOpenAttempt is the shared preamble for the three mutators that need
+// nothing back but an error: take the write lock, resolve the open attempt or
+// fail, apply. Transition, SetNext and SetActivity go through it.
+//
+// Cross and Finish deliberately do not, and cannot: each must return the
+// *Lease it yields, and this callback returns only an error. They repeat the
+// preamble inline instead — the same lock, the same currentLocked, the same
+// isOpen check, in the same order. That is three copies of the question "must
+// there be an open attempt?" rather than one, so it CAN drift between them;
+// what keeps it honest is TestJob_MutatorsRequireAnOpenAttempt, which drives
+// all five doors — Transition, SetNext, SetActivity, Finish and Cross — at a
+// never-run job and requires ErrNoOpenAttempt from each. Not this helper.
 func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()

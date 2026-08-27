@@ -12,13 +12,14 @@ import (
 // second assignment is exactly the mutation the design exists to prevent.
 //
 // Unexported: this error is reachable only from an in-package caller of
-// Attempt.finish directly (e.g. this package's own tests). Job.Finish goes
-// through withOpenAttempt, whose !a.isOpen() check fires first on a settled
-// attempt and returns ErrNoOpenAttempt instead — a strict superset of this
-// check, since isOpen() is itself defined as outcome == OutcomePending. No
-// external caller can ever reach this branch through the public API, so
-// exporting it would be a dead sentinel — see withOpenAttempt in job.go,
-// which deliberately does not surface this error.
+// Attempt.finish directly (e.g. this package's own tests). Job.Finish checks
+// !a.isOpen() itself, before calling this method, and returns ErrNoOpenAttempt
+// on a settled attempt — a strict superset of this check, since isOpen() is
+// defined as outcome == OutcomePending. (Finish does that check inline rather
+// than through withOpenAttempt, which it cannot use because it must return the
+// yielded lease; the shadowing is the same either way.) No external caller can
+// reach this branch through the public API, so exporting it would be a dead
+// sentinel.
 var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
@@ -61,8 +62,8 @@ var ErrFinishRequired = errors.New("job: transition cannot reach Finished; call 
 // OutcomePending (not a verdict at all) or a value AllOutcomes() does not
 // declare. Exported, unlike errOutcomeAlreadySet: an external caller of
 // Job.Finish can pass an arbitrary Outcome and observe this branch directly
-// (withOpenAttempt's !a.isOpen() guard does not shadow it the way it shadows
-// the write-once case), so a caller distinguishing "bad argument" from other
+// (Finish's own !a.isOpen() guard does not shadow it the way it shadows the
+// write-once case), so a caller distinguishing "bad argument" from other
 // finish failures needs a sentinel to match against.
 var ErrInvalidOutcome = errors.New("job: invalid outcome")
 
@@ -89,8 +90,11 @@ var ErrCrossRequired = errors.New("job: transition cannot cross the boundary; ca
 // persists across that.
 //
 // Every field is unexported and every mutator is package-private. Job is the
-// only caller, and it holds its own lock across each of these; Attempt does
-// no locking of its own.
+// only NON-TEST caller — this package's own tests drive a.transition, a.cross,
+// a.setNext and a.finish directly, which is how the attempt-level guards get
+// exercised without a Job around them. Job holds its own lock across each of
+// these; Attempt does no locking of its own, so an in-package caller that is
+// not Job is responsible for whatever synchronisation it needs.
 type Attempt struct {
 	state    State
 	next     State
@@ -240,6 +244,20 @@ func (a *Attempt) cross(to State) error {
 	if a.next != to {
 		return fmt.Errorf("%w: %s is recorded; cross cannot take %s instead", ErrIllegalTransition, a.next, to)
 	}
+	// Unreachable today, and kept deliberately. To get here, to must be a
+	// Production state, a.state must be Assessing, and a.next must equal to —
+	// and setNext only admits an n with CanTransition(a.state, n), which from
+	// Assessing means {Fetching, Repairing, Extracting}. Intersect those and
+	// to can only be Extracting, for which CanTransition(Assessing,
+	// Extracting) is true. Deleting this block changes no test, because no
+	// test can construct a case that reaches it with a false condition.
+	//
+	// It stays because what makes it unreachable is not one owner but a
+	// cross-field invariant — "a.next is always consistent with the a.state it
+	// was validated against" — maintained by every writer of a.state clearing
+	// next (transition, cross, finish). Rule 2 prefers an owner to a check
+	// precisely because a rule spread across several writers can be forgotten
+	// by one of them, and this is the check that would notice.
 	if !CanTransition(a.state, to) {
 		return illegalTransition(a.state, to)
 	}
