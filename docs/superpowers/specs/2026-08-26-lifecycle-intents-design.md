@@ -288,8 +288,19 @@ Three rules on `SetNext`:
    the boundary skipping repair — defect 3's mechanism surviving into a new
    door.
 3. **Cleared by the move.** `transition` and `Cross` each clear `next` as part
-   of taking it. Nothing else clears it, so an attempt that never re-enters
-   `Assessing` cannot carry a stale verdict.
+   of taking it, so an attempt that never re-enters `Assessing` cannot carry a
+   stale verdict.
+
+   > **Corrected during implementation (Half A, commit `779f95e6`).** This rule
+   > originally read "Nothing else clears it", and that is wrong: `finish`
+   > clears `next` too. A settled attempt that kept a destination would report
+   > a move it will never take, and `Finished` has no outgoing edge for it to
+   > name. So `next` has **four** writers, not three — `setNext` sets it;
+   > `transition`, `Cross` and `finish` clear it — and
+   > `TestNextWrites_MatchTheEnumerationStatedInProse` asserts exactly that
+   > four. `TestAttempt_FinishClearsNext` pins the clearing itself. §6.8's
+   > wording ("`SetNext`/`transition`/`Cross` the only writers of `next`")
+   > inherits the same error and is superseded by this note.
 
 `transition` keeps its `to == next` check. Its justification changes: with
 `Waiting` gone it no longer guards the boundary, and its sole remaining purpose
