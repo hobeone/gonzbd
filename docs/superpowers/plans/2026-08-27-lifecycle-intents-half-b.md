@@ -77,6 +77,61 @@ Hence: Tasks 1–4 give the cross-axis rules, lease identity and composite reads
 
 ---
 
+## What the RFC review round changed
+
+Issue #445 drew a review that found six defects, all six real. They share one
+shape, and it is the shape this plan was written to prevent — which is the
+useful part, because it means the diagnosis was right and its application was
+incomplete.
+
+**Pool A had an owner; pool B had none.** Task 4 gave the lease `reclaim`, an
+identity audit and a conservation walk. The compute slot got two acquisition
+sites and, before this round, exactly **one** production release —
+`grep -n 'slots\.release'` inside `finishCancel`. Three leaks followed directly:
+
+| Leak | Path | Cost |
+|---|---|---|
+| Demotion | `Assessing → Fetching` — `grantFor` acquires for the destination, nothing frees the origin's slot | pool-B slot held for an entire download |
+| Park | `park` surrendered the lease only | paused job holds a slot indefinitely |
+| Settlement | `Advance` returns early on a settled attempt | slot never freed after any completion |
+
+A fourth was ordering: `finishCancel` released the slot *after* `reclaim`, so an
+audit failure returned through the error path with the slot still held —
+turning one recoverable error into a permanent leak.
+
+**The fix is an owner, not four call-site patches.** `releaseFor(j, s)` is
+`grantFor`'s dual — it frees what `s` does not require, and `job.StateUnset`
+requires nothing — and it sits beside `reclaim` in `queue.go` so pool A and
+pool B have their single return paths in one place. Rule 2 says take the owner
+over the check, and this is the case the rule was written for: four checks, one
+of which was forgotten in three places.
+
+**Why every test stayed green.** `TestResourcesAreConservedAcrossEveryExit`
+walked pool A alone. It now walks both, from the same §3.9 exit table.
+
+**And one the review did not name.** `TestCancel_ReleasesTheComputeSlot` — the
+only test claiming to pin the one release that did exist — was **vacuous**. Its
+fixture called `q.slots.release(j.ID())` before `q.Cancel(j)`, so
+`q.slots.outstanding() == 0` held no matter what `finishCancel` did; deleting
+the release under test would not have turned it red. The fixture did that to
+make `running()` false so cancel would settle rather than abort, and in doing so
+removed the only slot the assertion could observe. It now uses `SetNext`
+instead: `running` is `IsOpen && holds && Next == StateUnset` (§3.4), so a job
+whose work has finished is not running **and still holds everything its
+position required** — which is the configuration where the leak actually bites.
+
+This is the same failure Half A shipped and this plan's own opening section
+indicts: a test written alongside a fix, asserting the state the fix produced
+rather than the behaviour it changed. It survived a plan review *and* a
+cross-model review before a per-finding verification pass caught it.
+
+**A fifth finding was a missing door.** Spec §5.9 and §5.10 write `q.Retry(j)`
+into their traces and two comments in this package point callers at it, but
+`Queue` never declared it — so two of the thirteen mandated scenario tests had
+no entry point. Task 7 now defines it.
+
+---
+
 ## Scope: this is Half B1
 
 The spec (§4.8) scopes Half B as "`gatedBy`, `waitReason`, `grantFor`, `advance`, `Cancel`, the composed view, `ToSABnzbd`'s inputs, the pools", landing as "an amendment to the swap plan's item 3". `internal/queue` is 27,204 lines and already declares `type Queue struct` at `queue.go:74`. Replacing it is not one plan.
@@ -107,9 +162,9 @@ This plan is **B1: the decision core, standing alone.** It produces working, tes
 |---|---|
 | `requirements.go` | §3.4's per-state resource table: `needsLease`, `needsSlot`. Total over `AllStates()`. |
 | `pool.go` | `leasePool` (identity-tracked, audits returns) and `slotPool` (counted by job ID). |
-| `queue.go` | `Queue` struct, `holds`, `running`, `gatedBy`, `waitReason` — the pure predicates. |
+| `queue.go` | `Queue` struct, `holds`, `running`, `gatedBy`, `waitReason` — the pure predicates — plus the two resource-return owners, `reclaim` (pool A) and `releaseFor` (pool B). |
 | `cancel.go` | `Cancel`, `finishCancel`. Lands before `advance.go`, which calls into it. |
-| `advance.go` | `advance`'s three branches, `park`, `grantFor`. |
+| `advance.go` | `advance`'s three branches, `park`, `grantFor`, `Retry`. |
 | `scenario_test.go` | Each of spec §5.1–5.13 as a named test. |
 
 ---
@@ -1007,7 +1062,7 @@ git commit  # feat(sched): add the resource requirements table and the audited p
 
 **Interfaces:**
 - Consumes: `needsLease`, `needsSlot`, `newLeasePool`, `newSlotPool` (Task 4); `job.Snapshot` (Task 3)
-- Produces: `type Queue struct`, `func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue`, `type Workers interface`, `(*Queue).holds(id string, s job.Snapshot) bool`, `(*Queue).running(id string, s job.Snapshot) bool`, `(*Queue).gatedBy(s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).waitReason(id string, s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).reclaim(l *job.Lease) error`
+- Produces: `type Queue struct`, `func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue`, `type Workers interface`, `(*Queue).holds(id string, s job.Snapshot) bool`, `(*Queue).running(id string, s job.Snapshot) bool`, `(*Queue).gatedBy(s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).waitReason(id string, s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).reclaim(l *job.Lease) error`, `(*Queue).releaseFor(j *job.Job, s job.State)`
 
 Every predicate takes a `job.Snapshot` and a job ID, never a `*job.Job`. That is what makes purity structural: a function with no `*Job` cannot call a door.
 
@@ -1250,6 +1305,36 @@ func (q *Queue) now() time.Time { return q.clock() }
 // task, and every commit must leave the repository building.
 func (q *Queue) reclaim(l *job.Lease) error { return q.leases.reclaim(l) }
 
+// releaseFor is the SOLE owner of slot release, and grantFor's dual: it frees
+// what s does not require. job.StateUnset requires nothing, which is how park,
+// settlement and cancel free everything without naming pool B at the call.
+//
+// It lives here beside reclaim, rather than beside grantFor in advance.go, for
+// exactly reclaim's reason: finishCancel needs it and Cancel lands first.
+// Together the two are pool A's and pool B's single return paths.
+//
+// It exists because a review of this plan found THREE separate slot leaks —
+// the Assessing → Fetching demotion, park, and settlement — where a per-site
+// release would have had to be remembered at each, and was not. The asymmetry
+// was total and is the whole argument: the lease got an owner in Task 4 and
+// leaked nowhere; the slot had none and leaked everywhere.
+//
+// The asymmetry was not acquire-count versus release-count. Acquisition
+// already HAD an owner — grantFor is the sole production caller of
+// slots.acquire (`grep -n 'slots\.acquire'` returns four hits, three of them
+// in tests). Release had no owner at all: one ad-hoc call inside finishCancel,
+// which is why the three paths that never reach finishCancel each leaked.
+//
+// Slots differ from leases in that nothing travels with them: the job does not
+// carry one, so there is no Surrender to mirror, and release is idempotent
+// (slotPool.release is a map delete). That is why this takes a *job.Job and a
+// target state rather than a token.
+func (q *Queue) releaseFor(j *job.Job, s job.State) {
+	if !needsSlot(s) {
+		q.slots.release(j.ID())
+	}
+}
+
 // holds reports whether the job holds everything its CURRENT position
 // requires. It says nothing about whether the attempt is open — running()
 // adds that, and §3.4 explains why the two must stay separate.
@@ -1411,11 +1496,28 @@ func TestCancel_PostBoundaryNotRunningSettlesAtOnce(t *testing.T) {
 // TestCancel_ReleasesTheComputeSlot pins the leak §3.7 names: Assessing and
 // Repairing hold a slot alongside the lease, and an earlier revision reclaimed
 // only the lease, leaking pool-B capacity on every cancel from those states.
+//
+// The job must hold the slot AT the moment Cancel runs, or this test asserts
+// nothing. An earlier draft released it in the fixture — to make running()
+// false so cancel would settle rather than abort — and thereby removed the
+// only slot the assertion could have caught. It passed against a finishCancel
+// that released nothing.
+//
+// SetNext is what makes the job settle-able while still holding: running() is
+// `IsOpen && holds && Next == StateUnset` (§3.4), so a job whose work has
+// FINISHED is not running yet still holds everything Assessing required. That
+// is a real configuration — the assessor is done and the job is waiting to
+// move — and it is the one where the leak bites.
 func TestCancel_ReleasesTheComputeSlot(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
 	mustHoldAt(t, q, j, job.Assessing)
-	q.slots.release(j.ID()) // the assessor finished and yielded its slot
+	if err := j.SetNext(job.Repairing); err != nil {
+		t.Fatalf("SetNext: %v", err)
+	}
+	if !q.slots.holds(j.ID()) {
+		t.Fatal("fixture holds no slot; this test cannot observe a slot leak")
+	}
 	if err := q.Cancel(j); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
@@ -1479,10 +1581,14 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 		return nil
 	}
 	l, err := j.Finish(job.OutcomeCancelled, q.now())
+	// Freed BEFORE the reclaim, and unconditionally. reclaim can fail its
+	// identity audit, and the earlier order returned through that failure with
+	// the slot still held — turning one audit error into a permanent pool-B
+	// leak. Nothing here depends on the reclaim succeeding.
+	q.releaseFor(j, job.StateUnset)
 	if rerr := q.reclaim(l); rerr != nil {
 		return rerr
 	}
-	q.slots.release(j.ID()) // Assessing and Repairing hold one too
 	return err
 }
 ```
@@ -1558,7 +1664,8 @@ git commit  # feat(sched): add Cancel with the running-based post-boundary gate
 
 **Interfaces:**
 - Consumes: Tasks 4 and 5; `finishCancel` from Task 6
-- Produces: `(*Queue).grantFor(j *job.Job, s job.State) bool`, `(*Queue).park(j *job.Job) error`, `(*Queue).reclaim(l *job.Lease) error`, `(*Queue).Advance(j *job.Job) error`
+- Produces: `(*Queue).grantFor(j *job.Job, s job.State) bool`, `(*Queue).park(j *job.Job) error`, `(*Queue).Advance(j *job.Job) error`, `(*Queue).Retry(j *job.Job) error`
+- Consumes additionally: `(*Queue).releaseFor` and `(*Queue).reclaim` (Task 5)
 
 `Advance` is exported because it is the scheduling loop's entry point; the predicates stay unexported.
 
@@ -1638,6 +1745,46 @@ func TestAdvance_ParkingAGatedJobReturnsItsLease(t *testing.T) {
 	if q.leases.outstanding() != 0 {
 		t.Errorf("leases outstanding = %d after parking, want 0", q.leases.outstanding())
 	}
+	// Pool B is the half §3.8's argument never mentions, and the half an
+	// earlier draft leaked: Assessing holds a slot, and parking returned only
+	// the lease. A paused job occupying a compute slot is the same deadlock
+	// wearing the other pool's name.
+	if q.slots.outstanding() != 0 {
+		t.Errorf("slots outstanding = %d after parking, want 0", q.slots.outstanding())
+	}
+}
+
+// TestAdvance_DemotionReleasesTheSlot pins the one demotion in the work spine.
+// Assessing → Fetching is legal (par2 decided more blocks are needed) and it
+// moves the job from a state that needs a slot to one that does not: §3.4 gives
+// Fetching no slot because it is network-bound.
+//
+// grantFor cannot catch this. It acquires what the DESTINATION requires and is
+// silent about what the ORIGIN held, so the job kept a pool-B slot for the
+// whole download — minutes to hours — with every test green.
+func TestAdvance_DemotionReleasesTheSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustAdvanceTo(t, q, j, job.Assessing)
+	if !q.slots.holds(j.ID()) {
+		t.Fatal("fixture holds no slot at Assessing; this test cannot observe the leak")
+	}
+	if err := j.SetNext(job.Fetching); err != nil {
+		t.Fatalf("SetNext: %v", err)
+	}
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if got := j.Snapshot().State.State; got != job.Fetching {
+		t.Fatalf("State = %v, want Fetching; the demotion did not happen and the "+
+			"slot assertion below would pass for the wrong reason", got)
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("still holds a compute slot in Fetching; §3.4 gives Fetching none")
+	}
+	if !j.HoldsLease() {
+		t.Error("lost its lease on a demotion; Fetching needs one and the job had it")
+	}
 }
 ```
 
@@ -1664,7 +1811,10 @@ import "github.com/hobeone/gonzbd/internal/job"
 // gave reclaim an identity audit, so it now fails on a lease this pool did not
 // issue or already took back — a real condition, and one whose only other
 // outlet would be silence.
-func (q *Queue) park(j *job.Job) error { return q.reclaim(j.Surrender()) }
+func (q *Queue) park(j *job.Job) error {
+	q.releaseFor(j, job.StateUnset)
+	return q.reclaim(j.Surrender())
+}
 
 // grantFor acquires what s requires and j does not already hold. Acquisition
 // happens ONLY here.
@@ -1695,6 +1845,25 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 	return true
 }
 
+// Retry reopens a settled attempt. It is the door spec §5.9 and §5.10 name in
+// their traces (`q.Retry(j) → BeginAttempt(now)`), and two comments in this
+// package already point callers at it; without it those traces have no entry
+// point and scenarios 5.9 and 5.10 cannot be written.
+//
+// It is deliberately NOT something Advance decides. A scheduling tick must
+// never resurrect a job the user has not asked to resurrect, which is why
+// Advance returns early on a settled attempt instead.
+//
+// It takes NO lease. BeginAttempt needs none (D-I12), and demanding one is the
+// exact defect revision 3 shipped: §5.9 records a retry dropped permanently
+// because the lease could not be taken and nothing recorded that a retry was
+// wanted. Branch 2 grants on a later tick.
+func (q *Queue) Retry(j *job.Job) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return j.BeginAttempt(q.now())
+}
+
 // Advance is the scheduling loop's entry point for one job. It writes no job
 // state on any blocked path, so a lost acquisition race costs a tick, never a
 // verdict. It takes no target — the target is next, written by the worker that
@@ -1717,8 +1886,14 @@ func (q *Queue) Advance(j *job.Job) error {
 		return j.BeginAttempt(q.now())
 	}
 	// A SETTLED attempt is never reopened here. Retry is an explicit user
-	// action, not something a scheduling tick decides.
+	// action, not something a scheduling tick decides — q.Retry is the door.
 	if s.State.Outcome.IsSettled() {
+		// A settled attempt KEEPS the position it settled at (§3.3) but needs
+		// none of that position's resources. Without this, a job that settles
+		// in Assessing, Repairing, Extracting or Finalizing holds pool-B
+		// capacity forever: no other path frees it, because every other
+		// release is on a path a settled job never takes again.
+		q.releaseFor(j, job.StateUnset)
 		return nil
 	}
 	// 2. Current state's work is unfinished: make it runnable. This is the
@@ -1755,7 +1930,17 @@ func (q *Queue) Advance(j *job.Job) error {
 	if !q.grantFor(j, s.State.Next) {
 		return nil
 	}
-	return j.Transition(s.State.Next)
+	if err := j.Transition(s.State.Next); err != nil {
+		return err
+	}
+	// A DEMOTION frees what the new position does not need. Assessing →
+	// Fetching is the live case and the only one in the work spine: Assessing
+	// holds a slot, Fetching is network-bound and holds none (§3.4), so
+	// without this the job downloads for minutes or hours while occupying
+	// pool B. Released AFTER the move, so a refused Transition cannot leave
+	// the job resourceless at the position it is still occupying.
+	q.releaseFor(j, s.State.Next)
+	return nil
 }
 ```
 
@@ -1838,14 +2023,17 @@ This is spec §6 test 4 ("each scenario in §5 is a test") and test 4b ("no path
 - [ ] **Step 1: Write the conservation walk**
 
 ```go
-// TestLeasesAreConservedAcrossEveryExit is spec §6 test 4b — the only test
+// TestResourcesAreConservedAcrossEveryExit is spec §6 test 4b — the only test
 // that would have caught all five of revision 3's leaks at once.
 //
-// It walks §3.9's exit table and asserts pool-A occupancy returns to its
-// starting value. This is checkable only because leasePool audits identity
+// It walks §3.9's exit table and asserts that BOTH pools return to their
+// starting occupancy. It covered only pool A when this plan was reviewed,
+// which is exactly why three pool-B leaks sat in the plan with every test
+// green: §3.9 is an exit table, not a lease table, and a job leaves through it
+// holding whatever its position required. This is checkable only because leasePool audits identity
 // (Task 4): job.Cross and job.Finish return a *Lease a caller can silently
 // drop, and no compiler check or linter sees that.
-func TestLeasesAreConservedAcrossEveryExit(t *testing.T) {
+func TestResourcesAreConservedAcrossEveryExit(t *testing.T) {
 	exits := []struct {
 		name string
 		run  func(t *testing.T, q *Queue, j *job.Job)
@@ -1874,7 +2062,12 @@ func TestLeasesAreConservedAcrossEveryExit(t *testing.T) {
 		}},
 		{"cancel", func(t *testing.T, q *Queue, j *job.Job) {
 			mustAdvanceTo(t, q, j, job.Assessing)
-			q.slots.release(j.ID())
+			// SetNext rather than a fixture slot release: the job must still
+			// hold its slot when Cancel runs, or the pool-B half of this walk
+			// is vacuous for this row. See TestCancel_ReleasesTheComputeSlot.
+			if err := j.SetNext(job.Repairing); err != nil {
+				t.Fatalf("SetNext: %v", err)
+			}
 			if err := q.Cancel(j); err != nil {
 				t.Fatalf("Cancel: %v", err)
 			}
@@ -1913,11 +2106,20 @@ func TestLeasesAreConservedAcrossEveryExit(t *testing.T) {
 		t.Run(e.name, func(t *testing.T) {
 			q := New(1, 1, testClock, &stubWorkers{})
 			j := job.New("j1", "n", job.Policy{})
-			before := q.leases.outstanding()
+			beforeA, beforeB := q.leases.outstanding(), q.slots.outstanding()
 			e.run(t, q, j)
-			if got := q.leases.outstanding(); got != before {
+			if got := q.leases.outstanding(); got != beforeA {
 				t.Errorf("pool-A occupancy %d → %d across %q; a lease was lost or double-returned",
-					before, got, e.name)
+					beforeA, got, e.name)
+			}
+			// Pool B is walked by the SAME table, and its absence is why three
+			// slot leaks survived into this plan: park, settlement and the
+			// Assessing → Fetching demotion each exited without freeing a
+			// slot, and no test looked. A conservation walk that covers one
+			// pool of two reads as coverage while proving half the claim.
+			if got := q.slots.outstanding(); got != beforeB {
+				t.Errorf("pool-B occupancy %d → %d across %q; a compute slot was leaked",
+					beforeB, got, e.name)
 			}
 		})
 	}
@@ -1933,6 +2135,30 @@ Expected: PASS.
 
 In `advance.go` branch 3, change `l, err := j.Cross(...)` / `q.reclaim(l)` to `_, err := j.Cross(...)` — the exact caller mistake no linter sees.
 Expected: FAIL on `cross into Production` with `pool-A occupancy 1 → 1` versus a start of 0… **run it and record the actual message**; if it does not fail, the walk's starting baseline is wrong and must be taken before the job acquires anything. Restore from your own copy.
+
+- [ ] **Step 3b: Mutate each of the three slot releases, one at a time**
+
+Pool B needs its own mutations, and they are the reason this step exists: every
+one of these leaks was present in a draft of this plan while the whole suite
+was green, because the walk covered pool A alone.
+
+Neuter each `q.releaseFor(...)` call by making the guard unreachable — change
+`if !needsSlot(s)` in `releaseFor` to `if false` for the whole-owner mutation,
+and comment out individual call sites for the per-site ones. **Do not delete
+the function**: an unused-parameter or unused-import failure is a build error,
+and a build failure is not an observation.
+
+| Mutation | Expect red in |
+|---|---|
+| `releaseFor` body → `if false` | every row of the walk that ends holding a slot, plus `TestCancel_ReleasesTheComputeSlot` |
+| drop the call in `park` | the walk's `pause` row |
+| drop the call in `Advance`'s settled branch | the walk's `settle …` rows |
+| drop the call after the demotion `Transition` | `TestAdvance_DemotionReleasesTheSlot` |
+| drop the call in `finishCancel` | `TestCancel_ReleasesTheComputeSlot` and the walk's `cancel` row |
+
+Record each observed message. If the demotion mutation does not go red, the
+demotion test is not reaching `Assessing → Fetching` — assert the position
+before and after, rather than weakening the test.
 
 - [ ] **Step 4: Write the remaining §5 scenarios**
 
@@ -2036,10 +2262,27 @@ Named so a reviewer can argue for pulling one in, rather than finding it missing
 
 Reviewers of this plan should test it against the evidence in "Why this plan is ordered this way", and specifically:
 
-1. **Is the admissibility table complete and right?** Every cell cites a spec clause. The contested ones are `OutcomeCancelled × {Extracting, Finalizing}` — argued admissible from §5.5 and §5.12. If those are wrong, Task 1's table is wrong and Task 7's cancel path is wrong with it.
-2. **Is `internal/sched` the right home?** Named as a decision, not assumed. The alternative is a differently-named type inside `internal/queue`.
-3. **Does Task 3's `Snapshot` actually close the tear?** The test races the doors and asserts internal consistency. If there is a composite the Queue asks that a `Snapshot` cannot answer, it is a gap.
-4. **Is the lease audit enough?** Go cannot enforce use of a return value. The claim is that a pool that knows what it issued plus a conservation walk over §3.9's six exits is the strongest available substitute. If there is a stronger one, it changes Task 4.
-5. **Is anything in "Adjacent work" actually load-bearing for B1?**
+**D1, D2 and D3 were the three open decisions. The #445 review answered all
+three**, and the answers are recorded here rather than left open:
+
+1. **D1 — `internal/sched` is the right home.** Affirmed. `internal/queue` is
+   27k lines and already declares `Queue`, `Job` and `ActiveSet`; wedging the
+   decision core in collides on symbols and entangles pure scheduling with
+   SQLite persistence and byte tracking. No dissent was offered.
+2. **D2 — `OutcomeCancelled` IS admissible in Production.** Affirmed, on §5.12's
+   forcing argument: a post-boundary job restored from a restart holds nothing,
+   so `running(j)` is false and there is no worker to protect. Refusing the cell
+   would leave exactly those jobs unsettleable.
+3. **D3 — the lease audit was strong enough; the SLOT had no audit at all.**
+   This is the one that changed the plan. The answer to "is the lease audit
+   enough" was yes, and the question was aimed at the wrong pool — see "What the
+   RFC review round changed". Pool B now has `releaseFor` as its owner and its
+   half of the conservation walk.
+
+What is still worth attacking:
+
+4. **Does Task 3's `Snapshot` actually close the tear?** The test races the doors and asserts internal consistency. If there is a composite the Queue asks that a `Snapshot` cannot answer, it is a gap.
+5. **Is anything in "Adjacent work" actually load-bearing for B1?** `scripts/check_citations` has since found four bad section references in this plan and its spec, which is an argument for promoting it.
+6. **Is `releaseFor` called everywhere a position stops requiring a slot?** It has four call sites. The population is enumerable — `grep -n 'releaseFor'` — and the demotion case proves the class is easy to miss. A fifth path that changes or abandons a position without going through `park`, `finishCancel`, the settled branch or `Transition` would leak exactly as the first three did.
 
 Every task's mutation steps are the plan's own red-green evidence. A reviewer who thinks a mutation would not go red is pointing at a test that is not pinning what it claims.
