@@ -21,40 +21,81 @@ reviews:
       instructions: |
         This package is a job-lifecycle state machine. Nothing outside it
         imports it yet — that is deliberate, and "this is unused" is not a
-        finding. A later plan does the wiring.
+        finding. A later plan (Half B) does the wiring.
 
         Review against these invariants, which generic Go review will not
-        surface:
+        surface. They describe the model as it stands after #443; if a claim
+        here contradicts the code, the code is authoritative and the
+        contradiction is itself worth reporting.
 
-        1. THREE ORTHOGONAL AXES. `State` is where the current attempt is
-           (7 values). `Activity` is what is executing (10 values) and is NOT
-           a state — "still producing, doing something else now" is an
-           Activity write, never a transition. `Outcome` is how the attempt
-           ended (5 values) and is write-once. Anything that lets one axis
-           branch on another is a finding.
+        1. FOUR ORTHOGONAL AXES, and they must not read each other except
+           where noted in 4.
+             - `State` — where the current attempt IS. `AllStates()` returns
+               five: Fetching, Assessing, Repairing, Extracting, Finalizing.
+               `StateUnset` is a sixth constant and a sentinel, not a state:
+               it is the zero value and must never appear in a walk.
+             - `Activity` — what is EXECUTING (10 values). Not a state.
+               "still producing, doing something else now" is an Activity
+               write, never a transition.
+             - `Outcome` — how the attempt ENDED (5 values), write-once.
+             - `Intent` — what a PERSON asked for (3 values: IntentRun,
+               IntentPause, IntentCancel). IntentCancel latches — once set it
+               refuses replacement. Pause is an intent, not a state; a paused
+               job still sits at the state it last occupied.
 
-        2. THE IRREVERSIBLE BOUNDARY. The Correctness zone (Fetching,
-           Assessing, Repairing) is idempotent and re-enterable. The
-           Production zone (Extracting, Finalizing) is destructive. Once
-           crossed, never returned — including across attempts, and including
-           via multi-step paths through Waiting. Two separate escapes were
-           found here by earlier reviewers; both were multi-hop, and neither
-           was visible as a single illegal edge. Reason about sequences, not
-           edges.
+           Anything that lets one axis branch on another, outside 4, is a
+           finding.
 
-        3. ONE DOOR PER NON-WORK STATE. `hold` is the only way into Waiting,
-           `finish` the only way into Finished, and `transition` moves between
-           work states only. This is an owner model, not a convention: each
-           door is the sole writer of the state it produces. A second writer
-           of any of them is a finding even if it looks correct.
+        2. THE IRREVERSIBLE BOUNDARY. Correctness (Fetching, Assessing,
+           Repairing) is re-enterable and touches only the job's own working
+           directory. Production (Extracting, Finalizing) deletes archives,
+           moves files and runs user scripts. Once crossed, never returned —
+           including across attempts.
 
-        4. SINGLE DECIDER. `Assessing` is the only state with more than one
-           work successor.
+           `Cross` is the only door over it, and `Assessing → Extracting` is
+           the only edge carrying `byCross` in `legalEdges`. Crossing also
+           surrenders the lease.
 
-        5. TWO-LAYER LOCKING. `Job` owns a sync.RWMutex; `Attempt` does no
-           locking and is called only under it. An exported `Attempt` method,
-           a `Job` method touching an attempt outside `withOpenAttempt`, or an
-           `*Attempt` escaping the lock are all findings.
+           Earlier reviewers found several escapes here and NONE was a single
+           illegal edge — every one composed two individually legal moves.
+           Reason about sequences, not edges. A test that scans the edge map
+           cannot catch this class; only a replay over real door calls can.
+
+        3. OWNERS, NOT CHECKS. The recurring defect in this package is a rule
+           enforced by remembering rather than by construction:
+             - `legalEdges` owns both which state changes exist AND which door
+               may take each. A zone predicate re-deriving that is a finding.
+             - `withOpenAttempt` owns the open-attempt precondition and the
+               lock. A `Job` method touching an attempt outside it, or an
+               `*Attempt` escaping the closure, is a finding.
+             - `finish` owns which outcomes are admissible from which
+               position.
+           A second writer of any derived field, a second constructor for a
+           type, or a second enforcement point for one invariant is a finding
+           even when it looks correct — see AGENTS.md Standing Design Rule 2.
+
+        4. CROSS-AXIS RULES ARE THE HIGHEST-YIELD TARGET. Where a rule relates
+           one axis to another it has historically been an ad-hoc `if` written
+           from memory, and that is where every logic defect in two review
+           rounds landed. Check each against the code it guards:
+             - `OutcomeOK` requires `Finalizing` SPECIFICALLY, not the
+               Production zone. This cell was wrong twice: a zone check
+               (`crossed()`) is too weak by exactly one state, because at
+               Extracting the output is still in a temporary unpack directory.
+             - `OutcomeUnrecoverable` is refused after the boundary.
+             - `crossed()` is DERIVED (`IsProduction(a.state)`), not a stored
+               latch. A reintroduced latch field is a finding.
+
+        5. THE LEASE HAS NO COMPILER ENFORCEMENT. `Cross` and `Finish` return
+           `(*Lease, error)`, and `_, err := j.Cross(...)` compiles while
+           silently dropping pool capacity. Go cannot enforce use of a return
+           value and no linter here checks it, so any new caller that discards
+           a returned `*Lease` is a finding.
+
+        6. TWO-LAYER LOCKING. `Job` owns a `sync.RWMutex`; `Attempt` does no
+           locking and is called only under it. Go mutexes are NOT reentrant,
+           so a door calling another exported door is a deadlock. An exported
+           `Attempt` method is a finding.
 
         Two defect classes have accounted for most real findings here, and are
         worth hunting specifically:
@@ -74,7 +115,10 @@ reviews:
         Tests are held to the same bar as code: a test whose name or doc
         comment promises more than its body asserts is a finding, as is a loop
         that asserts nothing when the collection it iterates is empty, and an
-        assertion whose truth does not depend on the code under test.
+        assertion whose truth does not depend on the code under test. A fixture
+        that pre-establishes the condition under test — releasing a resource
+        before calling the function whose job is to release it — is the same
+        defect and has shipped here.
 
     - path: "docs/superpowers/specs/**"
       instructions: |
