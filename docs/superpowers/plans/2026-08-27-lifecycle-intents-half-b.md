@@ -106,8 +106,13 @@ pool B have their single return paths in one place. Rule 2 says take the owner
 over the check, and this is the case the rule was written for: four checks, one
 of which was forgotten in three places.
 
-**Why every test stayed green.** `TestResourcesAreConservedAcrossEveryExit`
-walked pool A alone. It now walks both, from the same §3.9 exit table.
+**Why every test stayed green.** `TestBothPoolsAreAccountedAtEveryExit` walked
+pool A alone. It now walks both — but with a different invariant for each, which
+took a second review round to get right. Pool A is conserved across §3.9's
+exits; pool B is not, because a slot is held for as long as the position needs
+one and "cross into Production" legitimately ends at Extracting still holding
+one. The first attempt at this fix asserted conservation for both and failed
+three of the six rows, calling correct behaviour a leak.
 
 **And one the review did not name.** `TestCancel_ReleasesTheComputeSlot` — the
 only test claiming to pin the one release that did exist — was **vacuous**. Its
@@ -2023,17 +2028,29 @@ This is spec §6 test 4 ("each scenario in §5 is a test") and test 4b ("no path
 - [ ] **Step 1: Write the conservation walk**
 
 ```go
-// TestResourcesAreConservedAcrossEveryExit is spec §6 test 4b — the only test
-// that would have caught all five of revision 3's leaks at once.
+// TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b — the only test that
+// would have caught all five of revision 3's leaks at once.
 //
-// It walks §3.9's exit table and asserts that BOTH pools return to their
-// starting occupancy. It covered only pool A when this plan was reviewed,
-// which is exactly why three pool-B leaks sat in the plan with every test
-// green: §3.9 is an exit table, not a lease table, and a job leaves through it
-// holding whatever its position required. This is checkable only because leasePool audits identity
+// It walks §3.9's exit table and asserts a DIFFERENT invariant per pool. That
+// asymmetry is the point, and collapsing it was a defect in this plan twice,
+// in opposite directions:
+//
+//   - Pool A is CONSERVED: occupancy returns to its starting value. §3.9 is
+//     the table of where leases return, and a lease is a token that must come
+//     back, so conservation is exactly the right law. Covering only this was
+//     the first error — three pool-B leaks sat here with the suite green.
+//   - Pool B is CORRECT, not conserved: a job holds a slot exactly while its
+//     position requires one and it is neither settled nor gated. Asserting
+//     conservation here was the second error — "cross into Production" ends at
+//     Extracting legitimately holding a slot, and demanding zero would report
+//     correct behaviour as a leak in three of these six rows.
+//
+// The lesson generalises past this test: a resource with a handback has a
+// conservation law, and a resource that is merely occupied has a state-matching
+// rule. They are not the same claim and one walk must not assert both. This is checkable only because leasePool audits identity
 // (Task 4): job.Cross and job.Finish return a *Lease a caller can silently
 // drop, and no compiler check or linter sees that.
-func TestResourcesAreConservedAcrossEveryExit(t *testing.T) {
+func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 	exits := []struct {
 		name string
 		run  func(t *testing.T, q *Queue, j *job.Job)
@@ -2058,6 +2075,17 @@ func TestResourcesAreConservedAcrossEveryExit(t *testing.T) {
 			}
 			if err := q.reclaim(l); err != nil {
 				t.Fatalf("reclaim: %v", err)
+			}
+			// The lease returns AT the settlement, because Finish hands it
+			// back. The slot does not: B1 has no settlement door of its own
+			// for a non-cancel outcome — the worker calls j.Finish directly —
+			// so the slot is freed by the SWEEPER in Advance's settled branch,
+			// on the next scheduling tick. This Advance is that tick, and it
+			// is written out rather than elided because the asymmetry is a
+			// real property of the design, not test scaffolding. A Queue.Finish
+			// door would remove it; see "Adjacent work".
+			if err := q.Advance(j); err != nil {
+				t.Fatalf("Advance: %v", err)
 			}
 		}},
 		{"cancel", func(t *testing.T, q *Queue, j *job.Job) {
@@ -2097,6 +2125,26 @@ func TestResourcesAreConservedAcrossEveryExit(t *testing.T) {
 			}
 		}},
 	}
+	// wantsSlot is what pool-B occupancy SHOULD be for j right now: a job
+	// holds a compute slot exactly while its CURRENT position requires one and
+	// it is neither settled nor gated. Those are the three conditions
+	// releaseFor's four call sites exist to maintain, stated once as a
+	// predicate so the walk asserts the rule rather than six memorised numbers.
+	//
+	// It deliberately asks about the current position, not next: a job whose
+	// work has finished still occupies the position it finished in and still
+	// needs that position's slot until it actually moves.
+	wantsSlot := func(q *Queue, j *job.Job) bool {
+		s := j.Snapshot()
+		if s.State.Outcome.IsSettled() {
+			return false
+		}
+		if _, gated := q.gatedBy(s); gated {
+			return false
+		}
+		return needsSlot(s.State.State)
+	}
+
 	// The count is asserted so that adding a row to §3.9's table without
 	// adding a case here fails, rather than quietly narrowing the walk.
 	if len(exits) != 6 {
@@ -2106,20 +2154,31 @@ func TestResourcesAreConservedAcrossEveryExit(t *testing.T) {
 		t.Run(e.name, func(t *testing.T) {
 			q := New(1, 1, testClock, &stubWorkers{})
 			j := job.New("j1", "n", job.Policy{})
-			beforeA, beforeB := q.leases.outstanding(), q.slots.outstanding()
+			beforeA := q.leases.outstanding()
 			e.run(t, q, j)
 			if got := q.leases.outstanding(); got != beforeA {
 				t.Errorf("pool-A occupancy %d → %d across %q; a lease was lost or double-returned",
 					beforeA, got, e.name)
 			}
-			// Pool B is walked by the SAME table, and its absence is why three
-			// slot leaks survived into this plan: park, settlement and the
-			// Assessing → Fetching demotion each exited without freeing a
-			// slot, and no test looked. A conservation walk that covers one
-			// pool of two reads as coverage while proving half the claim.
-			if got := q.slots.outstanding(); got != beforeB {
-				t.Errorf("pool-B occupancy %d → %d across %q; a compute slot was leaked",
-					beforeB, got, e.name)
+			// Pool B gets a DIFFERENT invariant, and getting this wrong is
+			// what a review of this plan caught. §3.9 is the table of where
+			// LEASES return, so pool-A conservation across it is a real law:
+			// the lease is a token that must come back. A slot is not a token
+			// and is not conserved across these rows — it is held for exactly
+			// as long as the position needs one, so "cross into Production"
+			// legitimately ENDS holding one, at Extracting. Asserting pool-B
+			// occupancy returns to zero fails three of these six rows and
+			// calls correct behaviour a leak.
+			//
+			// The oracle is computed, never a per-row constant: a hand-written
+			// expected count passes for the wrong reason the moment a row's
+			// trace changes, which is the failure mode this whole walk exists
+			// to prevent. It shares needsSlot with the code under test, and
+			// that is acceptable only because TestRequirements_AreTotal pins
+			// needsSlot independently against a literal table.
+			if got, want := q.slots.holds(j.ID()), wantsSlot(q, j); got != want {
+				t.Errorf("pool-B: holds=%v, want %v at %v across %q",
+					got, want, j.Snapshot().State.State, e.name)
 			}
 		})
 	}
@@ -2150,7 +2209,7 @@ and a build failure is not an observation.
 
 | Mutation | Expect red in |
 |---|---|
-| `releaseFor` body → `if false` | every row of the walk that ends holding a slot, plus `TestCancel_ReleasesTheComputeSlot` |
+| `releaseFor` body → `if false` | the walk's `settle …`, `cancel` and `pause` rows — the ones that should FREE a slot. The two `cross` rows still pass: they end holding one legitimately, which is the asymmetry the oracle encodes. Plus `TestCancel_ReleasesTheComputeSlot`. |
 | drop the call in `park` | the walk's `pause` row |
 | drop the call in `Advance`'s settled branch | the walk's `settle …` rows |
 | drop the call after the demotion `Transition` | `TestAdvance_DemotionReleasesTheSlot` |
@@ -2255,6 +2314,7 @@ Named so a reviewer can argue for pulling one in, rather than finding it missing
 - **The dispatcher's `yielded` report** (§3.6). `Fetching` gates per-article, so its worker stops without its work having ended; that yield needs a caller for `q.park(j)`. B1 defines `Workers.Abort`; B2 adds the yield path.
 - **Persistence** of `State`, `Outcome` and `Intent` (spec §3.8), and **reorder** (§4.7).
 - **`ToSABnzbd`'s composed view** — it cannot compute its new inputs until the Queue exists to supply running-ness and `WaitReason`.
+- **A `Queue.Finish` door**, settling a non-cancel outcome and freeing both pools in one call. B1 releases the slot on settlement from a SWEEPER — `Advance`'s settled branch — rather than at the moment of settlement, because the worker calls `j.Finish` directly and that caller is B2's. The sweeper is correct (release is idempotent, and every settled job is advanced again) but it is a poll where an event would do, and it is visible in the exit walk: the `settle Unrecoverable` row needs an explicit `q.Advance` tick before the slot comes back. `finishCancel` already shows the shape a `Queue.Finish` would take. Deferred rather than built because it changes the interface B2's dispatcher writes against, which is a decision to make with B2's caller in view, not ahead of it.
 
 ---
 
