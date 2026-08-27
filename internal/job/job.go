@@ -480,15 +480,25 @@ func (j *Job) surrenderLocked() *Lease {
 	return l
 }
 
-// Snapshot is every fact about a job that a scheduling decision needs, read
-// under ONE lock acquisition.
+// Snapshot is the set of job facts a scheduling decision reads — the four
+// fields below — taken under ONE lock acquisition.
+//
+// That set is deliberately NOT claimed to be complete. internal/sched does not
+// exist yet, so there is no population of scheduling decisions to enumerate
+// against, and a comment asserting completeness here would be exactly the kind
+// of unverified universal Rule 4 forbids. What is meant to make it complete is
+// the SIGNATURE, not this sentence: §3.4's predicates take a Snapshot rather
+// than a *Job, so a decision needing a fifth fact must add it here rather than
+// reach for a lock. That becomes checkable in Half B1 task 5, and not before.
 //
 // It exists because the Queue's questions are composite. running(j) is "the
 // attempt is open AND it holds what its state requires AND next is unset" —
 // three facts that State(), HasRun() and HoldsLease() each lock for
 // separately, so a door landing between two of them yields an answer about a
-// configuration the job was never in. Half A gave every FIELD an owner and
-// left the composite questions unowned; this is that gap closed.
+// configuration the job was never in. Half A gave each of the five fields in
+// writer_enumeration_test.go's fieldOwner map a single writer, which
+// TestFieldOwners_AreTheOnlyDeclarers enforces, and left the composite
+// questions unowned; this is that gap closed.
 //
 // It is also what makes the render path's purity structural rather than
 // asserted (spec §6, test 1): a predicate over a Snapshot has no *Job to
@@ -500,12 +510,15 @@ type Snapshot struct {
 	HasRun     bool
 }
 
-// IsOpen reports whether an attempt is live — begun and not yet settled. It is
-// on Snapshot rather than Job because every caller asking it is asking about a
-// consistent moment, and Job has no exported isOpen for exactly that reason.
+// IsOpen reports whether an attempt is live — begun and not yet settled.
+//
+// It is on Snapshot rather than Job so that the two fields it reads come from
+// the same instant. A Job.IsOpen would take the lock again and could therefore
+// disagree with a Snapshot taken beside it, which is the tear this type exists
+// to remove; Job deliberately exports no isOpen for that reason.
 func (s Snapshot) IsOpen() bool { return s.HasRun && !s.State.Outcome.IsSettled() }
 
-// Snapshot reads every scheduling-relevant fact under one RLock.
+// Snapshot reads the four fields above under one RLock.
 func (j *Job) Snapshot() Snapshot {
 	j.mu.RLock()
 	defer j.mu.RUnlock()

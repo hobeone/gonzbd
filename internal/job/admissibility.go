@@ -6,9 +6,11 @@ import (
 )
 
 // admissibleAt is the sole owner of "which verdict may an attempt record from
-// which position". It replaces two hand-written guards in finish, one of which
-// was wrong through two review rounds while its own comment stated the correct
-// rule beside it.
+// which position" — sole in the enumerable sense: `git grep -n 'admits('
+// -- 'internal/job/*.go' ':!internal/job/*_test.go'` returns one production
+// call site, attempt.go's finish. It replaces two hand-written guards there,
+// one of which was wrong through two review rounds while its own comment
+// stated the correct rule beside it.
 //
 // The value is the set of positions that admit the outcome, not a bool per
 // pair, because the rows are what carry meaning: OutcomeOK names one state
@@ -33,9 +35,10 @@ var admissibleAt = map[Outcome][]State{
 	// rounds because the guard it replaced was written when the question was
 	// "did this attempt reach Production at all". The consequence of getting it
 	// wrong is not local: with no guard, Finish(OutcomeOK) settles an attempt
-	// in Fetching, and BeginAttempt — which refuses a reopen only for an
-	// attempt that crossed — then opens a SECOND attempt on a job already
-	// declared complete.
+	// in Fetching, and BeginAttempt then opens a SECOND attempt on a job
+	// already declared complete. BeginAttempt cannot stop that on its own —
+	// ErrBoundaryConsumed is its one error return, and it is reached only for
+	// an attempt that crossed, which an attempt settled in Fetching has not.
 	OutcomeOK: {Finalizing},
 	// §3.3's failure table: every state either continues to another work state
 	// or settles Failed. There is no position from which failing is illegal.

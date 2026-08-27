@@ -30,12 +30,12 @@ const (
 	// directory and it is still retryable (D3) — which is the whole reason
 	// this is a distinct outcome from OutcomeFailed rather than folded into
 	// it. finish rejects assigning this outcome to an attempt that has
-	// crossed into Production — admissibleAt's row for it names the
-	// Correctness zone, and inadmissible() returns
-	// ErrUnrecoverableAfterBoundary; see admissibility.go — so this sentence
-	// is enforced rather than only stated. The row ENUMERATES the three
-	// Correctness states rather than calling IsProduction, so finish reaches
-	// this verdict by a table lookup and not by a zone predicate.
+	// crossed into Production — admissibleAt's row for it enumerates
+	// {Fetching, Assessing, Repairing} literally (admissibility.go), and
+	// inadmissible() returns ErrUnrecoverableAfterBoundary — so this sentence
+	// is enforced rather than only stated. finish reaches the verdict by
+	// matching a.state against that row, NOT by calling IsProduction; the
+	// zone predicate is not on this path at all.
 	//
 	// Either way it reads a.state, which was once distinct from a stored
 	// latch: only a latch could still answer once finish had erased the
