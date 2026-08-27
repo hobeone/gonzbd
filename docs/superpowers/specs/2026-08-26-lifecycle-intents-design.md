@@ -747,10 +747,14 @@ error and no timeout.
 > callback returns only `error`, while both doors must return a `*Lease`. Each
 > therefore locks inline. The conclusion is unchanged and the reason is
 > stronger — the lock these doors must not re-take is one they hold
-> *themselves*, so no helper stands between the door and the deadlock. The
-> other four mutators (`Transition`, `SetNext`, `SetActivity`, and the
-> `Surrender` path for a holder with no open attempt) are the ones
-> `withOpenAttempt` covers.
+> *themselves*, so no helper stands between the door and the deadlock.
+> `withOpenAttempt` covers exactly three mutators — `Transition`, `SetNext`
+> and `SetActivity` (`git grep -n 'withOpenAttempt[(]func' --
+> 'internal/job/*.go' ':!internal/job/*_test.go'` returns those three lines).
+> The exported `Surrender` is not among them and structurally cannot be: the
+> helper returns `error` where `Surrender` returns a `*Lease`, and it refuses
+> a job with no open attempt — which is precisely the caller `Surrender`
+> exists to serve. It takes `j.mu` itself and calls `surrenderLocked`.
 
 The single-releaser property is unaffected: `surrenderLocked` is still the only
 code that clears `j.lease`, and `Surrender` is a thin lock-taking wrapper over
@@ -876,9 +880,12 @@ a global pause each job still carries `IntentRun`, so every one of them would
 have matched the `Queued` row. `waitReason` returns `UserPaused` or
 `GlobalPause` from `gatedBy`, and `WaitReason.IsPause()` already covers both —
 so routing through it costs nothing and cannot omit one. This is a live API
-contract, not a hypothetical: `TestJob_PausedRendersAsStatusPaused`'s subtest
-`"parked on a compute slot, then globally paused"` (`job_test.go:425`) asserts
-`StatusPaused` for exactly that case.
+contract, not a hypothetical: `TestToSABnzbd_GlobalPauseRendersAsPaused`
+(`internal/job/sabnzbd_test.go:190`) asserts `StatusPaused` for exactly that
+case. It replaced `TestJob_PausedRendersAsStatusPaused`, which Half A deleted
+along with the state that made a separate job-level pause test meaningful; the
+old citation named a test that no longer exists and a line past the end of
+`job_test.go`.
 
 Ordering matters too: a never-run job that is paused must match the `Paused`
 row, not the `StateUnset` catch-all. Revision 2 listed `StateUnset → Queued`
