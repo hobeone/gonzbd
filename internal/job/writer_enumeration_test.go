@@ -78,8 +78,10 @@ var fieldOwner = map[string]string{
 // This factors what were, before this task, two independently-maintained
 // copies — scanOutcomeWriters (outcome, on Attempt) and scanAttemptsWriters
 // (attempts, on Job) — into one implementation parameterized on field. Both
-// call this now, and TestCrossedWrites/TestIntentWrites/TestNextWrites/
-// TestLeaseWrites below are the four new callers Task 7 adds.
+// call this now, and TestIntentWrites/TestNextWrites/TestLeaseWrites below are
+// the further callers Task 7 added. It added a fourth, TestCrossedWrites, which
+// change 03 deleted along with the crossed field it enumerated — a derived
+// value has no writers to scan for.
 func scanWriters(t *testing.T, field string) []string {
 	t.Helper()
 
@@ -307,7 +309,7 @@ func TestLeaseWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 // SELECTOR NAME alone — `anything.outcome = x` counts, whatever `anything`
 // is — because resolving the receiver's type needs go/types, which this scan
 // does not run. That is fine exactly as long as no other struct in the package
-// declares one of these six names, which was a sentence in fieldOwner's
+// declares one of these five names, which was a sentence in fieldOwner's
 // comment backed by a git grep a reader had to run by hand.
 //
 // It is now a test, because the population is machine-enumerable and a

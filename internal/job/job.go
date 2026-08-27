@@ -27,10 +27,13 @@ import (
 var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
 // ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
-// attempt crossed into Production. The guard reads a.crossed, deliberately
-// NOT IsProduction(a.state) — this was true while finish overwrote a.state, so by
-// the time BeginAttempt looks, IsProduction would read false on exactly the
-// attempts this must refuse. D3 says crossing deletes
+// attempt crossed into Production. The guard reads a.crossed(), which IS
+// IsProduction(a.state). Those were once two different things: finish
+// overwrote a.state when it settled the attempt, so by the time BeginAttempt
+// looked, IsProduction read false on exactly the attempts this must refuse,
+// and a latch had to remember what the position had forgotten. Change 03
+// stopped finish writing the position, which made the latch redundant — see
+// Attempt.crossed for what deriving it instead costs. D3 says crossing deletes
 // archives, moves files, and consumes the inputs a later attempt would need
 // — "not crossing keeps the job retryable" — so a fresh attempt on THIS job
 // is no longer a legal way to retry it once one has crossed. The Attempt
@@ -48,7 +51,7 @@ var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior a
 // stops the pattern matching this citation's own text; RenderView.Intent
 // does appear in that file's comments, which a bare 'Intent' grep would also
 // have matched). What reaches the user as that deleted status is the settled
-// verdict OutcomeCancelled, mapped at sabnzbd.go:108 — its return statement
+// verdict OutcomeCancelled, mapped in finishedStatus — its return statement
 // is the only non-test site in this package that returns it (`git grep -n
 // 'return constants.Status[D]eleted' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'` returns exactly that one line).
@@ -253,8 +256,11 @@ func (j *Job) SetActivity(x Activity) error {
 }
 
 // Cross is the sole door across the irreversible boundary. It sets state,
-// latches crossed, clears next and yields the lease in ONE call — there is no
-// way to do one without the others.
+// clears next and yields the lease in ONE call — there is no way to do one
+// without the others. Setting the state IS the record that the boundary was
+// crossed: crossed() derives from the position, so there is no separate latch
+// here to be written, forgotten, or to drift out of step with the state beside
+// it.
 //
 // The lease may be nil: a job can legitimately reach the crossing holding
 // none, having been paused at Assessing{next: Extracting} and resumed. It does

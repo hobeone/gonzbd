@@ -40,8 +40,8 @@ var correctnessStates = map[State]bool{
 // productionStates is the other half of the oracle, and is package-level for
 // the same reason correctnessStates is: checkReachableConfig judges "has this
 // job been in Production" with it, replaying the sequence rather than reading
-// a.crossed, so the code's own latch is not both the thing under test and the
-// thing testing it.
+// crossed(), so the code's own answer to "has this crossed" is not both the
+// thing under test and the thing testing it.
 var productionStates = map[State]bool{
 	Extracting: true,
 	Finalizing: true,
@@ -236,13 +236,16 @@ func checkReachableConfig(t *testing.T, j *Job, seq []action) bool {
 
 	// The oracle for "this job has been in Production" is REPLAYED HISTORY
 	// judged by the literal productionStates map — deliberately not
-	// a.crossed. Reading the latch would repeat, one level deeper, the
-	// mistake the correctnessStates literal exists to avoid: crossed is
-	// written by cross and by nothing else (TestCrossedWrites_… pins that),
-	// so a latch-based oracle can only see escapes that went THROUGH Cross.
-	// An escape that reaches Extracting by some other route leaves crossed
-	// false, this function returns early, and both assertions below run on
-	// nothing — on precisely the configurations that constitute the escape.
+	// crossed(). Reading it would repeat, one level deeper, the mistake the
+	// correctnessStates literal exists to avoid, and change 03 made the repeat
+	// WORSE rather than better. While crossed was a latch written only by
+	// cross, a latch-based oracle could at least see every escape that went
+	// through Cross. Now that crossed() is IsProduction(a.state), it reports
+	// on where the job is standing RIGHT NOW — so an escape that reaches
+	// Extracting and then returns to Fetching, which is the exact shape this
+	// test exists to catch, leaves crossed() false. This function would return
+	// early and both assertions below would run on nothing: on precisely the
+	// configurations that constitute the escape.
 	//
 	// That is not hypothetical. Deleting transition's ErrCrossRequired guard
 	// (attempt.go) opens exactly that route, and against a latch-based oracle
@@ -298,8 +301,8 @@ func checkReachableConfig(t *testing.T, j *Job, seq []action) bool {
 		t.Errorf("reachable configuration violates the one-way boundary: %s\n"+
 			"this job reached a Production state during the sequence above, yet it is now in %s, "+
 			"which is a Correctness state (spec §4). Note the premise is a REPLAYED Production "+
-			"visit, not a.crossed — a route into Production that never sets the latch violates "+
-			"this just as surely", trace(seq), v.State)
+			"visit, not crossed() — a route that entered Production and left again reads "+
+			"crossed() == false and violates this just as surely", trace(seq), v.State)
 	}
 
 	// (2) Unrecoverable must stay refused past the boundary, including after
@@ -334,7 +337,7 @@ func allActions() []action {
 	// factor is stated in one place. Hold and SetWaitReason are gone with
 	// Waiting (task 5); this task (7) adds SetNext, Cross, SetIntent and
 	// Grant, which is what makes the boundary reachable at all — without
-	// Cross, a.crossed has no writer this walk can reach and
+	// Cross no action in this walk can reach a Production state, so
 	// checkReachableConfig's assertions never fire (see the crossedConfigs
 	// floor above), and without SetNext, Cross can never fire either, since
 	// it only succeeds from Assessing with a matching next already recorded.

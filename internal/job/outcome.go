@@ -30,11 +30,12 @@ const (
 	// directory and it is still retryable (D3) — which is the whole reason
 	// this is a distinct outcome from OutcomeFailed rather than folded into
 	// it. finish rejects assigning this outcome to an attempt that has
-	// crossed into Production at any point (a.crossed, not merely
-	// IsProduction(a.state) — while finish overwrote a.state in
-	// the same call, which erases the Production state a settled attempt
-	// crossed at; see ErrUnrecoverableAfterBoundary in attempt.go), so this
-	// sentence is enforced rather than only stated.
+	// crossed into Production — a.crossed(), which IS IsProduction(a.state);
+	// see ErrUnrecoverableAfterBoundary in attempt.go — so this sentence is
+	// enforced rather than only stated. Those were two different things while
+	// finish overwrote a.state, because only a latch could still answer once
+	// the position had been erased; change 03 stopped the erasure and
+	// collapsed them back into one.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled

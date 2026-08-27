@@ -23,11 +23,11 @@ import (
 var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")
 
 // ErrUnrecoverableAfterBoundary is returned when finish is asked to record
-// OutcomeUnrecoverable for an attempt that has crossed into Production
-// (a.crossed), whether or not it is still there — finish is about to
-// overwrite a.state in the same call, which used to erase the
-// Production state the attempt actually crossed at, so the guard tracks the
-// latch rather than the transient state. D3 defines OutcomeUnrecoverable
+// OutcomeUnrecoverable for an attempt that has crossed into Production. The
+// guard is a.crossed(), which reads the position — settling no longer moves
+// the attempt, so where it crossed is still there when finish looks. This
+// needed a latch for as long as finish overwrote a.state in the same call,
+// erasing exactly the fact the guard depends on. D3 defines OutcomeUnrecoverable
 // as "the job never crossed the boundary" specifically so its files stay in
 // the working directory and the job stays retryable — a verdict finish must
 // not let contradict where the attempt actually crossed. This is a sentinel
@@ -88,8 +88,9 @@ type Attempt struct {
 	// next records that this state's work has ENDED and names where the job
 	// continues to; setNext, below, documents what it means and the guards on
 	// writing it. Four functions assign it, and only these four: setNext sets
-	// it, and transition, cross and finish each clear it on the same call that
-	// writes a.state (`git grep -n 'nex[t] = ' -- 'internal/job/*.go'
+	// it, and transition, cross and finish each clear it — the first two on the
+	// same call that writes a.state, finish on the call that settles the
+	// attempt without moving it (`git grep -n 'nex[t] = ' -- 'internal/job/*.go'
 	// ':!internal/job/*_test.go'` returns exactly four lines, one in each of
 	// those bodies; the bracket keeps this citation from matching its own
 	// text). TWO mutators assign a.state after construction — transition and

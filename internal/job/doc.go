@@ -66,14 +66,19 @@
 // entering Production and giving up the lease cannot happen as two separate
 // calls without a window where one could be forgotten. Transition refuses the one Correctness→Production edge
 // outright (ErrCrossRequired) precisely so Cross is the only way to take it.
-// TestCrossedWrites_MatchTheEnumerationStatedInProse
-// (writer_enumeration_test.go) and TestOutcomeWrites_MatchTheEnumerationStatedInProse
-// (outcome_writer_enumeration_test.go) pin the sole writers of crossed and
-// outcome. Note what they name: the unexported Attempt methods cross and
-// finish, not the exported Job doors
-// Cross and Finish. The doors take the lock and yield the lease; the methods
-// are what actually assign the fields, and the enumeration asserts against
-// the assignment, so it is the method names that appear in it.
+// TestOutcomeWrites_MatchTheEnumerationStatedInProse
+// (outcome_writer_enumeration_test.go) pins the sole writer of outcome. Note
+// what it names: the unexported Attempt method finish, not the exported Job
+// door Finish. The door takes the lock and yields the lease; the method is
+// what actually assigns the field, and the enumeration asserts against the
+// assignment, so it is the method name that appears in it.
+//
+// There was a matching TestCrossedWrites_MatchTheEnumerationStatedInProse for
+// a crossed FIELD. Change 03 deleted the field — crossed() is now derived from
+// IsProduction(a.state) — and the test went with it, because a derived value
+// has no writers to enumerate. What replaced it is not another writer
+// enumeration but TestBoundaryIsUnreachableByAnyPath, which checks the
+// property the latch existed to provide.
 //
 // # One decider
 //
