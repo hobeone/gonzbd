@@ -365,14 +365,16 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if !slices.Contains(AllOutcomes(), o) {
 		return fmt.Errorf("%w: cannot finish an attempt with unrecognized outcome %s", ErrInvalidOutcome, o)
 	}
-	// Write-once is checked before the boundary guard below: an attempt that
-	// is both already settled AND crossed the boundary has its more
-	// fundamental invariant violated first — a second finish call is wrong
-	// regardless of which outcome it carries, while the boundary guard only
-	// ever has something to say about OutcomeUnrecoverable specifically.
-	// Checking the boundary first would report the crossing (from the
-	// crossed guard, which stays true after a first finish settles the
-	// attempt) for what is really a write-once violation.
+	// Write-once is checked before the admissibility lookup below: an attempt
+	// that is both already settled AND at a position its outcome does not
+	// admit has its more fundamental invariant violated first. A second finish
+	// call is wrong regardless of which outcome it carries, while the lookup
+	// only ever has something to say about a particular Outcome x State cell.
+	//
+	// Order matters because the position SURVIVES settling. Checking
+	// admissibility first would report the cell — say Unrecoverable at
+	// Extracting, which stays inadmissible after a first finish settles the
+	// attempt — for what is really a write-once violation.
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}

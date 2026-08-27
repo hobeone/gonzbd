@@ -22,9 +22,10 @@ import (
 // OTHER struct here declares any of these five names is established by
 // reading the declarations, not by grepping the names: `git grep -n '^typ[e]
 // [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns seven types — Attempt, Job, Lease, Policy, RenderView, StateView,
-// and edge, which change 02 added — and only the first two declare any of
-// these fields. TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
+// returns eight types — Attempt, Job, Lease, Policy, RenderView, Snapshot,
+// StateView, and edge — and only the first two declare any of these fields.
+// (edge arrived with change 02; Snapshot with Half B1 task 3, which is what
+// took this count from seven to eight.) TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
 // that, so this sentence is orientation rather than the guarantee.
 // A grep for the five field names themselves (`git grep -n -E
 // 'outcome|next|attempts|intent|lease' -- 'internal/job/*.go'
@@ -37,7 +38,9 @@ import (
 // quantity is that volatile, a bound that stays true beats a number that was
 // true once. Matching on the field name alone would therefore still be
 // correct today; this table exists so that stops being an accident if a
-// seventh type is added later.
+// further type is added later. Deliberately not a number: this sentence said
+// "a seventh" while the count above already said seven, so the two disagreed
+// about whether the next one was the seventh or the eighth.
 var fieldOwner = map[string]string{
 	"outcome":  "Attempt",
 	"next":     "Attempt",

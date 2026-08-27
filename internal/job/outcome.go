@@ -33,10 +33,13 @@ const (
 	// crossed into Production — admissibleAt's row for it names the
 	// Correctness zone, and inadmissible() returns
 	// ErrUnrecoverableAfterBoundary; see admissibility.go — so this sentence
-	// is enforced rather than only stated. The position it reads is
-	// IsProduction(a.state), which was once distinct from a stored latch:
-	// only a latch could still answer once finish had erased the position,
-	// and change 03 stopped the erasure and collapsed them back into one.
+	// is enforced rather than only stated. The row ENUMERATES the three
+	// Correctness states rather than calling IsProduction, so finish reaches
+	// this verdict by a table lookup and not by a zone predicate.
+	//
+	// Either way it reads a.state, which was once distinct from a stored
+	// latch: only a latch could still answer once finish had erased the
+	// position, and change 03 stopped the erasure and collapsed them into one.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled

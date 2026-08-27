@@ -1836,10 +1836,14 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 			return false
 		}
 		if err := j.Grant(l); err != nil {
-			// Grant refuses only nil, an unidentified lease, or a second one.
-			// The pool never issues the first two, so this is the third: the
-			// job acquired a lease between our HoldsLease check and here.
-			// Return the one we minted rather than leaking it.
+			// Grant's five refusals: nil, an unidentified lease, no open
+			// attempt, an attempt past the boundary, or a second lease. The
+			// pool never issues the first two; the next two cannot happen
+			// here, because branch 2 has already established an open,
+			// unsettled attempt and needsLease(s) is false for both
+			// Production states. So this is the fifth: the job acquired a
+			// lease between our HoldsLease check and here. Return the one we
+			// minted rather than leaking it.
 			_ = q.reclaim(l)
 			return false
 		}

@@ -47,5 +47,18 @@ type Lease struct {
 // than two.
 func NewLease(id LeaseID) *Lease { return &Lease{id: id} }
 
-// ID reports which issuance this lease is.
-func (l *Lease) ID() LeaseID { return l.id }
+// ID reports which issuance this lease is. A nil lease reports LeaseUnset
+// rather than panicking.
+//
+// Nil is not a defensive hypothetical here: Surrender, Cross and Finish all
+// return (*Lease, error) and legitimately yield nil when the job held nothing
+// — surrenderLocked returns j.lease unconditionally, and the design has
+// reclaim no-op on nil "so that no call site has to test for it". A logging or
+// auditing caller writing l.ID() on that return would panic, and LeaseUnset is
+// exactly the value that already means "no issuance".
+func (l *Lease) ID() LeaseID {
+	if l == nil {
+		return LeaseUnset
+	}
+	return l.id
+}

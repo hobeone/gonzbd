@@ -77,10 +77,13 @@ var ErrAlreadyLeased = errors.New("job: already holds a lease")
 // indistinguishable from holding none, so accepting one would leave the job
 // reporting HoldsLease() false while believing it had been admitted.
 //
-// A sentinel rather than a bare fmt.Errorf because Grant has two refusals and
-// they mean opposite things to the caller: ErrAlreadyLeased says the job is
-// already admitted and the grant is redundant, this says the caller passed
-// nothing and has a bug. It was also the last ad-hoc error string in the
+// A sentinel rather than a bare fmt.Errorf because Grant's refusals mean
+// different things to the caller and it must be able to tell them apart:
+// ErrAlreadyLeased says the job is already admitted and the grant is
+// redundant, this says the caller passed nothing and has a bug. There are five
+// now — `grep -n 'return Err' ` inside Grant lists ErrNilLease,
+// ErrUnidentifiedLease, ErrNoOpenAttempt, ErrLeaseAfterBoundary and
+// ErrAlreadyLeased. It was also the last ad-hoc error string in the
 // package — every other refusal here is matchable, and one that is not reads
 // as an oversight rather than a decision.
 var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable from holding none")
@@ -89,6 +92,14 @@ var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable 
 // one nobody issued. Distinct from ErrNilLease: that one says the caller
 // passed nothing, this says the caller passed something it built itself.
 var ErrUnidentifiedLease = errors.New("job: Grant: lease has no id; only an issuing pool may mint one")
+
+// ErrLeaseAfterBoundary is returned by Grant for an attempt that has crossed
+// into Production. Distinct from ErrNoOpenAttempt because such an attempt IS
+// open — it is running Extracting or Finalizing — so "no open attempt" would
+// misdescribe it. Design §3.4 gives those states a compute slot and no lease,
+// and Cross surrenders the lease precisely because nothing past the boundary
+// needs one.
+var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Production and needs no lease")
 
 // Job owns its state. Every field is unexported. The lifecycle field —
 // attempts — is guarded by mu, and there is no path to it that does not go
@@ -398,8 +409,13 @@ func (j *Job) HoldsLease() bool {
 	return j.lease != nil
 }
 
-// Grant hands this job an admission token. Refuses nil, which would be
-// indistinguishable from holding none, and refuses a second lease.
+// Grant hands this job an admission token, and is the gatekeeper for every
+// configuration in which holding one is meaningful.
+//
+// It refuses: a nil lease (indistinguishable from holding none), one carrying
+// LeaseUnset (nobody issued it), a job with no open attempt (nothing to admit
+// to the correctness loop), an attempt past the boundary (§3.4 gives
+// Production a slot and no lease), and a second lease.
 func (j *Job) Grant(l *Lease) error {
 	if l == nil {
 		return ErrNilLease
@@ -409,6 +425,23 @@ func (j *Job) Grant(l *Lease) error {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	// A lease is admission to the CORRECTNESS loop, so there must be a loop to
+	// be admitted to. Without this, an exported setter could put a job into a
+	// configuration the design forbids — holding a lease with no attempt, or
+	// past the boundary — and Snapshot would then report HoldsLease true for
+	// it, which is the input every Queue predicate composes.
+	//
+	// A gatekeeper rather than a rule each caller remembers (Rule 2). No
+	// caller violates it today: sched.grantFor only grants where needsLease is
+	// true, which is false for both Production states. The point is that it
+	// cannot, not that it does not.
+	a := j.currentLocked()
+	if a == nil || !a.isOpen() {
+		return ErrNoOpenAttempt
+	}
+	if a.crossed() {
+		return ErrLeaseAfterBoundary
+	}
 	if j.lease != nil {
 		return ErrAlreadyLeased
 	}

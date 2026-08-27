@@ -12,6 +12,7 @@ func TestJob_GrantAndSurrender(t *testing.T) {
 	if j.HoldsLease() {
 		t.Fatal("a fresh job holds a lease")
 	}
+	mustBegin(t, j) // Grant admits to the correctness loop; there must be one
 	l := NewLease(1)
 	if err := j.Grant(l); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -43,6 +44,7 @@ func TestJob_SurrenderIsNilWhenNothingHeld(t *testing.T) {
 
 func TestJob_GrantRefusesASecondLease(t *testing.T) {
 	j := newTestJob(t)
+	mustBegin(t, j)
 	if err := j.Grant(NewLease(1)); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
@@ -73,6 +75,11 @@ func TestJob_GrantRefusesNil(t *testing.T) {
 // identity.
 func TestJob_LeaseIsRaceFree(t *testing.T) {
 	j := newTestJob(t)
+	// Same trap as the minted lease above, one layer along: Grant now also
+	// requires an OPEN attempt, so without this every Grant is refused,
+	// Surrender is never reached, and this stops being a concurrency test
+	// while still passing.
+	mustBegin(t, j)
 	var wg sync.WaitGroup
 	for g := range 8 {
 		wg.Go(func() {
@@ -104,6 +111,7 @@ func TestJob_LeaseIsRaceFree(t *testing.T) {
 // detail -race happens not to catch.
 func TestJob_SurrenderLockedYieldsAndClears(t *testing.T) {
 	j := newTestJob(t)
+	mustBegin(t, j)
 	l := NewLease(1)
 	if err := j.Grant(l); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -170,5 +178,75 @@ func TestJob_GrantRefusesUnidentifiedLease(t *testing.T) {
 	}
 	if j.HoldsLease() {
 		t.Error("HoldsLease() = true after a refused Grant")
+	}
+}
+
+// TestLease_NilIDIsUnset pins that ID() is safe on the nil a door returns.
+// Surrender, Cross and Finish all yield (*Lease, error) with a nil lease when
+// the job held none, so this is a value callers genuinely receive — not a
+// defensive check against a caller mistake.
+func TestLease_NilIDIsUnset(t *testing.T) {
+	var l *Lease
+	if got := l.ID(); got != LeaseUnset {
+		t.Errorf("(*Lease)(nil).ID() = %v, want LeaseUnset", got)
+	}
+	// The value a door actually hands back, rather than a hand-built nil.
+	j := newTestJob(t)
+	if got := j.Surrender().ID(); got != LeaseUnset {
+		t.Errorf("Surrender().ID() on a job holding nothing = %v, want LeaseUnset", got)
+	}
+}
+
+// TestJob_GrantRequiresAnOpenCorrectnessAttempt pins the precondition that
+// makes "a Production job holds no lease" structural rather than conventional.
+//
+// Each case is a configuration an exported setter could otherwise create and
+// no door would ever undo, because Snapshot would then report HoldsLease true
+// to every Queue predicate that composes it.
+func TestJob_GrantRequiresAnOpenCorrectnessAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, j *Job)
+		want  error
+	}{
+		{"never run", func(*testing.T, *Job) {}, ErrNoOpenAttempt},
+		{"settled", func(t *testing.T, j *Job) {
+			mustBegin(t, j)
+			if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+		}, ErrNoOpenAttempt},
+		{"crossed into Extracting", func(t *testing.T, j *Job) {
+			mustBegin(t, j)
+			mustTransitionJob(t, j, Assessing)
+			if err := j.SetNext(Extracting); err != nil {
+				t.Fatalf("SetNext: %v", err)
+			}
+			if _, err := j.Cross(Extracting); err != nil {
+				t.Fatalf("Cross: %v", err)
+			}
+		}, ErrLeaseAfterBoundary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := newTestJob(t)
+			tc.setup(t, j)
+			if err := j.Grant(NewLease(1)); !errors.Is(err, tc.want) {
+				t.Errorf("Grant = %v, want %v", err, tc.want)
+			}
+			if j.HoldsLease() {
+				t.Error("HoldsLease() = true after a refused Grant")
+			}
+		})
+	}
+}
+
+// mustTransitionJob drives a Job (not a bare Attempt) through the public door.
+func mustTransitionJob(t *testing.T, j *Job, to State) {
+	t.Helper()
+	if err := j.SetNext(to); err != nil {
+		t.Fatalf("SetNext(%v): %v", to, err)
+	}
+	if err := j.Transition(to); err != nil {
+		t.Fatalf("Transition(%v): %v", to, err)
 	}
 }
