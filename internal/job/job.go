@@ -77,13 +77,29 @@ var ErrAlreadyLeased = errors.New("job: already holds a lease")
 // indistinguishable from holding none, so accepting one would leave the job
 // reporting HoldsLease() false while believing it had been admitted.
 //
-// A sentinel rather than a bare fmt.Errorf because Grant has two refusals and
-// they mean opposite things to the caller: ErrAlreadyLeased says the job is
-// already admitted and the grant is redundant, this says the caller passed
-// nothing and has a bug. It was also the last ad-hoc error string in the
+// A sentinel rather than a bare fmt.Errorf because Grant's refusals mean
+// different things to the caller and it must be able to tell them apart:
+// ErrAlreadyLeased says the job is already admitted and the grant is
+// redundant, this says the caller passed nothing and has a bug. There are five
+// now — `grep -n 'return Err' ` inside Grant lists ErrNilLease,
+// ErrUnidentifiedLease, ErrNoOpenAttempt, ErrLeaseAfterBoundary and
+// ErrAlreadyLeased. It was also the last ad-hoc error string in the
 // package — every other refusal here is matchable, and one that is not reads
 // as an oversight rather than a decision.
 var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable from holding none")
+
+// ErrUnidentifiedLease is returned by Grant for a lease carrying LeaseUnset —
+// one nobody issued. Distinct from ErrNilLease: that one says the caller
+// passed nothing, this says the caller passed something it built itself.
+var ErrUnidentifiedLease = errors.New("job: Grant: lease has no id; only an issuing pool may mint one")
+
+// ErrLeaseAfterBoundary is returned by Grant for an attempt that has crossed
+// into Production. Distinct from ErrNoOpenAttempt because such an attempt IS
+// open — it is running Extracting or Finalizing — so "no open attempt" would
+// misdescribe it. Design §3.4 gives those states a compute slot and no lease,
+// and Cross surrenders the lease precisely because nothing past the boundary
+// needs one.
+var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Production and needs no lease")
 
 // Job owns its state. Every field is unexported. The lifecycle field —
 // attempts — is guarded by mu, and there is no path to it that does not go
@@ -393,14 +409,39 @@ func (j *Job) HoldsLease() bool {
 	return j.lease != nil
 }
 
-// Grant hands this job an admission token. Refuses nil, which would be
-// indistinguishable from holding none, and refuses a second lease.
+// Grant hands this job an admission token, and is the gatekeeper for every
+// configuration in which holding one is meaningful.
+//
+// It refuses: a nil lease (indistinguishable from holding none), one carrying
+// LeaseUnset (nobody issued it), a job with no open attempt (nothing to admit
+// to the correctness loop), an attempt past the boundary (§3.4 gives
+// Production a slot and no lease), and a second lease.
 func (j *Job) Grant(l *Lease) error {
 	if l == nil {
 		return ErrNilLease
 	}
+	if l.id == LeaseUnset {
+		return ErrUnidentifiedLease
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	// A lease is admission to the CORRECTNESS loop, so there must be a loop to
+	// be admitted to. Without this, an exported setter could put a job into a
+	// configuration the design forbids — holding a lease with no attempt, or
+	// past the boundary — and Snapshot would then report HoldsLease true for
+	// it, which is the input every Queue predicate composes.
+	//
+	// A gatekeeper rather than a rule each caller remembers (Rule 2). No
+	// caller violates it today: sched.grantFor only grants where needsLease is
+	// true, which is false for both Production states. The point is that it
+	// cannot, not that it does not.
+	a := j.currentLocked()
+	if a == nil || !a.isOpen() {
+		return ErrNoOpenAttempt
+	}
+	if a.crossed() {
+		return ErrLeaseAfterBoundary
+	}
 	if j.lease != nil {
 		return ErrAlreadyLeased
 	}
@@ -437,4 +478,57 @@ func (j *Job) surrenderLocked() *Lease {
 	l := j.lease
 	j.lease = nil
 	return l
+}
+
+// Snapshot is the set of job facts a scheduling decision reads — the four
+// fields below — taken under ONE lock acquisition.
+//
+// That set is deliberately NOT claimed to be complete. internal/sched does not
+// exist yet, so there is no population of scheduling decisions to enumerate
+// against, and a comment asserting completeness here would be exactly the kind
+// of unverified universal Rule 4 forbids. What is meant to make it complete is
+// the SIGNATURE, not this sentence: §3.4's predicates take a Snapshot rather
+// than a *Job, so a decision needing a fifth fact must add it here rather than
+// reach for a lock. That becomes checkable in Half B1 task 5, and not before.
+//
+// It exists because the Queue's questions are composite. running(j) is "the
+// attempt is open AND it holds what its state requires AND next is unset" —
+// three facts that State(), HasRun() and HoldsLease() each lock for
+// separately, so a door landing between two of them yields an answer about a
+// configuration the job was never in. Half A gave each of the five fields in
+// writer_enumeration_test.go's fieldOwner map a single writer, which
+// TestFieldOwners_AreTheOnlyDeclarers enforces, and left the composite
+// questions unowned; this is that gap closed.
+//
+// It is also what makes the render path's purity structural rather than
+// asserted (spec §6, test 1): a predicate over a Snapshot has no *Job to
+// acquire anything from.
+type Snapshot struct {
+	State      StateView
+	Intent     Intent
+	HoldsLease bool
+	HasRun     bool
+}
+
+// IsOpen reports whether an attempt is live — begun and not yet settled.
+//
+// It is on Snapshot rather than Job so that the two fields it reads come from
+// the same instant. A Job.IsOpen would take the lock again and could therefore
+// disagree with a Snapshot taken beside it, which is the tear this type exists
+// to remove; Job deliberately exports no isOpen for that reason.
+func (s Snapshot) IsOpen() bool { return s.HasRun && !s.State.Outcome.IsSettled() }
+
+// Snapshot reads the four fields above under one RLock.
+func (j *Job) Snapshot() Snapshot {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	s := Snapshot{
+		Intent:     j.intent,
+		HoldsLease: j.lease != nil,
+		HasRun:     len(j.attempts) > 0,
+	}
+	if a := j.currentLocked(); a != nil {
+		s.State = a.view()
+	}
+	return s
 }

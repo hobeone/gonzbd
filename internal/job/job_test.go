@@ -424,3 +424,137 @@ func (j *Job) currentCrossedForTest() bool {
 	a := j.currentLocked()
 	return a != nil && a.crossed()
 }
+
+// TestJob_SnapshotIsAtomic pins that a snapshot is taken under one lock
+// acquisition, by racing it against the doors and requiring the result be
+// internally consistent at every observation.
+//
+// TWO invariants, because one of them stops discriminating almost immediately.
+//
+//  1. HasRun if and only if the job is at a position. This catches the tear at
+//     the FIRST append and nothing after it: len(attempts) never shrinks and
+//     settling no longer moves the attempt, so from attempt 1 onward both
+//     sides are permanently true and the check is `true != true`. Real, but a
+//     single narrow window out of 20,000 reads.
+//
+//  2. Holding a lease implies an open attempt. This one oscillates on every
+//     one of the 2,000 cycles, because Grant takes a lease and Finish
+//     surrenders it. Finish settles the attempt AND surrenders under one lock,
+//     so the two can never really disagree; a torn read that samples
+//     HoldsLease before Finish and the position after it sees a job holding a
+//     lease with a settled attempt, which is exactly the configuration every
+//     Queue predicate would then compose wrongly.
+//
+// The two are not interchangeable, and neither is redundant. Measured against
+// the torn-composition mutation, in isolation: invariant 1 fails on every run,
+// invariant 2 on 3 of 5 under -race and 1 of 3 without it. So 1 is the
+// deterministic detector with a one-cycle window, and 2 is a probabilistic
+// detector with a 2,000-cycle window. Do not delete 1 as "covered by 2" — the
+// suite would then detect this mutation only sometimes — and do not read 2 as
+// a hard pin, because a single green run does not establish it looked.
+//
+// Stated as a biconditional and an implication respectively, not as the field
+// order they happen to be read in — a reader should not have to reason about
+// composite-literal evaluation order to trust this. An earlier draft asserted
+// only `position set && !HasRun`, which no torn read can produce, and so
+// looked like a race test while being unable to fail.
+func TestJob_SnapshotIsAtomic(t *testing.T) {
+	j := newTestJob(t)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 2000 {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = j.BeginAttempt(testClock())
+			_ = j.Grant(NewLease(LeaseID(i + 1)))
+			_ = j.Transition(Assessing)
+			_, _ = j.Finish(OutcomeFailed, testClock())
+		}
+	}()
+	// Joined via Cleanup rather than a trailing receive: a t.Fatalf below never
+	// reaches the end of the function, and the mutator would otherwise keep
+	// writing to j after the test that owns it has failed.
+	t.Cleanup(func() { close(stop); <-done })
+
+	// Read until the mutator is DONE, not for a fixed count. A fixed count
+	// finishes in single-digit milliseconds — uncontended RLocks are cheap —
+	// and returns long before most of the 2,000 cycles have run, so the
+	// oscillating invariant below is never given a chance to observe one. That
+	// was measured, not guessed: with a 20,000-read cap the torn mutation went
+	// undetected by invariant 2.
+	reads := 0
+loop:
+	for {
+		select {
+		case <-done:
+			break loop
+		default:
+		}
+		s := j.Snapshot()
+		reads++
+		if s.HasRun != (s.State.State != StateUnset) {
+			t.Fatalf("torn snapshot: HasRun=%v but position=%v; a job has run if and only if "+
+				"it is at a position", s.HasRun, s.State.State)
+		}
+		if s.HoldsLease && !s.IsOpen() {
+			t.Fatalf("torn snapshot: holds a lease but the attempt is not open "+
+				"(position=%v, outcome=%v, hasRun=%v); Finish surrenders and settles "+
+				"under one lock, so these cannot really disagree",
+				s.State.State, s.State.Outcome, s.HasRun)
+		}
+	}
+	// Without a floor this passes vacuously if the mutator ever finishes
+	// before the first read.
+	if reads < 2000 {
+		t.Fatalf("only %d snapshots taken; too few to have raced the 2,000 mutation cycles", reads)
+	}
+}
+
+// TestSnapshot_IsOpen covers the predicate in two complementary ways, because
+// each alone leaves a real gap.
+//
+// The door-driven half proves the three shapes a real job actually reaches, so
+// the predicate is exercised against configurations the machine produces
+// rather than ones a test invented. The total half walks every Outcome and
+// pins the arithmetic — IsOpen is HasRun AND not settled — which a
+// three-case test cannot, since a new Outcome would slip through it silently.
+// Snapshot is a plain value and IsOpen reads two of its fields, so
+// constructing one here tests the predicate rather than the machine; that is
+// the point of splitting them.
+func TestSnapshot_IsOpen(t *testing.T) {
+	t.Run("shapes a real job reaches", func(t *testing.T) {
+		j := newTestJob(t)
+		if s := j.Snapshot(); s.IsOpen() {
+			t.Errorf("IsOpen() = true for a job that has never run (HasRun=%v)", s.HasRun)
+		}
+		mustBegin(t, j)
+		if s := j.Snapshot(); !s.IsOpen() {
+			t.Errorf("IsOpen() = false for a begun, unsettled attempt (HasRun=%v, outcome=%v)",
+				s.HasRun, s.State.Outcome)
+		}
+		if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		if s := j.Snapshot(); s.IsOpen() {
+			t.Errorf("IsOpen() = true for a settled attempt (outcome=%v)", s.State.Outcome)
+		}
+	})
+
+	t.Run("total over HasRun x Outcome", func(t *testing.T) {
+		for _, hasRun := range []bool{false, true} {
+			for _, o := range AllOutcomes() {
+				s := Snapshot{HasRun: hasRun, State: StateView{Outcome: o}}
+				want := hasRun && !o.IsSettled()
+				if got := s.IsOpen(); got != want {
+					t.Errorf("Snapshot{HasRun:%v, Outcome:%v}.IsOpen() = %v, want %v",
+						hasRun, o, got, want)
+				}
+			}
+		}
+	})
+}

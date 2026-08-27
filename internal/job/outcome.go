@@ -30,12 +30,16 @@ const (
 	// directory and it is still retryable (D3) — which is the whole reason
 	// this is a distinct outcome from OutcomeFailed rather than folded into
 	// it. finish rejects assigning this outcome to an attempt that has
-	// crossed into Production — a.crossed(), which IS IsProduction(a.state);
-	// see ErrUnrecoverableAfterBoundary in attempt.go — so this sentence is
-	// enforced rather than only stated. Those were two different things while
-	// finish overwrote a.state, because only a latch could still answer once
-	// the position had been erased; change 03 stopped the erasure and
-	// collapsed them back into one.
+	// crossed into Production — admissibleAt's row for it enumerates
+	// {Fetching, Assessing, Repairing} literally (admissibility.go), and
+	// inadmissible() returns ErrUnrecoverableAfterBoundary — so this sentence
+	// is enforced rather than only stated. finish reaches the verdict by
+	// matching a.state against that row, NOT by calling IsProduction; the
+	// zone predicate is not on this path at all.
+	//
+	// Either way it reads a.state, which was once distinct from a stored
+	// latch: only a latch could still answer once finish had erased the
+	// position, and change 03 stopped the erasure and collapsed them into one.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled
