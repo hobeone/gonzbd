@@ -244,14 +244,23 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
-	// Guard on a.crossed, not IsProduction(a.state): finish is about to
-	// overwrite a.state with Finished below, which erases the state the
-	// attempt crossed at — that is exactly why the latch exists rather than
-	// reading a.state directly (see the crossed field's doc comment).
-	// job.go's BeginAttempt reads this same latch after finish has already
-	// run, when a.state == Finished and IsProduction(a.state) would read
-	// false; a.crossed alone is what still says D3's "never crossed the
-	// boundary" at that point.
+	// Guard on a.crossed, not IsProduction(a.state). At THIS line the two
+	// agree: with Waiting gone an open attempt that crossed is necessarily in
+	// Extracting or Finalizing, and the overwrite to Finished happens below,
+	// after this check. So the choice is not forced here — it is forced by
+	// what the latch has to survive.
+	//
+	// finish erases the crossing from a.state on the next line. job.go's
+	// BeginAttempt then reads this same latch, when a.state == Finished and
+	// IsProduction(a.state) reads false; a.crossed alone is what still says
+	// D3's "never crossed the boundary" at that point. Reading the latch here
+	// too keeps one recorded fact answering the question at both call sites,
+	// rather than one site reading the fact and the other re-deriving it from
+	// a state that happens to still carry it (see the crossed field's doc
+	// comment).
+	//
+	// This is not Rule 1 residue: a.crossed is written by this build, on this
+	// attempt, during this run. Rule 1 governs state an EARLIER BUILD wrote.
 	if o == OutcomeUnrecoverable && a.crossed {
 		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
 	}
