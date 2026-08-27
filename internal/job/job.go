@@ -305,10 +305,17 @@ func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
 // The callback runs with j.mu held, which is why a door that yields must call
 // surrenderLocked and never the exported Surrender — see surrenderLocked.
 //
-// l stays nil unless the callback returns one, so an error path yields no
-// lease without the caller doing anything to arrange that. (*Lease, error)
-// must never mean "failed, and here is a lease": the job is still in
-// Correctness on that path and still needs its admission token.
+// It does NOT enforce that an error path yields no lease — it returns whatever
+// the callback returned, so a callback that returns (lease, err) hands back
+// both. That is caller discipline, and a mutation proves it: making Cross's
+// callback `return j.surrenderLocked(), err` does return a lease alongside the
+// error. What the adapter gives is that the correct shape is also the natural
+// one — `return nil, err` — and TestJob_FailedCrossAndFinishKeepTheLease is
+// what actually enforces it, granting a lease and driving four error paths.
+//
+// The rule being protected: (*Lease, error) must never mean "failed, and here
+// is a lease". The job is still in Correctness on that path and still needs
+// its admission token.
 func (j *Job) withOpenAttemptLease(fn func(*Attempt) (*Lease, error)) (*Lease, error) {
 	var l *Lease
 	err := j.withOpenAttempt(func(a *Attempt) error {

@@ -159,7 +159,9 @@ type Attempt struct {
 // for opening in any other state — BeginAttempt is the sole NON-TEST caller
 // and always starts here (`git grep -n 'newAttemp[t](' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'` returns two lines, this declaration and
-// BeginAttempt's call at job.go:207; this package's own tests construct
+// BeginAttempt's call in job.go — no line number, because the last one was
+// stale by the next commit; the grep is the durable form. This package's own
+// tests construct
 // attempts directly, which is how the attempt-level guards get exercised
 // without a Job around them) — and no lease is required to reach it: D-I12 makes Fetching
 // holding nothing a legal, representable state (a paused or restarted fetch
