@@ -108,8 +108,8 @@ This plan is **B1: the decision core, standing alone.** It produces working, tes
 | `requirements.go` | §3.4's per-state resource table: `needsLease`, `needsSlot`. Total over `AllStates()`. |
 | `pool.go` | `leasePool` (identity-tracked, audits returns) and `slotPool` (counted by job ID). |
 | `queue.go` | `Queue` struct, `holds`, `running`, `gatedBy`, `waitReason` — the pure predicates. |
+| `cancel.go` | `Cancel`, `finishCancel`. Lands before `advance.go`, which calls into it. |
 | `advance.go` | `advance`'s three branches, `park`, `grantFor`. |
-| `cancel.go` | `Cancel`, `finishCancel`. |
 | `scenario_test.go` | Each of spec §5.1–5.13 as a named test. |
 
 ---
@@ -620,11 +620,23 @@ func TestJob_SnapshotIsAtomic(t *testing.T) {
 	}()
 	for i := 0; i < 20000; i++ {
 		s := j.Snapshot()
-		if s.State.State != StateUnset && !s.HasRun {
-			t.Fatalf("snapshot has position %v with HasRun false; that configuration cannot exist", s.State.State)
-		}
-		if !s.HasRun && s.State.Outcome != OutcomePending {
-			t.Fatalf("snapshot has outcome %v for a job that has never run", s.State.Outcome)
+		// The invariant, as a BICONDITIONAL: a job has run if and only if it is
+		// at a position. newAttempt starts an attempt at Fetching, and settling
+		// no longer moves it, so every job with an attempt has a position and
+		// every job without one has StateUnset.
+		//
+		// Stated both ways deliberately. An earlier draft asserted only
+		// `position set && !HasRun`, which is VACUOUS: Go evaluates a composite
+		// literal's fields left to right, so the torn version reads HasRun
+		// strictly after State, and len(attempts) never shrinks — so HasRun can
+		// never be observed false once a position has been seen. The tear that
+		// IS observable is the other direction, State read before the first
+		// append and HasRun after it. A biconditional catches both and does not
+		// depend on the field order, which a reader should not have to reason
+		// about to trust this test.
+		if s.HasRun != (s.State.State != StateUnset) {
+			t.Fatalf("torn snapshot: HasRun=%v but position=%v; a job has run if and only if "+
+				"it is at a position", s.HasRun, s.State.State)
 		}
 	}
 	<-done
@@ -693,7 +705,9 @@ func (j *Job) Snapshot() Snapshot {
 }
 ```
 
-Re-run. Expected: FAIL with `snapshot has position ... with HasRun false`. If it passes, raise the iteration counts until it fails; a test that cannot observe the tear is not pinning anything. Restore from your own copy and record the message.
+Re-run. Expected: FAIL with `torn snapshot: HasRun=true but position=StateUnset`. If it passes, raise the iteration counts until it fails; a test that cannot observe the tear is not pinning anything.
+
+**Do not accept a pass here.** This exact test was written vacuous once already: the first draft asserted `position set && !HasRun`, which no torn read can produce, because the torn composite literal evaluates `HasRun` last and `len(attempts)` never shrinks. It looked like a race test and could not fail. If the mutation does not go red after raising the counts, the assertion is wrong, not the mutation. Restore from your own copy and record the message.
 
 - [ ] **Step 5: Gates and commit**
 
@@ -993,7 +1007,7 @@ git commit  # feat(sched): add the resource requirements table and the audited p
 
 **Interfaces:**
 - Consumes: `needsLease`, `needsSlot`, `newLeasePool`, `newSlotPool` (Task 4); `job.Snapshot` (Task 3)
-- Produces: `type Queue struct`, `func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue`, `type Workers interface`, `(*Queue).holds(id string, s job.Snapshot) bool`, `(*Queue).running(id string, s job.Snapshot) bool`, `(*Queue).gatedBy(s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).waitReason(id string, s job.Snapshot) (job.WaitReason, bool)`
+- Produces: `type Queue struct`, `func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue`, `type Workers interface`, `(*Queue).holds(id string, s job.Snapshot) bool`, `(*Queue).running(id string, s job.Snapshot) bool`, `(*Queue).gatedBy(s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).waitReason(id string, s job.Snapshot) (job.WaitReason, bool)`, `(*Queue).reclaim(l *job.Lease) error`
 
 Every predicate takes a `job.Snapshot` and a job ID, never a `*job.Job`. That is what makes purity structural: a function with no `*Job` cannot call a door.
 
@@ -1227,6 +1241,15 @@ func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue {
 
 func (q *Queue) now() time.Time { return q.clock() }
 
+// reclaim is the SOLE reclaimer (§3.9). It no-ops on nil so that no call site
+// has to test for it — a job may legitimately reach the crossing holding
+// nothing, having been paused at Assessing{next: Extracting} and resumed.
+//
+// It lives here rather than beside advance because Cancel needs it too, and
+// Cancel lands first: a task whose code does not compile on its own is not a
+// task, and every commit must leave the repository building.
+func (q *Queue) reclaim(l *job.Lease) error { return q.leases.reclaim(l) }
+
 // holds reports whether the job holds everything its CURRENT position
 // requires. It says nothing about whether the attempt is open — running()
 // adds that, and §3.4 explains why the two must stay separate.
@@ -1319,13 +1342,222 @@ git commit  # feat(sched): add the pure scheduling predicates over a job snapsho
 
 ---
 
-## Task 6: `grantFor`, `park`, and `advance`
+## Task 6: `Cancel` and `finishCancel`
+
+**Files:**
+- Create: `internal/sched/cancel.go`, `internal/sched/cancel_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 4 and 5
+- Produces: `(*Queue).Cancel(j *job.Job) error`, `(*Queue).finishCancel(j *job.Job, s job.Snapshot) error`
+
+`finishCancel` takes the snapshot `Advance` already read, rather than re-reading. Two reads would reintroduce the tear Task 3 closed, at the one call site where the intent has just changed.
+
+The **gate is `IsProduction && running`, not `IsProduction && !workDone`** — §3.7 lists three ways the latter failed, all because `Finalizing` never sets `next`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+// TestCancel_PreBoundaryAbortsRatherThanSeizing pins §3.7's interrupt arm.
+// "Immediately" describes when the worker is TOLD to stop, not when its
+// resources are taken: the Manifest and StorageBarrier come with the lease, so
+// reclaiming one from under a downloader mid-article is a use-after-free in
+// all but name.
+func TestCancel_PreBoundaryAbortsRatherThanSeizing(t *testing.T) {
+	w := &stubWorkers{}
+	q := New(1, 1, testClock, w)
+	j := job.New("j1", "n", job.Policy{})
+	mustHoldAt(t, q, j, job.Fetching)
+	if err := q.Cancel(j); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(w.aborted) != 1 || w.aborted[0] != "j1" {
+		t.Errorf("aborted = %v, want [j1]", w.aborted)
+	}
+	if !j.HoldsLease() {
+		t.Error("Cancel took the lease from a live worker; it must wait for the yield")
+	}
+	if j.Snapshot().State.Outcome.IsSettled() {
+		t.Error("Cancel settled a job whose worker is still live")
+	}
+}
+
+// TestCancel_PostBoundaryNotRunningSettlesAtOnce is scenario §5.12: a job
+// restored from a restart holds nothing, so running() is false and there is no
+// worker to protect. Revision 3 gated on !workDone and deadlocked here.
+func TestCancel_PostBoundaryNotRunningSettlesAtOnce(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustHoldAt(t, q, j, job.Assessing)
+	if err := j.SetNext(job.Extracting); err != nil {
+		t.Fatalf("SetNext: %v", err)
+	}
+	l, err := j.Cross(job.Extracting) // the crossing, driven directly
+	if err != nil {
+		t.Fatalf("Cross: %v", err)
+	}
+	if err := q.reclaim(l); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	// Holds nothing now, which is exactly the restored-from-restart shape.
+	if err := q.Cancel(j); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if got := j.Snapshot().State.Outcome; got != job.OutcomeCancelled {
+		t.Errorf("Outcome = %v, want Cancelled — nothing was in flight to protect", got)
+	}
+}
+
+// TestCancel_ReleasesTheComputeSlot pins the leak §3.7 names: Assessing and
+// Repairing hold a slot alongside the lease, and an earlier revision reclaimed
+// only the lease, leaking pool-B capacity on every cancel from those states.
+func TestCancel_ReleasesTheComputeSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustHoldAt(t, q, j, job.Assessing)
+	q.slots.release(j.ID()) // the assessor finished and yielded its slot
+	if err := q.Cancel(j); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if q.leases.outstanding() != 0 {
+		t.Errorf("leases outstanding = %d after a cancel, want 0", q.leases.outstanding())
+	}
+	if q.slots.outstanding() != 0 {
+		t.Errorf("slots outstanding = %d after a cancel, want 0", q.slots.outstanding())
+	}
+}
+```
+
+- [ ] **Step 2: Run to verify it fails, then write `cancel.go`**
+
+Run: `go test -count=1 -run TestCancel ./internal/sched/` → build failure, `undefined: q.Cancel`.
+
+```go
+package sched
+
+import "github.com/hobeone/gonzbd/internal/job"
+
+// Cancel latches the job's intent and then settles it if nothing is in flight.
+// §8.4 makes cancel an interrupt before the boundary and a gate after it.
+func (q *Queue) Cancel(j *job.Job) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		return err
+	}
+	return q.finishCancel(j, j.Snapshot())
+}
+
+// finishCancel takes the snapshot its caller already read rather than reading
+// again: two reads would reintroduce the tear job.Snapshot closes, at the one
+// site where the intent has just changed underneath.
+//
+// The gate is IsProduction && running, NOT IsProduction && !workDone. §3.7
+// lists three ways the latter fails, all because Finalizing never sets next so
+// !workDone is permanently true there: a Finalizing job could never be
+// cancelled; a post-boundary job restored from a restart gated forever; and a
+// Finalizing job waiting for a slot gated forever with no work in flight.
+func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
+	if s.State.State == job.StateUnset {
+		// A never-run job cannot be settled — Outcome lives on the Attempt and
+		// there is none, so Finish returns ErrNoOpenAttempt. Cancelling a
+		// queued job removes it from the queue, which is what a user means.
+		// discard is Half B2's, with the store; naming it here keeps the case
+		// from being silently unhandled.
+		return nil
+	}
+	if s.State.Outcome.IsSettled() {
+		return nil // already closed, by cancel or otherwise
+	}
+	if q.running(j.ID(), s) {
+		// A worker owns this job's resources and is using them. Neither arm
+		// may seize a lease or slot out from under it.
+		if job.IsProduction(s.State.State) {
+			return nil // gate: let it reach the end; D-I11 lets it complete OK
+		}
+		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
+		return nil
+	}
+	l, err := j.Finish(job.OutcomeCancelled, q.now())
+	if rerr := q.reclaim(l); rerr != nil {
+		return rerr
+	}
+	q.slots.release(j.ID()) // Assessing and Repairing hold one too
+	return err
+}
+```
+
+- [ ] **Step 3: Write the setup helper this task uses**
+
+```go
+// mustHoldAt puts j at `at`, holding everything that position requires, using
+// the job doors and the pools DIRECTLY rather than the scheduler.
+//
+// Deliberately not driven through Advance. Cancel is a decision about a job's
+// current holdings, and a helper that reached those holdings by running the
+// scheduler would make every test here also a test of Advance — so a bug in
+// Advance would show up as a cancel failure. It also lets this task land
+// before Advance exists, which is what keeps each task independently
+// compilable.
+func mustHoldAt(t *testing.T, q *Queue, j *job.Job, at job.State) {
+	t.Helper()
+	if err := j.BeginAttempt(testClock()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	route := map[job.State][]job.State{
+		job.Fetching:  {},
+		job.Assessing: {job.Assessing},
+		job.Repairing: {job.Assessing, job.Repairing},
+	}
+	steps, ok := route[at]
+	if !ok {
+		t.Fatalf("mustHoldAt has no route to %v; add one rather than reaching past the doors", at)
+	}
+	for _, to := range steps {
+		if err := j.SetNext(to); err != nil {
+			t.Fatalf("SetNext(%v): %v", to, err)
+		}
+		if err := j.Transition(to); err != nil {
+			t.Fatalf("Transition(%v): %v", to, err)
+		}
+	}
+	if needsLease(at) {
+		l := q.leases.issue()
+		if l == nil {
+			t.Fatal("pool A had no capacity for the fixture")
+		}
+		if err := j.Grant(l); err != nil {
+			t.Fatalf("Grant: %v", err)
+		}
+	}
+	if needsSlot(at) && !q.slots.acquire(j.ID()) {
+		t.Fatal("pool B had no capacity for the fixture")
+	}
+}
+```
+
+- [ ] **Step 4: Run, then mutate the gate**
+
+Run: `go test -race -count=1 ./internal/sched/` → PASS.
+
+Mutate `if q.running(j.ID(), s)` to `if s.State.Next == job.StateUnset` — revision 3's `!workDone` proxy. Expected: `TestCancel_PostBoundaryNotRunningSettlesAtOnce` red, because `Extracting{next: unset}` gates forever. Restore and record.
+
+- [ ] **Step 5: Gates and commit**
+
+```bash
+git add internal/sched/cancel.go internal/sched/cancel_test.go
+git commit  # feat(sched): add Cancel with the running-based post-boundary gate
+```
+
+---
+
+## Task 7: `grantFor`, `park`, and `advance`
 
 **Files:**
 - Create: `internal/sched/advance.go`, `internal/sched/advance_test.go`
 
 **Interfaces:**
-- Consumes: everything from Tasks 4 and 5
+- Consumes: Tasks 4 and 5; `finishCancel` from Task 6
 - Produces: `(*Queue).grantFor(j *job.Job, s job.State) bool`, `(*Queue).park(j *job.Job) error`, `(*Queue).reclaim(l *job.Lease) error`, `(*Queue).Advance(j *job.Job) error`
 
 `Advance` is exported because it is the scheduling loop's entry point; the predicates stay unexported.
@@ -1421,13 +1653,17 @@ package sched
 
 import "github.com/hobeone/gonzbd/internal/job"
 
-// reclaim is the SOLE reclaimer (§3.9). It no-ops on nil so that no call site
-// has to test for it — a job may legitimately reach the crossing holding
-// nothing, having been paused at Assessing{next: Extracting} and resumed.
-func (q *Queue) reclaim(l *job.Lease) error { return q.leases.reclaim(l) }
-
 // park releases what a gated job must not keep holding. Both gated paths go
 // through it.
+//
+// It returns an error where spec §3.6 shows it returning nothing. That is a
+// deliberate divergence and it SUPERSEDES a specific spec decision: §10's
+// revision history records "park returned an error that is always nil →
+// returns nothing", so the signature was narrowed once, on the grounds that
+// the error could not carry information. That reasoning no longer holds. Task 4
+// gave reclaim an identity audit, so it now fails on a lease this pool did not
+// issue or already took back — a real condition, and one whose only other
+// outlet would be silence.
 func (q *Queue) park(j *job.Job) error { return q.reclaim(j.Surrender()) }
 
 // grantFor acquires what s requires and j does not already hold. Acquisition
@@ -1531,6 +1767,11 @@ In `advance_test.go`:
 // mustAdvanceTo drives j through the real doors until it sits at want, using
 // the Queue rather than constructing state, so a configuration this helper
 // cannot reach is one the machine cannot reach.
+//
+// The scheduler-driven counterpart to Task 6's mustHoldAt, which reaches the
+// same positions through the job doors and the pools directly. Both exist on
+// purpose: cancel is a decision about holdings and must not depend on Advance,
+// while the scenarios in Task 8 are about the scheduler and should go through it.
 func mustAdvanceTo(t *testing.T, q *Queue, j *job.Job, want job.State) {
 	t.Helper()
 	if err := q.Advance(j); err != nil { // branch 1: opens the attempt
@@ -1583,162 +1824,6 @@ Record every message.
 ```bash
 git add internal/sched/advance.go internal/sched/advance_test.go
 git commit  # feat(sched): add advance, grantFor and park
-```
-
----
-
-## Task 7: `Cancel` and `finishCancel`
-
-**Files:**
-- Create: `internal/sched/cancel.go`, `internal/sched/cancel_test.go`
-
-**Interfaces:**
-- Consumes: Tasks 4–6
-- Produces: `(*Queue).Cancel(j *job.Job) error`, `(*Queue).finishCancel(j *job.Job, s job.Snapshot) error`
-
-`finishCancel` takes the snapshot `Advance` already read, rather than re-reading. Two reads would reintroduce the tear Task 3 closed, at the one call site where the intent has just changed.
-
-The **gate is `IsProduction && running`, not `IsProduction && !workDone`** — §3.7 lists three ways the latter failed, all because `Finalizing` never sets `next`.
-
-- [ ] **Step 1: Write the failing tests**
-
-```go
-// TestCancel_PreBoundaryAbortsRatherThanSeizing pins §3.7's interrupt arm.
-// "Immediately" describes when the worker is TOLD to stop, not when its
-// resources are taken: the Manifest and StorageBarrier come with the lease, so
-// reclaiming one from under a downloader mid-article is a use-after-free in
-// all but name.
-func TestCancel_PreBoundaryAbortsRatherThanSeizing(t *testing.T) {
-	w := &stubWorkers{}
-	q := New(1, 1, testClock, w)
-	j := job.New("j1", "n", job.Policy{})
-	mustAdvanceTo(t, q, j, job.Fetching)
-	if err := q.Cancel(j); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if len(w.aborted) != 1 || w.aborted[0] != "j1" {
-		t.Errorf("aborted = %v, want [j1]", w.aborted)
-	}
-	if !j.HoldsLease() {
-		t.Error("Cancel took the lease from a live worker; it must wait for the yield")
-	}
-	if j.Snapshot().State.Outcome.IsSettled() {
-		t.Error("Cancel settled a job whose worker is still live")
-	}
-}
-
-// TestCancel_PostBoundaryNotRunningSettlesAtOnce is scenario §5.12: a job
-// restored from a restart holds nothing, so running() is false and there is no
-// worker to protect. Revision 3 gated on !workDone and deadlocked here.
-func TestCancel_PostBoundaryNotRunningSettlesAtOnce(t *testing.T) {
-	q := New(1, 1, testClock, &stubWorkers{})
-	j := job.New("j1", "n", job.Policy{})
-	mustAdvanceTo(t, q, j, job.Assessing)
-	if err := j.SetNext(job.Extracting); err != nil {
-		t.Fatalf("SetNext: %v", err)
-	}
-	if err := q.Advance(j); err != nil { // crosses, reclaims, grants a slot
-		t.Fatalf("Advance: %v", err)
-	}
-	q.slots.release(j.ID()) // simulate the restart: holds nothing
-	if err := q.Cancel(j); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if got := j.Snapshot().State.Outcome; got != job.OutcomeCancelled {
-		t.Errorf("Outcome = %v, want Cancelled — nothing was in flight to protect", got)
-	}
-}
-
-// TestCancel_ReleasesTheComputeSlot pins the leak §3.7 names: Assessing and
-// Repairing hold a slot alongside the lease, and an earlier revision reclaimed
-// only the lease, leaking pool-B capacity on every cancel from those states.
-func TestCancel_ReleasesTheComputeSlot(t *testing.T) {
-	q := New(1, 1, testClock, &stubWorkers{})
-	j := job.New("j1", "n", job.Policy{})
-	mustAdvanceTo(t, q, j, job.Assessing)
-	q.slots.release(j.ID()) // the assessor finished and yielded its slot
-	if err := q.Cancel(j); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if q.leases.outstanding() != 0 {
-		t.Errorf("leases outstanding = %d after a cancel, want 0", q.leases.outstanding())
-	}
-	if q.slots.outstanding() != 0 {
-		t.Errorf("slots outstanding = %d after a cancel, want 0", q.slots.outstanding())
-	}
-}
-```
-
-- [ ] **Step 2: Run to verify it fails, then write `cancel.go`**
-
-Run: `go test -count=1 -run TestCancel ./internal/sched/` → build failure, `undefined: q.Cancel`.
-
-```go
-package sched
-
-import "github.com/hobeone/gonzbd/internal/job"
-
-// Cancel latches the job's intent and then settles it if nothing is in flight.
-// §8.4 makes cancel an interrupt before the boundary and a gate after it.
-func (q *Queue) Cancel(j *job.Job) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if err := j.SetIntent(job.IntentCancel); err != nil {
-		return err
-	}
-	return q.finishCancel(j, j.Snapshot())
-}
-
-// finishCancel takes the snapshot its caller already read rather than reading
-// again: two reads would reintroduce the tear job.Snapshot closes, at the one
-// site where the intent has just changed underneath.
-//
-// The gate is IsProduction && running, NOT IsProduction && !workDone. §3.7
-// lists three ways the latter fails, all because Finalizing never sets next so
-// !workDone is permanently true there: a Finalizing job could never be
-// cancelled; a post-boundary job restored from a restart gated forever; and a
-// Finalizing job waiting for a slot gated forever with no work in flight.
-func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
-	if s.State.State == job.StateUnset {
-		// A never-run job cannot be settled — Outcome lives on the Attempt and
-		// there is none, so Finish returns ErrNoOpenAttempt. Cancelling a
-		// queued job removes it from the queue, which is what a user means.
-		// discard is Half B2's, with the store; naming it here keeps the case
-		// from being silently unhandled.
-		return nil
-	}
-	if s.State.Outcome.IsSettled() {
-		return nil // already closed, by cancel or otherwise
-	}
-	if q.running(j.ID(), s) {
-		// A worker owns this job's resources and is using them. Neither arm
-		// may seize a lease or slot out from under it.
-		if job.IsProduction(s.State.State) {
-			return nil // gate: let it reach the end; D-I11 lets it complete OK
-		}
-		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
-		return nil
-	}
-	l, err := j.Finish(job.OutcomeCancelled, q.now())
-	if rerr := q.reclaim(l); rerr != nil {
-		return rerr
-	}
-	q.slots.release(j.ID()) // Assessing and Repairing hold one too
-	return err
-}
-```
-
-- [ ] **Step 3: Run, then mutate the gate**
-
-Run: `go test -race -count=1 ./internal/sched/` → PASS.
-
-Mutate `if q.running(j.ID(), s)` to `if s.State.Next == job.StateUnset` — revision 3's `!workDone` proxy. Expected: `TestCancel_PostBoundaryNotRunningSettlesAtOnce` red, because `Extracting{next: unset}` gates forever. Restore and record.
-
-- [ ] **Step 4: Gates and commit**
-
-```bash
-git add internal/sched/cancel.go internal/sched/cancel_test.go
-git commit  # feat(sched): add Cancel with the running-based post-boundary gate
 ```
 
 ---
