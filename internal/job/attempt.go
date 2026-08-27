@@ -15,9 +15,9 @@ import (
 // Attempt.finish directly (e.g. this package's own tests). Job.Finish checks
 // !a.isOpen() itself, before calling this method, and returns ErrNoOpenAttempt
 // on a settled attempt — a strict superset of this check, since isOpen() is
-// defined as outcome == OutcomePending. (Finish does that check inline rather
-// than through withOpenAttempt, which it cannot use because it must return the
-// yielded lease; the shadowing is the same either way.) No external caller can
+// defined as outcome == OutcomePending. (Finish gets that check from
+// withOpenAttempt, via the withOpenAttemptLease adapter that lets a door
+// return the lease it yields.) No external caller can
 // reach this branch through the public API, so exporting it would be a dead
 // sentinel.
 var errOutcomeAlreadySet = errors.New("job: attempt outcome already set")

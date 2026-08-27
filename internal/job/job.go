@@ -10,14 +10,17 @@ import (
 
 // ErrNoOpenAttempt is returned by every door that needs an attempt already in
 // flight, when the job has none — either because it has never run or because
-// its last attempt is settled. Five doors return it, by two different routes:
-// Transition, SetNext and SetActivity through withOpenAttempt (`git grep -n
-// 'withOpenAttempt(fun[c]' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns those three call sites and nothing else; the bracket keeps this
+// its last attempt is settled. Five doors return it — Transition, SetNext,
+// SetActivity, Cross and Finish — and all five now return it from ONE check,
+// in withOpenAttempt. Cross and Finish reach it through withOpenAttemptLease,
+// a shape adapter that takes no lock and repeats no check, so there is a
+// single answer to "must there be an open attempt?" rather than three copies
+// that could drift. `git grep -n 'withOpenAttempt[(]' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns five lines: the three direct callers,
+// the adapter's call, and the helper's own declaration. The bracket keeps this
 // citation from matching its own text, and the pathspec drops the tests that
-// call the helper directly), and Cross and Finish from their own inline check, because
-// each must yield the lease under the lock it mutates under and
-// withOpenAttempt's callback returns only an error. BeginAttempt is also a
+// call the helper directly.
+// BeginAttempt is also a
 // mutator but never returns this error: it is what opens an
 // attempt in the first place. The caller's fix for this error is
 // BeginAttempt, which is the only door into the machine.
@@ -247,20 +250,16 @@ func (j *Job) SetActivity(x Activity) error {
 // lease up anyway. The Queue's reclaimer no-ops on nil rather than each caller
 // testing for it.
 //
-// Not routed through withOpenAttempt, because it must surrender under the same
-// lock it mutates the attempt under — see surrenderLocked for why calling the
-// exported Surrender from a locked door deadlocks.
+// It surrenders under the same lock it mutates the attempt under, which is why
+// it calls surrenderLocked rather than the exported Surrender — see
+// surrenderLocked for why the latter would deadlock from inside a door.
 func (j *Job) Cross(to State) (*Lease, error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	a := j.currentLocked()
-	if a == nil || !a.isOpen() {
-		return nil, ErrNoOpenAttempt
-	}
-	if err := a.cross(to); err != nil {
-		return nil, err
-	}
-	return j.surrenderLocked(), nil
+	return j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {
+		if err := a.cross(to); err != nil {
+			return nil, err
+		}
+		return j.surrenderLocked(), nil
+	})
 }
 
 // Finish assigns the verdict, closes the open attempt, and yields the lease if
@@ -271,30 +270,23 @@ func (j *Job) Cross(to State) (*Lease, error) {
 // cancel all reach Finished without passing through Cross. An earlier design
 // returned only an error, and leaked a pool-A slot on all three.
 func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	a := j.currentLocked()
-	if a == nil || !a.isOpen() {
-		return nil, ErrNoOpenAttempt
-	}
-	if err := a.finish(o, now); err != nil {
-		return nil, err
-	}
-	return j.surrenderLocked(), nil
+	return j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {
+		if err := a.finish(o, now); err != nil {
+			return nil, err
+		}
+		return j.surrenderLocked(), nil
+	})
 }
 
-// withOpenAttempt is the shared preamble for the three mutators that need
-// nothing back but an error: take the write lock, resolve the open attempt or
-// fail, apply. Transition, SetNext and SetActivity go through it.
+// withOpenAttempt is the one preamble every door that mutates the current
+// attempt goes through: take the write lock, resolve the open attempt or fail,
+// apply. It is the only function in this file that answers "must there be an
+// open attempt?", so the answer cannot drift between doors.
 //
-// Cross and Finish deliberately do not, and cannot: each must return the
-// *Lease it yields, and this callback returns only an error. They repeat the
-// preamble inline instead — the same lock, the same currentLocked, the same
-// isOpen check, in the same order. That is three copies of the question "must
-// there be an open attempt?" rather than one, so it CAN drift between them;
-// what keeps it honest is TestJob_MutatorsRequireAnOpenAttempt, which drives
-// all five doors — Transition, SetNext, SetActivity, Finish and Cross — at a
-// never-run job and requires ErrNoOpenAttempt from each. Not this helper.
+// Doors that must return the lease they yield use withOpenAttemptLease below,
+// which is a shape adapter over this one — it takes no lock and repeats no
+// check. Before that adapter existed, Cross and Finish copied this preamble
+// inline, which made three independently-maintained copies of one question.
 func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -303,6 +295,28 @@ func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
 		return ErrNoOpenAttempt
 	}
 	return fn(a)
+}
+
+// withOpenAttemptLease adapts withOpenAttempt for the doors that yield a lease
+// on success. It changes the SHAPE of the callback's result and nothing else:
+// no lock of its own, no second open-attempt check, so withOpenAttempt remains
+// the sole owner of both.
+//
+// The callback runs with j.mu held, which is why a door that yields must call
+// surrenderLocked and never the exported Surrender — see surrenderLocked.
+//
+// l stays nil unless the callback returns one, so an error path yields no
+// lease without the caller doing anything to arrange that. (*Lease, error)
+// must never mean "failed, and here is a lease": the job is still in
+// Correctness on that path and still needs its admission token.
+func (j *Job) withOpenAttemptLease(fn func(*Attempt) (*Lease, error)) (*Lease, error) {
+	var l *Lease
+	err := j.withOpenAttempt(func(a *Attempt) error {
+		var e error
+		l, e = fn(a)
+		return e
+	})
+	return l, err
 }
 
 // currentLocked returns a pointer to the last attempt, or nil if there are
@@ -380,12 +394,11 @@ func (j *Job) Surrender() *Lease {
 // surrenderLocked is the sole releaser of j.lease. Must hold mu.
 //
 // It exists because j.mu is a sync.RWMutex and Go mutexes are NOT reentrant.
-// Cross and Finish, the two doors that end a job's need for a lease, each
-// take j.mu.Lock() themselves and hold it across their own body rather than
-// going through withOpenAttempt — so a call to the exported Surrender() from
-// either would take j.mu a second time and deadlock the job permanently, with
-// no error and no timeout. Both call this helper instead, which needs no lock
-// of its own.
+// Cross and Finish, the two doors that end a job's need for a lease, run their
+// bodies inside withOpenAttempt's callback, which holds j.mu — so a call to
+// the exported Surrender() from either would take j.mu a second time and
+// deadlock the job permanently, with no error and no timeout. Both call this
+// helper instead, which needs no lock of its own.
 //
 // Three callers of surrenderLocked as of this commit: Surrender (above),
 // Cross and Finish (job.go) — `git grep -n 'surrender[L]ocked()' --

@@ -58,14 +58,13 @@
 // move they were asked for — see ErrNextAlreadySet.
 //
 // Transition, SetNext, SetActivity, Cross and Finish share one precondition —
-// an open attempt (see ErrNoOpenAttempt). The first three get it from
-// withOpenAttempt; Cross and Finish check inline, because each returns a
-// *Lease and that callback returns only an error. Cross is also the sole door across
-// the irreversible boundary, and it takes j.mu itself rather than going
-// through withOpenAttempt because it must yield the lease under the same
-// lock it mutates the attempt under — entering Production and giving up the
-// lease cannot happen as two separate calls without a window where one could
-// be forgotten. Transition refuses the one Correctness→Production edge
+// an open attempt (see ErrNoOpenAttempt) — and all five get it from one place,
+// withOpenAttempt. The two that yield a lease reach it through
+// withOpenAttemptLease, an adapter over that helper rather than a second copy
+// of it. Cross is also the sole door across the irreversible boundary, and it
+// yields the lease inside the same locked callback that mutates the attempt —
+// entering Production and giving up the lease cannot happen as two separate
+// calls without a window where one could be forgotten. Transition refuses the one Correctness→Production edge
 // outright (ErrCrossRequired) precisely so Cross is the only way to take it.
 // TestCrossedWrites_MatchTheEnumerationStatedInProse
 // (writer_enumeration_test.go) and TestOutcomeWrites_MatchTheEnumerationStatedInProse

@@ -656,9 +656,9 @@ lease, leaking pool-B capacity on every cancel from those two states.
 
 **A never-run job cannot be settled**, because `Outcome` lives on the `Attempt`
 and there is none: `Job.Finish` returns `ErrNoOpenAttempt`
-(`internal/job/job.go`). It reaches that check inline rather than through
-`withOpenAttempt` — the callback returns only `error`, and `Finish` must return
-a `*Lease` — but the answer for a never-run job is the same either way. Cancelling a queued job therefore
+(`internal/job/job.go`), from the same `withOpenAttempt` check every other
+mutating door uses — reached via the `withOpenAttemptLease` adapter, which lets
+a door return the lease it yields. Cancelling a queued job therefore
 **removes it from the queue** rather than settling it, which is what upstream
 does and what a user means. `discard` is the Queue's, and is named here only so
 the case is not silently unhandled.
@@ -735,26 +735,31 @@ func (q *Queue) reclaim(l *Lease)                              // no-op on nil �
 ```
 
 **`Cross` and `Finish` must call `surrenderLocked`, not `Surrender`.** `Job.mu`
-is a `sync.RWMutex` and Go's mutexes are not reentrant. Both doors take
-`j.mu.Lock()` in their own bodies and hold it across the attempt mutation
-(`internal/job/job.go`) — so either one calling the exported `Surrender()`
-would take `j.mu` a second time and **deadlock the job permanently**, with no
-error and no timeout.
+is a `sync.RWMutex` and Go's mutexes are not reentrant. Both doors run their
+bodies inside `withOpenAttempt`'s callback, which holds `j.mu` across the
+attempt mutation (`internal/job/job.go`) — so either one calling the exported
+`Surrender()` would take `j.mu` a second time and **deadlock the job
+permanently**, with no error and no timeout.
 
-> **Corrected during implementation (Half A).** This paragraph originally
-> derived the hazard from `Job.Finish` routing through `withOpenAttempt`.
-> `Finish` does not route through it, and neither does `Cross`: that helper's
-> callback returns only `error`, while both doors must return a `*Lease`. Each
-> therefore locks inline. The conclusion is unchanged and the reason is
-> stronger — the lock these doors must not re-take is one they hold
-> *themselves*, so no helper stands between the door and the deadlock.
-> `withOpenAttempt` covers exactly three mutators — `Transition`, `SetNext`
-> and `SetActivity` (`git grep -n 'withOpenAttempt[(]func' --
-> 'internal/job/*.go' ':!internal/job/*_test.go'` returns those three lines).
-> The exported `Surrender` is not among them and structurally cannot be: the
-> helper returns `error` where `Surrender` returns a `*Lease`, and it refuses
-> a job with no open attempt — which is precisely the caller `Surrender`
-> exists to serve. It takes `j.mu` itself and calls `surrenderLocked`.
+> **Corrected twice during implementation (Half A); this is the current
+> statement.** The paragraph first derived the hazard from `Job.Finish`
+> routing through `withOpenAttempt`, which at the time it did not — both doors
+> locked inline, because the helper's callback returns only `error` while they
+> must return a `*Lease`. That inline duplication was then removed: a
+> `withOpenAttemptLease` adapter over the same helper changes the shape of the
+> callback's result without taking a lock or repeating a check, so **all five
+> attempt-mutating doors now share one open-attempt check** — `Transition`,
+> `SetNext`, `SetActivity`, `Cross`, `Finish`. Dropping `!a.isOpen()` from that
+> single helper fails all five subtests of
+> `TestJob_FinishedJobHasNoOpenAttempt`, which is the property made
+> observable rather than asserted.
+>
+> The deadlock conclusion is unchanged throughout: what matters is that `j.mu`
+> is held when the door's body runs, not which frame took it. The exported
+> `Surrender` remains outside this set and structurally cannot join it — the
+> helper refuses a job with no open attempt, which is precisely the caller
+> `Surrender` exists to serve. It takes `j.mu` itself and calls
+> `surrenderLocked`.
 
 The single-releaser property is unaffected: `surrenderLocked` is still the only
 code that clears `j.lease`, and `Surrender` is a thin lock-taking wrapper over

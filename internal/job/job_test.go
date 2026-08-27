@@ -145,10 +145,12 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
 		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeFailed, testClock()); return err }},
 		// Cross belongs here even though it can never succeed from a never-run
-		// job for a second reason (it is legal only from Assessing): the door
-		// checks for an open attempt FIRST, and it is one of the two doors
-		// that check inline rather than through withOpenAttempt, so it is
-		// exactly the one that could drift from the other four unnoticed.
+		// job for a second reason (it is legal only from Assessing): the
+		// open-attempt check runs FIRST, so this pins which of the two errors
+		// the door owes. All five now share one check in withOpenAttempt, and
+		// that is what this table demonstrates rather than assumes — dropping
+		// !a.isOpen() from that single helper fails all five subtests of
+		// TestJob_FinishedJobHasNoOpenAttempt at once.
 		{"Cross", func(j *Job) error { _, err := j.Cross(Extracting); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -347,4 +349,76 @@ func mustJobTransition(t *testing.T, j *Job, to State) {
 	if err := j.Transition(to); err != nil {
 		t.Fatalf("Transition(%v): %v", to, err)
 	}
+}
+
+// TestJob_WithOpenAttemptLease drives the adapter directly, because what it
+// guarantees is not observable through Cross and Finish alone: those always
+// return a lease on success and nil on error, so they cannot show that the
+// adapter itself never invents one.
+//
+// Three properties, each of which a plausible rewrite would break:
+//   - it refuses without calling fn at all, so a door cannot act on a settled
+//     or never-run attempt before the check;
+//   - it hands the callback the same *Attempt currentLocked resolves, not a
+//     copy — a copy would silently discard every mutation;
+//   - the returned lease is exactly what the callback returned, including nil
+//     alongside an error. (*Lease, error) must never mean "failed, and here is
+//     a lease".
+func TestJob_WithOpenAttemptLease(t *testing.T) {
+	t.Run("refuses without invoking fn", func(t *testing.T) {
+		j := newTestJob(t)
+		called := false
+		l, err := j.withOpenAttemptLease(func(*Attempt) (*Lease, error) {
+			called = true
+			return &Lease{}, nil
+		})
+		if !errors.Is(err, ErrNoOpenAttempt) {
+			t.Errorf("err = %v, want ErrNoOpenAttempt", err)
+		}
+		if called {
+			t.Error("fn was invoked on a job with no open attempt")
+		}
+		if l != nil {
+			t.Errorf("lease = %p, want nil — a refusal must yield nothing", l)
+		}
+	})
+
+	t.Run("passes the live attempt and returns its lease", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		want := &Lease{}
+		l, err := j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {
+			// Fetched under the lock the adapter's callback already runs
+			// beneath; taking it again here would deadlock.
+			if got := j.currentLocked(); a != got {
+				t.Errorf("fn got %p, want the attempt currentLocked resolves (%p)", a, got)
+			}
+			a.setActivity(ActPar2Verify)
+			return want, nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if l != want {
+			t.Errorf("lease = %p, want the one fn returned (%p)", l, want)
+		}
+		if got := j.State().Activity; got != ActPar2Verify {
+			t.Errorf("Activity = %v; the callback received a copy, not the live attempt", got)
+		}
+	})
+
+	t.Run("an error from fn yields no lease", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		sentinel := errors.New("probe")
+		l, err := j.withOpenAttemptLease(func(*Attempt) (*Lease, error) {
+			return nil, sentinel
+		})
+		if !errors.Is(err, sentinel) {
+			t.Errorf("err = %v, want the callback's error", err)
+		}
+		if l != nil {
+			t.Errorf("lease = %p, want nil on an error path", l)
+		}
+	})
 }

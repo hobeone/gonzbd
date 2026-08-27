@@ -1833,6 +1833,16 @@ func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) {
 }
 ```
 
+
+> **Superseded after task 7.** The two passages above describe the shape task 6
+> actually built — `Cross` and `Finish` locking inline because
+> `withOpenAttempt`'s callback returns only `error`. A later change added
+> `withOpenAttemptLease`, an adapter over that same helper, so both doors now
+> run inside its callback and all five attempt-mutating doors share one
+> open-attempt check. Left as written because it is the record of what task 6
+> produced; the current statement is in the design doc's §3.9.
+
+
 - [ ] **Step 5: Update every `Finish` call site in tests**
 
 `grep -rn '\.Finish(' internal/job/*_test.go` and change each to `_, err := j.Finish(...)` or `if _, err := j.Finish(...); err != nil`. Do not leave any bare `j.Finish(...)` — `golangci-lint` will flag the unused return.
@@ -1897,6 +1907,16 @@ Note what this does NOT prove: a caller may still drop the *Lease either
 door returns, and no test in this package can see that. Cross makes the leak
 one call site, not unrepresentable."
 ```
+
+
+> **Superseded after task 7.** The two passages above describe the shape task 6
+> actually built — `Cross` and `Finish` locking inline because
+> `withOpenAttempt`'s callback returns only `error`. A later change added
+> `withOpenAttemptLease`, an adapter over that same helper, so both doors now
+> run inside its callback and all five attempt-mutating doors share one
+> open-attempt check. Left as written because it is the record of what task 6
+> produced; the current statement is in the design doc's §3.9.
+
 
 ---
 
