@@ -160,14 +160,36 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 	}
 }
 
+// TestJob_FinishedJobHasNoOpenAttempt is the settled-attempt half of
+// TestJob_MutatorsRequireAnOpenAttempt's never-run half. Both halves are
+// needed and neither implies the other: the never-run case reaches the guard
+// through a == nil and the settled case through !a.isOpen(), so a door that
+// dropped the second half would still pass the first. Cross is the door that
+// proves it — with !a.isOpen() removed from Cross and a == nil kept, the whole
+// package passed, because Cross on a settled attempt falls through to
+// a.cross, whose "legal only from Assessing" guard rejects Finished with
+// ErrIllegalTransition instead. The wrong error, and no test to say so.
 func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := j.Transition(Fetching); !errors.Is(err, ErrNoOpenAttempt) {
-		t.Errorf("Transition after Finish = %v, want ErrNoOpenAttempt", err)
+	for _, tc := range []struct {
+		name string
+		call func(*Job) error
+	}{
+		{"Transition", func(j *Job) error { return j.Transition(Fetching) }},
+		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
+		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeOK, testClock()); return err }},
+		{"Cross", func(j *Job) error { _, err := j.Cross(Extracting); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := newTestJob(t)
+			mustBegin(t, j)
+			if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if err := tc.call(j); !errors.Is(err, ErrNoOpenAttempt) {
+				t.Errorf("%s after Finish = %v, want ErrNoOpenAttempt", tc.name, err)
+			}
+		})
 	}
 }
 
