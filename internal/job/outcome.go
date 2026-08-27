@@ -3,7 +3,7 @@ package job
 import "fmt"
 
 // Outcome is an attempt's verdict. It is write-once: assigned only on the
-// edge into Finished, and never revised.
+// call that settles the attempt, and never revised.
 //
 // The old model made "did this job fail?" a question whose answer could
 // change, because Failed → Queued was a legal edge. Retry therefore had to
@@ -13,12 +13,12 @@ import "fmt"
 type Outcome uint8
 
 const (
-	// OutcomePending means the attempt has not reached Finished. The zero
+	// OutcomePending means the attempt has not settled. The zero
 	// value, so an in-flight attempt carries it without an assignment.
 	OutcomePending Outcome = iota
 	// OutcomeOK means the job produced its files.
 	OutcomeOK
-	// OutcomeFailed means the attempt reached Finished having failed. It is
+	// OutcomeFailed means the attempt settled having failed. It is
 	// the typical case for a Production-stage failure, but finish does not
 	// enforce IsProduction(state) for this outcome the way it does for
 	// OutcomeUnrecoverable below — a Correctness-stage giving-up (e.g.
@@ -30,10 +30,12 @@ const (
 	// directory and it is still retryable (D3) — which is the whole reason
 	// this is a distinct outcome from OutcomeFailed rather than folded into
 	// it. finish rejects assigning this outcome to an attempt that has
-	// crossed into Production at any point (a.crossed, not merely
-	// IsProduction(a.state) — a held attempt reads back as Waiting; see
-	// ErrUnrecoverableAfterBoundary in attempt.go), so this sentence is
-	// enforced rather than only stated.
+	// crossed into Production — a.crossed(), which IS IsProduction(a.state);
+	// see ErrUnrecoverableAfterBoundary in attempt.go — so this sentence is
+	// enforced rather than only stated. Those were two different things while
+	// finish overwrote a.state, because only a latch could still answer once
+	// the position had been erased; change 03 stopped the erasure and
+	// collapsed them back into one.
 	OutcomeUnrecoverable
 	// OutcomeCancelled means a person stopped it.
 	OutcomeCancelled

@@ -1,9 +1,6 @@
 package job
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,13 +11,16 @@ func TestState_String(t *testing.T) {
 		s    State
 		want string
 	}{
-		{Waiting, "Waiting"},
+		// The sentinel prints too, and readers match on it: setNext's and
+		// transition's error text names "StateUnset". Without this row,
+		// deleting that String() arm leaves State(0) rendering as "State(0)"
+		// and no test fails.
+		{StateUnset, "StateUnset"},
 		{Fetching, "Fetching"},
 		{Assessing, "Assessing"},
 		{Repairing, "Repairing"},
 		{Extracting, "Extracting"},
 		{Finalizing, "Finalizing"},
-		{Finished, "Finished"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			if got := tc.s.String(); got != tc.want {
@@ -48,18 +48,33 @@ func TestAllStates_Exhaustive(t *testing.T) {
 		t.Fatal("parsed no State constants from state.go; the parser below no longer matches the file's shape, so this test would pass vacuously")
 	}
 
+	// StateUnset is declared and deliberately unlisted: it is a sentinel zero,
+	// not a state, and AllStates() drives exhaustive walks that must not visit
+	// it. Naming it here rather than subtracting one from a count is what makes
+	// a SECOND sentinel fail — someone adding one has to come and write it down.
+	const sentinel = "StateUnset"
+	if _, ok := declared[sentinel]; !ok {
+		t.Fatalf("%s is no longer declared in state.go; if the sentinel was removed, delete this exception rather than leaving it asserting nothing", sentinel)
+	}
+
 	listed := make(map[State]bool, len(AllStates()))
 	for _, s := range AllStates() {
 		listed[s] = true
 	}
 	for name, value := range declared {
+		if name == sentinel {
+			if listed[value] {
+				t.Errorf("%s is listed in AllStates(); the sentinel must not be walked as a real state", name)
+			}
+			continue
+		}
 		if !listed[value] {
 			t.Errorf("%s is declared in state.go but missing from AllStates(); add it there and give it edges in transition.go", name)
 		}
 	}
-	if len(AllStates()) != len(declared) {
-		t.Errorf("AllStates() has %d entries, state.go declares %d; the list has a duplicate or an entry that is no longer declared",
-			len(AllStates()), len(declared))
+	if want := len(declared) - 1; len(AllStates()) != want {
+		t.Errorf("AllStates() has %d entries, state.go declares %d real states plus %s; the list has a duplicate or an entry that is no longer declared",
+			len(AllStates()), want, sentinel)
 	}
 }
 
@@ -82,38 +97,9 @@ func TestAllStates_Exhaustive(t *testing.T) {
 // once, from gd.Specs[0].
 func stateConstantsFromSource(t *testing.T, filename string) map[string]State {
 	t.Helper()
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, filename, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", filename, err)
-	}
-
 	found := make(map[string]State)
-	for _, decl := range f.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.CONST {
-			continue
-		}
-		var currentType ast.Expr
-		for i, spec := range gd.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			if vs.Type != nil {
-				currentType = vs.Type
-			}
-			ident, ok := currentType.(*ast.Ident)
-			if !ok || ident.Name != "State" {
-				continue
-			}
-			for _, name := range vs.Names {
-				if name.Name == "_" {
-					continue
-				}
-				found[name.Name] = State(i)
-			}
-		}
+	for name, v := range constantsOfType(t, filename, "State") {
+		found[name] = State(v)
 	}
 	return found
 }
@@ -138,6 +124,8 @@ const (
 	Beta
 	Gamma, Delta State = iota, iota // one spec, two names, same iota
 	Epsilon
+	Zeta = 99 // untyped WITH a value: Go does not inherit the preceding type
+	Eta       // no type and no value: inherits Zeta's spec, so untyped too
 )
 `
 	dir := t.TempDir()
@@ -147,6 +135,12 @@ const (
 	}
 
 	got := stateConstantsFromSource(t, path)
+	// Zeta and Eta are deliberately absent. A spec with expressions and no
+	// type starts a fresh, untyped run — it does not inherit State from the
+	// spec above it — and Eta then inherits ZETA's spec, not Epsilon's. A scan
+	// that only ever SETS currentType and never clears it reports both as
+	// States, which would make an exhaustiveness test fail while naming
+	// constants that are not members of the type at all.
 	want := map[string]State{
 		"Alpha":   1,
 		"Beta":    2,
@@ -154,12 +148,33 @@ const (
 		"Delta":   3,
 		"Epsilon": 4,
 	}
+	for _, notAState := range []string{"Zeta", "Eta"} {
+		if v, ok := got[notAState]; ok {
+			t.Errorf("stateConstantsFromSource(fixture)[%q] = %v; %s is untyped and is not a State", notAState, v, notAState)
+		}
+	}
 	if len(got) != len(want) {
 		t.Fatalf("stateConstantsFromSource(fixture) = %v, want %v", got, want)
 	}
 	for name, wantVal := range want {
 		if gotVal, ok := got[name]; !ok || gotVal != wantVal {
 			t.Errorf("stateConstantsFromSource(fixture)[%q] = %v (ok=%v), want %v", name, gotVal, ok, wantVal)
+		}
+	}
+}
+
+// TestStateUnset_IsTheZeroValue pins the property the sentinel exists for: a
+// zero State — and therefore a zero StateView — is not a real state. Without
+// it, Waiting's removal (task 5) would have silently promoted Fetching to
+// zero, and an unstarted job would read as an active download.
+func TestStateUnset_IsTheZeroValue(t *testing.T) {
+	var zero State
+	if zero != StateUnset {
+		t.Errorf("zero State = %v, want StateUnset", zero)
+	}
+	for _, s := range AllStates() {
+		if s == StateUnset {
+			t.Errorf("AllStates() contains StateUnset; it is a sentinel, not a state")
 		}
 	}
 }

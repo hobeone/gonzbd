@@ -10,72 +10,73 @@ import (
 // edge in the machine below.
 var ErrIllegalTransition = errors.New("job: illegal state transition")
 
-// legalEdges is the lifecycle as a directed graph: 22 edges, and every one is
-// reachable — there are no fan-out blocks, because "still producing, doing
-// something else now" is an Activity write rather than a transition.
+// door names which of the two moving doors may take an edge. It exists so that
+// "which move is a boundary crossing" is written down once, in legalEdges,
+// rather than re-derived by a zone predicate in transition and a literal state
+// check in cross.
 //
-// A hand-counted breakdown of the 22 by shape is exactly the kind of claim
-// Standing Design Rule 4 forbids stating in prose: an earlier version of this
-// comment recited "8 spine + 6 pause + 6 cancel", which both undercounts (the
-// listed spine edges alone number nine) and double-counts (Assessing→Finished
-// and Finalizing→Finished were claimed under both spine and cancel). Rather
-// than recite a corrected set of numbers that can drift the same way, this
-// comment states the partition RULE, and
-// TestEdgeCountsMatchTheStatedPartition classifies every edge in the map
-// below by it and asserts the bucket sizes and their total — so a change to
-// legalEdges that shifts a count fails the test instead of leaving stale
-// numbers here. Every edge falls into exactly one bucket, checked in this
-// order:
+// That duplication was not theoretical. With the fact stored three times, the
+// zone predicate ran before the graph was consulted, so every
+// Correctness→Production PAIR answered ErrCrossRequired — including four that
+// are not edges at all — and a caller that obeyed "call Cross instead" got
+// ErrIllegalTransition from cross, which is legal only from Assessing.
+type door uint8
+
+const (
+	// byTransition is the ordinary work-spine move.
+	byTransition door = iota
+	// byCross is the boundary crossing. Exactly one edge carries it, which
+	// TestLegalEdgesIsTheWorkSpine asserts, and cross is its only door
+	// because crossing also yields the lease.
+	byCross
+)
+
+// legalEdges is the lifecycle as a directed graph: the six-edge WORK SPINE, and
+// nothing else. Pause and resume are not edges — a job that is not running is
+// still at the state it last occupied (design §3.2) — and cancellation is not
+// an edge either, because finish is its own door and never consults this map
+// (`sed -n '/func (a \*Attempt) finish/,/^}/p' internal/job/attempt.go | grep
+// CanTransition` returns nothing).
 //
-//  1. Cancel — target is Finished (6 edges: one per non-terminal source).
-//  2. Pause — target is Waiting (5 edges: one per non-Waiting, non-terminal
-//     source).
-//  3. Resume — source is Waiting, target is not Finished (5 edges: Waiting
-//     may resume into any of the other five non-terminal states).
-//  4. Work spine — everything else (6 edges): Fetching→Assessing,
-//     Assessing→Fetching, Assessing→Repairing, Assessing→Extracting,
-//     Repairing→Assessing, Extracting→Finalizing.
-//
-// Self-transitions are not in this graph at all: CanTransition's from == to
-// early return reports every one of the seven states as legally
-// self-transitioning, without a self-edge appearing in legalEdges. That is a
-// property of CanTransition, not of the doors that actually drive a change:
-// Attempt.transition rejects to == Waiting and to == Finished outright
-// (ErrHoldRequired, ErrFinishRequired) before it ever compares a.state to
-// to, so those two states can never actually be self-transitioned through
-// transition, even though CanTransition(Waiting, Waiting) and
-// CanTransition(Finished, Finished) both report true.
-//
-// One consequence of that self-transition legality is worth naming: it is
-// what keeps the Finalizing → Waiting pause edge reachable at all.
-// legalEdges[Finalizing] is {Waiting, Finished}, and hold validates a pause's
-// next against CanTransition(a.state, next) after already excluding
-// next == Finished (ErrFinishRequired) and next == Waiting (self-referential
-// hold is refused). From Finalizing, the only next value left that
-// CanTransition(Finalizing, next) accepts is Finalizing itself, via this
-// same from == to return — so a Finalizing attempt can only ever pause to
-// resume back into Finalizing, never into any other state.
-//
-// The one edge the graph must NOT contain is any return from Production to
-// Correctness. TestBoundaryIsOneWay enumerates AllStates() and fails if one
-// appears, rather than trusting this comment.
-var legalEdges = map[State][]State{
-	Waiting:    {Fetching, Assessing, Repairing, Extracting, Finalizing, Finished},
-	Fetching:   {Assessing, Waiting, Finished},
-	Assessing:  {Fetching, Repairing, Extracting, Waiting, Finished},
-	Repairing:  {Assessing, Waiting, Finished},
-	Extracting: {Finalizing, Waiting, Finished},
-	Finalizing: {Waiting, Finished},
-	Finished:   {},
+// Each edge carries the door that may take it. Exactly one is byCross —
+// Assessing → Extracting — which is why Cross owns one EDGE rather than a
+// state class, and why neither door needs a zone predicate to route.
+var legalEdges = map[State][]edge{
+	Fetching:   {{Assessing, byTransition}},
+	Assessing:  {{Fetching, byTransition}, {Repairing, byTransition}, {Extracting, byCross}},
+	Repairing:  {{Assessing, byTransition}},
+	Extracting: {{Finalizing, byTransition}},
+	Finalizing: {},
 }
 
-// CanTransition reports whether a job may move from → to. Self transitions
-// are always legal.
-func CanTransition(from, to State) bool {
-	if from == to {
-		return true
+// edge is one entry in legalEdges: a destination and the door that may take it.
+type edge struct {
+	to   State
+	door door
+}
+
+// edgeFrom resolves from → to in legalEdges. It is the single lookup both
+// moving doors use, so "does this move exist" and "who may take it" are
+// answered together and cannot disagree.
+func edgeFrom(from, to State) (edge, bool) {
+	i := slices.IndexFunc(legalEdges[from], func(e edge) bool { return e.to == to })
+	if i < 0 {
+		return edge{}, false
 	}
-	return slices.Contains(legalEdges[from], to)
+	return legalEdges[from][i], true
+}
+
+// CanTransition reports whether a job may move from → to by ANY door. It says
+// nothing about which one: Assessing → Extracting is an edge, and answering
+// true here is what lets cross take it while transition refuses it.
+//
+// Self-transitions are NOT legal. The previous from == to early return existed
+// partly to keep hold's Finalizing case reachable, and hold is gone; no door
+// requests one now, and leaving it would permit a legal no-op that clears
+// Activity and nothing else.
+func CanTransition(from, to State) bool {
+	_, ok := edgeFrom(from, to)
+	return ok
 }
 
 // IsCorrectness reports whether s is in the reversible zone — the states whose
@@ -93,4 +94,24 @@ func IsProduction(s State) bool {
 
 func illegalTransition(from, to State) error {
 	return fmt.Errorf("%w: %s → %s", ErrIllegalTransition, from, to)
+}
+
+// ErrTransitionRequired is returned when cross is asked to take an edge that
+// belongs to transition. It is the exported counterpart of ErrCrossRequired,
+// and it exists because being a counterpart in prose is not the same as being
+// one to errors.Is: without it, a caller could distinguish "wrong door" from
+// "not an edge" in one direction and not the other.
+//
+// It wraps ErrIllegalTransition, as ErrCrossRequired does, so a caller that
+// only wants to know a state change was refused matches one sentinel and gets
+// every refusal including both wrong-door cases.
+var ErrTransitionRequired = fmt.Errorf("%w: cross cannot take a transition edge; call Transition instead", ErrIllegalTransition)
+
+// wrongDoor reports an edge that exists but belongs to the other door. It is
+// the counterpart of ErrCrossRequired, which transition returns for the same
+// situation in the other direction — and the counterpart claim is enforced
+// rather than only stated: TestWrongDoorErrorsAreMatchable requires both
+// directions to carry a distinct sentinel AND to match ErrIllegalTransition.
+func wrongDoor(from, to State) error {
+	return fmt.Errorf("%w: %s → %s is an edge, but transition takes it, not cross", ErrTransitionRequired, from, to)
 }

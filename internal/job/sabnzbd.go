@@ -18,12 +18,15 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // this package makes no claim about whether some other, unrelated code in
 // the repository ever converts a constants.Status back.
 //
-// ToSABnzbd is total by construction: every State arm returns, and the
-// Finished and Waiting arms delegate to helpers that also return on every
-// input via a default case. TestToSABnzbd_IsTotal walks the product space of
-// every axis to prove no combination yields an empty string, because an
-// unhandled combination shows up as a blank status in somebody's Sonarr
-// rather than as a crash here.
+// ToSABnzbd takes a RenderView, not a StateView: Running and Reason are facts
+// only a Queue can supply (§4.4), and this package has none yet — Half A
+// constructs them directly in tests. A settled attempt short-circuits to
+// finishedStatus regardless of Running; everything else is keyed on Running
+// first, then on Reason while not running, then on State while running, with
+// a default case at each switch. TestToSABnzbd_IsTotal walks the product
+// space of every axis to prove no combination yields an empty string,
+// because an unhandled combination shows up as a blank status in somebody's
+// Sonarr rather than as a crash here.
 //
 // Four upstream statuses — Idle, Grabbing, Propagating and Checking — are
 // statuses this function never produces: TestToSABnzbd_NeverEmitsUnproducedStatuses
@@ -39,53 +42,62 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // downloading extra par2 files for repair, which is exactly our Assessing →
 // Fetching re-entry, told apart from a first-pass download by the attempt's
 // latched Assessed flag.
-func ToSABnzbd(v StateView) constants.Status {
-	switch v.State {
-	case Waiting:
+func ToSABnzbd(v RenderView) constants.Status {
+	// Settledness is an Outcome fact, not a State one. There is no Finished
+	// state to key on: a settled attempt keeps the position it settled at, so
+	// asking State here would have to enumerate every position instead of
+	// asking the one axis that actually records the verdict.
+	if v.Outcome.IsSettled() {
+		return finishedStatus(v.Outcome)
+	}
+	if !v.Running {
+		// Keyed on the wait REASON, not on Intent. Under a queue-wide pause
+		// every job still carries IntentRun, so keying on IntentPause alone
+		// would render the whole queue as Queued — a live API regression
+		// against TestToSABnzbd_GlobalPauseRendersAsPaused. WaitReason.IsPause()
+		// covers UserPaused and GlobalPause both, so routing through it cannot
+		// omit one.
 		if v.Reason.IsPause() {
 			return constants.StatusPaused
 		}
 		return constants.StatusQueued
+	}
 
+	// Running. Intent is deliberately NOT consulted: a job with a pause
+	// requested is still repairing until it reaches a gate, and reporting it
+	// as Paused is what design §1.1 exists to prevent. Surfacing "finishing
+	// repair, then pausing" is the UI reading RenderView.Intent alongside this
+	// status.
+	switch v.State {
 	case Fetching:
-		// A re-entry after a verdict is fetching recovery volumes. Anything
-		// before the first assessment is an ordinary download.
 		if v.Assessed {
 			return constants.StatusFetching
 		}
 		return constants.StatusDownloading
-
 	case Assessing:
 		if v.Activity == ActCRCCheck {
 			return constants.StatusQuickCheck
 		}
 		return constants.StatusVerifying
-
 	case Repairing:
 		return constants.StatusRepairing
-
 	case Extracting:
 		return constants.StatusExtracting
-
 	case Finalizing:
 		if v.Activity == ActScript {
 			return constants.StatusRunning
 		}
 		return constants.StatusMoving
-
-	case Finished:
-		return finishedStatus(v.Outcome)
-
 	default:
-		// Reachable only if AllStates() grows a value this switch does not
-		// yet have an arm for — TestAllStates_Exhaustive (state_test.go) is
-		// what would catch that omission at the State level; this default is
-		// what keeps ToSABnzbd itself total in the meantime.
+		// StateUnset with Running true is not constructible by the Queue — a
+		// job with no attempt holds nothing — but ToSABnzbd is total by
+		// construction and a blank status in somebody's Sonarr is worse than
+		// a wrong-but-declared one.
 		return constants.StatusQueued
 	}
 }
 
-// finishedStatus maps a Finished attempt's verdict to the status shown once a
+// finishedStatus maps a settled attempt's verdict to the status shown once a
 // job leaves the queue. o is normally settled (finish rejects OutcomePending
 // and any value AllOutcomes() does not declare — see Attempt.finish), but
 // TestToSABnzbd_IsTotal constructs StateView values directly rather than

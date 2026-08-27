@@ -187,9 +187,50 @@ const (
     Repairing
     Extracting
     Finalizing
-    Finished
 )
 ```
+
+> **Superseded during implementation (change 03). This note scopes the whole
+> document, not just this block.**
+>
+> `Finished` is no longer a `State`, and the `crossed` field no longer exists.
+> Both are gone for one reason: `finish` used to write `a.state = Finished`,
+> which **erased the position the attempt settled at**, so `IsProduction(state)`
+> stopped answering after settling and a shadow latch had to remember what the
+> state had forgotten. `finish` no longer touches `a.state`, so:
+>
+> - **Settledness is an `Outcome` fact.** `isOpen()` is `outcome ==
+>   OutcomePending` and always was; assigning the verdict is what closes the
+>   attempt. A settled attempt keeps its position — `Finalizing` + `OutcomeOK`,
+>   not `Finished` + `OutcomeOK`, which is strictly more information and is what
+>   a history view wants: *where did this attempt end?*
+> - **`crossed` is derived**: `IsProduction(a.state)`. Sound only because no
+>   edge runs from Production back to Correctness, so
+>   `TestBoundaryIsUnreachableByAnyPath` now asserts the derivation against
+>   replayed history at every reachable configuration rather than leaving it
+>   assumed.
+> - **`ErrFinishRequired` is deleted.** `transition` cannot be asked to reach
+>   settledness because no `State` names it: a runtime error became a compile
+>   error.
+> - **A settled attempt can be in a Correctness state.** `OutcomeFailed` from
+>   `Fetching` settles at `Fetching`. Anything below that treats "settled" and
+>   "in a Correctness state" as mutually exclusive describes the old model.
+>
+> **Every NORMATIVE occurrence — the tables and rules Half B will build code
+> from — has been corrected in place and says so.** An external review was
+> right that this note alone is not enough for them: a blanket "read the rest
+> as history" does not stop someone writing a lease gate or a SQLite schema
+> keyed on a state row two hundred lines below. The corrected sites are §3.4's
+> resource table and the two `holds`/`needsLease` arguments around it, §3.6's
+> door table, and §6.2's persistence shape.
+>
+> **Read every REMAINING occurrence of `Finished`-as-a-State or
+> `crossed`-as-a-field below as the superseded model.** They are left in place because the arguments
+> around them — why the latch was needed, what the two escapes were, how
+> rendering keys — remain the record of how the design got here, and rewriting
+> them would destroy that record while pretending the reasoning was always this
+> shape. Where a statement below would lead a reader to *act* wrongly rather
+> than merely read history, it is corrected in place and says so.
 
 `StateUnset` exists because removing `Waiting` would otherwise make `Fetching`
 the zero value, so a zero `StateView` would read as an active download —
@@ -288,8 +329,19 @@ Three rules on `SetNext`:
    the boundary skipping repair — defect 3's mechanism surviving into a new
    door.
 3. **Cleared by the move.** `transition` and `Cross` each clear `next` as part
-   of taking it. Nothing else clears it, so an attempt that never re-enters
-   `Assessing` cannot carry a stale verdict.
+   of taking it, so an attempt that never re-enters `Assessing` cannot carry a
+   stale verdict.
+
+   > **Corrected during implementation (Half A, commit `779f95e6`).** This rule
+   > originally read "Nothing else clears it", and that is wrong: `finish`
+   > clears `next` too. A settled attempt that kept a destination would report
+   > a move it will never take, and `Finished` has no outgoing edge for it to
+   > name. So `next` has **four** writers, not three — `setNext` sets it;
+   > `transition`, `Cross` and `finish` clear it — and
+   > `TestNextWrites_MatchTheEnumerationStatedInProse` asserts exactly that
+   > four. `TestAttempt_FinishClearsNext` pins the clearing itself. §6.8's
+   > wording ("`SetNext`/`transition`/`Cross` the only writers of `next`")
+   > inherits the same error and is superseded by this note.
 
 `transition` keeps its `to == next` check. Its justification changes: with
 `Waiting` gone it no longer guards the boundary, and its sole remaining purpose
@@ -320,7 +372,16 @@ func (j *Job) Surrender() *Lease          // called on crossing
 | `Fetching` | lease |
 | `Assessing`, `Repairing` | lease + compute slot |
 | `Extracting`, `Finalizing` | compute slot (the lease was surrendered at crossing) |
-| `Finished`, `StateUnset` | nothing |
+| `StateUnset` | nothing |
+| *any state, once settled* | nothing |
+
+> **Corrected by change 03 — this row is normative and the scoping note above
+> is not enough for it.** There is no `Finished` state. A settled attempt keeps
+> the position it settled at, so it can be sitting in `Fetching` or `Assessing`
+> and require **nothing**. Any gate written as `needsLease(state)` alone will
+> therefore request a lease for a settled job. **Settledness must be checked
+> first** — `!a.isOpen()`, i.e. `Outcome.IsSettled()` — and only then the
+> position consulted.
 
 ```
 holds(j)   ≡ j holds everything its CURRENT state requires
@@ -329,9 +390,14 @@ running(j) ≡ the attempt is open && holds(j) && next is unset
 
 All three conjuncts are load-bearing. A job holding a slot whose work is
 finished is not running, it is waiting to move — that is the `next` clause. And
-the open-attempt clause is not redundant: `Finished` and `StateUnset` require
-nothing, so `holds` is *vacuously true* for them and `next` is unset, and
-without it a settled job would report as running. An earlier draft of this
+the open-attempt clause is not redundant — and change 03 made it MORE
+load-bearing, not less. It was written when a settled attempt sat in a
+`Finished` state that required nothing, so `holds` was vacuously true for it.
+A settled attempt now keeps its position, so one settled at `Fetching`
+requires a lease and `holds` is **not** vacuous: it may be genuinely false, or
+genuinely true if the lease was never reclaimed. Either way the attempt is not
+open, and only the open-attempt clause says so. Without it a settled job would
+report as running. An earlier draft of this
 section omitted it and was saved only by §4.4's table ordering, which is exactly
 the kind of accidental correctness this document exists to remove.
 
@@ -379,9 +445,13 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool
 ```
 
 The two early returns before the resource checks are not decoration.
-`running(j)` is false for a settled attempt and for a never-run job alike —
-both require nothing, so `holds` is vacuously true but the attempt is not open
-— and `needsLease` is false for `Finished` and `StateUnset` too. Without them
+`running(j)` is false for a settled attempt and for a never-run job alike, but
+after change 03 for two DIFFERENT reasons: a never-run job requires nothing, so
+`holds` is vacuously true and only the open-attempt clause excludes it, while a
+settled attempt keeps its position and may require a lease it does or does not
+hold. `needsLease` is false for `StateUnset`, and is whatever the settled
+position says — **it must not be consulted for a settled attempt at all.**
+Without these returns
 both fall through to `NoComputeSlot`: a terminal job reported as waiting for a
 compute slot, and a never-run job reported as waiting for one when it is
 waiting for a lease.
@@ -412,8 +482,8 @@ own, for the same reason `finish` has one.
 |---|---|---|---|
 | `BeginAttempt(now)` | an open attempt at `Fetching`, holding nothing | `attempts` | — |
 | `transition(to)` | ordinary spine moves | — | — |
-| `Cross(to) (*Lease, error)` | the one boundary edge | `crossed` | yes |
-| `finish(o, now) (*Lease, error)` | `Finished` | `outcome` | yes |
+| `Cross(to) (*Lease, error)` | the one boundary edge | `state` (with `transition`) | yes |
+| `finish(o, now) (*Lease, error)` | a settled attempt — `state` **unchanged** | `outcome` | yes |
 
 **`BeginAttempt` does NOT take a lease.** Revision 3 changed it to
 `BeginAttempt(l *Lease, now)`, reasoning that `Fetching` requires a lease so
@@ -461,8 +531,10 @@ forgettable, failing without an error. That is a check where an owner is owed:
 func (j *Job) Cross(to State) (*Lease, error)
 ```
 
-`Cross` does not release the lease itself — it calls `Surrender`, which stays
-the **sole releaser**. Pause and `finish` release through the same call (§3.9).
+`Cross` does not null the handle itself — it calls `surrenderLocked`, which
+stays the **sole releaser**. Pause and `finish` release through the same call,
+and the exported `Surrender` is a lock-taking wrapper around it for a holder
+with no open attempt (§3.9).
 Two independent paths nulling one handle would be two writers of the same field,
 and the whole point of `Cross` is to remove a coordination, not add one.
 
@@ -642,8 +714,10 @@ hold one alongside the lease (§3.4), and an earlier revision reclaimed only the
 lease, leaking pool-B capacity on every cancel from those two states.
 
 **A never-run job cannot be settled**, because `Outcome` lives on the `Attempt`
-and there is none: `Job.Finish` routes through `withOpenAttempt` and returns
-`ErrNoOpenAttempt` (`internal/job/job.go`). Cancelling a queued job therefore
+and there is none: `Job.Finish` returns `ErrNoOpenAttempt`
+(`internal/job/job.go`), from the same `withOpenAttempt` check every other
+mutating door uses — reached via the `withOpenAttemptLease` adapter, which lets
+a door return the lease it yields. Cancelling a queued job therefore
 **removes it from the queue** rather than settling it, which is what upstream
 does and what a user means. `discard` is the Queue's, and is named here only so
 the case is not silently unhandled.
@@ -671,15 +745,25 @@ its download over — wrong to every API client, and wrong in a way no error
 surfaces.
 
 Persistence stores the **raw `Attempt` fields**, not a derived view. So a
-settled attempt persists and restores as `Finished` with its `Outcome`, and
-`advance` declines it at the `v.Outcome.IsSettled()` check exactly as it would
-have before the restart. **`StateUnset` means one thing only: the job has no
-attempt at all.** It is never what a settled attempt restores to.
+settled attempt persists and restores with the position it settled at plus its
+`Outcome`, and `advance` declines it at the `v.Outcome.IsSettled()` check
+exactly as it would have before the restart. **`StateUnset` means one thing
+only: the job has no attempt at all.** It is never what a settled attempt
+restores to.
 
-§4.3 says `finish` "erases `state`" — that is shorthand for *overwrites it with
-`Finished`*, which is why a crossed-then-settled attempt's crossing is
-recoverable only from the `crossed` latch. Nothing is unset, and restart,
-rendering and retry all read the same stored `Finished`.
+> **Corrected by change 03 — normative, and a schema will be built from it.**
+> This section previously said a settled attempt persists as `Finished`, and
+> that a crossed-then-settled attempt's crossing was recoverable *only* from
+> the `crossed` latch. Neither holds. `finish` no longer touches `state`, there
+> is no `Finished` value to store, and `crossed` is not a column: it is
+> `IsProduction(state)`, derived on read.
+>
+> For Half B this means the persisted shape is **`state` + `outcome`, with no
+> crossing flag**. A schema carrying a `crossed` boolean would be storing a
+> value recomputable from a column beside it — the redundancy this change
+> existed to remove — and the stored copy is the one that would drift.
+>
+> §4.3's "`finish` erases `state`" is likewise superseded: it erases nothing.
 
 Restoring `next` is what makes this correct rather than destructive. A job
 persisted mid-`Extracting` restores with `next` unset, so `advance` branch 2
@@ -720,11 +804,31 @@ func (q *Queue) reclaim(l *Lease)                              // no-op on nil �
 ```
 
 **`Cross` and `Finish` must call `surrenderLocked`, not `Surrender`.** `Job.mu`
-is a `sync.RWMutex` and Go's mutexes are not reentrant. `Job.Finish` routes
-through `withOpenAttempt`, which takes `j.mu.Lock()` and holds it across the
-callback (`internal/job/job.go`) — so a `finish` that called the exported
+is a `sync.RWMutex` and Go's mutexes are not reentrant. Both doors run their
+bodies inside `withOpenAttempt`'s callback, which holds `j.mu` across the
+attempt mutation (`internal/job/job.go`) — so either one calling the exported
 `Surrender()` would take `j.mu` a second time and **deadlock the job
-permanently**, with no error and no timeout. `Cross` has the same shape.
+permanently**, with no error and no timeout.
+
+> **Corrected twice during implementation (Half A); this is the current
+> statement.** The paragraph first derived the hazard from `Job.Finish`
+> routing through `withOpenAttempt`, which at the time it did not — both doors
+> locked inline, because the helper's callback returns only `error` while they
+> must return a `*Lease`. That inline duplication was then removed: a
+> `withOpenAttemptLease` adapter over the same helper changes the shape of the
+> callback's result without taking a lock or repeating a check, so **all five
+> attempt-mutating doors now share one open-attempt check** — `Transition`,
+> `SetNext`, `SetActivity`, `Cross`, `Finish`. Dropping `!a.isOpen()` from that
+> single helper fails all five subtests of
+> `TestJob_FinishedJobHasNoOpenAttempt`, which is the property made
+> observable rather than asserted.
+>
+> The deadlock conclusion is unchanged throughout: what matters is that `j.mu`
+> is held when the door's body runs, not which frame took it. The exported
+> `Surrender` remains outside this set and structurally cannot join it — the
+> helper refuses a job with no open attempt, which is precisely the caller
+> `Surrender` exists to serve. It takes `j.mu` itself and calls
+> `surrenderLocked`.
 
 The single-releaser property is unaffected: `surrenderLocked` is still the only
 code that clears `j.lease`, and `Surrender` is a thin lock-taking wrapper over
@@ -839,7 +943,7 @@ first**, because a running job's intent must not change its status:
 
 | Composed view | Status |
 |---|---|
-| `Finished` | per `finishedStatus(Outcome)`, unchanged |
+| *settled* (`Outcome.IsSettled()`, any position) | per `finishedStatus(Outcome)`, unchanged — **corrected by change 03**: keyed on the Outcome axis, not on a `Finished` state |
 | running | its state's status, per the rows below |
 | not running, `waitReason` satisfies `IsPause()` | `Paused` |
 | not running, otherwise (incl. `StateUnset`) | `Queued` |
@@ -850,9 +954,12 @@ a global pause each job still carries `IntentRun`, so every one of them would
 have matched the `Queued` row. `waitReason` returns `UserPaused` or
 `GlobalPause` from `gatedBy`, and `WaitReason.IsPause()` already covers both —
 so routing through it costs nothing and cannot omit one. This is a live API
-contract, not a hypothetical: `TestJob_PausedRendersAsStatusPaused`'s subtest
-`"parked on a compute slot, then globally paused"` (`job_test.go:425`) asserts
-`StatusPaused` for exactly that case.
+contract, not a hypothetical: `TestToSABnzbd_GlobalPauseRendersAsPaused`
+(`internal/job/sabnzbd_test.go:190`) asserts `StatusPaused` for exactly that
+case. It replaced `TestJob_PausedRendersAsStatusPaused`, which Half A deleted
+along with the state that made a separate job-level pause test meaningful; the
+old citation named a test that no longer exists and a line past the end of
+`job_test.go`.
 
 Ordering matters too: a never-run job that is paused must match the `Paused`
 row, not the `StateUnset` catch-all. Revision 2 listed `StateUnset → Queued`
@@ -875,18 +982,18 @@ The four never-produced statuses stay never-produced.
 |---|---|---|
 | `Intent` | `Job` | `SetIntent` |
 | `state` | `Attempt` | `transition`, `Cross`, `finish` |
-| `next` | `Attempt` | `SetNext`; cleared by `transition` and `Cross` |
+| `next` | `Attempt` | `SetNext`; cleared by `transition`, `Cross` and `finish` |
 | `crossed` | `Attempt` | `Cross` — sole writer |
 | `outcome` | `Attempt` | `finish` — sole writer |
 | `attempts` | `Job` | `BeginAttempt` — sole writer |
-| the `Lease` | `Job` | `Grant` acquires; `Surrender` releases — sole releaser, called by `Cross`, `Finish` and pause |
+| the `Lease` | `Job` | `Grant` acquires; `surrenderLocked` releases — sole releaser, called by `Cross`, `Finish`, pause, and the exported `Surrender` wrapper |
 | running-ness, wait reason | derived | nobody |
 
 ### 4.6 Resource lifetimes
 
 | | Acquired | Released |
 |---|---|---|
-| Lease (pool A) | `grantFor`, once per attempt | `Surrender` — via `Cross`, via `Finish`, or directly on pause. See §3.9 |
+| Lease (pool A) | `grantFor`, once per attempt | `surrenderLocked` — via `Cross`, via `Finish`, via the exported `Surrender`, or directly on pause. See §3.9 |
 | Compute slot (pool B) | `grantFor`, per state | when that state's work completes |
 
 Pool A is reserved across the correctness loop and **not** released between
@@ -1252,7 +1359,7 @@ alone, and both were verified against source before being accepted:
 
 | Finding | Evidence |
 |---|---|
-| **`Cross` and `Finish` calling the exported `Surrender` self-deadlocks.** `withOpenAttempt` takes `j.mu.Lock()` and holds it across its callback, and Go mutexes are not reentrant — the job would hang permanently, with no error and no timeout | `internal/job/job.go`; §3.9 now specifies `surrenderLocked` |
+| **`Cross` and `Finish` calling the exported `Surrender` self-deadlocks.** Each takes `j.mu.Lock()` in its own body and holds it across the attempt mutation, and Go mutexes are not reentrant — the job would hang permanently, with no error and no timeout | `internal/job/job.go`; §3.9 now specifies `surrenderLocked`, and see the correction there on where the lock is taken |
 | **§4.1's own verification command does not run.** It was written as `git grep -n 'CanTransition(' internal/ --include='*.go'`, which errors: *"option '--include=*.go' must come before non-option arguments"*. The `grep -rn` form had been executed and transcribed as `git grep` | re-run against this commit; §4.1 corrected and the failure recorded |
 
 That second one is Rule 4's failure in its purest form. A citation exists so the
@@ -1401,7 +1508,7 @@ Also fixed in revision 3:
 | `finishCancel`'s `IsProduction`-only guard hit at both call sites forever; a completing `Finalizing` would record `OutcomeOK` on a cancelled job | §3.7's guard is `IsProduction && !workDone` |
 | Render table matched `StateUnset` before `IntentPause`, so a never-run paused job rendered `Queued` | §4.4 keys on running-ness and intent first |
 | Prior spec §3.1, D1 and §8.1.1 were broken without being declared superseded | declared in the header; §4.7 supersedes the reorder table |
-| `next`-clearing stated twice, redundantly and inconsistently | §3.3 rule 3: `transition` and `Cross` clear it, nothing else |
+| `next`-clearing stated twice, redundantly and inconsistently | §3.3 rule 3 — but see the correction there: `finish` clears it as well, so the writers are `setNext`, `transition`, `Cross` and `finish` |
 | `StateUnset` breaks `TestAllStates_Exhaustive`'s AST check | named in §3.2 with the required fix |
 
 **Rejected.** The claim that removing the `→ Finished` edges breaks completion,

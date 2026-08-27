@@ -12,10 +12,23 @@ import "fmt"
 type State uint8
 
 const (
-	// Waiting holds no lease and no compute slot. It knows where it is going
-	// (StateView.Next) and why it is held (StateView.Reason); it never
-	// decides anything itself.
-	Waiting State = iota
+	// StateUnset is not a state. It is the zero value, and exists so that a
+	// zero StateView cannot be mistaken for a job in a real state: with
+	// Waiting removed, a zero State would otherwise BE Fetching, and an
+	// uninitialized view would read as an active download.
+	//
+	// No door accepts it as a destination — `grep -n 'StateUnset'
+	// internal/job/transition.go` returns nothing, so it is neither a key
+	// nor a value in legalEdges — and AllStates() does not list it, which
+	// TestAllStates_Exhaustive asserts by name rather than by count.
+	//
+	// StateUnset IS the never-run shape: Job.State() returns a zero
+	// StateView (State and Next both StateUnset) for a job with no attempt,
+	// constructed at job.go's State() method. There is no longer an
+	// exception to reach for — the old Waiting{Next: Fetching} answer
+	// claimed a position the job had not reached, and it is gone along with
+	// Waiting itself.
+	StateUnset State = iota
 	// Fetching is downloading articles. Holds a lease.
 	Fetching
 	// Assessing decides whether the bytes are correct. Holds a lease and a
@@ -35,9 +48,6 @@ const (
 	// Finalizing renames, cleans, moves and runs the user script. Holds a
 	// compute slot.
 	Finalizing
-	// Finished is terminal. The attempt's Outcome is assigned on the edge
-	// into it and never revised.
-	Finished
 )
 
 // AllStates returns every declared State. TestAllStates_Exhaustive fails if
@@ -45,20 +55,18 @@ const (
 // without appearing here.
 func AllStates() []State {
 	return []State{
-		Waiting,
 		Fetching,
 		Assessing,
 		Repairing,
 		Extracting,
 		Finalizing,
-		Finished,
 	}
 }
 
 func (s State) String() string {
 	switch s {
-	case Waiting:
-		return "Waiting"
+	case StateUnset:
+		return "StateUnset"
 	case Fetching:
 		return "Fetching"
 	case Assessing:
@@ -69,8 +77,6 @@ func (s State) String() string {
 		return "Extracting"
 	case Finalizing:
 		return "Finalizing"
-	case Finished:
-		return "Finished"
 	default:
 		return fmt.Sprintf("State(%d)", uint8(s))
 	}

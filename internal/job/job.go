@@ -2,23 +2,38 @@ package job
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
 
-// ErrNoOpenAttempt is returned by the four mutators withOpenAttempt wraps —
-// Transition, Hold, SetActivity and Finish — when the job has no attempt in
-// flight, either because it has never run or because its last attempt is
-// settled. BeginAttempt and SetWaitReason are also mutators but do not go
-// through withOpenAttempt and so never return this error: BeginAttempt is
-// what opens an attempt in the first place, and SetWaitReason's never-run
-// case (see its own doc comment) exists specifically to write j.pending
-// while no attempt is open. The caller's fix for this error is BeginAttempt,
-// which is the only door into the machine.
+// ErrNoOpenAttempt is returned by every door that needs an attempt already in
+// flight, when the job has none — either because it has never run or because
+// its last attempt is settled. Five doors return it — Transition, SetNext,
+// SetActivity, Cross and Finish — and all five now return it from ONE check,
+// in withOpenAttempt. Cross and Finish reach it through withOpenAttemptLease,
+// a shape adapter that takes no lock and repeats no check, so there is a
+// single answer to "must there be an open attempt?" rather than three copies
+// that could drift. `git grep -n 'withOpenAttempt[(]' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns five lines: the three direct callers,
+// the adapter's call, and the helper's own declaration. The bracket keeps this
+// citation from matching its own text, and the pathspec drops the tests that
+// call the helper directly.
+// BeginAttempt is also a
+// mutator but never returns this error: it is what opens an
+// attempt in the first place. The caller's fix for this error is
+// BeginAttempt, which is the only door into the machine.
 var ErrNoOpenAttempt = errors.New("job: no open attempt")
 
 // ErrBoundaryConsumed is returned by BeginAttempt when the job's most recent
-// attempt crossed into Production (IsProduction). D3 says crossing deletes
+// attempt crossed into Production. The guard reads a.crossed(), which IS
+// IsProduction(a.state). Those were once two different things: finish
+// overwrote a.state when it settled the attempt, so by the time BeginAttempt
+// looked, IsProduction read false on exactly the attempts this must refuse,
+// and a latch had to remember what the position had forgotten. Change 03
+// stopped finish writing the position, which made the latch redundant — see
+// Attempt.crossed for what deriving it instead costs. D3 says crossing deletes
 // archives, moves files, and consumes the inputs a later attempt would need
 // — "not crossing keeps the job retryable" — so a fresh attempt on THIS job
 // is no longer a legal way to retry it once one has crossed. The Attempt
@@ -29,11 +44,52 @@ var ErrNoOpenAttempt = errors.New("job: no open attempt")
 // starts a new Job, not a new Attempt on this one.
 var ErrBoundaryConsumed = errors.New("job: cannot begin a new attempt; a prior attempt crossed the Correctness/Production boundary")
 
-// Job owns its state. Every field is unexported. The lifecycle fields —
-// attempts and pending — are guarded by mu, and there is no path to either
-// that does not go through a method here. id, name and policy are not
-// guarded: they are set once in New and never written again, so ID, Name and
-// Policy read them without taking the lock.
+// ErrIntentLatched is returned by SetIntent when the job has already been
+// cancelled. Cancel is final for a Job because of where it leads, not
+// because of what it renders as: ToSABnzbd never reads the intent field —
+// `git grep -n 'v\.[I]ntent' internal/job/sabnzbd.go` exits 1 (the bracket
+// stops the pattern matching this citation's own text; RenderView.Intent
+// does appear in that file's comments, which a bare 'Intent' grep would also
+// have matched). What reaches the user as that deleted status is the settled
+// verdict OutcomeCancelled, mapped in finishedStatus — its return statement
+// is the only non-test site in this package that returns it (`git grep -n
+// 'return constants.Status[D]eleted' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns exactly that one line).
+//
+// The latch is one-way because prior spec D8 makes a full redo a re-added
+// NZB starting a NEW Job rather than a new attempt on this one. Clearing the
+// latch would let a job the user deleted come back through a path that never
+// re-asked them.
+var ErrIntentLatched = errors.New("job: intent is latched; this job is cancelled")
+
+// ErrInvalidIntent is returned when SetIntent is given a value that is not a
+// declared Intent. TestAllIntents_Exhaustive keeps AllIntents() equal to
+// intent.go's declarations, so this rejects exactly the undeclared values.
+var ErrInvalidIntent = errors.New("job: invalid intent")
+
+// ErrAlreadyLeased is returned by Grant when the job already holds a lease.
+// Pool-A capacity is reserved across the whole correctness loop (prior spec
+// §8.1), so a job re-entering Fetching from Assessing still holds the one it
+// was given; a second grant would mean the Queue had issued capacity twice.
+var ErrAlreadyLeased = errors.New("job: already holds a lease")
+
+// ErrNilLease is returned by Grant when handed a nil lease. A nil lease is
+// indistinguishable from holding none, so accepting one would leave the job
+// reporting HoldsLease() false while believing it had been admitted.
+//
+// A sentinel rather than a bare fmt.Errorf because Grant has two refusals and
+// they mean opposite things to the caller: ErrAlreadyLeased says the job is
+// already admitted and the grant is redundant, this says the caller passed
+// nothing and has a bug. It was also the last ad-hoc error string in the
+// package — every other refusal here is matchable, and one that is not reads
+// as an oversight rather than a decision.
+var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable from holding none")
+
+// Job owns its state. Every field is unexported. The lifecycle field —
+// attempts — is guarded by mu, and there is no path to it that does not go
+// through a method here. id, name and policy are not guarded: they are set
+// once in New and never written again, so ID, Name and Policy read them
+// without taking the lock.
 //
 // What is established now: a Job method never calls any other repository
 // package's method, because this package imports nothing from the rest of
@@ -73,26 +129,27 @@ type Job struct {
 	// history retention. Not worth a policy before there is evidence.
 	attempts []Attempt
 
-	// pending is the wait reason a job carries before its first attempt
-	// exists. A never-run job has no Attempt to hold a reason on — Attempt's
-	// own reason field only exists once an attempt has been opened — so a
-	// pause arriving before BeginAttempt has nowhere to record itself
-	// without this field. Exactly two writes — New's initializer and
-	// SetWaitReason's assignment — confirmed by `git grep -n 'pending[:][
-	// ]NoLease\|[.]pending[ ]=' -- internal/job/*.go`, which returns those
-	// two lines and nothing else. The bracketed single-character classes
-	// around the colon, the space and the dot are there so this citation,
-	// quoted verbatim inside this comment, does not match its own quoted
-	// text as a substring the way an earlier draft of this comment did.
-	pending WaitReason
+	// intent is what a person has asked of this job. Guarded by mu. Sole
+	// writer: SetIntent — enforced by
+	// TestIntentWrites_MatchTheEnumerationStatedInProse (task 7), not by this
+	// comment.
+	intent Intent
+
+	// lease is the admission token this job currently holds, or nil. Guarded
+	// by mu. Granted by Grant; released by surrenderLocked, which is the sole
+	// writer of nil into this field — `git grep -n 'j\.lease[ \t]*='
+	// -- 'internal/job/*.go'` returns two hits, Grant writing l and
+	// surrenderLocked writing nil. Cross and Finish both settle a job's need
+	// for its lease and both yield it by calling surrenderLocked, not the
+	// exported Surrender — see surrenderLocked's comment for why the
+	// exported form would deadlock from either door.
+	lease *Lease
 }
 
 // New builds a job that has never run. It has no attempt record, because
-// nothing has happened to it yet. pending starts at NoLease, matching the
-// constant State() has always reported for a never-run job — a fresh Job's
-// behavior is unchanged unless SetWaitReason is called.
+// nothing has happened to it yet.
 func New(id, name string, p Policy) *Job {
-	return &Job{id: id, name: name, policy: p, pending: NoLease}
+	return &Job{id: id, name: name, policy: p}
 }
 
 // ID returns the job's identifier.
@@ -104,25 +161,25 @@ func (j *Job) Name() string { return j.name }
 // Policy returns the job's retry/repair policy.
 func (j *Job) Policy() Policy { return j.policy }
 
-// State returns the current attempt's view. For a job that has never run the
-// answer is a constant shape rather than a special case: it is waiting for a
-// lease, which is exactly what is true. Reason comes from j.pending rather
-// than a hardcoded NoLease, so a pause recorded via SetWaitReason before the
-// job's first attempt (e.g. UserPaused) is visible here — New initializes
-// pending to NoLease, so this is unchanged from before unless SetWaitReason
-// has been called.
+// State returns the current attempt's view, or a StateUnset view for a job that
+// has never run. A job with no attempt is not AT a state — the old model
+// answered Waiting{Next: Fetching}, which claimed a position the job had not
+// reached. HasRun() distinguishes the two cases for a caller that needs to.
 func (j *Job) State() StateView {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	if a := j.currentLocked(); a != nil {
 		return a.view()
 	}
-	return StateView{State: Waiting, Next: Fetching, Reason: j.pending}
+	return StateView{}
 }
 
-// HasRun reports whether this job has ever held a lease. Exact, where any
-// predicate over bytes or durable runs would conflate "did not start" with
-// "started and got nowhere".
+// HasRun reports whether this job has ever begun an attempt — len(attempts) >
+// 0, nothing more. NOT whether it ever held a lease: D-I12 decoupled the two,
+// so a job that has begun an attempt and is still waiting for pool A returns
+// true here while j.lease is nil. Exact, where any predicate over bytes or
+// durable runs would conflate "did not start" with "started and got
+// nowhere".
 func (j *Job) HasRun() bool {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -152,8 +209,10 @@ func (j *Job) AttemptAt(i int) StateView {
 // recent attempt crossed into Production, even though that attempt is
 // closed. The open check runs first and returns nil before the crossed
 // check is even reached, so an open attempt that has crossed still no-ops
-// here rather than erroring — idempotence while a lease is held takes
-// priority over the boundary refusal, and the boundary refusal only ever
+// here rather than erroring — idempotence while an attempt is OPEN takes
+// priority over the boundary refusal (open, not "holding a lease": Cross
+// surrenders the lease at the boundary, so an open attempt past it holds a
+// compute slot and no lease), and the boundary refusal only ever
 // applies to starting a NEW attempt.
 //
 // Checking only the most recent attempt, rather than every element of
@@ -171,7 +230,7 @@ func (j *Job) BeginAttempt(now time.Time) error {
 	if a != nil && a.isOpen() {
 		return nil
 	}
-	if a != nil && a.crossed {
+	if a != nil && a.crossed() {
 		return ErrBoundaryConsumed
 	}
 	j.attempts = append(j.attempts, newAttempt(now))
@@ -179,16 +238,16 @@ func (j *Job) BeginAttempt(now time.Time) error {
 }
 
 // Transition moves the open attempt to the given state. It surfaces
-// ErrHoldRequired and ErrFinishRequired unchanged when to is Waiting or
-// Finished respectively — those states each have their own door (Hold,
-// Finish) and Transition is not one of them.
+// its errors unchanged — the settling door has its own
+// door (Finish) and Transition is not it.
 func (j *Job) Transition(to State) error {
 	return j.withOpenAttempt(func(a *Attempt) error { return a.transition(to) })
 }
 
-// Hold parks the open attempt at a boundary, to resume at next for reason r.
-func (j *Job) Hold(next State, r WaitReason) error {
-	return j.withOpenAttempt(func(a *Attempt) error { return a.hold(next, r) })
+// SetNext records that the open attempt's current state has finished its work,
+// and where it continues to. See Attempt.setNext.
+func (j *Job) SetNext(n State) error {
+	return j.withOpenAttempt(func(a *Attempt) error { return a.setNext(n) })
 }
 
 // SetActivity records what the open attempt is currently executing.
@@ -196,45 +255,56 @@ func (j *Job) SetActivity(x Activity) error {
 	return j.withOpenAttempt(func(a *Attempt) error { a.setActivity(x); return nil })
 }
 
-// Finish assigns the verdict and closes the open attempt.
-func (j *Job) Finish(o Outcome, now time.Time) error {
-	return j.withOpenAttempt(func(a *Attempt) error { return a.finish(o, now) })
+// Cross is the sole door across the irreversible boundary. It sets state,
+// clears next and yields the lease in ONE call — there is no way to do one
+// without the others. Setting the state IS the record that the boundary was
+// crossed: crossed() derives from the position, so there is no separate latch
+// here to be written, forgotten, or to drift out of step with the state beside
+// it.
+//
+// The lease may be nil: a job can legitimately reach the crossing holding
+// none, having been paused at Assessing{next: Extracting} and resumed. It does
+// not need one to cross, because crossing is where it would have given the
+// lease up anyway. The Queue's reclaimer no-ops on nil rather than each caller
+// testing for it.
+//
+// It surrenders under the same lock it mutates the attempt under, which is why
+// it calls surrenderLocked rather than the exported Surrender — see
+// surrenderLocked for why the latter would deadlock from inside a door.
+func (j *Job) Cross(to State) (*Lease, error) {
+	return j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {
+		if err := a.cross(to); err != nil {
+			return nil, err
+		}
+		return j.surrenderLocked(), nil
+	})
 }
 
-// SetWaitReason records why the job is waiting, covering the two shapes
-// nothing else in this package can update in place:
+// Finish assigns the verdict, closes the open attempt, and yields the lease if
+// one is held.
 //
-//   - No attempt exists yet (HasRun() == false): there is no Attempt to
-//     carry a reason, so this writes j.pending directly.
-//   - An attempt is open and parked (State() == Waiting): Hold already
-//     decided the destination (next), and its own doc comment explains why
-//     that must not be re-declared by a second Hold call — but the REASON
-//     legitimately changes while parked (NoComputeSlot -> GlobalPause, when
-//     a global pause arrives while a job already waits for a compute slot).
-//     This delegates to setReason, which writes only a.reason.
-//
-// Deliberately NOT routed through withOpenAttempt: that helper's !a.isOpen()
-// check would reject the never-run case outright — no attempt is ever open
-// before the first BeginAttempt — which is half of what this method exists
-// to cover. An attempt that is open but not Waiting (mid-work) still fails,
-// via setReason's own ErrNotWaiting: SetWaitReason cannot alter a.next, only
-// a.reason, so there is nothing for it to do while an attempt is actively
-// running.
-func (j *Job) SetWaitReason(r WaitReason) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	a := j.currentLocked()
-	if a == nil {
-		j.pending = r
-		return nil
-	}
-	return a.setReason(r)
+// It yields the lease because every settling path ends the job's need for it:
+// a pre-boundary failure, an Unrecoverable verdict from Assessing, and a
+// cancel all settle without passing through Cross. An earlier design
+// returned only an error, and leaked a pool-A slot on all three.
+func (j *Job) Finish(o Outcome, now time.Time) (*Lease, error) {
+	return j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {
+		if err := a.finish(o, now); err != nil {
+			return nil, err
+		}
+		return j.surrenderLocked(), nil
+	})
 }
 
-// withOpenAttempt is the single door every mutator goes through: take the
-// write lock, resolve the open attempt or fail, apply. One door rather than
-// four copies of the same preamble, so "must there be an open attempt?" has
-// one answer that cannot drift between mutators.
+// withOpenAttempt is the one preamble every door that mutates the current
+// attempt goes through: take the write lock, resolve the open attempt or fail,
+// apply. It is the only function in this file that answers "must there be an
+// open attempt?", so the answer cannot drift between doors.
+//
+// Doors that must return the lease they yield use withOpenAttemptLease below,
+// which is a shape adapter over this one — it takes no lock and repeats no
+// check. Before that adapter existed, Cross and Finish copied this preamble
+// inline, which made three independently-maintained copies of one question.
 func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -245,6 +315,35 @@ func (j *Job) withOpenAttempt(fn func(*Attempt) error) error {
 	return fn(a)
 }
 
+// withOpenAttemptLease adapts withOpenAttempt for the doors that yield a lease
+// on success. It changes the SHAPE of the callback's result and nothing else:
+// no lock of its own, no second open-attempt check, so withOpenAttempt remains
+// the sole owner of both.
+//
+// The callback runs with j.mu held, which is why a door that yields must call
+// surrenderLocked and never the exported Surrender — see surrenderLocked.
+//
+// It does NOT enforce that an error path yields no lease — it returns whatever
+// the callback returned, so a callback that returns (lease, err) hands back
+// both. That is caller discipline, and a mutation proves it: making Cross's
+// callback `return j.surrenderLocked(), err` does return a lease alongside the
+// error. What the adapter gives is that the correct shape is also the natural
+// one — `return nil, err` — and TestJob_FailedCrossAndFinishKeepTheLease is
+// what actually enforces it, granting a lease and driving four error paths.
+//
+// The rule being protected: (*Lease, error) must never mean "failed, and here
+// is a lease". The job is still in Correctness on that path and still needs
+// its admission token.
+func (j *Job) withOpenAttemptLease(fn func(*Attempt) (*Lease, error)) (*Lease, error) {
+	var l *Lease
+	err := j.withOpenAttempt(func(a *Attempt) error {
+		var e error
+		l, e = fn(a)
+		return e
+	})
+	return l, err
+}
+
 // currentLocked returns a pointer to the last attempt, or nil if there are
 // none. Must hold mu.
 func (j *Job) currentLocked() *Attempt {
@@ -252,4 +351,90 @@ func (j *Job) currentLocked() *Attempt {
 		return nil
 	}
 	return &j.attempts[len(j.attempts)-1]
+}
+
+// Intent reports what has been asked of this job.
+func (j *Job) Intent() Intent {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.intent
+}
+
+// SetIntent records what is being asked of this job. Legal in every state,
+// including once the current attempt is settled: a settled job may be retried,
+// and the intent it carries governs what happens when it is.
+//
+// Refuses only when the job is already cancelled, and only for a DIFFERENT
+// intent — re-asserting cancel is an idempotent no-op rather than an error,
+// since a retrying caller repeating itself is not a mistake to report.
+func (j *Job) SetIntent(i Intent) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	// Membership first, mirroring finish's slices.Contains(AllOutcomes(), o).
+	// An out-of-range Intent stored here is not merely cosmetic: IsLatched()
+	// is false for it, so the cancel latch never engages, and every gate that
+	// compares against IntentPause or IntentCancel reads the job as un-gated
+	// while telemetry publishes "Intent(99)".
+	if !slices.Contains(AllIntents(), i) {
+		return fmt.Errorf("%w: %s is not a declared intent", ErrInvalidIntent, i)
+	}
+	if j.intent.IsLatched() && i != j.intent {
+		return fmt.Errorf("%w: cannot replace %s with %s", ErrIntentLatched, j.intent, i)
+	}
+	j.intent = i
+	return nil
+}
+
+// HoldsLease reports whether this job currently holds its admission token.
+// This is half of what makes a job "running" — see the design's §3.4.
+func (j *Job) HoldsLease() bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.lease != nil
+}
+
+// Grant hands this job an admission token. Refuses nil, which would be
+// indistinguishable from holding none, and refuses a second lease.
+func (j *Job) Grant(l *Lease) error {
+	if l == nil {
+		return ErrNilLease
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.lease != nil {
+		return ErrAlreadyLeased
+	}
+	j.lease = l
+	return nil
+}
+
+// Surrender yields the lease, or nil if none is held. Callers that already
+// hold j.mu must use surrenderLocked instead — see its comment.
+func (j *Job) Surrender() *Lease {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.surrenderLocked()
+}
+
+// surrenderLocked is the sole releaser of j.lease. Must hold mu.
+//
+// It exists because j.mu is a sync.RWMutex and Go mutexes are NOT reentrant.
+// Cross and Finish, the two doors that end a job's need for a lease, run their
+// bodies inside withOpenAttempt's callback, which holds j.mu — so a call to
+// the exported Surrender() from either would take j.mu a second time and
+// deadlock the job permanently, with no error and no timeout. Both call this
+// helper instead, which needs no lock of its own.
+//
+// Three callers of surrenderLocked as of this commit: Surrender (above),
+// Cross and Finish (job.go) — `git grep -n 'surrender[L]ocked()' --
+// 'internal/job/*.go' ':!internal/job/*_test.go'` returns FIVE lines: those
+// three calls, this method's own definition, and one prose mention in
+// withOpenAttemptLease's comment. The bracket hides this citation from itself
+// but cannot hide it from other comments that name the function, which is a
+// limit of the technique worth knowing: escaping makes a citation
+// self-consistent, not prose-proof.
+func (j *Job) surrenderLocked() *Lease {
+	l := j.lease
+	j.lease = nil
+	return l
 }

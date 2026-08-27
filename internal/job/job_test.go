@@ -2,12 +2,9 @@ package job
 
 import (
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 func newTestJob(t *testing.T) *Job {
@@ -81,22 +78,6 @@ func TestJob_CurrentLockedAndWithOpenAttempt(t *testing.T) {
 	}
 }
 
-// TestJob_NeverRunReportsWaitingForALease pins D1: there is no Queued state,
-// and a job that has never run has no attempt record at all.
-func TestJob_NeverRunReportsWaitingForALease(t *testing.T) {
-	j := newTestJob(t)
-	if j.HasRun() {
-		t.Error("HasRun() = true on a fresh job, want false")
-	}
-	if got := j.Attempts(); got != 0 {
-		t.Errorf("Attempts() = %d, want 0", got)
-	}
-	v := j.State()
-	if v.State != Waiting || v.Next != Fetching || v.Reason != NoLease {
-		t.Errorf("State() = %+v; want State=Waiting Next=Fetching Reason=NoLease", v)
-	}
-}
-
 func TestJob_BeginAttemptOpensOne(t *testing.T) {
 	j := newTestJob(t)
 	if err := j.BeginAttempt(testClock()); err != nil {
@@ -110,20 +91,20 @@ func TestJob_BeginAttemptOpensOne(t *testing.T) {
 	}
 }
 
-// TestJob_BeginAttemptIsIdempotentWhileOneIsOpen pins the rule that a lease
-// re-issued after a pause does not count as a new attempt.
+// TestJob_BeginAttemptIsIdempotentWhileOneIsOpen pins the rule that a second
+// BeginAttempt on a job whose current attempt is still open (not settled) is
+// a no-op rather than a fresh attempt — a job that is not running is still at
+// the state it last occupied (design §3.2), so a lease re-issued after a
+// pool-B wait must not be counted as a retry.
 func TestJob_BeginAttemptIsIdempotentWhileOneIsOpen(t *testing.T) {
 	j := newTestJob(t)
 	mustBegin(t, j)
-	if err := j.Hold(Fetching, UserPaused); err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
 	if err := j.BeginAttempt(testClock().Add(time.Hour)); err != nil {
 		t.Fatalf("second BeginAttempt: %v", err)
 	}
 	if got := j.Attempts(); got != 1 {
-		t.Errorf("Attempts() = %d after a pause/resume cycle, want 1; "+
-			"an attempt closes only at Finished", got)
+		t.Errorf("Attempts() = %d after a second BeginAttempt on an open attempt, want 1; "+
+			"an attempt closes only when finish assigns its verdict", got)
 	}
 }
 
@@ -132,7 +113,7 @@ func TestJob_BeginAttemptIsIdempotentWhileOneIsOpen(t *testing.T) {
 func TestJob_RetryAppendsAnAttempt(t *testing.T) {
 	j := newTestJob(t)
 	mustBegin(t, j)
-	if err := j.Finish(OutcomeUnrecoverable, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeUnrecoverable, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if got := j.State().Outcome; got != OutcomeUnrecoverable {
@@ -160,9 +141,17 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 		call func(*Job) error
 	}{
 		{"Transition", func(j *Job) error { return j.Transition(Assessing) }},
-		{"Hold", func(j *Job) error { return j.Hold(Fetching, UserPaused) }},
+		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
 		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
-		{"Finish", func(j *Job) error { return j.Finish(OutcomeOK, testClock()) }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeFailed, testClock()); return err }},
+		// Cross belongs here even though it can never succeed from a never-run
+		// job for a second reason (it is legal only from Assessing): the
+		// open-attempt check runs FIRST, so this pins which of the two errors
+		// the door owes. All five now share one check in withOpenAttempt, and
+		// that is what this table demonstrates rather than assumes — dropping
+		// !a.isOpen() from that single helper fails all five subtests of
+		// TestJob_FinishedJobHasNoOpenAttempt at once.
+		{"Cross", func(j *Job) error { _, err := j.Cross(Extracting); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t)
@@ -173,28 +162,36 @@ func TestJob_MutatorsRequireAnOpenAttempt(t *testing.T) {
 	}
 }
 
+// TestJob_FinishedJobHasNoOpenAttempt is the settled-attempt half of
+// TestJob_MutatorsRequireAnOpenAttempt's never-run half. Both halves are
+// needed and neither implies the other: the never-run case reaches the guard
+// through a == nil and the settled case through !a.isOpen(), so a door that
+// dropped the second half would still pass the first. Cross is the door that
+// proves it — with !a.isOpen() removed from Cross and a == nil kept, the whole
+// package passed, because Cross on a settled attempt falls through to a.cross,
+// which finds no edge out of Finalizing and returns ErrIllegalTransition
+// instead. The wrong error, and no test to say so.
 func TestJob_FinishedJobHasNoOpenAttempt(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.Finish(OutcomeOK, testClock()); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := j.Transition(Fetching); !errors.Is(err, ErrNoOpenAttempt) {
-		t.Errorf("Transition after Finish = %v, want ErrNoOpenAttempt", err)
-	}
-}
-
-// TestJob_TransitionSurfacesHoldAndFinishDoors pins that Job.Transition does
-// not translate, wrap, or swallow the three-doors sentinels from Attempt —
-// it surfaces them unchanged.
-func TestJob_TransitionSurfacesHoldAndFinishDoors(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.Transition(Waiting); !errors.Is(err, ErrHoldRequired) {
-		t.Errorf("Transition(Waiting) = %v, want ErrHoldRequired", err)
-	}
-	if err := j.Transition(Finished); !errors.Is(err, ErrFinishRequired) {
-		t.Errorf("Transition(Finished) = %v, want ErrFinishRequired", err)
+	for _, tc := range []struct {
+		name string
+		call func(*Job) error
+	}{
+		{"Transition", func(j *Job) error { return j.Transition(Fetching) }},
+		{"SetNext", func(j *Job) error { return j.SetNext(Assessing) }},
+		{"SetActivity", func(j *Job) error { return j.SetActivity(ActUnpack) }},
+		{"Finish", func(j *Job) error { _, err := j.Finish(OutcomeFailed, testClock()); return err }},
+		{"Cross", func(j *Job) error { _, err := j.Cross(Extracting); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := newTestJob(t)
+			mustBegin(t, j)
+			if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if err := tc.call(j); !errors.Is(err, ErrNoOpenAttempt) {
+				t.Errorf("%s after Finish = %v, want ErrNoOpenAttempt", tc.name, err)
+			}
+		})
 	}
 }
 
@@ -232,7 +229,7 @@ func TestJob_ConcurrentReadsAndWrites(t *testing.T) {
 // one-way boundary is enforced inside a single Attempt (TestBoundaryIsOneWay),
 // but Job holds a LIST of attempts, and appending a fresh one was previously
 // unguarded — the exact probe this test encodes: an attempt that reached
-// Extracting, then Finished with OutcomeOK, let BeginAttempt open a second
+// Extracting, then settled with OutcomeOK, let BeginAttempt open a second
 // attempt back at Fetching with err == nil.
 func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	j := newTestJob(t)
@@ -240,13 +237,16 @@ func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	if err := j.Transition(Assessing); err != nil {
 		t.Fatalf("Transition(Assessing): %v", err)
 	}
-	if err := j.Transition(Extracting); err != nil {
-		t.Fatalf("Transition(Extracting): %v", err)
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+	if _, err := j.Cross(Extracting); err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
 	}
 	if err := j.Transition(Finalizing); err != nil {
 		t.Fatalf("Transition(Finalizing): %v", err)
 	}
-	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if got := j.Attempts(); got != 1 {
@@ -260,8 +260,11 @@ func TestJob_BeginAttemptRefusesAfterCrossing(t *testing.T) {
 	if got := j.Attempts(); got != 1 {
 		t.Errorf("Attempts() after refused retry = %d, want 1 (no attempt appended)", got)
 	}
-	if got := j.State().State; got != Finished {
-		t.Errorf("State() after refused retry = %v, want Finished (unchanged)", got)
+	// Finalizing, not some terminal value: the refused retry left the settled
+	// attempt exactly where it was, which is also what makes crossed()
+	// answerable without a latch.
+	if got := j.State().State; got != Finalizing {
+		t.Errorf("State() after refused retry = %v, want Finalizing (unchanged)", got)
 	}
 }
 
@@ -275,8 +278,11 @@ func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) 
 	if err := j.Transition(Assessing); err != nil {
 		t.Fatalf("Transition(Assessing): %v", err)
 	}
-	if err := j.Transition(Extracting); err != nil {
-		t.Fatalf("Transition(Extracting): %v", err)
+	if err := j.SetNext(Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+	if _, err := j.Cross(Extracting); err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
 	}
 	// Extracting is Production, but this attempt is still open (unfinished).
 	if err := j.BeginAttempt(testClock().Add(time.Hour)); err != nil {
@@ -289,155 +295,36 @@ func TestJob_BeginAttemptStillIdempotentWhenOpenAttemptHasCrossed(t *testing.T) 
 	if err := j.Transition(Finalizing); err != nil {
 		t.Fatalf("Transition(Finalizing): %v", err)
 	}
-	if err := j.Finish(OutcomeOK, testClock()); err != nil {
+	if _, err := j.Finish(OutcomeFailed, testClock()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 }
 
-// TestJob_SetWaitReasonOnNeverRunJob pins the never-run half of
-// SetWaitReason: a job with no attempt at all has nowhere to record a pause
-// reason except j.pending, so a UserPaused arriving before the first
-// BeginAttempt must still be visible through State().
-func TestJob_SetWaitReasonOnNeverRunJob(t *testing.T) {
+// TestJob_NeverRunReportsStateUnset replaces
+// TestJob_NeverRunReportsWaitingForALease. A job with no attempt is not at a
+// state; StateUnset says exactly that, where the old Waiting{Next: Fetching}
+// claimed a position the job had not reached.
+func TestJob_NeverRunReportsStateUnset(t *testing.T) {
 	j := newTestJob(t)
-	if err := j.SetWaitReason(UserPaused); err != nil {
-		t.Fatalf("SetWaitReason: %v", err)
-	}
 	v := j.State()
-	if v.State != Waiting || v.Next != Fetching || v.Reason != UserPaused {
-		t.Errorf("State() = %+v; want State=Waiting Next=Fetching Reason=UserPaused", v)
+	if v.State != StateUnset {
+		t.Errorf("State() on a never-run job = %v, want StateUnset", v.State)
+	}
+	if v.Next != StateUnset {
+		t.Errorf("Next = %v on a never-run job, want StateUnset: nothing has ended, so nothing is pending", v.Next)
+	}
+	if j.HasRun() {
+		t.Error("HasRun() is true for a job with no attempt")
 	}
 }
 
-// TestJob_SetWaitReasonOnParkedAttempt pins the parked-attempt half: hold
-// refuses to re-declare a destination once an attempt is already Waiting
-// (that refusal is correct — see Hold's doc comment), but the REASON must
-// still be updatable, e.g. NoComputeSlot -> GlobalPause when a global pause
-// arrives while the job already waits for a compute slot.
-func TestJob_SetWaitReasonOnParkedAttempt(t *testing.T) {
+// TestJob_SetNextRequiresAnOpenAttempt pins that the marker cannot be written
+// before there is an attempt to carry it.
+func TestJob_SetNextRequiresAnOpenAttempt(t *testing.T) {
 	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.Hold(Assessing, NoComputeSlot); err != nil {
-		t.Fatalf("Hold: %v", err)
+	if err := j.SetNext(Assessing); !errors.Is(err, ErrNoOpenAttempt) {
+		t.Errorf("SetNext on a never-run job, error = %v, want ErrNoOpenAttempt", err)
 	}
-	if err := j.SetWaitReason(GlobalPause); err != nil {
-		t.Fatalf("SetWaitReason: %v", err)
-	}
-	v := j.State()
-	if v.State != Waiting || v.Next != Assessing || v.Reason != GlobalPause {
-		t.Errorf("State() = %+v; want State=Waiting Next=Assessing Reason=GlobalPause", v)
-	}
-}
-
-// TestJob_SetWaitReasonRejectsMidWork pins that SetWaitReason is not a
-// general-purpose reason setter: an attempt that is open but actively
-// working (not Waiting) has no reason field meaningful to update.
-func TestJob_SetWaitReasonRejectsMidWork(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.SetWaitReason(UserPaused); !errors.Is(err, ErrNotWaiting) {
-		t.Errorf("SetWaitReason on an open, working (Fetching) attempt = %v, want ErrNotWaiting", err)
-	}
-}
-
-// TestJob_SetWaitReasonRejectsSettledJob pins the Critical review finding
-// this round settled rather than fixed: a job whose only attempt settled
-// with OutcomeUnrecoverable cannot record a pause reason, and that refusal
-// is correct, not a gap. OutcomeUnrecoverable comes from exactly one place —
-// an Assessing verdict, spec §5 — and such a job renders Failed; it is not
-// sitting in a queue awaiting a lease, so there is no wait state for a
-// reason to attach to. The message names why, not just that.
-func TestJob_SetWaitReasonRejectsSettledJob(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.Finish(OutcomeUnrecoverable, testClock()); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	err := j.SetWaitReason(UserPaused)
-	if !errors.Is(err, ErrNotWaiting) {
-		t.Fatalf("SetWaitReason on a settled job = %v, want ErrNotWaiting", err)
-	}
-	const wantSubstring = "no wait state"
-	if !strings.Contains(err.Error(), wantSubstring) {
-		t.Errorf("SetWaitReason error = %q, want it to explain why via %q", err.Error(), wantSubstring)
-	}
-	if got := j.State().Reason; got != NoLease {
-		t.Errorf("Reason = %v after a rejected SetWaitReason, want unchanged (NoLease)", got)
-	}
-}
-
-// TestJob_SetWaitReasonCannotChangeNext is the stranding check named in the
-// review: SetWaitReason must never be usable to change where a parked
-// attempt resumes, only why it is parked.
-func TestJob_SetWaitReasonCannotChangeNext(t *testing.T) {
-	j := newTestJob(t)
-	mustBegin(t, j)
-	if err := j.Transition(Assessing); err != nil {
-		t.Fatalf("Transition(Assessing): %v", err)
-	}
-	if err := j.Hold(Repairing, NoComputeSlot); err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
-	if err := j.SetWaitReason(GlobalPause); err != nil {
-		t.Fatalf("SetWaitReason: %v", err)
-	}
-	if got := j.State().Next; got != Repairing {
-		t.Errorf("Next = %v after SetWaitReason, want Repairing unchanged", got)
-	}
-	// The parked attempt must still resume to its declared next afterward.
-	if err := j.Transition(Repairing); err != nil {
-		t.Fatalf("Transition(Repairing) after SetWaitReason: %v", err)
-	}
-}
-
-// TestJob_BeginAttemptAfterSetWaitReasonOnNeverRunJob pins that a never-run
-// job carrying a non-default pending reason still opens normally: pending
-// is a Job-level field consulted only by State() when there is no attempt,
-// and BeginAttempt does not read it at all.
-func TestJob_BeginAttemptAfterSetWaitReasonOnNeverRunJob(t *testing.T) {
-	j := newTestJob(t)
-	if err := j.SetWaitReason(UserPaused); err != nil {
-		t.Fatalf("SetWaitReason: %v", err)
-	}
-	if err := j.BeginAttempt(testClock()); err != nil {
-		t.Fatalf("BeginAttempt after SetWaitReason: %v", err)
-	}
-	if got := j.State().State; got != Fetching {
-		t.Errorf("State = %v after BeginAttempt, want Fetching", got)
-	}
-}
-
-// TestJob_PausedRendersAsStatusPaused is the end-to-end property both review
-// comments actually care about: a job that cannot record why it is waiting
-// renders as Queued instead of Paused through the legacy status shim. This
-// covers both gaps SetWaitReason closes — a never-run job, and a parked
-// attempt whose pause reason changes while it waits.
-func TestJob_PausedRendersAsStatusPaused(t *testing.T) {
-	t.Run("never run, user paused", func(t *testing.T) {
-		j := newTestJob(t)
-		if err := j.SetWaitReason(UserPaused); err != nil {
-			t.Fatalf("SetWaitReason: %v", err)
-		}
-		if got := ToSABnzbd(j.State()); got != constants.StatusPaused {
-			t.Errorf("ToSABnzbd(State()) = %q, want StatusPaused", got)
-		}
-	})
-	t.Run("parked on a compute slot, then globally paused", func(t *testing.T) {
-		j := newTestJob(t)
-		mustBegin(t, j)
-		if err := j.Hold(Assessing, NoComputeSlot); err != nil {
-			t.Fatalf("Hold: %v", err)
-		}
-		if got := ToSABnzbd(j.State()); got != constants.StatusQueued {
-			t.Fatalf("ToSABnzbd(State()) before the global pause arrives = %q, want StatusQueued (NoComputeSlot is not a pause)", got)
-		}
-		if err := j.SetWaitReason(GlobalPause); err != nil {
-			t.Fatalf("SetWaitReason: %v", err)
-		}
-		if got := ToSABnzbd(j.State()); got != constants.StatusPaused {
-			t.Errorf("ToSABnzbd(State()) = %q, want StatusPaused", got)
-		}
-	})
 }
 
 func mustBegin(t *testing.T, j *Job) {
@@ -445,4 +332,95 @@ func mustBegin(t *testing.T, j *Job) {
 	if err := j.BeginAttempt(testClock()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
 	}
+}
+
+func mustJobTransition(t *testing.T, j *Job, to State) {
+	t.Helper()
+	if err := j.Transition(to); err != nil {
+		t.Fatalf("Transition(%v): %v", to, err)
+	}
+}
+
+// TestJob_WithOpenAttemptLease drives the adapter directly, because what it
+// guarantees is not observable through Cross and Finish alone: those always
+// return a lease on success and nil on error, so they cannot show that the
+// adapter itself never invents one.
+//
+// Three properties, each of which a plausible rewrite would break:
+//   - it refuses without calling fn at all, so a door cannot act on a settled
+//     or never-run attempt before the check;
+//   - it hands the callback the same *Attempt currentLocked resolves, not a
+//     copy — a copy would silently discard every mutation;
+//   - the returned lease is exactly what the callback returned, including nil
+//     alongside an error. (*Lease, error) must never mean "failed, and here is
+//     a lease".
+func TestJob_WithOpenAttemptLease(t *testing.T) {
+	t.Run("refuses without invoking fn", func(t *testing.T) {
+		j := newTestJob(t)
+		called := false
+		l, err := j.withOpenAttemptLease(func(*Attempt) (*Lease, error) {
+			called = true
+			return &Lease{}, nil
+		})
+		if !errors.Is(err, ErrNoOpenAttempt) {
+			t.Errorf("err = %v, want ErrNoOpenAttempt", err)
+		}
+		if called {
+			t.Error("fn was invoked on a job with no open attempt")
+		}
+		if l != nil {
+			t.Errorf("lease = %p, want nil — a refusal must yield nothing", l)
+		}
+	})
+
+	t.Run("passes the live attempt and returns its lease", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		want := &Lease{}
+		l, err := j.withOpenAttemptLease(func(a *Attempt) (*Lease, error) {
+			// Fetched under the lock the adapter's callback already runs
+			// beneath; taking it again here would deadlock.
+			if got := j.currentLocked(); a != got {
+				t.Errorf("fn got %p, want the attempt currentLocked resolves (%p)", a, got)
+			}
+			a.setActivity(ActPar2Verify)
+			return want, nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if l != want {
+			t.Errorf("lease = %p, want the one fn returned (%p)", l, want)
+		}
+		if got := j.State().Activity; got != ActPar2Verify {
+			t.Errorf("Activity = %v; the callback received a copy, not the live attempt", got)
+		}
+	})
+
+	t.Run("an error from fn yields no lease", func(t *testing.T) {
+		j := newTestJob(t)
+		mustBegin(t, j)
+		sentinel := errors.New("probe")
+		l, err := j.withOpenAttemptLease(func(*Attempt) (*Lease, error) {
+			return nil, sentinel
+		})
+		if !errors.Is(err, sentinel) {
+			t.Errorf("err = %v, want the callback's error", err)
+		}
+		if l != nil {
+			t.Errorf("lease = %p, want nil on an error path", l)
+		}
+	})
+}
+
+// currentCrossedForTest reports the current attempt's crossed() under the
+// job's own read lock. The reachability walk needs it because crossed() lives
+// on Attempt and the walk only holds a *Job; going through State() would not
+// do, since crossed is deliberately not on StateView — nothing outside this
+// package needs it.
+func (j *Job) currentCrossedForTest() bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	a := j.currentLocked()
+	return a != nil && a.crossed()
 }
