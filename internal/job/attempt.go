@@ -352,20 +352,39 @@ func (a *Attempt) finish(o Outcome, now time.Time) error {
 	if a.outcome.IsSettled() {
 		return fmt.Errorf("%w: %s, refusing to overwrite with %s", errOutcomeAlreadySet, a.outcome, o)
 	}
-	// OutcomeOK means "the job produced its files" (outcome.go), which cannot
-	// be true before the boundary — production happens in Extracting and
-	// Finalizing. Without this, Finish(OutcomeOK) settles an attempt in
-	// Fetching, and BeginAttempt — which refuses a reopen only for an attempt
-	// that crossed — then opens a SECOND attempt on a job already declared
-	// complete. Guarding here rather than in BeginAttempt keeps one owner:
-	// the door that assigns the verdict decides which verdicts are assignable.
+	// OutcomeOK means "the job produced its files" (outcome.go), and the state
+	// where that becomes true is Finalizing, not Production generally. Design
+	// §3.3's work-spine table gives each state one completion, and Extracting's
+	// is SetNext(Finalizing); Finish(OutcomeOK) appears on Finalizing's row
+	// alone. At Extracting the archives are unpacked into the working
+	// directory and nothing has been moved to the destination or run a user
+	// script, so settling OK there reports a complete job whose output is
+	// stranded in a temporary unpack directory.
 	//
-	// Both guards read a.crossed(), which is now IsProduction(a.state) rather
-	// than a latch. finish no longer overwrites a.state, so the position
-	// survives settling and answers the question directly.
-	if o == OutcomeOK && !a.crossed() {
-		return fmt.Errorf("%w: OutcomeOK claims the job produced its files, but this attempt never crossed into Production", ErrInvalidOutcome)
+	// This is deliberately NOT a.crossed(). The zone predicate is too weak
+	// here by exactly one state, and it read as correct because the guard it
+	// replaced was written when the question was "did this attempt reach
+	// Production at all". Without the guard at all, Finish(OutcomeOK) settles
+	// an attempt in Fetching, and BeginAttempt — which refuses a reopen only
+	// for an attempt that crossed — then opens a SECOND attempt on a job
+	// already declared complete. Guarding here rather than in BeginAttempt
+	// keeps one owner: the door that assigns the verdict decides which
+	// verdicts are assignable.
+	//
+	// Consulting a.state is not consulting legalEdges. finish still reads
+	// neither the edge map nor next, which is what keeps every open attempt in
+	// every reachable state settleable — an attempt at Extracting can still
+	// settle Failed, Cancelled or (before crossing) Unrecoverable. What this
+	// narrows is which VERDICT a position admits, not whether it can settle.
+	if o == OutcomeOK && a.state != Finalizing {
+		return fmt.Errorf("%w: OutcomeOK claims the job produced its files, but this attempt settled at %s, not Finalizing", ErrInvalidOutcome, a.state)
 	}
+	// This one is still the zone question, and correctly so: D3 defines
+	// Unrecoverable as "never crossed the boundary", which is Production
+	// generally rather than any single state. a.crossed() is
+	// IsProduction(a.state) now rather than a latch — finish no longer
+	// overwrites a.state, so the position survives settling and answers
+	// directly.
 	if o == OutcomeUnrecoverable && a.crossed() {
 		return fmt.Errorf("%w: this attempt already crossed into Production", ErrUnrecoverableAfterBoundary)
 	}

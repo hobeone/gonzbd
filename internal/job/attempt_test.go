@@ -263,12 +263,15 @@ func TestAttempt_FinishRejectsUnrecoverableInProduction(t *testing.T) {
 // key with an empty successor list. This table IS the coverage that bypass
 // relies on, so it walks all five non-terminal, non-sentinel states.
 func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
-	// The outcome varies by zone and that is part of the property, not a
-	// detail. finish refuses OutcomeOK before the boundary — "produced its
-	// files" cannot be true of an attempt that never entered Production — so
-	// the pre-boundary cases settle Failed. What this table pins is that NO
-	// open state strands: every one of them can be settled with SOME legal
-	// verdict, which is why finish consults neither legalEdges nor next.
+	// The outcome varies by state and that is part of the property, not a
+	// detail. finish admits OutcomeOK only at Finalizing — "produced its files"
+	// is not true of an attempt that has not moved anything to the destination,
+	// and §3.3 gives Extracting SetNext(Finalizing) as its only completion — so
+	// every other case settles Failed. What this table pins is that NO open
+	// state strands: every one of them can be settled with SOME legal verdict,
+	// which is why finish consults neither legalEdges nor next. Narrowing WHICH
+	// verdict a position admits does not narrow THAT it can settle, and this
+	// table is what keeps those two apart.
 	tests := []struct {
 		name    string
 		outcome Outcome
@@ -282,7 +285,7 @@ func TestAttempt_FinishSucceedsFromAnyOpenState(t *testing.T) {
 			mustTransition(t, a, Assessing)
 			mustTransition(t, a, Repairing)
 		}},
-		{"Extracting", OutcomeOK, func(t *testing.T, a *Attempt) {
+		{"Extracting", OutcomeFailed, func(t *testing.T, a *Attempt) {
 			mustTransition(t, a, Assessing)
 			mustCross(t, a, Extracting)
 		}},
@@ -841,12 +844,22 @@ func TestAttempt_TransitionReportsTheRecordedVerdict(t *testing.T) {
 	}
 }
 
-// TestAttempt_FinishRefusesOKBeforeTheBoundary pins the guard AND the reopen it
+// TestAttempt_FinishRefusesOKBeforeFinalizing pins the guard AND the reopen it
 // prevents. Without it, Finish(OutcomeOK) from Fetching settles the attempt
-// with crossed still false, and BeginAttempt — which refuses a reopen only on
-// that latch — opens a second attempt on a job already declared complete.
-func TestAttempt_FinishRefusesOKBeforeTheBoundary(t *testing.T) {
-	for _, from := range []State{Fetching, Assessing, Repairing} {
+// while the position still reads Fetching, and BeginAttempt — which refuses a
+// reopen only for an attempt that crossed — opens a second attempt on a job
+// already declared complete.
+//
+// Extracting is in the list, and it is the case that is NOT obvious. Extracting
+// is past the boundary, so a guard phrased as "must have crossed" admits it.
+// But §3.3's work-spine table gives Extracting exactly one completion —
+// SetNext(Finalizing) — and Finish(OutcomeOK) is Finalizing's row alone.
+// OutcomeOK means "the job produced its files"; at Extracting the archives have
+// been unpacked into the working directory and nothing has been moved to the
+// destination or run a user script. Settling OK there reports a job complete
+// with its output stranded in a temporary unpack directory.
+func TestAttempt_FinishRefusesOKBeforeFinalizing(t *testing.T) {
+	for _, from := range []State{Fetching, Assessing, Repairing, Extracting} {
 		t.Run(from.String(), func(t *testing.T) {
 			a := newAttempt(testClock())
 			if from != Fetching {
@@ -855,11 +868,22 @@ func TestAttempt_FinishRefusesOKBeforeTheBoundary(t *testing.T) {
 			if from == Repairing {
 				mustTransition(t, &a, Repairing)
 			}
+			if from == Extracting {
+				mustCross(t, &a, Extracting)
+			}
 			if err := a.finish(OutcomeOK, testClock()); !errors.Is(err, ErrInvalidOutcome) {
 				t.Errorf("finish(OutcomeOK) from %v = %v, want ErrInvalidOutcome", from, err)
 			}
 		})
 	}
+	// Every state EXCEPT Finalizing must appear above. Stated as a count
+	// against AllStates() rather than as a list, so adding a state fails here
+	// instead of quietly leaving the new one unguarded.
+	t.Run("the table covers every state but Finalizing", func(t *testing.T) {
+		if want := len(AllStates()) - 1; want != 4 {
+			t.Fatalf("AllStates() has %d members, so the loop above should test %d states, not 4", len(AllStates()), want)
+		}
+	})
 	t.Run("a job settled OK cannot reopen", func(t *testing.T) {
 		j := newTestJob(t)
 		mustBegin(t, j)
@@ -870,8 +894,12 @@ func TestAttempt_FinishRefusesOKBeforeTheBoundary(t *testing.T) {
 		if _, err := j.Cross(Extracting); err != nil {
 			t.Fatalf("Cross: %v", err)
 		}
+		if err := j.SetNext(Finalizing); err != nil {
+			t.Fatalf("SetNext(Finalizing): %v", err)
+		}
+		mustJobTransition(t, j, Finalizing)
 		if _, err := j.Finish(OutcomeOK, testClock()); err != nil {
-			t.Fatalf("Finish(OutcomeOK) after crossing: %v", err)
+			t.Fatalf("Finish(OutcomeOK) from Finalizing: %v", err)
 		}
 		if err := j.BeginAttempt(testClock()); err == nil {
 			t.Error("BeginAttempt reopened a job that produced its files")
