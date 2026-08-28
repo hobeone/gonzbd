@@ -181,8 +181,12 @@ func TestCancel_AlreadySettledIsANoop(t *testing.T) {
 	q := New(1, 0, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
 	mustHoldAt(t, q, j, job.Fetching)
-	if _, err := j.Finish(job.OutcomeFailed, testClock()); err != nil {
+	l, err := j.Finish(job.OutcomeFailed, testClock())
+	if err != nil {
 		t.Fatalf("Finish: %v", err)
+	}
+	if err := q.reclaim(l); err != nil {
+		t.Fatalf("reclaim: %v", err)
 	}
 	if err := q.Cancel(j); err != nil {
 		t.Fatalf("Cancel: %v", err)

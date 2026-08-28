@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -880,13 +882,38 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 	if got, want := renderStatus(q, j), constants.StatusCompleted; got != want {
 		t.Errorf("status = %v, want %v", got, want)
 	}
+
+	// §5.13's trace has a trailing advance after the settle: IntentCancel is
+	// still latched (asserted above), so this call routes through
+	// finishCancel's settled arm rather than Advance's own — Advance sends an
+	// IntentCancel job to finishCancel before it ever reaches its own settled
+	// branch (advance.go). Without this step the test never exercised the
+	// release Finalizing's slot needs: q.slots.holds("j1") stayed true at test
+	// end.
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (trailing, settled+cancelled): %v", err)
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("still holds a compute slot after the trailing advance; finishCancel's settled arm must release it")
+	}
 }
 
 // TestEveryScenarioHasATest fails when §5 grows a scenario nobody pinned.
 // §5 is the regression suite for four revisions of defects; a scenario without
 // a test is a defect class with nothing watching it.
+//
+// The comparison is against the spec's own §5 headings, parsed from the file
+// (specScenarioCount below) — not a hardcoded literal. A hardcoded count
+// checks this file's own test count against itself and proves nothing about
+// §5 ever having grown: a fourteenth scenario added to the spec with no test
+// written for it left the old version of this check green, because both
+// sides of the comparison came from this file. Parsing the spec is what makes
+// this a real gate on the POPULATION §5 defines, matching Standing Design
+// Rule 4's enumerate-from-source requirement, and the population is
+// enumerable by a machine (a heading pattern), which the same rule prefers
+// over a comment stating a count by hand.
 func TestEveryScenarioHasATest(t *testing.T) {
-	const scenariosInSpec = 13
+	scenariosInSpec := specScenarioCount(t)
 	names := scenarioTestNames(t) // parses this file for TestScenario_ funcs
 	// Both halves of this check matter separately: a parse that silently read
 	// zero declarations would otherwise pass the count check below by
@@ -899,6 +926,45 @@ func TestEveryScenarioHasATest(t *testing.T) {
 	if len(names) != scenariosInSpec {
 		t.Errorf("§5 has %d scenarios, this file has %d tests: %v", scenariosInSpec, len(names), names)
 	}
+}
+
+// specScenariosPath is docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md,
+// relative to this package's directory — `go test` runs with the package
+// directory as its working directory, so this is stable across invocation
+// styles (`go test ./...` from the repo root, `go test .` from here, an IDE
+// runner) without needing runtime.Caller to locate it.
+const specScenariosPath = "../../docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md"
+
+// specHeadingRE matches a §5 scenario heading, e.g. "### 5.13 Cancelling a
+// running `Finalizing` job". Anchored on "### 5." rather than a bare "###" so
+// a level-3 heading elsewhere in the document (§6's subsections, say) cannot
+// be miscounted as a scenario.
+var specHeadingRE = regexp.MustCompile(`^### 5\.\d+\b`)
+
+// specScenarioCount reads specScenariosPath and counts §5's own scenario
+// headings — the population TestEveryScenarioHasATest checks this file's
+// tests against. A read failure or a zero count is fatal rather than silently
+// falling back to a hardcoded number: a scan that reads nothing and reports
+// "0 scenarios, add none" is exactly the failure this whole suite exists to
+// avoid, and a hand-maintained fallback would reintroduce the same drift risk
+// the parse was written to remove.
+func specScenarioCount(t *testing.T) int {
+	t.Helper()
+	data, err := os.ReadFile(specScenariosPath)
+	if err != nil {
+		t.Fatalf("read %s: %v — TestEveryScenarioHasATest cannot check §5's scenario count without it", specScenariosPath, err)
+	}
+	n := 0
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if specHeadingRE.MatchString(line) {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatalf("found zero §5 scenario headings in %s; the parse did not run against real content — "+
+			"check the path and the heading pattern (%q)", specScenariosPath, specHeadingRE.String())
+	}
+	return n
 }
 
 // scenarioTestNames returns every TestScenario_ function declared in this
