@@ -332,6 +332,19 @@ func TestNew_PanicsOnNilWorkers(t *testing.T) {
 	New(1, 1, testClock, nil)
 }
 
+// TestNew_PanicsOnNilClock is the clock half of the same precondition. Without
+// it New succeeds and the panic surfaces later, inside q.now(), on whichever of
+// Advance/Cancel/Retry happens to run first — a stack trace that points at the
+// scheduler rather than at the caller that built it wrong.
+func TestNew_PanicsOnNilClock(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("New(nil clock) did not panic")
+		}
+	}()
+	New(1, 1, nil, &stubWorkers{})
+}
+
 // TestQueue_NowReturnsTheInjectedClock pins that now() reads the clock the
 // Queue was constructed with rather than wall time.
 func TestQueue_NowReturnsTheInjectedClock(t *testing.T) {

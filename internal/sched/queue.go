@@ -67,6 +67,13 @@ func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue {
 	if w == nil {
 		panic("sched: New: Workers must not be nil")
 	}
+	if clock == nil {
+		// Same class as the nil Workers above: a construction-time programmer
+		// error, not state an earlier build wrote, so Rule 1 does not waive it.
+		// Without this, New succeeds and the first Advance, Cancel or Retry
+		// panics inside q.now() — far from the call that was actually wrong.
+		panic("sched: New: clock must not be nil")
+	}
 	return &Queue{
 		leases: newLeasePool(leaseCap),
 		slots:  newSlotPool(slotCap),
@@ -134,11 +141,18 @@ func (q *Queue) holds(id string, s job.Snapshot) bool {
 }
 
 // running is §3.4's three-conjunct definition. Every conjunct is load-bearing:
-// a job whose work has finished is waiting to move, not running (the next
-// clause); and a settled attempt keeps its position, so holds() may be
-// genuinely true for it — only the open clause excludes it.
+// a job whose work has finished is waiting to move, not running (the
+// Next == StateUnset clause); and a settled attempt keeps its position, so
+// holds() may be genuinely true for it — only the open clause excludes it.
+//
+// The order is deliberate, though the value is order-independent: IsOpen and
+// the Next comparison are inline scalar checks, while holds() consults the
+// requirements table and does a map lookup in slotPool. Testing the two cheap
+// conjuncts first means a job awaiting a transition — the common case for the
+// whole time work has ended and the move has not happened — never pays for the
+// lookup.
 func (q *Queue) running(id string, s job.Snapshot) bool {
-	return s.IsOpen() && q.holds(id, s) && s.State.Next == job.StateUnset
+	return s.IsOpen() && s.State.Next == job.StateUnset && q.holds(id, s)
 }
 
 // gatedBy reports an intent or queue-wide gate. Resources are NOT consulted:
