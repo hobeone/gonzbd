@@ -14,17 +14,10 @@ func (s *stubWorkers) Abort(jobID string) { s.aborted = append(s.aborted, jobID)
 
 func testClock() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
-// TestPredicatesArePure is spec §6 test 1. It calls both predicates across the
-// product space with BOTH pools exhausted and asserts occupancy is unchanged.
-// Acquisition leaking into the render path is the failure mode that does not
-// show up as a wrong answer — it shows up as capacity disappearing while
-// someone looks at a page.
-func TestPredicatesArePure(t *testing.T) {
-	q := New(1, 1, testClock, &stubWorkers{})
-	if q.leases.issue() == nil || !q.slots.acquire("other") {
-		t.Fatal("could not exhaust the pools for the test")
-	}
-	beforeL, beforeS := q.leases.outstanding(), q.slots.outstanding()
+// walkPredicatesFor drives q.gatedBy and q.waitReason(id, ...) across the
+// full Snapshot product space, for TestPredicatesArePure's two
+// configurations.
+func walkPredicatesFor(q *Queue, id string) {
 	for _, st := range append(job.AllStates(), job.StateUnset) {
 		for _, nx := range append(job.AllStates(), job.StateUnset) {
 			for _, o := range job.AllOutcomes() {
@@ -39,16 +32,59 @@ func TestPredicatesArePure(t *testing.T) {
 								HasRun:     st != job.StateUnset,
 							}
 							q.gatedBy(s)
-							q.waitReason("j1", s)
+							q.waitReason(id, s)
 						}
 					}
 				}
 			}
 		}
 	}
-	if q.leases.outstanding() != beforeL || q.slots.outstanding() != beforeS {
-		t.Errorf("pools moved during a render-path walk: leases %d→%d, slots %d→%d",
-			beforeL, q.leases.outstanding(), beforeS, q.slots.outstanding())
+}
+
+// TestPredicatesArePure is spec §6 test 1. It calls both predicates across the
+// product space and asserts occupancy is unchanged. Acquisition leaking into
+// the render path is the failure mode that does not show up as a wrong
+// answer — it shows up as capacity disappearing while someone looks at a
+// page.
+//
+// It runs the walk under two pool configurations, not one. At capacity
+// (leaseCap=1, slotCap=1, one unit already occupied), leasePool.issue and
+// slotPool.acquire both return early WITHOUT mutating anything — so a
+// predicate that started calling q.slots.acquire(id) internally would return
+// false, no map would change, outstanding() would hold steady, and this
+// test would stay green against the exact regression its own doc comment
+// names. "headroom" gives each pool a second unit so a stray acquire
+// actually mutates: outstanding() moves, and — since acquire is
+// idempotent — q.slots.holds(id) latches true and stays true regardless of
+// how many further calls the walk makes for the same id, catching a leak
+// that a lone before/after outstanding() comparison could otherwise miss if
+// some other call in the walk released it back down in between.
+func TestPredicatesArePure(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		leaseCap, slotCap int
+	}{
+		{"exhausted", 1, 1},
+		{"headroom", 2, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := New(tc.leaseCap, tc.slotCap, testClock, &stubWorkers{})
+			if q.leases.issue() == nil || !q.slots.acquire("other") {
+				t.Fatal("could not occupy one unit of each pool for the test")
+			}
+			beforeL, beforeS := q.leases.outstanding(), q.slots.outstanding()
+
+			walkPredicatesFor(q, "j1")
+
+			if q.leases.outstanding() != beforeL || q.slots.outstanding() != beforeS {
+				t.Errorf("pools moved during a render-path walk: leases %d→%d, slots %d→%d",
+					beforeL, q.leases.outstanding(), beforeS, q.slots.outstanding())
+			}
+			if q.slots.holds("j1") {
+				t.Error(`q.slots.holds("j1") = true after a render-path walk; a predicate acquired ` +
+					"a slot for the job under test")
+			}
+		})
 	}
 }
 
