@@ -30,10 +30,9 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 //
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
-// order against Queue.mu and Job.mu (prior spec §7.1). Queue has no mu field
-// yet — Task 6 adds it in the same commit as Cancel, its first locker — so at
-// this commit the requirement is a forward-looking constraint on that future
-// caller, not a description of a lock any code takes today.
+// order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and
+// Cancel is its first locker (internal/sched/cancel.go), so this is now a
+// description of a lock real code takes, not a forward-looking constraint.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID

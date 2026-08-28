@@ -1,6 +1,7 @@
 package sched
 
 import (
+	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -20,16 +21,15 @@ type Workers interface {
 
 // Queue owns admission: the pure predicates over a job.Snapshot (holds,
 // running, gatedBy, waitReason) and the two resource-return paths (reclaim,
-// releaseFor) that Task 6's Cancel needs before it exists.
+// releaseFor) that Cancel needs.
 //
-// It has no lock of its own yet. Task 6 adds a mu sync.Mutex field here in
-// the same commit that first takes it (Cancel does q.mu.Lock(); defer
-// q.mu.Unlock()) — prior spec §7.1's order is Queue.mu before Job.mu, and
-// that ordering holds once the field and its first caller land together. A
-// field nothing locks is not needed yet: this mirrors why reclaim and
-// releaseFor are declared here rather than beside their own first callers —
-// a declaration lands with the earliest thing that needs it.
+// mu guards the pools and the admission decisions made over them. Cancel is
+// its first locker (q.mu.Lock(); defer q.mu.Unlock()); prior spec §7.1's
+// order is Queue.mu before Job.mu, so nothing here may call into a *job.Job
+// method while holding mu in a way that would take the locks in the other
+// order.
 type Queue struct {
+	mu     sync.Mutex
 	paused bool
 	leases *leasePool
 	slots  *slotPool
@@ -75,7 +75,7 @@ func (q *Queue) reclaim(l *job.Lease) error { return q.leases.reclaim(l) }
 //
 // The asymmetry was not acquire-count versus release-count. Acquisition was
 // designed to have an owner from the start — grantFor is meant to be the sole
-// production caller of slots.acquire, but grantFor is Task 6/7 work and does
+// production caller of slots.acquire, but grantFor is Task 7 work and does
 // not exist at this commit: `grep -n 'slots\.acquire' internal/sched/*.go |
 // grep -v _test.go` finds only this comment's own mention of the name, zero
 // production call sites. Release, by contrast, never had a designated owner

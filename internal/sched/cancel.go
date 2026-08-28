@@ -1,0 +1,56 @@
+package sched
+
+import "github.com/hobeone/gonzbd/internal/job"
+
+// Cancel latches the job's intent and then settles it if nothing is in flight.
+// Prior spec §8.4 makes cancel an interrupt before the boundary and a gate after it.
+func (q *Queue) Cancel(j *job.Job) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		return err
+	}
+	return q.finishCancel(j, j.Snapshot())
+}
+
+// finishCancel takes the snapshot its caller already read rather than reading
+// again: two reads would reintroduce the tear job.Snapshot closes, at the one
+// site where the intent has just changed underneath.
+//
+// The gate is IsProduction && running, NOT IsProduction && !workDone. §3.7
+// lists three ways the latter fails, all because Finalizing never sets next so
+// !workDone is permanently true there: a Finalizing job could never be
+// cancelled; a post-boundary job restored from a restart gated forever; and a
+// Finalizing job waiting for a slot gated forever with no work in flight.
+func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
+	if s.State.State == job.StateUnset {
+		// A never-run job cannot be settled — Outcome lives on the Attempt and
+		// there is none, so Finish returns ErrNoOpenAttempt. Cancelling a
+		// queued job removes it from the queue, which is what a user means.
+		// discard is Half B2's, with the store; naming it here keeps the case
+		// from being silently unhandled.
+		return nil
+	}
+	if s.State.Outcome.IsSettled() {
+		return nil // already closed, by cancel or otherwise
+	}
+	if q.running(j.ID(), s) {
+		// A worker owns this job's resources and is using them. Neither arm
+		// may seize a lease or slot out from under it.
+		if job.IsProduction(s.State.State) {
+			return nil // gate: let it reach the end; D-I11 lets it complete OK
+		}
+		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
+		return nil
+	}
+	l, err := j.Finish(job.OutcomeCancelled, q.now())
+	// Freed BEFORE the reclaim, and unconditionally. reclaim can fail its
+	// identity audit, and the earlier order returned through that failure with
+	// the slot still held — turning one audit error into a permanent pool-B
+	// leak. Nothing here depends on the reclaim succeeding.
+	q.releaseFor(j, job.StateUnset)
+	if rerr := q.reclaim(l); rerr != nil {
+		return rerr
+	}
+	return err
+}
