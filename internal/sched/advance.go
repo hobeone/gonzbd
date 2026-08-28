@@ -47,8 +47,11 @@ func (q *Queue) park(j *job.Job) error {
 //
 // `grep -n 'q\.parkLocked(' advance.go` finds exactly three lines: park's own
 // delegation, and Advance's branch 2 and branch 3 gated arms. Advance is the
-// sole caller that reaches it WITHOUT going through park — the two arms sit
-// inside Advance's own q.mu span, which is the whole reason this split exists.
+// sole PRODUCTION caller that reaches it without going through park — the two
+// arms sit inside Advance's own q.mu span, which is the whole reason this split
+// exists. The qualifier is load-bearing: advance_test.go calls parkLocked
+// directly, so an unqualified "sole caller" is false, and that pattern above
+// searches advance.go only.
 // An earlier version of this comment said "Advance is the sole production
 // caller" and stated two lines, which was wrong the moment park was written to
 // delegate here.
