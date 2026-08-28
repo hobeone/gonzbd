@@ -73,7 +73,7 @@ jobs:
           # .golangci.yml is a version:"2" config, so this needs a v2 binary.
           # It must also be built with Go >= the go.mod version, or it fails to
           # load the config at all (a startup error, not a lint finding).
-          version: v2.13.1
+          version: v2.13.2
 
       # Whole-repository, not diff-scoped, and each catches a class that build,
       # vet, lint and the test suite are structurally blind to: comments and
