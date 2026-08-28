@@ -39,12 +39,27 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 		if err := j.Grant(l); err != nil {
 			// Grant's five refusals: nil, an unidentified lease, no open
 			// attempt, an attempt past the boundary, or a second lease. The
-			// pool never issues the first two; the next two cannot happen
-			// here, because branch 2 has already established an open,
-			// unsettled attempt and needsLease(s) is false for both
-			// Production states. So this is the fifth: the job acquired a
-			// lease between our HoldsLease check and here. Return the one we
-			// minted rather than leaking it.
+			// pool never issues the first two. This is a claim about
+			// grantFor's PRODUCTION call paths, not about grantFor itself:
+			// `grep -n 'q\.grantFor(' advance.go` finds exactly three —
+			// branch 2 (line 133) and branch 3's two calls (lines 152, 155).
+			// At all three, Advance's settled early return has already
+			// established an open, unsettled attempt before grantFor runs,
+			// so "no open attempt" and "past the boundary" cannot fire from
+			// any of them; and at line 152, needsLease(s) is false for both
+			// Production states, so this whole block is never entered there
+			// at all. That leaves the fifth as the only refusal a production
+			// call can hit: the job acquired a lease between our HoldsLease
+			// check and here. Return the one we minted rather than leaking
+			// it.
+			//
+			// grantFor has no such guarantee on its own — it is a package-
+			// private function, and TestGrantFor_ReturnsIssuedLeaseOnGrantFailure
+			// calls it directly on a job that never began an attempt, to
+			// deliberately trigger the third refusal this comment says
+			// cannot happen "here". "Here" means through Advance; it does
+			// not mean grantFor is guarded against being called any other
+			// way.
 			_ = q.reclaim(l)
 			return false
 		}

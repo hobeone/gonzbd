@@ -9,7 +9,8 @@ import (
 
 // errNotOutstanding is returned by leasePool.reclaim for a lease this pool did
 // not issue, or already got back. Both are caller bugs that inflate capacity:
-// a double return frees a slot twice, so two jobs end up holding one.
+// a double return frees the same lease's pool-A capacity twice, so two jobs
+// end up holding what the pool's own accounting believes is a single lease.
 var errNotOutstanding = errors.New("sched: lease is not outstanding")
 
 // leasePool issues pool-A admission tokens and audits their return.
