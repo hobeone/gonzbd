@@ -147,8 +147,12 @@
 // under one RLock so a scheduling decision reads one instant rather than a
 // composite of several. It is what makes the render path's purity structural
 // rather than asserted: a predicate that takes a Snapshot has no *Job to
-// acquire anything from. internal/sched's holds, running, gatedBy,
-// waitReason and finishCancel all take one rather than a *Job.
+// acquire anything from. internal/sched's holds, running, gatedBy and
+// waitReason all take one rather than a *Job. finishCancel takes a Snapshot
+// TOO, alongside the *Job it settles — it is the door that mutates the job on
+// a cancel, not a pure predicate, and it takes both so it acts on the one
+// instant its caller already read rather than re-reading a possibly torn view
+// mid-decision (see finishCancel's own doc comment, internal/sched/cancel.go).
 //
 // # What this package does not do
 //
