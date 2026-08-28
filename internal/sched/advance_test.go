@@ -82,9 +82,27 @@ func TestAdvance_BranchOne_GatedNeverRunJobStaysUnstarted(t *testing.T) {
 	}
 }
 
-// TestAdvance_NeverReopensASettledAttempt covers §3.6's settled early return.
-// Retry is an explicit user action, not something a scheduling tick decides.
-func TestAdvance_NeverReopensASettledAttempt(t *testing.T) {
+// TestAdvance_SettledJobDoesNotOpenANewAttempt asserts j.Attempts() is
+// unchanged after Advance on a settled job. It does NOT discriminate §3.6's
+// settled early return: neutering that early return (`if false &&
+// s.State.Outcome.IsSettled()`) still reports this test `ok`. Traced why —
+// with the early return removed, a settled job (State != StateUnset, so
+// branch 1 can never run regardless) falls into branch 2, where holds()
+// is false (no lease held) and grantFor is called; grantFor issues a lease
+// from the pool, calls j.Grant, which refuses because the attempt has no
+// open door (job.Grant's own settled-attempt guard), and the refused lease
+// is reclaimed within the same call. Attempts is untouched either way,
+// because only branch 1 — gated on s.State.State == StateUnset, which a
+// settled job's State never is — calls BeginAttempt at all. No fixture
+// reachable from this test's vantage (an Advance call on an already-settled
+// job) can make Attempts differ between the two versions, so this assertion
+// is a structural invariant of State != StateUnset, not a pin on the settled
+// early return.
+//
+// The early return's own observable effect — the slot it releases — is what
+// actually distinguishes it, and TestAdvance_SettledJobReleasesItsSlot below
+// pins that: neutering the same condition turns it red.
+func TestAdvance_SettledJobDoesNotOpenANewAttempt(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
 	mustAdvanceToSettled(t, q, j, job.OutcomeFailed)
@@ -202,11 +220,17 @@ func TestAdvance_ParkingAGatedJobReturnsItsLease(t *testing.T) {
 }
 
 // TestAdvance_ParkingAGatedRunnableJobAlsoReturnsItsResources covers branch
-// 3's park arm (§3.6): work at Assessing has FINISHED (Next is set) and the
-// job is gated, so it must park rather than cross. Branch 2's park test above
-// covers the "work still in progress" gated case; this is the "work is
-// finished, about to move" gated case, and the two sit on different sides of
-// the s.State.Next == StateUnset split inside Advance.
+// 3's park arm (§3.6): work at Assessing has FINISHED (SetNext(Repairing) is
+// called before pausing) and the job is gated, so it must park rather than
+// move. TestAdvance_ParkingAGatedJobReturnsItsLease above is NOT the branch-2
+// contrast this comment once claimed: it also calls SetNext (to Fetching)
+// before pausing, so it too has s.State.Next != StateUnset and lands on
+// branch 3 — both tests exercise the same park arm, differing only in which
+// destination state was pending (a demotion out of the correctness loop
+// there, a move within it here). Branch 2's OWN park arm — s.State.Next ==
+// StateUnset, work still unfinished — has no fixture in this file's earlier
+// tests at all; it is pinned separately by
+// TestAdvance_BranchTwo_ParkingAGatedNotYetRunningJobReturnsItsLease below.
 func TestAdvance_ParkingAGatedRunnableJobAlsoReturnsItsResources(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
@@ -301,11 +325,22 @@ func TestAdvance_DemotionReleasesTheSlot(t *testing.T) {
 	}
 }
 
-// TestAdvance_AlreadyRunningJobIsLeftAlone covers branch 2's early return: a
-// job whose current-state resources are all held, and whose work is not yet
-// finished, must not be touched. This is the case
-// TestAdvance_OrderGatedButAlreadyRunningIsNotParked also exercises for
-// ordering; this one only pins the effect in isolation.
+// TestAdvance_AlreadyRunningJobIsLeftAlone asserts an already-running,
+// UNGATED job's slot count and position are unchanged after Advance. It does
+// NOT discriminate branch 2's `if q.holds(j.ID(), s) { return nil }` early
+// return: neutering it (`if false && q.holds(...)`) still reports this test
+// `ok`, because for an ungated running job the fall-through path is
+// gatedBy (not gated) → grantFor(j, s.State.State), and grantFor is
+// idempotent for a job that already holds everything the state requires —
+// slotPool.acquire and the lease check both no-op on what is already held
+// (pool.go). The two versions produce an identical observable result for
+// this fixture, so no assertion reachable from an ungated fixture can pin
+// this early return.
+//
+// The early return only becomes observable under gating, where the
+// alternative path is park rather than an idempotent re-grant:
+// TestAdvance_OrderGatedButAlreadyRunningIsNotParked below is what actually
+// discriminates it.
 func TestAdvance_AlreadyRunningJobIsLeftAlone(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
@@ -400,10 +435,20 @@ func TestRetry_ReopensASettledAttemptWithoutALease(t *testing.T) {
 	}
 }
 
-// TestGrantFor_AcquiresLeaseThenSlot calls grantFor directly rather than only
-// observing it through Advance. It pins the ordering grantFor's own doc
-// comment claims — lease before slot — for the case where both are available.
-func TestGrantFor_AcquiresLeaseThenSlot(t *testing.T) {
+// TestGrantFor_AcquiresBothWhenBothAreAvailable calls grantFor directly
+// rather than only observing it through Advance. It asserts grantFor
+// acquires both the lease and the slot when both pools have capacity — it
+// does NOT pin the lease-before-slot ORDER grantFor's own doc comment
+// claims: at capacity (1, 1) both acquisitions succeed regardless of which
+// runs first, so swapping the two lines inside grantFor still reports this
+// test `ok`. Order is only observable under contention, where the two
+// orderings diverge on which pool gets touched before the call fails.
+// TestGrantFor_NoLeaseCapacityFailsWithoutTouchingTheSlot below is what
+// pins the order: with zero lease capacity, the swapped (slot-first)
+// version would acquire the slot before failing on the lease, so that
+// test's "slot untouched" assertion goes red under the swap while this one
+// does not.
+func TestGrantFor_AcquiresBothWhenBothAreAvailable(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
 	if err := j.BeginAttempt(testClock()); err != nil {

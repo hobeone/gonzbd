@@ -29,8 +29,18 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 	})
 }
 
-// TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b — the only test that
-// would have caught all five of revision 3's leaks at once.
+// TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b. §10's
+// revision-3→4 table (docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md,
+// "five of the twelve were one problem: nobody returned the lease") lists
+// five leak paths: pre-boundary Finish(Failed), Assessing→Finish(Unrecoverable),
+// Cancel→Finish(Cancelled), Cross after an already-surrendered pause, and
+// BeginAttempt orphaning the *Lease passed to it. Four of those five are rows
+// in the walk below — "settle after a pre-boundary failure", "settle
+// Unrecoverable from Assessing", "cancel", and "cross a job paused before
+// crossing". The fifth has no row here and cannot: D-I12 removed the *Lease
+// parameter from BeginAttempt, so that leak's cause no longer exists to
+// exercise. This walk is checked against four of revision 3's five leaks,
+// not all five at once.
 //
 // It walks §3.9's exit table and asserts a DIFFERENT invariant per pool. That
 // asymmetry is the point, and collapsing it was a defect in this plan twice,
@@ -48,8 +58,17 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 //
 // The lesson generalises past this test: a resource with a handback has a
 // conservation law, and a resource that is merely occupied has a state-matching
-// rule. They are not the same claim and one walk must not assert both. This is checkable only because leasePool audits identity
-// (Task 4): job.Cross and job.Finish return a *Lease a caller can silently
+// rule. They are not the same claim and one walk must not assert both.
+//
+// The "double-returned" half of the per-row assertion below ("a lease was
+// lost or double-returned") is checkable only because leasePool.reclaim
+// audits identity — `if !p.issued[l.ID()]` at pool.go:66 — rather than
+// merely deleting a map key: a reclaim of an ID the pool does not currently
+// have outstanding surfaces as errNotOutstanding instead of silently
+// no-oping, so a double reclaim of the same lease is distinguishable from a
+// single correct one. Without that audit a double `delete` on the same key
+// is itself idempotent and this walk's before/after count could not tell the
+// two apart. job.Cross and job.Finish return a *Lease a caller can silently
 // drop, and no compiler check or linter sees that.
 func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 	exits := []struct {
@@ -545,6 +564,9 @@ func TestScenario_5_7_PauseDuringFinalizing(t *testing.T) {
 	}
 	if got := j.Snapshot().State.Outcome; got != job.OutcomeOK {
 		t.Errorf("Outcome = %v, want OK — pausing mid-Finalizing must not turn into a failure", got)
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("still holds a compute slot after settling; the settled branch must release it")
 	}
 	if got, want := renderStatus(q, j), constants.StatusCompleted; got != want {
 		t.Errorf("status = %v, want %v", got, want)
