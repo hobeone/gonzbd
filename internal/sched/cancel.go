@@ -1,8 +1,6 @@
 package sched
 
 import (
-	"errors"
-
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -49,32 +47,15 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 	if q.running(j.ID(), s) {
 		// A worker owns this job's resources and is using them. Neither arm
 		// may seize a lease or slot out from under it.
-		if job.IsProduction(s.State.State) {
+		if !cancelInterrupts(s.State.State) {
 			return nil // gate: let it reach the end; D-I11 lets it complete OK
 		}
 		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
 		return nil
 	}
-	l, err := j.Finish(job.OutcomeCancelled, q.now())
-	if err != nil {
-		// Finish refused: the attempt was NOT cancelled, so the job still
-		// occupies its current position and needs whatever that position
-		// requires. Releasing here would strand it resourceless while still
-		// running — the same shape of bug B1's Retry fix guards against.
-		return err
-	}
-	// Freed BEFORE the reclaim. reclaim can fail its identity audit, and an
-	// earlier order returned through that failure with the slot still held —
-	// turning one audit error into a permanent pool-B leak. This ordering is
-	// unconditional only with respect to reclaim's outcome, not Finish's: the
-	// guard above is what keeps it from running on a failed Finish.
-	q.releaseFor(j, job.StateUnset)
-	if rerr := q.reclaim(l); rerr != nil {
-		// Both errors are real: Finish already succeeded (the job IS settled,
-		// so the caller must not retry Finish), and reclaim's identity audit
-		// caught something separately wrong with the lease. Neither may be
-		// dropped in favor of the other.
-		return errors.Join(err, rerr)
-	}
-	return err
+	// The outcome passed here is what settleLocked will produce anyway, since
+	// the latch is set and this arm is only reached pre-boundary. Passing it
+	// explicitly keeps settleLocked's signature honest — the outcome is the
+	// caller's to state — rather than having one caller rely on the override.
+	return q.settleLocked(j, job.OutcomeCancelled, s)
 }
