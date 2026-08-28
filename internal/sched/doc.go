@@ -36,7 +36,14 @@
 //
 //     Note this also bounds gatedBy's stated reason for ignoring IntentCancel
 //     ("advance handles it first, so no cancel value reaches the render
-//     path"): true for every job that has run, false for one that has not.
+//     path"): true for every job that has run, false for one that has not —
+//     except between a Park and the next tick. A job cancelled while running
+//     and then Parked rather than Settled (teardown, shutdown) sits open at
+//     Fetching with no lease and IntentCancel: Render reports it not settled
+//     and not running, gatedBy ignores IntentCancel as documented, and it
+//     falls through to NoLease → StatusQueued until the next Advance routes
+//     it through finishCancel. Transient and self-healing, but real for the
+//     tick it lasts.
 //
 //   - A Workers implementation whose Abort neither blocks nor takes a lock a
 //     caller could hold across a call into Queue. See the Workers interface.

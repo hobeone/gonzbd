@@ -90,10 +90,20 @@ var errCancelReserved = errors.New("sched: Settle: OutcomeCancelled is reserved 
 //
 // It refuses OutcomeCancelled. Cancel is final for a Job (D-I14) and it is
 // final because Cancel latches SetIntent(IntentCancel) before settling. A
-// caller reaching this door with Cancelled would skip the latch, leaving a job
-// that renders as Deleted (§4.4) while still carrying IntentRun — so q.Retry
-// would see an ordinary settled attempt and reopen it. The refusal returns
-// before q.mu is taken, because it is a pure check on an argument.
+// caller reaching this door with Cancelled would skip the latch, leaving a
+// job that renders as Deleted (§4.4) while still carrying IntentRun — unlike
+// a job Cancel itself settled, such a job has no safety net: Advance's
+// s.Intent == IntentCancel route to finishCancel (advance.go) is what
+// re-settles a properly-latched job Cancelled on every tick after a Retry
+// reopens it, and that route never fires for IntentRun. (It is NOT that
+// Retry itself refuses a latched job — it does not: advance.go's
+// settled-attempt check tests only Outcome.IsSettled(), so q.Retry(j) opens
+// an attempt for a properly-cancelled job exactly as readily as for this
+// one. D-I14, spec:1424, names that "deliberate" and "not a trap", because
+// finishCancel is what cancels the reopened attempt again next tick.) Skip
+// the latch and that safety net is gone: q.Retry would reopen an ordinary
+// attempt that nothing then re-cancels. The refusal returns before q.mu is
+// taken, because it is a pure check on an argument.
 func (q *Queue) Settle(j *job.Job, o job.Outcome) error {
 	if o == job.OutcomeCancelled {
 		return errCancelReserved

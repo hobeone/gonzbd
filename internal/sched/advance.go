@@ -54,7 +54,7 @@ func (q *Queue) Park(j *job.Job) error {
 
 // parkLocked is Park's body, for a caller that already holds q.mu.
 //
-// `grep -n 'q\.parkLocked(' advance.go` finds exactly three lines: Park's own
+// `grep -n 'q\.parkLocked(' internal/sched/advance.go` finds exactly three lines: Park's own
 // delegation, and Advance's branch 2 and branch 3 gated arms. Advance is the
 // sole PRODUCTION caller that reaches it without going through park — the two
 // arms sit inside Advance's own q.mu span, which is the whole reason this split
@@ -92,7 +92,7 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 			// attempt, an attempt past the boundary, or a second lease. The
 			// pool never issues the first two. This is a claim about
 			// grantFor's PRODUCTION call paths, not about grantFor itself:
-			// `grep -n 'q\.grantFor(' advance.go | grep -v '// '` (the
+			// `grep -n 'q\.grantFor(' internal/sched/advance.go | grep -v '// '` (the
 			// second filter drops this comment's own mention of the name)
 			// finds exactly three — branch 2 (line 200) and branch 3's two
 			// calls (lines 219, 222). At all three, Advance's settled early
