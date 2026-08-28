@@ -75,14 +75,16 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 			// attempt, an attempt past the boundary, or a second lease. The
 			// pool never issues the first two. This is a claim about
 			// grantFor's PRODUCTION call paths, not about grantFor itself:
-			// `grep -n 'q\.grantFor(' advance.go` finds exactly three —
-			// branch 2 (line 133) and branch 3's two calls (lines 152, 155).
-			// At all three, Advance's settled early return has already
-			// established an open, unsettled attempt before grantFor runs,
-			// so "no open attempt" and "past the boundary" cannot fire from
-			// any of them; and at line 152, needsLease(s) is false for both
-			// Production states, so this whole block is never entered there
-			// at all. That leaves the fifth as the only refusal a production
+			// `grep -n 'q\.grantFor(' advance.go | grep -v '// '` (the
+			// second filter drops this comment's own mention of the name)
+			// finds exactly three — branch 2 (line 200) and branch 3's two
+			// calls (lines 219, 222). At all three, Advance's settled early
+			// return has already established an open, unsettled attempt
+			// before grantFor runs, so "no open attempt" and "past the
+			// boundary" cannot fire from any of them; and at line 219 (the
+			// crossing's ignored-result call), needsLease(s) is false for
+			// both Production states, so this whole block is never entered
+			// there at all. That leaves the fifth as the only refusal a production
 			// call can hit: the job acquired a lease between our HoldsLease
 			// check and here. Return the one we minted rather than leaking
 			// it.

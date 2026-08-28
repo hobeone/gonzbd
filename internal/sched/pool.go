@@ -25,14 +25,31 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 //
 // The audit exists because nothing else can enforce it. job.Cross and
 // job.Finish return a *Lease and Go has no must-use; a caller writing
-// `_, err := j.Cross(to)` silently drops a slot, and neither go vet nor
-// golangci-lint sees it. The pool knowing what is outstanding is what lets a
-// scenario test assert none were lost (spec §6, test 4b).
+// `_, err := j.Cross(to)` silently drops a lease, and neither go vet nor
+// golangci-lint sees it. Slots are not returned from either door — they are
+// keyed by string job ID in slotPool, not carried on the job the way a lease
+// is — so nothing here is ever silently dropped on the pool-B side; this
+// audit is pool A's alone. The pool knowing what is outstanding is what lets
+// a scenario test assert none were lost (spec §6, test 4b).
+//
+// The audit's reach is bounded to what one leasePool itself issued: `next`
+// starts at zero independently in every leasePool, so a second Queue's pool
+// would mint LeaseID(1) too, and this pool's issued map would accept that
+// foreign lease as its own if handed one — id collision, not identity
+// confusion, and only across two *different* Queues in the same process.
+// Nothing in this repository constructs two — B1 has no caller of
+// internal/sched at all, and B2's plan does not add a second Queue — so this
+// is a bound to state rather than a guard against it (Standing Design Rule
+// 1). Within a single pool, which is every production configuration today,
+// identity is exact: a double return or a lease this pool never issued is
+// caught, which is what reclaim's errNotOutstanding and the tests below rely
+// on.
 //
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
-// order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and
-// Cancel is its first locker (internal/sched/cancel.go), so this is now a
+// order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and is
+// taken by four production doors — Cancel (cancel.go), and park, Retry and
+// Advance (advance.go; see queue.go's own comment on mu) — so this is now a
 // description of a lock real code takes, not a forward-looking constraint.
 type leasePool struct {
 	capacity int

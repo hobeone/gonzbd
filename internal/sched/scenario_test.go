@@ -65,7 +65,12 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 //     position requires one and it is neither settled nor gated. Asserting
 //     conservation here was the second error — "cross into Production" ends at
 //     Extracting legitimately holding a slot, and demanding zero would report
-//     correct behaviour as a leak in three of these six rows.
+//     correct behaviour as a leak in two of these six rows: "cross into
+//     Production" and "cross a job paused before crossing" (also ending at
+//     Extracting). Checked by instrumenting the walk directly rather than
+//     reasoning about each row: only those two log holds=true at their
+//     per-row assertion; the other four settle, cancel or park, and all
+//     four release pool B on the way.
 //
 // The lesson generalises past this test: a resource with a handback has a
 // conservation law, and a resource that is merely occupied has a state-matching
@@ -195,11 +200,14 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 	// it is neither settled nor gated. Those are the three conditions
 	// releaseFor's call sites exist to maintain, stated once as a predicate so
 	// the walk asserts the rule rather than memorised numbers. `grep -n
-	// 'releaseFor(' internal/sched/*.go | grep -v _test.go` finds six
-	// production call sites, not the four it had before this task's two leak
-	// fixes: park, Retry (Critical 2's fix), Advance's settled branch,
-	// Advance's demotion, and finishCancel's two arms — the running-then-
-	// settled path and the settled-on-entry arm Critical 1's fix added.
+	// 'q\.releaseFor(' internal/sched/*.go | grep -v _test.go` (the `q\.`
+	// prefix excludes releaseFor's own func declaration in queue.go, which a
+	// bare `releaseFor(` pattern also matches) finds seven production call
+	// sites: parkLocked, Retry, Advance's settled branch, Advance's demotion,
+	// Advance's release on a failed Transition (the rollback for a slot
+	// grantFor already acquired for a destination the job never reached), and
+	// finishCancel's two arms — the running-then-settled path and the
+	// settled-on-entry arm.
 	//
 	// It deliberately asks about the current position, not next: a job whose
 	// work has finished still occupies the position it finished in and still
@@ -242,8 +250,10 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 			// and is not conserved across these rows — it is held for exactly
 			// as long as the position needs one, so "cross into Production"
 			// legitimately ENDS holding one, at Extracting. Asserting pool-B
-			// occupancy returns to zero fails three of these six rows and
-			// calls correct behaviour a leak.
+			// occupancy returns to zero fails two of these six rows — "cross
+			// into Production" and "cross a job paused before crossing",
+			// both legitimately ending at Extracting — and calls correct
+			// behaviour a leak.
 			//
 			// The oracle is computed, never a per-row constant: a hand-written
 			// expected count passes for the wrong reason the moment a row's
@@ -898,6 +908,13 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 	}
 }
 
+// specScenariosPath is docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md,
+// relative to this package's directory — `go test` runs with the package
+// directory as its working directory, so this is stable across invocation
+// styles (`go test ./...` from the repo root, `go test .` from here, an IDE
+// runner) without needing runtime.Caller to locate it.
+const specScenariosPath = "../../docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md"
+
 // TestEveryScenarioHasATest fails when §5 grows a scenario nobody pinned.
 // §5 is the regression suite for four revisions of defects; a scenario without
 // a test is a defect class with nothing watching it.
@@ -927,13 +944,6 @@ func TestEveryScenarioHasATest(t *testing.T) {
 		t.Errorf("§5 has %d scenarios, this file has %d tests: %v", scenariosInSpec, len(names), names)
 	}
 }
-
-// specScenariosPath is docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md,
-// relative to this package's directory — `go test` runs with the package
-// directory as its working directory, so this is stable across invocation
-// styles (`go test ./...` from the repo root, `go test .` from here, an IDE
-// runner) without needing runtime.Caller to locate it.
-const specScenariosPath = "../../docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md"
 
 // specHeadingRE matches a §5 scenario heading, e.g. "### 5.13 Cancelling a
 // running `Finalizing` job". Anchored on "### 5." rather than a bare "###" so
