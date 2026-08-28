@@ -1,10 +1,42 @@
 package sched
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
+
+// TestRender_TakesTheQueueLock is the final review's race-detector pin for
+// Render, in TestPark_TakesTheQueueLock's own shape (advance_test.go). It
+// covers the read side that Settle's and Park's own pins do not: Render
+// reads q.slots.holds(id) inside q.running while a concurrent Park on a
+// DIFFERENT job deletes from that same map via releaseFor — a
+// read/write overlap on q.slots.held, rather than the write/write overlap
+// the other two doors' pins exercise. Run with `go test -race`; without
+// Render taking q.mu this reports a DATA RACE, so a plain (non-race) run
+// does not discriminate the fix at all.
+func TestRender_TakesTheQueueLock(t *testing.T) {
+	q := New(2, 2, testClock, &stubWorkers{})
+	a := job.New("a", "n", job.Policy{})
+	b := job.New("b", "n", job.Policy{})
+	mustAdvanceTo(t, q, a, job.Assessing)
+	mustAdvanceTo(t, q, b, job.Assessing)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		q.Render(a)
+	}()
+	go func() {
+		defer wg.Done()
+		if err := q.Park(b); err != nil {
+			t.Errorf("Park(b): %v", err)
+		}
+	}()
+	wg.Wait()
+}
 
 // TestRender_FillsEveryFieldFromOneSnapshot pins that Render is the seam
 // job.RenderView's own doc comment describes: "Nothing in this package can

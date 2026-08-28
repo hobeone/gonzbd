@@ -2,6 +2,7 @@ package sched
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -59,6 +60,39 @@ func TestSettle_RefusesCancelledOutcome(t *testing.T) {
 	if got := q.leases.outstanding(); got != 1 {
 		t.Errorf("leases outstanding = %d, want 1 — a refused Settle releases nothing", got)
 	}
+}
+
+// TestSettle_TakesTheQueueLock is the final review's race-detector pin for
+// Settle, in TestPark_TakesTheQueueLock's own shape (advance_test.go):
+// settleLocked mutates both pools (releaseFor touches q.slots, reclaim
+// touches q.leases), and an earlier draft that called Settle on the SAME job
+// from both goroutines, or paired it with a branch of Advance that never
+// touches either pool, stayed green under -race even with the lock removed
+// — a write/write overlap needs two DIFFERENT jobs settling concurrently.
+// Run with `go test -race`; without Settle taking q.mu this reports a DATA
+// RACE, so a plain (non-race) run does not discriminate the fix at all.
+func TestSettle_TakesTheQueueLock(t *testing.T) {
+	q := New(2, 2, testClock, &stubWorkers{})
+	a := job.New("a", "n", job.Policy{})
+	b := job.New("b", "n", job.Policy{})
+	mustAdvanceTo(t, q, a, job.Assessing)
+	mustAdvanceTo(t, q, b, job.Assessing)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := q.Settle(a, job.OutcomeFailed); err != nil {
+			t.Errorf("Settle(a): %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := q.Settle(b, job.OutcomeFailed); err != nil {
+			t.Errorf("Settle(b): %v", err)
+		}
+	}()
+	wg.Wait()
 }
 
 // TestSettle_InterruptedCancelOverridesTheOutcome pins the case the door was

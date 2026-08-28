@@ -2,11 +2,36 @@ package sched
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
+
+// TestPauseResumePaused_TakesTheQueueLock is the final review's
+// race-detector pin for Pause, Resume and Paused, in
+// TestPark_TakesTheQueueLock's own shape (advance_test.go): one goroutine
+// flips q.paused (a write) while another reads it back through Paused,
+// unsynchronized without each door's own q.mu. Run with `go test -race`;
+// without the lock on all three this reports a DATA RACE, so a plain
+// (non-race) run does not discriminate the fix at all.
+func TestPauseResumePaused_TakesTheQueueLock(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		q.Pause()
+		q.Resume()
+	}()
+	go func() {
+		defer wg.Done()
+		q.Paused()
+	}()
+	wg.Wait()
+}
 
 type stubWorkers struct{ aborted []string }
 
