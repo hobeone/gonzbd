@@ -43,10 +43,15 @@ func (q *Queue) park(j *job.Job) error {
 	return q.parkLocked(j)
 }
 
-// parkLocked is park's body, for a caller that already holds q.mu. Advance is
-// the sole production caller — `grep -n 'q\.parkLocked(' advance.go` finds
-// exactly two lines, branch 2's and branch 3's gated arms, both inside
-// Advance's own q.mu span.
+// parkLocked is park's body, for a caller that already holds q.mu.
+//
+// `grep -n 'q\.parkLocked(' advance.go` finds exactly three lines: park's own
+// delegation, and Advance's branch 2 and branch 3 gated arms. Advance is the
+// sole caller that reaches it WITHOUT going through park — the two arms sit
+// inside Advance's own q.mu span, which is the whole reason this split exists.
+// An earlier version of this comment said "Advance is the sole production
+// caller" and stated two lines, which was wrong the moment park was written to
+// delegate here.
 func (q *Queue) parkLocked(j *job.Job) error {
 	q.releaseFor(j, job.StateUnset)
 	return q.reclaim(j.Surrender())

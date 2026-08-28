@@ -867,8 +867,8 @@ func (w *FileWriter) Truncate(n int64) error {
 // ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
 // life of the process and only a restart's ClearAllEmitted recovers it.
 //
-// There are two call sites — `grep -n 'w\.Close()' internal/assembler/*.go`
-// outside tests returns the cancel arm and drainAndClose — and the set is
+// There are two call sites — `grep -n 'w\.Close()' internal/assembler/*.go |
+// grep -v _test.go` returns the cancel arm and drainAndClose — and the set is
 // empty at both whenever every producer of w.faulted has been drained before
 // the worker returns to its select loop, which is the ordinary case.
 //
