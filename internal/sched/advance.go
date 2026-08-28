@@ -14,38 +14,47 @@ import (
 // is one.
 var errNotSettled = errors.New("sched: Retry: attempt is not settled")
 
-// park releases what a gated job must not keep holding. It is the entry
-// point for a caller that does NOT already hold q.mu — doc.go and spec
-// §5.1/§5.2 designate it as what the dispatcher calls directly on a worker's
-// yield, outside of Advance. It takes the lock and delegates to parkLocked,
-// which does the actual work.
+// Park is the door a dispatcher calls when its worker has stopped without
+// finishing the state's work — the `yielded` report spec §3.6 names, whose
+// handoff is "a worker that stops on a gate without ending its work reports
+// yielded, and the dispatcher calls q.park(j)".
 //
-// Split from a single lock-free park because parkLocked mutates both pools
-// (releaseFor touches q.slots, reclaim touches q.leases via j.Surrender) with
-// no lock of its own: Advance called it while already holding q.mu, but nothing
-// stopped a caller reaching it directly — as the dispatcher does — from racing
-// Advance on the same maps. internal/job/doc.go's Snapshot section claims every
-// call this package makes into a *job.Job sits inside a Queue.mu span; an
-// unlocked park calling j.Surrender() from outside Advance's lock broke that
-// claim for exactly this door.
+// PRECONDITION, which this package cannot check: the caller's worker for j has
+// returned and will not touch the job's lease, slot, manifest or barrier
+// again. running() stays TRUE for a worker that has yielded and not yet been
+// parked — that is precisely why this door exists — so the fact is the
+// caller's to guarantee, exactly as Workers.Abort's non-blocking requirement
+// is.
 //
-// It returns an error where spec §3.6 shows it returning nothing. That is a
-// deliberate divergence and it SUPERSEDES a specific spec decision: §10's
-// revision history records "park returned an error that is always nil →
-// returns nothing", so the signature was narrowed once, on the grounds that
-// the error could not carry information. That reasoning no longer holds. Task 4
-// gave reclaim an identity audit, so it now fails on a lease this pool did not
-// issue or already took back — a real condition, and one whose only other
-// outlet would be silence.
-func (q *Queue) park(j *job.Job) error {
+// It is UNCONDITIONAL and takes no view on why the worker stopped. A gate is
+// the common reason but not the only one: teardown, shutdown, and a connection
+// that died all end a worker without ending the work, and all want this door.
+// Gating it on gatedBy would refuse those while protecting nothing, since
+// gatedBy reads Intent and q.paused and consults nothing about worker
+// liveness.
+//
+// Advance cannot do this job. Its branch 2 tests q.holds BEFORE q.gatedBy and
+// returns early for a job that still holds, because the Queue cannot tell
+// "holding and working" from "holding and yielded" and stripping a live
+// worker is the worse failure. So a gated job holding a lease mid-state is
+// never parked by any number of Advance ticks; only this door releases it.
+//
+// It takes q.mu and delegates to parkLocked, which mutates both pools with no
+// lock of its own. It returns an error because reclaim carries an identity
+// audit that fails on a lease this pool did not issue or already took back —
+// a real condition whose only other outlet would be silence. (§10's revision
+// history records park's signature being narrowed to return nothing, on the
+// grounds that the error was always nil; the audit added in Half B1 makes that
+// no longer true.)
+func (q *Queue) Park(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.parkLocked(j)
 }
 
-// parkLocked is park's body, for a caller that already holds q.mu.
+// parkLocked is Park's body, for a caller that already holds q.mu.
 //
-// `grep -n 'q\.parkLocked(' advance.go` finds exactly three lines: park's own
+// `grep -n 'q\.parkLocked(' advance.go` finds exactly three lines: Park's own
 // delegation, and Advance's branch 2 and branch 3 gated arms. Advance is the
 // sole PRODUCTION caller that reaches it without going through park — the two
 // arms sit inside Advance's own q.mu span, which is the whole reason this split

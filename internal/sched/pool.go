@@ -48,9 +48,10 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
 // order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and is
-// taken by four production doors — Cancel (cancel.go), and park, Retry and
-// Advance (advance.go; see queue.go's own comment on mu) — so this is now a
-// description of a lock real code takes, not a forward-looking constraint.
+// taken by five production doors — Cancel (cancel.go), Park, Retry and
+// Advance (advance.go), and Settle (settle.go; see queue.go's own comment on
+// mu) — so this is now a description of a lock real code takes, not a
+// forward-looking constraint.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID

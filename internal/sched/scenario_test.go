@@ -271,8 +271,8 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 
 // TestScenario_5_1_PauseMidDownloadThenResume pins §5.1: a job paused
 // mid-download must surrender its lease at the dispatcher's yield handling
-// (q.park, called directly here in place of Half B2's dispatcher — see
-// advance.go's park doc comment) and must never touch Assessing on the way.
+// (q.Park, called directly here in place of Half B2's dispatcher — see
+// advance.go's Park doc comment) and must never touch Assessing on the way.
 // Revision 2 jumped a partially-downloaded job straight into verification;
 // asserting State stays Fetching throughout is what would catch that again.
 func TestScenario_5_1_PauseMidDownloadThenResume(t *testing.T) {
@@ -289,11 +289,11 @@ func TestScenario_5_1_PauseMidDownloadThenResume(t *testing.T) {
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		t.Fatalf("SetIntent: %v", err)
 	}
-	// The downloader yields between articles; the dispatcher calls q.park —
+	// The downloader yields between articles; the dispatcher calls q.Park —
 	// Advance's own branch 2 would decline to touch a job it still holds
 	// (holds-before-gated), so this is not interchangeable with q.Advance(j).
-	if err := q.park(j); err != nil {
-		t.Fatalf("park: %v", err)
+	if err := q.Park(j); err != nil {
+		t.Fatalf("Park: %v", err)
 	}
 	if j.HoldsLease() {
 		t.Error("job still holds its lease after the yield; §3.6 calls that a deadlock")
@@ -745,8 +745,8 @@ func TestScenario_5_10_PausedThenFailedThenRetried(t *testing.T) {
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		t.Fatalf("SetIntent: %v", err)
 	}
-	if err := q.park(j); err != nil { // the dispatcher's yield handling, as in §5.1
-		t.Fatalf("park: %v", err)
+	if err := q.Park(j); err != nil { // the dispatcher's yield handling, as in §5.1
+		t.Fatalf("Park: %v", err)
 	}
 	if got, want := renderStatus(q, j), constants.StatusPaused; got != want {
 		t.Errorf("status = %v, want %v", got, want)

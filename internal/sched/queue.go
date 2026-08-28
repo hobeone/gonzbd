@@ -38,7 +38,7 @@ type Workers interface {
 // advance.go so that reclaim and releaseFor — which finishCancel needs —
 // existed for Cancel to call), but it is no longer the only one: `grep -n
 // 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds five production
-// lockers — Cancel (cancel.go), park, Retry and Advance (advance.go), and
+// lockers — Cancel (cancel.go), Park, Retry and Advance (advance.go), and
 // Settle (settle.go) — plus this sentence's own mention of the pattern,
 // written as q.mu.Loc[k]()
 // (the same self-matching workaround internal/job/job.go's surrenderLocked

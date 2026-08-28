@@ -574,28 +574,28 @@ func TestGrantFor_ReturnsIssuedLeaseOnGrantFailure(t *testing.T) {
 	}
 }
 
-// TestPark_ReleasesBothPools calls park directly rather than only observing
+// TestPark_ReleasesBothPools calls Park directly rather than only observing
 // it through Advance's gated branches, pinning its two-line contract:
 // releaseFor then reclaim.
 func TestPark_ReleasesBothPools(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
 	mustAdvanceTo(t, q, j, job.Assessing)
-	if err := q.park(j); err != nil {
-		t.Fatalf("park: %v", err)
+	if err := q.Park(j); err != nil {
+		t.Fatalf("Park: %v", err)
 	}
 	if j.HoldsLease() {
-		t.Error("park left the lease held")
+		t.Error("Park left the lease held")
 	}
 	if q.slots.holds(j.ID()) {
-		t.Error("park left the slot held")
+		t.Error("Park left the slot held")
 	}
 }
 
-// TestPark_PropagatesAForeignLeaseReclaimError pins park's documented
-// divergence from the brief's original signature (see park's doc comment):
+// TestPark_PropagatesAForeignLeaseReclaimError pins Park's documented
+// divergence from the brief's original signature (see Park's doc comment):
 // a lease this pool never issued must surface as an error, not be silently
-// swallowed the way a `return nil`-shaped park would.
+// swallowed the way a `return nil`-shaped Park would.
 func TestPark_PropagatesAForeignLeaseReclaimError(t *testing.T) {
 	q := New(1, 0, testClock, &stubWorkers{})
 	foreign := New(1, 0, testClock, &stubWorkers{})
@@ -616,28 +616,28 @@ func TestPark_PropagatesAForeignLeaseReclaimError(t *testing.T) {
 	if err := j.Grant(l); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if err := q.park(j); !errors.Is(err, errNotOutstanding) {
-		t.Errorf("park = %v, want errNotOutstanding — a foreign lease's reclaim failure must surface", err)
+	if err := q.Park(j); !errors.Is(err, errNotOutstanding) {
+		t.Errorf("Park = %v, want errNotOutstanding — a foreign lease's reclaim failure must surface", err)
 	}
 }
 
-// TestPark_TakesTheQueueLock is B4's race-detector pin. park mutates both
+// TestPark_TakesTheQueueLock is B4's race-detector pin. Park mutates both
 // pools (releaseFor touches q.slots, reclaim touches q.leases via
 // j.Surrender) and doc.go/spec §5.1-§5.2 designate it as what a real
 // dispatcher calls directly on a worker's yield — outside of any lock Advance
-// holds. Before the fix, park took no lock of its own and relied entirely on
+// holds. Before the fix, Park took no lock of its own and relied entirely on
 // its caller already holding q.mu, which a direct call does not do:
-// concurrent calls to park on the same Queue raced on q.slots.held and
+// concurrent calls to Park on the same Queue raced on q.slots.held and
 // q.leases.issued.
 //
-// Both goroutines call park (not Advance) on two DIFFERENT jobs that each
+// Both goroutines call Park (not Advance) on two DIFFERENT jobs that each
 // hold a slot and a lease, so both concurrently write into the same
 // q.slots.held and q.leases.issued maps — that write/write overlap is what
-// the race detector actually needs to catch anything; an unlocked park
+// the race detector actually needs to catch anything; an unlocked Park
 // racing an Advance call whose first branch never touches either pool (a
 // never-run job's BeginAttempt path) proved nothing, and an earlier draft of
 // this test used exactly that shape and stayed green for 5 straight -race
-// runs even with the lock removed. Run with `go test -race`; without park
+// runs even with the lock removed. Run with `go test -race`; without Park
 // taking q.mu, this reports a DATA RACE rather than merely passing, so a
 // plain (non-race) run of this test does not discriminate the fix at all.
 func TestPark_TakesTheQueueLock(t *testing.T) {
@@ -651,21 +651,21 @@ func TestPark_TakesTheQueueLock(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := q.park(a); err != nil {
-			t.Errorf("park(a): %v", err)
+		if err := q.Park(a); err != nil {
+			t.Errorf("Park(a): %v", err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := q.park(b); err != nil {
-			t.Errorf("park(b): %v", err)
+		if err := q.Park(b); err != nil {
+			t.Errorf("Park(b): %v", err)
 		}
 	}()
 	wg.Wait()
 }
 
 // TestParkLocked_AssumesTheCallerAlreadyHoldsTheLock pins parkLocked's own
-// contract directly: unlike park, it must NOT take q.mu itself — Advance
+// contract directly: unlike Park, it must NOT take q.mu itself — Advance
 // calls it from inside Advance's own q.mu span (branch 2 and branch 3's
 // gated arms), and a parkLocked that tried to lock again would deadlock
 // there. Calling it here with q.mu already held, from the test goroutine
@@ -692,13 +692,13 @@ func TestParkLocked_AssumesTheCallerAlreadyHoldsTheLock(t *testing.T) {
 }
 
 // TestAdvance_BranchTwo_ParkingAGatedNotYetRunningJobReturnsItsLease pins
-// branch 2's OWN park call (the one guarding "current state's work is
+// branch 2's OWN parkLocked call (the one guarding "current state's work is
 // unfinished"), which is a different call site from branch 3's and is not
 // exercised by TestAdvance_ParkingAGatedJobReturnsItsLease above — that test
 // calls SetNext before pausing, which sets s.State.Next and routes it into
-// branch 3 instead. A red check on branch 2's `return q.park(j)` replaced
-// with `return nil` left every other test in this file green, confirming the
-// gap: this test is what closes it.
+// branch 3 instead. A red check on branch 2's `return q.parkLocked(j)`
+// replaced with `return nil` left every other test in this file green,
+// confirming the gap: this test is what closes it.
 //
 // The fixture holds the lease but not the slot — running() (via holds())
 // must be false for gatedBy to be consulted at all (§3.6's holds-before-gated
@@ -732,4 +732,88 @@ func TestAdvance_BranchTwo_ParkingAGatedNotYetRunningJobReturnsItsLease(t *testi
 	if q.leases.outstanding() != 0 {
 		t.Errorf("leases outstanding = %d after branch 2 parks a gated job, want 0", q.leases.outstanding())
 	}
+}
+
+// TestPark_IsTotalOverEveryShape pins that the exported door is
+// unconditional and safe on every job a caller can hand it. An earlier draft
+// of the RFC proposed refusing a non-gated job with an errNotGated sentinel,
+// by analogy to Retry's errNotSettled. That analogy is wrong: gatedBy reads
+// Intent and q.paused and consults NOTHING about worker liveness, so a gated
+// job whose worker is still mid-article passes such a check and is stripped
+// anyway, while legitimate non-gate returns — teardown, shutdown, a dead
+// connection — are refused. It would protect against nothing and forbid
+// something real.
+//
+// Totality is structural, not accidental: slotPool.release is a map delete,
+// Surrender returns nil when nothing is held, and reclaim no-ops on nil (the
+// last introduced by §3.9 for the paused-then-crossing case).
+func TestPark_IsTotalOverEveryShape(t *testing.T) {
+	t.Run("never run", func(t *testing.T) {
+		q := New(2, 2, testClock, &stubWorkers{})
+		j := job.New("a", "n", job.Policy{})
+		if err := q.Park(j); err != nil {
+			t.Fatalf("Park on a never-run job: %v", err)
+		}
+	})
+
+	t.Run("already parked", func(t *testing.T) {
+		q := New(2, 2, testClock, &stubWorkers{})
+		j := job.New("b", "n", job.Policy{})
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance (begin): %v", err)
+		}
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance (grant): %v", err)
+		}
+		if err := q.Park(j); err != nil {
+			t.Fatalf("first Park: %v", err)
+		}
+		if err := q.Park(j); err != nil {
+			t.Fatalf("second Park: %v — the door must be idempotent", err)
+		}
+		if got := q.leases.outstanding(); got != 0 {
+			t.Errorf("leases outstanding = %d, want 0", got)
+		}
+	})
+
+	t.Run("settled", func(t *testing.T) {
+		q := New(2, 2, testClock, &stubWorkers{})
+		j := job.New("c", "n", job.Policy{})
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance (begin): %v", err)
+		}
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance (grant): %v", err)
+		}
+		if err := q.Settle(j, job.OutcomeFailed); err != nil {
+			t.Fatalf("Settle: %v", err)
+		}
+		if err := q.Park(j); err != nil {
+			t.Fatalf("Park on a settled job: %v", err)
+		}
+	})
+
+	t.Run("work ended, next set", func(t *testing.T) {
+		q := New(2, 2, testClock, &stubWorkers{})
+		j := job.New("d", "n", job.Policy{})
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance (begin): %v", err)
+		}
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance (grant): %v", err)
+		}
+		if err := j.SetNext(job.Assessing); err != nil {
+			t.Fatalf("SetNext: %v", err)
+		}
+		if err := q.Park(j); err != nil {
+			t.Fatalf("Park with next set: %v", err)
+		}
+		if got := j.Snapshot().State.Next; got != job.Assessing {
+			t.Errorf("Next = %v, want Assessing — Park releases resources, it does "+
+				"not discard the verdict the finished work recorded", got)
+		}
+		if got := q.leases.outstanding(); got != 0 {
+			t.Errorf("leases outstanding = %d, want 0", got)
+		}
+	})
 }
