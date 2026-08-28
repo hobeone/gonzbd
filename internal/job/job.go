@@ -116,10 +116,16 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // sabnzbd_test.go itself imports internal/constants. In particular Job
 // cannot call Queue, because Job cannot see Queue.
 //
-// What is intent for a later plan, not yet built or enforced: a Queue type
-// that always locks Queue.mu before calling into Job.mu, giving the system a
-// single lock order. Nothing in this repository defines Queue yet, so that
-// half of the ordering claim has no enforcement point until it does.
+// The ordering half of this is now enforced, not merely intent: internal/sched
+// defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
+// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds three
+// sites (advance.go's Advance and Retry, cancel.go's Cancel), and every
+// *job.Job method call in the package's non-test sources sits inside one of
+// those three locked spans. The other half holds by construction: this
+// package imports nothing from internal/sched (its own import block has none;
+// the only hits for that string are comment mentions in doc.go and this
+// file), so Job cannot call into Queue at all, and the order is
+// one-directional — Queue.mu before Job.mu, never the reverse.
 //
 // Job does no I/O. It exposes State() and the attempt accessors. The later
 // plan's design intent is a Checkpointer that reads those and writes the
