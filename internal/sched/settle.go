@@ -1,6 +1,8 @@
 package sched
 
 import (
+	"errors"
+
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -63,4 +65,40 @@ func (q *Queue) settleLocked(j *job.Job, o job.Outcome, s job.Snapshot) error {
 	}
 	q.releaseFor(j, job.StateUnset)
 	return q.reclaim(l)
+}
+
+// errCancelReserved is Settle's refusal of an outcome only the cancel latch
+// may produce.
+var errCancelReserved = errors.New("sched: Settle: OutcomeCancelled is reserved for Cancel")
+
+// Settle is the door a dispatcher calls when its worker has returned
+// terminally. It is the counterpart of the three exported job doors that YIELD
+// a lease — Cross, Finish and Surrender — none of which had an exported
+// reclaimer before this: q.reclaim is unexported and is the sole reclaimer
+// (§3.9, D-I13), so a dispatcher calling j.Finish itself would drop the lease
+// and lose a pool-A slot permanently and silently.
+//
+// PRECONDITION, which this package cannot check: the caller's worker for j has
+// returned and will not touch the job's lease, slot, manifest or barrier
+// again. There is deliberately no q.running guard here, and its absence is not
+// an oversight. running() is IsOpen && Next == StateUnset && holds(), and for
+// a worker that has just finished normally at Fetching every conjunct is still
+// TRUE — so a !running guard would reject exactly the call this door exists to
+// serve. Cancel and Retry guard because a USER initiates them and does not
+// know whether a worker is mid-article; here the caller IS the worker's owner,
+// which is the evidence.
+//
+// It refuses OutcomeCancelled. Cancel is final for a Job (D-I14) and it is
+// final because Cancel latches SetIntent(IntentCancel) before settling. A
+// caller reaching this door with Cancelled would skip the latch, leaving a job
+// that renders as Deleted (§4.4) while still carrying IntentRun — so q.Retry
+// would see an ordinary settled attempt and reopen it. The refusal returns
+// before q.mu is taken, because it is a pure check on an argument.
+func (q *Queue) Settle(j *job.Job, o job.Outcome) error {
+	if o == job.OutcomeCancelled {
+		return errCancelReserved
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.settleLocked(j, o, j.Snapshot())
 }

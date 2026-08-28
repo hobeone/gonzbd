@@ -874,14 +874,14 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 		t.Errorf("aborted = %v, want none — Production has no interrupt arm", w.aborted)
 	}
 
-	// The move and the user script complete; the worker settles directly,
-	// exactly as it would with no cancel pending.
-	l, err := j.Finish(job.OutcomeOK, testClock())
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := q.reclaim(l); err != nil {
-		t.Fatalf("reclaim: %v", err)
+	// The move and the user script complete; the worker settles through the
+	// door a dispatcher uses, NOT j.Finish directly. Routed here deliberately:
+	// settleLocked applies the cancel latch, and this scenario is the one that
+	// pins the latch NOT firing (D-I11, Finalizing is post-boundary and so
+	// gated rather than interrupted). Asserting against j.Finish would leave
+	// the production path unpinned.
+	if err := q.Settle(j, job.OutcomeOK); err != nil {
+		t.Fatalf("Settle: %v", err)
 	}
 	if got := j.Snapshot().State.Outcome; got != job.OutcomeOK {
 		t.Errorf("Outcome = %v, want OK — recording Cancelled here would be false: the files moved", got)
