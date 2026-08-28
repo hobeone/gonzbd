@@ -75,7 +75,7 @@ jobs:
           # load the config at all (a startup error, not a lint finding).
           version: v2.13.1
 
-      # Whole-repository, not diff-scoped, and both catch classes that build,
+      # Whole-repository, not diff-scoped, and each catches a class that build,
       # vet, lint and the test suite are structurally blind to: comments and
       # Markdown are neither type-checked nor executed. AGENTS.md has listed
       # them as required gates since they were written; their absence here is
@@ -86,6 +86,9 @@ jobs:
 
       - name: Review banner check
         run: go run ./scripts/check_review_banner
+
+      - name: Check citation counts
+        run: go run ./scripts/check_citations
 
       - name: Mutex-held-during-I/O check
         run: go run scripts/check_lock_io/main.go
