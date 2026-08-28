@@ -32,6 +32,14 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 		return nil
 	}
 	if s.State.Outcome.IsSettled() {
+		// A settled attempt KEEPS the position it settled at (§3.3) but needs
+		// none of that position's resources — the same rule Advance's own
+		// settled branch applies. Without this release, a job that settles at
+		// Assessing, Repairing, Extracting or Finalizing and is THEN cancelled
+		// strands its slot forever: Advance routes s.Intent == IntentCancel to
+		// finishCancel before it ever reaches its own settled-branch release,
+		// so no later tick can recover what this arm fails to free.
+		q.releaseFor(j, job.StateUnset)
 		return nil // already closed, by cancel or otherwise
 	}
 	if q.running(j.ID(), s) {

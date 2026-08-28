@@ -42,6 +42,15 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 // exercise. This walk is checked against four of revision 3's five leaks,
 // not all five at once.
 //
+// Two further rows — "retry after a pre-boundary settle" and "cancel a
+// settled attempt" — are not from §3.9's table or revision 3's leak list at
+// all. They pin the two Critical findings from this branch's final
+// whole-branch review: Retry carrying a settled attempt's slot into Fetching,
+// and finishCancel's settled arm never releasing the slot a settled-then-
+// cancelled job still held. Both are real leaks this walk's original six rows
+// never exercised — neither row settles a job and then separately retries or
+// cancels it.
+//
 // It walks §3.9's exit table and asserts a DIFFERENT invariant per pool. That
 // asymmetry is the point, and collapsing it was a defect in this plan twice,
 // in opposite directions:
@@ -144,12 +153,51 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 				t.Fatalf("Advance: %v", err) // Cross yields nil; reclaim must no-op
 			}
 		}},
+		{"retry after a pre-boundary settle", func(t *testing.T, q *Queue, j *job.Job) {
+			// Critical 2: Retry must release the settled attempt's slot BEFORE
+			// opening the new one at Fetching, which needsSlot == false --
+			// nothing on the Fetching path calls releaseFor again, so a slot
+			// carried in here is never freed.
+			mustAdvanceTo(t, q, j, job.Assessing)
+			l, err := j.Finish(job.OutcomeFailed, testClock())
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if err := q.reclaim(l); err != nil {
+				t.Fatalf("reclaim: %v", err)
+			}
+			if err := q.Retry(j); err != nil {
+				t.Fatalf("Retry: %v", err)
+			}
+		}},
+		{"cancel a settled attempt", func(t *testing.T, q *Queue, j *job.Job) {
+			// Critical 1: finishCancel's settled arm must release the slot
+			// itself -- Advance routes IntentCancel to finishCancel before its
+			// own settled branch ever runs, so that branch's release is
+			// permanently unreachable for a job cancelled after settling.
+			mustAdvanceTo(t, q, j, job.Assessing)
+			l, err := j.Finish(job.OutcomeFailed, testClock())
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if err := q.reclaim(l); err != nil {
+				t.Fatalf("reclaim: %v", err)
+			}
+			if err := q.Cancel(j); err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+		}},
 	}
 	// wantsSlot is what pool-B occupancy SHOULD be for j right now: a job
 	// holds a compute slot exactly while its CURRENT position requires one and
 	// it is neither settled nor gated. Those are the three conditions
-	// releaseFor's four call sites exist to maintain, stated once as a
-	// predicate so the walk asserts the rule rather than six memorised numbers.
+	// releaseFor's call sites exist to maintain, stated once as a predicate so
+	// the walk asserts the rule rather than memorised numbers. `grep -n
+	// 'releaseFor(' internal/sched/*.go | grep -v _test.go` finds six
+	// production call sites, not the four it had before this task's two leak
+	// fixes: park, Retry (Critical 2's fix), Advance's settled branch,
+	// Advance's demotion, and finishCancel's two arms — the running-then-
+	// settled path and the settled-on-entry arm Critical 1's fix added.
 	//
 	// It deliberately asks about the current position, not next: a job whose
 	// work has finished still occupies the position it finished in and still
@@ -165,10 +213,15 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 		return needsSlot(s.State.State)
 	}
 
-	// The count is asserted so that adding a row to §3.9's table without
-	// adding a case here fails, rather than quietly narrowing the walk.
-	if len(exits) != 6 {
-		t.Fatalf("§3.9's exit table has 6 rows; this walk has %d", len(exits))
+	// The count is asserted so that adding a row to §3.9's table, or removing
+	// one of the two leak-regression rows below it, fails loudly rather than
+	// quietly narrowing the walk. §3.9's table itself has 6 rows; the other 2
+	// ("retry after a pre-boundary settle", "cancel a settled attempt") pin
+	// the final review's two Critical findings, which are not exits §3.9's
+	// table names — a settled attempt cancelled or retried has already left
+	// the table by the row that settled it.
+	if len(exits) != 8 {
+		t.Fatalf("expected 6 rows from §3.9's exit table plus 2 leak-regression rows, got %d", len(exits))
 	}
 	for _, e := range exits {
 		t.Run(e.name, func(t *testing.T) {

@@ -435,6 +435,42 @@ func TestRetry_ReopensASettledAttemptWithoutALease(t *testing.T) {
 	}
 }
 
+// TestRetry_ReleasesTheSettledAttemptsSlot pins the final whole-branch
+// review's Critical 2: Retry must release the settled attempt's compute slot
+// before opening the new attempt at Fetching. Fetching's needsSlot is false
+// (§3.4), so nothing on the Fetching path ever calls releaseFor again — a
+// slot carried in by Retry is held for the entire re-download, the same cost
+// the Assessing→Fetching demotion leak had before TestAdvance_DemotionReleasesTheSlot
+// was written to pin it.
+func TestRetry_ReleasesTheSettledAttemptsSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustAdvanceTo(t, q, j, job.Assessing)
+	if !q.slots.holds(j.ID()) {
+		t.Fatal("fixture holds no slot at Assessing; this test cannot observe the leak")
+	}
+	l, err := j.Finish(job.OutcomeFailed, testClock())
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if err := q.reclaim(l); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if err := q.Retry(j); err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("Retry carried the settled attempt's slot into the new one")
+	}
+	if err := q.Advance(j); err != nil { // branch 2: grants for Fetching
+		t.Fatalf("Advance: %v", err)
+	}
+	st := j.Snapshot().State.State
+	if got := q.slots.holds(j.ID()); got && !needsSlot(st) {
+		t.Errorf("holds a slot at %v, which needsSlot=false; outstanding=%d", st, q.slots.outstanding())
+	}
+}
+
 // TestGrantFor_AcquiresBothWhenBothAreAvailable calls grantFor directly
 // rather than only observing it through Advance. It asserts grantFor
 // acquires both the lease and the slot when both pools have capacity — it

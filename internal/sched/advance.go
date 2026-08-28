@@ -83,9 +83,17 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 // exact defect revision 3 shipped: §5.9 records a retry dropped permanently
 // because the lease could not be taken and nothing recorded that a retry was
 // wanted. Branch 2 grants on a later tick.
+//
+// It releases the settled attempt's compute slot BEFORE opening the new one.
+// The new attempt starts at Fetching, which needsSlot == false (§3.4), so
+// nothing on the Fetching path ever calls releaseFor again — without this,
+// a job that last settled at Assessing, Repairing, Extracting or Finalizing
+// carries that slot into the retried download and holds pool-B capacity for
+// the whole re-fetch.
 func (q *Queue) Retry(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.releaseFor(j, job.StateUnset)
 	return j.BeginAttempt(q.now())
 }
 

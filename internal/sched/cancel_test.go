@@ -226,6 +226,51 @@ func TestCancel_ProductionRunningGates(t *testing.T) {
 	}
 }
 
+// TestCancel_SettledThenCancelledReleasesTheSlot pins the final whole-branch
+// review's Critical 1: cancelling a job that has ALREADY settled must release
+// the slot its position still holds. Before this fix, finishCancel's settled
+// arm returned bare, and Advance routes s.Intent == IntentCancel to
+// finishCancel before it ever reaches Advance's own settled-branch release —
+// so once IntentCancel latches on a settled job, no later Advance tick can
+// recover the slot either. Both real sequences that reach this — a worker
+// failing at a correctness state and the user then cancelling, or a user
+// cancelling a running Production job whose worker then completes with
+// OutcomeOK — settle first and are cancelled second, which is exactly what
+// mustHoldAt + Finish + Cancel reproduces here.
+func TestCancel_SettledThenCancelledReleasesTheSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustHoldAt(t, q, j, job.Assessing)
+	if !q.slots.holds(j.ID()) {
+		t.Fatal("fixture holds no slot; this test cannot observe the leak")
+	}
+	l, err := j.Finish(job.OutcomeFailed, testClock())
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if err := q.reclaim(l); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if err := q.Cancel(j); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("slot still held after cancelling an already-settled job; " +
+			"finishCancel's settled arm must release it")
+	}
+	// Further Advance ticks must not be needed to recover it — and, per the
+	// routing this test exists to pin, cannot: Advance sends an IntentCancel
+	// job straight to finishCancel, never reaching its own settled branch.
+	for i := range 5 {
+		if err := q.Advance(j); err != nil {
+			t.Fatalf("Advance %d: %v", i, err)
+		}
+	}
+	if q.slots.holds(j.ID()) {
+		t.Errorf("slot still held after 5 further Advance ticks; outstanding=%d", q.slots.outstanding())
+	}
+}
+
 // TestFinishCancel_ReclaimErrorPropagates pins the ordering the plan review
 // flagged: the slot must be freed even when reclaim's identity audit fails,
 // and the audit's error must still reach the caller. A lease Grant-ed to the
