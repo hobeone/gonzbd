@@ -39,7 +39,18 @@ type Queue struct {
 
 // New builds a Queue with the given pool A and pool B capacities, an injected
 // clock, and the Workers it aborts jobs through.
+//
+// w must not be nil: cancel.go's interrupt arm dereferences it unconditionally
+// (q.work.Abort), and a nil Workers is a construction-time programmer error —
+// not state an earlier build wrote, so Standing Design Rule 1's guard-removal
+// argument does not apply here. New panics immediately rather than let a nil
+// Workers surface as a nil-pointer dereference deep inside a later Cancel
+// call, on an unrelated goroutine, with no construction-site stack frame left
+// to explain it.
 func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue {
+	if w == nil {
+		panic("sched: New: Workers must not be nil")
+	}
 	return &Queue{
 		leases: newLeasePool(leaseCap),
 		slots:  newSlotPool(slotCap),

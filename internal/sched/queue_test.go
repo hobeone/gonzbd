@@ -318,6 +318,20 @@ func TestReleaseFor(t *testing.T) {
 	}
 }
 
+// TestNew_PanicsOnNilWorkers pins New's precondition: w must not be nil.
+// cancel.go's interrupt arm dereferences q.work unconditionally, so a nil
+// Workers is a construction-time programmer error New refuses immediately
+// rather than let it surface as a nil-pointer dereference deep inside a
+// later Cancel call.
+func TestNew_PanicsOnNilWorkers(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("New(nil Workers) did not panic")
+		}
+	}()
+	New(1, 1, testClock, nil)
+}
+
 // TestQueue_NowReturnsTheInjectedClock pins that now() reads the clock the
 // Queue was constructed with rather than wall time.
 func TestQueue_NowReturnsTheInjectedClock(t *testing.T) {
