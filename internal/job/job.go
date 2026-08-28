@@ -116,10 +116,16 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // sabnzbd_test.go itself imports internal/constants. In particular Job
 // cannot call Queue, because Job cannot see Queue.
 //
-// What is intent for a later plan, not yet built or enforced: a Queue type
-// that always locks Queue.mu before calling into Job.mu, giving the system a
-// single lock order. Nothing in this repository defines Queue yet, so that
-// half of the ordering claim has no enforcement point until it does.
+// The ordering half of this is now enforced, not merely intent: internal/sched
+// defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
+// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds four
+// sites (advance.go's park, Retry and Advance, cancel.go's Cancel), and every
+// *job.Job method call in the package's non-test sources sits inside one of
+// those four locked spans. The other half holds by construction: this
+// package imports nothing from internal/sched (its own import block has none;
+// the only hits for that string are comment mentions in doc.go and this
+// file), so Job cannot call into Queue at all, and the order is
+// one-directional — Queue.mu before Job.mu, never the reverse.
 //
 // Job does no I/O. It exposes State() and the attempt accessors. The later
 // plan's design intent is a Checkpointer that reads those and writes the
@@ -483,13 +489,22 @@ func (j *Job) surrenderLocked() *Lease {
 // Snapshot is the set of job facts a scheduling decision reads — the four
 // fields below — taken under ONE lock acquisition.
 //
-// That set is deliberately NOT claimed to be complete. internal/sched does not
-// exist yet, so there is no population of scheduling decisions to enumerate
-// against, and a comment asserting completeness here would be exactly the kind
-// of unverified universal Rule 4 forbids. What is meant to make it complete is
-// the SIGNATURE, not this sentence: §3.4's predicates take a Snapshot rather
-// than a *Job, so a decision needing a fifth fact must add it here rather than
-// reach for a lock. That becomes checkable in Half B1 task 5, and not before.
+// That set is deliberately NOT claimed to be complete. internal/sched now
+// exists (Half B1) and four of its functions take ONLY a Snapshot, never a
+// *Job — `grep -n 'job\.Snapshot)' internal/sched/*.go | grep -v _test.go |
+// grep 'func '` finds finishCancel, holds, running, gatedBy and waitReason,
+// but that grep is blind to a second parameter: finishCancel's actual
+// signature is `func (q *Queue) finishCancel(j *job.Job, s job.Snapshot)
+// error` — it takes both, and mutates the job, because it is the door that
+// settles a cancel, not a predicate. holds, running, gatedBy and waitReason
+// are the four that are pure over a Snapshot with no *Job in sight. That is
+// not the same claim as "these four fields cover every scheduling decision";
+// nothing enumerates the fields a future predicate might need, so asserting
+// completeness here would still be the kind of unverified universal Rule 4
+// forbids. What makes it complete enough is the SIGNATURE, not this
+// sentence: §3.4's predicates take a Snapshot rather than a *Job, so a
+// decision needing a fifth fact must add it here rather than reach for a
+// lock.
 //
 // It exists because the Queue's questions are composite. running(j) is "the
 // attempt is open AND it holds what its state requires AND next is unset" —

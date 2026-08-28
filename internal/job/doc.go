@@ -80,6 +80,23 @@
 // enumeration but TestBoundaryIsUnreachableByAnyPath, which checks the
 // property the latch existed to provide.
 //
+// # Which verdict a position admits
+//
+// finish's open-attempt precondition says nothing about whether the Outcome
+// being recorded is legal from the position the attempt is at — that is
+// admissibleAt (admissibility.go), the sole owner of "which verdict may an
+// attempt record from which state": `git grep -n 'admits(' --
+// 'internal/job/*.go' ':!internal/job/*_test.go'` returns four lines — this
+// comment and admissibility.go's own citing of the same grep pattern, the
+// function's declaration, and one production call site, finish's own guard.
+// It replaces two hand-written guards that used to live inline in finish, one
+// of which was
+// wrong through two review rounds while a correct rule sat in a comment
+// beside it. OutcomeOK admits only Finalizing; OutcomeUnrecoverable admits
+// only the Correctness zone (D3: unrecoverable means the job never crossed);
+// OutcomeFailed and OutcomeCancelled admit every state, for the reasons the
+// design's §3.3 and §5.12 give respectively.
+//
 // # One decider
 //
 // Within the Correctness zone, Assessing is the only state with more than
@@ -107,6 +124,35 @@
 // A Job with no attempts has never run. That is what HasRun reports, and it
 // is exact where any predicate over byte counters would conflate "did not
 // start" with "started and got nowhere".
+//
+// # Lease identity
+//
+// A Lease (lease.go) is the admission token internal/sched's pool A issues
+// and reclaims; the Job holds it, Grant admits one, and surrenderLocked is
+// its sole releaser. LeaseID gives each issuance an identity distinct from
+// the *Lease pointer, because the pointer alone cannot serve: Lease had no
+// fields while its manifest and barrier waited for a later half, and Go
+// gives distinct zero-size allocations the same address, so two jobs'
+// leases collapsed into one entry in a pointer-keyed pool. NewLease mints a
+// Lease from an id the pool already knows it issued; Grant refuses
+// LeaseUnset, the invalid zero, in the same spirit as StateUnset.
+//
+// # Snapshot
+//
+// internal/sched's admission questions are composite — running(j) is "the
+// attempt is open AND it holds what its state requires AND next is unset" —
+// and State, HasRun and HoldsLease each used to lock separately, so a door
+// landing between two reads could answer about a configuration the job was
+// never in. Snapshot (job.go) reads State, Intent, HoldsLease and HasRun
+// under one RLock so a scheduling decision reads one instant rather than a
+// composite of several. It is what makes the render path's purity structural
+// rather than asserted: a predicate that takes a Snapshot has no *Job to
+// acquire anything from. internal/sched's holds, running, gatedBy and
+// waitReason all take one rather than a *Job. finishCancel takes a Snapshot
+// TOO, alongside the *Job it settles — it is the door that mutates the job on
+// a cancel, not a pure predicate, and it takes both so it acts on the one
+// instant its caller already read rather than re-reading a possibly torn view
+// mid-decision (see finishCancel's own doc comment, internal/sched/cancel.go).
 //
 // # What this package does not do
 //
