@@ -271,6 +271,55 @@ func TestCancel_SettledThenCancelledReleasesTheSlot(t *testing.T) {
 	}
 }
 
+// TestFinishCancel_FailedFinishDoesNotReleaseTheSlot pins B3: if Finish
+// itself refuses (here, a write-once violation — the attempt already
+// settled), the attempt was NOT cancelled, so finishCancel must not release
+// the slot its still-occupied position requires, and must return the error
+// rather than let it vanish behind an unconditional release.
+//
+// Constructed with a snapshot that is stale on purpose, exactly the shape
+// finishCancel's own doc comment names as the reason it takes its caller's
+// already-read snapshot rather than re-reading: s is captured while the job's
+// work has finished but before it moves (Next = Repairing, so running(s) is
+// false and finishCancel takes the settle path), and then the job is
+// ACTUALLY settled — Failed, by a real worker completing independently of
+// the snapshot — before finishCancel ever runs. finishCancel's own
+// Finish(OutcomeCancelled) then hits the write-once guard
+// (internal/job/attempt.go's `if a.outcome.IsSettled()`), which is exactly
+// what a genuine race between a settling worker and a concurrent Cancel
+// would produce; the stale snapshot reproduces that race deterministically
+// without needing real goroutines.
+func TestFinishCancel_FailedFinishDoesNotReleaseTheSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustHoldAt(t, q, j, job.Assessing)
+	if err := j.SetNext(job.Repairing); err != nil { // work finished; not yet moved
+		t.Fatalf("SetNext: %v", err)
+	}
+	s := j.Snapshot() // stale on purpose — see comment above
+
+	l, err := j.Finish(job.OutcomeFailed, testClock()) // the real, independent settle
+	if err != nil {
+		t.Fatalf("fixture Finish: %v", err)
+	}
+	if err := q.reclaim(l); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if !q.slots.holds(j.ID()) {
+		t.Fatal("fixture holds no slot; this test cannot observe a wrongful release")
+	}
+
+	if err := q.finishCancel(j, s); err == nil {
+		t.Fatal("finishCancel = nil, want an error — Finish must refuse a second settle")
+	}
+	if !q.slots.holds(j.ID()) {
+		t.Error("finishCancel released the slot despite Finish failing; the attempt was NOT cancelled")
+	}
+	if got := j.Snapshot().State.Outcome; got != job.OutcomeFailed {
+		t.Errorf("Outcome = %v, want Failed — finishCancel's failed Finish must not have overwritten the real verdict", got)
+	}
+}
+
 // TestFinishCancel_ReclaimErrorPropagates pins the ordering the plan review
 // flagged: the slot must be freed even when reclaim's identity audit fails,
 // and the audit's error must still reach the caller. A lease Grant-ed to the

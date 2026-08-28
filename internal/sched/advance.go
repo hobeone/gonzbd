@@ -1,9 +1,33 @@
 package sched
 
-import "github.com/hobeone/gonzbd/internal/job"
+import (
+	"errors"
 
-// park releases what a gated job must not keep holding. Both gated paths go
-// through it.
+	"github.com/hobeone/gonzbd/internal/job"
+)
+
+// errNotSettled is Retry's refusal for a job it must not touch: one whose
+// current attempt is still open (a live worker holds its slot or lease) or
+// which has never run at all. Both share one check because a never-run job's
+// Outcome is the zero value OutcomePending, which IsSettled() already reports
+// false — Retry's contract is "reopen a settled attempt", and neither shape
+// is one.
+var errNotSettled = errors.New("sched: Retry: attempt is not settled")
+
+// park releases what a gated job must not keep holding. It is the entry
+// point for a caller that does NOT already hold q.mu — doc.go and spec
+// §5.1/§5.2 designate it as what the dispatcher calls directly on a worker's
+// yield, outside of Advance. It takes the lock and delegates to parkLocked,
+// which does the actual work.
+//
+// Split from a single lock-free park because parkLocked mutates both pools
+// (releaseFor touches q.slots, reclaim touches q.leases via j.Surrender) with
+// no lock of its own: Advance called it while already holding q.mu, but nothing
+// stopped a caller reaching it directly — as the dispatcher does — from racing
+// Advance on the same maps. internal/job/doc.go's Snapshot section claims every
+// call this package makes into a *job.Job sits inside a Queue.mu span; an
+// unlocked park calling j.Surrender() from outside Advance's lock broke that
+// claim for exactly this door.
 //
 // It returns an error where spec §3.6 shows it returning nothing. That is a
 // deliberate divergence and it SUPERSEDES a specific spec decision: §10's
@@ -14,6 +38,16 @@ import "github.com/hobeone/gonzbd/internal/job"
 // issue or already took back — a real condition, and one whose only other
 // outlet would be silence.
 func (q *Queue) park(j *job.Job) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.parkLocked(j)
+}
+
+// parkLocked is park's body, for a caller that already holds q.mu. Advance is
+// the sole production caller — `grep -n 'q\.parkLocked(' advance.go` finds
+// exactly two lines, branch 2's and branch 3's gated arms, both inside
+// Advance's own q.mu span.
+func (q *Queue) parkLocked(j *job.Job) error {
 	q.releaseFor(j, job.StateUnset)
 	return q.reclaim(j.Surrender())
 }
@@ -90,9 +124,26 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 // a job that last settled at Assessing, Repairing, Extracting or Finalizing
 // carries that slot into the retried download and holds pool-B capacity for
 // the whole re-fetch.
+//
+// It refuses with errNotSettled rather than releasing anything when the
+// attempt is not settled — a live worker at Assessing, Repairing, Extracting
+// or Finalizing, or a job that has never run. j.BeginAttempt already no-ops
+// silently on an open attempt (job.go: `if a != nil && a.isOpen() { return
+// nil }`), which made the release above unconditional: it ran, then
+// BeginAttempt quietly declined to open anything, leaving the running
+// worker's slot deleted from q.slots.held while the worker kept using it —
+// pool B overcommitted past slotCap, and q.holds/q.running then read false
+// for a job that was, in fact, still running. An error is the more honest
+// signal here than BeginAttempt's silent no-op: calling Retry on a job that
+// is not settled is a caller mistake (the door §5.9/§5.10 name is for a
+// SETTLED attempt), not a condition a scheduling tick can quietly absorb the
+// way an idempotent re-grant can.
 func (q *Queue) Retry(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if !j.Snapshot().State.Outcome.IsSettled() {
+		return errNotSettled
+	}
 	q.releaseFor(j, job.StateUnset)
 	return j.BeginAttempt(q.now())
 }
@@ -142,14 +193,14 @@ func (q *Queue) Advance(j *job.Job) error {
 			return nil // already working; never take resources from a live worker
 		}
 		if _, gated := q.gatedBy(s); gated {
-			return q.park(j)
+			return q.parkLocked(j)
 		}
 		q.grantFor(j, s.State.State)
 		return nil
 	}
 	// 3. Work is finished: move.
 	if _, gated := q.gatedBy(s); gated {
-		return q.park(j)
+		return q.parkLocked(j)
 	}
 	if job.IsCorrectness(s.State.State) && job.IsProduction(s.State.Next) {
 		l, err := j.Cross(s.State.Next)
@@ -170,6 +221,16 @@ func (q *Queue) Advance(j *job.Job) error {
 		return nil
 	}
 	if err := j.Transition(s.State.Next); err != nil {
+		// grantFor has no rollback (its own doc comment): it acquired what the
+		// DESTINATION requires and does not know the move failed. The job is
+		// still at its ORIGIN position — s.State.State, unchanged by a refused
+		// Transition — so release what THAT position does not need, through the
+		// same owner every other release goes through, rather than calling
+		// q.slots.release directly. Without this, a slot grantFor just acquired
+		// for a destination the job never reached stays in q.slots.held forever:
+		// nothing else on this path frees it, because every other release call
+		// is keyed to a state the job actually reached.
+		q.releaseFor(j, s.State.State)
 		return err
 	}
 	// A DEMOTION frees what the new position does not need. Assessing →

@@ -1,6 +1,10 @@
 package sched
 
-import "github.com/hobeone/gonzbd/internal/job"
+import (
+	"errors"
+
+	"github.com/hobeone/gonzbd/internal/job"
+)
 
 // Cancel latches the job's intent and then settles it if nothing is in flight.
 // Prior spec §8.4 makes cancel an interrupt before the boundary and a gate after it.
@@ -52,13 +56,25 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 		return nil
 	}
 	l, err := j.Finish(job.OutcomeCancelled, q.now())
-	// Freed BEFORE the reclaim, and unconditionally. reclaim can fail its
-	// identity audit, and the earlier order returned through that failure with
-	// the slot still held — turning one audit error into a permanent pool-B
-	// leak. Nothing here depends on the reclaim succeeding.
+	if err != nil {
+		// Finish refused: the attempt was NOT cancelled, so the job still
+		// occupies its current position and needs whatever that position
+		// requires. Releasing here would strand it resourceless while still
+		// running — the same shape of bug B1's Retry fix guards against.
+		return err
+	}
+	// Freed BEFORE the reclaim. reclaim can fail its identity audit, and an
+	// earlier order returned through that failure with the slot still held —
+	// turning one audit error into a permanent pool-B leak. This ordering is
+	// unconditional only with respect to reclaim's outcome, not Finish's: the
+	// guard above is what keeps it from running on a failed Finish.
 	q.releaseFor(j, job.StateUnset)
 	if rerr := q.reclaim(l); rerr != nil {
-		return rerr
+		// Both errors are real: Finish already succeeded (the job IS settled,
+		// so the caller must not retry Finish), and reclaim's identity audit
+		// caught something separately wrong with the lease. Neither may be
+		// dropped in favor of the other.
+		return errors.Join(err, rerr)
 	}
 	return err
 }

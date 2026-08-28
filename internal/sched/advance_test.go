@@ -2,6 +2,7 @@ package sched
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -471,6 +472,45 @@ func TestRetry_ReleasesTheSettledAttemptsSlot(t *testing.T) {
 	}
 }
 
+// TestRetry_RefusesALiveUnsettledJob pins B1: Retry on a job whose current
+// attempt is open and unsettled — a live worker at Assessing, Repairing,
+// Extracting or Finalizing — must refuse rather than strip that worker's
+// slot. The prior version released unconditionally and then called
+// j.BeginAttempt, which itself no-ops on an open attempt (job.go), leaving
+// the release as the only observable effect: a running job's slot vanished
+// from q.slots.held while the worker kept using it.
+func TestRetry_RefusesALiveUnsettledJob(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustAdvanceTo(t, q, j, job.Assessing)
+	if !q.slots.holds(j.ID()) {
+		t.Fatal("fixture holds no slot at Assessing; this test cannot observe the strip")
+	}
+	if err := q.Retry(j); !errors.Is(err, errNotSettled) {
+		t.Errorf("Retry = %v, want errNotSettled", err)
+	}
+	if !q.slots.holds(j.ID()) {
+		t.Error("Retry stripped a live, unsettled job's slot")
+	}
+	if got := j.Snapshot().State.State; got != job.Assessing {
+		t.Errorf("State = %v, want Assessing — Retry must not touch a live job", got)
+	}
+}
+
+// TestRetry_RefusesANeverRunJob pins the other half of B1's fix: Retry is the
+// door for a SETTLED attempt (§5.9, §5.10), not for a job that has never run
+// at all — Advance's branch 1 owns starting one of those.
+func TestRetry_RefusesANeverRunJob(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Retry(j); !errors.Is(err, errNotSettled) {
+		t.Errorf("Retry = %v, want errNotSettled", err)
+	}
+	if j.HasRun() {
+		t.Error("Retry started a never-run job; that is branch 1's job, not Retry's")
+	}
+}
+
 // TestGrantFor_AcquiresBothWhenBothAreAvailable calls grantFor directly
 // rather than only observing it through Advance. It asserts grantFor
 // acquires both the lease and the slot when both pools have capacity — it
@@ -578,6 +618,76 @@ func TestPark_PropagatesAForeignLeaseReclaimError(t *testing.T) {
 	}
 	if err := q.park(j); !errors.Is(err, errNotOutstanding) {
 		t.Errorf("park = %v, want errNotOutstanding — a foreign lease's reclaim failure must surface", err)
+	}
+}
+
+// TestPark_TakesTheQueueLock is B4's race-detector pin. park mutates both
+// pools (releaseFor touches q.slots, reclaim touches q.leases via
+// j.Surrender) and doc.go/spec §5.1-§5.2 designate it as what a real
+// dispatcher calls directly on a worker's yield — outside of any lock Advance
+// holds. Before the fix, park took no lock of its own and relied entirely on
+// its caller already holding q.mu, which a direct call does not do:
+// concurrent calls to park on the same Queue raced on q.slots.held and
+// q.leases.issued.
+//
+// Both goroutines call park (not Advance) on two DIFFERENT jobs that each
+// hold a slot and a lease, so both concurrently write into the same
+// q.slots.held and q.leases.issued maps — that write/write overlap is what
+// the race detector actually needs to catch anything; an unlocked park
+// racing an Advance call whose first branch never touches either pool (a
+// never-run job's BeginAttempt path) proved nothing, and an earlier draft of
+// this test used exactly that shape and stayed green for 5 straight -race
+// runs even with the lock removed. Run with `go test -race`; without park
+// taking q.mu, this reports a DATA RACE rather than merely passing, so a
+// plain (non-race) run of this test does not discriminate the fix at all.
+func TestPark_TakesTheQueueLock(t *testing.T) {
+	q := New(2, 2, testClock, &stubWorkers{})
+	a := job.New("a", "n", job.Policy{})
+	b := job.New("b", "n", job.Policy{})
+	mustAdvanceTo(t, q, a, job.Assessing)
+	mustAdvanceTo(t, q, b, job.Assessing)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := q.park(a); err != nil {
+			t.Errorf("park(a): %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := q.park(b); err != nil {
+			t.Errorf("park(b): %v", err)
+		}
+	}()
+	wg.Wait()
+}
+
+// TestParkLocked_AssumesTheCallerAlreadyHoldsTheLock pins parkLocked's own
+// contract directly: unlike park, it must NOT take q.mu itself — Advance
+// calls it from inside Advance's own q.mu span (branch 2 and branch 3's
+// gated arms), and a parkLocked that tried to lock again would deadlock
+// there. Calling it here with q.mu already held, from the test goroutine
+// itself, is exactly that shape; a version of parkLocked that (incorrectly)
+// re-acquired q.mu would hang this test rather than merely fail it.
+func TestParkLocked_AssumesTheCallerAlreadyHoldsTheLock(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustAdvanceTo(t, q, j, job.Assessing)
+
+	q.mu.Lock()
+	err := q.parkLocked(j)
+	q.mu.Unlock()
+
+	if err != nil {
+		t.Fatalf("parkLocked: %v", err)
+	}
+	if j.HoldsLease() {
+		t.Error("parkLocked left the lease held")
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("parkLocked left the slot held")
 	}
 }
 
