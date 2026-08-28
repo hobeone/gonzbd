@@ -16,7 +16,11 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 //
 // It tracks ids rather than pointers because it must be able to say "I did not
 // issue this", which pointer identity alone cannot express — and because a
-// pointer-keyed map was outright broken while job.Lease was zero-sized.
+// pointer-keyed map was outright broken while job.Lease was zero-sized: a
+// probe on PR #447 measured unsafe.Sizeof(Lease{}) == 0, so distinct
+// allocations shared one address and two jobs' leases collapsed into one map
+// entry. internal/job/lease.go's LeaseID and NewLease are what fixed it, by
+// giving each issuance an identity independent of the pointer.
 //
 // The audit exists because nothing else can enforce it. job.Cross and
 // job.Finish return a *Lease and Go has no must-use; a caller writing
