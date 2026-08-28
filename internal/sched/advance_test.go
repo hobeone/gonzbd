@@ -231,6 +231,43 @@ func TestAdvance_ParkingAGatedRunnableJobAlsoReturnsItsResources(t *testing.T) {
 	}
 }
 
+// TestAdvance_OrderGatedPrecedesTheCrossing is branch 3's other overlap, and
+// the highest-stakes pair in the file: a job at Assessing with Next =
+// Extracting (a legal SetNext — Assessing → Extracting is the one byCross
+// edge) and IntentPause set satisfies BOTH the gate check and the
+// IsCorrectness && IsProduction crossing check at once. §3.8 says a paused
+// job must park, never cross — the boundary is irreversible (D3: crossing
+// deletes archives, moves files, runs user scripts) and a pause is exactly
+// the signal that the user does not want that to happen yet.
+//
+// TestAdvance_ParkingAGatedRunnableJobAlsoReturnsItsResources covers branch
+// 3's park arm generally, but with Next = Repairing, which is not the
+// crossing edge — it never reaches this overlap. This is the only fixture in
+// the file that does.
+func TestAdvance_OrderGatedPrecedesTheCrossing(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustAdvanceTo(t, q, j, job.Assessing)
+	if err := j.SetNext(job.Extracting); err != nil {
+		t.Fatalf("SetNext: %v", err)
+	}
+	if err := j.SetIntent(job.IntentPause); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if got := j.Snapshot().State.State; got != job.Assessing {
+		t.Errorf("State = %v, want Assessing — a paused job must park, not cross the boundary", got)
+	}
+	if j.HoldsLease() {
+		t.Error("a gated job at the crossing still holds its lease; park must release it")
+	}
+	if q.slots.holds(j.ID()) {
+		t.Error("a gated job at the crossing still holds its slot; park must release it")
+	}
+}
+
 // TestAdvance_DemotionReleasesTheSlot pins the one demotion in the work spine.
 // Assessing → Fetching is legal (par2 decided more blocks are needed) and it
 // moves the job from a state that needs a slot to one that does not: §3.4 gives

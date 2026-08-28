@@ -19,7 +19,11 @@ func (q *Queue) park(j *job.Job) error {
 }
 
 // grantFor acquires what s requires and j does not already hold. Acquisition
-// happens ONLY here.
+// happens ONLY here: `grep -n 'leases\.issue' internal/sched/*.go | grep -v
+// _test.go` finds exactly one line, the call below. `grep -n 'slots\.acquire'
+// internal/sched/*.go | grep -v _test.go` finds two — that same call and
+// queue.go's own citation of this name in prose — so one production call
+// site for each pool, both inside this function's body.
 //
 // It grants the lease before the slot and does not roll back a lease it took
 // when the slot is unavailable: the job keeps the lease and waits, which is
