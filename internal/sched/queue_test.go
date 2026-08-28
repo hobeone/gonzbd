@@ -294,7 +294,7 @@ func TestReclaim_ReturnsErrNotOutstandingForAForeignLease(t *testing.T) {
 }
 
 // TestReleaseFor pins releaseFor's rule: free the slot exactly when the
-// target state does not need one, including at job.StateUnset (used by park,
+// target state does not need one, including at job.StateUnset (used by Park,
 // settlement and cancel to free everything without naming pool B), and leave
 // it held when the target state still needs a slot.
 func TestReleaseFor(t *testing.T) {

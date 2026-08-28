@@ -240,6 +240,18 @@ func (q *Queue) Advance(j *job.Job) error {
 		return nil
 	}
 	if err := j.Transition(s.State.Next); err != nil {
+		// Unreachable through Advance's own preconditions, and deliberately
+		// kept. setNext validates CanTransition before recording next
+		// (attempt.go:222) and refuses to replace a recorded next with a
+		// different one, transition's four refusals are then all excluded, and
+		// Advance's settled early-return guarantees an open attempt here. The
+		// one route left was a concurrent j.Finish from outside q.mu, which
+		// Settle closes by taking q.mu. It is NOT tested, because
+		// constructing it would mean manufacturing a race this package's lock
+		// discipline forbids — and it is not deleted, because the reasoning
+		// above spans two packages and would have to be re-derived by anyone
+		// who widens transition's admissibility.
+		//
 		// grantFor has no rollback (its own doc comment): it acquired what the
 		// DESTINATION requires and does not know the move failed. The job is
 		// still at its ORIGIN position — s.State.State, unchanged by a refused

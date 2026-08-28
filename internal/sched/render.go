@@ -4,11 +4,15 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// Render is this package's SOLE read door: it builds the job.RenderView that
+// Render is the only door that composes a job.RenderView — the view
 // job.ToSABnzbd consumes. `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go
-// | grep -v _test.go` finds nine exported methods; eight of them — Advance,
-// Cancel, Park, Retry and Settle (advance.go, cancel.go, settle.go) and
-// Pause, Resume and Paused (queue.go) — write or gate. This one alone reads.
+// | grep -v _test.go` finds nine exported methods: Advance, Cancel, Park,
+// Retry and Settle (advance.go, cancel.go, settle.go) write or gate; Pause and
+// Resume (queue.go) write the pause flag; Paused (queue.go) is a pure getter
+// of q.paused — it neither writes nor gates, so it is not grouped with the
+// six above. Render is still the one distinguished door: it is the only one
+// that reads q.waitReason and q.running together under one lock to build a
+// RenderView, rather than reporting a single flag back to its caller.
 //
 // It is one method rather than exported Running and WaitReason predicates, for
 // two reasons that each rule the pair out on their own.
