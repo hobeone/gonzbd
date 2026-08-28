@@ -612,6 +612,23 @@ func (q *Queue) park(j *job.Job) {
 }
 ```
 
+> **Corrected during implementation (Half B1, D3 — the lease audit was strong
+> enough, but the slot had no audit at all).** This pseudocode releases only
+> the lease. Reviewed against `Job.Surrender`, which is §3.9's own definition
+> of the lease's SOLE releaser and yields nothing else, that leaves `park`
+> silently keeping any compute slot the parked position held — the exact
+> pool-B leak D3 named. The built `park` (`internal/sched/advance.go`) is:
+>
+> ```go
+> func (q *Queue) park(j *job.Job) error {
+>     q.releaseFor(j, job.StateUnset)
+>     return q.reclaim(j.Surrender())
+> }
+> ```
+>
+> `releaseFor(StateUnset)` is unconditional, because `needsSlot(StateUnset)`
+> is always false — see the table correction below.
+
 **Branch 2 checks `q.holds(j)` before the gate, and that order is deliberate.**
 `holds` means a worker owns the job's resources and is using them — the
 `Manifest` and `StorageBarrier` come with the lease (§6). Surrendering while a
@@ -620,11 +637,14 @@ interrupts work (§8.3), so a gated job that still holds keeps holding until its
 worker yields.
 
 **The yield is what hands the resources back, and it needs an owner.** For every
-state but `Fetching`, §8.3 gates per-state: the worker runs to the end, sets
-`next` or settles, and releases its slot — after which branch 3 gates and parks.
-`Fetching` is the one state that gates *per-article*, so its worker stops
-without its work having ended and `next` stays unset. That yield is not a
-completion and must not be reported as one:
+state but `Fetching`, §8.3 gates per-state: the worker runs to the end and sets
+`next` or settles — after which branch 3 gates and parks, and it is `park`
+that releases what the job holds (§3.9, and §5.3/§5.5's corrected traces),
+never the worker itself. `park` releases for `StateUnset`, the one destination
+that needs nothing, so this case is unconditional; it is not the general rule
+for every move, only for a gated one. `Fetching` is the one state that gates
+*per-article*, so its worker stops without its work having ended and `next`
+stays unset. That yield is not a completion and must not be reported as one:
 
 > **A worker that stops on a gate without ending its work reports `yielded`, and
 > the dispatcher calls `q.park(j)`.** `advance` cannot do it — branch 2 correctly
@@ -635,11 +655,15 @@ Half B owns the dispatcher side. Named here because the alternative is a paused
 and because prose in §3.8 and scenario 5.1 described this handoff without ever
 giving it a caller.
 
-Only the lease needs releasing at a gate, and that follows from §8.3 rather
-than being a separate rule: gating never interrupts work, so a job holding a
-compute slot is by definition mid-state and not yet gated. By the time it is
-gated its worker has finished and released the slot. A job gated at
-`Extracting{next: Finalizing}` holds neither — the lease went at the crossing.
+Only the lease needs a separate table entry (§3.9's), and that follows from
+§8.3 rather than being a separate rule: gating never interrupts work, so a job
+holding a compute slot is by definition mid-state and not yet gated. Once a
+job IS gated, `park` releases everything it holds in one call, because
+`park`'s target is `StateUnset`, and `StateUnset` needs nothing — not because
+the worker released the slot itself while finishing its state's work (§3.6's
+correction above; the worker only sets `next` or settles). A job gated at
+`Extracting{next: Finalizing}` therefore holds neither — the lease went at the
+crossing, and the slot goes at `park`.
 
 Crossing before acquiring the slot is deliberate, and branch 3 deliberately
 ignores `grantFor`'s result there: the decision was already made and recorded in
@@ -994,7 +1018,7 @@ The four never-produced statuses stay never-produced.
 | | Acquired | Released |
 |---|---|---|
 | Lease (pool A) | `grantFor`, once per attempt | `surrenderLocked` — via `Cross`, via `Finish`, via the exported `Surrender`, or directly on pause. See §3.9 |
-| Compute slot (pool B) | `grantFor`, per state | when that state's work completes |
+| Compute slot (pool B) | `grantFor`, per state | by `releaseFor`, when the job moves to a position `needsSlot` does not name — **not** simply when the current state's work completes: `Assessing → Repairing` and `Extracting → Finalizing` both keep the slot, because the destination needs one too (§5.3, §5.5) |
 
 Pool A is reserved across the correctness loop and **not** released between
 `Fetching`, `Assessing` and `Repairing`, per §8.1. Pool B is per-state.
@@ -1082,18 +1106,30 @@ Assessing  —           Run    lease+slot         → "Verifying"
 
 ```
 Assessing  —           Run    lease+slot         → "Verifying"
-  verdict NeedsRepair → SetNext(Repairing); slot released
-Assessing  Repairing   Run    lease              → ready
+  verdict NeedsRepair → SetNext(Repairing)
+Assessing  Repairing   Run    lease+slot         → ready
   grantFor(Repairing); Transition clears next
 Repairing  —           Run    lease+slot         → "Repairing"
-  repair done → SetNext(Assessing); slot released
+  repair done → SetNext(Assessing)
   ... → Assessing → verdict OK → SetNext(Extracting)
-Assessing  Extracting  Run    lease              → ready
+Assessing  Extracting  Run    lease+slot         → ready
   advance branch 3: IsCorrectness && IsProduction
   Cross(Extracting) → state, crossed, next cleared, lease yielded — ONE call
-  q.reclaim(lease); grantFor(Extracting)
+  q.reclaim(lease); grantFor(Extracting) — no-op, the slot was already held
 Extracting —           Run    slot               → "Extracting"
 ```
+
+**The slot is held continuously from the first `Verifying` line to the last —
+neither the repair verdict nor the repair's own completion releases it.** An
+earlier revision of this trace said "slot released" at both points; it is
+wrong, and two independent reviews confirmed the code is right and the trace
+was not. The mechanism: `needsSlot` (`internal/sched/requirements.go`) makes
+`Assessing`, `Repairing`, `Extracting` and `Finalizing` all slot-needing, and
+`releaseFor` (`internal/sched/queue.go`) frees a slot only for a destination
+that does **not** need one. `Assessing → Repairing` is a same-zone move, not a
+demotion — the one demotion in the work spine is `Assessing → Fetching`
+(§3.6) — so `releaseFor(Repairing)` no-ops, and the same holds in reverse for
+`Repairing → Assessing`.
 
 ### 5.4 Restart, both variants
 
@@ -1112,14 +1148,27 @@ The completion marker survives the crash and distinguishes the two.
 ```
 Extracting  —            Run     slot
   Cancel → intent=Cancel; IsProduction && running(j) → gate, return nil
-  unpacker finishes → slot released, SetNext(Finalizing)
-Extracting  Finalizing   Cancel   holds nothing    running(j) == false
-  advance → finishCancel: not running → Finish(Cancelled)  → "Deleted"
+  unpacker finishes → SetNext(Finalizing)
+Extracting  Finalizing   Cancel   slot            running(j) == false
+  advance → finishCancel: not running → Finish(Cancelled), releaseFor(StateUnset)
+                                                             → "Deleted"
 ```
 
-`running(j)` goes false for two independent reasons once the unpacker finishes
-— the slot is released and `next` is set — and either alone is sufficient. The
-gate opens because work is no longer in flight, which is the question §8.4
+`running(j)` goes false once the unpacker finishes because `next` is set —
+that alone is sufficient, and it is the ONLY thing that changes at that line.
+**The slot is not released there.** An earlier revision of this trace said it
+was, and had the job "holding nothing" one step early; two independent
+reviews confirmed the code is right and the trace was not. `needsSlot`
+(`internal/sched/requirements.go`) makes `Finalizing` slot-needing exactly
+like `Extracting`, so `releaseFor` (`internal/sched/queue.go`) keeps the slot
+across this same-zone move precisely as it does for `Assessing → Repairing`
+in §5.3. The slot is freed one step later, inside `finishCancel` — right
+after its `Finish(Cancelled)` call, by a separate `releaseFor(j, StateUnset)`
+statement that is not part of `Finish` itself (`Finish` yields only the
+lease, via `surrenderLocked`). `StateUnset` is the first destination in this
+trace that needs nothing.
+
+The gate opens because work is no longer in flight, which is the question §8.4
 poses. Revision 2 deadlocked here and would then have recorded `OutcomeOK`; an
 earlier draft of this trace still described the gate as `!workDone`, which
 `Finalizing` cannot express.
@@ -1299,14 +1348,27 @@ surviving `IntentCancel` is what the UI reads to say the request came too late
 
 ## 8. Open questions
 
-1. **Can a `Finished` job be told retryable from outside?** `finish` erases
-   `state`, so a `Finished(Failed)` job's crossing is only in the `crossed`
-   latch, which is not on `StateView`. Rendering moves to the Queue in Half B;
-   decide there whether `Crossed` joins the composed view. **Not** a reason to
-   put it on `StateView` in Half A.
-2. **Where do the per-state resource requirements live?** §3.4's table is a
-   property of a `State`, so `internal/job` is natural, but only the Queue
-   consumes it. Half B.
+1. **~~Can a `Finished` job be told retryable from outside?~~ Dissolved.** The
+   question assumed `finish` erases `state`, which change 03 corrected (§3.2's
+   scoping note): `finish` no longer touches `state`, there is no `Finished`
+   value, and a settled attempt keeps the position it settled at. A caller
+   asking whether a settled job already crossed reads
+   `IsProduction(StateView.State)` directly — `StateView.State` already
+   answers it, and there is no `Crossed` field to add to it. Recorded as
+   dissolved rather than deleted: the question was real under the model that
+   predated change 03, and a reader tracing why it is gone should find the
+   reason here rather than a silent deletion.
+2. **~~Where do the per-state resource requirements live?~~ Answered:
+   `internal/job` was the candidate this question weighed against the actual
+   choice, and the actual choice is `internal/sched/requirements.go`.** The
+   Half B1 plan's own decision D1 — that `internal/sched`, not `internal/job`
+   or `internal/queue`, is the right home for the Queue's decision core —
+   settles the package question this open question was really asking; that
+   package's `needsLease`/`needsSlot` restate §3.4's table in code, with the
+   Queue as their only consumer. A copy living in `internal/job` with no
+   in-package caller would be a second place to maintain one fact (Standing
+   Design Rule 2) — the reasoning `internal/sched/requirements.go`'s own doc
+   comment states beside the table itself.
 3. **Does the dispatcher need `next`?** Prior spec §9 is unread against this
    change. To be checked when Half B is written, not assumed here.
 4. **Does a paused job keep its queue position?** Reorder (§4.7) says a paused
