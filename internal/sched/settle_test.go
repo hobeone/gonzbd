@@ -114,6 +114,124 @@ func TestSettle_RefusedFinishReleasesNothing(t *testing.T) {
 	}
 }
 
+// TestCancelInterrupts pins §8.4's interrupt/gate boundary directly, rather
+// than only through cancelInterrupts's two callers (finishCancel and
+// settleLocked). The expectation for each state is written out explicitly —
+// not derived from job.IsProduction — so this does not degenerate into a
+// restatement of cancelInterrupts's own one-line body.
+func TestCancelInterrupts(t *testing.T) {
+	tests := []struct {
+		state job.State
+		want  bool // true: cancel interrupts (pre-boundary); false: cancel gates (post-boundary)
+	}{
+		{job.StateUnset, true},
+		{job.Fetching, true},
+		{job.Assessing, true},
+		{job.Repairing, true},
+		{job.Extracting, false},
+		{job.Finalizing, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.state.String(), func(t *testing.T) {
+			if got := cancelInterrupts(tc.state); got != tc.want {
+				t.Errorf("cancelInterrupts(%v) = %v, want %v", tc.state, got, tc.want)
+			}
+		})
+	}
+}
+
+// driveToAssessing walks a job to a RUNNING Assessing: Fetching (holds a
+// lease) → Assessing (holds that same lease AND a compute slot, per
+// requirements.go's needsLease/needsSlot). It is the shape
+// TestSettleLocked_ReleasesSlotEvenWhenReclaimFails needs: a job holding both
+// resources settleLocked's four-step order returns.
+func driveToAssessing(t *testing.T, q *Queue, j *job.Job) {
+	t.Helper()
+	if err := q.Advance(j); err != nil { // BeginAttempt
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	if err := q.Advance(j); err != nil { // grant the Fetching lease
+		t.Fatalf("Advance (grant): %v", err)
+	}
+	if err := j.SetNext(job.Assessing); err != nil {
+		t.Fatalf("SetNext(Assessing): %v", err)
+	}
+	if err := q.Advance(j); err != nil { // move to Assessing, take a slot
+		t.Fatalf("Advance (to Assessing): %v", err)
+	}
+	s := j.Snapshot()
+	if s.State.State != job.Assessing || !s.HoldsLease || !q.slots.holds(j.ID()) {
+		t.Fatalf("drive ended at %+v, holds lease=%v slot=%v, want Assessing holding both",
+			s, s.HoldsLease, q.slots.holds(j.ID()))
+	}
+}
+
+// TestSettleLocked_ReleasesSlotEvenWhenReclaimFails is a direct call to
+// settleLocked — check_test_alignment requires one, and it is worth having on
+// its own merits: it pins step 3 running unconditionally before step 4, per
+// settleLocked's own doc comment ("release the compute slot BEFORE the
+// reclaim ... turning one audit error into a permanent pool-B leak").
+//
+// The lease this job holds is pre-removed from the pool's issued set before
+// settleLocked runs, so j.Finish still succeeds (the job itself is unaware)
+// but the subsequent q.reclaim(l) fails its identity audit with
+// errNotOutstanding. If step 3 ran after step 4 — or was skipped on a reclaim
+// failure — the slot would still be held after this call returns.
+func TestSettleLocked_ReleasesSlotEvenWhenReclaimFails(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	driveToAssessing(t, q, j)
+
+	// The pool issued LeaseID 1 first (newLeasePool starts at zero, issue
+	// increments before minting): `driveToAssessing` above is this job's
+	// first and only Advance sequence, so its one grantFor call is the pool's
+	// first issue. Reclaiming it here, out from under the job, simulates the
+	// identity-audit failure without needing a second Queue.
+	if err := q.leases.reclaim(job.NewLease(1)); err != nil {
+		t.Fatalf("setup: pre-reclaim of lease 1: %v", err)
+	}
+
+	q.mu.Lock()
+	err := q.settleLocked(j, job.OutcomeFailed, j.Snapshot())
+	q.mu.Unlock()
+
+	if !errors.Is(err, errNotOutstanding) {
+		t.Fatalf("settleLocked error = %v, want errNotOutstanding", err)
+	}
+	if got := q.slots.outstanding(); got != 0 {
+		t.Errorf("slots outstanding = %d, want 0 — step 3 must release the slot "+
+			"even though step 4's reclaim then fails", got)
+	}
+	if got := j.Snapshot().State.Outcome; got != job.OutcomeFailed {
+		t.Errorf("Outcome = %v, want Failed — Finish (step 2) still committed", got)
+	}
+}
+
+// TestSettleLocked_RefusedFinishReleasesNothing is a direct call to
+// settleLocked on a job with no open attempt: j.Finish returns an error
+// before settleLocked's steps 3 and 4 run at all. Nothing was ever acquired
+// for a job that never ran, so both pools stay empty — the direct-call
+// counterpart of TestSettle_RefusedFinishReleasesNothing, which only reaches
+// settleLocked through Settle.
+func TestSettleLocked_RefusedFinishReleasesNothing(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("never-run", "n", job.Policy{})
+
+	q.mu.Lock()
+	err := q.settleLocked(j, job.OutcomeFailed, j.Snapshot())
+	q.mu.Unlock()
+
+	if err == nil {
+		t.Fatal("settleLocked on a never-run job = nil, want an error from Finish")
+	}
+	if got := q.leases.outstanding(); got != 0 {
+		t.Errorf("leases outstanding = %d, want 0", got)
+	}
+	if got := q.slots.outstanding(); got != 0 {
+		t.Errorf("slots outstanding = %d, want 0", got)
+	}
+}
+
 // driveToFinalizing walks a job along the work spine to a RUNNING Finalizing:
 // Fetching → Assessing → cross to Extracting → Finalizing. It asserts at the
 // end rather than trusting the walk, because a silent early exit would make
