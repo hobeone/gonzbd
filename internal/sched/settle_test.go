@@ -137,14 +137,50 @@ func TestSettle_GatedCancelPreservesTheOutcome(t *testing.T) {
 	}
 }
 
-// TestSettle_RefusedFinishReleasesNothing pins step 2 of settleLocked's
-// ordering. A job with no open attempt cannot be settled, and the failure must
-// not take resources from the position it still occupies.
-func TestSettle_RefusedFinishReleasesNothing(t *testing.T) {
+// TestSettle_RefusedFinishErrors asserts exactly what its name says: an error
+// comes back. It does NOT assert anything about release, because a never-run
+// job holds neither pool — TestSettle_RefusedFinishRetainsTheLeaseAndSlot
+// below is what pins the retention half of step 2, on a fixture that can
+// actually observe a wrongful release.
+//
+// This test used to be named TestSettle_RefusedFinishReleasesNothing while
+// asserting only this — a name-claim mismatch the final review found:
+// inserting a release above settleLocked's `if err != nil` check LIVED
+// against the old name's assertions, because a job holding nothing cannot
+// distinguish "released" from "never acquired".
+func TestSettle_RefusedFinishErrors(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("never-run", "n", job.Policy{})
 	if err := q.Settle(j, job.OutcomeFailed); err == nil {
 		t.Fatal("Settle on a job that never ran = nil, want an error from Finish")
+	}
+}
+
+// TestSettle_RefusedFinishRetainsTheLeaseAndSlot pins the reachable case
+// TestSettle_RefusedFinishErrors's never-run fixture cannot reach: a job
+// that holds both a lease and a slot when Finish refuses it.
+// admissibleAt[OutcomeOK] is {Finalizing} (internal/job/admissibility.go),
+// so Settle(j, OutcomeOK) on a job open at Assessing — holding a lease and a
+// slot, both of which Assessing requires — is refused by Finish while the
+// job still occupies that position. A job stripped at a position that
+// requires a lease is resourceless while still occupying it, which is
+// exactly what step 2's ordering (release AFTER the error check, never
+// before) exists to prevent.
+func TestSettle_RefusedFinishRetainsTheLeaseAndSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustHoldAt(t, q, j, job.Assessing)
+
+	if err := q.Settle(j, job.OutcomeOK); err == nil {
+		t.Fatal("Settle(OutcomeOK) on a job at Assessing = nil, want an error " +
+			"— OutcomeOK is admissible only at Finalizing")
+	}
+	if got := q.leases.outstanding(); got != 1 {
+		t.Errorf("leases outstanding = %d, want 1 — a refused Finish must not release "+
+			"the lease Assessing still requires", got)
+	}
+	if !q.slots.holds(j.ID()) {
+		t.Error("refused Finish released the slot — Assessing still requires it")
 	}
 }
 
@@ -245,7 +281,7 @@ func TestSettleLocked_ReleasesSlotEvenWhenReclaimFails(t *testing.T) {
 // settleLocked on a job with no open attempt: j.Finish returns an error
 // before settleLocked's steps 3 and 4 run at all. Nothing was ever acquired
 // for a job that never ran, so both pools stay empty — the direct-call
-// counterpart of TestSettle_RefusedFinishReleasesNothing, which only reaches
+// counterpart of TestSettle_RefusedFinishErrors, which only reaches
 // settleLocked through Settle.
 func TestSettleLocked_RefusedFinishReleasesNothing(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
