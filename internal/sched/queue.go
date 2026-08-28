@@ -45,6 +45,15 @@ type Workers interface {
 // comment uses) so it does not inflate that count. Prior spec §7.1's order is
 // Queue.mu before Job.mu, so nothing here may call into a *job.Job method
 // while holding mu in a way that would take the locks in the other order.
+//
+// The grep above proves the COUNT; it says nothing about whether these are
+// the same nine NAMES this comment lists, so a rename this pattern still
+// matches (or a new locker under an old name) would leave the citation green
+// while the prose went wrong.
+// TestQueueMuLockers_MatchTheEnumerationStatedInProse
+// (lock_enumeration_test.go) is what checks the names, here and at pool.go's
+// and internal/job/job.go's matching claims — a fourth hand-maintained copy
+// of this list is not needed.
 type Queue struct {
 	mu     sync.Mutex
 	paused bool

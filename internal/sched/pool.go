@@ -52,7 +52,10 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 // Advance (advance.go), Settle (settle.go), Render (render.go), and Pause,
 // Resume and Paused (queue.go; see queue.go's own comment on mu) — so this is
 // now a description of a lock real code takes, not a forward-looking
-// constraint.
+// constraint. queue.go's own comment carries the backticked grep for the
+// count; internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse
+// is what checks that these nine NAMES, not merely this count, are still
+// right — a grep proves how many, never which ones.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID

@@ -138,7 +138,11 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // by construction: this package imports nothing from internal/sched (its own
 // import block has none; the only hits for that string are comment mentions
 // in doc.go and this file), so Job cannot call into Queue at all, and the
-// order is one-directional — Queue.mu before Job.mu, never the reverse.
+// order is one-directional — Queue.mu before Job.mu, never the reverse. The
+// grep above proves the count of nine; it cannot say whether these are the
+// same nine NAMES named here, so a rename this pattern still matches would
+// leave this citation green while the prose went wrong. That is what
+// internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse checks.
 //
 // Job does no I/O. It exposes State() and the attempt accessors. The later
 // plan's design intent is a Checkpointer that reads those and writes the
