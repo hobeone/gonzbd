@@ -74,11 +74,11 @@ func (q *Queue) reclaim(l *job.Lease) error { return q.leases.reclaim(l) }
 // leaked nowhere; the slot had none and leaked everywhere.
 //
 // The asymmetry was not acquire-count versus release-count. Acquisition was
-// designed to have an owner from the start — grantFor is meant to be the sole
-// production caller of slots.acquire, but grantFor is Task 7 work and does
-// not exist at this commit: `grep -n 'slots\.acquire' internal/sched/*.go |
-// grep -v _test.go` finds only this comment's own mention of the name, zero
-// production call sites. Release, by contrast, never had a designated owner
+// designed to have an owner from the start — grantFor (advance.go, Task 7) IS
+// the sole production caller of slots.acquire: `grep -n 'slots\.acquire'
+// internal/sched/*.go | grep -v _test.go` now finds exactly two lines, the
+// call inside grantFor and this comment's own mention of the name — one
+// production call site. Release, by contrast, never had a designated owner
 // at all — one ad-hoc call inside finishCancel — which is why the three paths
 // that never reach finishCancel each leaked.
 //
