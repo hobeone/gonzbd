@@ -129,10 +129,12 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 //
 // The ordering half of this is now enforced, not merely intent: internal/sched
 // defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
-// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds five
+// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds eight
 // sites (advance.go's Park, Retry and Advance, cancel.go's Cancel, settle.go's
-// Settle), and every *job.Job method call in the package's non-test sources
-// sits inside one of those five locked spans. The other half holds by construction: this
+// Settle, and queue.go's Pause, Resume and Paused), and every *job.Job method
+// call in the package's non-test sources sits inside one of the five that call
+// into Job at all — Pause, Resume and Paused touch only Queue's own paused
+// field and never reach a *Job. The other half holds by construction: this
 // package imports nothing from internal/sched (its own import block has none;
 // the only hits for that string are comment mentions in doc.go and this
 // file), so Job cannot call into Queue at all, and the order is

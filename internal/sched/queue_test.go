@@ -354,3 +354,67 @@ func TestQueue_NowReturnsTheInjectedClock(t *testing.T) {
 		t.Errorf("now() = %v, want %v (the injected clock, not wall time)", got, want)
 	}
 }
+
+// TestPause_MakesGlobalPauseReachable pins the gap this closes. gatedBy reads
+// q.paused, and before these doors nothing in the package could write it — so
+// job.GlobalPause existed as a WaitReason that no production code path could
+// ever produce.
+func TestPause_MakesGlobalPauseReachable(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	s := j.Snapshot()
+	if _, gated := q.gatedBy(s); gated {
+		t.Fatal("a fresh Queue must not be gated")
+	}
+
+	q.Pause()
+	if !q.Paused() {
+		t.Error("Paused() = false after Pause()")
+	}
+	r, gated := q.gatedBy(j.Snapshot())
+	if !gated || r != job.GlobalPause {
+		t.Errorf("gatedBy = (%v, %v), want (GlobalPause, true)", r, gated)
+	}
+
+	q.Resume()
+	if q.Paused() {
+		t.Error("Paused() = true after Resume()")
+	}
+	if _, gated := q.gatedBy(j.Snapshot()); gated {
+		t.Error("gatedBy still gated after Resume()")
+	}
+}
+
+// TestPause_DoesNotTakeResourcesFromAHoldingJob pins the contract Decision 3
+// puts on B2's dispatcher. §8.3: gating never interrupts work. Pause sets a
+// flag; it cannot sweep, because the Queue holds no jobs to sweep. A holding
+// job keeps everything until its worker returns and the dispatcher Parks it.
+func TestPause_DoesNotTakeResourcesFromAHoldingJob(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (grant): %v", err)
+	}
+
+	q.Pause()
+	if err := q.Advance(j); err != nil { // a tick under global pause
+		t.Fatalf("Advance under pause: %v", err)
+	}
+	if !j.Snapshot().HoldsLease {
+		t.Error("Pause took the lease from a holding job — §8.3: gating never " +
+			"interrupts work; only Park releases it")
+	}
+
+	if err := q.Park(j); err != nil { // the dispatcher's half of the contract
+		t.Fatalf("Park: %v", err)
+	}
+	if got := q.leases.outstanding(); got != 0 {
+		t.Errorf("leases outstanding after Park = %d, want 0", got)
+	}
+}
