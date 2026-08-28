@@ -111,9 +111,10 @@ type WriteRequest struct {
 
 	// disposition says what the cancel arm does with the files it closes.
 	// Ignored everywhere else: `grep -n 'req\.disposition'
-	// internal/assembler/*.go` returns exactly one read, in the
-	// fileIdxCancelJob arm of dispatchRequest, which passes it to
-	// closeCancelledFile.
+	// internal/assembler/*.go | grep -v '// '` returns exactly one read, in
+	// the fileIdxCancelJob arm of dispatchRequest, which passes it to
+	// closeCancelledFile. The second filter drops a prose mention of the name
+	// in dispatchRequest's own comment block.
 	//
 	// Unexported for the reason the block above dispatchRequest gives for
 	// ackCh and syncOp: JobID and FileIdx are exported and overwritten from

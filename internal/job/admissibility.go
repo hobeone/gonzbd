@@ -6,9 +6,12 @@ import (
 )
 
 // admissibleAt is the sole owner of "which verdict may an attempt record from
-// which position" — sole in the enumerable sense: `git grep -n 'admits('
-// -- 'internal/job/*.go' ':!internal/job/*_test.go'` returns one production
-// call site, attempt.go's finish. It replaces two hand-written guards there,
+// which position" — sole in the enumerable sense: `git grep -n 'admits(' --
+// 'internal/job/*.go' ':!internal/job/*_test.go' | grep -v '// ' | grep -v
+// 'func '` returns one production call site, attempt.go's finish. The two
+// filters drop this comment's own mention of the name and the declaration
+// below; without them the pattern matches four lines and the claim reads as
+// false. It replaces two hand-written guards there,
 // one of which was wrong through two review rounds while its own comment
 // stated the correct rule beside it.
 //

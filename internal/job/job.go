@@ -80,10 +80,21 @@ var ErrAlreadyLeased = errors.New("job: already holds a lease")
 // A sentinel rather than a bare fmt.Errorf because Grant's refusals mean
 // different things to the caller and it must be able to tell them apart:
 // ErrAlreadyLeased says the job is already admitted and the grant is
-// redundant, this says the caller passed nothing and has a bug. There are five
-// now — `grep -n 'return Err' ` inside Grant lists ErrNilLease,
-// ErrUnidentifiedLease, ErrNoOpenAttempt, ErrLeaseAfterBoundary and
-// ErrAlreadyLeased. It was also the last ad-hoc error string in the
+// redundant, this says the caller passed nothing and has a bug. Grant refuses
+// five ways: ErrNilLease, ErrUnidentifiedLease, ErrNoOpenAttempt,
+// ErrLeaseAfterBoundary and ErrAlreadyLeased, in that order.
+//
+// That list is deliberately NOT presented as a grep. The population is "the
+// errors one function returns", and no pattern expresses it — a whole-file
+// search for 'return Err' finds Grant's five alongside every other refusal in
+// the file. An earlier version cited a pathless grep for 'return Err' — no
+// file argument at all — which reads as evidence and runs as nothing: grep
+// then takes its input from the null device and reports zero.
+// check_citations found it, and now refuses that shape outright. The command
+// is described rather than backticked here, because a backticked example is
+// indistinguishable from a live citation to any tool that reads them. Where a
+// population is real but not greppable, name it and stop, rather than dressing
+// prose as an enumeration. It was also the last ad-hoc error string in the
 // package — every other refusal here is matchable, and one that is not reads
 // as an oversight rather than a decision.
 var ErrNilLease = errors.New("job: Grant(nil): a nil lease is indistinguishable from holding none")
