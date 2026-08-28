@@ -1185,11 +1185,20 @@ Fetching   Assessing   Run    lease    pool B full
 ```
 Finalizing  —   Run    slot     → "Moving"
   user pauses: §8.3 gates per-state, so the state runs to completion
-  Finish(OutcomeOK)                                      → "Completed"
+  Finish(OutcomeOK)
+Finished    —   Run    slot            — Finish yields only the lease (there is
+                                          none here); the slot Finalizing held
+                                          is not released yet
+  advance → settled branch: releaseFor(StateUnset)   → releases the slot
+Finished    —   Run    —               → "Completed"
 ```
 
 There is no such thing as a paused `Finalizing` job that must resume: pause can
 only hold a job *before* `Finalizing` starts. Revision 2 had this stuck forever.
+The trailing `advance` step is the same sweep §5.5 needed: `Finish` yields the
+lease only, via `surrenderLocked`, and the compute slot survives until the
+settled branch's `releaseFor` runs on a later tick — see §5.5's own note for
+the mechanism.
 
 ### 5.8 A pre-boundary failure returns the lease
 
@@ -1200,10 +1209,15 @@ Fetching    —   Run   lease            → "Downloading"
 Fetching    Assessing  Run  lease
   ... Assessing verdict Unrecoverable
   l, _ := Finish(OutcomeUnrecoverable); q.reclaim(l)   ← lease returned
+Finished    —   Run   slot             — Assessing's slot is not released yet
+  advance → settled branch: releaseFor(StateUnset)   → releases the slot
 Finished    —   Run   —                → "Failed"
 ```
 
-Revision 3 leaked the lease here on every failed download.
+Revision 3 leaked the lease here on every failed download. The slot is a
+separate story, on the same schedule as §5.5 and §5.7: `Finish` returns only
+the lease, so the compute slot Assessing held survives until the settled
+branch's `releaseFor` runs on the next `advance` tick.
 
 ### 5.9 Retry when pool A is exhausted
 
@@ -1259,6 +1273,8 @@ granting, so the extraction that would have set `next` never ran.
 Finalizing  —  Run     slot       → "Moving"
   Cancel → IsProduction && running → gate
   the move and the user script complete; worker calls Finish(OutcomeOK)
+Finished    —  Cancel  slot            — Finalizing's slot is not released yet
+  advance → Intent still Cancel → finishCancel's settled arm: releaseFor(StateUnset)
 Finished    —  Cancel  —          → "Completed", Intent still IntentCancel
 ```
 
@@ -1267,6 +1283,14 @@ gate, and there is no gate after `Finalizing`. Recording `Cancelled` would be
 false — the files moved and the script ran — so the outcome is honest and the
 surviving `IntentCancel` is what the UI reads to say the request came too late
 (D-I11).
+
+The trailing `advance` step matters here for a reason none of the other traces
+share: `Intent` is still `IntentCancel` after the worker's own `Finish`, so
+every later `advance` call keeps routing to `finishCancel` rather than
+`advance`'s own settled branch — and, before this branch's Critical 1 fix,
+`finishCancel`'s settled arm returned without releasing anything, which
+stranded this exact job's slot permanently. `finishCancel`'s settled arm now
+releases it, on the same schedule the other post-`Finish` traces show.
 
 ---
 
