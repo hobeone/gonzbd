@@ -15,20 +15,16 @@ import (
 )
 
 // renderStatus renders j's status through the same seam production does:
-// the Queue computes Running and Reason from a Snapshot, and job.ToSABnzbd
-// turns those into the legacy vocabulary. Scenario tests assert on this
-// rather than on State/Outcome directly wherever the spec's trace names a
-// rendered status, because ToSABnzbd is the thing a client actually sees.
+// q.Render composes the view under one lock, and job.ToSABnzbd turns it into
+// the legacy vocabulary. Scenario tests assert on this rather than on
+// State/Outcome directly wherever the spec's trace names a rendered status,
+// because ToSABnzbd is what a client actually sees.
+//
+// This was a hand-rolled copy of Render's body until Render existed. Routing
+// it here is what keeps every scenario test pinning the PRODUCTION composition
+// rather than a parallel one that could drift from it silently.
 func renderStatus(q *Queue, j *job.Job) constants.Status {
-	s := j.Snapshot()
-	running := q.running(j.ID(), s)
-	reason, _ := q.waitReason(j.ID(), s)
-	return job.ToSABnzbd(job.RenderView{
-		StateView: s.State,
-		Running:   running,
-		Reason:    reason,
-		Intent:    s.Intent,
-	})
+	return job.ToSABnzbd(q.Render(j))
 }
 
 // TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b. §10's

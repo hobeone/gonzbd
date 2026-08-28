@@ -37,14 +37,14 @@ type Workers interface {
 // its first locker during this package's build order (queue.go landed before
 // advance.go so that reclaim and releaseFor — which finishCancel needs —
 // existed for Cancel to call), but it is no longer the only one: `grep -n
-// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds eight production
+// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds nine production
 // lockers — Cancel (cancel.go), Park, Retry and Advance (advance.go), Settle
-// (settle.go), and Pause, Resume and Paused (this file) — plus this sentence's
-// own mention of the pattern, written as q.mu.Loc[k]() (the same self-matching
-// workaround internal/job/job.go's surrenderLocked comment uses) so it does
-// not inflate that count. Prior spec §7.1's order is Queue.mu before Job.mu,
-// so nothing here may call into a *job.Job method while holding mu in a way
-// that would take the locks in the other order.
+// (settle.go), Render (render.go), and Pause, Resume and Paused (this file) —
+// plus this sentence's own mention of the pattern, written as q.mu.Loc[k]()
+// (the same self-matching workaround internal/job/job.go's surrenderLocked
+// comment uses) so it does not inflate that count. Prior spec §7.1's order is
+// Queue.mu before Job.mu, so nothing here may call into a *job.Job method
+// while holding mu in a way that would take the locks in the other order.
 type Queue struct {
 	mu     sync.Mutex
 	paused bool
