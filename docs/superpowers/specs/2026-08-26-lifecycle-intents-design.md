@@ -1186,11 +1186,11 @@ Fetching   Assessing   Run    lease    pool B full
 Finalizing  —   Run    slot     → "Moving"
   user pauses: §8.3 gates per-state, so the state runs to completion
   Finish(OutcomeOK)
-Finished    —   Run    slot            — Finish yields only the lease (there is
+Finalizing  —   Run    slot            — Finish yields only the lease (there is
                                           none here); the slot Finalizing held
                                           is not released yet
   advance → settled branch: releaseFor(StateUnset)   → releases the slot
-Finished    —   Run    —               → "Completed"
+Finalizing  —   Run    —               → "Completed"
 ```
 
 There is no such thing as a paused `Finalizing` job that must resume: pause can
@@ -1209,9 +1209,9 @@ Fetching    —   Run   lease            → "Downloading"
 Fetching    Assessing  Run  lease
   ... Assessing verdict Unrecoverable
   l, _ := Finish(OutcomeUnrecoverable); q.reclaim(l)   ← lease returned
-Finished    —   Run   slot             — Assessing's slot is not released yet
+Assessing   —   Run   slot             — Assessing's slot is not released yet
   advance → settled branch: releaseFor(StateUnset)   → releases the slot
-Finished    —   Run   —                → "Failed"
+Assessing   —   Run   —                → "Failed"
 ```
 
 Revision 3 leaked the lease here on every failed download. The slot is a
@@ -1222,7 +1222,7 @@ branch's `releaseFor` runs on the next `advance` tick.
 ### 5.9 Retry when pool A is exhausted
 
 ```
-Finished  —  Run  —   Outcome=Failed          → "Failed"
+Fetching  —  Run  —   Outcome=Failed          → "Failed"
   user retries → q.Retry(j) → BeginAttempt(now)          (no lease needed)
 Fetching  —  Run  —   holds nothing           → "Queued"
   ... capacity frees → branch 2 → grantFor(Fetching)
@@ -1237,7 +1237,7 @@ could not be taken, and nothing could record that a retry was wanted.
 ```
 Fetching  —  Pause  —          → "Paused"
   ... a prior attempt settles Failed
-Finished  —  Pause  —          → "Failed"
+Fetching  —  Pause  —          → "Failed"
   user unpauses: SetIntent(IntentRun)   — legal on a settled attempt (§3.1)
   user retries  → q.Retry(j) → BeginAttempt; branch 2 grants
 Fetching  —  Run    lease      → "Downloading"
@@ -1273,9 +1273,9 @@ granting, so the extraction that would have set `next` never ran.
 Finalizing  —  Run     slot       → "Moving"
   Cancel → IsProduction && running → gate
   the move and the user script complete; worker calls Finish(OutcomeOK)
-Finished    —  Cancel  slot            — Finalizing's slot is not released yet
+Finalizing  —  Cancel  slot            — Finalizing's slot is not released yet
   advance → Intent still Cancel → finishCancel's settled arm: releaseFor(StateUnset)
-Finished    —  Cancel  —          → "Completed", Intent still IntentCancel
+Finalizing  —  Cancel  —          → "Completed", Intent still IntentCancel
 ```
 
 The cancel arrived after the last gate. §8.4 degrades post-boundary cancel to a
