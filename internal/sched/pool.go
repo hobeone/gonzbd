@@ -28,9 +28,12 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 // golangci-lint sees it. The pool knowing what is outstanding is what lets a
 // scenario test assert none were lost (spec §6, test 4b).
 //
-// Not goroutine-safe: every caller holds Queue.mu. Stated rather than locked,
-// because a second lock here would be a second thing to order against
-// Queue.mu and Job.mu (prior spec §7.1).
+// Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
+// rather than locked, because a second lock here would be a second thing to
+// order against Queue.mu and Job.mu (prior spec §7.1). Queue has no mu field
+// yet — Task 6 adds it in the same commit as Cancel, its first locker — so at
+// this commit the requirement is a forward-looking constraint on that future
+// caller, not a description of a lock any code takes today.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID

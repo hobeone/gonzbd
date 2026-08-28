@@ -1,7 +1,6 @@
 package sched
 
 import (
-	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -19,18 +18,18 @@ type Workers interface {
 	Abort(jobID string)
 }
 
-// Queue owns admission. Its lock is taken before any Job lock (prior spec
-// §7.1's order, Queue.mu before Job.mu) and no method here calls back into a
-// Job while another Job's lock is held.
+// Queue owns admission: the pure predicates over a job.Snapshot (holds,
+// running, gatedBy, waitReason) and the two resource-return paths (reclaim,
+// releaseFor) that Task 6's Cancel needs before it exists.
 //
-// No method in this file takes mu itself: waitReason calls gatedBy and
-// running, and running calls holds, all directly rather than through a
-// re-locking entry point, and sync.Mutex is not reentrant. The Task 6/7
-// callers that hold Job locks alongside these predicates (Advance, Cancel,
-// grantFor) are the ones that acquire mu, once, around a whole operation —
-// this file supplies the predicates they call while holding it.
+// It has no lock of its own yet. Task 6 adds a mu sync.Mutex field here in
+// the same commit that first takes it (Cancel does q.mu.Lock(); defer
+// q.mu.Unlock()) — prior spec §7.1's order is Queue.mu before Job.mu, and
+// that ordering holds once the field and its first caller land together. A
+// field nothing locks is not needed yet: this mirrors why reclaim and
+// releaseFor are declared here rather than beside their own first callers —
+// a declaration lands with the earliest thing that needs it.
 type Queue struct {
-	mu     sync.Mutex
 	paused bool
 	leases *leasePool
 	slots  *slotPool
@@ -151,6 +150,21 @@ func (q *Queue) waitReason(id string, s job.Snapshot) (job.WaitReason, bool) {
 	if needsLease(want) && !s.HoldsLease {
 		return job.NoLease, true
 	}
+	// This tail departs from the task brief's draft, which returned
+	// NoComputeSlot unconditionally once the lease check passed:
+	//
+	//   if needsLease(want) && !s.HoldsLease {
+	//       return job.NoLease, true
+	//   }
+	//   return job.NoComputeSlot, true
+	//
+	// That reports a job at Assessing{Next: Fetching} holding its lease as
+	// perpetually slot-starved, because Fetching needs no slot at all — it
+	// never checked needsSlot(want) before defaulting to NoComputeSlot.
+	// TestWaitReason_UsesTheNextStateWhenWorkHasEnded pins the corrected
+	// behaviour: work has ended and the job holds everything the next
+	// position requires, so it is ready to be advanced, not waiting on
+	// anything.
 	if needsSlot(want) && !q.slots.holds(id) {
 		return job.NoComputeSlot, true
 	}

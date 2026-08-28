@@ -291,32 +291,3 @@ func TestQueue_NowReturnsTheInjectedClock(t *testing.T) {
 		t.Errorf("now() = %v, want %v (the injected clock, not wall time)", got, want)
 	}
 }
-
-// TestQueue_MuSerializesAccess pins that Queue.mu is a working mutual-exclusion
-// lock, ready for the Task 6/7 callers (Advance, Cancel, grantFor) that will
-// hold it across a predicate and a pool mutation, even though no method in
-// this file takes it yet — see the Queue struct's comment for why.
-func TestQueue_MuSerializesAccess(t *testing.T) {
-	q := New(0, 0, testClock, &stubWorkers{})
-	q.mu.Lock()
-	acquired := make(chan struct{})
-	go func() {
-		q.mu.Lock()
-		defer q.mu.Unlock()
-		close(acquired)
-	}()
-
-	select {
-	case <-acquired:
-		t.Fatal("a second Lock succeeded while the first was still held")
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	q.mu.Unlock()
-
-	select {
-	case <-acquired:
-	case <-time.After(time.Second):
-		t.Fatal("the second Lock never succeeded after the first was released")
-	}
-}
