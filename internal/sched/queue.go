@@ -16,6 +16,16 @@ type Workers interface {
 	// immediately; the job settles on a later tick, once running() has gone
 	// false. §3.7: "immediately" describes when the worker is TOLD to stop,
 	// not when its resources are taken.
+	//
+	// Abort MUST NOT block, and MUST NOT acquire any lock that a caller could
+	// hold across a call into Queue. cancel.go calls Abort from inside
+	// Queue.mu's span — it is the only outward call this package makes while
+	// holding that lock, and check_lock_io cannot see through an interface
+	// method implemented in another package. If a B2 dispatcher takes its own
+	// lock on a tick and calls Queue.Advance (which takes Queue.mu), an Abort
+	// implementation that takes that same dispatcher lock deadlocks ABBA
+	// against a concurrent Cancel. This is a precondition B2's implementation
+	// of Workers must satisfy; nothing in this package enforces it.
 	Abort(jobID string)
 }
 

@@ -97,10 +97,16 @@ func (q *Queue) Retry(j *job.Job) error {
 	return j.BeginAttempt(q.now())
 }
 
-// Advance is the scheduling loop's entry point for one job. It writes no job
-// state on any blocked path, so a lost acquisition race costs a tick, never a
-// verdict. It takes no target — the target is next, written by the worker that
-// finished the state.
+// Advance is the scheduling loop's entry point for one job. A blocked path
+// never records a verdict — State, Next and Outcome are untouched — so a lost
+// acquisition race costs a tick, never a decision. It is not true that a
+// blocked path writes NO job state: branch 3's `if !q.grantFor(...) { return
+// nil }` can block after grantFor has already written j.lease via j.Grant,
+// which Snapshot().HoldsLease then reports, and grantFor's own comment
+// documents that write as deliberate — the job keeps a lease it is one slot
+// short of using, rather than giving up capacity it will need again on the
+// next tick. Advance takes no target — the target is next, written by the
+// worker that finished the state.
 func (q *Queue) Advance(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
