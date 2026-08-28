@@ -29,8 +29,19 @@ func newSettleQueue(t *testing.T) (*Queue, *job.Job) {
 // TestSettle_ReturnsBothPools pins the door's whole reason for existing: three
 // exported job doors yield a *job.Lease and before this one, nothing exported
 // could take it back.
+//
+// It settles from Finalizing, not newSettleQueue's Fetching, because
+// OutcomeFailed is admissible everywhere (admissibleAt[OutcomeFailed] in
+// internal/job/admissibility.go) but Fetching never acquires a slot
+// (needsSlot in requirements.go) — a job settled there has q.slots.outstanding
+// == 0 before Settle even runs, which cannot discriminate a slot leak from a
+// correct release. driveToFinalizing's job holds both a lease and a slot
+// (asserted by the helper itself), so this test's slot assertion has
+// something to observe.
 func TestSettle_ReturnsBothPools(t *testing.T) {
-	q, j := newSettleQueue(t)
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	driveToFinalizing(t, q, j)
 	if err := q.Settle(j, job.OutcomeFailed); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}

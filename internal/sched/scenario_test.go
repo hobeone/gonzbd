@@ -199,11 +199,13 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 	// 'q\.releaseFor(' internal/sched/*.go | grep -v _test.go` (the `q\.`
 	// prefix excludes releaseFor's own func declaration in queue.go, which a
 	// bare `releaseFor(` pattern also matches) finds seven production call
-	// sites: parkLocked, Retry, Advance's settled branch, Advance's demotion,
-	// Advance's release on a failed Transition (the rollback for a slot
-	// grantFor already acquired for a destination the job never reached), and
-	// finishCancel's two arms — the running-then-settled path and the
-	// settled-on-entry arm.
+	// sites: parkLocked, Retry, Advance's settled branch, Advance's release on
+	// a failed Transition (the rollback for a slot grantFor already acquired
+	// for a destination the job never reached), Advance's demotion,
+	// finishCancel's settled-on-entry arm (cancel.go), and settleLocked
+	// (settle.go) — reached both from Settle directly and from finishCancel's
+	// running-then-settled path, which now delegates to it rather than
+	// releasing the slot itself.
 	//
 	// It deliberately asks about the current position, not next: a job whose
 	// work has finished still occupies the position it finished in and still
