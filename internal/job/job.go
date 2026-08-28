@@ -483,13 +483,17 @@ func (j *Job) surrenderLocked() *Lease {
 // Snapshot is the set of job facts a scheduling decision reads — the four
 // fields below — taken under ONE lock acquisition.
 //
-// That set is deliberately NOT claimed to be complete. internal/sched does not
-// exist yet, so there is no population of scheduling decisions to enumerate
-// against, and a comment asserting completeness here would be exactly the kind
-// of unverified universal Rule 4 forbids. What is meant to make it complete is
-// the SIGNATURE, not this sentence: §3.4's predicates take a Snapshot rather
-// than a *Job, so a decision needing a fifth fact must add it here rather than
-// reach for a lock. That becomes checkable in Half B1 task 5, and not before.
+// That set is deliberately NOT claimed to be complete. internal/sched now
+// exists (Half B1) and five of its functions take a Snapshot rather than a
+// *Job — `grep -n 'job\.Snapshot)' internal/sched/*.go | grep -v _test.go |
+// grep 'func '` finds finishCancel, holds, running, gatedBy and waitReason —
+// but that is not the same claim as "these five fields cover every
+// scheduling decision"; nothing enumerates the fields a future predicate
+// might need, so asserting completeness here would still be the kind of
+// unverified universal Rule 4 forbids. What makes it complete enough is the
+// SIGNATURE, not this sentence: §3.4's predicates take a Snapshot rather
+// than a *Job, so a decision needing a fifth fact must add it here rather
+// than reach for a lock.
 //
 // It exists because the Queue's questions are composite. running(j) is "the
 // attempt is open AND it holds what its state requires AND next is unset" —
