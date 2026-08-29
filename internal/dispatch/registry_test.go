@@ -81,6 +81,28 @@ func TestRemove_PreservesOrderOfRemainingEntries(t *testing.T) {
 	}
 }
 
+// TestRemove_PrunesTheWrittenRecord pins that remove also deletes the job's
+// d.written entry, not just its registry entries: without this, d.written
+// grows without bound as jobs are evicted, and a reused job ID would have its
+// first Save wrongly suppressed by comparison against the dead job's stale
+// row.
+func TestRemove_PrunesTheWrittenRecord(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.markWritten(Persisted{ID: "j1", Header: Header{Name: "n"}, State: job.StateView{State: job.Fetching}})
+	if _, ok := d.lastWritten("j1"); !ok {
+		t.Fatal("setup: markWritten did not record j1")
+	}
+
+	d.remove("j1")
+
+	if _, ok := d.lastWritten("j1"); ok {
+		t.Error("lastWritten(j1) = ok after remove, want false — remove must prune d.written alongside d.byID and d.order")
+	}
+}
+
 func TestList_EmptyRegistryReturnsEmptyNonNil(t *testing.T) {
 	d := newTestDispatcher(t)
 	got := d.List()

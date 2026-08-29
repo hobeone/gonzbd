@@ -64,17 +64,24 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 	return out
 }
 
-// remove deletes a job from both d.byID and d.order under d.mu.
+// remove deletes a job from d.byID, d.order and d.written under d.mu.
 //
 // It preserves the relative order of the remaining entries: queue order is
 // the priority policy sched consults, and a swap-with-last deletion would
-// silently reorder jobs behind the removed one. Task 6's eviction is the
-// first caller — it never removes a running job, but this method makes no
-// such assumption itself.
+// silently reorder jobs behind the removed one. evictCancelledNeverRun
+// (tick.go) is the first caller — it never removes a running job, but this
+// method makes no such assumption itself.
+//
+// d.written is pruned here too, not left to grow unboundedly: without this,
+// a job removed from the registry keeps its last-Persisted entry forever,
+// and if the store or a caller later reuses that same job ID, the reused
+// job's first persistIfChanged would compare against the dead job's stale
+// row and could wrongly suppress a Save that should have happened.
 func (d *Dispatcher) remove(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.byID, id)
+	delete(d.written, id)
 	for i, oid := range d.order {
 		if oid == id {
 			d.order = append(d.order[:i], d.order[i+1:]...)
