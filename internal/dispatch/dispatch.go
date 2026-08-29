@@ -482,7 +482,24 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dispatch: restore: load: %w", err)
 	}
+	// Restore is all-or-nothing. Registering as it goes would otherwise leave
+	// every row before the failing one in the registry: Start reports the
+	// error and clears started, so a caller may legitimately retry once a
+	// transient store problem clears — but the retry re-Loads the same rows
+	// and Add refuses the first with "already registered", so the dispatcher
+	// can never start again. In between, List and Stop would be operating on
+	// a queue that was never fully restored.
+	//
+	// remove is total (registry.go), so rolling back a partial restore needs
+	// nothing beyond calling it for each ID this call registered — including
+	// the write markWritten recorded, which remove also clears.
 	now := time.Now()
+	var registered []string
+	defer func() {
+		for _, id := range registered {
+			d.remove(id)
+		}
+	}()
 	for _, p := range rows {
 		j, err := reconstruct(p.ID, p.Header.Name, p.State, p.Intent, now)
 		if err != nil {
@@ -491,8 +508,10 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		if err := d.Add(j, p.Header); err != nil {
 			return fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err)
 		}
+		registered = append(registered, p.ID)
 		d.markWritten(p)
 	}
+	registered = nil // every row landed; the deferred rollback becomes a no-op
 	return nil
 }
 

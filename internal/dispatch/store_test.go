@@ -470,3 +470,46 @@ func TestFakeStore_RowsAndOrderStayInStep(t *testing.T) {
 		t.Error("row(b) survived a re-seed — seed replaces the store's contents")
 	}
 }
+
+// TestRestore_RollsBackWhenALaterRowFails pins that a failed startup leaves
+// the registry empty rather than half-populated.
+//
+// restore registers each row as it goes, so a row that fails partway leaves
+// every earlier row in d.byID. Start reports the error and clears started, so
+// the caller may legitimately retry once a transient store problem clears —
+// but the retry re-Loads the same rows and d.Add refuses the first one with
+// "already registered", so the dispatcher can never start again. In between,
+// List and Stop operate on a queue that was never fully restored.
+func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{
+		{ID: "good", Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
+		// StateUnset carrying a Next is a position no attempt can hold, so
+		// reconstruct rejects it — a stand-in for any row that fails partway.
+		{ID: "bad", Header: Header{Name: "b"}, State: job.StateView{State: job.StateUnset, Next: job.Assessing}},
+	})
+	d := newTestDispatcher(t, withStore(st))
+
+	err := d.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start() = nil, want an error — the second row cannot be reconstructed")
+	}
+
+	if got := len(d.List()); got != 0 {
+		t.Errorf("registry holds %d jobs after a failed restore, want 0 — the "+
+			"rows registered before the failure were left behind", got)
+	}
+
+	// The retry is the consequence that bites: same store, now readable.
+	st.seed([]Persisted{
+		{ID: "good", Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
+	})
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("second Start: %v — a retry after a failed restore must be able "+
+			"to register the rows the first attempt left behind", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+	if got := len(d.List()); got != 1 {
+		t.Errorf("registry holds %d jobs after the retry, want 1", got)
+	}
+}
