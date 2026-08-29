@@ -434,6 +434,11 @@ current size. `docs/queue-lifecycle.md` already assigns residency to the
 
 ## What this means for B2's shape
 
+The repository-wide figures below were measured against `0549d7cd`, this
+branch's merge base. They are a snapshot of the decision's context, not a
+maintained invariant, and are not expected to be kept current as the tree
+moves.
+
 B2 cannot be one plan, but it is smaller than the raw figure suggests.
 `internal/queue` is 27,204 lines across 99 files — of which **7,831 lines in 15
 files are non-test** (`queue.go` 2,211; `sqlite_store.go` 1,605; `job.go` 1,024;
@@ -452,9 +457,15 @@ Proposed decomposition, for discussion:
 | PR | Contains | Depends on |
 |---|---|---|
 | **B2.1** | `Settle` + `settleLocked` extraction, `Park`, `Pause`/`Resume`/`Paused`, `Render`. Still imported by nothing. | this RFC |
-| **B2.2** | Persistence of `State`, `Next`, `Outcome`, `Intent`, `crossed` — a new `goose` migration | B2.1 |
+| **B2.2** | Persistence of `State`, `Next`, `Outcome`, `Intent` — a new `goose` migration | B2.1 |
 | **B2.3** | The dispatcher and the composed view together: `Workers` implementation, residency, worker yield → `Park`, tick → `Advance`, §4.4's `ToSABnzbd` inputs | B2.1, B2.2 |
 | **B2.4** | The swap: repoint the five production files, rewrite tests, delete `internal/queue` | all |
+
+`crossed` is deliberately absent from that list. It is derived from `State` —
+`func (a *Attempt) crossed() bool { return IsProduction(a.state) }`
+(`internal/job/attempt.go:191`) — and persisting it would create a second
+source of truth that could disagree with `State` after a restore, the smell
+Standing Design Rule 2 names for a derived value that is also stored.
 
 The view and the dispatcher land together because the dispatcher is what
 populates the view, and splitting them would mean defining view types in one PR
@@ -471,12 +482,19 @@ that nothing fills until the next.
    unsettled positions, and its last row — "`Extracting`, `Finalizing`,
    `Finished` → never, the job will not fetch again" — is now wrong for a
    *settled* attempt at any position, since `Retry` reopens one at `Fetching`.
-   **Proposed row, from review:** *reordering a settled job is recorded
-   immediately and takes effect only if `Retry` reopens it, at that new
-   position's next lease issuance.* It holds neither a lease nor a slot, so
-   nothing else can be affected. This is consistent with reorder remaining total
-   and unconditionally recorded (§8.1.1); folding it into §4.7 needs a spec
-   edit rather than a code change.
+   **Proposed rows, from review, split at the one-way boundary (§4.1):** a
+   settled **pre-boundary** attempt (`StateUnset`, `Fetching`, `Assessing`,
+   `Repairing`) may still be reopened by `Retry`, so reordering it is recorded
+   immediately and takes effect at that reopened attempt's next lease
+   issuance. A settled **post-boundary** attempt (`Extracting`, `Finalizing`)
+   cannot be reopened: `BeginAttempt` refuses with `ErrBoundaryConsumed`
+   (`internal/job/job.go:45`) when the job's most recent attempt crossed
+   (`internal/job/job.go:273`), so `Retry` can never reach it. For that case
+   the original row stands — never, the job will not fetch again — and
+   reordering it is recorded but can never take effect. Neither case holds a
+   lease or a slot, so nothing else can be affected. This is consistent with
+   reorder remaining total and unconditionally recorded (§8.1.1); folding it
+   into §4.7 needs a spec edit rather than a code change.
 4. **`q.discard`, and a rendering hole it leaves open.** `finishCancel` returns
    `nil` for a never-run job and names `discard` as B2's, with the store. Review
    traced what that costs today, and it is worse than a missing feature: a
