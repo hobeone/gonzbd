@@ -64,7 +64,10 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 	return out
 }
 
-// remove deletes a job from d.byID, d.order and d.written under d.mu.
+// remove deletes a job from EVERY per-job structure — d.byID, d.order,
+// d.written, d.resident and d.launched — under one d.mu span. See the
+// Dispatcher struct's per-job map comment (dispatch.go) for why "every" is
+// the rule here rather than "the ones this caller happens to care about".
 //
 // It preserves the relative order of the remaining entries: queue order is
 // the priority policy sched consults, and a swap-with-last deletion would
@@ -72,16 +75,24 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 // (tick.go) is the first caller — it never removes a running job, but this
 // method makes no such assumption itself.
 //
-// d.written is pruned here too, not left to grow unboundedly: without this,
-// a job removed from the registry keeps its last-Persisted entry forever,
-// and if the store or a caller later reuses that same job ID, the reused
-// job's first persistIfChanged would compare against the dead job's stale
-// row and could wrongly suppress a Save that should have happened.
+// What each prune buys, since none of them is obviously load-bearing on its
+// own and all three were omitted at least once:
+//
+//   - d.written: a job removed from the registry would keep its last-Persisted
+//     entry forever, and a reused job ID's first persistIfChanged would
+//     compare against the dead job's stale row and wrongly suppress a Save.
+//   - d.resident: a stale true entry makes reconcileResidency take neither
+//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
+//     never hydrates and runs without its manifest.
+//   - d.launched: a stale true entry makes claimLaunched return false
+//     forever, so a reused ID is permanently unlaunchable.
 func (d *Dispatcher) remove(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.byID, id)
 	delete(d.written, id)
+	delete(d.resident, id)
+	delete(d.launched, id)
 	for i, oid := range d.order {
 		if oid == id {
 			d.order = append(d.order[:i], d.order[i+1:]...)

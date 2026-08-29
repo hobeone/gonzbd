@@ -103,6 +103,36 @@ func TestRemove_PrunesTheWrittenRecord(t *testing.T) {
 	}
 }
 
+// TestRemove_PrunesTheResidentAndLaunchedFlags is the same claim as the test
+// above for the two maps it did not cover. Both were leaking, and both are
+// worse than a leak: a stale resident entry makes reconcileResidency skip
+// hydration for a reused job ID (its hydrate arm requires !d.isResident(id)),
+// and a stale launched entry makes claimLaunched return false forever, so the
+// job is permanently unlaunchable.
+//
+// It asserts through the same accessors production uses rather than reading
+// the maps directly, so it pins the observable consequence rather than the
+// storage.
+func TestRemove_PrunesTheResidentAndLaunchedFlags(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.markResident("j1")
+	if !d.claimLaunched("j1") {
+		t.Fatal("setup: claimLaunched(j1) = false on a fresh dispatcher")
+	}
+
+	d.remove("j1")
+
+	if d.isResident("j1") {
+		t.Error("isResident(j1) = true after remove — a reused ID would never hydrate, since reconcileResidency only hydrates when !isResident")
+	}
+	if !d.claimLaunched("j1") {
+		t.Error("claimLaunched(j1) = false after remove — a reused ID would be permanently unlaunchable")
+	}
+}
+
 func TestList_EmptyRegistryReturnsEmptyNonNil(t *testing.T) {
 	d := newTestDispatcher(t)
 	got := d.List()

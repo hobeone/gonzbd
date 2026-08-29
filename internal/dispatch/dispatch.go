@@ -26,9 +26,35 @@ type Dispatcher struct {
 	byID  map[string]*entry
 	order []string
 
-	// resident, launched and written are the dispatcher's own bookkeeping,
-	// all guarded by mu. None may be held across a call into sched or into
-	// Residency.Hydrate — take mu, read or write one map, release.
+	// resident, launched and written are the dispatcher's own per-job
+	// bookkeeping, all guarded by mu. None may be held across a call into
+	// sched or into Residency.Hydrate — take mu, read or write one map,
+	// release.
+	//
+	// ADDING A MAP HERE MEANS EXTENDING EVERY TEARDOWN. This has been got
+	// wrong three times on this branch — Stop not clearing resident, remove
+	// not clearing written, remove not clearing resident and launched — and
+	// each time the shape was identical: a new per-job map arrived and an
+	// existing teardown was not extended. The failure is silent, because a
+	// stale entry only bites a job ID that comes back (a reused ID reads as
+	// already resident, so it never hydrates, and as already launched, so it
+	// is never launchable).
+	//
+	// The teardowns, enumerated from source rather than remembered —
+	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds six lines:
+	//
+	//   - remove (registry.go), four lines: byID, written, resident,
+	//     launched. It is total by rule; d.order is pruned by the loop
+	//     below those four rather than by a delete, so it does not appear.
+	//   - markNotResident (tick.go), one line: resident. The per-map
+	//     accessor reconcileResidency and Stop's sweep both call.
+	//   - clearLaunched (worker.go), one line: launched. The per-map
+	//     accessor Finished, Yielded and Stop's sweep all call.
+	//
+	// Stop's sweep therefore prunes resident and launched through those two
+	// accessors; it deliberately leaves byID, order and written intact,
+	// because a Stopped Dispatcher is still inspectable and its jobs still
+	// exist. remove is the only site that must be total.
 	resident map[string]bool
 	launched map[string]bool
 	written  map[string]Persisted
