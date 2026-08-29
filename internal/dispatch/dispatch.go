@@ -63,6 +63,47 @@ func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
 	return e.j, true
 }
 
+// Cancel latches the intent through sched and wakes the tick.
+//
+// It exists on Dispatcher rather than leaving callers to reach sched.Cancel
+// because D-B12's eviction has no other home: sched has no registry to remove a
+// never-run job from. A second route to the latch would skip it. Task 6 adds
+// the eviction; here it delegates and kicks.
+func (d *Dispatcher) Cancel(id string) error {
+	j, ok := d.lookup(id)
+	if !ok {
+		return fmt.Errorf("dispatch: Cancel: no job %q", id)
+	}
+	if err := d.q.Cancel(j); err != nil {
+		return fmt.Errorf("dispatch: Cancel(%s): %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// Retry re-arms a settled job for another attempt through sched and wakes the
+// tick.
+func (d *Dispatcher) Retry(id string) error {
+	j, ok := d.lookup(id)
+	if !ok {
+		return fmt.Errorf("dispatch: Retry: no job %q", id)
+	}
+	if err := d.q.Retry(j); err != nil {
+		return fmt.Errorf("dispatch: Retry(%s): %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// Pause sets the Queue's pause flag and wakes the tick (D-B13).
+func (d *Dispatcher) Pause() { d.q.Pause(); d.kick() }
+
+// Resume clears the Queue's pause flag and wakes the tick (D-B13).
+func (d *Dispatcher) Resume() { d.q.Resume(); d.kick() }
+
+// Paused reports the Queue's pause flag (D-B13).
+func (d *Dispatcher) Paused() bool { return d.q.Paused() }
+
 // The three log helpers exist so the tick has exactly one shape for "this job
 // failed, keep walking". A tick must never abandon the rest of the queue
 // because one job errored — that would let a single bad job stall every other,

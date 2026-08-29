@@ -19,13 +19,22 @@ func testClock() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) 
 
 // fakeResidency is the Residency test double. failOn lets a test force
 // Hydrate to fail for one job ID, for Task 4's hydration-failure test.
+// onHydrate lets Task 5's tests interleave a Cancel with the unlocked
+// residency read.
 type fakeResidency struct {
-	mu     sync.Mutex
-	live   map[string]bool
-	failOn map[string]error
+	mu        sync.Mutex
+	live      map[string]bool
+	failOn    map[string]error
+	onHydrate func(string)
 }
 
 func (f *fakeResidency) Hydrate(_ context.Context, id string) error {
+	if f.onHydrate != nil {
+		// Called WITHOUT f.mu: the hook re-enters Dispatcher.Cancel, and
+		// holding a fake's lock across that re-entry deadlocks the test
+		// against itself.
+		f.onHydrate(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.failOn[id]; err != nil {
@@ -104,7 +113,6 @@ func (f *fakeRunner) Run(_ context.Context, id string, _ job.State) {
 	f.seen[id] = true
 }
 
-//nolint:unused // first caller is Task 5's launch tests
 func (f *fakeRunner) started(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -170,8 +178,6 @@ func withResidency(r Residency) func(*testOpts) { return func(o *testOpts) { o.r
 //nolint:unused // first caller is Task 6
 func withStore(s Store) func(*testOpts) { return func(o *testOpts) { o.store = s } }
 
-//nolint:unused // first caller is Task 5
 func withRunner(r Runner) func(*testOpts) { return func(o *testOpts) { o.runner = r } }
 
-//nolint:unused // first caller is Task 5's abort-loop test
 func withWorkers(w sched.Workers) func(*testOpts) { return func(o *testOpts) { o.workers = w } }

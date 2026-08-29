@@ -15,8 +15,9 @@ import (
 // inside Queue.mu and an Abort implementation that took d.mu would deadlock
 // ABBA against a concurrent Cancel.
 //
-// Worker launch and eviction-on-cancel are not implemented yet — they land in
-// Tasks 5-6. This tick advances, then reconciles residency.
+// Task 5 adds worker launch after residency; eviction-on-cancel is not
+// implemented yet — it lands in Task 6. This tick advances, reconciles
+// residency, then launches.
 func (d *Dispatcher) tick(ctx context.Context) {
 	for _, j := range d.snapshotOrder() {
 		if err := d.q.Advance(j); err != nil {
@@ -25,7 +26,9 @@ func (d *Dispatcher) tick(ctx context.Context) {
 		}
 		if err := d.reconcileResidency(ctx, j); err != nil {
 			d.logResidencyError(j.ID(), err)
+			continue
 		}
+		d.launch(ctx, j)
 	}
 }
 
