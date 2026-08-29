@@ -26,11 +26,4 @@
 // internal/queue. Row carries a Header supplied at Add rather than byte and
 // article progress, because internal/job.Job holds only id, name and policy —
 // the progress tier is still in internal/queue until B2.4.
-//
-// # What Task 2 does not implement
-//
-// This task adds only the registry (Header, Row, Add, List, snapshotOrder) and
-// the scaffolding later tasks build on — the complete Dispatcher struct and the
-// Residency/Store/Runner ports. New, Start, Stop, tick, restore, residency
-// reconciliation, worker launch and eviction all arrive in Tasks 3-7.
 package dispatch

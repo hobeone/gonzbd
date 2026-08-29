@@ -38,12 +38,22 @@ func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 // TestRestore_JobsComeBackHoldingNothing pins D-B13's Startup paragraph: the
 // pools are process-local, so a job persisted mid-Repairing comes back at
 // Repairing holding no lease — there is nothing in this process to reclaim.
+//
+// Assessed is set true here because it is the only value a real Repairing row
+// could carry: Repairing's one inbound edge is Assessing (legalEdges,
+// internal/job/transition.go:47), and Assessed is set unconditionally on
+// entering Assessing (transition, internal/job/attempt.go:280-281) with no
+// door that later clears it — so a Repairing row with Assessed false names a
+// position no attempt could have reached. The fixture does not trust this
+// field at face value; reconstruct re-derives it by replaying the job through
+// the same doors a live job would have crossed, and a restored row's Assessed
+// is correct because of that replay, not because the fixture asserts it.
 func TestRestore_JobsComeBackHoldingNothing(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{{
 		ID:     "j1",
 		Header: Header{Name: "j1"},
-		State:  job.StateView{State: job.Repairing},
+		State:  job.StateView{State: job.Repairing, Assessed: true},
 	}})
 	d := newTestDispatcher(t, withStore(st))
 
@@ -93,8 +103,12 @@ func TestPersist_WritesWhenTheAxesMove(t *testing.T) {
 // TestPersist_QuietTickWritesNothing pins the "no store traffic on a quiet
 // tick" half of persistIfChanged: once a job's row matches what was last
 // written, a further tick over the same, unchanged job must not call Save
-// again. A job at Finalizing with no lease and no slot requirement holds
-// still across ticks, so its rendered view does not change between them.
+// again. The job here is at Fetching after the first tick (BeginAttempt only
+// — it has not yet been granted a lease). The second, "quiet" tick DOES grant
+// it one, but that moves what the job HOLDS, not its StateView: State stays
+// Fetching with Next/Activity/Outcome untouched, so the Persisted row
+// persistIfChanged builds is unchanged and the comparison against d.written
+// is what actually suppresses the write — not the job being idle.
 func TestPersist_QuietTickWritesNothing(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))

@@ -49,9 +49,10 @@ type Dispatcher struct {
 	log *slog.Logger
 }
 
-// lookup returns the registered job for an ID. Task 5's Cancel and Task 6's
-// eviction are its production callers; declared here because it is
-// registry-shaped scaffolding, not tick behaviour.
+// lookup returns the registered job for an ID. Its production callers are
+// Cancel and Retry below, the only two non-test call sites in this package;
+// declared here because it is registry-shaped scaffolding, not tick
+// behaviour.
 func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -66,8 +67,9 @@ func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
 //
 // It exists on Dispatcher rather than leaving callers to reach sched.Cancel
 // because D-B12's eviction has no other home: sched has no registry to remove a
-// never-run job from. A second route to the latch would skip it. Task 6 adds
-// the eviction; here it delegates and kicks.
+// never-run job from. A second route to the latch would skip it. The eviction
+// itself runs later in the same tick, from evictCancelledNeverRun (tick.go);
+// here Cancel only latches the intent through sched and kicks.
 func (d *Dispatcher) Cancel(id string) error {
 	j, ok := d.lookup(id)
 	if !ok {
@@ -107,10 +109,9 @@ func (d *Dispatcher) Paused() bool { return d.q.Paused() }
 // failed, keep walking". A tick must never abandon the rest of the queue
 // because one job errored — that would let a single bad job stall every other,
 // which is the blast radius Standing Design Rule 3 bounds for articles and the
-// same argument applies here. Production callers arrive with the tick: Task
-// 3's tick (logAdvanceError), Task 4's reconcileResidency
-// (logResidencyError), and Task 6's eviction plus Task 7's persistIfChanged
-// (logStoreError).
+// same argument applies here. Production callers, all in tick.go: tick itself
+// (logAdvanceError), reconcileResidency (logResidencyError), and
+// evictCancelledNeverRun plus persistIfChanged (logStoreError).
 func (d *Dispatcher) logAdvanceError(id string, err error) {
 	d.log.Error("advance failed", "job_id", id, "err", err)
 }
