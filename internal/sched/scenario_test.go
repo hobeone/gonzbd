@@ -15,20 +15,16 @@ import (
 )
 
 // renderStatus renders j's status through the same seam production does:
-// the Queue computes Running and Reason from a Snapshot, and job.ToSABnzbd
-// turns those into the legacy vocabulary. Scenario tests assert on this
-// rather than on State/Outcome directly wherever the spec's trace names a
-// rendered status, because ToSABnzbd is the thing a client actually sees.
+// q.Render composes the view under one lock, and job.ToSABnzbd turns it into
+// the legacy vocabulary. Scenario tests assert on this rather than on
+// State/Outcome directly wherever the spec's trace names a rendered status,
+// because ToSABnzbd is what a client actually sees.
+//
+// This was a hand-rolled copy of Render's body until Render existed. Routing
+// it here is what keeps every scenario test pinning the PRODUCTION composition
+// rather than a parallel one that could drift from it silently.
 func renderStatus(q *Queue, j *job.Job) constants.Status {
-	s := j.Snapshot()
-	running := q.running(j.ID(), s)
-	reason, _ := q.waitReason(j.ID(), s)
-	return job.ToSABnzbd(job.RenderView{
-		StateView: s.State,
-		Running:   running,
-		Reason:    reason,
-		Intent:    s.Intent,
-	})
+	return job.ToSABnzbd(q.Render(j))
 }
 
 // TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b. §10's
@@ -78,9 +74,9 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 //
 // The "double-returned" half of the per-row assertion below ("a lease was
 // lost or double-returned") is checkable only because leasePool.reclaim
-// audits identity — `if !p.issued[l.ID()]` at pool.go:66 — rather than
+// audits identity — `if !p.issued[l.ID()]` at pool.go:89 — rather than
 // merely deleting a map key: a reclaim of an ID the pool does not currently
-// have outstanding surfaces as errNotOutstanding instead of silently
+// have outstanding surfaces as ErrNotOutstanding instead of silently
 // no-oping, so a double reclaim of the same lease is distinguishable from a
 // single correct one. Without that audit a double `delete` on the same key
 // is itself idempotent and this walk's before/after count could not tell the
@@ -203,11 +199,13 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 	// 'q\.releaseFor(' internal/sched/*.go | grep -v _test.go` (the `q\.`
 	// prefix excludes releaseFor's own func declaration in queue.go, which a
 	// bare `releaseFor(` pattern also matches) finds seven production call
-	// sites: parkLocked, Retry, Advance's settled branch, Advance's demotion,
-	// Advance's release on a failed Transition (the rollback for a slot
-	// grantFor already acquired for a destination the job never reached), and
-	// finishCancel's two arms — the running-then-settled path and the
-	// settled-on-entry arm.
+	// sites: parkLocked, Retry, Advance's settled branch, Advance's release on
+	// a failed Transition (the rollback for a slot grantFor already acquired
+	// for a destination the job never reached), Advance's demotion,
+	// finishCancel's settled-on-entry arm (cancel.go), and settleLocked
+	// (settle.go) — reached both from Settle directly and from finishCancel's
+	// running-then-settled path, which now delegates to it rather than
+	// releasing the slot itself.
 	//
 	// It deliberately asks about the current position, not next: a job whose
 	// work has finished still occupies the position it finished in and still
@@ -271,8 +269,8 @@ func TestBothPoolsAreAccountedAtEveryExit(t *testing.T) {
 
 // TestScenario_5_1_PauseMidDownloadThenResume pins §5.1: a job paused
 // mid-download must surrender its lease at the dispatcher's yield handling
-// (q.park, called directly here in place of Half B2's dispatcher — see
-// advance.go's park doc comment) and must never touch Assessing on the way.
+// (q.Park, called directly here in place of Half B2's dispatcher — see
+// advance.go's Park doc comment) and must never touch Assessing on the way.
 // Revision 2 jumped a partially-downloaded job straight into verification;
 // asserting State stays Fetching throughout is what would catch that again.
 func TestScenario_5_1_PauseMidDownloadThenResume(t *testing.T) {
@@ -289,11 +287,11 @@ func TestScenario_5_1_PauseMidDownloadThenResume(t *testing.T) {
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		t.Fatalf("SetIntent: %v", err)
 	}
-	// The downloader yields between articles; the dispatcher calls q.park —
+	// The downloader yields between articles; the dispatcher calls q.Park —
 	// Advance's own branch 2 would decline to touch a job it still holds
 	// (holds-before-gated), so this is not interchangeable with q.Advance(j).
-	if err := q.park(j); err != nil {
-		t.Fatalf("park: %v", err)
+	if err := q.Park(j); err != nil {
+		t.Fatalf("Park: %v", err)
 	}
 	if j.HoldsLease() {
 		t.Error("job still holds its lease after the yield; §3.6 calls that a deadlock")
@@ -745,8 +743,8 @@ func TestScenario_5_10_PausedThenFailedThenRetried(t *testing.T) {
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		t.Fatalf("SetIntent: %v", err)
 	}
-	if err := q.park(j); err != nil { // the dispatcher's yield handling, as in §5.1
-		t.Fatalf("park: %v", err)
+	if err := q.Park(j); err != nil { // the dispatcher's yield handling, as in §5.1
+		t.Fatalf("Park: %v", err)
 	}
 	if got, want := renderStatus(q, j), constants.StatusPaused; got != want {
 		t.Errorf("status = %v, want %v", got, want)
@@ -874,14 +872,14 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 		t.Errorf("aborted = %v, want none — Production has no interrupt arm", w.aborted)
 	}
 
-	// The move and the user script complete; the worker settles directly,
-	// exactly as it would with no cancel pending.
-	l, err := j.Finish(job.OutcomeOK, testClock())
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := q.reclaim(l); err != nil {
-		t.Fatalf("reclaim: %v", err)
+	// The move and the user script complete; the worker settles through the
+	// door a dispatcher uses, NOT j.Finish directly. Routed here deliberately:
+	// settleLocked applies the cancel latch, and this scenario is the one that
+	// pins the latch NOT firing (D-I11, Finalizing is post-boundary and so
+	// gated rather than interrupted). Asserting against j.Finish would leave
+	// the production path unpinned.
+	if err := q.Settle(j, job.OutcomeOK); err != nil {
+		t.Fatalf("Settle: %v", err)
 	}
 	if got := j.Snapshot().State.Outcome; got != job.OutcomeOK {
 		t.Errorf("Outcome = %v, want OK — recording Cancelled here would be false: the files moved", got)
@@ -892,19 +890,23 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 	if got, want := renderStatus(q, j), constants.StatusCompleted; got != want {
 		t.Errorf("status = %v, want %v", got, want)
 	}
+	// settleLocked (settle.go) releases the compute slot itself, as step 3 of
+	// its four-step order — BEFORE the trailing Advance below runs, not
+	// because of it. Asserted here, immediately after Settle, so this check
+	// actually observes settleLocked's release.
+	if q.slots.holds(j.ID()) {
+		t.Error("still holds a compute slot after Settle; settleLocked's step 3 must release it")
+	}
 
-	// §5.13's trace has a trailing advance after the settle: IntentCancel is
-	// still latched (asserted above), so this call routes through
-	// finishCancel's settled arm rather than Advance's own — Advance sends an
-	// IntentCancel job to finishCancel before it ever reaches its own settled
-	// branch (advance.go). Without this step the test never exercised the
-	// release Finalizing's slot needs: q.slots.holds("j1") stayed true at test
-	// end.
+	// §5.13's trace still has a trailing advance after the settle, which this
+	// test keeps to pin that it is harmless: IntentCancel is still latched
+	// (asserted above), so this call routes through finishCancel's settled arm
+	// rather than Advance's own — Advance sends an IntentCancel job to
+	// finishCancel before it ever reaches its own settled branch (advance.go).
+	// It is no longer what releases the slot (Settle already did, above); it
+	// is exercised here only because §5.13's trace includes it.
 	if err := q.Advance(j); err != nil {
 		t.Fatalf("Advance (trailing, settled+cancelled): %v", err)
-	}
-	if q.slots.holds(j.ID()) {
-		t.Error("still holds a compute slot after the trailing advance; finishCancel's settled arm must release it")
 	}
 }
 

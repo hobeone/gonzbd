@@ -1,8 +1,6 @@
 package sched
 
 import (
-	"errors"
-
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -49,32 +47,23 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 	if q.running(j.ID(), s) {
 		// A worker owns this job's resources and is using them. Neither arm
 		// may seize a lease or slot out from under it.
-		if job.IsProduction(s.State.State) {
+		if !cancelInterrupts(s.State.State) {
 			return nil // gate: let it reach the end; D-I11 lets it complete OK
 		}
 		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
 		return nil
 	}
-	l, err := j.Finish(job.OutcomeCancelled, q.now())
-	if err != nil {
-		// Finish refused: the attempt was NOT cancelled, so the job still
-		// occupies its current position and needs whatever that position
-		// requires. Releasing here would strand it resourceless while still
-		// running — the same shape of bug B1's Retry fix guards against.
-		return err
-	}
-	// Freed BEFORE the reclaim. reclaim can fail its identity audit, and an
-	// earlier order returned through that failure with the slot still held —
-	// turning one audit error into a permanent pool-B leak. This ordering is
-	// unconditional only with respect to reclaim's outcome, not Finish's: the
-	// guard above is what keeps it from running on a failed Finish.
-	q.releaseFor(j, job.StateUnset)
-	if rerr := q.reclaim(l); rerr != nil {
-		// Both errors are real: Finish already succeeded (the job IS settled,
-		// so the caller must not retry Finish), and reclaim's identity audit
-		// caught something separately wrong with the lease. Neither may be
-		// dropped in favor of the other.
-		return errors.Join(err, rerr)
-	}
-	return err
+	// This line is reached both pre- and post-boundary: a non-running
+	// post-boundary job — Extracting or Finalizing waiting on a compute slot,
+	// or a job restored from a restart (§5.12) — has q.running == false and
+	// falls through the two arms above to here, same as a pre-boundary one.
+	// At post-boundary states cancelInterrupts is false, so settleLocked's own
+	// override — its `s.Intent == job.IntentCancel && cancelInterrupts` check,
+	// applied to the job's current state — does NOT fire there; passing
+	// OutcomeCancelled explicitly is what makes a non-running post-boundary
+	// job cancel at all; settleLocked would otherwise record whatever outcome
+	// a caller happened to pass. Only for a pre-boundary job does
+	// settleLocked's override make this argument redundant with what it would
+	// have produced anyway.
+	return q.settleLocked(j, job.OutcomeCancelled, s)
 }

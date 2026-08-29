@@ -2,11 +2,70 @@ package sched
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
+
+// TestPause_TakesTheQueueLock is the final review's race-detector pin for
+// Pause and Paused, in TestPark_TakesTheQueueLock's own shape
+// (advance_test.go): one goroutine writes q.paused through Pause while
+// another reads it back through Paused, with no synchronizing call between
+// the write and the read. Run with `go test -race`; without the lock on
+// both doors this reports a DATA RACE, so a plain (non-race) run does not
+// discriminate the fix at all.
+//
+// This was previously combined with Resume in one goroutine
+// (q.Pause(); q.Resume()) racing against a single q.Paused() call in another.
+// Resume's own q.mu.Lock/Unlock synchronizes-with Paused's lock acquisition
+// — establishing write(Pause) → unlock(Resume) → lock(Paused) → read — so
+// ThreadSanitizer's vector clock advances past the unlocked Pause write and
+// it stops being a reportable race at all. Measured empirically: five single
+// `-race -count=1` runs against a build with Pause's lock removed gave FAIL,
+// FAIL, ok, FAIL, ok (~40% pass rate against genuinely broken code), and a
+// `-count=50` run caught it only once across all 50 iterations. Splitting
+// Pause and Resume into their own tests, each racing only against Paused
+// with nothing in between, removes that synchronizing edge.
+func TestPause_TakesTheQueueLock(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		q.Pause()
+	}()
+	go func() {
+		defer wg.Done()
+		q.Paused()
+	}()
+	wg.Wait()
+}
+
+// TestResume_TakesTheQueueLock is Resume's half of the same pin — see
+// TestPause_TakesTheQueueLock's comment for why the two must be separate
+// tests rather than one goroutine calling both doors. q.Pause() runs to
+// completion before the two racing goroutines start, so it does not
+// synchronize with either of them; it only sets up the flag Resume then
+// clears.
+func TestResume_TakesTheQueueLock(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	q.Pause()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		q.Resume()
+	}()
+	go func() {
+		defer wg.Done()
+		q.Paused()
+	}()
+	wg.Wait()
+}
 
 type stubWorkers struct{ aborted []string }
 
@@ -277,8 +336,8 @@ func TestReclaim_ReturnsErrNotOutstandingForAForeignLease(t *testing.T) {
 	if l == nil {
 		t.Fatal("could not issue a lease from the foreign queue's pool")
 	}
-	if err := q.reclaim(l); !errors.Is(err, errNotOutstanding) {
-		t.Errorf("reclaim(foreign lease) = %v, want errNotOutstanding", err)
+	if err := q.reclaim(l); !errors.Is(err, ErrNotOutstanding) {
+		t.Errorf("reclaim(foreign lease) = %v, want ErrNotOutstanding", err)
 	}
 
 	mine := q.leases.issue()
@@ -294,7 +353,7 @@ func TestReclaim_ReturnsErrNotOutstandingForAForeignLease(t *testing.T) {
 }
 
 // TestReleaseFor pins releaseFor's rule: free the slot exactly when the
-// target state does not need one, including at job.StateUnset (used by park,
+// target state does not need one, including at job.StateUnset (used by Park,
 // settlement and cancel to free everything without naming pool B), and leave
 // it held when the target state still needs a slot.
 func TestReleaseFor(t *testing.T) {
@@ -352,5 +411,69 @@ func TestQueue_NowReturnsTheInjectedClock(t *testing.T) {
 	q := New(0, 0, func() time.Time { return want }, &stubWorkers{})
 	if got := q.now(); !got.Equal(want) {
 		t.Errorf("now() = %v, want %v (the injected clock, not wall time)", got, want)
+	}
+}
+
+// TestPause_MakesGlobalPauseReachable pins the gap this closes. gatedBy reads
+// q.paused, and before these doors nothing in the package could write it — so
+// job.GlobalPause existed as a WaitReason that no production code path could
+// ever produce.
+func TestPause_MakesGlobalPauseReachable(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	s := j.Snapshot()
+	if _, gated := q.gatedBy(s); gated {
+		t.Fatal("a fresh Queue must not be gated")
+	}
+
+	q.Pause()
+	if !q.Paused() {
+		t.Error("Paused() = false after Pause()")
+	}
+	r, gated := q.gatedBy(j.Snapshot())
+	if !gated || r != job.GlobalPause {
+		t.Errorf("gatedBy = (%v, %v), want (GlobalPause, true)", r, gated)
+	}
+
+	q.Resume()
+	if q.Paused() {
+		t.Error("Paused() = true after Resume()")
+	}
+	if _, gated := q.gatedBy(j.Snapshot()); gated {
+		t.Error("gatedBy still gated after Resume()")
+	}
+}
+
+// TestPause_DoesNotTakeResourcesFromAHoldingJob pins the contract Decision 3
+// puts on B2's dispatcher. §8.3: gating never interrupts work. Pause sets a
+// flag; it cannot sweep, because the Queue holds no jobs to sweep. A holding
+// job keeps everything until its worker returns and the dispatcher Parks it.
+func TestPause_DoesNotTakeResourcesFromAHoldingJob(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (grant): %v", err)
+	}
+
+	q.Pause()
+	if err := q.Advance(j); err != nil { // a tick under global pause
+		t.Fatalf("Advance under pause: %v", err)
+	}
+	if !j.Snapshot().HoldsLease {
+		t.Error("Pause took the lease from a holding job — §8.3: gating never " +
+			"interrupts work; only Park releases it")
+	}
+
+	if err := q.Park(j); err != nil { // the dispatcher's half of the contract
+		t.Fatalf("Park: %v", err)
+	}
+	if got := q.leases.outstanding(); got != 0 {
+		t.Errorf("leases outstanding after Park = %d, want 0", got)
 	}
 }

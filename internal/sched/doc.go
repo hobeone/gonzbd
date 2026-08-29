@@ -6,25 +6,45 @@
 // resource as a side effect of being asked. Acquisition happens in exactly one
 // place, grantFor.
 //
-// It does NOT contain the dispatcher, the workers, persistence, or rendering.
-// Those are Half B2, which also retires internal/queue. Nothing imports this
+// It does NOT contain the dispatcher, the workers, or persistence. Those are
+// Half B2, which also retires internal/queue. It does hold one rendering
+// door, Render (see below) — composing the view a caller renders from is a
+// decision over a job.Snapshot like any other, and B2 supplies the HTTP
+// layer that calls it, not the composition itself. Nothing imports this
 // package yet, by design.
 //
-// # Known obligations left for Half B2
+// # What this package exports, and what B2 still owes it
 //
-// These are open items, not a description of anything this package currently
-// exposes. B2 must add doors for them to THIS package — beside reclaim and
-// releaseFor, which already own the lease and slot return paths — rather than
-// invent a parallel owner in the dispatcher or elsewhere:
+// `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go | grep -v
+// _test.go` finds nine lines: Advance, Cancel, Park, Retry and Settle
+// (advance.go, cancel.go, settle.go) write or gate; Pause and Resume (queue.go)
+// write the pause flag; Paused (queue.go) reads it back; and Render
+// (render.go) is the door that composes a job.RenderView. Acquisition happens
+// only in grantFor; return happens only through reclaim and releaseFor, which
+// Settle, Park and Cancel all route through.
 //
-//   - No public door returns a worker-yielded lease to the Queue. park does
-//     this internally, but nothing exported lets a caller outside the
-//     package hand back a lease the way a dispatcher's yield handling needs
-//     to (see park's own doc comment in advance.go).
-//   - park is unexported, though the design spec's traces (§5.1, §5.2) show
-//     the dispatcher calling it directly on a worker's yield. B2 needs an
-//     exported equivalent, or park itself exported, once a real dispatcher
-//     exists to call it.
-//   - q.paused has no setter. Nothing in this package can currently flip the
-//     global-pause gate gatedBy reads; B2's wiring needs one.
+// Half B2 still owes this package two things, neither of which it can supply
+// for itself:
+//
+//   - A discard path for a cancelled job that never ran. finishCancel returns
+//     nil for one, because Outcome lives on the Attempt and there is none. The
+//     job therefore survives, and Render reports it as not running with a
+//     NoLease reason — which job.ToSABnzbd turns into StatusQueued. A job the
+//     user deleted renders as queued, forever. Closing it needs residency and
+//     a store, which D-B5 keeps out of this package: B2's dispatcher must
+//     evict StateUnset && IntentCancel from the active set and the store.
+//
+//     Note this also bounds gatedBy's stated reason for ignoring IntentCancel
+//     ("advance handles it first, so no cancel value reaches the render
+//     path"): true for every job that has run, false for one that has not —
+//     except between a Park and the next tick. A job cancelled while running
+//     and then Parked rather than Settled (teardown, shutdown) sits open at
+//     Fetching with no lease and IntentCancel: Render reports it not settled
+//     and not running, gatedBy ignores IntentCancel as documented, and it
+//     falls through to NoLease → StatusQueued until the next Advance routes
+//     it through finishCancel. Transient and self-healing, but real for the
+//     tick it lasts.
+//
+//   - A Workers implementation whose Abort neither blocks nor takes a lock a
+//     caller could hold across a call into Queue. See the Workers interface.
 package sched

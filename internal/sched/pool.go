@@ -7,11 +7,12 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// errNotOutstanding is returned by leasePool.reclaim for a lease this pool did
+// ErrNotOutstanding is returned by leasePool.reclaim for a lease this pool did
 // not issue, or already got back. Both are caller bugs that inflate capacity:
 // a double return frees the same lease's pool-A capacity twice, so two jobs
 // end up holding what the pool's own accounting believes is a single lease.
-var errNotOutstanding = errors.New("sched: lease is not outstanding")
+// Exported so a caller of Park or Settle can errors.Is against it.
+var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 
 // leasePool issues pool-A admission tokens and audits their return.
 //
@@ -42,15 +43,20 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 // is a bound to state rather than a guard against it (Standing Design Rule
 // 1). Within a single pool, which is every production configuration today,
 // identity is exact: a double return or a lease this pool never issued is
-// caught, which is what reclaim's errNotOutstanding and the tests below rely
+// caught, which is what reclaim's ErrNotOutstanding and the tests below rely
 // on.
 //
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
 // order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and is
-// taken by four production doors — Cancel (cancel.go), and park, Retry and
-// Advance (advance.go; see queue.go's own comment on mu) — so this is now a
-// description of a lock real code takes, not a forward-looking constraint.
+// taken by nine production doors — Cancel (cancel.go), Park, Retry and
+// Advance (advance.go), Settle (settle.go), Render (render.go), and Pause,
+// Resume and Paused (queue.go; see queue.go's own comment on mu) — so this is
+// now a description of a lock real code takes, not a forward-looking
+// constraint. queue.go's own comment carries the backticked grep for the
+// count; internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse
+// is what checks that these nine NAMES, not merely this count, are still
+// right — a grep proves how many, never which ones.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID
@@ -81,7 +87,7 @@ func (p *leasePool) reclaim(l *job.Lease) error {
 		return nil
 	}
 	if !p.issued[l.ID()] {
-		return fmt.Errorf("%w: id %d", errNotOutstanding, l.ID())
+		return fmt.Errorf("%w: id %d", ErrNotOutstanding, l.ID())
 	}
 	delete(p.issued, l.ID())
 	return nil

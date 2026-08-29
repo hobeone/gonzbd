@@ -328,7 +328,7 @@ func TestFinishCancel_FailedFinishDoesNotReleaseTheSlot(t *testing.T) {
 // flagged: the slot must be freed even when reclaim's identity audit fails,
 // and the audit's error must still reach the caller. A lease Grant-ed to the
 // job but never issued by q's own pool A makes j.Finish yield a lease that
-// q.reclaim rejects with errNotOutstanding.
+// q.reclaim rejects with ErrNotOutstanding.
 func TestFinishCancel_ReclaimErrorPropagates(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	foreign := New(1, 0, testClock, &stubWorkers{})
@@ -364,8 +364,8 @@ func TestFinishCancel_ReclaimErrorPropagates(t *testing.T) {
 	// snapshot its caller already read (see its doc comment) rather than
 	// re-reading it, so a direct call with a freshly taken snapshot exercises
 	// exactly the contract Cancel relies on.
-	if err := q.finishCancel(j, j.Snapshot()); !errors.Is(err, errNotOutstanding) {
-		t.Errorf("finishCancel = %v, want errNotOutstanding — the lease was never q's own", err)
+	if err := q.finishCancel(j, j.Snapshot()); !errors.Is(err, ErrNotOutstanding) {
+		t.Errorf("finishCancel = %v, want ErrNotOutstanding — the lease was never q's own", err)
 	}
 	if q.slots.outstanding() != 0 {
 		t.Errorf("slots outstanding = %d after a failed reclaim, want 0 — "+

@@ -20,6 +20,19 @@ type RenderView struct {
 	// Reason is why it is not running, and is meaningless when Running is
 	// true. Derived by the Queue from intent, its own pause flag, and what
 	// the job holds.
+	//
+	// Its zero value, NoLease, is ambiguous by construction: waitReason
+	// (internal/sched/queue.go) returns (0, false) — not (NoLease, true) —
+	// for a settled attempt, a running job, and a job whose work has ended
+	// while already holding what the next state requires, and Render (Queue,
+	// render.go) discards that boolean when it fills this field. So Reason ==
+	// NoLease reads identically whether the job is genuinely waiting on pool
+	// A or is one of those three "waiting for nothing" cases. Consult Running
+	// first; do not read Reason == NoLease as "waiting for a lease" on its
+	// own. Today's only consumer, ToSABnzbd, happens not to care — it checks
+	// Reason.IsPause(), and NoLease is never a pause reason — but a future
+	// consumer that branches on NoLease specifically would need Running
+	// checked first for the same reason.
 	Reason WaitReason
 	// Intent is the Job's, carried here so a consumer can render "finishing
 	// repair, then pausing" — a running job with IntentPause shows its state,

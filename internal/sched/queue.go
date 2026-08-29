@@ -37,13 +37,23 @@ type Workers interface {
 // its first locker during this package's build order (queue.go landed before
 // advance.go so that reclaim and releaseFor — which finishCancel needs —
 // existed for Cancel to call), but it is no longer the only one: `grep -n
-// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds four production
-// lockers — Cancel (cancel.go), and park, Retry and Advance (advance.go) —
+// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds nine production
+// lockers — Cancel (cancel.go), Park, Retry and Advance (advance.go), Settle
+// (settle.go), Render (render.go), and Pause, Resume and Paused (this file) —
 // plus this sentence's own mention of the pattern, written as q.mu.Loc[k]()
 // (the same self-matching workaround internal/job/job.go's surrenderLocked
 // comment uses) so it does not inflate that count. Prior spec §7.1's order is
 // Queue.mu before Job.mu, so nothing here may call into a *job.Job method
 // while holding mu in a way that would take the locks in the other order.
+//
+// The grep above proves the COUNT; it says nothing about whether these are
+// the same nine NAMES this comment lists, so a rename this pattern still
+// matches (or a new locker under an old name) would leave the citation green
+// while the prose went wrong.
+// TestQueueMuLockers_MatchTheEnumerationStatedInProse
+// (lock_enumeration_test.go) is what checks the names, here and at pool.go's
+// and internal/job/job.go's matching claims — a fourth hand-maintained copy
+// of this list is not needed.
 type Queue struct {
 	mu     sync.Mutex
 	paused bool
@@ -83,6 +93,55 @@ func New(leaseCap, slotCap int, clock func() time.Time, w Workers) *Queue {
 }
 
 func (q *Queue) now() time.Time { return q.clock() }
+
+// Pause and Resume write the queue-wide gate that gatedBy reads, and Paused
+// reads it back for a renderer. Two verbs rather than SetPaused(bool), so no
+// call site reads as a blind boolean.
+//
+// Pause sets the flag and NOTHING else, and that is a contract on the caller
+// rather than an omission. The Queue holds no jobs — its state is two pools
+// and a flag, with no registry and no way to enumerate what is resident (D-B5)
+// — so it structurally cannot sweep. And it must not: §8.3 says gating never
+// interrupts work, and Workers.Abort belongs to Cancel alone.
+//
+// After Pause, a dispatcher AWAITS its workers and calls Park per job: a
+// Fetching worker checks Paused at an article boundary and reports yielded
+// (§3.6), while a worker in any OTHER state runs its stage to the end and
+// sets next, after which Advance's branch 3 gates and parks it unaided —
+// with one exception: Finalizing has no outbound edges
+// (internal/job/transition.go), never sets next, and so never reaches branch
+// 3 at all. A Finalizing worker settles directly (Advance never gates it
+// mid-stage; TestScenario_5_7_PauseDuringFinalizing pins that a pause request
+// arriving during Finalizing does not stop it), and only a subsequent job
+// waiting to ENTER Finalizing — one still short a compute slot — is what
+// Pause can actually keep parked there.
+//
+// No notification channel is needed, for the reason §3.6 gives about the
+// mirror case: "Resume needs no notification. SetIntent(IntentRun) writes a
+// flag; the scheduling loop calls advance on its ordinary cadence and picks it
+// up." Pause is symmetric — the next tick observes it through gatedBy.
+func (q *Queue) Pause() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.paused = true
+}
+
+// Resume clears the queue-wide gate. See Pause.
+func (q *Queue) Resume() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.paused = false
+}
+
+// Paused reports the queue-wide gate. It exists for two callers: a renderer
+// filling the top-level paused field of /api?mode=queue, and a Fetching worker
+// deciding at an article boundary whether to yield — the one state that gates
+// per-article rather than per-stage (§3.6).
+func (q *Queue) Paused() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.paused
+}
 
 // reclaim is the SOLE reclaimer (§3.9). It no-ops on nil so that no call site
 // has to test for it — a job may legitimately reach the crossing holding
