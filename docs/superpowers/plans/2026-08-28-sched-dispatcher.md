@@ -362,9 +362,9 @@ Expected: FAIL — the package does not exist.
 // calls sched.Queue.Advance on each job; the kick is a latency optimisation
 // that must remain deletable without changing what the system computes. The
 // package this replaces made promotion event-driven, which put nine call sites
-// in charge of one condition — `grep -c 'q\.PromoteNext(' internal/queue/queue.go`
-// returns 9 — where forgetting one yields a job that is eligible, unblocked and
-// never starts, silently.
+// in charge of one condition — `grep -n 'q\.PromoteNext(' internal/queue/queue.go`
+// returns 9 lines — where forgetting one yields a job that is eligible, unblocked
+// and never starts, silently.
 //
 // The dispatcher also launches every worker and observes every exit (D-B14).
 // That is not bookkeeping: the Queue cannot distinguish "holding and working"

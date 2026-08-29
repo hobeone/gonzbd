@@ -18,9 +18,9 @@ because D-B5 gives it no registry. Three specific things follow.
 
 ### 1. The condition that promotes jobs has nine call sites and no owner
 
-Today's promotion is event-driven. `grep -c 'q\.PromoteNext(' internal/queue/queue.go`
-returns **9** — nine places that must each remember that something they just
-did might have made a job eligible.
+Today's promotion is event-driven. `grep -n 'q\.PromoteNext(' internal/queue/queue.go`
+returns **9** lines — nine places that must each remember that something they
+just did might have made a job eligible.
 
 Every one is individually defensible: a job was added, capacity changed, a job
 finished. None of them is a mistake. But the set is exactly the shape Standing
