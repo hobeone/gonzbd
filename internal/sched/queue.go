@@ -191,6 +191,26 @@ func (q *Queue) releaseFor(j *job.Job, s job.State) {
 // adds that, and §3.4 explains why the two must stay separate.
 func (q *Queue) holds(id string, s job.Snapshot) bool {
 	pos := s.State.State
+	if pos == job.StateUnset {
+		// A job that has never run holds nothing, and this has to be said
+		// rather than derived: needsLease and needsSlot are BOTH false at
+		// StateUnset (requirements.go), so the two guards below are vacuous
+		// there and the function fell through to true — reporting that a job
+		// owning no lease and no slot held everything its position required.
+		//
+		// Two of the three callers were immune, which is why it survived.
+		// running() (queue.go, below) conjoins s.IsOpen(), false for a job
+		// with no attempt. Advance never reaches its own q.holds call with
+		// StateUnset: branch 1 returns from `if s.State.State ==
+		// job.StateUnset` either way (advance.go), so branch 2's call is only
+		// ever made for a job at a real position. The third, renderLocked's
+		// Holds field (render.go), is the one that saw it — and
+		// internal/dispatch's reconcileResidency hydrates on `v.Holds &&
+		// !resident`, so a paused, never-started job had its manifest read
+		// into memory while holding nothing, and a failed read then tried to
+		// settle a job with no open attempt.
+		return false
+	}
 	if needsLease(pos) && !s.HoldsLease {
 		return false
 	}

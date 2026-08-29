@@ -321,3 +321,32 @@ func TestRenderLocked_AssumesTheCallerAlreadyHoldsTheLock(t *testing.T) {
 		t.Errorf("Reason = %v, want NoLease's zero value — Reason is meaningless while Running", got.Reason)
 	}
 }
+
+// TestRender_NeverRunJobHoldsNothing pins that a job which has never started
+// reports Holds=false. It is a regression pin, not a tautology: holds() asks
+// whether the job has everything its CURRENT position requires, and at
+// StateUnset both requirement guards are vacuous — needsLease and needsSlot
+// are false there — so the function fell through to true and reported that a
+// job owning zero pool resources held everything it needed.
+//
+// The consumer that suffered is RenderView.Holds. internal/dispatch's
+// reconcileResidency hydrates on `v.Holds && !resident`, so a paused,
+// never-started job had its manifest read into memory while holding nothing,
+// and a failed read then tried to settle a job with no open attempt.
+func TestRender_NeverRunJobHoldsNothing(t *testing.T) {
+	q := New(2, 2, testClock, &stubWorkers{})
+	j := job.New("never", "n", job.Policy{})
+
+	v := q.Render(j)
+
+	if v.State != job.StateUnset {
+		t.Fatalf("setup: State = %v, want StateUnset", v.State)
+	}
+	if v.Holds {
+		t.Error("Holds = true for a job that has never run — it owns no lease " +
+			"and no slot, so there is nothing for it to hold")
+	}
+	if v.Running {
+		t.Error("Running = true for a job that has never run")
+	}
+}

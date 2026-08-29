@@ -195,3 +195,61 @@ func TestResidency_HydrationFailureIsPersisted(t *testing.T) {
 			"Pending for a job that already failed", p.State.Outcome)
 	}
 }
+
+// TestResidency_DoesNotHydrateANeverStartedJob is the dispatch-side half of
+// the same defect. A paused job never leaves StateUnset — Advance's branch 1
+// returns before BeginAttempt when gatedBy reports the pause — so it holds no
+// lease and no slot, and its manifest has no business being in memory.
+//
+// Two things went wrong when Holds was vacuously true for it. The manifest
+// was hydrated for a job holding nothing, which is the memory bound
+// docs/queue-lifecycle.md sets; and if that read failed, the settle attempted
+// on the way out hit job.ErrNoOpenAttempt, because Outcome lives on the
+// Attempt and a never-started job has none.
+func TestResidency_DoesNotHydrateANeverStartedJob(t *testing.T) {
+	res := &fakeResidency{}
+	d := newTestDispatcher(t, withResidency(res))
+	d.Pause()
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.tick(context.Background())
+
+	if got := d.q.Render(j).State; got != job.StateUnset {
+		t.Fatalf("setup: State = %v, want StateUnset — a paused job must not start", got)
+	}
+	if res.resident("j1") {
+		t.Error("a paused, never-started job was hydrated — it holds no lease " +
+			"and no slot, so nothing about it requires its manifest in memory")
+	}
+	if d.isResident("j1") {
+		t.Error("isResident(j1) = true for a paused, never-started job")
+	}
+}
+
+// TestReconcileResidency_NeverStartedJobDoesNotAttemptASettle pins the second
+// consequence separately: settling a job with no open attempt cannot work, so
+// reaching that call at all is the bug. Before the fix this returned an error
+// wrapping job.ErrNoOpenAttempt.
+func TestReconcileResidency_NeverStartedJobDoesNotAttemptASettle(t *testing.T) {
+	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("boom")}}
+	d := newTestDispatcher(t, withResidency(res))
+	d.Pause()
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := d.reconcileResidency(context.Background(), j)
+
+	if errors.Is(err, job.ErrNoOpenAttempt) {
+		t.Errorf("reconcileResidency = %v — it tried to settle a job with no "+
+			"open attempt, which means it hydrated one that holds nothing", err)
+	}
+	if err != nil {
+		t.Errorf("reconcileResidency = %v, want nil — a never-started job needs "+
+			"no residency work at all", err)
+	}
+}
