@@ -145,6 +145,15 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	d.mu.Unlock()
 
 	if err := d.restore(ctx); err != nil {
+		// The goroutine never launches on this path, so d.done never closes.
+		// Leaving d.started true here would make a later Stop() read
+		// wasStarted true, close d.stop, and then block forever on <-d.done
+		// with nothing left to close it — a real deadlock, not a hypothetical
+		// one. Clearing it under mu is what makes Stop's wasStarted read see
+		// a Dispatcher that, as far as Stop is concerned, was never started.
+		d.mu.Lock()
+		d.started = false
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: Start: %w", err)
 	}
 

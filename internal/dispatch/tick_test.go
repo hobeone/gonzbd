@@ -101,6 +101,37 @@ func TestStop_ParksHoldersRatherThanSettlingThem(t *testing.T) {
 	}
 }
 
+// TestStop_AfterAFailedStartReturnsRatherThanDeadlocking pins the failure
+// mode a naive fix reintroduces: if Start's restore error leaves d.started
+// true, a later Stop reads wasStarted true, closes d.stop, and blocks
+// forever on <-d.done — because run never launched on this path, and
+// nothing else closes d.done. A test that just called Stop() and asserted
+// on its return value would hang the whole suite instead of failing, which
+// is worse than not testing this at all. So Stop runs in its own goroutine
+// and the test asserts on a channel with a bounded timeout: on timeout it
+// fails with a message that names the deadlock instead of leaving the
+// runner to time out the whole package with no diagnosis.
+func TestStop_AfterAFailedStartReturnsRatherThanDeadlocking(t *testing.T) {
+	wantErr := errors.New("boom")
+	d := newTestDispatcher(t, withStore(&failingLoadStore{err: wantErr}))
+
+	if err := d.Start(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("Start() = %v, want an error wrapping %v", err, wantErr)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Stop() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop deadlocked after a failed Start — d.started was left true with no run goroutine to close d.done")
+	}
+}
+
 // TestTick_LogsAndSkipsAJobWhoseAdvanceErrors pins the branch a good-weather
 // walk never reaches: q.Advance returning a real error, which tick must log
 // and step past rather than let one job's failure abort the rest of the
