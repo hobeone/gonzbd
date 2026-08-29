@@ -21,7 +21,7 @@ import (
 //
 // It walks each *ast.FuncDecl's whole body rather than only its top level,
 // so a lock taken inside a nested closure would still be found — though none
-// of q.mu's nine lockers takes it that way today. It does not attempt to
+// of q.mu's ten lockers takes it that way today. It does not attempt to
 // verify the receiver is actually named q; every *Queue method in this
 // package uses that name (queue.go's own comment on mu already relies on
 // this), and a differently-named receiver calling q.mu.Lock() literally
