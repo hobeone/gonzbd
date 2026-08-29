@@ -119,8 +119,22 @@ func TestEvictCancelledNeverRun_CalledDirectly(t *testing.T) {
 }
 
 // TestCancelledRunningJob_IsNotEvicted distinguishes the never-run case from
-// a job that HAS run: that job settles OutcomeCancelled and must stay visible
-// in the listing so the user can see what happened to it.
+// a job that HAS run: eviction is gated on StateUnset, so a job past that
+// point stays in the listing where the user can see what happened to it.
+//
+// It deliberately does NOT assert OutcomeCancelled, because the job has not
+// settled by the end of this test and must not have. finishCancel
+// (internal/sched/cancel.go) sees a RUNNING pre-boundary job, calls
+// work.Abort and returns — "settled on the tick after it yields" — and
+// stubWorkers.Abort only records the ID, so nothing here ever yields. The
+// settling half is TestCancelledWorker_SettlesRatherThanReAbortingForever's
+// (internal/dispatch/worker_test.go:16), which calls d.Yielded explicitly;
+// asserting it here would assert a state this fixture cannot reach.
+//
+// What the assertions below add over a bare listing count: the count alone
+// passes whenever the job is still registered for ANY reason, including a
+// cancel that never latched. Checking the intent and the state names the two
+// facts that actually make eviction inapplicable.
 func TestCancelledRunningJob_IsNotEvicted(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
@@ -138,6 +152,13 @@ func TestCancelledRunningJob_IsNotEvicted(t *testing.T) {
 	}
 	d.tick(context.Background())
 
+	v := d.q.Render(j)
+	if v.Intent != job.IntentCancel {
+		t.Errorf("Intent = %v, want IntentCancel — the cancel must have latched, or the job is still listed for the wrong reason", v.Intent)
+	}
+	if v.State == job.StateUnset {
+		t.Errorf("State = StateUnset — this job HAS run, and StateUnset is the gate evictCancelledNeverRun keys on; if it reads unset the test is no longer covering the case it names")
+	}
 	if got := d.List(); len(got) != 1 {
 		t.Errorf("List has %d rows, want 1 — a job that HAS run must settle as Cancelled and stay visible; only the never-run case is evicted", len(got))
 	}

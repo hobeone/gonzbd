@@ -53,7 +53,12 @@ func TestTick_WalksInQueueOrder(t *testing.T) {
 	}
 }
 
-func TestStart_IsNotBlockingAndStopIsIdempotent(t *testing.T) {
+// TestStop_IsIdempotent covers Stop only. An earlier name also claimed Start
+// is non-blocking, which this body cannot observe and which is not true as
+// written: Start calls restore(ctx) — and so Store.Load — synchronously
+// before it launches run, so it returns only once the restore has finished.
+// With the immediate fakeStore there is no window to detect either way.
+func TestStop_IsIdempotent(t *testing.T) {
 	d := newTestDispatcher(t)
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -216,6 +221,13 @@ func TestTick_LogsAndSkipsAJobWhoseAdvanceErrors(t *testing.T) {
 	if err := d2.Add(j, Header{}); err != nil {
 		t.Fatalf("d2.Add: %v", err)
 	}
+	// Registered AFTER the failing job, so it is reached only if the walk
+	// carries on past the error. Without it the test observes the log and
+	// nothing else, and tick's `continue` could be a `return` unnoticed.
+	later := job.New("j2", "n", job.Policy{})
+	if err := d2.Add(later, Header{}); err != nil {
+		t.Fatalf("d2.Add(later): %v", err)
+	}
 
 	d2.tick(context.Background())
 
@@ -231,6 +243,9 @@ func TestTick_LogsAndSkipsAJobWhoseAdvanceErrors(t *testing.T) {
 	// even though d2's tick logged an error for it.
 	if got := j.State().State; got != job.Extracting {
 		t.Errorf("job State = %v after the failed reclaim, want Extracting — Cross succeeds independently of which queue reclaims the lease", got)
+	}
+	if got := d2.q.Render(later).State; got != job.Fetching {
+		t.Errorf("the job queued behind the failing one is at %v, want Fetching — tick must SKIP a job whose Advance errors and keep walking, not abandon the pass", got)
 	}
 }
 
