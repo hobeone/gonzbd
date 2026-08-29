@@ -17,9 +17,8 @@ func (s *stubWorkers) Abort(jobID string) { s.aborted = append(s.aborted, jobID)
 
 func testClock() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
-// fakeResidency is the Residency test double. Task 4 adds an onHydrate hook;
-// Task 2 needs only enough to satisfy the interface and let a test observe
-// what became resident.
+// fakeResidency is the Residency test double. failOn lets a test force
+// Hydrate to fail for one job ID, for Task 4's hydration-failure test.
 type fakeResidency struct {
 	mu     sync.Mutex
 	live   map[string]bool
@@ -45,7 +44,6 @@ func (f *fakeResidency) Evict(id string) {
 	delete(f.live, id)
 }
 
-//nolint:unused // first caller is Task 4's residency tests
 func (f *fakeResidency) resident(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -167,7 +165,6 @@ func withCaps(lease, slot int) func(*testOpts) {
 	return func(o *testOpts) { o.leaseCap, o.slotCap = lease, slot }
 }
 
-//nolint:unused // first caller is Task 4
 func withResidency(r Residency) func(*testOpts) { return func(o *testOpts) { o.res = r } }
 
 //nolint:unused // first caller is Task 6
