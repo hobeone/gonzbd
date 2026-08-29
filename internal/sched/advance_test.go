@@ -574,6 +574,41 @@ func TestGrantFor_ReturnsIssuedLeaseOnGrantFailure(t *testing.T) {
 	}
 }
 
+// TestMoveTo_RefusedTransitionReleasesTheDestinationSlot pins the rollback.
+// Fetching -> Repairing is not an edge (legalEdges gives Fetching only
+// {Assessing}), so Transition refuses after grantFor has already taken a slot
+// for Repairing. Without the rollback that slot is held forever: the job never
+// reached Repairing, and every other release is keyed to a state it did reach.
+//
+// It calls moveTo directly because Advance cannot reach this path — the same
+// reason TestGrantFor_ReturnsIssuedLeaseOnGrantFailure calls grantFor directly.
+func TestMoveTo_RefusedTransitionReleasesTheDestinationSlot(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	if err := q.Advance(j); err != nil {
+		t.Fatalf("Advance (grant): %v", err)
+	}
+	if got := q.slots.outstanding(); got != 0 {
+		t.Fatalf("setup: slots = %d, want 0 — Fetching needs none", got)
+	}
+
+	err := q.moveTo(j, job.Fetching, job.Repairing)
+	if err == nil {
+		t.Fatal("moveTo(Fetching -> Repairing) = nil, want an illegal-edge refusal")
+	}
+	if got := q.slots.outstanding(); got != 0 {
+		t.Errorf("slots outstanding = %d, want 0 — grantFor took a slot for "+
+			"Repairing and the job never got there; without the rollback it "+
+			"is held forever", got)
+	}
+	if got := j.Snapshot().State.State; got != job.Fetching {
+		t.Errorf("State = %v, want Fetching — a refused Transition must not move it", got)
+	}
+}
+
 // TestPark_ReleasesBothPools calls Park directly rather than only observing
 // it through Advance's gated branches, pinning its two-line contract:
 // releaseFor then reclaim.

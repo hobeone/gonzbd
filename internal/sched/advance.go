@@ -94,13 +94,14 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 			// grantFor's PRODUCTION call paths, not about grantFor itself:
 			// `grep -n 'q\.grantFor(' internal/sched/advance.go | grep -v '// '` (the
 			// second filter drops this comment's own mention of the name)
-			// finds exactly three — branch 2 (line 217) and branch 3's two
-			// calls (lines 236, 239). At all three, Advance's settled early
-			// return has already established an open, unsettled attempt
-			// before grantFor runs, so "no open attempt" and "past the
-			// boundary" cannot fire from any of them; and at line 236 (the
-			// crossing's ignored-result call), needsLease(s) is false for
-			// both Production states, so this whole block is never entered
+			// finds exactly three — branch 2 (line 217), branch 3's crossing
+			// arm (line 236), and moveTo's call (line 287), which branch 3's
+			// non-crossing tail reaches via q.moveTo(j, ...). At all three,
+			// Advance's settled early return has already established an open,
+			// unsettled attempt before grantFor runs, so "no open attempt" and
+			// "past the boundary" cannot fire from any of them; and at line
+			// 236 (the crossing's ignored-result call), needsLease(s) is false
+			// for both Production states, so this whole block is never entered
 			// there at all. That leaves the fifth as the only refusal a production
 			// call can hit: the job acquired a lease between our HoldsLease
 			// check and here. Return the one we minted rather than leaking
@@ -170,9 +171,10 @@ func (q *Queue) Retry(j *job.Job) error {
 // Advance is the scheduling loop's entry point for one job. A blocked path
 // never records a verdict — State, Next and Outcome are untouched — so a lost
 // acquisition race costs a tick, never a decision. It is not true that a
-// blocked path writes NO job state: branch 3's `if !q.grantFor(...) { return
-// nil }` can block after grantFor has already written j.lease via j.Grant,
-// which Snapshot().HoldsLease then reports, and grantFor's own comment
+// blocked path writes NO job state: branch 3's non-crossing tail (moveTo's
+// `if !q.grantFor(...) { return nil }`) can block after grantFor has already
+// written j.lease via j.Grant, which Snapshot().HoldsLease then reports, and
+// grantFor's own comment
 // documents that write as deliberate — the job keeps a lease it is one slot
 // short of using, rather than giving up capacity it will need again on the
 // next tick. Advance takes no target — the target is next, written by the
@@ -236,40 +238,61 @@ func (q *Queue) Advance(j *job.Job) error {
 		q.grantFor(j, s.State.Next)
 		return nil
 	}
-	if !q.grantFor(j, s.State.Next) {
+	return q.moveTo(j, s.State.State, s.State.Next)
+}
+
+// moveTo grants what `to` requires, attempts j.Transition(from, to)'s move,
+// and releases what the resulting position does not need. It is Advance's
+// branch-3 non-crossing tail, extracted so a unit test can drive the refused-
+// Transition path directly — Advance itself cannot reach it; see below.
+//
+// A refused grant returns nil, not an error: a blocked tick is not a
+// failure. Branch 2 retries the grant on a later tick, exactly as it does
+// for the resume path.
+//
+// grantFor has no rollback of its own (its own doc comment): it acquires
+// what the DESTINATION requires and does not know if the move that follows
+// fails. On a refused Transition the job is still at `from` — Transition
+// changed nothing — so the release below is keyed to `from`, not `to`,
+// through releaseFor, the same owner every other release goes through,
+// rather than calling q.slots.release directly. Without this, a slot
+// grantFor just acquired for a destination the job never reached stays in
+// q.slots.held forever: nothing else on this path frees it, because every
+// other release call is keyed to a state the job actually reached.
+//
+// On a successful Transition, releaseFor(j, to) frees what the NEW position
+// does not need — a DEMOTION. Assessing -> Fetching is the live case and the
+// only one in the work spine: Assessing holds a slot, Fetching is network-
+// bound and holds none (§3.4), so without this the job downloads for
+// minutes or hours while occupying pool B. This release happens AFTER the
+// move (rather than being folded into a single call keyed on the eventual
+// state), so a refused Transition cannot leave the job resourceless at the
+// position it is still occupying: the two branches release two different
+// states for that reason.
+//
+// The refused-Transition path is unreachable through Advance's own
+// preconditions: setNext validates CanTransition before recording next
+// (attempt.go:222) and refuses to replace a recorded next with a different
+// one, transition's four refusals are then all excluded, and Advance's
+// settled early-return guarantees an open attempt here. The one route left
+// was a concurrent j.Finish from outside q.mu, which Settle closes by taking
+// q.mu. That is why TestMoveTo_RefusedTransitionReleasesTheDestinationSlot
+// calls moveTo directly instead of going through Advance — the same pattern
+// grantFor's own doc comment describes for
+// TestGrantFor_ReturnsIssuedLeaseOnGrantFailure: "grantFor has no such
+// guarantee on its own — it is a package-private function", callable to
+// exercise a path Advance's preconditions close off.
+//
+// moveTo takes no lock of its own; Advance already holds q.mu for the whole
+// of its own body and calls this while still holding it.
+func (q *Queue) moveTo(j *job.Job, from, to job.State) error {
+	if !q.grantFor(j, to) {
 		return nil
 	}
-	if err := j.Transition(s.State.Next); err != nil {
-		// Unreachable through Advance's own preconditions, and deliberately
-		// kept. setNext validates CanTransition before recording next
-		// (attempt.go:222) and refuses to replace a recorded next with a
-		// different one, transition's four refusals are then all excluded, and
-		// Advance's settled early-return guarantees an open attempt here. The
-		// one route left was a concurrent j.Finish from outside q.mu, which
-		// Settle closes by taking q.mu. It is NOT tested, because
-		// constructing it would mean manufacturing a race this package's lock
-		// discipline forbids — and it is not deleted, because the reasoning
-		// above spans two packages and would have to be re-derived by anyone
-		// who widens transition's admissibility.
-		//
-		// grantFor has no rollback (its own doc comment): it acquired what the
-		// DESTINATION requires and does not know the move failed. The job is
-		// still at its ORIGIN position — s.State.State, unchanged by a refused
-		// Transition — so release what THAT position does not need, through the
-		// same owner every other release goes through, rather than calling
-		// q.slots.release directly. Without this, a slot grantFor just acquired
-		// for a destination the job never reached stays in q.slots.held forever:
-		// nothing else on this path frees it, because every other release call
-		// is keyed to a state the job actually reached.
-		q.releaseFor(j, s.State.State)
+	if err := j.Transition(to); err != nil {
+		q.releaseFor(j, from)
 		return err
 	}
-	// A DEMOTION frees what the new position does not need. Assessing →
-	// Fetching is the live case and the only one in the work spine: Assessing
-	// holds a slot, Fetching is network-bound and holds none (§3.4), so
-	// without this the job downloads for minutes or hours while occupying
-	// pool B. Released AFTER the move, so a refused Transition cannot leave
-	// the job resourceless at the position it is still occupying.
-	q.releaseFor(j, s.State.Next)
+	q.releaseFor(j, to)
 	return nil
 }
