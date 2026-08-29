@@ -268,12 +268,27 @@ composed view, so it arrives here. D-B4's substantive decisions — one read
 door returning `job.RenderView`, computed in a single lock span, no exported
 predicates, no pool telemetry — are unchanged.
 
-**The composed row does no I/O and cannot fail.** Status inputs come from
-`sched`; name, category and priority from the header tier; byte and article
-figures from `JobProgress`. All three are in memory for every job at every
-residency. `docs/queue-lifecycle.md`: "Remaining bytes is derived, not stored…
-from `FileProgress` alone, so it holds at any residency and needs no
-adjustment."
+**The composed row does no I/O and cannot fail.** Every input is in memory for
+every job at every residency, so there is no error path and no store call.
+
+**What a row can contain in B2.3 is bounded by what has migrated.**
+`internal/job.Job` carries `id`, `name` and `policy` and nothing else — the
+header and progress tiers still live in `internal/queue` and move in B2.4. So
+B2.3's `Row` is `job.RenderView` plus the `Header` the caller supplies at
+`Add` (name, category, priority, total bytes); **byte and article progress
+figures are deferred to B2.4**, when `JobProgress` migrates.
+
+This narrows the aggregate argument for `RenderAll` without defeating it. A
+torn list is still wrong for status alone — a listing that shows job 3 as
+`Downloading` and job 300 as `Queued` when no instant had both is a view of
+nothing. The stronger case, summing remaining bytes across rows from different
+instants, arrives with the figures in B2.4, and `RenderAll` is the shape that
+makes it correct when it does rather than a change made under pressure later.
+
+For the record, those figures will need no store call either when they arrive:
+`docs/queue-lifecycle.md` puts `JobProgress` in the always-resident tier and
+states that "Remaining bytes is derived, not stored… from `FileProgress`
+alone, so it holds at any residency and needs no adjustment."
 
 This is worth stating because the opposite is easy to conclude and wrong. Most
 jobs in a listing are manifest-non-resident under D-B8, and a
@@ -389,15 +404,17 @@ The surface, therefore:
 | `New(...) *Dispatcher` | Constructs the `sched.Queue` with the given capacities, clock, `Workers`, store, and **tick interval**. |
 | `Start(ctx) error` | Reads the store, registers every job, then launches the ticker goroutine and **returns**. Non-blocking. Returns an error only if the store read fails; a `Start` on an already-started dispatcher is an error, not a no-op, because it would create a second ticker and break D-B7's single-goroutine premise. |
 | `Stop() error` | Stops the ticker and waits for the in-flight tick to finish. Idempotent. It **parks** every job holding resources and settles nothing — a shutdown is not an outcome, and D-I11's reasoning applies: recording one would contradict what is on disk. |
-| `Add(j *job.Job) error` | Registers a job and kicks the tick. |
+| `Add(j *job.Job, h Header) error` | Registers a job with its header fields and kicks the tick. |
 | `Finished(j, outcome)` / `Yielded(j)` | The worker-exit path required by D-B14. `Finished` calls `Settle`, `Yielded` calls `Park`. Both are safe to call from a worker goroutine. |
 | `List() []Row` | The composed view — one `RenderAll` call plus the header and `JobProgress` tiers. |
 | `Cancel(id) error` | `sched.Cancel`, then D-B12's eviction. |
 | `Retry(id) error`, `Pause()`, `Resume()`, `Paused() bool` | Delegate to `sched` unchanged. |
 
-`Row` is a `dispatch` type composing `job.RenderView` with the header and
-progress fields a listing needs. It is not a `job` type: `internal/job` cannot
-name the registry that supplies half of it.
+`Row` is a `dispatch` type composing `job.RenderView` with the `Header`
+supplied at `Add`. It is not a `job` type: `internal/job` cannot name the
+registry that supplies half of it. `Header` is a plain struct — name,
+category, priority, total bytes — because `internal/job.Job` carries only
+`id`, `name` and `policy`, and the header tier does not migrate until B2.4.
 
 **Startup.** `Start` reads the store once (D-B11), reconstructs each job's four
 axes and sizes its `JobProgress`, and registers everything before the first
