@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -105,7 +106,9 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 // function can hydrate it, and Hydrate does disk I/O that must not run under
 // any lock. A job therefore holds a lease with no manifest for the length of
 // one read. Nothing consumes that window: Task 5's launch path runs after this
-// function, and a failed read settles the job here.
+// function, and a read that failed on the manifest itself settles the job
+// here. A read that failed because ctx was cancelled does NOT settle — see the
+// branch below for why the two differ.
 //
 // It takes exactly ONE d.q.Render(j) call and reads v.Holds — job.RenderView's
 // field computed by sched's renderLocked from q.holds(j.ID(), s)
@@ -119,6 +122,22 @@ func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 	switch {
 	case v.Holds && !d.isResident(j.ID()):
 		if err := d.res.Hydrate(ctx, j.ID()); err != nil {
+			// A cancelled context says nothing about the JOB. run returns on
+			// ctx.Done(), but a tick already in flight walks on with the same
+			// cancelled ctx, so Hydrate reports context.Canceled for a
+			// perfectly healthy job — and Outcome is write-once, so settling
+			// here would mark it Failed permanently and the user would find
+			// it Failed after a restart when it was merely interrupted.
+			//
+			// That is exactly what makes this case different from the one
+			// below. An unreadable manifest is a fact about the job: it can
+			// never run, so settling is right and returns its pools. A
+			// cancellation is a fact about the process. The job keeps its
+			// resources; Stop's sweep parks them, and if the cancellation was
+			// not a shutdown the next tick retries the hydration.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("hydrate %s: %w", j.ID(), err)
+			}
 			// The job cannot run without its manifest, and it is holding
 			// resources it can never use. Settling returns both pools; leaving
 			// it would strand them, because no later tick reaches a different

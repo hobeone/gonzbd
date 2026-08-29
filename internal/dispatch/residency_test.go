@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -112,5 +113,49 @@ func TestResidency_HydrationFailureSettlesFailedAndReturnsBothPools(t *testing.T
 	}
 	if j.HoldsLease() {
 		t.Error("lease still held after a hydration failure — settling must return both pools")
+	}
+}
+
+// TestResidency_HydrationCancelledDoesNotSettleTheJob is the other half of the
+// test above. Both drive the same branch of reconcileResidency; they differ
+// only in what Hydrate returns, and that difference must change the outcome.
+//
+// Settling on a cancelled context is permanent damage: run returns on
+// ctx.Done() but a tick already in flight walks on with the same cancelled
+// ctx, so a healthy job's Hydrate reports context.Canceled — and Outcome is
+// write-once, so the user restarts to find jobs marked Failed that were only
+// interrupted. DeadlineExceeded is included because a ctx with a deadline
+// reports that instead, and it means the same thing here.
+func TestResidency_HydrationCancelledDoesNotSettleTheJob(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"Canceled", context.Canceled},
+		{"DeadlineExceeded", context.DeadlineExceeded},
+		{"wrapped", fmt.Errorf("read manifest: %w", context.Canceled)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := &fakeResidency{failOn: map[string]error{"j1": tc.err}}
+			d := newTestDispatcher(t, withResidency(res))
+			j := job.New("j1", "n", job.Policy{})
+			if err := d.Add(j, Header{}); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			d.tick(context.Background())
+			d.tick(context.Background())
+
+			v := d.q.Render(j)
+			if v.Outcome != job.OutcomePending {
+				t.Errorf("Outcome = %v, want Pending — a cancelled context is a fact about the process, not about the job, and Outcome is write-once", v.Outcome)
+			}
+			if !j.HoldsLease() {
+				t.Error("lease released — a job whose hydration was cancelled keeps its resources; Stop's sweep parks them")
+			}
+			if d.isResident("j1") {
+				t.Error("isResident(j1) = true after a failed Hydrate")
+			}
+		})
 	}
 }
