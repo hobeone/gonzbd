@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -426,5 +427,46 @@ func TestHeaderFor_RoundTrip(t *testing.T) {
 
 	if _, ok := d.headerFor("nope"); ok {
 		t.Error("headerFor(nope) = ok, want false for an unregistered ID")
+	}
+}
+
+// TestFakeStore_RowsAndOrderStayInStep pins the test double itself. Load
+// indexes rows by each ID in order, so the two must move together: an ID left
+// in order after Delete removed its row yields a zero-valued Persisted, and a
+// Save that never reached order is invisible to Load. Both are shapes no real
+// store can produce, so a test built on them would be exercising the fake.
+func TestFakeStore_RowsAndOrderStayInStep(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeStore{}
+	f.seed([]Persisted{{ID: "a"}, {ID: "b"}})
+
+	if err := f.Save(ctx, Persisted{ID: "c"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := f.Delete(ctx, "a"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	got, err := f.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	var ids []string
+	for _, p := range got {
+		if p.ID == "" {
+			t.Errorf("Load returned a zero-valued row among %+v — an ID left in "+
+				"order after its row was deleted reads back as an empty Persisted", got)
+		}
+		ids = append(ids, p.ID)
+	}
+	if want := []string{"b", "c"}; !slices.Equal(ids, want) {
+		t.Errorf("Load returned %v, want %v — a saved row must become visible "+
+			"to Load and a deleted one must disappear from it", ids, want)
+	}
+
+	// Re-seeding replaces the contents rather than layering over them.
+	f.seed([]Persisted{{ID: "z"}})
+	if _, ok := f.row("b"); ok {
+		t.Error("row(b) survived a re-seed — seed replaces the store's contents")
 	}
 }

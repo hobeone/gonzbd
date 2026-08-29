@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -70,16 +71,22 @@ type fakeStore struct {
 	loadErr error
 }
 
+// rows and order are two views of one set and are always written together:
+// order fixes the sequence Load returns (rows, a map, has none), and every
+// ID in order has an entry in rows. Letting them drift is not a harmless
+// test-double shortcut — Load indexes rows by each ID in order, so an ID
+// left in order after its row is gone yields a zero-valued Persisted rather
+// than no row at all, which is a plausible-looking restore input that no
+// production path can produce.
+
 // seed replaces the store's contents with ps, in the given order. It exists
 // for Task 7's restore tests, which need Load to return rows in a specific
-// sequence — d.rows alone (a map) has none.
+// sequence.
 func (f *fakeStore) seed(ps []Persisted) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.order = nil
-	if f.rows == nil {
-		f.rows = map[string]Persisted{}
-	}
+	f.rows = map[string]Persisted{}
 	for _, p := range ps {
 		f.rows[p.ID] = p
 		f.order = append(f.order, p.ID)
@@ -114,6 +121,9 @@ func (f *fakeStore) Save(_ context.Context, p Persisted) error {
 	if f.rows == nil {
 		f.rows = map[string]Persisted{}
 	}
+	if _, ok := f.rows[p.ID]; !ok {
+		f.order = append(f.order, p.ID)
+	}
 	f.rows[p.ID] = p
 	return nil
 }
@@ -126,6 +136,7 @@ func (f *fakeStore) Delete(_ context.Context, id string) error {
 	}
 	f.gone[id] = true
 	delete(f.rows, id)
+	f.order = slices.DeleteFunc(f.order, func(s string) bool { return s == id })
 	return nil
 }
 
@@ -197,13 +208,11 @@ func newTestDispatcher(t *testing.T, mods ...func(*testOpts)) *Dispatcher {
 	}
 }
 
-// The with* options are each unused until the task whose tests vary that
-// axis: withCaps (Task 3, lease-contention tests), withResidency (Task 4),
-// withStore (Task 6), withRunner (Task 5), withWorkers (Task 5's abort-loop
-// test). Declaring all five up front means every later task's tests compile
-// against one constructor rather than each task adding its own.
-
-//nolint:unused // first caller is Task 3
+// The with* options each vary one axis of the test dispatcher, so every
+// task's tests compile against one constructor rather than each task adding
+// its own. All five have callers now: grepping each name across
+// internal/dispatch/*_test.go and discounting its own declaration finds
+// withCaps 3, withResidency 7, withStore 17, withRunner 4, withWorkers 1.
 func withCaps(lease, slot int) func(*testOpts) {
 	return func(o *testOpts) { o.leaseCap, o.slotCap = lease, slot }
 }
