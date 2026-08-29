@@ -19,6 +19,13 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 	tests := []struct {
 		name string
 		exit func(t *testing.T, d *Dispatcher, j *job.Job)
+		// postExit runs immediately after exit, before the relaunch ticks
+		// below, for a check that only makes sense at that instant. Only
+		// Stop needs one: unlike Finished and Yielded, whose residency
+		// cleanup runs a tick later through reconcileResidency, Stop's own
+		// sweep is the only place that clears the job's residency
+		// bookkeeping, so the property belongs right after Stop returns.
+		postExit func(t *testing.T, d *Dispatcher, j *job.Job)
 	}{
 		{"Finished", func(t *testing.T, d *Dispatcher, j *job.Job) {
 			t.Helper()
@@ -28,17 +35,29 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 			if err := d.Retry(j.ID()); err != nil {
 				t.Fatalf("Retry: %v", err)
 			}
-		}},
+		}, nil},
 		{"Yielded", func(t *testing.T, d *Dispatcher, j *job.Job) {
 			t.Helper()
 			if err := d.Yielded(j); err != nil {
 				t.Fatalf("Yielded: %v", err)
 			}
-		}},
+		}, nil},
 		{"Stop", func(t *testing.T, d *Dispatcher, j *job.Job) {
 			t.Helper()
 			if err := d.Stop(); err != nil {
 				t.Fatalf("Stop: %v", err)
+			}
+		}, func(t *testing.T, d *Dispatcher, j *job.Job) {
+			t.Helper()
+			// Stop evicts the manifest (d.res.Evict) but must also clear
+			// d.resident, the dispatcher's own bookkeeping of what
+			// Residency believes is loaded. Without that second clear, a
+			// later tick's reconcileResidency finds v.Holds true (the job
+			// re-granted resources) and d.isResident already true, takes
+			// NEITHER branch, and never re-hydrates: the job launches
+			// against a manifest that Stop already evicted from disk.
+			if d.isResident(j.ID()) {
+				t.Error("job still marked resident after Stop — Stop evicted the manifest via Residency.Evict but left d.resident set, so a later tick will never re-hydrate it")
 			}
 		}},
 	}
@@ -58,6 +77,9 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 			}
 
 			tc.exit(t, d, j)
+			if tc.postExit != nil {
+				tc.postExit(t, d, j)
+			}
 
 			// Reset the runner's record so the assertion below can only pass
 			// by observing a FRESH Run call made after the exit, not the one

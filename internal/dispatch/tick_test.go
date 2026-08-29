@@ -77,6 +77,35 @@ func TestStart_TwiceIsAnError(t *testing.T) {
 	}
 }
 
+// TestStart_AfterStopReturnsAnErrorRatherThanPanicking pins Stop's terminal
+// contract: d.stop and d.done are created once, in New, and Stop closes both.
+// A naive Start that only checked d.started would proceed after Stop clears
+// it, launch a second `go d.run(ctx)`, and that goroutine would select the
+// already-closed d.stop and return immediately — its deferred close(d.done)
+// then panicking on an already-closed channel, with Start itself having
+// already returned nil. This asserts the safe outcome instead: a distinct
+// error, and no panic, which running under `go test` would catch regardless
+// since an unrecovered panic in a spawned goroutine crashes the whole test
+// binary.
+func TestStart_AfterStopReturnsAnErrorRatherThanPanicking(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if err := d.Start(context.Background()); err == nil {
+		t.Fatal("Start after Stop returned nil, want an error — Stop is terminal and a Dispatcher must not be restarted")
+	}
+
+	// Give a wrongly-spawned second run goroutine a chance to panic before
+	// the test process exits, so a regression fails this test rather than
+	// crashing an unrelated one later in the same binary.
+	time.Sleep(20 * time.Millisecond)
+}
+
 func TestStop_ParksHoldersRatherThanSettlingThem(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})

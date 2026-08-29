@@ -17,14 +17,10 @@ import (
 // eviction Cancel below performs, reintroducing the defect where a deleted job
 // renders as queued forever.
 //
-// Task 2 declares every field the dispatcher will ever hold, before every
-// field had a reader — Go permits unused struct fields, and the alternative,
-// adding fields piecemeal per task, would leave this file's own test
-// constructor unable to compile until the last task landed. Every field now
-// has at least one reader: res and store since Task 4 and Task 7's restore,
-// runner since Task 5's launch, tickEvery/stop/done/started since Task 3's
-// Start/Stop/run, log since the log helpers below, and written — the last to
-// gain one — since Task 7's persistIfChanged (write) and restore (seed).
+// res and store are read by restore and reconcileResidency; runner is read by
+// launch; tickEvery/stop/done/started/stopped drive Start/Stop/run; log backs
+// the log helpers below; written is persistIfChanged's and restore's record
+// of what the store already holds.
 type Dispatcher struct {
 	mu    sync.Mutex
 	byID  map[string]*entry
@@ -48,6 +44,7 @@ type Dispatcher struct {
 	stop      chan struct{}
 	done      chan struct{}
 	started   bool
+	stopped   bool
 
 	log *slog.Logger
 }
@@ -184,8 +181,21 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 // A second Start is an error rather than a no-op: it would create a second
 // ticker goroutine, and two concurrent walks would need locking between them
 // that D-B7's single-goroutine design deliberately does not have.
+//
+// A Dispatcher that has been Stopped cannot be restarted: Stop is terminal.
+// d.stop and d.done are created once, in New, and closing d.stop is
+// irreversible — recreating them on a later Start would add a reuse path with
+// its own races (a worker goroutine still unwinding from the old d.done close
+// racing a new Start's d.restore, for one) to serve a capability nothing in
+// this codebase asks for: B2.4 constructs one Dispatcher per process. This
+// matches net/http.Server, whose Shutdown is documented as making the server
+// unusable for future calls.
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.mu.Lock()
+	if d.stopped {
+		d.mu.Unlock()
+		return errors.New("dispatch: Start: this Dispatcher was already stopped and cannot be restarted")
+	}
 	if d.started {
 		d.mu.Unlock()
 		return errors.New("dispatch: Start: already started")
@@ -227,6 +237,15 @@ func (d *Dispatcher) run(ctx context.Context) {
 		case <-d.stop:
 			return
 		case <-ctx.Done():
+			// This exit leaves d.started true with no goroutine behind it,
+			// so a later Start refuses forever (it never sees d.stop close,
+			// since only Stop closes that channel). That is deliberate, not
+			// an oversight: nothing but Stop makes a Dispatcher usable again
+			// in the first place, now that Stop is terminal, so ctx
+			// cancellation without an explicit Stop simply leaves the
+			// Dispatcher inert rather than restartable. A caller that wants
+			// a clean, inspectable shutdown after cancelling ctx still calls
+			// Stop — see TestRun_AdvancesOnAWakeAndStopsOnContextCancel.
 			return
 		case <-t.C:
 		case <-d.wake:
@@ -235,8 +254,10 @@ func (d *Dispatcher) run(ctx context.Context) {
 	}
 }
 
-// Stop halts the ticker, waits for the in-flight tick to finish, and parks
-// every job that still holds resources.
+// Stop halts the ticker, waits for the in-flight tick to finish, parks every
+// job that still holds resources, and evicts its manifest residency. It is
+// terminal: a Dispatcher that has been Stopped cannot be Started again (see
+// Start's doc comment).
 //
 // It parks rather than settles. A shutdown is not an outcome: recording one
 // would claim a verdict about work that simply stopped, and an Outcome must
@@ -247,29 +268,44 @@ func (d *Dispatcher) run(ctx context.Context) {
 // NOT: Stop must return every held resource even for a Dispatcher whose
 // ticker was never started (a caller that only ever drove the queue through
 // direct tick calls, as this package's own tests do), and it must be safe to
-// call twice. Park and Residency.Evict are both unconditional and idempotent
-// (job.Surrender on an already-parked job returns a nil lease, which reclaim
-// treats as a no-op — see sched.leasePool.reclaim), so re-running the sweep
-// on a second call costs nothing and cannot double-release.
+// call twice. Park, Residency.Evict and markNotResident are all unconditional
+// and idempotent (job.Surrender on an already-parked job returns a nil lease,
+// which reclaim treats as a no-op — see sched.leasePool.reclaim; delete on an
+// absent map key is a no-op), so re-running the sweep on a second call costs
+// nothing and cannot double-release.
 //
 // started itself IS the idempotency guard for the channel dance: it is read
 // and cleared under mu in one step, so only the call that observes it true
 // closes d.stop and waits on d.done. A second call — concurrent or
 // sequential — finds it already false and skips straight to the sweep,
-// which never touches d.stop or d.done.
+// which never touches d.stop or d.done. stopped is a separate, one-way latch:
+// it is set on every call (there is no "already stopped" branch to take),
+// because Stop's terminal contract holds regardless of how many times it is
+// called or whether the ticker was ever running.
 //
-// The sweep also clears each job's launched claim, alongside Park and Evict.
-// Stop is a third worker-exit path beside Finished and Yielded — the ticker
-// goroutine has already stopped by the time the sweep runs (the wait above),
-// so nothing races a launch here — and it must clear the same bookkeeping
-// they do. Without this, a job that held a claim when Stop ran would still
-// carry it after a later Start reopens the Dispatcher, and claimLaunched
-// would refuse it forever: the job would render Running-eligible but never
-// actually launch.
+// The sweep also clears each job's launched claim and its manifest
+// residency, alongside Park and Evict. Stop is a third worker-exit path
+// beside Finished and Yielded — the ticker goroutine has already stopped by
+// the time the sweep runs (the wait above), so nothing races a launch here —
+// and it must clear the same bookkeeping they do. Now that Stop is terminal,
+// this is no longer about surviving a later Start: it is about leaving the
+// Dispatcher's own bookkeeping consistent and inspectable after shutdown,
+// since this package's tests (and any caller keeping a Stopped Dispatcher
+// around to inspect) drive tick and its helpers directly, and a stale
+// launched or resident entry would be a lie about what the Dispatcher
+// believes is true. Without the resident clear specifically, a job that held
+// a lease when Stop ran would still read as manifest-resident afterward, so a
+// direct tick() call reaching reconcileResidency for it (v.Holds is now
+// false, post-Park) would see d.isResident true and correctly evict — but
+// only because reconcileResidency's own else-branch happens to cover it; the
+// job would never re-hydrate, because the branch that grants residency
+// requires !d.isResident(id) and this entry would already, wrongly, satisfy
+// that.
 func (d *Dispatcher) Stop() error {
 	d.mu.Lock()
 	wasStarted := d.started
 	d.started = false
+	d.stopped = true
 	d.mu.Unlock()
 
 	if wasStarted {
@@ -283,6 +319,7 @@ func (d *Dispatcher) Stop() error {
 			firstErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
 		}
 		d.res.Evict(j.ID())
+		d.markNotResident(j.ID())
 		d.clearLaunched(j.ID())
 	}
 	return firstErr
