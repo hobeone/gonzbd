@@ -237,8 +237,10 @@ that a one-line change in one place instead of a two-file invariant somebody has
 to remember.
 
 This is deliberately broader than a `Finalizing && OutcomeOK` carve-out, and the
-difference is a real design call rather than a detail. Under `!IsProduction`, a
-cancelled `Extracting` job whose unrar fails settles `Failed`, not `Cancelled`.
+difference is a real design call rather than a detail. Under the broader rule, a
+cancelled `Extracting` job whose unrar fails settles `Failed`, not `Cancelled`:
+`Extracting` is post-boundary, so `cancelInterrupts` is false, the override does
+not fire, and the worker's own outcome stands.
 Recording `Cancelled` there would be false in D-I11's own sense — archives were
 partially written — and it would erase a genuine extraction failure behind a
 `Deleted` badge.
