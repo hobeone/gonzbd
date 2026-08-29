@@ -72,6 +72,14 @@ type Dispatcher struct {
 	started   bool
 	stopped   bool
 
+	// stopOnce and stopErr make Stop total for CONCURRENT callers, which the
+	// started/stopped latches alone cannot: those are read under d.mu and
+	// cleared there, so a second Stop entering while the first is still
+	// waiting on d.done reads wasStarted false and would skip the wait.
+	// Every caller now blocks on the same Do and observes the same result.
+	stopOnce sync.Once
+	stopErr  error
+
 	log *slog.Logger
 }
 
@@ -251,9 +259,13 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		// here would hide rather than establish it):
 		//
 		//  1. run's deferred close runs only if `go d.run(ctx)` below was
-		//     reached, which happens only when restore returned nil; this
-		//     branch runs only when it returned non-nil. Start returns on
-		//     exactly one of the two, so the two closers are disjoint.
+		//     reached. There are now THREE closers, not two, because the
+		//     succeeding-restore path below closes d.done when it finds
+		//     stopped latched — so "restore returned nil" no longer implies
+		//     run was launched. They stay disjoint: this branch runs only on
+		//     a non-nil restore and that one only on a nil restore, and that
+		//     one returns BEFORE `go d.run(ctx)` when it closes. Start
+		//     therefore takes exactly one of the three per call.
 		//  2. This branch cannot run twice. stopped is a one-way latch (Stop
 		//     sets it, nothing clears it), and Start's first check refuses
 		//     any call that sees it set. A second Start therefore reaches
@@ -275,6 +287,32 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return fmt.Errorf("dispatch: Start: %w", err)
 	}
 
+	// restore ran unlocked, so a Stop can have landed inside it. Without this
+	// check Start would launch run and return nil for a Dispatcher that is
+	// already stopped — naming a success that did not happen, and handing run
+	// a d.stop that is ALREADY closed. That last part is the sharp end: Add's
+	// kick may have primed d.wake, and run's select would then have two ready
+	// cases, which Go chooses between uniformly at random. It could take the
+	// wake, tick, and launch workers after shutdown.
+	//
+	// Closing d.done here is what lets the Stop blocked on it return; nothing
+	// else would, since run is deliberately not launched. See the
+	// closed-exactly-once argument above, which this path is the third arm of.
+	// started stays SET across this check. Clearing it and restoring it would
+	// open a window in which a concurrent Stop reads wasStarted false, skips
+	// its wait on d.done, and returns while run is about to be launched.
+	// One critical section, and started is cleared only on the bail-out.
+	d.mu.Lock()
+	sawStop := d.stopped
+	if sawStop {
+		d.started = false
+	}
+	d.mu.Unlock()
+	if sawStop {
+		close(d.done)
+		return errors.New("dispatch: Start: stopped while restoring; this Dispatcher is terminal")
+	}
+
 	go d.run(ctx)
 	return nil
 }
@@ -292,6 +330,20 @@ func (d *Dispatcher) run(ctx context.Context) {
 	t := time.NewTicker(d.tickEvery)
 	defer t.Stop()
 	for {
+		// Shutdown takes priority over work. A select with several ready
+		// cases picks one uniformly at random, so a closed d.stop and a
+		// primed d.wake are a coin toss — and losing it means ticking, and
+		// launching workers, after shutdown. Add's kick primes d.wake, and a
+		// Stop can land between Start's stopped check and this loop's first
+		// pass, so both really are ready together. This non-blocking pass
+		// settles it before the blocking select below can gamble.
+		select {
+		case <-d.stop:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
 		select {
 		case <-d.stop:
 			return
@@ -361,27 +413,44 @@ func (d *Dispatcher) run(ctx context.Context) {
 // requires !d.isResident(id) and this entry would already, wrongly, satisfy
 // that.
 func (d *Dispatcher) Stop() error {
-	d.mu.Lock()
-	wasStarted := d.started
-	d.started = false
-	d.stopped = true
-	d.mu.Unlock()
+	// The whole sequence runs once, and every caller waits for it. Reading
+	// the latches under d.mu is enough to make Stop IDEMPOTENT in sequence
+	// but not total under concurrency: the first caller clears started before
+	// it blocks on d.done, so a second caller arriving in that window read
+	// wasStarted false, skipped the wait, and ran the teardown sweep — Park,
+	// Evict, markNotResident, clearLaunched — against a tick that was still
+	// calling Advance, Hydrate and Runner.Run. It then returned nil, naming a
+	// shutdown that had not happened.
+	//
+	// sync.Once gives both halves at once: the sweep cannot run twice, and Do
+	// blocks every later caller until the first has finished, so no Stop can
+	// return early. Do also establishes the happens-before edge that makes
+	// reading stopErr after it safe without d.mu.
+	//
+	// This does not add a closer of d.done — Stop only ever waits on it — so
+	// Start's closed-exactly-once argument is untouched.
+	d.stopOnce.Do(func() {
+		d.mu.Lock()
+		wasStarted := d.started
+		d.started = false
+		d.stopped = true
+		d.mu.Unlock()
 
-	if wasStarted {
-		close(d.stop)
-		<-d.done
-	}
-
-	var firstErr error
-	for _, j := range d.snapshotOrder() {
-		if err := d.q.Park(j); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
+		if wasStarted {
+			close(d.stop)
+			<-d.done
 		}
-		d.res.Evict(j.ID())
-		d.markNotResident(j.ID())
-		d.clearLaunched(j.ID())
-	}
-	return firstErr
+
+		for _, j := range d.snapshotOrder() {
+			if err := d.q.Park(j); err != nil && d.stopErr == nil {
+				d.stopErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
+			}
+			d.res.Evict(j.ID())
+			d.markNotResident(j.ID())
+			d.clearLaunched(j.ID())
+		}
+	})
+	return d.stopErr
 }
 
 // restore registers everything the store holds, before the first tick.

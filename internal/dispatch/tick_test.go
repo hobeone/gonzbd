@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -448,5 +449,184 @@ func TestStop_ConcurrentWithAFailingStartReturnsRatherThanDeadlocking(t *testing
 
 	if err := <-startErr; !errors.Is(err, wantErr) {
 		t.Errorf("Start() = %v, want an error wrapping %v", err, wantErr)
+	}
+}
+
+// blockingSaveStore holds a tick in flight. persistIfChanged is the last stage
+// of the per-job walk and runs on the very first tick after Add — Advance
+// opens the attempt at Fetching, which needsLease and does not yet hold one,
+// so neither the residency nor the launch stage does anything — which makes
+// Save the earliest deterministic place to park a tick inside run.
+type blockingSaveStore struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingSaveStore) Load(context.Context) ([]Persisted, error) { return nil, nil }
+func (b *blockingSaveStore) Delete(context.Context, string) error      { return nil }
+func (b *blockingSaveStore) Save(context.Context, Persisted) error {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return nil
+}
+
+// TestStop_ConcurrentStopsBothWaitForTheInFlightTick pins that EVERY Stop
+// caller waits for shutdown, not just the first.
+//
+// Stop reads wasStarted and clears started under d.mu. A second Stop landing
+// while the first is still blocked on <-d.done therefore reads wasStarted
+// FALSE, skips the wait entirely, and walks straight into the teardown sweep —
+// q.Park, res.Evict, markNotResident, clearLaunched — while the background
+// tick is still calling Advance, Hydrate and Runner.Run. It then returns nil
+// to its caller, reporting a shutdown that has not happened.
+//
+// The pin is that the second Stop must still be blocked while the tick is
+// parked. It cannot produce a false failure: once every caller waits on the
+// same shutdown, no Stop can return before release is closed.
+func TestStop_ConcurrentStopsBothWaitForTheInFlightTick(t *testing.T) {
+	bs := &blockingSaveStore{entered: make(chan struct{}), release: make(chan struct{})}
+	d := newTestDispatcher(t, withStore(bs))
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	<-bs.entered // a tick is now parked inside run, mid-walk
+
+	first := make(chan error, 1)
+	go func() { first <- d.Stop() }()
+	<-d.stop // the first Stop has latched stopped and is waiting on d.done
+
+	second := make(chan error, 1)
+	go func() { second <- d.Stop() }()
+
+	select {
+	case err := <-second:
+		t.Fatalf("a second Stop returned %v while a tick is still in flight — "+
+			"it read wasStarted false, skipped <-d.done, and is tearing down "+
+			"resources underneath a live tick", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(bs.release)
+	for i, ch := range []chan error{first, second} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Errorf("Stop %d = %v, want nil", i+1, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Stop %d never returned after the tick was released", i+1)
+		}
+	}
+}
+
+// TestStart_StoppedDuringASucceedingRestoreDoesNotStart is the success-path
+// twin of TestStop_ConcurrentWithAFailingStartReturnsRatherThanDeadlocking.
+// That test covers restore FAILING while a Stop is latched; this one covers it
+// succeeding, which took the opposite branch and checked nothing.
+//
+// Start claims started, releases d.mu (D-B9 forbids holding it across
+// restore's Store I/O), and in that window a Stop latches stopped, closes
+// d.stop and blocks on d.done. When restore then succeeds, Start used to
+// launch run and return nil — reporting success for a dispatcher that is
+// already stopped, and handing run a d.stop that is ALREADY closed while
+// Add's kick has primed d.wake. Both cases of that select are then ready at
+// once, and Go picks uniformly at random, so run could take the wake, tick,
+// and launch workers after shutdown.
+func TestStart_StoppedDuringASucceedingRestoreDoesNotStart(t *testing.T) {
+	st := &blockingLoadStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     nil, // restore SUCCEEDS — the branch the failing twin cannot reach
+	}
+	d := newTestDispatcher(t, withStore(st))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- d.Start(context.Background()) }()
+	<-st.entered // Start has claimed started and is inside restore.
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- d.Stop() }()
+	<-d.stop // Stop has latched stopped and is now blocked on <-d.done.
+
+	close(st.release) // Let restore succeed.
+
+	select {
+	case err := <-startErr:
+		if err == nil {
+			t.Error("Start() = nil after a Stop latched during restore — it " +
+				"reported success for a dispatcher that is already stopped, and " +
+				"launched run against an already-closed d.stop")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start never returned")
+	}
+
+	select {
+	case err := <-stopErr:
+		if err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop deadlocked: nothing closed d.done on the succeeding-restore path")
+	}
+}
+
+// countingStore records how many times a tick reached persistIfChanged.
+type countingStore struct {
+	mu    sync.Mutex
+	saves int
+}
+
+func (c *countingStore) Load(context.Context) ([]Persisted, error) { return nil, nil }
+func (c *countingStore) Delete(context.Context, string) error      { return nil }
+func (c *countingStore) Save(context.Context, Persisted) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.saves++
+	return nil
+}
+
+// TestRun_ShutdownBeatsAPrimedWake pins that run never ticks once d.stop is
+// closed, even when d.wake is primed at the same instant.
+//
+// A select with several ready cases picks one uniformly at random. With a
+// closed d.stop AND a primed d.wake — the state Add's kick plus a concurrent
+// Stop produces — the old loop had roughly even odds of taking the wake,
+// ticking, and launching workers after shutdown.
+//
+// The repetition is the point: one trial proves nothing about a coin toss.
+// Against the unprioritised loop this fails almost immediately; with shutdown
+// checked first it cannot fail at all, because no ordering exists in which
+// the tick runs.
+func TestRun_ShutdownBeatsAPrimedWake(t *testing.T) {
+	const trials = 200
+	for range trials {
+		cs := &countingStore{}
+		d := newTestDispatcher(t, withStore(cs))
+		if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		// Add primed d.wake. Close d.stop so both cases are ready before run
+		// ever reaches its select.
+		close(d.stop)
+
+		done := make(chan struct{})
+		go func() { defer close(done); d.run(context.Background()) }()
+		<-done
+
+		cs.mu.Lock()
+		saves := cs.saves
+		cs.mu.Unlock()
+		if saves != 0 {
+			t.Fatalf("run ticked after d.stop was closed (%d store writes) — "+
+				"it took the primed wake instead of the shutdown, which is the "+
+				"coin toss a multi-ready select makes", saves)
+		}
 	}
 }
