@@ -486,8 +486,8 @@ func TestRetry_RefusesALiveUnsettledJob(t *testing.T) {
 	if !q.slots.holds(j.ID()) {
 		t.Fatal("fixture holds no slot at Assessing; this test cannot observe the strip")
 	}
-	if err := q.Retry(j); !errors.Is(err, errNotSettled) {
-		t.Errorf("Retry = %v, want errNotSettled", err)
+	if err := q.Retry(j); !errors.Is(err, ErrNotSettled) {
+		t.Errorf("Retry = %v, want ErrNotSettled", err)
 	}
 	if !q.slots.holds(j.ID()) {
 		t.Error("Retry stripped a live, unsettled job's slot")
@@ -503,8 +503,8 @@ func TestRetry_RefusesALiveUnsettledJob(t *testing.T) {
 func TestRetry_RefusesANeverRunJob(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
-	if err := q.Retry(j); !errors.Is(err, errNotSettled) {
-		t.Errorf("Retry = %v, want errNotSettled", err)
+	if err := q.Retry(j); !errors.Is(err, ErrNotSettled) {
+		t.Errorf("Retry = %v, want ErrNotSettled", err)
 	}
 	if j.HasRun() {
 		t.Error("Retry started a never-run job; that is branch 1's job, not Retry's")
@@ -616,8 +616,8 @@ func TestPark_PropagatesAForeignLeaseReclaimError(t *testing.T) {
 	if err := j.Grant(l); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if err := q.Park(j); !errors.Is(err, errNotOutstanding) {
-		t.Errorf("Park = %v, want errNotOutstanding — a foreign lease's reclaim failure must surface", err)
+	if err := q.Park(j); !errors.Is(err, ErrNotOutstanding) {
+		t.Errorf("Park = %v, want ErrNotOutstanding — a foreign lease's reclaim failure must surface", err)
 	}
 }
 
@@ -737,7 +737,7 @@ func TestAdvance_BranchTwo_ParkingAGatedNotYetRunningJobReturnsItsLease(t *testi
 // TestPark_IsTotalOverEveryShape pins that the exported door is
 // unconditional and safe on every job a caller can hand it. An earlier draft
 // of the RFC proposed refusing a non-gated job with an errNotGated sentinel,
-// by analogy to Retry's errNotSettled. That analogy is wrong: gatedBy reads
+// by analogy to Retry's ErrNotSettled. That analogy is wrong: gatedBy reads
 // Intent and q.paused and consults NOTHING about worker liveness, so a gated
 // job whose worker is still mid-article passes such a check and is stripped
 // anyway, while legitimate non-gate returns — teardown, shutdown, a dead

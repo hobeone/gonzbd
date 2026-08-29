@@ -7,11 +7,12 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// errNotOutstanding is returned by leasePool.reclaim for a lease this pool did
+// ErrNotOutstanding is returned by leasePool.reclaim for a lease this pool did
 // not issue, or already got back. Both are caller bugs that inflate capacity:
 // a double return frees the same lease's pool-A capacity twice, so two jobs
 // end up holding what the pool's own accounting believes is a single lease.
-var errNotOutstanding = errors.New("sched: lease is not outstanding")
+// Exported so a caller of Park or Settle can errors.Is against it.
+var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 
 // leasePool issues pool-A admission tokens and audits their return.
 //
@@ -42,7 +43,7 @@ var errNotOutstanding = errors.New("sched: lease is not outstanding")
 // is a bound to state rather than a guard against it (Standing Design Rule
 // 1). Within a single pool, which is every production configuration today,
 // identity is exact: a double return or a lease this pool never issued is
-// caught, which is what reclaim's errNotOutstanding and the tests below rely
+// caught, which is what reclaim's ErrNotOutstanding and the tests below rely
 // on.
 //
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
@@ -86,7 +87,7 @@ func (p *leasePool) reclaim(l *job.Lease) error {
 		return nil
 	}
 	if !p.issued[l.ID()] {
-		return fmt.Errorf("%w: id %d", errNotOutstanding, l.ID())
+		return fmt.Errorf("%w: id %d", ErrNotOutstanding, l.ID())
 	}
 	delete(p.issued, l.ID())
 	return nil

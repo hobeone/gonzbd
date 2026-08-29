@@ -53,9 +53,17 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
 		return nil
 	}
-	// The outcome passed here is what settleLocked will produce anyway, since
-	// the latch is set and this arm is only reached pre-boundary. Passing it
-	// explicitly keeps settleLocked's signature honest — the outcome is the
-	// caller's to state — rather than having one caller rely on the override.
+	// This line is reached both pre- and post-boundary: a non-running
+	// post-boundary job — Extracting or Finalizing waiting on a compute slot,
+	// or a job restored from a restart (§5.12) — has q.running == false and
+	// falls through the two arms above to here, same as a pre-boundary one.
+	// At post-boundary states cancelInterrupts is false, so settleLocked's own
+	// override — its `s.Intent == job.IntentCancel && cancelInterrupts` check,
+	// applied to the job's current state — does NOT fire there; passing
+	// OutcomeCancelled explicitly is what makes a non-running post-boundary
+	// job cancel at all; settleLocked would otherwise record whatever outcome
+	// a caller happened to pass. Only for a pre-boundary job does
+	// settleLocked's override make this argument redundant with what it would
+	// have produced anyway.
 	return q.settleLocked(j, job.OutcomeCancelled, s)
 }

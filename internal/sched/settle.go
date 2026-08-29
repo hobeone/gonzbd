@@ -67,16 +67,18 @@ func (q *Queue) settleLocked(j *job.Job, o job.Outcome, s job.Snapshot) error {
 	return q.reclaim(l)
 }
 
-// errCancelReserved is Settle's refusal of an outcome only the cancel latch
-// may produce.
-var errCancelReserved = errors.New("sched: Settle: OutcomeCancelled is reserved for Cancel")
+// ErrCancelReserved is Settle's refusal of an outcome only the cancel latch
+// may produce. Exported so a caller of Settle can errors.Is against it.
+var ErrCancelReserved = errors.New("sched: Settle: OutcomeCancelled is reserved for Cancel")
 
 // Settle is the door a dispatcher calls when its worker has returned
-// terminally. It is the counterpart of the three exported job doors that YIELD
-// a lease — Cross, Finish and Surrender — none of which had an exported
-// reclaimer before this: q.reclaim is unexported and is the sole reclaimer
-// (§3.9, D-I13), so a dispatcher calling j.Finish itself would drop the lease
-// and lose a pool-A slot permanently and silently.
+// terminally. Of the three exported job doors that YIELD a lease — Cross,
+// Finish and Surrender — Settle is the reclaimer for Finish alone: Advance
+// already reclaims Cross's lease at the crossing (advance.go), and Park
+// reclaims Surrender's (advance.go's parkLocked). Before Settle, nothing
+// exported reclaimed what Finish yields: q.reclaim is unexported and is the
+// sole reclaimer (§3.9, D-I13), so a dispatcher calling j.Finish itself would
+// drop the lease and lose a pool-A slot permanently and silently.
 //
 // PRECONDITION, which this package cannot check: the caller's worker for j has
 // returned and will not touch the job's lease, slot, manifest or barrier
@@ -106,7 +108,7 @@ var errCancelReserved = errors.New("sched: Settle: OutcomeCancelled is reserved 
 // taken, because it is a pure check on an argument.
 func (q *Queue) Settle(j *job.Job, o job.Outcome) error {
 	if o == job.OutcomeCancelled {
-		return errCancelReserved
+		return ErrCancelReserved
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()

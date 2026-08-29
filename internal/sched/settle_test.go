@@ -30,18 +30,19 @@ func newSettleQueue(t *testing.T) (*Queue, *job.Job) {
 // exported job doors yield a *job.Lease and before this one, nothing exported
 // could take it back.
 //
-// It settles from Finalizing, not newSettleQueue's Fetching, because
-// OutcomeFailed is admissible everywhere (admissibleAt[OutcomeFailed] in
-// internal/job/admissibility.go) but Fetching never acquires a slot
-// (needsSlot in requirements.go) — a job settled there has q.slots.outstanding
-// == 0 before Settle even runs, which cannot discriminate a slot leak from a
-// correct release. driveToFinalizing's job holds both a lease and a slot
-// (asserted by the helper itself), so this test's slot assertion has
-// something to observe.
+// It settles from Assessing, not newSettleQueue's Fetching, because Fetching
+// never acquires a slot (needsSlot in requirements.go) — a job settled there
+// has q.slots.outstanding == 0 before Settle even runs, which cannot
+// discriminate a slot leak from a correct release. driveToAssessing's job
+// holds both a lease and a slot (asserted by the helper itself, before
+// crossing into Extracting surrenders the lease — see doc.go on the
+// boundary), so this test's lease AND slot assertions both have something to
+// observe. OutcomeFailed is admissible at Assessing
+// (admissibleAt[OutcomeFailed] in internal/job/admissibility.go).
 func TestSettle_ReturnsBothPools(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
-	driveToFinalizing(t, q, j)
+	driveToAssessing(t, q, j)
 	if err := q.Settle(j, job.OutcomeFailed); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
@@ -62,8 +63,8 @@ func TestSettle_ReturnsBothPools(t *testing.T) {
 // resurrection D-I14's note says must have no path.
 func TestSettle_RefusesCancelledOutcome(t *testing.T) {
 	q, j := newSettleQueue(t)
-	if err := q.Settle(j, job.OutcomeCancelled); !errors.Is(err, errCancelReserved) {
-		t.Fatalf("Settle(Cancelled) = %v, want errCancelReserved", err)
+	if err := q.Settle(j, job.OutcomeCancelled); !errors.Is(err, ErrCancelReserved) {
+		t.Fatalf("Settle(Cancelled) = %v, want ErrCancelReserved", err)
 	}
 	if j.Snapshot().State.Outcome.IsSettled() {
 		t.Error("refused Settle must not have settled the attempt")
@@ -110,10 +111,20 @@ func TestSettle_TakesTheQueueLock(t *testing.T) {
 // designed around: Cancel on a running pre-boundary job calls Abort and
 // returns without settling, so the worker comes back with an I/O error and the
 // dispatcher reports Failed. Recording Failed would be false — we caused it.
+//
+// It calls q.Cancel(j) rather than j.SetIntent(job.IntentCancel) directly, so
+// it actually exercises finishCancel's interrupt arm and Workers.Abort —
+// setting the intent alone would pin only settleLocked's override, leaving
+// the interrupt/gate decision and the abort call themselves unexercised.
 func TestSettle_InterruptedCancelOverridesTheOutcome(t *testing.T) {
 	q, j := newSettleQueue(t)
-	if err := j.SetIntent(job.IntentCancel); err != nil {
-		t.Fatalf("SetIntent: %v", err)
+	w := q.work.(*stubWorkers)
+	if err := q.Cancel(j); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(w.aborted) != 1 || w.aborted[0] != j.ID() {
+		t.Errorf("aborted = %v, want [%s] exactly once — Fetching is "+
+			"pre-boundary and running, so Cancel must interrupt it", w.aborted, j.ID())
 	}
 	if err := q.Settle(j, job.OutcomeFailed); err != nil {
 		t.Fatalf("Settle: %v", err)
@@ -128,12 +139,22 @@ func TestSettle_InterruptedCancelOverridesTheOutcome(t *testing.T) {
 // running Finalizing job that is cancelled is GATED, not interrupted: it moves
 // the files and runs the user script, then settles OK. Overriding to Cancelled
 // would make the record contradict the disk.
+//
+// It calls q.Cancel(j) rather than j.SetIntent(job.IntentCancel) directly, for
+// the same reason as the interrupted case above: this is what actually
+// exercises finishCancel's gate arm, and the assertion that Abort is NOT
+// called is only meaningful against the real decision, not a bypass of it.
 func TestSettle_GatedCancelPreservesTheOutcome(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
 	j := job.New("j1", "n", job.Policy{})
 	driveToFinalizing(t, q, j)
-	if err := j.SetIntent(job.IntentCancel); err != nil {
-		t.Fatalf("SetIntent: %v", err)
+	w := q.work.(*stubWorkers)
+	if err := q.Cancel(j); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(w.aborted) != 0 {
+		t.Errorf("aborted = %v, want none — Finalizing is post-boundary and running, "+
+			"so Cancel must gate rather than interrupt it", w.aborted)
 	}
 	if err := q.Settle(j, job.OutcomeOK); err != nil {
 		t.Fatalf("Settle: %v", err)
@@ -256,7 +277,7 @@ func driveToAssessing(t *testing.T, q *Queue, j *job.Job) {
 // The lease this job holds is pre-removed from the pool's issued set before
 // settleLocked runs, so j.Finish still succeeds (the job itself is unaware)
 // but the subsequent q.reclaim(l) fails its identity audit with
-// errNotOutstanding. If step 3 ran after step 4 — or was skipped on a reclaim
+// ErrNotOutstanding. If step 3 ran after step 4 — or was skipped on a reclaim
 // failure — the slot would still be held after this call returns.
 func TestSettleLocked_ReleasesSlotEvenWhenReclaimFails(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})
@@ -276,8 +297,8 @@ func TestSettleLocked_ReleasesSlotEvenWhenReclaimFails(t *testing.T) {
 	err := q.settleLocked(j, job.OutcomeFailed, j.Snapshot())
 	q.mu.Unlock()
 
-	if !errors.Is(err, errNotOutstanding) {
-		t.Fatalf("settleLocked error = %v, want errNotOutstanding", err)
+	if !errors.Is(err, ErrNotOutstanding) {
+		t.Fatalf("settleLocked error = %v, want ErrNotOutstanding", err)
 	}
 	if got := q.slots.outstanding(); got != 0 {
 		t.Errorf("slots outstanding = %d, want 0 — step 3 must release the slot "+

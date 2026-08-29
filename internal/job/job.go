@@ -509,12 +509,16 @@ func (j *Job) surrenderLocked() *Lease {
 // That set is deliberately NOT claimed to be complete. internal/sched now
 // exists (Half B1) and four of its functions take ONLY a Snapshot, never a
 // *Job — `grep -n 'job\.Snapshot)' internal/sched/*.go | grep -v _test.go |
-// grep 'func '` finds finishCancel, holds, running, gatedBy and waitReason,
-// but that grep is blind to a second parameter: finishCancel's actual
-// signature is `func (q *Queue) finishCancel(j *job.Job, s job.Snapshot)
-// error` — it takes both, and mutates the job, because it is the door that
-// settles a cancel, not a predicate. holds, running, gatedBy and waitReason
-// are the four that are pure over a Snapshot with no *Job in sight. That is
+// grep 'func '` finds six lines: finishCancel, holds, running, gatedBy,
+// waitReason and settleLocked, but that grep is blind to a second parameter:
+// finishCancel's actual signature is `func (q *Queue) finishCancel(j
+// *job.Job, s job.Snapshot) error` — it takes both, and mutates the job,
+// because it is the door that settles a cancel, not a predicate.
+// settleLocked is the same shape for the same reason: `func (q *Queue)
+// settleLocked(j *job.Job, o job.Outcome, s job.Snapshot) error` also takes
+// both and mutates the job — it is the door that settles an ordinary Finish,
+// not a predicate. holds, running, gatedBy and waitReason are the four that
+// are pure over a Snapshot with no *Job in sight. That is
 // not the same claim as "these four fields cover every scheduling decision";
 // nothing enumerates the fields a future predicate might need, so asserting
 // completeness here would still be the kind of unverified universal Rule 4

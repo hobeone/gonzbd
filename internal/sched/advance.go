@@ -6,13 +6,13 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// errNotSettled is Retry's refusal for a job it must not touch: one whose
+// ErrNotSettled is Retry's refusal for a job it must not touch: one whose
 // current attempt is still open (a live worker holds its slot or lease) or
 // which has never run at all. Both share one check because a never-run job's
 // Outcome is the zero value OutcomePending, which IsSettled() already reports
 // false — Retry's contract is "reopen a settled attempt", and neither shape
-// is one.
-var errNotSettled = errors.New("sched: Retry: attempt is not settled")
+// is one. Exported so a caller of Retry can errors.Is against it.
+var ErrNotSettled = errors.New("sched: Retry: attempt is not settled")
 
 // Park is the door a dispatcher calls when its worker has stopped without
 // finishing the state's work — the `yielded` report spec §3.6 names, whose
@@ -144,7 +144,7 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 // carries that slot into the retried download and holds pool-B capacity for
 // the whole re-fetch.
 //
-// It refuses with errNotSettled rather than releasing anything when the
+// It refuses with ErrNotSettled rather than releasing anything when the
 // attempt is not settled — a live worker at Assessing, Repairing, Extracting
 // or Finalizing, or a job that has never run. j.BeginAttempt already no-ops
 // silently on an open attempt (job.go: `if a != nil && a.isOpen() { return
@@ -161,7 +161,7 @@ func (q *Queue) Retry(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if !j.Snapshot().State.Outcome.IsSettled() {
-		return errNotSettled
+		return ErrNotSettled
 	}
 	q.releaseFor(j, job.StateUnset)
 	return j.BeginAttempt(q.now())

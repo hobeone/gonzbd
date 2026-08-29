@@ -74,9 +74,9 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 //
 // The "double-returned" half of the per-row assertion below ("a lease was
 // lost or double-returned") is checkable only because leasePool.reclaim
-// audits identity — `if !p.issued[l.ID()]` at pool.go:66 — rather than
+// audits identity — `if !p.issued[l.ID()]` at pool.go:89 — rather than
 // merely deleting a map key: a reclaim of an ID the pool does not currently
-// have outstanding surfaces as errNotOutstanding instead of silently
+// have outstanding surfaces as ErrNotOutstanding instead of silently
 // no-oping, so a double reclaim of the same lease is distinguishable from a
 // single correct one. Without that audit a double `delete` on the same key
 // is itself idempotent and this walk's before/after count could not tell the
@@ -890,19 +890,23 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 	if got, want := renderStatus(q, j), constants.StatusCompleted; got != want {
 		t.Errorf("status = %v, want %v", got, want)
 	}
+	// settleLocked (settle.go) releases the compute slot itself, as step 3 of
+	// its four-step order — BEFORE the trailing Advance below runs, not
+	// because of it. Asserted here, immediately after Settle, so this check
+	// actually observes settleLocked's release.
+	if q.slots.holds(j.ID()) {
+		t.Error("still holds a compute slot after Settle; settleLocked's step 3 must release it")
+	}
 
-	// §5.13's trace has a trailing advance after the settle: IntentCancel is
-	// still latched (asserted above), so this call routes through
-	// finishCancel's settled arm rather than Advance's own — Advance sends an
-	// IntentCancel job to finishCancel before it ever reaches its own settled
-	// branch (advance.go). Without this step the test never exercised the
-	// release Finalizing's slot needs: q.slots.holds("j1") stayed true at test
-	// end.
+	// §5.13's trace still has a trailing advance after the settle, which this
+	// test keeps to pin that it is harmless: IntentCancel is still latched
+	// (asserted above), so this call routes through finishCancel's settled arm
+	// rather than Advance's own — Advance sends an IntentCancel job to
+	// finishCancel before it ever reaches its own settled branch (advance.go).
+	// It is no longer what releases the slot (Settle already did, above); it
+	// is exercised here only because §5.13's trace includes it.
 	if err := q.Advance(j); err != nil {
 		t.Fatalf("Advance (trailing, settled+cancelled): %v", err)
-	}
-	if q.slots.holds(j.ID()) {
-		t.Error("still holds a compute slot after the trailing advance; finishCancel's settled arm must release it")
 	}
 }
 

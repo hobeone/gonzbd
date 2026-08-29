@@ -10,7 +10,7 @@ import (
 // Retry and Settle (advance.go, cancel.go, settle.go) write or gate; Pause and
 // Resume (queue.go) write the pause flag; Paused (queue.go) is a pure getter
 // of q.paused — it neither writes nor gates, so it is not grouped with the
-// six above. Render is still the one distinguished door: it is the only one
+// seven above. Render is still the one distinguished door: it is the only one
 // that reads q.waitReason and q.running together under one lock to build a
 // RenderView, rather than reporting a single flag back to its caller.
 //

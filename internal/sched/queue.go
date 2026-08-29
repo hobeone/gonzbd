@@ -102,11 +102,19 @@ func (q *Queue) now() time.Time { return q.clock() }
 // rather than an omission. The Queue holds no jobs — its state is two pools
 // and a flag, with no registry and no way to enumerate what is resident (D-B5)
 // — so it structurally cannot sweep. And it must not: §8.3 says gating never
-// interrupts work, and Workers.Abort belongs to Cancel alone. After Pause, a
-// dispatcher AWAITS its workers and calls Park per job: a Fetching worker
-// checks Paused at an article boundary and reports yielded (§3.6), while a
-// worker in any other state runs its stage to the end and sets next, after
-// which Advance's branch 3 gates and parks it unaided.
+// interrupts work, and Workers.Abort belongs to Cancel alone.
+//
+// After Pause, a dispatcher AWAITS its workers and calls Park per job: a
+// Fetching worker checks Paused at an article boundary and reports yielded
+// (§3.6), while a worker in any OTHER state runs its stage to the end and
+// sets next, after which Advance's branch 3 gates and parks it unaided —
+// with one exception: Finalizing has no outbound edges
+// (internal/job/transition.go), never sets next, and so never reaches branch
+// 3 at all. A Finalizing worker settles directly (Advance never gates it
+// mid-stage; TestScenario_5_7_PauseDuringFinalizing pins that a pause request
+// arriving during Finalizing does not stop it), and only a subsequent job
+// waiting to ENTER Finalizing — one still short a compute slot — is what
+// Pause can actually keep parked there.
 //
 // No notification channel is needed, for the reason §3.6 gives about the
 // mirror case: "Resume needs no notification. SetIntent(IntentRun) writes a

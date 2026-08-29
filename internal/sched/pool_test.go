@@ -27,12 +27,12 @@ func TestLeasePool_AuditsReturns(t *testing.T) {
 	if err := p.reclaim(a); err != nil {
 		t.Errorf("reclaim(a) = %v, want nil", err)
 	}
-	if err := p.reclaim(a); !errors.Is(err, errNotOutstanding) {
-		t.Errorf("second reclaim(a) = %v, want errNotOutstanding — a double return would "+
+	if err := p.reclaim(a); !errors.Is(err, ErrNotOutstanding) {
+		t.Errorf("second reclaim(a) = %v, want ErrNotOutstanding — a double return would "+
 			"inflate capacity and let two jobs hold one slot", err)
 	}
-	if err := p.reclaim(job.NewLease(9999)); !errors.Is(err, errNotOutstanding) {
-		t.Errorf("reclaim of a lease this pool never issued = %v, want errNotOutstanding", err)
+	if err := p.reclaim(job.NewLease(9999)); !errors.Is(err, ErrNotOutstanding) {
+		t.Errorf("reclaim of a lease this pool never issued = %v, want ErrNotOutstanding", err)
 	}
 	if err := p.reclaim(nil); err != nil {
 		t.Errorf("reclaim(nil) = %v, want nil — §3.9 requires the sole reclaimer to no-op "+

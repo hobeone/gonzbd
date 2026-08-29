@@ -129,11 +129,12 @@ func TestQueueMuLockers_MatchTheEnumerationStatedInProse(t *testing.T) {
 	want := []string{"Advance", "Cancel", "Park", "Pause", "Paused", "Render", "Resume", "Retry", "Settle"}
 	if !slices.Equal(got, want) {
 		t.Errorf("methods calling q.mu.Lock() = %v, want %v\n\n"+
-			"doc.go, queue.go's own mu comment, and pool.go's leasePool/slotPool "+
-			"comments all claim these nine methods, and only these nine, take "+
-			"q.mu. If a different set is correct, update all three comments AND "+
-			"this list together — a comment that still names the old nine once "+
-			"a tenth exists (or one is removed/renamed) is worse than no comment "+
-			"at all.", got, want)
+			"internal/sched/queue.go's own mu comment, internal/sched/pool.go's "+
+			"leasePool comment, and internal/job/job.go's Snapshot comment all "+
+			"claim these nine methods, and only these nine, take q.mu. If a "+
+			"different set is correct, update all three comments AND this list "+
+			"together — a comment that still names the old nine once a tenth "+
+			"exists (or one is removed/renamed) is worse than no comment at all.",
+			got, want)
 	}
 }
