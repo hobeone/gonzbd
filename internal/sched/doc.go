@@ -7,10 +7,10 @@
 // place, grantFor.
 //
 // It does NOT contain the dispatcher, the workers, or persistence. Those are
-// Half B2, which also retires internal/queue. It does hold one rendering
-// door, Render (see below) — composing the view a caller renders from is a
-// decision over a job.Snapshot like any other, and B2 supplies the HTTP
-// layer that calls it, not the composition itself.
+// Half B2, which also retires internal/queue. It does hold the two rendering
+// doors, Render and RenderAll (see below) — composing the view a caller
+// renders from is a decision over a job.Snapshot like any other, and B2
+// supplies the HTTP layer that calls them, not the composition itself.
 //
 // internal/dispatch (Half B2.3) is this package's first caller: it
 // constructs the one *Queue a process runs (sched.New) and drives every job

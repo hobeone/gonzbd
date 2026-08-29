@@ -444,6 +444,12 @@ func takeHop(j *job.Job, h hop) error {
 		if err := j.SetNext(h.to); err != nil {
 			return err
 		}
+		// Cross returns the lease it surrenders, and replay has none to
+		// surrender: Cross yields j.surrenderLocked() (internal/job/job.go),
+		// which returns j.lease, and reconstruct builds the job with job.New
+		// followed by BeginAttempt — neither grants a lease, and nothing
+		// between them does. The discarded value is therefore always nil on
+		// this path, not a lease being dropped.
 		_, err := j.Cross(h.to)
 		return err
 	}
