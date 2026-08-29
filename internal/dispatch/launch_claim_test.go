@@ -29,7 +29,7 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 	}{
 		{"Finished", func(t *testing.T, d *Dispatcher, j *job.Job) {
 			t.Helper()
-			if err := d.Finished(j, job.OutcomeFailed); err != nil {
+			if err := d.Finished(j.ID(), job.OutcomeFailed); err != nil {
 				t.Fatalf("Finished: %v", err)
 			}
 			if err := d.Retry(j.ID()); err != nil {
@@ -38,7 +38,7 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 		}, nil},
 		{"Yielded", func(t *testing.T, d *Dispatcher, j *job.Job) {
 			t.Helper()
-			if err := d.Yielded(j); err != nil {
+			if err := d.Yielded(j.ID()); err != nil {
 				t.Fatalf("Yielded: %v", err)
 			}
 		}, nil},

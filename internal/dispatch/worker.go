@@ -30,10 +30,14 @@ import (
 // resources the first has not yet released. The defer is what makes the clear
 // land after Settle has run — so Running (if it changes) has already changed
 // — while still being unconditional on Settle's outcome.
-func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
+func (d *Dispatcher) Finished(id string, o job.Outcome) error {
+	j, ok := d.lookup(id)
+	if !ok {
+		return fmt.Errorf("dispatch: Finished: no job %q", id)
+	}
 	if o == job.OutcomeCancelled {
-		d.clearLaunched(j.ID())
-		return fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", j.ID())
+		d.clearLaunched(id)
+		return fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", id)
 	}
 	err := d.q.Settle(j, o)
 	// Cleared AFTER Settle and BEFORE kick, and unconditional on Settle's
@@ -42,9 +46,9 @@ func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
 	// was still held, find claimLaunched false, decline to start a worker —
 	// and consume the wake doing it, leaving the job holding resources with
 	// nobody working it until the next timer tick.
-	d.clearLaunched(j.ID())
+	d.clearLaunched(id)
 	if err != nil {
-		return fmt.Errorf("dispatch: Finished(%s): %w", j.ID(), err)
+		return fmt.Errorf("dispatch: Finished(%s): %w", id, err)
 	}
 	d.kick()
 	return nil
@@ -72,13 +76,17 @@ func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
 // the job still Running (Park has not yet released it) with the claim
 // already free, and start a second worker on resources the first has not yet
 // surrendered.
-func (d *Dispatcher) Yielded(j *job.Job) error {
+func (d *Dispatcher) Yielded(id string) error {
+	j, ok := d.lookup(id)
+	if !ok {
+		return fmt.Errorf("dispatch: Yielded: no job %q", id)
+	}
 	err := d.q.Park(j)
 	// After Park, before kick — see Finished above for why the ordering is
 	// load-bearing in both directions.
-	d.clearLaunched(j.ID())
+	d.clearLaunched(id)
 	if err != nil {
-		return fmt.Errorf("dispatch: Yielded(%s): %w", j.ID(), err)
+		return fmt.Errorf("dispatch: Yielded(%s): %w", id, err)
 	}
 	d.kick()
 	return nil

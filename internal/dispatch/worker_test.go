@@ -37,7 +37,7 @@ func TestCancelledWorker_SettlesRatherThanReAbortingForever(t *testing.T) {
 	}
 
 	// The worker notices the abort and exits without finishing.
-	if err := d.Yielded(j); err != nil {
+	if err := d.Yielded(j.ID()); err != nil {
 		t.Fatalf("Yielded: %v", err)
 	}
 	d.tick(context.Background())
@@ -63,7 +63,7 @@ func TestYielded_UnderPauseReturnsTheLease(t *testing.T) {
 	}
 
 	d.Pause()
-	if err := d.Yielded(j); err != nil {
+	if err := d.Yielded(j.ID()); err != nil {
 		t.Fatalf("Yielded: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestFinished_SucceedsForARunningJob(t *testing.T) {
 		t.Fatal("setup: job is not running")
 	}
 
-	if err := d.Finished(j, job.OutcomeFailed); err != nil {
+	if err := d.Finished(j.ID(), job.OutcomeFailed); err != nil {
 		t.Fatalf("Finished: %v", err)
 	}
 	if got := d.q.Render(j).Outcome; got != job.OutcomeFailed {
@@ -105,7 +105,7 @@ func TestFinished_PropagatesASettleError(t *testing.T) {
 	}
 	// No tick: the job never opened an attempt.
 
-	if err := d.Finished(j, job.OutcomeOK); err == nil {
+	if err := d.Finished(j.ID(), job.OutcomeOK); err == nil {
 		t.Fatal("Finished on a job with no open attempt returned nil, want an error")
 	}
 }
@@ -119,7 +119,7 @@ func TestFinished_RefusesCancelledAsAnOutcome(t *testing.T) {
 	d.tick(context.Background())
 	d.tick(context.Background())
 
-	if err := d.Finished(j, job.OutcomeCancelled); err == nil {
+	if err := d.Finished(j.ID(), job.OutcomeCancelled); err == nil {
 		t.Fatal("Finished accepted OutcomeCancelled, want an error — only the cancel latch may produce it, and a worker reporting it would let any exit masquerade as a user deletion")
 	}
 }
@@ -300,5 +300,19 @@ func TestWorkerExits_ClearTheLaunchClaimBeforeKicking(t *testing.T) {
 		if !found {
 			t.Errorf("%s not found in worker.go; this test cannot silently pass because its subject moved", name)
 		}
+	}
+}
+
+// TestWorkerExits_RejectAnUnknownID covers the branch the id-taking signature
+// introduces. A Runner reporting for a job that has since been removed —
+// cancelled and evicted, or torn down — must get an error rather than a nil
+// dereference.
+func TestWorkerExits_RejectAnUnknownID(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Finished("nope", job.OutcomeOK); err == nil {
+		t.Error("Finished on an unregistered id = nil, want an error")
+	}
+	if err := d.Yielded("nope"); err == nil {
+		t.Error("Yielded on an unregistered id = nil, want an error")
 	}
 }

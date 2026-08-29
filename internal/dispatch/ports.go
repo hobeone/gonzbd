@@ -45,6 +45,13 @@ type Persisted struct {
 // exit by calling Dispatcher.Yielded. Not calling either strands the job's
 // resources: the Queue cannot tell "holding and working" from "holding and
 // yielded", so nothing else can return them.
+//
+// Both take the job ID this method is handed, which is what makes that
+// contract satisfiable from outside this package. They took a *job.Job until
+// B2.3's review: lookup is unexported and the Row that List returns carries a
+// job.RenderView rather than a pointer, so an external Runner had no way to
+// obtain one and could not report at all. Taking the ID also matches
+// Dispatcher.Cancel and Dispatcher.Retry, which resolve the same way.
 type Runner interface {
 	Run(ctx context.Context, id string, state job.State)
 }

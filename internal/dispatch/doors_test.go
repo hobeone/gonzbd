@@ -50,7 +50,7 @@ func TestRetry_ReopensASettledJobAndKicks(t *testing.T) {
 	}
 	d.tick(context.Background())
 	d.tick(context.Background())
-	if err := d.Finished(j, job.OutcomeFailed); err != nil {
+	if err := d.Finished(j.ID(), job.OutcomeFailed); err != nil {
 		t.Fatalf("Finished: %v", err)
 	}
 	<-d.wake // drain Finished's own kick
