@@ -451,7 +451,7 @@ func TestFakeStore_RowsAndOrderStayInStep(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	var ids []string
+	ids := make([]string, 0, len(got))
 	for _, p := range got {
 		if p.ID == "" {
 			t.Errorf("Load returned a zero-valued row among %+v — an ID left in "+

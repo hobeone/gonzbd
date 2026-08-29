@@ -20,6 +20,12 @@ import (
 // reconcileResidency: Advance routes IntentCancel to finishCancel before every
 // other branch, so eviction cannot race a settle. This tick advances, evicts,
 // reconciles residency, launches, then persists.
+//
+// Persistence has two exits, not one. The linear order above is the path a
+// healthy job takes; a job whose residency reconciliation fails also persists,
+// because that failure can have SETTLED it. Only two exits skip the write: an
+// Advance error, which produces no position this Queue accepted, and an
+// eviction, which has already deleted the row.
 func (d *Dispatcher) tick(ctx context.Context) {
 	for _, j := range d.snapshotOrder() {
 		if err := d.q.Advance(j); err != nil {
