@@ -17,12 +17,14 @@ import (
 // eviction Cancel below performs, reintroducing the defect where a deleted job
 // renders as queued forever.
 //
-// Task 2 declares every field the dispatcher will ever hold, including ones no
-// method in this package reads yet (res, store, runner, tickEvery, stop, done,
-// started, log). Go permits unused struct fields, and the alternative — adding
-// fields piecemeal per task — would leave this file's own test constructor
-// unable to compile until the last task landed. Tasks 3-7 give each field its
-// first reader; declaring it here is not implementing it.
+// Task 2 declares every field the dispatcher will ever hold, before every
+// field had a reader — Go permits unused struct fields, and the alternative,
+// adding fields piecemeal per task, would leave this file's own test
+// constructor unable to compile until the last task landed. Every field now
+// has at least one reader except `written`: res and store read since Task 4
+// and Task 7's restore stub, runner since Task 5's launch, tickEvery/stop/
+// done/started since Task 3's Start/Stop/run, log since the log helpers
+// below. `written` waits on Task 7's persistIfChanged.
 type Dispatcher struct {
 	mu    sync.Mutex
 	byID  map[string]*entry
@@ -136,12 +138,14 @@ func (d *Dispatcher) kick() {
 
 // New builds a Dispatcher and the sched.Queue it owns.
 //
-// It panics on a nil Residency, Store or Workers for the same reason
+// It panics on a nil Residency, Store, Workers or Runner for the same reason
 // sched.New panics on a nil Workers: these are construction-time programmer
 // errors, not state an earlier build wrote, so Standing Design Rule 1's
 // guard-removal argument does not apply. Failing here beats a nil dereference
-// on the ticker goroutine with no construction frame left to explain it.
-func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time, w sched.Workers, r Residency, s Store) *Dispatcher {
+// on the ticker goroutine with no construction frame left to explain it — the
+// Runner check in particular is what stands between a missing wiring and
+// launch's `d.runner.Run` panicking on the first job that renders Running.
+func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time, w sched.Workers, r Residency, s Store, run Runner) *Dispatcher {
 	if w == nil {
 		panic("dispatch: New: Workers must not be nil")
 	}
@@ -150,6 +154,9 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	}
 	if s == nil {
 		panic("dispatch: New: Store must not be nil")
+	}
+	if run == nil {
+		panic("dispatch: New: Runner must not be nil")
 	}
 	if tickEvery <= 0 {
 		panic("dispatch: New: tick interval must be positive")
@@ -163,6 +170,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		wake:      make(chan struct{}, 1),
 		res:       r,
 		store:     s,
+		runner:    run,
 		tickEvery: tickEvery,
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
@@ -249,6 +257,15 @@ func (d *Dispatcher) run(ctx context.Context) {
 // closes d.stop and waits on d.done. A second call — concurrent or
 // sequential — finds it already false and skips straight to the sweep,
 // which never touches d.stop or d.done.
+//
+// The sweep also clears each job's launched claim, alongside Park and Evict.
+// Stop is a third worker-exit path beside Finished and Yielded — the ticker
+// goroutine has already stopped by the time the sweep runs (the wait above),
+// so nothing races a launch here — and it must clear the same bookkeeping
+// they do. Without this, a job that held a claim when Stop ran would still
+// carry it after a later Start reopens the Dispatcher, and claimLaunched
+// would refuse it forever: the job would render Running-eligible but never
+// actually launch.
 func (d *Dispatcher) Stop() error {
 	d.mu.Lock()
 	wasStarted := d.started
@@ -266,6 +283,7 @@ func (d *Dispatcher) Stop() error {
 			firstErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
 		}
 		d.res.Evict(j.ID())
+		d.clearLaunched(j.ID())
 	}
 	return firstErr
 }

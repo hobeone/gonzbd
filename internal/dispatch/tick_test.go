@@ -206,28 +206,32 @@ func TestTick_LogsAndSkipsAJobWhoseAdvanceErrors(t *testing.T) {
 }
 
 func TestNew_PanicsOnEachNilPort(t *testing.T) {
-	valid := func() (sched.Workers, Residency, Store) {
-		return &stubWorkers{}, &fakeResidency{}, &fakeStore{}
+	valid := func() (sched.Workers, Residency, Store, Runner) {
+		return &stubWorkers{}, &fakeResidency{}, &fakeStore{}, &fakeRunner{}
 	}
 	tests := []struct {
 		name string
 		call func()
 	}{
 		{"nil Workers", func() {
-			_, r, s := valid()
-			New(1, 1, time.Hour, testClock, nil, r, s)
+			_, r, s, run := valid()
+			New(1, 1, time.Hour, testClock, nil, r, s, run)
 		}},
 		{"nil Residency", func() {
-			w, _, s := valid()
-			New(1, 1, time.Hour, testClock, w, nil, s)
+			w, _, s, run := valid()
+			New(1, 1, time.Hour, testClock, w, nil, s, run)
 		}},
 		{"nil Store", func() {
-			w, r, _ := valid()
-			New(1, 1, time.Hour, testClock, w, r, nil)
+			w, r, _, run := valid()
+			New(1, 1, time.Hour, testClock, w, r, nil, run)
+		}},
+		{"nil Runner", func() {
+			w, r, s, _ := valid()
+			New(1, 1, time.Hour, testClock, w, r, s, nil)
 		}},
 		{"non-positive tick", func() {
-			w, r, s := valid()
-			New(1, 1, 0, testClock, w, r, s)
+			w, r, s, run := valid()
+			New(1, 1, 0, testClock, w, r, s, run)
 		}},
 	}
 	for _, tc := range tests {
@@ -243,14 +247,19 @@ func TestNew_PanicsOnEachNilPort(t *testing.T) {
 }
 
 func TestNew_BuildsAWorkingDispatcher(t *testing.T) {
-	d := New(2, 2, time.Hour, testClock, &stubWorkers{}, &fakeResidency{}, &fakeStore{})
+	runner := &fakeRunner{}
+	d := New(2, 2, time.Hour, testClock, &stubWorkers{}, &fakeResidency{}, &fakeStore{}, runner)
 	j := job.New("j1", "n", job.Policy{})
 	if err := d.Add(j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
+	d.tick(context.Background())
 	if !j.HasRun() {
 		t.Fatal("job never started on a Dispatcher built by New")
+	}
+	if !runner.started(j.ID()) {
+		t.Fatal("New's Runner was never invoked — launch is wired to a nil-checked field, not a live one")
 	}
 }
 

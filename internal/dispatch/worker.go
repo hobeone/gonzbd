@@ -13,14 +13,31 @@ import (
 // it too, but failing here names the caller: only the cancel latch may produce
 // Cancelled, and a worker allowed to report it could make any exit look like a
 // user deletion.
+//
+// The launched claim is cleared by a deferred call, covering every return
+// path, not one written after Settle's success line. A call to Finished
+// happens only after the Runner's Run invocation has already returned — that
+// is what a worker calling Finished means — so the claim it made in launch is
+// stale the moment Finished is entered, whether or not Settle goes on to
+// succeed. Clearing only on success would leave launched[id] set forever
+// after a Settle failure (a refused Finish, a failed reclaim identity audit)
+// or the OutcomeCancelled rejection above: the job would then be permanently
+// unlaunchable, since claimLaunched never returns true for an ID already set.
+// Clearing unconditionally BEFORE calling Settle, instead of deferring, would
+// be wrong the other way: a concurrent tick's launch reads Render(j).Running
+// from Queue state, which Settle has not yet changed, so it could observe the
+// job still Running with the claim already clear and start a second worker on
+// resources the first has not yet released. The defer is what makes the clear
+// land after Settle has run — so Running (if it changes) has already changed
+// — while still being unconditional on Settle's outcome.
 func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
+	defer d.clearLaunched(j.ID())
 	if o == job.OutcomeCancelled {
 		return fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", j.ID())
 	}
 	if err := d.q.Settle(j, o); err != nil {
 		return fmt.Errorf("dispatch: Finished(%s): %w", j.ID(), err)
 	}
-	d.clearLaunched(j.ID())
 	d.kick()
 	return nil
 }
@@ -37,11 +54,21 @@ func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
 // while holds() is true, because the Queue cannot distinguish a working holder
 // from a yielded one, and stripping a live worker is the worse failure. Only
 // the dispatcher knows which it is.
+//
+// The launched claim is cleared by a deferred call, for the same reason as
+// Finished: a call to Yielded means the Runner's Run invocation has already
+// returned, so the claim is stale on entry regardless of whether Park
+// succeeds. Clearing only after a successful Park would strand the claim
+// forever on a Park failure, making the job permanently unlaunchable;
+// clearing before calling Park would let a concurrent tick's launch observe
+// the job still Running (Park has not yet released it) with the claim
+// already free, and start a second worker on resources the first has not yet
+// surrendered.
 func (d *Dispatcher) Yielded(j *job.Job) error {
+	defer d.clearLaunched(j.ID())
 	if err := d.q.Park(j); err != nil {
 		return fmt.Errorf("dispatch: Yielded(%s): %w", j.ID(), err)
 	}
-	d.clearLaunched(j.ID())
 	d.kick()
 	return nil
 }
@@ -65,7 +92,9 @@ func (d *Dispatcher) launch(ctx context.Context, j *job.Job) {
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
-// job already being worked. Finished and Yielded clear it.
+// job already being worked. Finished, Yielded and Stop's sweep are its three
+// exit-path clearers — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
+// grep -v _test.go` finds three lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
