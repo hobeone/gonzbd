@@ -38,4 +38,14 @@ type RenderView struct {
 	// repair, then pausing" — a running job with IntentPause shows its state,
 	// not Paused.
 	Intent Intent
+
+	// Holds reports whether the job currently has EVERY resource its position
+	// requires — the Queue's holds(id, s), not merely "has a lease". A job at
+	// Extracting needs a compute slot and no lease, so it holds while HoldsLease()
+	// is false; a job at Assessing with a lease but no slot does NOT hold.
+	//
+	// It is carried here because a caller cannot reconstruct it: Running is
+	// holds() AND the attempt is open AND next is unset, so a false Running says
+	// nothing about which conjunct failed.
+	Holds bool
 }

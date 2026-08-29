@@ -49,13 +49,13 @@ var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
 // order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and is
-// taken by nine production doors — Cancel (cancel.go), Park, Retry and
-// Advance (advance.go), Settle (settle.go), Render (render.go), and Pause,
-// Resume and Paused (queue.go; see queue.go's own comment on mu) — so this is
-// now a description of a lock real code takes, not a forward-looking
-// constraint. queue.go's own comment carries the backticked grep for the
-// count; internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse
-// is what checks that these nine NAMES, not merely this count, are still
+// taken by ten production doors — Cancel (cancel.go), Park, Retry and
+// Advance (advance.go), Settle (settle.go), Render and RenderAll (render.go),
+// and Pause, Resume and Paused (queue.go; see queue.go's own comment on mu) —
+// so this is now a description of a lock real code takes, not a
+// forward-looking constraint. queue.go's own comment carries the backticked
+// grep for the count; internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse
+// is what checks that these ten NAMES, not merely this count, are still
 // right — a grep proves how many, never which ones.
 type leasePool struct {
 	capacity int

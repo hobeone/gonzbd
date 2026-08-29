@@ -148,6 +148,104 @@ func TestRender_DistinguishesRunningFromReadyToAdvance(t *testing.T) {
 	}
 }
 
+// TestRenderAll_TakesTheQueueLockOnce departs from the task brief's draft in
+// one respect: the brief's version leaves both jobs at Fetching and loops
+// q.Advance(b) 200 times. Fetching needsLease but not needsSlot (§3.4), and
+// q.holds only touches q.slots.held when the position needsSlot — so a job
+// that never leaves Fetching never causes RenderAll's read side to touch
+// q.slots.held at all, and the mutation this test exists to catch (removing
+// RenderAll's q.mu.Lock/Unlock pair) produced no race across repeated runs
+// with the brief's exact scenario; see task-1-report.md's Step 7 section for
+// the observed (non-)failures. Moving both jobs to Assessing first, which
+// DOES needSlot, and using a single concurrent Park(b) — TestRender_TakesTheQueueLock's
+// own proven pattern (advance_test.go) — gives q.slots.held a genuine
+// concurrent reader (RenderAll's loop) and writer (Park's releaseFor) on the
+// SAME map, which is what the race detector actually needs to catch an
+// unlocked RenderAll.
+func TestRenderAll_TakesTheQueueLockOnce(t *testing.T) {
+	q := New(2, 2, testClock, &stubWorkers{})
+	a := job.New("a", "n", job.Policy{})
+	b := job.New("b", "n", job.Policy{})
+	mustAdvanceTo(t, q, a, job.Assessing)
+	mustAdvanceTo(t, q, b, job.Assessing)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := q.Park(b); err != nil {
+			t.Errorf("Park(b): %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			got := q.RenderAll([]*job.Job{a, b})
+			if len(got) != 2 {
+				t.Errorf("RenderAll returned %d rows, want 2", len(got))
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+func TestRenderAll_MatchesRenderPerJob(t *testing.T) {
+	q := New(2, 2, testClock, &stubWorkers{})
+	a := job.New("a", "n", job.Policy{})
+	b := job.New("b", "n", job.Policy{})
+	if err := a.BeginAttempt(q.now()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+
+	all := q.RenderAll([]*job.Job{a, b})
+	if len(all) != 2 {
+		t.Fatalf("RenderAll returned %d rows, want 2", len(all))
+	}
+	for i, j := range []*job.Job{a, b} {
+		if want := q.Render(j); all[i] != want {
+			t.Errorf("row %d = %+v, want %+v — RenderAll and Render must compute the same view", i, all[i], want)
+		}
+	}
+}
+
+func TestRenderAll_EmptyInputReturnsEmptyNonNil(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	got := q.RenderAll(nil)
+	if got == nil {
+		t.Fatal("RenderAll(nil) = nil, want an empty non-nil slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("RenderAll(nil) has %d rows, want 0", len(got))
+	}
+}
+
+// TestRender_FillsHolds pins that renderLocked fills job.RenderView.Holds
+// from q.holds(j.ID(), s) — the addition beyond the task brief. A job at
+// Fetching after its lease has been granted holds everything Fetching
+// requires (§3.4: Fetching needs only the lease), so Holds must read true; a
+// freshly-begun attempt before any Advance grants a lease holds nothing, so
+// Holds must read false.
+func TestRender_FillsHolds(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	if err := q.Advance(j); err != nil { // begins the attempt; no lease yet
+		t.Fatalf("Advance (begin): %v", err)
+	}
+	before := q.Render(j)
+	if before.Holds {
+		t.Error("Holds = true before any lease is granted, want false")
+	}
+
+	if err := q.Advance(j); err != nil { // grants the Fetching lease
+		t.Fatalf("Advance (grant): %v", err)
+	}
+	after := q.Render(j)
+	if !after.Holds {
+		t.Error("Holds = false once the Fetching lease is granted, want true — " +
+			"Fetching needs only the lease (§3.4) and the job now has it")
+	}
+}
+
 // TestRender_ReportsTheGateReason pins that gates reach the view.
 func TestRender_ReportsTheGateReason(t *testing.T) {
 	q := New(1, 1, testClock, &stubWorkers{})

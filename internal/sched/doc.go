@@ -16,12 +16,12 @@
 // # What this package exports, and what B2 still owes it
 //
 // `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go | grep -v
-// _test.go` finds nine lines: Advance, Cancel, Park, Retry and Settle
+// _test.go` finds ten lines: Advance, Cancel, Park, Retry and Settle
 // (advance.go, cancel.go, settle.go) write or gate; Pause and Resume (queue.go)
-// write the pause flag; Paused (queue.go) reads it back; and Render
-// (render.go) is the door that composes a job.RenderView. Acquisition happens
-// only in grantFor; return happens only through reclaim and releaseFor, which
-// Settle, Park and Cancel all route through.
+// write the pause flag; Paused (queue.go) reads it back; and Render and
+// RenderAll (render.go) are the doors that compose a job.RenderView.
+// Acquisition happens only in grantFor; return happens only through reclaim
+// and releaseFor, which Settle, Park and Cancel all route through.
 //
 // Half B2 still owes this package two things, neither of which it can supply
 // for itself:
