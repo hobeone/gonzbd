@@ -264,3 +264,50 @@ func TestRender_ReportsTheGateReason(t *testing.T) {
 		t.Errorf("Intent = %v, want IntentPause", v.Intent)
 	}
 }
+
+// TestRenderLocked_AssumesTheCallerAlreadyHoldsTheLock pins renderLocked's own
+// contract directly, in TestParkLocked_AssumesTheCallerAlreadyHoldsTheLock's
+// shape (advance_test.go): unlike Render and RenderAll, renderLocked must NOT
+// take q.mu itself — both of its callers already hold it when they call in,
+// and a renderLocked that tried to lock again would deadlock there. Calling
+// it here with q.mu already held, from the test goroutine itself, is exactly
+// that shape.
+//
+// The assertions are concrete field values known independently from
+// mustAdvanceTo's own contract (a job at Assessing that mustAdvanceTo landed
+// there holds its lease and has no pending Next), not a comparison against
+// q.Render(j)'s own output. Render calls renderLocked internally, so a
+// renderLocked-vs-Render comparison is tautological: a renderLocked mutated
+// to always return a zero job.RenderView would make Render return the same
+// zero value, and the two sides would agree with each other while both are
+// wrong. Asserting the actual expected shape catches that; a
+// renderLocked-vs-Render comparison, tried first here, did not — verified
+// below.
+func TestRenderLocked_AssumesTheCallerAlreadyHoldsTheLock(t *testing.T) {
+	q := New(1, 1, testClock, &stubWorkers{})
+	j := job.New("j1", "n", job.Policy{})
+	mustAdvanceTo(t, q, j, job.Assessing)
+
+	q.mu.Lock()
+	got := q.renderLocked(j)
+	q.mu.Unlock()
+
+	if got.State != job.Assessing {
+		t.Errorf("State = %v, want Assessing", got.State)
+	}
+	if got.Next != job.StateUnset {
+		t.Errorf("Next = %v, want StateUnset — mustAdvanceTo left no pending transition", got.Next)
+	}
+	if !got.Running {
+		t.Error("Running = false, want true — the job holds what Assessing requires and Next is unset")
+	}
+	if !got.Holds {
+		t.Error("Holds = false, want true — Assessing needs only the lease (§3.4), which mustAdvanceTo granted")
+	}
+	if got.Intent != job.IntentRun {
+		t.Errorf("Intent = %v, want IntentRun — nothing asked for pause or cancel", got.Intent)
+	}
+	if got.Reason != job.NoLease {
+		t.Errorf("Reason = %v, want NoLease's zero value — Reason is meaningless while Running", got.Reason)
+	}
+}
