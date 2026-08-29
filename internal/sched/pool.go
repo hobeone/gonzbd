@@ -38,13 +38,30 @@ var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 // would mint LeaseID(1) too, and this pool's issued map would accept that
 // foreign lease as its own if handed one — id collision, not identity
 // confusion, and only across two *different* Queues in the same process.
-// Nothing in this repository constructs two — B1 has no caller of
-// internal/sched at all, and B2's plan does not add a second Queue — so this
-// is a bound to state rather than a guard against it (Standing Design Rule
-// 1). Within a single pool, which is every production configuration today,
-// identity is exact: a double return or a lease this pool never issued is
-// caught, which is what reclaim's ErrNotOutstanding and the tests below rely
-// on.
+//
+// A second Queue is no longer only a hypothetical: internal/dispatch.New
+// (internal/dispatch/dispatch.go) mints one *Queue per *Dispatcher —
+// `grep -n 'sched.New(' internal/dispatch/dispatch.go` finds one call, inside
+// New — so constructing two Dispatchers does construct two Queues, and
+// internal/dispatch's own TestTick_LogsAndSkipsAJobWhoseAdvanceErrors
+// (tick_test.go) deliberately does this: it hands the same *job.Job to two
+// Dispatchers so the second one's queue, which never issued that job's
+// lease, hits this exact audit and fails as designed. That test is evidence
+// the audit does its job across two Queues, not evidence two Queues sharing
+// a Job is a supported configuration — nothing in dispatch's own design
+// (D-B13, this Dispatcher owns its Queue outright) constructs more than one
+// Dispatcher per Job, and nothing outside internal/dispatch's own package
+// calls dispatch.New yet, in test or production code: `grep -rn
+// 'dispatch\.New(' --include='*.go' internal/ cmd/` (run from the repo root)
+// finds zero matches, matching internal/dispatch/doc.go's own claim that
+// nothing imports the package before B2.4 repoints production onto it. So
+// today's single-pool claim survives, scoped to what runs: within a single
+// pool, which is every production configuration that exists today, identity
+// is exact — a double return or a lease this pool never issued is caught,
+// which is what reclaim's ErrNotOutstanding and the tests below rely on.
+// Whether a future caller is allowed to construct two Queues over one Job is
+// a design question for whoever adds that caller, not settled by this
+// comment.
 //
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
