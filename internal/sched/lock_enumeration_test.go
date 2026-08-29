@@ -1,6 +1,7 @@
 package sched
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -72,22 +73,7 @@ func scanQMuLockers(t *testing.T) []string {
 
 			locks := false
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				// q.mu.Lock() parses as CallExpr{Fun: SelectorExpr{X:
-				// SelectorExpr{X: Ident("q"), Sel: Ident("mu")}, Sel:
-				// Ident("Lock")}}.
-				outer, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || outer.Sel.Name != "Lock" {
-					return true
-				}
-				inner, ok := outer.X.(*ast.SelectorExpr)
-				if !ok || inner.Sel.Name != "mu" {
-					return true
-				}
-				if ident, ok := inner.X.(*ast.Ident); ok && ident.Name == "q" {
+				if isQMuCall(n, "Lock") {
 					locks = true
 				}
 				return true
@@ -146,6 +132,30 @@ func flatParams(fl *ast.FieldList) []struct {
 		}
 	}
 	return out
+}
+
+// isQMuCall reports whether n is a call of q.mu.<method>() — matched on the
+// literal selector chain rather than resolved types, the same way
+// internal/job/writer_enumeration_test.go's scanWriters matches field writes
+// on the selector name alone.
+//
+// q.mu.Lock() parses as CallExpr{Fun: SelectorExpr{X: SelectorExpr{X:
+// Ident("q"), Sel: Ident("mu")}, Sel: Ident("Lock")}}.
+func isQMuCall(n ast.Node, method string) bool {
+	call, ok := n.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	outer, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || outer.Sel.Name != method {
+		return false
+	}
+	inner, ok := outer.X.(*ast.SelectorExpr)
+	if !ok || inner.Sel.Name != "mu" {
+		return false
+	}
+	ident, ok := inner.X.(*ast.Ident)
+	return ok && ident.Name == "q"
 }
 
 // isJobJobPtr reports whether e is the type expression `*job.Job` — the only
@@ -247,12 +257,17 @@ func queueMethodFuncs(t *testing.T) map[string]*ast.FuncDecl {
 // found via *ast.RangeStmt rather than a call argument.
 //
 // This is name-and-position matching, not a type checker: it cannot see
-// through a reassignment (`j2 := j; j2.Foo()`) or a value stored in a
-// struct field and read back. Nothing in this package's *Queue methods does
-// either as of this writing, which is a claim about the CURRENT bodies, not a
-// guarantee the pattern will always suffice — a future body written that way
-// would need this helper extended, not just trusted.
-func reachesJobMethod(fd *ast.FuncDecl, jobVars map[string]bool, jobSliceVars map[string]bool, funcs map[string]*ast.FuncDecl, visited map[string]bool) bool {
+// through a reassignment (`j2 := j; j2.Foo()`) or a *job.Job stored into a
+// struct field or composite literal and read back. Rather than state in prose
+// that no body does either — a claim that would go stale silently, leaving the
+// seven-of-ten assertion green while the analysis under-reported — it records
+// every such flow in *unsupported, and the caller fails the test on any entry.
+// The failure mode is then "this check no longer knows enough", which is loud,
+// instead of "this door does not reach a *job.Job", which is wrong.
+//
+// unsupported is threaded through the recursion so a flow introduced in a
+// callee is caught as well as one in a door's own body.
+func reachesJobMethod(fd *ast.FuncDecl, jobVars map[string]bool, jobSliceVars map[string]bool, funcs map[string]*ast.FuncDecl, visited map[string]bool, unsupported *[]string) bool {
 	if fd.Body == nil {
 		return false
 	}
@@ -260,6 +275,45 @@ func reachesJobMethod(fd *ast.FuncDecl, jobVars map[string]bool, jobSliceVars ma
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
 		if found {
 			return false
+		}
+		// An alias (`j2 := j`) or a store into a struct field / composite
+		// literal (`x.f = j`, `T{F: j}`) moves the value somewhere the
+		// name-and-position matching below cannot follow.
+		if as, ok := n.(*ast.AssignStmt); ok {
+			for i, rhs := range as.Rhs {
+				rhsIdent, ok := rhs.(*ast.Ident)
+				if !ok || !jobVars[rhsIdent.Name] {
+					continue
+				}
+				if i >= len(as.Lhs) {
+					continue
+				}
+				switch lhs := as.Lhs[i].(type) {
+				case *ast.Ident:
+					if lhs.Name == "_" || lhs.Name == rhsIdent.Name {
+						continue // discarded, or assigned to itself
+					}
+					*unsupported = append(*unsupported, fmt.Sprintf(
+						"%s: aliases %s to %s", fd.Name.Name, rhsIdent.Name, lhs.Name))
+				case *ast.SelectorExpr:
+					*unsupported = append(*unsupported, fmt.Sprintf(
+						"%s: stores %s into a field", fd.Name.Name, rhsIdent.Name))
+				}
+			}
+			return true
+		}
+		if cl, ok := n.(*ast.CompositeLit); ok {
+			for _, elt := range cl.Elts {
+				e := elt
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					e = kv.Value
+				}
+				if ident, ok := e.(*ast.Ident); ok && jobVars[ident.Name] {
+					*unsupported = append(*unsupported, fmt.Sprintf(
+						"%s: stores %s into a composite literal", fd.Name.Name, ident.Name))
+				}
+			}
+			return true
 		}
 		if rs, ok := n.(*ast.RangeStmt); ok {
 			if xIdent, ok := rs.X.(*ast.Ident); ok && jobSliceVars[xIdent.Name] {
@@ -322,7 +376,7 @@ func reachesJobMethod(fd *ast.FuncDecl, jobVars map[string]bool, jobSliceVars ma
 		// here costs nothing today. If a future helper takes []*job.Job, this
 		// recursion would need to thread jobSliceVars through the same way
 		// childVars is threaded above.
-		if reachesJobMethod(callee, childVars, nil, funcs, nextVisited) {
+		if reachesJobMethod(callee, childVars, nil, funcs, nextVisited, unsupported) {
 			found = true
 			return false
 		}
@@ -341,6 +395,7 @@ func doorsReachingJobMethod(t *testing.T) map[string]bool {
 	t.Helper()
 	funcs := queueMethodFuncs(t)
 	got := make(map[string]bool)
+	var unsupported []string
 	for name, fd := range funcs {
 		if !fd.Name.IsExported() || fd.Recv == nil {
 			continue
@@ -358,7 +413,18 @@ func doorsReachingJobMethod(t *testing.T) map[string]bool {
 				jobSliceVars[p.name] = true
 			}
 		}
-		got[name] = reachesJobMethod(fd, jobVars, jobSliceVars, funcs, map[string]bool{name: true})
+		got[name] = reachesJobMethod(fd, jobVars, jobSliceVars, funcs, map[string]bool{name: true}, &unsupported)
+	}
+	if len(unsupported) > 0 {
+		slices.Sort(unsupported)
+		t.Fatalf("reachesJobMethod met %d *job.Job data flow(s) it cannot follow:\n  %s\n\n"+
+			"It matches names and argument positions, not types, so an alias or a "+
+			"value parked in a struct field escapes the walk. Left alone, such a "+
+			"flow makes this analysis report a door as NOT reaching *job.Job when "+
+			"it does, and the seven-of-ten assertion below stays green while being "+
+			"wrong. Extend reachesJobMethod to follow the flow, or rewrite the body "+
+			"to pass the job directly — do not delete this check.",
+			len(unsupported), strings.Join(unsupported, "\n  "))
 	}
 	return got
 }
@@ -413,4 +479,70 @@ func TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse(t *testing.T) {
 	if len(got) != len(want) {
 		t.Errorf("found %d exported doors, prose enumerates %d", len(got), len(want))
 	}
+}
+
+// TestRenderAll_LocksOnceOutsideTheRowLoop pins the property RenderAll exists
+// for: every row in one listing is composed under a SINGLE hold of q.mu, so a
+// caller cannot observe a listing torn across a concurrent mutation. Without
+// it, RenderAll would be nothing but a loop the caller could have written.
+//
+// TestRenderAll_TakesTheQueueLock (render_test.go) cannot reach this. It
+// is a race-detector test, and an implementation that locked and unlocked
+// around each row would still be race-free, still return every row, and still
+// pass — so it pins "locks at all", not "locks once". The distinction is
+// invisible at runtime and plain in the source, which is what makes this a
+// static check rather than another concurrent one.
+//
+// Asserting Unlock is DEFERRED is half the proof: one Lock with a deferred
+// Unlock is a span that necessarily runs to the return, and therefore over
+// every iteration. One Lock with an inline Unlock inside the loop would
+// satisfy a bare count and prove nothing.
+func TestRenderAll_LocksOnceOutsideTheRowLoop(t *testing.T) {
+	fd, ok := queueMethodFuncs(t)["RenderAll"]
+	if !ok || fd.Body == nil {
+		t.Fatal("RenderAll not found in this package's non-test sources; " +
+			"this test cannot silently pass because its subject moved")
+	}
+
+	var lockPos []token.Pos
+	var deferredUnlocks int
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if isQMuCall(n, "Lock") {
+			lockPos = append(lockPos, n.Pos())
+		}
+		if d, ok := n.(*ast.DeferStmt); ok && isQMuCall(d.Call, "Unlock") {
+			deferredUnlocks++
+		}
+		return true
+	})
+
+	if len(lockPos) != 1 {
+		t.Fatalf("RenderAll calls q.mu.Lock() %d times, want exactly 1 — more "+
+			"than one hold means the listing is composed across separate "+
+			"critical sections and can be torn", len(lockPos))
+	}
+	if deferredUnlocks != 1 {
+		t.Errorf("RenderAll has %d deferred q.mu.Unlock() calls, want 1 — a "+
+			"lock released inline can be released inside the row loop, which "+
+			"a Lock count alone would not distinguish", deferredUnlocks)
+	}
+
+	// The single Lock must not sit inside the loop that walks the rows.
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch loop := n.(type) {
+		case *ast.RangeStmt:
+			body = loop.Body
+		case *ast.ForStmt:
+			body = loop.Body
+		default:
+			return true
+		}
+		if body != nil && lockPos[0] > body.Pos() && lockPos[0] < body.End() {
+			t.Errorf("RenderAll takes q.mu INSIDE its row loop — each row would " +
+				"then be composed under its own hold, which is exactly the " +
+				"per-row locking this door exists to avoid")
+		}
+		return true
+	})
 }

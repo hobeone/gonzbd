@@ -148,7 +148,17 @@ func TestRender_DistinguishesRunningFromReadyToAdvance(t *testing.T) {
 	}
 }
 
-// TestRenderAll_TakesTheQueueLockOnce departs from the task brief's draft in
+// TestRenderAll_TakesTheQueueLock proves RenderAll locks AT ALL, and only
+// that. It cannot prove the lock is taken ONCE: an implementation that locked
+// and unlocked around each row is equally race-free, returns the same rows,
+// and passes this test unchanged — verified by mutating render.go to lock
+// per row, which leaves this test reporting ok under -race while
+// TestRenderAll_LocksOnceOutsideTheRowLoop (lock_enumeration_test.go) fails.
+// The single-span property is invisible at runtime and plain in the source,
+// so it is pinned statically there rather than here; an earlier name for this
+// test said "Once" and claimed both halves.
+//
+// It departs from the task brief's draft in
 // one respect: the brief's version leaves both jobs at Fetching and loops
 // q.Advance(b) 200 times. Fetching needsLease but not needsSlot (§3.4), and
 // q.holds only touches q.slots.held when the position needsSlot — so a job
@@ -162,7 +172,7 @@ func TestRender_DistinguishesRunningFromReadyToAdvance(t *testing.T) {
 // concurrent reader (RenderAll's loop) and writer (Park's releaseFor) on the
 // SAME map, which is what the race detector actually needs to catch an
 // unlocked RenderAll.
-func TestRenderAll_TakesTheQueueLockOnce(t *testing.T) {
+func TestRenderAll_TakesTheQueueLock(t *testing.T) {
 	q := New(2, 2, testClock, &stubWorkers{})
 	a := job.New("a", "n", job.Policy{})
 	b := job.New("b", "n", job.Policy{})
