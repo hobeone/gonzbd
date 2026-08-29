@@ -63,12 +63,50 @@ func (f *fakeResidency) resident(id string) bool {
 // needs only enough to satisfy the interface and let a test observe what was
 // saved or deleted.
 type fakeStore struct {
-	mu   sync.Mutex
-	rows map[string]Persisted
-	gone map[string]bool
+	mu      sync.Mutex
+	rows    map[string]Persisted
+	gone    map[string]bool
+	order   []string
+	loadErr error
 }
 
-func (f *fakeStore) Load(context.Context) ([]Persisted, error) { return nil, nil }
+// seed replaces the store's contents with ps, in the given order. It exists
+// for Task 7's restore tests, which need Load to return rows in a specific
+// sequence — d.rows alone (a map) has none.
+func (f *fakeStore) seed(ps []Persisted) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.order = nil
+	if f.rows == nil {
+		f.rows = map[string]Persisted{}
+	}
+	for _, p := range ps {
+		f.rows[p.ID] = p
+		f.order = append(f.order, p.ID)
+	}
+}
+
+// row returns the stored Persisted for id, for a test to inspect what
+// persistIfChanged actually wrote.
+func (f *fakeStore) row(id string) (Persisted, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.rows[id]
+	return p, ok
+}
+
+func (f *fakeStore) Load(context.Context) ([]Persisted, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
+	out := make([]Persisted, 0, len(f.order))
+	for _, id := range f.order {
+		out = append(out, f.rows[id])
+	}
+	return out, nil
+}
 
 func (f *fakeStore) Save(_ context.Context, p Persisted) error {
 	f.mu.Lock()

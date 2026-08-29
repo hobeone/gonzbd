@@ -316,9 +316,8 @@ func TestRun_AdvancesOnAWakeAndStopsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestRestore_SurfacesTheStoreError pins restore's own contract directly —
-// Task 7 replaces the body, but until then it must neither swallow a Load
-// error nor fabricate one.
+// TestRestore_SurfacesTheStoreError pins restore's own contract directly:
+// it must neither swallow a Load error nor fabricate one.
 func TestRestore_SurfacesTheStoreError(t *testing.T) {
 	wantErr := errors.New("boom")
 	d := newTestDispatcher(t, withStore(&failingLoadStore{err: wantErr}))

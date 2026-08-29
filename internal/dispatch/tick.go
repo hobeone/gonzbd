@@ -18,7 +18,7 @@ import (
 // Eviction of a cancelled never-run job (D-B12) runs after Advance and before
 // reconcileResidency: Advance routes IntentCancel to finishCancel before every
 // other branch, so eviction cannot race a settle. This tick advances, evicts,
-// reconciles residency, then launches.
+// reconciles residency, launches, then persists.
 func (d *Dispatcher) tick(ctx context.Context) {
 	for _, j := range d.snapshotOrder() {
 		if err := d.q.Advance(j); err != nil {
@@ -33,7 +33,37 @@ func (d *Dispatcher) tick(ctx context.Context) {
 			continue
 		}
 		d.launch(ctx, j)
+		d.persistIfChanged(ctx, j)
 	}
+}
+
+// persistIfChanged writes a job's four axes when they have moved since the
+// last write. The comparison is against the last value written, held in
+// memory (d.written), so a quiet tick over a large queue costs no store
+// traffic — Persisted is a plain comparable struct (no slices or maps), so
+// `last == p` is a real equality check, not a reference comparison.
+//
+// D-B9: d.mu is never held across the Render or Save calls. lastWritten and
+// markWritten each take d.mu for one map operation and release it
+// immediately; Render (into sched) and Save (into Store) both run unlocked
+// between them.
+func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
+	h, ok := d.headerFor(j.ID())
+	if !ok {
+		// Evicted (D-B12) or removed between snapshotOrder and here: nothing
+		// left in the registry to attach a Header to.
+		return
+	}
+	v := d.q.Render(j)
+	p := Persisted{ID: j.ID(), Header: h, State: v.StateView, Intent: v.Intent}
+	if last, ok := d.lastWritten(j.ID()); ok && last == p {
+		return
+	}
+	if err := d.store.Save(ctx, p); err != nil {
+		d.logStoreError(j.ID(), err)
+		return
+	}
+	d.markWritten(p)
 }
 
 // evictCancelledNeverRun removes a job the user cancelled before it ever ran,

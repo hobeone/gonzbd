@@ -10,8 +10,15 @@
 // Half B2, which also retires internal/queue. It does hold one rendering
 // door, Render (see below) — composing the view a caller renders from is a
 // decision over a job.Snapshot like any other, and B2 supplies the HTTP
-// layer that calls it, not the composition itself. Nothing imports this
-// package yet, by design.
+// layer that calls it, not the composition itself.
+//
+// internal/dispatch (Half B2.3) is this package's first caller: it
+// constructs the one *Queue a process runs (sched.New) and drives every job
+// through Advance, Cancel, Park, Retry, Settle, Pause, Resume, Paused, Render
+// and RenderAll. `git grep -n '"github.com/hobeone/gonzbd/internal/sched"'
+// -- '*.go' ':!internal/sched/*' | grep -v _test.go` returns exactly one
+// line, dispatch.go's import — the two dispatch test files import it too,
+// which the filter drops.
 //
 // # What this package exports, and what B2 still owes it
 //
@@ -23,16 +30,18 @@
 // Acquisition happens only in grantFor; return happens only through reclaim
 // and releaseFor, which Settle, Park and Cancel all route through.
 //
-// Half B2 still owes this package two things, neither of which it can supply
-// for itself:
+// Half B2 owed this package two things it could not supply for itself. One is
+// closed:
 //
-//   - A discard path for a cancelled job that never ran. finishCancel returns
-//     nil for one, because Outcome lives on the Attempt and there is none. The
-//     job therefore survives, and Render reports it as not running with a
-//     NoLease reason — which job.ToSABnzbd turns into StatusQueued. A job the
-//     user deleted renders as queued, forever. Closing it needs residency and
-//     a store, which D-B5 keeps out of this package: B2's dispatcher must
-//     evict StateUnset && IntentCancel from the active set and the store.
+//   - CLOSED (B2.3). A discard path for a cancelled job that never ran.
+//     finishCancel returns nil for one, because Outcome lives on the Attempt
+//     and there is none. The job therefore survives here, and Render reports
+//     it as not running with a NoLease reason — which job.ToSABnzbd turns
+//     into StatusQueued. This package still cannot close that gap itself
+//     (D-B5 keeps residency and the store out of it), but internal/dispatch's
+//     tick now does: evictCancelledNeverRun (internal/dispatch/tick.go)
+//     removes StateUnset && IntentCancel from the registry and the store
+//     immediately after Advance, on every tick.
 //
 //     Note this also bounds gatedBy's stated reason for ignoring IntentCancel
 //     ("advance handles it first, so no cancel value reaches the render
@@ -45,6 +54,11 @@
 //     it through finishCancel. Transient and self-healing, but real for the
 //     tick it lasts.
 //
-//   - A Workers implementation whose Abort neither blocks nor takes a lock a
-//     caller could hold across a call into Queue. See the Workers interface.
+//   - STILL OWED. A Workers implementation whose Abort neither blocks nor
+//     takes a lock a caller could hold across a call into Queue. See the
+//     Workers interface. `git grep -n ') Abor[t](jobID string)' -- '*.go'`
+//     (the bracket keeps this citation from matching its own quoted text)
+//     finds two hits, both named stubWorkers and both in _test.go files
+//     (internal/dispatch/fakes_test.go, internal/sched/queue_test.go); no
+//     non-test file declares an Abort method at all.
 package sched
