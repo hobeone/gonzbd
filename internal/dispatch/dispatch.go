@@ -205,15 +205,47 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	d.mu.Unlock()
 
 	if err := d.restore(ctx); err != nil {
-		// The goroutine never launches on this path, so d.done never closes.
-		// Leaving d.started true here would make a later Stop() read
-		// wasStarted true, close d.stop, and then block forever on <-d.done
-		// with nothing left to close it — a real deadlock, not a hypothetical
-		// one. Clearing it under mu is what makes Stop's wasStarted read see
-		// a Dispatcher that, as far as Stop is concerned, was never started.
+		// The goroutine never launches on this path, so run's deferred
+		// close(d.done) never runs. Leaving d.started true here would make a
+		// LATER Stop() read wasStarted true, close d.stop, and then block
+		// forever on <-d.done with nothing left to close it. Clearing it
+		// under mu is what makes such a Stop's wasStarted read see a
+		// Dispatcher that, as far as Stop is concerned, was never started.
+		//
+		// Clearing started is not enough for a Stop that is ALREADY waiting.
+		// restore does Store I/O and D-B9 forbids holding d.mu across it, so
+		// the whole of restore runs unlocked and a concurrent Stop can pass
+		// through its own critical section in that window: it reads
+		// wasStarted true (this Start set it), latches stopped, closes d.stop
+		// and blocks on <-d.done. Nothing else will ever close d.done. So
+		// this path closes it when — and only when — it observes that latch.
+		//
+		// d.done is closed exactly once. The argument (approach (a): a proof,
+		// not a sync.Once, because the disjointness is structural and a Once
+		// here would hide rather than establish it):
+		//
+		//  1. run's deferred close runs only if `go d.run(ctx)` below was
+		//     reached, which happens only when restore returned nil; this
+		//     branch runs only when it returned non-nil. Start returns on
+		//     exactly one of the two, so the two closers are disjoint.
+		//  2. This branch cannot run twice. stopped is a one-way latch (Stop
+		//     sets it, nothing clears it), and Start's first check refuses
+		//     any call that sees it set. A second Start therefore reaches
+		//     restore only while stopped is still false — and a Start that
+		//     reaches this branch while stopped is false does not close.
+		//     Concretely: the goroutine that closes read stopped true inside
+		//     the critical section below, so every Start entering afterwards
+		//     is refused at that first check, and every Start that entered
+		//     earlier either saw started true (this call's claim) and was
+		//     refused, or takes d.mu after this section and sees stopped
+		//     true. Either way, no second close.
 		d.mu.Lock()
 		d.started = false
+		sawStop := d.stopped
 		d.mu.Unlock()
+		if sawStop {
+			close(d.done)
+		}
 		return fmt.Errorf("dispatch: Start: %w", err)
 	}
 

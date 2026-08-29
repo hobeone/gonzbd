@@ -365,3 +365,73 @@ type failingLoadStore struct{ err error }
 func (f *failingLoadStore) Load(context.Context) ([]Persisted, error) { return nil, f.err }
 func (f *failingLoadStore) Save(context.Context, Persisted) error     { return nil }
 func (f *failingLoadStore) Delete(context.Context, string) error      { return nil }
+
+// blockingLoadStore's Load announces that it has been entered, waits to be
+// released, and then fails. It is what lets a test hold Start inside restore
+// — the unlocked window D-B9 forces, since restore does Store I/O — while a
+// concurrent Stop runs to completion, with no sleep and no polling.
+type blockingLoadStore struct {
+	entered chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (b *blockingLoadStore) Load(context.Context) ([]Persisted, error) {
+	close(b.entered)
+	<-b.release
+	return nil, b.err
+}
+func (b *blockingLoadStore) Save(context.Context, Persisted) error { return nil }
+func (b *blockingLoadStore) Delete(context.Context, string) error  { return nil }
+
+// TestStop_ConcurrentWithAFailingStartReturnsRatherThanDeadlocking pins the
+// interleaving TestStop_AfterAFailedStart above cannot reach, because that
+// one calls Start and Stop in sequence: there, Start has already cleared
+// started before Stop reads it, so Stop takes its no-op path.
+//
+// The dangerous order is Stop landing WHILE Start is inside restore. Start
+// claims started, releases d.mu (D-B9 forbids holding it across the Store
+// I/O restore does), and in that window Stop reads wasStarted true, latches
+// stopped, closes d.stop and blocks on <-d.done. If restore then fails,
+// Start returns without ever spawning run — so run's deferred close(d.done)
+// never happens and Stop waits forever. Start's error path must close d.done
+// itself when it sees the stopped latch.
+//
+// Every step is driven by a channel, so nothing here depends on timing: the
+// test waits for Load to be entered, then for Stop to close d.stop (which
+// Stop does only after latching stopped under d.mu), and only then releases
+// Load to fail. The final assertion is a bounded select rather than a plain
+// receive so that a regression FAILS with a diagnosis instead of wedging the
+// package until the go test timeout.
+func TestStop_ConcurrentWithAFailingStartReturnsRatherThanDeadlocking(t *testing.T) {
+	wantErr := errors.New("boom")
+	st := &blockingLoadStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     wantErr,
+	}
+	d := newTestDispatcher(t, withStore(st))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- d.Start(context.Background()) }()
+	<-st.entered // Start has claimed started and is inside restore.
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- d.Stop() }()
+	<-d.stop // Stop has latched stopped and is now blocked on <-d.done.
+
+	close(st.release) // Let restore fail.
+
+	select {
+	case err := <-stopErr:
+		if err != nil {
+			t.Errorf("Stop() = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop deadlocked: a Stop that latched stopped while Start was inside restore is waiting on d.done, which Start's restore-failure path never closed")
+	}
+
+	if err := <-startErr; !errors.Is(err, wantErr) {
+		t.Errorf("Start() = %v, want an error wrapping %v", err, wantErr)
+	}
+}
