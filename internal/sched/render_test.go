@@ -55,9 +55,34 @@ func TestRender_FillsEveryFieldFromOneSnapshot(t *testing.T) {
 	if v.State != job.Fetching {
 		t.Errorf("State = %v, want Fetching", v.State)
 	}
+	if v.Next != job.StateUnset {
+		t.Errorf("Next = %v, want StateUnset — the second Advance only granted "+
+			"the Fetching lease, it did not end Fetching's work or set a next state",
+			v.Next)
+	}
+	if v.Activity != job.ActNone {
+		t.Errorf("Activity = %v, want ActNone — nothing in this fixture ever "+
+			"calls SetActivity", v.Activity)
+	}
+	if v.Outcome != job.OutcomePending {
+		t.Errorf("Outcome = %v, want OutcomePending — the attempt BeginAttempt "+
+			"opened has not been settled by Finish", v.Outcome)
+	}
+	if v.Assessed {
+		t.Error("Assessed = true, want false — this attempt has never reached " +
+			"Assessing")
+	}
 	if !v.Running {
 		t.Error("Running = false, want true — the job holds its Fetching lease " +
 			"and its work has not ended")
+	}
+	if v.Reason != job.NoLease {
+		t.Errorf("Reason = %v, want NoLease (0) — RenderView's doc comment "+
+			"names NoLease's zero value as the reading a running job also "+
+			"produces: waitReason returns (0, false) for a running job and "+
+			"Render discards the boolean, so a running job's Reason reads "+
+			"identically to \"waiting on pool A\" and must not be interpreted "+
+			"without checking Running first", v.Reason)
 	}
 	if v.Intent != job.IntentRun {
 		t.Errorf("Intent = %v, want IntentRun", v.Intent)
