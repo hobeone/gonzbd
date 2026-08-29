@@ -91,7 +91,6 @@ func (f *fakeStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-//nolint:unused // first caller is Task 6's eviction tests
 func (f *fakeStore) deleted(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -175,7 +174,6 @@ func withCaps(lease, slot int) func(*testOpts) {
 
 func withResidency(r Residency) func(*testOpts) { return func(o *testOpts) { o.res = r } }
 
-//nolint:unused // first caller is Task 6
 func withStore(s Store) func(*testOpts) { return func(o *testOpts) { o.store = s } }
 
 func withRunner(r Runner) func(*testOpts) { return func(o *testOpts) { o.runner = r } }

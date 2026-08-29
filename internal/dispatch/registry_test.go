@@ -55,6 +55,32 @@ func TestList_CarriesTheHeaderAndTheView(t *testing.T) {
 	}
 }
 
+// TestRemove_PreservesOrderOfRemainingEntries pins that remove is not a
+// swap-with-last deletion: queue order is the priority policy, and swapping
+// the last entry into a removed slot would silently reorder the jobs behind
+// it.
+func TestRemove_PreservesOrderOfRemainingEntries(t *testing.T) {
+	d := newTestDispatcher(t)
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+			t.Fatalf("Add(%s): %v", id, err)
+		}
+	}
+
+	d.remove("b")
+
+	got := d.List()
+	want := []string{"a", "c", "d"}
+	if len(got) != len(want) {
+		t.Fatalf("List returned %d rows, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i] {
+			t.Errorf("row %d is %s, want %s — remove must preserve the order of the remaining entries", i, got[i].ID, want[i])
+		}
+	}
+}
+
 func TestList_EmptyRegistryReturnsEmptyNonNil(t *testing.T) {
 	d := newTestDispatcher(t)
 	got := d.List()

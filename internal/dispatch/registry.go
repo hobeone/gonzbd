@@ -64,6 +64,25 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 	return out
 }
 
+// remove deletes a job from both d.byID and d.order under d.mu.
+//
+// It preserves the relative order of the remaining entries: queue order is
+// the priority policy sched consults, and a swap-with-last deletion would
+// silently reorder jobs behind the removed one. Task 6's eviction is the
+// first caller — it never removes a running job, but this method makes no
+// such assumption itself.
+func (d *Dispatcher) remove(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.byID, id)
+	for i, oid := range d.order {
+		if oid == id {
+			d.order = append(d.order[:i], d.order[i+1:]...)
+			break
+		}
+	}
+}
+
 // List composes the queue listing. It takes Queue.mu exactly once, through
 // RenderAll, so every row is from one instant.
 func (d *Dispatcher) List() []Row {

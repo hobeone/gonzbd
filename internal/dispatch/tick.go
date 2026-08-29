@@ -15,13 +15,17 @@ import (
 // inside Queue.mu and an Abort implementation that took d.mu would deadlock
 // ABBA against a concurrent Cancel.
 //
-// Task 5 adds worker launch after residency; eviction-on-cancel is not
-// implemented yet — it lands in Task 6. This tick advances, reconciles
-// residency, then launches.
+// Eviction of a cancelled never-run job (D-B12) runs after Advance and before
+// reconcileResidency: Advance routes IntentCancel to finishCancel before every
+// other branch, so eviction cannot race a settle. This tick advances, evicts,
+// reconciles residency, then launches.
 func (d *Dispatcher) tick(ctx context.Context) {
 	for _, j := range d.snapshotOrder() {
 		if err := d.q.Advance(j); err != nil {
 			d.logAdvanceError(j.ID(), err)
+			continue
+		}
+		if d.evictCancelledNeverRun(ctx, j) {
 			continue
 		}
 		if err := d.reconcileResidency(ctx, j); err != nil {
@@ -30,6 +34,37 @@ func (d *Dispatcher) tick(ctx context.Context) {
 		}
 		d.launch(ctx, j)
 	}
+}
+
+// evictCancelledNeverRun removes a job the user cancelled before it ever ran,
+// and reports whether it did.
+//
+// finishCancel (internal/sched/cancel.go) returns nil for such a job because
+// Outcome lives on the Attempt and there is none, so Finish would return
+// ErrNoOpenAttempt. The job therefore survives in the Queue: gatedBy ignores
+// IntentCancel, waitReason returns NoLease, NoLease.IsPause() is false, and
+// job.ToSABnzbd renders StatusQueued. A job the user deleted looks queued,
+// forever — the dispatcher is the only component with a registry to remove it
+// from, which is why the eviction lives here rather than in sched.
+//
+// It frees no pools: TestRequirements_StateUnsetRequiresNothing
+// (internal/sched/requirements_test.go) pins that StateUnset requires neither
+// a lease nor a slot, so there is nothing for this function to release before
+// removing the job.
+func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) bool {
+	v := d.q.Render(j)
+	if v.State != job.StateUnset || v.Intent != job.IntentCancel {
+		return false
+	}
+	if err := d.store.Delete(ctx, j.ID()); err != nil {
+		// Leave it registered: removing it from the registry here while the
+		// store still holds the row would resurrect it at the next Start,
+		// which is worse than trying again on the next tick.
+		d.logStoreError(j.ID(), err)
+		return false
+	}
+	d.remove(j.ID())
+	return true
 }
 
 // reconcileResidency brings a job's manifest residency in line with what it
