@@ -131,18 +131,28 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
 // `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds nine
 // sites (advance.go's Park, Retry and Advance, cancel.go's Cancel, settle.go's
-// Settle, render.go's Render, and queue.go's Pause, Resume and Paused), and
-// every *job.Job method call in the package's non-test sources sits inside
-// one of the six that call into Job at all — Pause, Resume and Paused touch
-// only Queue's own paused field and never reach a *Job. The other half holds
-// by construction: this package imports nothing from internal/sched (its own
-// import block has none; the only hits for that string are comment mentions
-// in doc.go and this file), so Job cannot call into Queue at all, and the
-// order is one-directional — Queue.mu before Job.mu, never the reverse. The
-// grep above proves the count of nine; it cannot say whether these are the
-// same nine NAMES named here, so a rename this pattern still matches would
-// leave this citation green while the prose went wrong. That is what
-// internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse checks.
+// Settle, render.go's Render, and queue.go's Pause, Resume and Paused). Of
+// those nine, six reach a *job.Job method call — Cancel (via SetIntent,
+// Snapshot and, through finishCancel/settleLocked, Finish), Park (via
+// parkLocked's Surrender), Retry (Snapshot, BeginAttempt), Advance (Snapshot,
+// BeginAttempt, Cross, Transition, and grantFor's HoldsLease/Grant), Settle
+// (Snapshot) and Render (Snapshot); reviewed by reading all nine bodies, not
+// derived from a test. Pause, Resume and Paused touch only Queue's own paused
+// field and never reach a *Job. This six-of-nine split is a reviewed
+// property, not a machine-checked one: no test in this repository walks the
+// *job.Job call population, because attributing a call expression to a
+// *job.Job receiver needs type information a plain go/ast walk does not have.
+// The other half holds by construction: this package imports nothing from
+// internal/sched (its own import block has none; the only hits for that
+// string are comment mentions in doc.go and this file), so Job cannot call
+// into Queue at all, and the order is one-directional — Queue.mu before
+// Job.mu, never the reverse. The grep above proves the count of nine; it
+// cannot say whether these are the same nine NAMES named here, so a rename
+// this pattern still matches would leave this citation green while the prose
+// went wrong. That is what
+// internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse checks —
+// it enforces the nine locker NAMES only, not the six-of-nine *job.Job call
+// claim above, which remains reviewer-maintained.
 //
 // Job does no I/O. It exposes State() and the attempt accessors. The later
 // plan's design intent is a Checkpointer that reads those and writes the
