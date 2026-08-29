@@ -253,3 +253,61 @@ func TestReconcileResidency_NeverStartedJobDoesNotAttemptASettle(t *testing.T) {
 			"no residency work at all", err)
 	}
 }
+
+// TestResidency_CancelledContextDoesNotSettleOnANonContextError closes the
+// gap the sentinel check alone leaves.
+//
+// The branch distinguishing "the job is bad" from "the process is going away"
+// tested only errors.Is(err, context.Canceled/DeadlineExceeded). That
+// identifies a cancellation only when the error CARRIES the sentinel, and the
+// I/O a real Hydrate does mostly does not: os.Open returns *os.PathError,
+// gzip and json return io.ErrUnexpectedEOF, and a reader interrupted mid-file
+// reports a short read. None of those wrap a context sentinel.
+//
+// Settling on one of them is permanent damage, because Outcome is write-once:
+// the user restarts to find a healthy job marked Failed because the process
+// happened to be shutting down while its manifest was being read. When ctx is
+// already cancelled, no error identity should be able to produce a settle.
+func TestResidency_CancelledContextDoesNotSettleOnANonContextError(t *testing.T) {
+	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("read manifest: unexpected EOF")}}
+	d := newTestDispatcher(t, withResidency(res))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background()) // open the attempt
+	d.tick(context.Background()) // grant the lease, hydrate (and fail)
+	if got := d.q.Render(j).Outcome; got != job.OutcomeFailed {
+		t.Fatalf("setup: Outcome = %v, want Failed — with a LIVE ctx this error must settle", got)
+	}
+
+	// Same error, same branch, but the process is going away.
+	res2 := &fakeResidency{failOn: map[string]error{"j2": errors.New("read manifest: unexpected EOF")}}
+	d2 := newTestDispatcher(t, withResidency(res2))
+	j2 := job.New("j2", "n", job.Policy{})
+	if err := d2.Add(j2, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d2.tick(context.Background()) // opens the attempt at Fetching; no lease yet
+	// Grant the lease WITHOUT going through tick, so the hydration below is
+	// the first one attempted and happens under the cancelled ctx. A second
+	// tick would hydrate under a live ctx and settle before we got here.
+	if err := d2.q.Advance(j2); err != nil {
+		t.Fatalf("setup: Advance: %v", err)
+	}
+	if !d2.q.Render(j2).Holds {
+		t.Fatal("setup: job does not hold its lease, so reconcileResidency will not hydrate")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = d2.reconcileResidency(ctx, j2)
+
+	if got := d2.q.Render(j2).Outcome; got != job.OutcomePending {
+		t.Errorf("Outcome = %v, want Pending — ctx was already cancelled, so this "+
+			"is a fact about the process, not the job, and Outcome is write-once", got)
+	}
+	if !j2.HoldsLease() {
+		t.Error("lease released — a job interrupted by shutdown keeps its " +
+			"resources; Stop's sweep parks them")
+	}
+}

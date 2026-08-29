@@ -175,7 +175,23 @@ func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 			// cancellation is a fact about the process. The job keeps its
 			// resources; Stop's sweep parks them, and if the cancellation was
 			// not a shutdown the next tick retries the hydration.
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// ctx.Err() is checked FIRST and matters most. The sentinel
+			// tests below identify a cancellation only when the error
+			// CARRIES the sentinel, and the I/O a real Hydrate does mostly
+			// does not: os.Open returns *os.PathError, gzip and json return
+			// io.ErrUnexpectedEOF, and a reader interrupted mid-file reports
+			// a short read. None of those wrap a context error, so on the
+			// sentinel test alone every one of them settled the job Failed
+			// during a shutdown. Outcome is write-once, so that is permanent:
+			// the user restarts to find healthy jobs marked Failed because
+			// the process happened to be stopping while their manifests were
+			// read. If ctx is already cancelled, no error identity should be
+			// able to produce a settle.
+			//
+			// The sentinel tests are kept rather than replaced: a Hydrate
+			// given a ctx with its OWN deadline can report DeadlineExceeded
+			// while this ctx is still live.
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("hydrate %s: %w", j.ID(), err)
 			}
 			// The job cannot run without its manifest, and it is holding
