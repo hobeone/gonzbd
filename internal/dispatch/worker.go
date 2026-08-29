@@ -31,11 +31,19 @@ import (
 // land after Settle has run — so Running (if it changes) has already changed
 // — while still being unconditional on Settle's outcome.
 func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
-	defer d.clearLaunched(j.ID())
 	if o == job.OutcomeCancelled {
+		d.clearLaunched(j.ID())
 		return fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", j.ID())
 	}
-	if err := d.q.Settle(j, o); err != nil {
+	err := d.q.Settle(j, o)
+	// Cleared AFTER Settle and BEFORE kick, and unconditional on Settle's
+	// outcome. A defer satisfied the first and third and broke the second:
+	// kick ran first, so the woken tick could reach launch() while the claim
+	// was still held, find claimLaunched false, decline to start a worker —
+	// and consume the wake doing it, leaving the job holding resources with
+	// nobody working it until the next timer tick.
+	d.clearLaunched(j.ID())
+	if err != nil {
 		return fmt.Errorf("dispatch: Finished(%s): %w", j.ID(), err)
 	}
 	d.kick()
@@ -65,8 +73,11 @@ func (d *Dispatcher) Finished(j *job.Job, o job.Outcome) error {
 // already free, and start a second worker on resources the first has not yet
 // surrendered.
 func (d *Dispatcher) Yielded(j *job.Job) error {
-	defer d.clearLaunched(j.ID())
-	if err := d.q.Park(j); err != nil {
+	err := d.q.Park(j)
+	// After Park, before kick — see Finished above for why the ordering is
+	// load-bearing in both directions.
+	d.clearLaunched(j.ID())
+	if err != nil {
 		return fmt.Errorf("dispatch: Yielded(%s): %w", j.ID(), err)
 	}
 	d.kick()

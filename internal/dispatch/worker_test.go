@@ -2,6 +2,9 @@ package dispatch
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -202,5 +205,100 @@ func TestLaunch_SkippedWhenIntentTurnedToCancelDuringHydration(t *testing.T) {
 
 	if runner.started(j.ID()) {
 		t.Error("worker launched for a job cancelled during hydration — the launch path must re-read the snapshot after the unlocked read")
+	}
+}
+
+// TestWorkerExits_ClearTheLaunchClaimBeforeKicking pins the call ORDER inside
+// Finished and Yielded: clearLaunched must precede kick.
+//
+// Why this is a source-order check and not a behavioural one. The consequence
+// is real but the window is nanoseconds — between kick() returning and a
+// deferred clear running — so a runtime test would be flaky in the direction
+// that matters (it would usually pass while the bug was present) and would
+// pin nothing. The ordering is invisible at runtime and plain in the source,
+// which is the same argument
+// TestRenderAll_LocksOnceOutsideTheRowLoop (internal/sched) is built on.
+//
+// What goes wrong when the order flips: kick wakes the ticker, tick reaches
+// launch(), claimLaunched finds the claim still held and declines to start a
+// worker — consuming the wake in the process. The job then holds its
+// resources with nobody working it until the next timer tick.
+func TestWorkerExits_ClearTheLaunchClaimBeforeKicking(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "worker.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse worker.go: %v", err)
+	}
+
+	want := map[string]bool{"Finished": false, "Yielded": false}
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		if _, tracked := want[fd.Name.Name]; !tracked {
+			continue
+		}
+		want[fd.Name.Name] = true
+
+		var clearPos, kickPos []token.Pos
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			switch sel.Sel.Name {
+			case "clearLaunched":
+				clearPos = append(clearPos, call.Pos())
+			case "kick":
+				kickPos = append(kickPos, call.Pos())
+			}
+			return true
+		})
+
+		if len(kickPos) == 0 {
+			t.Errorf("%s calls kick 0 times — this test no longer covers what it names", fd.Name.Name)
+			continue
+		}
+		if len(clearPos) == 0 {
+			t.Errorf("%s never clears the launch claim", fd.Name.Name)
+			continue
+		}
+		// Every kick must be preceded by a clear.
+		for _, k := range kickPos {
+			cleared := false
+			for _, c := range clearPos {
+				if c < k {
+					cleared = true
+				}
+			}
+			if !cleared {
+				t.Errorf("%s kicks before clearing the launch claim — the woken "+
+					"tick can reach launch() while the claim is still held, decline "+
+					"to start a worker, and consume the wake doing it", fd.Name.Name)
+			}
+		}
+		// A deferred clear runs after kick however it is written.
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			ds, ok := n.(*ast.DeferStmt)
+			if !ok {
+				return true
+			}
+			if sel, ok := ds.Call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "clearLaunched" {
+				t.Errorf("%s clears the launch claim with defer — that runs on the "+
+					"way out, which is after kick, whatever the statement order says",
+					fd.Name.Name)
+			}
+			return true
+		})
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("%s not found in worker.go; this test cannot silently pass because its subject moved", name)
+		}
 	}
 }
