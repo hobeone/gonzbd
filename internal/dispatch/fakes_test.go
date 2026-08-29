@@ -69,6 +69,7 @@ type fakeStore struct {
 	gone    map[string]bool
 	order   []string
 	loadErr error
+	delErr  error
 }
 
 // rows and order are two views of one set and are always written together:
@@ -131,6 +132,9 @@ func (f *fakeStore) Save(_ context.Context, p Persisted) error {
 func (f *fakeStore) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.delErr != nil {
+		return f.delErr
+	}
 	if f.gone == nil {
 		f.gone = map[string]bool{}
 	}

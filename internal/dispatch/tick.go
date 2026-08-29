@@ -32,6 +32,8 @@ func (d *Dispatcher) tick(ctx context.Context) {
 			d.logAdvanceError(j.ID(), err)
 			continue
 		}
+		// True means this job's pass ends here, including when the store
+		// delete failed and the job stays registered for a retry.
 		if d.evictCancelledNeverRun(ctx, j) {
 			continue
 		}
@@ -91,7 +93,20 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 }
 
 // evictCancelledNeverRun removes a job the user cancelled before it ever ran,
-// and reports whether it did.
+// and reports whether THIS JOB'S PASS IS OVER — which is not the same as
+// whether the removal succeeded, and the difference was a defect.
+//
+// The bool used to mean "did I evict?", so a failed store.Delete returned
+// false and tick could not tell that case apart from "this is not a cancelled
+// never-run job at all". It walked on to persistIfChanged, and because the
+// Intent had just become IntentCancel the rendered value no longer matched
+// lastWritten, so Save wrote the row straight back — the same tick re-created
+// the row whose deletion had just failed.
+//
+// A cancelled never-run job needs nothing else from this tick either way: it
+// holds no resources to reconcile, there is nothing to launch, and its row
+// must not be rewritten. So the answer is true whether the delete succeeded
+// or not, and the retry rides on the job still being registered.
 //
 // finishCancel (internal/sched/cancel.go) returns nil for such a job because
 // Outcome lives on the Attempt and there is none, so Finish would return
@@ -113,9 +128,11 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 	if err := d.store.Delete(ctx, j.ID()); err != nil {
 		// Leave it registered: removing it from the registry here while the
 		// store still holds the row would resurrect it at the next Start,
-		// which is worse than trying again on the next tick.
+		// which is worse than trying again on the next tick. Returning true
+		// anyway is what keeps the rest of the tick — above all
+		// persistIfChanged — from writing the row back.
 		d.logStoreError(j.ID(), err)
-		return false
+		return true
 	}
 	d.remove(j.ID())
 	return true

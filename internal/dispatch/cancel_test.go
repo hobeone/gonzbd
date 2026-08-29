@@ -163,3 +163,41 @@ func TestCancelledRunningJob_IsNotEvicted(t *testing.T) {
 		t.Errorf("List has %d rows, want 1 — a job that HAS run must settle as Cancelled and stay visible; only the never-run case is evicted", len(got))
 	}
 }
+
+// TestEvictCancelledNeverRun_DeleteFailureDoesNotResurrectTheRow pins the
+// interaction between the two halves of the eviction path.
+//
+// evictCancelledNeverRun returns false when store.Delete fails, deliberately
+// leaving the job registered so a later tick can retry — removing it from the
+// registry while the store still holds its row would resurrect it at the next
+// Start. But false is also what it returns for a job that is simply not a
+// cancelled never-run one, so tick could not tell the two apart and walked on
+// to persistIfChanged. The job's Intent had just changed to IntentCancel, so
+// it no longer matched lastWritten and Save wrote it straight back — the tick
+// re-created the row whose deletion had just failed, in the same pass.
+func TestEvictCancelledNeverRun_DeleteFailureDoesNotResurrectTheRow(t *testing.T) {
+	st := &fakeStore{delErr: errors.New("disk is angry")}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.Cancel(j.ID()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	d.tick(context.Background())
+
+	if got := d.q.Render(j).State; got != job.StateUnset {
+		t.Fatalf("setup: State = %v, want StateUnset — this must be the never-run case", got)
+	}
+	if _, ok := st.row("j1"); ok {
+		t.Error("the store holds a row for a cancelled never-run job whose " +
+			"Delete failed — the tick walked on to persistIfChanged and wrote " +
+			"back the row it had just failed to remove")
+	}
+	if got := len(d.List()); got != 1 {
+		t.Errorf("List has %d rows, want 1 — the job must stay registered so a "+
+			"later tick can retry the delete", got)
+	}
+}
