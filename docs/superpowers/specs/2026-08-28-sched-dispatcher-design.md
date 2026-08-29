@@ -112,12 +112,38 @@ is no other goroutine.
 transition need driving, and those are operations where a tick of latency is
 invisible against a multi-minute download.
 
-**What the tick discharges for free.** All three of §2's deferred contracts,
-without code written for them: the pause sweep is the next tick's `Advance`
-seeing `gatedBy → GlobalPause` and parking every non-running job (branch 2
-leaves running holders alone by design); cancel's settle is the next tick after
-the worker yields; and the `Park`-then-cancel window acquires an upper bound of
-one tick interval where the event-driven model gave it none.
+**What the tick does and does not discharge.** An earlier draft of this RFC
+claimed all three of §2's deferred contracts were discharged by the tick
+existing, with no code written for them. **That was wrong for two of the
+three**, and the correction is D-B14 below.
+
+The tick supplies *when* to ask. It cannot supply the one fact those contracts
+turn on — whether a worker is still working — because B2.1 established that
+the Queue structurally cannot know it:
+
+> the Queue cannot distinguish "holding and working" from "holding and
+> yielded", and stripping a live worker is the worse failure
+
+`Abort` does not change that. It appears in exactly one call position
+(`cancel.go:53`) and touches neither pool: it tells a worker to stop and
+returns. Only `Park` and `Settle` return resources. So a tick alone gives:
+
+| Contract | Discharged by the tick alone? |
+|---|---|
+| The `Park`-then-cancel render window gains an upper bound of one tick | **Yes** — the bound is the tick interval, where the event-driven model gave none |
+| The pause sweep | **No** — a *yielded* holder still has `holds() == true`, so branch 2 returns early and never parks it |
+| Cancel's settle after `Abort` | **No** — worse than not discharged; see below |
+
+The cancel case is not merely incomplete, it loops. `finishCancel` reaches its
+interrupt arm when `q.running(id, s)` is true; after `Abort` the worker exits
+but surrenders nothing, so `HoldsLease` stays true, the attempt stays open,
+`Next` stays `StateUnset`, and `running` stays true. Every subsequent tick
+routes `IntentCancel` back to `finishCancel`, calls `Abort` again, and returns
+`nil`. The job is **never settled**, and holds pool-A capacity for the life of
+the process.
+
+The tick is still the right owner of liveness — D-B7 stands. What it needs is
+an input it cannot compute.
 
 ---
 
@@ -212,6 +238,29 @@ sole computer; the two doors differ only in how many jobs they lock around. A
 second *computation* of a `RenderView` — the thing B2.1 refused when it
 rejected exported `Running`/`WaitReason` predicates — is still refused.
 
+**The cost is five files of enumeration, and one of them has no gate.** A tenth
+exported door is also a tenth `Queue.mu` locker, and this package states that
+count in prose in five non-test files — `internal/sched/queue.go`, `doc.go`,
+`render.go`, `pool.go`, and `internal/job/job.go`. Three carry the name list,
+and `TestQueueMuLockers_MatchTheEnumerationStatedInProse` fails loudly on all
+of those, which is the design working: the test exists precisely so a rename or
+addition cannot leave the prose wrong while the gates stay green.
+
+The one that has no gate is `internal/job/job.go:135-142`, which states a
+*derived* property on top of the count: "of those nine, six reach a `*job.Job`
+method call", explicitly qualified as "a reviewed property, not a
+machine-checked one". `RenderAll` calls `Snapshot`, so the true figure becomes
+seven of ten — and `job.go:154` records that the test "enforces the nine locker
+NAMES only, not the six-of-nine". **Nothing in the repository would catch that
+sentence going stale.**
+
+The implementation must therefore update all five files, and Rule 4's third
+clause applies to the six-of-nine claim: where a population is enumerable by a
+machine, write the test rather than the sentence. Extending
+`TestQueueMuLockers_MatchTheEnumerationStatedInProse` to also assert which
+doors reach a `*job.Job` method is the fix, and it converts a hand-maintained
+claim that has already survived one round of review into a gate.
+
 **This supersedes D-B4's placement clause.** D-B4 reads "`RenderAll` lands with
 its consumer in B2.4", which contradicts D-B6 and the B2.1 roadmap table, both
 of which place the composed view in B2.3. `RenderAll`'s consumer *is* the
@@ -279,7 +328,48 @@ has not".
 
 ---
 
-## Decision 7 (D-B13) — `dispatch` owns the `sched.Queue`; callers talk only to `dispatch`
+## Decision 7 (D-B14) — the dispatcher owns the worker lifecycle
+
+The dispatcher launches every worker and observes every exit. On exit it calls
+exactly one of:
+
+- **`Settle(j, outcome)`** — the worker finished the state's work, terminally.
+- **`Park(j)`** — the worker stopped without finishing: a pause yield at an
+  article boundary, an `Abort`, a shutdown, a dead connection.
+
+**This is the input the tick cannot compute**, and it is what makes D-B7's
+three contracts actually hold. Without it, the pause sweep never reaches a
+yielded holder and cancel loops on `Abort` forever, as shown above.
+
+`Park` is the right door for every non-terminal exit because B2.1 made it
+unconditional and total: slot release is a map delete, `Surrender` returns nil
+when nothing is held, and `reclaim` no-ops on nil. The dispatcher therefore
+never has to decide *whether* a yielding worker still holds something — it
+calls `Park` and the totality makes that correct at every shape.
+
+**The worker must not report its own outcome as `Cancelled`.** `Settle` refuses
+`OutcomeCancelled` before taking the lock (`ErrCancelReserved`); only the cancel
+latch may produce it. A worker aborted mid-`Fetching` exits via `Park`, and the
+next tick's `finishCancel` settles it — now terminating, because `Park`
+surrendered the lease and `running` has gone false.
+
+**Ordering against the tick.** Worker exits arrive on other goroutines, so
+`Settle` and `Park` are called outside the tick. Both take `Queue.mu`
+themselves and neither needs `dispatch.mu`, so D-B9's discipline is unaffected.
+A worker that exits mid-tick is picked up by the following tick; a worker that
+exits between ticks is settled immediately and the tick finds nothing to do.
+
+**Re-verify intent before launching.** Between `Advance` granting resources and
+the dispatcher launching a worker, the manifest read happens unlocked (D-B8),
+and a concurrent `Cancel` can latch `IntentCancel` in that window. The
+dispatcher must re-read the snapshot and skip the launch if the intent is no
+longer `Run`. Launching anyway is not a correctness failure — the next tick
+aborts it — but it starts work the user has already cancelled, and the abort
+then costs a further tick.
+
+---
+
+## Decision 8 (D-B13) — `dispatch` owns the `sched.Queue`; callers talk only to `dispatch`
 
 The dispatcher constructs and holds the `*sched.Queue`. It is not passed one,
 and nothing else holds a reference to it.
@@ -296,9 +386,11 @@ The surface, therefore:
 
 | Door | Purpose |
 |---|---|
-| `New(...) *Dispatcher` | Constructs the `sched.Queue` with the given capacities, clock, `Workers` and store. |
-| `Start(ctx) error` / `Stop() error` | The ticker goroutine's lifecycle. `Stop` is idempotent and does not settle anything. |
+| `New(...) *Dispatcher` | Constructs the `sched.Queue` with the given capacities, clock, `Workers`, store, and **tick interval**. |
+| `Start(ctx) error` | Reads the store, registers every job, then launches the ticker goroutine and **returns**. Non-blocking. Returns an error only if the store read fails; a `Start` on an already-started dispatcher is an error, not a no-op, because it would create a second ticker and break D-B7's single-goroutine premise. |
+| `Stop() error` | Stops the ticker and waits for the in-flight tick to finish. Idempotent. It **parks** every job holding resources and settles nothing — a shutdown is not an outcome, and D-I11's reasoning applies: recording one would contradict what is on disk. |
 | `Add(j *job.Job) error` | Registers a job and kicks the tick. |
+| `Finished(j, outcome)` / `Yielded(j)` | The worker-exit path required by D-B14. `Finished` calls `Settle`, `Yielded` calls `Park`. Both are safe to call from a worker goroutine. |
 | `List() []Row` | The composed view — one `RenderAll` call plus the header and `JobProgress` tiers. |
 | `Cancel(id) error` | `sched.Cancel`, then D-B12's eviction. |
 | `Retry(id) error`, `Pause()`, `Resume()`, `Paused() bool` | Delegate to `sched` unchanged. |
@@ -341,13 +433,22 @@ row for a settled attempt and that its last row ("`Extracting`, `Finalizing`,
 `Retry` reopens a settled attempt at `Fetching`. The replacement rows, split at
 the one-way boundary of §4.1:
 
-| Settled attempt at | Reorder takes effect | Why |
+| Job | Reorder takes effect | Why |
 |---|---|---|
-| `StateUnset`, `Fetching`, `Assessing`, `Repairing` (pre-boundary) | recorded immediately; applies at the reopened attempt's next lease issuance | `Retry` may still reopen it |
-| `Extracting`, `Finalizing` (post-boundary) | recorded, but can never take effect | `BeginAttempt` refuses with `ErrBoundaryConsumed` when the job's most recent attempt crossed, so `Retry` can never reach it |
+| Never run (`StateUnset`) | recorded immediately; applies at its first lease issuance | It has no attempt at all, so nothing has settled and nothing bars a start |
+| Settled attempt at `Fetching`, `Assessing`, `Repairing` (pre-boundary) | recorded immediately; applies at the reopened attempt's next lease issuance | `Retry` may still reopen it |
+| Settled attempt at `Extracting`, `Finalizing` (post-boundary) | recorded, but can never take effect | `BeginAttempt` refuses with `ErrBoundaryConsumed` when the job's most recent attempt crossed, so `Retry` can never reach it |
 
-Neither case holds a lease or a slot, so nothing else can be affected. Both are
-consistent with reorder remaining total and unconditionally recorded (§8.1.1).
+None of the three holds a lease or a slot, so nothing else can be affected. All
+are consistent with reorder remaining total and unconditionally recorded
+(§8.1.1).
+
+**`StateUnset` gets its own row deliberately.** B2.1's proposed rows grouped it
+with the settled pre-boundary states, which is a category error: `Outcome`
+lives on the `Attempt`, a never-run job has none, and `finishCancel`'s own
+`StateUnset` arm exists because such a job cannot be settled at all
+(`Finish` returns `ErrNoOpenAttempt`). Listing it under "settled attempt at"
+would assert the opposite of D-B12's premise, in the same document.
 
 ---
 
@@ -391,6 +492,10 @@ What must be pinned by observed mutation, each with the mutation named:
 | Hydration failure settles `Failed` and returns both pools | Neuter the error branch; the pool-accounting oracle must fail |
 | `dispatch.mu` is not held across a `sched` call | An enumeration test over the tick's lock spans, in the shape of `TestQueueMuLockers_MatchTheEnumerationStatedInProse` |
 | A cancelled never-run job is evicted | Delete the D-B12 branch; a render test must show `StatusQueued` |
+| An aborted worker's exit settles the job | Delete `Yielded`'s `Park` call; a test must show `Abort` called on two successive ticks and the job never settling — the loop described under D-B7 |
+| A yielded holder is parked under pause | Same deletion; a pool-accounting assertion must show the lease still outstanding after a pause and two ticks |
+| A launch is skipped when intent turned to Cancel mid-hydration | Delete the re-verify; a test interleaving `Cancel` with a slow store must show a worker launched for a cancelled job |
+| The six-of-ten `*job.Job` claim is machine-checked | Extend the locker enumeration test; adding a door that reaches a `*job.Job` method without updating the prose must fail |
 | `RenderAll` takes one lock, not N | Two goroutines mutating different jobs during a listing, under `-race` |
 
 The last row needs the two-different-jobs shape specifically: B2.1 established
@@ -404,13 +509,14 @@ and a read creates a happens-before edge that hides the race.
 
 | ID | Decision |
 |---|---|
-| **D-B7** | A ticker owns liveness; a size-1 buffered kick is a deletable latency optimisation. Discharges the pause sweep, cancel's settle, and the `Park`-then-cancel window. |
+| **D-B7** | A ticker owns liveness; a size-1 buffered kick is a deletable latency optimisation. It bounds the `Park`-then-cancel window at one tick, but does **not** discharge the pause sweep or cancel's settle — both need D-B14, because the tick cannot know whether a worker is still working. |
 | **D-B8** | `manifestResident(j) ⟺ q.holds(j)`. Only the manifest tier is evictable; header and `JobProgress` stay resident. Consistent at tick boundaries, not instantaneously. `MaxActiveJobs` becomes redundant but is not retired here. |
 | **D-B9** | `dispatch.mu` is never held across a call into `sched`. Lock order `dispatch.mu` → `Queue.mu` → `Job.mu`. |
 | **D-B10** | Add `RenderAll(js)` taking `Queue.mu` once; both doors delegate to `renderLocked`. Supersedes D-B4's "lands in B2.4" placement clause only. |
 | **D-B11** | `dispatch` defines a store interface of startup-read plus state-write; B2.2 implements it. `crossed` stays derived. |
 | **D-B12** | The dispatcher evicts `StateUnset && IntentCancel` from the registry and the store, closing the renders-as-queued-forever defect. |
 | **D-B13** | `dispatch` owns the `sched.Queue`; callers reach `sched` only through `dispatch`. Forced by D-B12: a direct `sched.Cancel` would skip the eviction. |
+| **D-B14** | The dispatcher launches every worker and observes every exit, calling `Settle` on terminal completion and `Park` on every other exit. This is the input the tick cannot compute, and without it cancel loops on `Abort` forever while the pause sweep never reaches a yielded holder. It must also re-verify intent between granting and launching. |
 
 Answered from B2.1's carried-forward list: §8 q3 (no), §8 q4 (no), §4.7's
 reorder rows (folded in above). §4.7's amendment is a spec edit with no code
