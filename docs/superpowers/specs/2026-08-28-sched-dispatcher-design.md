@@ -313,6 +313,21 @@ consumer-defines-interface idiom. Two obligations, and no others:
 and persisting it would create a second source of truth that could disagree
 with `State` after a restore.
 
+**Correction: `Assessed` must be persisted, and B2.2 MUST give it a column.**
+An earlier draft of this decision recorded `Assessed` as derived, on the same
+footing as `crossed`. That was wrong, and B2.3's review refuted it. It is
+derived at every position *except* `Fetching`: entering `Repairing`,
+`Extracting` or `Finalizing` is only reachable through `Assessing`, so
+`Assessed` is necessarily true there and carries no information. At `Fetching`
+it carries real information and is not recoverable from anything else — a job
+at `Fetching` has `Assessed == false` on a first-pass download and `true` when
+re-fetching recovery blocks after assessment, and `job.ToSABnzbd`
+(`internal/job/sabnzbd.go`) branches on exactly that, rendering
+`StatusFetching` when true and `StatusDownloading` when false. `dispatch`'s own
+`reconstruct` already consults it only for `Fetching`, for the same reason.
+Omit the column and a job restored mid-recovery-fetch silently comes back
+rendering as "Downloading".
+
 B2.3 ships an in-memory implementation for tests. This leaves the dispatcher
 unable to persist until B2.2 — the same "imported by nothing" state B2.1
 shipped in, and acceptable for the same reason: nothing uses it yet.
@@ -491,6 +506,22 @@ would assert the opposite of D-B12's premise, in the same document.
   `queue.Queue` and deletes `internal/queue`.
 - **A config decision.** See D-B8 on `MaxActiveJobs`.
 
+### Carried forward to B2.4 — two hazards the fake `Runner` hides
+
+Both are latent in B2.3 and harmless only because its `Runner` does no work.
+They become live the moment a real one is wired in.
+
+- **`Stop` evicts manifests while workers may still be running.** `Stop`'s
+  sweep calls `Residency.Evict` for every job after waiting only for the
+  *ticker*, not for workers. With a real `Runner`, B2.4 must cancel and drain
+  its workers **before** `Evict`, or a worker reads a manifest that has gone.
+- **`Runner.Run` is invoked on the ticker goroutine.** `launch` calls it
+  inline, so a synchronous `Runner` blocks the whole loop and every other job
+  with it. B2.4's implementation must spawn asynchronously, and must call
+  `Finished`/`Yielded` on **every** exit path including a panic — a `Run` that
+  returns without either strands the job's resources, since the Queue cannot
+  tell "holding and working" from "holding and yielded".
+
 ---
 
 ## Testing
@@ -530,7 +561,7 @@ and a read creates a happens-before edge that hides the race.
 | **D-B8** | `manifestResident(j) ⟺ q.holds(j)`. Only the manifest tier is evictable; header and `JobProgress` stay resident. Consistent at tick boundaries, not instantaneously. `MaxActiveJobs` becomes redundant but is not retired here. |
 | **D-B9** | `dispatch.mu` is never held across a call into `sched`. Lock order `dispatch.mu` → `Queue.mu` → `Job.mu`. |
 | **D-B10** | Add `RenderAll(js)` taking `Queue.mu` once; both doors delegate to `renderLocked`. Supersedes D-B4's "lands in B2.4" placement clause only. |
-| **D-B11** | `dispatch` defines a store interface of startup-read plus state-write; B2.2 implements it. `crossed` stays derived. |
+| **D-B11** | `dispatch` defines a store interface of startup-read plus state-write; B2.2 implements it. `crossed` stays derived; `Assessed` does NOT — B2.2 must persist it, because it is derived everywhere except `Fetching`, where it decides Fetching-vs-Downloading. |
 | **D-B12** | The dispatcher evicts `StateUnset && IntentCancel` from the registry and the store, closing the renders-as-queued-forever defect. |
 | **D-B13** | `dispatch` owns the `sched.Queue`; callers reach `sched` only through `dispatch`. Forced by D-B12: a direct `sched.Cancel` would skip the eviction. |
 | **D-B14** | The dispatcher launches every worker and observes every exit, calling `Settle` on terminal completion and `Park` on every other exit. This is the input the tick cannot compute, and without it cancel loops on `Abort` forever while the pause sweep never reaches a yielded holder. It must also re-verify intent between granting and launching. |
