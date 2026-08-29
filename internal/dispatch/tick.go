@@ -31,6 +31,23 @@ func (d *Dispatcher) tick(ctx context.Context) {
 		}
 		if err := d.reconcileResidency(ctx, j); err != nil {
 			d.logResidencyError(j.ID(), err)
+			// reconcileResidency may have SETTLED the job before returning
+			// this error: an unreadable manifest is a fact about the job, so
+			// that branch settles it Failed and returns its pools. The settle
+			// is a real state change and has to reach the store on this pass.
+			// A later tick would persist it, but Stop is what makes the gap
+			// permanent — it ends the loop, and the row still says Pending
+			// for a job that can never run, which the next Start restores as
+			// pending work.
+			//
+			// The hydration-cancelled sub-case costs nothing here: it does
+			// not settle, so the rendered value equals the one already
+			// written and persistIfChanged returns before calling Save.
+			//
+			// Advance's branch above deliberately does NOT do this. A
+			// position Advance reached and then failed on is not one this
+			// Queue accepted, so the store keeps the last one it did.
+			d.persistIfChanged(ctx, j)
 			continue
 		}
 		d.launch(ctx, j)

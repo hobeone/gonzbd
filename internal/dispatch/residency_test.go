@@ -159,3 +159,39 @@ func TestResidency_HydrationCancelledDoesNotSettleTheJob(t *testing.T) {
 		})
 	}
 }
+
+// TestResidency_HydrationFailureIsPersisted pins the store side of the
+// settle above. reconcileResidency settles the job Failed and then returns an
+// error, and tick's error branch continues to the next job — so the write
+// that would record the settle is the one step the failure path skips.
+//
+// A later tick does reach persistIfChanged for this job, which is why the gap
+// is invisible to every test that keeps ticking. Stop is what makes it
+// permanent: it ends the loop, and the row the store kept still says Pending
+// for a job that can never run. The next Start restores it as pending work.
+func TestResidency_HydrationFailureIsPersisted(t *testing.T) {
+	st := &fakeStore{}
+	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("manifest is corrupt")}}
+	d := newTestDispatcher(t, withResidency(res), withStore(st))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.tick(context.Background()) // begins the attempt; persists Pending
+	d.tick(context.Background()) // grants the lease, Hydrate fails, settles Failed
+
+	if got := d.q.Render(j).Outcome; got != job.OutcomeFailed {
+		t.Fatalf("setup: in-memory Outcome = %v, want Failed", got)
+	}
+	p, ok := st.row("j1")
+	if !ok {
+		t.Fatal("store holds no row for j1")
+	}
+	if p.State.Outcome != job.OutcomeFailed {
+		t.Errorf("persisted Outcome = %v, want Failed — the settle that the "+
+			"hydration failure performed must reach the store before tick "+
+			"moves on, or a Stop before the next tick leaves the row saying "+
+			"Pending for a job that already failed", p.State.Outcome)
+	}
+}
