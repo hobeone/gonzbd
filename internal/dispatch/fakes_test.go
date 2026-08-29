@@ -200,10 +200,8 @@ func newTestDispatcher(t *testing.T, mods ...func(*testOpts)) *Dispatcher {
 // The with* options are each unused until the task whose tests vary that
 // axis: withCaps (Task 3, lease-contention tests), withResidency (Task 4),
 // withStore (Task 6), withRunner (Task 5), withWorkers (Task 5's abort-loop
-// test). Declaring all five now, per the ruling in
-// .superpowers/sdd/2026-08-28-sched-dispatcher/progress.md, means every later
-// task's tests compile against one constructor rather than each task adding
-// its own.
+// test). Declaring all five up front means every later task's tests compile
+// against one constructor rather than each task adding its own.
 
 //nolint:unused // first caller is Task 3
 func withCaps(lease, slot int) func(*testOpts) {

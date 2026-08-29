@@ -1,7 +1,8 @@
 package job
 
 // RenderView is a job's state as a CONSUMER sees it: the attempt's own view,
-// plus the three facts only the Queue can supply.
+// plus the four facts only the Queue can supply: Running, Reason, Intent and
+// Holds, each declared below.
 //
 // Running-ness and the wait reason are DERIVED, never stored (design §3.4,
 // D-I4). A job is running when its attempt is open, it holds everything its
