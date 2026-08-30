@@ -122,19 +122,19 @@ func TestEvictCancelledNeverRun_CalledDirectly(t *testing.T) {
 // a job that HAS run: eviction is gated on StateUnset, so a job past that
 // point stays in the listing where the user can see what happened to it.
 //
-// It deliberately does NOT assert OutcomeCancelled, because the job has not
-// settled by the end of this test and must not have. finishCancel
-// (internal/sched/cancel.go) sees a RUNNING pre-boundary job, calls
-// work.Abort and returns — "settled on the tick after it yields" — and
-// stubWorkers.Abort only records the ID, so nothing here ever yields. The
-// settling half is TestCancelledWorker_SettlesRatherThanReAbortingForever's
-// (internal/dispatch/worker_test.go:16), which calls d.Yielded explicitly;
-// asserting it here would assert a state this fixture cannot reach.
+// The worker yield is what makes the settle reachable, and it is the whole
+// reason this test can assert one. finishCancel (internal/sched/cancel.go)
+// sees a RUNNING pre-boundary job, calls work.Abort and returns — "settled on
+// the tick after it yields" — and stubWorkers.Abort only records the ID.
+// Without d.Yielded nothing ever yields, so the job stays Pending forever and
+// the listing count alone passes whenever it is still registered for ANY
+// reason, including a cancel that never latched.
 //
-// What the assertions below add over a bare listing count: the count alone
-// passes whenever the job is still registered for ANY reason, including a
-// cancel that never latched. Checking the intent and the state names the two
-// facts that actually make eviction inapplicable.
+// TestCancelledWorker_SettlesRatherThanReAbortingForever
+// (internal/dispatch/worker_test.go) covers the same yield for the
+// re-Abort-loop property; here it is setup for the eviction question, and the
+// intent and state assertions name the two facts that make eviction
+// inapplicable.
 func TestCancelledRunningJob_IsNotEvicted(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
@@ -150,9 +150,17 @@ func TestCancelledRunningJob_IsNotEvicted(t *testing.T) {
 	if err := d.Cancel(j.ID()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
+	// The worker notices the Abort and exits without finishing.
+	if err := d.Yielded(j.ID()); err != nil {
+		t.Fatalf("Yielded: %v", err)
+	}
 	d.tick(context.Background())
 
 	v := d.q.Render(j)
+	if v.Outcome != job.OutcomeCancelled {
+		t.Errorf("Outcome = %v, want Cancelled — a job that HAS run settles "+
+			"through finishCancel on the tick after its worker yields", v.Outcome)
+	}
 	if v.Intent != job.IntentCancel {
 		t.Errorf("Intent = %v, want IntentCancel — the cancel must have latched, or the job is still listed for the wrong reason", v.Intent)
 	}

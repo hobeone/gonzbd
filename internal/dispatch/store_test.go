@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -511,5 +512,55 @@ func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
 	t.Cleanup(func() { _ = d.Stop() })
 	if got := len(d.List()); got != 1 {
 		t.Errorf("registry holds %d jobs after the retry, want 1", got)
+	}
+}
+
+// TestReconstruct_SettledRowsReplayAtEveryPosition pins that a settled row
+// round-trips at every position an attempt can settle at.
+//
+// A review reading of reconstruct held that SetNext and SetActivity run
+// unconditionally before Finish, and that SetNext's CanTransition check would
+// therefore reject a settled row at a terminal position like Finalizing. Both
+// calls are in fact guarded on a non-zero value, and Attempt.finish clears
+// next and activity when it settles — so a settled row carries neither, the
+// guards do not fire, and there is nothing for CanTransition to refuse. This
+// test is that argument made executable rather than restated.
+//
+// OutcomeOK appears only for Finalizing because the admissibility table
+// allows it nowhere else; the other positions settle Failed. That is the
+// table working, not a replay limit.
+func TestReconstruct_SettledRowsReplayAtEveryPosition(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		state   job.State
+		outcome job.Outcome
+	}{
+		{job.Fetching, job.OutcomeFailed},
+		{job.Assessing, job.OutcomeFailed},
+		{job.Repairing, job.OutcomeFailed},
+		{job.Extracting, job.OutcomeFailed},
+		{job.Finalizing, job.OutcomeFailed},
+		{job.Finalizing, job.OutcomeOK},
+	} {
+		t.Run(tc.state.String()+"_"+tc.outcome.String(), func(t *testing.T) {
+			v := job.StateView{State: tc.state, Outcome: tc.outcome, Assessed: tc.state != job.Fetching}
+			j, err := reconstruct("id", "n", v, job.IntentRun, now)
+			if err != nil {
+				t.Fatalf("reconstruct: %v", err)
+			}
+			got := j.Snapshot().State
+			if got.State != tc.state {
+				t.Errorf("State = %v, want %v", got.State, tc.state)
+			}
+			if got.Outcome != tc.outcome {
+				t.Errorf("Outcome = %v, want %v", got.Outcome, tc.outcome)
+			}
+			if got.Next != job.StateUnset {
+				t.Errorf("Next = %v, want StateUnset — Finish clears it when it settles", got.Next)
+			}
+			if got.Activity != job.ActNone {
+				t.Errorf("Activity = %v, want ActNone — Finish clears it when it settles", got.Activity)
+			}
+		})
 	}
 }
