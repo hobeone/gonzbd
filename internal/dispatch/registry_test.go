@@ -167,9 +167,10 @@ func TestSortKey_ReproducesQueueOrderAcrossRemoval(t *testing.T) {
 	}
 	d.remove("b")
 
-	var got []string
-	var keys []int64
-	for _, r := range d.List() {
+	rows := d.List()
+	got := make([]string, 0, len(rows))
+	keys := make([]int64, 0, len(rows))
+	for _, r := range rows {
 		got = append(got, r.ID)
 		keys = append(keys, d.sortKeyOf(r.ID))
 	}
