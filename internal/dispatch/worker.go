@@ -35,11 +35,16 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 	if !ok {
 		return fmt.Errorf("dispatch: Finished: no job %q", id)
 	}
+	// One clearLaunched call, on every path: the rejection below and a failed
+	// Settle both still have to release the claim, and a second call site
+	// would be a second thing to forget. claimLaunched's citation counts
+	// these, one per exit door.
+	var err error
 	if o == job.OutcomeCancelled {
-		d.clearLaunched(id)
-		return fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", id)
+		err = fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", id)
+	} else if serr := d.q.Settle(j, o); serr != nil {
+		err = fmt.Errorf("dispatch: Finished(%s): %w", id, serr)
 	}
-	err := d.q.Settle(j, o)
 	// Cleared AFTER Settle and BEFORE kick, and unconditional on Settle's
 	// outcome. A defer satisfied the first and third and broke the second:
 	// kick ran first, so the woken tick could reach launch() while the claim
@@ -48,7 +53,7 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 	// nobody working it until the next timer tick.
 	d.clearLaunched(id)
 	if err != nil {
-		return fmt.Errorf("dispatch: Finished(%s): %w", id, err)
+		return err
 	}
 	d.kick()
 	return nil
