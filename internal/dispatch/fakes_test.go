@@ -70,6 +70,7 @@ type fakeStore struct {
 	order   []string
 	loadErr error
 	delErr  error
+	saves   int
 }
 
 // rows and order are two views of one set and are always written together:
@@ -126,7 +127,17 @@ func (f *fakeStore) Save(_ context.Context, p Persisted) error {
 		f.order = append(f.order, p.ID)
 	}
 	f.rows[p.ID] = p
+	f.saves++
 	return nil
+}
+
+// saveCount reports how many times Save was called. Tests use it to assert a
+// NEGATIVE — that a quiet tick wrote nothing — which row() cannot express,
+// since a Save that rewrites identical content leaves no trace in rows.
+func (f *fakeStore) saveCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.saves
 }
 
 func (f *fakeStore) Delete(_ context.Context, id string) error {

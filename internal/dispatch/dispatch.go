@@ -1,10 +1,12 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -499,6 +501,19 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	// remove is total (registry.go), so rolling back a partial restore needs
 	// nothing beyond calling it for each ID this call registered — including
 	// the write markWritten recorded, which remove also clears.
+	// Sort rather than trust Load's slice order, with a tiebreak matching the
+	// SQLite store's `ORDER BY sort_key ASC, id ASC`. A sort keyed on SortKey
+	// alone disagrees with SQLite whenever two keys collide, and the
+	// disagreement is non-deterministic. Keeping the sort here also means
+	// Load's ordering is a performance property rather than a correctness
+	// one, which is the safer place for it.
+	slices.SortStableFunc(rows, func(a, b Persisted) int {
+		if c := cmp.Compare(a.SortKey, b.SortKey); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+
 	now := time.Now()
 	var registered []string
 	defer func() {
@@ -507,11 +522,16 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		}
 	}()
 	for _, p := range rows {
-		j, err := reconstruct(p.ID, p.Header.Name, p.State, p.Intent, now)
+		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)
 		}
-		if err := d.Add(j, p.Header); err != nil {
+		// register, not Add: Add would assign a FRESH sequence while
+		// markWritten below records the stored one, and the first
+		// persistIfChanged would then see a difference that is not there and
+		// rewrite every restored row's key.
+		// TestRestore_DoesNotRewriteRowsItJustRead pins that.
+		if err := d.register(j, p.Header, p.SortKey); err != nil {
 			return fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err)
 		}
 		registered = append(registered, p.ID)
@@ -599,6 +619,12 @@ var replayPath = map[job.State][]hop{
 // nothing that was actually stored; there is no attempt-count field to
 // reconstruct from.
 //
+// pol is passed straight to job.New rather than re-derived. It was job.Policy{}
+// until B2.2 gave Persisted a Policy field, which silently denied a restored
+// job all four permissions — it would neither verify, repair, unpack nor
+// delete. It is stored resolved rather than as the upstream PP integer; see
+// Persisted.Policy (ports.go) for why.
+//
 // v.Assessed is consulted only for v.State == Fetching, to decide whether the
 // replay must round-trip through Assessing first (a job that has already been
 // assessed and re-entered Fetching, e.g. after a Repairing verdict, vs. one
@@ -608,8 +634,8 @@ var replayPath = map[job.State][]hop{
 // separately checked there — there is no door that could set it
 // independently, and a row whose Assessed disagrees at those states is not
 // reachable in the first place.
-func reconstruct(id, name string, v job.StateView, intent job.Intent, now time.Time) (*job.Job, error) {
-	j := job.New(id, name, job.Policy{})
+func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.Intent, now time.Time) (*job.Job, error) {
+	j := job.New(id, name, pol)
 
 	if v.State == job.StateUnset {
 		// Never ran: no attempt to open. This package never persists a row

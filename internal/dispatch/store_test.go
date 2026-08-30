@@ -13,11 +13,19 @@ import (
 // TestRestore_RegistersEveryStoredJobInOrder pins that restore preserves the
 // store's row order in the registry (D-B11's read-once-at-startup), rather
 // than reordering by ID or by any other key.
+// TestRestore_RegistersEveryStoredJobInOrder asserts restore rebuilds queue
+// order from SortKey, not from the order Load happened to return rows in.
+//
+// The seeded rows are deliberately out of both orders at once: "c" sorts after
+// "a" alphabetically and is returned FIRST by Load, yet carries the lower key,
+// so only a restore that reads SortKey produces [c a]. Before B2.2 this test
+// seeded no keys and passed on Load's slice order alone, which is the premise
+// this change replaced.
 func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{
-		{ID: "c", Header: Header{Name: "c"}},
-		{ID: "a", Header: Header{Name: "a"}},
+		{ID: "c", SortKey: 1, Header: Header{Name: "c"}},
+		{ID: "a", SortKey: 2, Header: Header{Name: "a"}},
 	})
 	d := newTestDispatcher(t, withStore(st))
 
@@ -32,7 +40,7 @@ func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 	}
 	for i := range want {
 		if got[i].ID != want[i] {
-			t.Errorf("row %d is %s, want %s — restore must preserve stored queue order", i, got[i].ID, want[i])
+			t.Errorf("row %d is %s, want %s — restore must rebuild queue order from SortKey", i, got[i].ID, want[i])
 		}
 	}
 }
@@ -221,7 +229,7 @@ func TestRestore_ReachesExtractingViaCross(t *testing.T) {
 // the StateUnset branch: a never-run row produces a job with no attempt and
 // the persisted Intent carried over.
 func TestReconstruct_NeverRunRoundTrips(t *testing.T) {
-	j, err := reconstruct("j1", "n", job.StateView{}, job.IntentPause, testClock())
+	j, err := reconstruct("j1", "n", job.Policy{}, job.StateView{}, job.IntentPause, testClock())
 	if err != nil {
 		t.Fatalf("reconstruct: %v", err)
 	}
@@ -239,7 +247,7 @@ func TestReconstruct_NeverRunRoundTrips(t *testing.T) {
 // OPEN attempt (job.Job.SetNext).
 func TestReconstruct_NeverRunRejectsAStrayNext(t *testing.T) {
 	v := job.StateView{State: job.StateUnset, Next: job.Assessing}
-	if _, err := reconstruct("j1", "n", v, job.IntentRun, testClock()); err == nil {
+	if _, err := reconstruct("j1", "n", job.Policy{}, v, job.IntentRun, testClock()); err == nil {
 		t.Fatal("reconstruct() = nil error, want one — StateUnset with Next set is not a reachable row")
 	}
 }
@@ -250,7 +258,7 @@ func TestReconstruct_NeverRunRejectsAStrayNext(t *testing.T) {
 // verdict) must come back reporting Assessed true, not merely "at Fetching".
 func TestReconstruct_FetchingWithAssessedRoundTrips(t *testing.T) {
 	v := job.StateView{State: job.Fetching, Assessed: true}
-	j, err := reconstruct("j1", "n", v, job.IntentRun, testClock())
+	j, err := reconstruct("j1", "n", job.Policy{}, v, job.IntentRun, testClock())
 	if err != nil {
 		t.Fatalf("reconstruct: %v", err)
 	}
@@ -269,7 +277,7 @@ func TestReconstruct_FetchingWithAssessedRoundTrips(t *testing.T) {
 // legal at Assessing, both exercised by no other test in this file.
 func TestReconstruct_AssessingRoundTrips(t *testing.T) {
 	v := job.StateView{State: job.Assessing, Next: job.Repairing, Activity: job.ActPar2Verify}
-	j, err := reconstruct("j1", "n", v, job.IntentRun, testClock())
+	j, err := reconstruct("j1", "n", job.Policy{}, v, job.IntentRun, testClock())
 	if err != nil {
 		t.Fatalf("reconstruct: %v", err)
 	}
@@ -285,7 +293,7 @@ func TestReconstruct_AssessingRoundTrips(t *testing.T) {
 // to Assessing, so a Next of Repairing here is unreachable.
 func TestReconstruct_RejectsAnIllegalNext(t *testing.T) {
 	v := job.StateView{State: job.Fetching, Next: job.Repairing}
-	if _, err := reconstruct("j1", "n", v, job.IntentRun, testClock()); err == nil {
+	if _, err := reconstruct("j1", "n", job.Policy{}, v, job.IntentRun, testClock()); err == nil {
 		t.Fatal("reconstruct() = nil error, want one — Fetching has no edge to Repairing")
 	}
 }
@@ -295,7 +303,7 @@ func TestReconstruct_RejectsAnIllegalNext(t *testing.T) {
 // as any of the five real positions.
 func TestReconstruct_RejectsAnUndeclaredState(t *testing.T) {
 	v := job.StateView{State: job.State(99)}
-	if _, err := reconstruct("j1", "n", v, job.IntentRun, testClock()); err == nil {
+	if _, err := reconstruct("j1", "n", job.Policy{}, v, job.IntentRun, testClock()); err == nil {
 		t.Fatal("reconstruct() = nil error, want one — State(99) is not declared")
 	}
 }
@@ -305,7 +313,7 @@ func TestReconstruct_RejectsAnUndeclaredState(t *testing.T) {
 // rather than silently stored.
 func TestReconstruct_RejectsAnInvalidIntent(t *testing.T) {
 	v := job.StateView{State: job.Fetching}
-	if _, err := reconstruct("j1", "n", v, job.Intent(99), testClock()); err == nil {
+	if _, err := reconstruct("j1", "n", job.Policy{}, v, job.Intent(99), testClock()); err == nil {
 		t.Fatal("reconstruct() = nil error, want one — Intent(99) is not declared")
 	}
 }
@@ -344,7 +352,7 @@ func TestTakeHop_TransitionAndCross(t *testing.T) {
 // branch's own SetIntent call, distinct from TestReconstruct_RejectsAnInvalidIntent
 // above which exercises the same check after the switch/hop path instead.
 func TestReconstruct_NeverRunRejectsAnInvalidIntent(t *testing.T) {
-	if _, err := reconstruct("j1", "n", job.StateView{}, job.Intent(99), testClock()); err == nil {
+	if _, err := reconstruct("j1", "n", job.Policy{}, job.StateView{}, job.Intent(99), testClock()); err == nil {
 		t.Fatal("reconstruct() = nil error, want one — Intent(99) is not declared")
 	}
 }
@@ -544,7 +552,7 @@ func TestReconstruct_SettledRowsReplayAtEveryPosition(t *testing.T) {
 	} {
 		t.Run(tc.state.String()+"_"+tc.outcome.String(), func(t *testing.T) {
 			v := job.StateView{State: tc.state, Outcome: tc.outcome, Assessed: tc.state != job.Fetching}
-			j, err := reconstruct("id", "n", v, job.IntentRun, now)
+			j, err := reconstruct("id", "n", job.Policy{}, v, job.IntentRun, now)
 			if err != nil {
 				t.Fatalf("reconstruct: %v", err)
 			}
@@ -562,5 +570,96 @@ func TestReconstruct_SettledRowsReplayAtEveryPosition(t *testing.T) {
 				t.Errorf("Activity = %v, want ActNone — Finish clears it when it settles", got.Activity)
 			}
 		})
+	}
+}
+
+// TestRestore_PreservesPolicy pins that a restored job comes back able to do
+// what it was permitted to do. reconstruct built every job with job.Policy{}
+// until this change, and a zero Policy denies all four permissions — so a
+// restored job would silently neither verify, repair, unpack nor delete.
+func TestRestore_PreservesPolicy(t *testing.T) {
+	want := job.Policy{Verify: true, Repair: true, Unpack: true, Delete: true}
+	st := &fakeStore{}
+	st.seed([]Persisted{{
+		ID:     "j1",
+		Header: Header{Name: "j1"},
+		Policy: want,
+		State:  job.StateView{State: job.Fetching},
+	}})
+	d := newTestDispatcher(t, withStore(st))
+
+	if err := d.restore(context.Background()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	j, ok := d.lookup("j1")
+	if !ok {
+		t.Fatal("job was not registered")
+	}
+	if got := j.Policy(); got != want {
+		t.Fatalf("restored Policy = %+v, want %+v", got, want)
+	}
+}
+
+// TestRestore_PreservesSortKeyAndResumesAbove pins both halves of queue-order
+// restoration with one set of rows.
+//
+// The seeded keys are non-contiguous and non-zero on purpose. Contiguous keys
+// starting at 0 are exactly what a restore that reassigns from scratch would
+// invent, so they cannot tell a preserved key from a fresh one.
+//
+// The second assertion is on sortKeyOf rather than on List order, for the same
+// reason: register appends unconditionally, so a job added after restore is
+// last in d.order whether or not the sequence resumed.
+func TestRestore_PreservesSortKeyAndResumesAbove(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{
+		{ID: "a", SortKey: 10, Header: Header{Name: "a"}},
+		{ID: "b", SortKey: 50, Header: Header{Name: "b"}},
+		{ID: "c", SortKey: 100, Header: Header{Name: "c"}},
+	})
+	d := newTestDispatcher(t, withStore(st))
+
+	if err := d.restore(context.Background()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	for id, want := range map[string]int64{"a": 10, "b": 50, "c": 100} {
+		if got := d.sortKeyOf(id); got != want {
+			t.Errorf("restored %s sortKey = %d, want %d — restore reassigned it", id, got, want)
+		}
+	}
+	if err := d.Add(job.New("fresh", "fresh", job.Policy{}), Header{Name: "fresh"}); err != nil {
+		t.Fatalf("Add after restore: %v", err)
+	}
+	if got := d.sortKeyOf("fresh"); got <= 100 {
+		t.Fatalf("post-restore Add got sortKey %d, want > 100 — the sequence did not resume, so the next job sorts ahead of restored ones", got)
+	}
+}
+
+// TestRestore_DoesNotRewriteRowsItJustRead pins the spurious-Save regression
+// directly. A restore that registers with a fresh sequence leaves d.written
+// holding the stored key while the live entry carries a new one, so the first
+// persistIfChanged finds a difference that is not there and renumbers every
+// restored row in the store.
+//
+// Nothing else would report it: the queue simply comes back in a different
+// order after the SECOND restart.
+func TestRestore_DoesNotRewriteRowsItJustRead(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{
+		{ID: "a", SortKey: 10, Header: Header{Name: "a"}},
+		{ID: "b", SortKey: 50, Header: Header{Name: "b"}},
+	})
+	d := newTestDispatcher(t, withStore(st))
+	if err := d.restore(context.Background()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	before := st.saveCount()
+
+	for _, j := range d.snapshotOrder() {
+		d.persistIfChanged(context.Background(), j)
+	}
+
+	if got := st.saveCount() - before; got != 0 {
+		t.Fatalf("a quiet pass over restored jobs issued %d Save calls, want 0 — restore and persistIfChanged disagree about what was stored", got)
 	}
 }

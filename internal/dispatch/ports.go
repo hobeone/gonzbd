@@ -38,8 +38,16 @@ type Persisted struct {
 	// order is the priority policy sched consults, so this is not cosmetic.
 	SortKey int64
 	Header  Header
-	State   job.StateView
-	Intent  job.Intent
+	// Policy is what the job is permitted to do, stored resolved rather than
+	// as the upstream PP integer it was derived from: PP is external
+	// vocabulary that "does not exist past App" (internal/job/policy.go), so
+	// persisting it would carry it back inside the internal layer. job.Job
+	// already owns this field — New takes it and Policy() returns it — so
+	// storing it is persisting the owner's own value, not a second
+	// derivation of it.
+	Policy job.Policy
+	State  job.StateView
+	Intent job.Intent
 }
 
 // Runner starts the work for one job at one state. It must return promptly —

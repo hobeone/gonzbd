@@ -87,7 +87,14 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	// carries only the job's own StateView and Intent, so Render's Queue.mu
 	// acquisition would buy nothing this row records.
 	s := j.Snapshot()
-	p := Persisted{ID: j.ID(), SortKey: d.sortKeyOf(j.ID()), Header: h, State: s.State, Intent: s.Intent}
+	p := Persisted{
+		ID:      j.ID(),
+		SortKey: d.sortKeyOf(j.ID()),
+		Header:  h,
+		Policy:  j.Policy(),
+		State:   s.State,
+		Intent:  s.Intent,
+	}
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return
 	}
