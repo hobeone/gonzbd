@@ -4,8 +4,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// Render is the only door that composes a job.RenderView — the view
-// job.ToSABnzbd consumes. `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go
+// Render composes a job.RenderView for ONE job — the view job.ToSABnzbd
+// consumes. RenderAll (below) composes the same view for many under a single
+// lock; between them they are the package's two rendering doors. `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go
 // | grep -v _test.go` finds ten exported methods: Advance, Cancel, Park,
 // Retry and Settle (advance.go, cancel.go, settle.go) write or gate; Pause and
 // Resume (queue.go) write the pause flag; Paused (queue.go) is a pure getter

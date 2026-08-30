@@ -1,8 +1,13 @@
 package job
 
 // RenderView is a job's state as a CONSUMER sees it: the attempt's own view,
-// plus the four facts only the Queue can supply: Running, Reason, Intent and
-// Holds, each declared below.
+// plus four facts declared below — Running, Reason, Holds and Intent.
+//
+// Only the first three are facts the Queue alone can supply; they depend on
+// pool-B slots and a queue-wide pause flag that live there. Intent is this
+// package's own field, carried on Snapshot and merely COPIED through by the
+// renderer, and it is grouped here because a consumer reads it alongside the
+// other three, not because the Queue is its source.
 //
 // Running-ness and the wait reason are DERIVED, never stored (design §3.4,
 // D-I4). A job is running when its attempt is open, it holds everything its

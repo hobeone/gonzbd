@@ -2,14 +2,20 @@ package dispatch
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// Header is the display metadata a listing needs that internal/job.Job does
-// not carry. job.Job holds id, name and policy only; category, priority and
-// the total byte figure live in internal/queue until B2.4 migrates them, so
-// the caller supplies them at Add.
+// Header is the display metadata a listing needs. job.Job holds id, name and
+// policy only; category, priority and the total byte figure live in
+// internal/queue until B2.4 migrates them, so the caller supplies them at Add.
+//
+// Name is the one field job.Job DOES carry, and it is duplicated here on
+// purpose: it lets a listing be composed from Header alone, without the
+// registry handing out *job.Job pointers to do it. The duplication is a
+// second copy of a display string, not a second source of truth for any
+// scheduling decision — nothing reads Header.Name to decide anything.
 type Header struct {
 	Name     string
 	Category string
@@ -93,11 +99,12 @@ func (d *Dispatcher) remove(id string) {
 	delete(d.written, id)
 	delete(d.resident, id)
 	delete(d.launched, id)
-	for i, oid := range d.order {
-		if oid == id {
-			d.order = append(d.order[:i], d.order[i+1:]...)
-			break
-		}
+	// slices.Delete rather than the append-shift idiom: the shift leaves the
+	// vacated tail slot holding its old string header, and d.order lives as
+	// long as the Dispatcher, so a removed job's ID stayed reachable from the
+	// backing array. slices.Delete zeroes what it vacates.
+	if i := slices.Index(d.order, id); i >= 0 {
+		d.order = slices.Delete(d.order, i, i+1)
 	}
 }
 

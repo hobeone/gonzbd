@@ -312,7 +312,7 @@ func TestRenderLocked_AssumesTheCallerAlreadyHoldsTheLock(t *testing.T) {
 		t.Error("Running = false, want true — the job holds what Assessing requires and Next is unset")
 	}
 	if !got.Holds {
-		t.Error("Holds = false, want true — Assessing needs only the lease (§3.4), which mustAdvanceTo granted")
+		t.Error("Holds = false, want true — Assessing needs BOTH a lease and a compute slot (needsLease and needsSlot are each true for it), and mustAdvanceTo granted both")
 	}
 	if got.Intent != job.IntentRun {
 		t.Errorf("Intent = %v, want IntentRun — nothing asked for pause or cancel", got.Intent)
