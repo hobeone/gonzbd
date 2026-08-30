@@ -268,3 +268,27 @@ func TestStore_LoadRejectsAnOutOfRangeEnum(t *testing.T) {
 		t.Errorf("Load error = %v, want it to name the out-of-range value", err)
 	}
 }
+
+// TestStore_SurfacesDatabaseErrors pins that each of the three operations
+// reports a failing database rather than swallowing it.
+//
+// Dropping the table is the realistic shape of this, not an artificial one: it
+// is exactly what a database predating B2.2 looks like, since the schema change
+// went into 001_initial.sql without a version bump. That case is meant to fail
+// loudly at startup, and this is the test that says so.
+func TestStore_SurfacesDatabaseErrors(t *testing.T) {
+	s, raw := newTestStoreDB(t)
+	if _, err := raw.ExecContext(t.Context(), `DROP TABLE dispatch_jobs`); err != nil {
+		t.Fatalf("dropping the table: %v", err)
+	}
+
+	if _, err := s.Load(t.Context()); err == nil {
+		t.Error("Load against a missing table returned nil, want an error naming the table")
+	}
+	if err := s.Save(t.Context(), dispatch.Persisted{ID: "j1", Header: dispatch.Header{Name: "n"}}); err == nil {
+		t.Error("Save against a missing table returned nil, want an error")
+	}
+	if err := s.Delete(t.Context(), "j1"); err == nil {
+		t.Error("Delete against a missing table returned nil, want an error — absence of a ROW is fine, absence of the TABLE is not")
+	}
+}

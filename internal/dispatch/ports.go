@@ -19,7 +19,9 @@ type Residency interface {
 
 // Store is the persistence the dispatcher needs, and no more (D-B11): read the
 // whole queue once at Start, and write a job's four axes when they move.
-// internal/dispatch defines it; B2.2 implements it against SQLite.
+// internal/dispatch defines it; internal/dispatch/store implements it against
+// SQLite. The implementation lives in its own package so this one stays free of
+// a SQL driver, the same shape Residency and Runner have.
 type Store interface {
 	Load(ctx context.Context) ([]Persisted, error)
 	Save(ctx context.Context, p Persisted) error

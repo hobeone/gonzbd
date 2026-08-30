@@ -184,3 +184,38 @@ func TestSortKey_ReproducesQueueOrderAcrossRemoval(t *testing.T) {
 		t.Fatalf("sort keys = %v, want %v", keys, want)
 	}
 }
+
+// TestRegister_TakesTheSequenceItIsGivenAndAdvancesPast pins register's own
+// contract, rather than reaching it only through Add and restore.
+//
+// The two callers want opposite things from it — Add wants the next unused
+// sequence, restore wants the one already on disk — and what makes both safe is
+// that register advances d.nextSeq past whatever it was handed. Testing it
+// directly is what keeps that property from being an accident of the two
+// callers' current shapes.
+func TestRegister_TakesTheSequenceItIsGivenAndAdvancesPast(t *testing.T) {
+	d := newTestDispatcher(t)
+
+	if err := d.register(job.New("a", "a", job.Policy{}), Header{Name: "a"}, 42); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if got := d.sortKeyOf("a"); got != 42 {
+		t.Fatalf("sortKeyOf(a) = %d, want 42 — register did not take the sequence it was given", got)
+	}
+
+	// A LOWER sequence must not drag the counter backwards, or a later Add
+	// would collide with a key already in use.
+	if err := d.register(job.New("b", "b", job.Policy{}), Header{Name: "b"}, 7); err != nil {
+		t.Fatalf("register(7): %v", err)
+	}
+	if err := d.Add(job.New("c", "c", job.Policy{}), Header{Name: "c"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got := d.sortKeyOf("c"); got != 43 {
+		t.Fatalf("Add after register(42) then register(7) got key %d, want 43 — the counter moved backwards", got)
+	}
+
+	if err := d.register(job.New("a", "dup", job.Policy{}), Header{Name: "dup"}, 99); err == nil {
+		t.Error("register accepted a duplicate ID; a silent overwrite would strand the first job's resources")
+	}
+}
