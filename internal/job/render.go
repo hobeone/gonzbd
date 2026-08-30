@@ -1,7 +1,13 @@
 package job
 
 // RenderView is a job's state as a CONSUMER sees it: the attempt's own view,
-// plus the three facts only the Queue can supply.
+// plus four facts declared below — Running, Reason, Holds and Intent.
+//
+// Only the first three are facts the Queue alone can supply; they depend on
+// pool-B slots and a queue-wide pause flag that live there. Intent is this
+// package's own field, carried on Snapshot and merely COPIED through by the
+// renderer, and it is grouped here because a consumer reads it alongside the
+// other three, not because the Queue is its source.
 //
 // Running-ness and the wait reason are DERIVED, never stored (design §3.4,
 // D-I4). A job is running when its attempt is open, it holds everything its
@@ -38,4 +44,14 @@ type RenderView struct {
 	// repair, then pausing" — a running job with IntentPause shows its state,
 	// not Paused.
 	Intent Intent
+
+	// Holds reports whether the job currently has EVERY resource its position
+	// requires — the Queue's holds(id, s), not merely "has a lease". A job at
+	// Extracting needs a compute slot and no lease, so it holds while HoldsLease()
+	// is false; a job at Assessing with a lease but no slot does NOT hold.
+	//
+	// It is carried here because a caller cannot reconstruct it: Running is
+	// holds() AND the attempt is open AND next is unset, so a false Running says
+	// nothing about which conjunct failed.
+	Holds bool
 }

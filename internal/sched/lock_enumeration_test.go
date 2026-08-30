@@ -1,9 +1,11 @@
 package sched
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,7 +22,7 @@ import (
 //
 // It walks each *ast.FuncDecl's whole body rather than only its top level,
 // so a lock taken inside a nested closure would still be found — though none
-// of q.mu's nine lockers takes it that way today. It does not attempt to
+// of q.mu's ten lockers takes it that way today. It does not attempt to
 // verify the receiver is actually named q; every *Queue method in this
 // package uses that name (queue.go's own comment on mu already relies on
 // this), and a differently-named receiver calling q.mu.Lock() literally
@@ -71,22 +73,7 @@ func scanQMuLockers(t *testing.T) []string {
 
 			locks := false
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				// q.mu.Lock() parses as CallExpr{Fun: SelectorExpr{X:
-				// SelectorExpr{X: Ident("q"), Sel: Ident("mu")}, Sel:
-				// Ident("Lock")}}.
-				outer, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || outer.Sel.Name != "Lock" {
-					return true
-				}
-				inner, ok := outer.X.(*ast.SelectorExpr)
-				if !ok || inner.Sel.Name != "mu" {
-					return true
-				}
-				if ident, ok := inner.X.(*ast.Ident); ok && ident.Name == "q" {
+				if isQMuCall(n, "Lock") {
 					locks = true
 				}
 				return true
@@ -111,6 +98,337 @@ func scanQMuLockers(t *testing.T) []string {
 	return slices.Compact(lockers)
 }
 
+// flatParams flattens a *ast.FieldList (receiver or parameter list) into an
+// ordered slice of (name, type) pairs, one per declared identifier — Go
+// allows a single Field to carry several names sharing one type
+// (`func f(a, b string)`), so a naive one-pair-per-Field walk would
+// under-count and misalign a later positional match against call arguments.
+// An unnamed parameter (no Names) contributes one blank-named entry so
+// position is still preserved.
+func flatParams(fl *ast.FieldList) []struct {
+	name string
+	typ  ast.Expr
+} {
+	var out []struct {
+		name string
+		typ  ast.Expr
+	}
+	if fl == nil {
+		return out
+	}
+	for _, f := range fl.List {
+		if len(f.Names) == 0 {
+			out = append(out, struct {
+				name string
+				typ  ast.Expr
+			}{"", f.Type})
+			continue
+		}
+		for _, n := range f.Names {
+			out = append(out, struct {
+				name string
+				typ  ast.Expr
+			}{n.Name, f.Type})
+		}
+	}
+	return out
+}
+
+// isQMuCall reports whether n is a call of q.mu.<method>() — matched on the
+// literal selector chain rather than resolved types, the same way
+// internal/job/writer_enumeration_test.go's scanWriters matches field writes
+// on the selector name alone.
+//
+// q.mu.Lock() parses as CallExpr{Fun: SelectorExpr{X: SelectorExpr{X:
+// Ident("q"), Sel: Ident("mu")}, Sel: Ident("Lock")}}.
+func isQMuCall(n ast.Node, method string) bool {
+	call, ok := n.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	outer, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || outer.Sel.Name != method {
+		return false
+	}
+	inner, ok := outer.X.(*ast.SelectorExpr)
+	if !ok || inner.Sel.Name != "mu" {
+		return false
+	}
+	ident, ok := inner.X.(*ast.Ident)
+	return ok && ident.Name == "q"
+}
+
+// isJobJobPtr reports whether e is the type expression `*job.Job` — the only
+// type this package ever hands a *Queue method that later reaches a *job.Job
+// method call.
+func isJobJobPtr(e ast.Expr) bool {
+	star, ok := e.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "job" && sel.Sel.Name == "Job"
+}
+
+// isJobJobSlice reports whether e is the type expression `[]*job.Job` —
+// RenderAll's js parameter is the only site of it in this package's non-test
+// sources.
+func isJobJobSlice(e ast.Expr) bool {
+	arr, ok := e.(*ast.ArrayType)
+	if !ok || arr.Len != nil { // Len != nil is a fixed-size array, not a slice
+		return false
+	}
+	return isJobJobPtr(arr.Elt)
+}
+
+// queueMethodFuncs parses this package's non-test sources and returns every
+// *Queue method (exported or not) and every receiver-less package function,
+// keyed by name. leasePool and slotPool methods are deliberately excluded:
+// neither type is ever handed a *job.Job (their signatures take only
+// job.LeaseID, string ids, or nothing), so they can never reach a *job.Job
+// method call, and including them would let slotPool.holds collide in this
+// map with Queue's own same-named holds (pool.go:125 and queue.go:192) —
+// admitting a callee that can never carry a job argument does no harm to the
+// reachability walk below, but the name collision would make map-building
+// order-dependent, so the exclusion is the simpler and exactly-sufficient
+// fix.
+func queueMethodFuncs(t *testing.T) map[string]*ast.FuncDecl {
+	t.Helper()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+	fset := token.NewFileSet()
+	funcs := make(map[string]*ast.FuncDecl)
+	var scanned int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		scanned++
+		for _, decl := range file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			if fd.Recv == nil {
+				funcs[fd.Name.Name] = fd
+				continue
+			}
+			for _, f := range fd.Recv.List {
+				star, ok := f.Type.(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				if ident, ok := star.X.(*ast.Ident); ok && ident.Name == "Queue" {
+					funcs[fd.Name.Name] = fd
+				}
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("no non-test sources parsed; the scan found nothing to check " +
+			"and its empty result would otherwise look like a real answer")
+	}
+	return funcs
+}
+
+// reachesJobMethod reports whether fd's body — walked through calls into
+// other *Queue methods and package functions in funcs, but never past a
+// visited name twice — contains a call expression whose receiver is a
+// variable known (via jobVars) to hold a *job.Job. jobVars starts as fd's own
+// parameter names typed *job.Job and is recomputed at each recursive step by
+// positionally matching the call's argument identifiers against the callee's
+// own *job.Job-typed parameters, so a job pointer threaded through several
+// layers of unexported helpers (Cancel -> finishCancel, Park -> parkLocked,
+// Advance -> grantFor/moveTo) is still tracked to wherever it is finally used.
+// jobSliceVars is the same idea for a []*job.Job parameter (RenderAll's js):
+// a `for _, j := range js` binds j as a *job.Job for the rest of the walk,
+// found via *ast.RangeStmt rather than a call argument.
+//
+// This is name-and-position matching, not a type checker: it cannot see
+// through a reassignment (`j2 := j; j2.Foo()`) or a *job.Job stored into a
+// struct field or composite literal and read back. Rather than state in prose
+// that no body does either — a claim that would go stale silently, leaving the
+// seven-of-ten assertion green while the analysis under-reported — it records
+// every such flow in *unsupported, and the caller fails the test on any entry.
+// The failure mode is then "this check no longer knows enough", which is loud,
+// instead of "this door does not reach a *job.Job", which is wrong.
+//
+// unsupported is threaded through the recursion so a flow introduced in a
+// callee is caught as well as one in a door's own body.
+func reachesJobMethod(fd *ast.FuncDecl, jobVars map[string]bool, jobSliceVars map[string]bool, funcs map[string]*ast.FuncDecl, visited map[string]bool, unsupported *[]string) bool {
+	if fd.Body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		// An alias (`j2 := j`) or a store into a struct field / composite
+		// literal (`x.f = j`, `T{F: j}`) moves the value somewhere the
+		// name-and-position matching below cannot follow.
+		if as, ok := n.(*ast.AssignStmt); ok {
+			for i, rhs := range as.Rhs {
+				rhsIdent, ok := rhs.(*ast.Ident)
+				if !ok || !jobVars[rhsIdent.Name] {
+					continue
+				}
+				if i >= len(as.Lhs) {
+					continue
+				}
+				switch lhs := as.Lhs[i].(type) {
+				case *ast.Ident:
+					if lhs.Name == "_" || lhs.Name == rhsIdent.Name {
+						continue // discarded, or assigned to itself
+					}
+					*unsupported = append(*unsupported, fmt.Sprintf(
+						"%s: aliases %s to %s", fd.Name.Name, rhsIdent.Name, lhs.Name))
+				case *ast.SelectorExpr:
+					*unsupported = append(*unsupported, fmt.Sprintf(
+						"%s: stores %s into a field", fd.Name.Name, rhsIdent.Name))
+				}
+			}
+			return true
+		}
+		if cl, ok := n.(*ast.CompositeLit); ok {
+			for _, elt := range cl.Elts {
+				e := elt
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					e = kv.Value
+				}
+				if ident, ok := e.(*ast.Ident); ok && jobVars[ident.Name] {
+					*unsupported = append(*unsupported, fmt.Sprintf(
+						"%s: stores %s into a composite literal", fd.Name.Name, ident.Name))
+				}
+			}
+			return true
+		}
+		if rs, ok := n.(*ast.RangeStmt); ok {
+			if xIdent, ok := rs.X.(*ast.Ident); ok && jobSliceVars[xIdent.Name] {
+				if valIdent, ok := rs.Value.(*ast.Ident); ok {
+					jobVars[valIdent.Name] = true
+				}
+			}
+			return true
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var calleeName string
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			ident, ok := fn.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if jobVars[ident.Name] {
+				found = true
+				return false
+			}
+			calleeName = fn.Sel.Name
+		case *ast.Ident:
+			calleeName = fn.Name
+		default:
+			return true
+		}
+		callee, ok := funcs[calleeName]
+		if !ok || visited[calleeName] {
+			return true
+		}
+		params := flatParams(callee.Type.Params)
+		childVars := make(map[string]bool)
+		for i, p := range params {
+			if !isJobJobPtr(p.typ) || p.name == "" {
+				continue
+			}
+			if i >= len(call.Args) {
+				continue
+			}
+			argIdent, ok := call.Args[i].(*ast.Ident)
+			if ok && jobVars[argIdent.Name] {
+				childVars[p.name] = true
+			}
+		}
+		if len(childVars) == 0 {
+			return true
+		}
+		nextVisited := make(map[string]bool, len(visited)+1)
+		maps.Copy(nextVisited, visited)
+		nextVisited[calleeName] = true
+		// No *Queue method or package function this package's callees reach
+		// takes a []*job.Job: `grep -n '\[\]\*job\.Job' internal/sched/*.go |
+		// grep -v _test.go` finds exactly one line, RenderAll's own
+		// signature, and RenderAll does not pass js itself to any callee — it
+		// ranges over it and passes one *job.Job at a time — so an empty map
+		// here costs nothing today. If a future helper takes []*job.Job, this
+		// recursion would need to thread jobSliceVars through the same way
+		// childVars is threaded above.
+		if reachesJobMethod(callee, childVars, nil, funcs, nextVisited, unsupported) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// doorsReachingJobMethod reports, for every exported *Queue door, whether its
+// body — transitively, through this package's own unexported helpers —
+// reaches a call on a *job.Job value. It is the machine check
+// internal/job/job.go's seven-of-ten prose split names as its own
+// enforcement: see TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse
+// below.
+func doorsReachingJobMethod(t *testing.T) map[string]bool {
+	t.Helper()
+	funcs := queueMethodFuncs(t)
+	got := make(map[string]bool)
+	var unsupported []string
+	for name, fd := range funcs {
+		if !fd.Name.IsExported() || fd.Recv == nil {
+			continue
+		}
+		jobVars := make(map[string]bool)
+		jobSliceVars := make(map[string]bool)
+		for _, p := range flatParams(fd.Type.Params) {
+			switch {
+			case isJobJobPtr(p.typ) && p.name != "":
+				jobVars[p.name] = true
+			case isJobJobSlice(p.typ) && p.name != "":
+				// RenderAll's js is []*job.Job, not *job.Job — reachesJobMethod
+				// promotes its range variable into jobVars when it finds a
+				// `for _, j := range js` RangeStmt.
+				jobSliceVars[p.name] = true
+			}
+		}
+		got[name] = reachesJobMethod(fd, jobVars, jobSliceVars, funcs, map[string]bool{name: true}, &unsupported)
+	}
+	if len(unsupported) > 0 {
+		slices.Sort(unsupported)
+		t.Fatalf("reachesJobMethod met %d *job.Job data flow(s) it cannot follow:\n  %s\n\n"+
+			"It matches names and argument positions, not types, so an alias or a "+
+			"value parked in a struct field escapes the walk. Left alone, such a "+
+			"flow makes this analysis report a door as NOT reaching *job.Job when "+
+			"it does, and the seven-of-ten assertion below stays green while being "+
+			"wrong. Extend reachesJobMethod to follow the flow, or rewrite the body "+
+			"to pass the job directly — do not delete this check.",
+			len(unsupported), strings.Join(unsupported, "\n  "))
+	}
+	return got
+}
+
 // TestQueueMuLockers_MatchTheEnumerationStatedInProse enforces the count AND
 // the names of q.mu's lockers — the fact stated in prose at three sites
 // (doc.go, queue.go, pool.go) and, per the final Half B2.1 review, broken by
@@ -123,18 +441,108 @@ func scanQMuLockers(t *testing.T) []string {
 // hand-maintained copy of the same list.
 func TestQueueMuLockers_MatchTheEnumerationStatedInProse(t *testing.T) {
 	got := scanQMuLockers(t)
-	// The nine names doc.go, queue.go and pool.go's comments state, sorted —
+	// The ten names doc.go, queue.go and pool.go's comments state, sorted —
 	// spelled out explicitly rather than derived, since a silently-wrong
 	// `want` would defeat the whole point of this test.
-	want := []string{"Advance", "Cancel", "Park", "Pause", "Paused", "Render", "Resume", "Retry", "Settle"}
+	want := []string{"Advance", "Cancel", "Park", "Pause", "Paused", "Render", "RenderAll", "Resume", "Retry", "Settle"}
 	if !slices.Equal(got, want) {
 		t.Errorf("methods calling q.mu.Lock() = %v, want %v\n\n"+
 			"internal/sched/queue.go's own mu comment, internal/sched/pool.go's "+
 			"leasePool comment, and internal/job/job.go's Snapshot comment all "+
-			"claim these nine methods, and only these nine, take q.mu. If a "+
+			"claim these ten methods, and only these ten, take q.mu. If a "+
 			"different set is correct, update all three comments AND this list "+
-			"together — a comment that still names the old nine once a tenth "+
+			"together — a comment that still names the old ten once an eleventh "+
 			"exists (or one is removed/renamed) is worse than no comment at all.",
 			got, want)
 	}
+}
+
+// TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse pins the
+// seven-of-ten split that internal/job/job.go states in prose. That comment
+// was explicitly "a reviewed property, not a machine-checked one", and adding
+// RenderAll moved it from six-of-nine to seven-of-ten — a change no gate in
+// this repository would have caught, since
+// TestQueueMuLockers_MatchTheEnumerationStatedInProse asserts locker NAMES
+// only.
+func TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse(t *testing.T) {
+	want := map[string]bool{
+		"Cancel": true, "Park": true, "Retry": true, "Advance": true,
+		"Settle": true, "Render": true, "RenderAll": true,
+		"Pause": false, "Resume": false, "Paused": false,
+	}
+	got := doorsReachingJobMethod(t) // set of exported doors whose body reaches a *job.Job method
+	for name, expected := range want {
+		if got[name] != expected {
+			t.Errorf("door %s reaches *job.Job = %v, want %v — update internal/job/job.go's prose split", name, got[name], expected)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("found %d exported doors, prose enumerates %d", len(got), len(want))
+	}
+}
+
+// TestRenderAll_LocksOnceOutsideTheRowLoop pins the property RenderAll exists
+// for: every row in one listing is composed under a SINGLE hold of q.mu, so a
+// caller cannot observe a listing torn across a concurrent mutation. Without
+// it, RenderAll would be nothing but a loop the caller could have written.
+//
+// TestRenderAll_TakesTheQueueLock (render_test.go) cannot reach this. It
+// is a race-detector test, and an implementation that locked and unlocked
+// around each row would still be race-free, still return every row, and still
+// pass — so it pins "locks at all", not "locks once". The distinction is
+// invisible at runtime and plain in the source, which is what makes this a
+// static check rather than another concurrent one.
+//
+// Asserting Unlock is DEFERRED is half the proof: one Lock with a deferred
+// Unlock is a span that necessarily runs to the return, and therefore over
+// every iteration. One Lock with an inline Unlock inside the loop would
+// satisfy a bare count and prove nothing.
+func TestRenderAll_LocksOnceOutsideTheRowLoop(t *testing.T) {
+	fd, ok := queueMethodFuncs(t)["RenderAll"]
+	if !ok || fd.Body == nil {
+		t.Fatal("RenderAll not found in this package's non-test sources; " +
+			"this test cannot silently pass because its subject moved")
+	}
+
+	var lockPos []token.Pos
+	var deferredUnlocks int
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if isQMuCall(n, "Lock") {
+			lockPos = append(lockPos, n.Pos())
+		}
+		if d, ok := n.(*ast.DeferStmt); ok && isQMuCall(d.Call, "Unlock") {
+			deferredUnlocks++
+		}
+		return true
+	})
+
+	if len(lockPos) != 1 {
+		t.Fatalf("RenderAll calls q.mu.Lock() %d times, want exactly 1 — more "+
+			"than one hold means the listing is composed across separate "+
+			"critical sections and can be torn", len(lockPos))
+	}
+	if deferredUnlocks != 1 {
+		t.Errorf("RenderAll has %d deferred q.mu.Unlock() calls, want 1 — a "+
+			"lock released inline can be released inside the row loop, which "+
+			"a Lock count alone would not distinguish", deferredUnlocks)
+	}
+
+	// The single Lock must not sit inside the loop that walks the rows.
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch loop := n.(type) {
+		case *ast.RangeStmt:
+			body = loop.Body
+		case *ast.ForStmt:
+			body = loop.Body
+		default:
+			return true
+		}
+		if body != nil && lockPos[0] > body.Pos() && lockPos[0] < body.End() {
+			t.Errorf("RenderAll takes q.mu INSIDE its row loop — each row would " +
+				"then be composed under its own hold, which is exactly the " +
+				"per-row locking this door exists to avoid")
+		}
+		return true
+	})
 }

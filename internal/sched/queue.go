@@ -37,17 +37,18 @@ type Workers interface {
 // its first locker during this package's build order (queue.go landed before
 // advance.go so that reclaim and releaseFor — which finishCancel needs —
 // existed for Cancel to call), but it is no longer the only one: `grep -n
-// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds nine production
+// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds ten production
 // lockers — Cancel (cancel.go), Park, Retry and Advance (advance.go), Settle
-// (settle.go), Render (render.go), and Pause, Resume and Paused (this file) —
-// plus this sentence's own mention of the pattern, written as q.mu.Loc[k]()
-// (the same self-matching workaround internal/job/job.go's surrenderLocked
-// comment uses) so it does not inflate that count. Prior spec §7.1's order is
-// Queue.mu before Job.mu, so nothing here may call into a *job.Job method
-// while holding mu in a way that would take the locks in the other order.
+// (settle.go), Render and RenderAll (render.go), and Pause, Resume and Paused
+// (this file) — plus this sentence's own mention of the pattern, written as
+// q.mu.Loc[k]() (the same self-matching workaround internal/job/job.go's
+// surrenderLocked comment uses) so it does not inflate that count. Prior spec
+// §7.1's order is Queue.mu before Job.mu, so nothing here may call into a
+// *job.Job method while holding mu in a way that would take the locks in the
+// other order.
 //
 // The grep above proves the COUNT; it says nothing about whether these are
-// the same nine NAMES this comment lists, so a rename this pattern still
+// the same ten NAMES this comment lists, so a rename this pattern still
 // matches (or a new locker under an old name) would leave the citation green
 // while the prose went wrong.
 // TestQueueMuLockers_MatchTheEnumerationStatedInProse
@@ -190,6 +191,26 @@ func (q *Queue) releaseFor(j *job.Job, s job.State) {
 // adds that, and §3.4 explains why the two must stay separate.
 func (q *Queue) holds(id string, s job.Snapshot) bool {
 	pos := s.State.State
+	if pos == job.StateUnset {
+		// A job that has never run holds nothing, and this has to be said
+		// rather than derived: needsLease and needsSlot are BOTH false at
+		// StateUnset (requirements.go), so the two guards below are vacuous
+		// there and the function fell through to true — reporting that a job
+		// owning no lease and no slot held everything its position required.
+		//
+		// Two of the three callers were immune, which is why it survived.
+		// running() (queue.go, below) conjoins s.IsOpen(), false for a job
+		// with no attempt. Advance never reaches its own q.holds call with
+		// StateUnset: branch 1 returns from `if s.State.State ==
+		// job.StateUnset` either way (advance.go), so branch 2's call is only
+		// ever made for a job at a real position. The third, renderLocked's
+		// Holds field (render.go), is the one that saw it — and
+		// internal/dispatch's reconcileResidency hydrates on `v.Holds &&
+		// !resident`, so a paused, never-started job had its manifest read
+		// into memory while holding nothing, and a failed read then tried to
+		// settle a job with no open attempt.
+		return false
+	}
 	if needsLease(pos) && !s.HoldsLease {
 		return false
 	}
