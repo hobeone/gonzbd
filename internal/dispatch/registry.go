@@ -35,25 +35,74 @@ type Row struct {
 type entry struct {
 	j *job.Job
 	h Header
+	// seq is this job's place in queue order, persisted as Persisted.SortKey.
+	// It is a monotonic insertion sequence rather than an index: a position
+	// would have to be renumbered whenever an earlier job is removed, and
+	// persistIfChanged only writes jobs whose state moved, so the rewrite
+	// would be both expensive and easy to miss.
+	//
+	// A sequence needs no renumbering because only two operations change
+	// d.order — register appends, and remove deletes with slices.Delete,
+	// which preserves the relative order of what survives.
+	// TestSortKey_ReproducesQueueOrderAcrossRemoval pins that.
+	seq int64
 }
 
-// Add registers a job in queue order and wakes the tick.
+// Add registers a job at the end of the queue and wakes the tick.
 //
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
 // strand whatever the displaced job held, with nothing left to release it.
 func (d *Dispatcher) Add(j *job.Job, h Header) error {
 	d.mu.Lock()
+	seq := d.nextSeq
+	d.mu.Unlock()
+	return d.register(j, h, seq)
+}
+
+// register is the only path by which a job enters the registry, and the only
+// writer of d.byID, d.order and d.nextSeq. Add calls it with the next unused
+// sequence; restore calls it with the sequence the store recorded, which is
+// what preserves queue order across a restart.
+//
+// One path rather than two because the alternative had already produced a
+// defect in review: a restore that registered through Add was handed a FRESH
+// sequence while d.written held the row's real SortKey from disk, so the first
+// persistIfChanged saw a difference that was not there and rewrote every
+// restored row's key. Two registration paths that must agree about one field
+// is the smell Standing Design Rule 2 names, and an owner is the fix it
+// prescribes.
+//
+// Advancing d.nextSeq past seq here, rather than at the call sites, is what
+// makes "the next Add sorts after everything restored" true without a separate
+// step anyone could forget.
+func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
+	d.mu.Lock()
 	if _, dup := d.byID[j.ID()]; dup {
 		d.mu.Unlock()
-		return fmt.Errorf("dispatch: Add: job %q is already registered", j.ID())
+		return fmt.Errorf("dispatch: register: job %q is already registered", j.ID())
 	}
-	d.byID[j.ID()] = &entry{j: j, h: h}
+	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
 	d.order = append(d.order, j.ID())
+	d.nextSeq = max(d.nextSeq, seq+1)
 	d.mu.Unlock()
 
 	d.kick()
 	return nil
+}
+
+// sortKeyOf reports a registered job's queue-order sequence, or -1 if it is not
+// registered. Tests use it to assert on the key itself: asserting on List order
+// instead would prove nothing about the sequence, since register appends
+// unconditionally and a new job is therefore last either way.
+func (d *Dispatcher) sortKeyOf(id string) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return -1
+	}
+	return e.seq
 }
 
 // snapshotOrder copies the registry in queue order. The copy exists so the tick

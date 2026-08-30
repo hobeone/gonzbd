@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -141,5 +142,44 @@ func TestList_EmptyRegistryReturnsEmptyNonNil(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("List() has %d rows, want 0", len(got))
+	}
+}
+
+// TestSortKey_ReproducesQueueOrderAcrossRemoval pins the enumeration that lets
+// queue order be persisted as a plain insertion sequence rather than a
+// position needing a renumbering pass.
+//
+// Only two operations change d.order, and neither invalidates such a key: Add
+// appends, and remove deletes in place with slices.Delete, which preserves the
+// relative order of what survives. `git grep -n 'd\.order = ' internal/dispatch`
+// returns 2 lines — register's append and remove's slices.Delete — so those
+// two operations are the whole population.
+//
+// The keys are asserted EXACTLY rather than with slices.IsSorted. IsSorted is
+// non-strict, so an implementation that never assigns a sequence at all yields
+// [0 0 0] and passes while the feature is entirely broken.
+func TestSortKey_ReproducesQueueOrderAcrossRemoval(t *testing.T) {
+	d := newTestDispatcher(t)
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+			t.Fatalf("Add(%s): %v", id, err)
+		}
+	}
+	d.remove("b")
+
+	var got []string
+	var keys []int64
+	for _, r := range d.List() {
+		got = append(got, r.ID)
+		keys = append(keys, d.sortKeyOf(r.ID))
+	}
+	if want := []string{"a", "c", "d"}; !slices.Equal(got, want) {
+		t.Fatalf("order after removal = %v, want %v", got, want)
+	}
+	// The gap at 1 is the point: b's key is retired with b, and c and d keep
+	// the keys they were registered with. A position would have renumbered
+	// them to 1 and 2.
+	if want := []int64{0, 2, 3}; !slices.Equal(keys, want) {
+		t.Fatalf("sort keys = %v, want %v", keys, want)
 	}
 }

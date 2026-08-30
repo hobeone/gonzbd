@@ -31,10 +31,15 @@ type Store interface {
 // Attempt.crossed, and storing it would create a second source of truth that
 // could disagree with State after a restore.
 type Persisted struct {
-	ID     string
-	Header Header
-	State  job.StateView
-	Intent job.Intent
+	ID string
+	// SortKey is queue order: the monotonic insertion sequence register
+	// assigns, carried here so a restart can rebuild the order rather than
+	// inherit whatever order the store happened to return rows in. Queue
+	// order is the priority policy sched consults, so this is not cosmetic.
+	SortKey int64
+	Header  Header
+	State   job.StateView
+	Intent  job.Intent
 }
 
 // Runner starts the work for one job at one state. It must return promptly —

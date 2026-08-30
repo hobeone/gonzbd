@@ -59,6 +59,12 @@ type Dispatcher struct {
 	launched map[string]bool
 	written  map[string]Persisted
 
+	// nextSeq is the sequence register will hand the next job. register is
+	// its only writer: `git grep -n 'd\.nextSeq = ' internal/dispatch` returns
+	// 1 line, register's own max(). Add reads it and passes the value on, but
+	// does not advance it.
+	nextSeq int64
+
 	q    *sched.Queue
 	wake chan struct{}
 
