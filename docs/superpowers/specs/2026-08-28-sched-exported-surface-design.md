@@ -459,8 +459,8 @@ Proposed decomposition, for discussion:
 | PR | Contains | Depends on |
 |---|---|---|
 | **B2.1** | `Settle` + `settleLocked` extraction, `Park`, `Pause`/`Resume`/`Paused`, `Render`. Still imported by nothing. | this RFC |
-| **B2.2** | Persistence of `State`, `Next`, `Outcome`, `Intent` — a new `goose` migration | B2.1 |
-| **B2.3** | The dispatcher and the composed view together: `Workers` implementation, residency, worker yield → `Park`, tick → `Advance`, §4.4's `ToSABnzbd` inputs | B2.1, B2.2 |
+| **B2.2** | Persistence of `State`, `Next`, `Outcome`, `Intent` ~~— a new `goose` migration~~. **Landed.** Scope shrank: B2.3 shipped `reconstruct` ahead of it, so this was the `dispatch_jobs` table plus `internal/dispatch/store`. Per #454 the table was edited into `001_initial.sql` rather than added as a migration, and `Persisted` also gained `SortKey` and `Policy` — see #454's D2 amendment and D3 reversal. | B2.1 |
+| **B2.3** | The dispatcher and the composed view together: `Workers` implementation, residency, worker yield → `Park`, tick → `Advance`, §4.4's `ToSABnzbd` inputs. **Landed, out of order** — it merged before B2.2, which was harmless because nothing imports `internal/dispatch` yet. | B2.1, ~~B2.2~~ |
 | **B2.4** | The swap: repoint the five production files, rewrite tests, delete `internal/queue` | all |
 
 `crossed` is deliberately absent from that list. It is derived from `State` —

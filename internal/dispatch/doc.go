@@ -22,8 +22,13 @@
 //
 // # What this package does not have yet
 //
-// Nothing imports it. B2.4 repoints production onto it and deletes
-// internal/queue. Row carries a Header supplied at Add rather than byte and
+// No application code imports it. The one importer is internal/dispatch/store,
+// which exists only to satisfy this package's own Store interface and is itself
+// unwired: `git grep -l 'gonzbd/internal/dispatc[h]"' -- '*.go' ':!*_test.go'`
+// returns 1 file. The bracket around the last letter is deliberate — it makes
+// the pattern match a real import line while NOT matching this sentence, and a
+// citation that counts its own prose is worse than none.
+// B2.4 repoints production onto it and deletes internal/queue. Row carries a Header supplied at Add rather than byte and
 // article progress, because internal/job.Job holds only id, name and policy —
 // the progress tier is still in internal/queue until B2.4.
 package dispatch

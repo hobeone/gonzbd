@@ -344,8 +344,70 @@ CREATE TABLE history_job_files (
 );
 -- +goose StatementEnd
 
+-- +goose StatementBegin
+-- dispatch_jobs is internal/dispatch/store's table and nothing else's.
+--
+-- It is deliberately NOT columns on `jobs`: that table is internal/queue's
+-- until B2.4 deletes the package, and its `status` column is a lossy
+-- projection of the same position `state` records here. Two writers to one row
+-- could let the two disagree, which is the second-writer smell Standing Design
+-- Rule 2 names. The duplicated identity and header columns are the price, and
+-- they go away with `jobs`.
+--
+-- The axes are stored as the integer values of internal/job's uint8 enums.
+-- They carry no CHECK constraint, and that is not an oversight: a restored row
+-- is replayed forward through job.Job's own doors by dispatch.reconstruct, so
+-- an illegal position, an inadmissible outcome for its state, or a `next` that
+-- is not a legal edge is refused by the state machine itself. A CHECK could
+-- only re-validate the enum RANGE — it cannot know the transition table — and
+-- would be a second enforcement point for one invariant. Contrast
+-- job_files.fetch_policy above, whose CHECK is the only guard that value has.
+--
+-- `crossed` is absent on purpose: it is derived from `state` via
+-- Attempt.crossed, and storing it would create a second source of truth that
+-- could disagree with `state` after a restore.
+CREATE TABLE dispatch_jobs (
+    id          TEXT PRIMARY KEY,
+    -- sort_key is queue order: a monotonic insertion sequence the dispatcher
+    -- assigns once, at registration, and never revises. It survives a removal
+    -- without renumbering because the only two operations that change the
+    -- dispatcher's order are an append and an order-preserving delete.
+    sort_key    INTEGER NOT NULL,
+
+    -- Header: the display metadata job.Job does not carry, supplied by the
+    -- caller at Add.
+    name        TEXT NOT NULL,
+    category    TEXT NOT NULL DEFAULT '',
+    priority    INTEGER NOT NULL DEFAULT 0,
+    bytes       INTEGER NOT NULL DEFAULT 0,
+
+    -- Policy: what the job is permitted to do, resolved at ingestion. Stored
+    -- resolved rather than as the upstream PP integer, because PP is external
+    -- vocabulary that "does not exist past App" (internal/job/policy.go).
+    verify      INTEGER NOT NULL DEFAULT 0,
+    repair      INTEGER NOT NULL DEFAULT 0,
+    unpack      INTEGER NOT NULL DEFAULT 0,
+    delete_ok   INTEGER NOT NULL DEFAULT 0,
+
+    -- The StateView axes. `assessed` is not derivable from `state`: Fetching
+    -- with assessed set is a job that has been through Assessing and returned,
+    -- which is a different position from a first-pass Fetching, and it decides
+    -- the path reconstruct replays.
+    state       INTEGER NOT NULL DEFAULT 0,
+    next        INTEGER NOT NULL DEFAULT 0,
+    activity    INTEGER NOT NULL DEFAULT 0,
+    outcome     INTEGER NOT NULL DEFAULT 0,
+    assessed    INTEGER NOT NULL DEFAULT 0,
+
+    intent      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_dispatch_jobs_sort_key ON dispatch_jobs(sort_key);
+-- +goose StatementEnd
+
 -- +goose Down
 -- +goose StatementBegin
+DROP TABLE dispatch_jobs;
 DROP TABLE history_job_files;
 DROP TABLE file_extents;
 DROP TABLE article_facts;

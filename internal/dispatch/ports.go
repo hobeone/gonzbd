@@ -19,7 +19,9 @@ type Residency interface {
 
 // Store is the persistence the dispatcher needs, and no more (D-B11): read the
 // whole queue once at Start, and write a job's four axes when they move.
-// internal/dispatch defines it; B2.2 implements it against SQLite.
+// internal/dispatch defines it; internal/dispatch/store implements it against
+// SQLite. The implementation lives in its own package so this one stays free of
+// a SQL driver, the same shape Residency and Runner have.
 type Store interface {
 	Load(ctx context.Context) ([]Persisted, error)
 	Save(ctx context.Context, p Persisted) error
@@ -31,8 +33,27 @@ type Store interface {
 // Attempt.crossed, and storing it would create a second source of truth that
 // could disagree with State after a restore.
 type Persisted struct {
-	ID     string
-	Header Header
+	ID string
+	// SortKey is queue order: the insertion sequence register assigns, carried
+	// here so a restart can rebuild the order rather than inherit whatever
+	// order the store happened to return rows in. Queue order is the priority
+	// policy sched consults, so this is not cosmetic.
+	//
+	// Restore reads order from this field ALONE. That is what makes reordering
+	// B2.4's problem rather than a free extension: a /api?mode=switch move that
+	// did not rewrite keys would survive in memory and vanish at the next
+	// restart, so B2.4 needs an atomic whole-queue resequence in the store.
+	// See entry.seq (registry.go).
+	SortKey int64
+	Header  Header
+	// Policy is what the job is permitted to do, stored resolved rather than
+	// as the upstream PP integer it was derived from: PP is external
+	// vocabulary that "does not exist past App" (internal/job/policy.go), so
+	// persisting it would carry it back inside the internal layer. job.Job
+	// already owns this field — New takes it and Policy() returns it — so
+	// storing it is persisting the owner's own value, not a second
+	// derivation of it.
+	Policy job.Policy
 	State  job.StateView
 	Intent job.Intent
 }

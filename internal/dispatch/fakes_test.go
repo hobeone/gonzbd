@@ -70,6 +70,11 @@ type fakeStore struct {
 	order   []string
 	loadErr error
 	delErr  error
+	saves   int
+	// loadHook runs inside Load, which is how a test reaches the middle of a
+	// restore: the whole of restore is the window in which the registry is
+	// half-populated, and Load is the one point inside it a fake controls.
+	loadHook func()
 }
 
 // rows and order are two views of one set and are always written together:
@@ -88,6 +93,7 @@ func (f *fakeStore) seed(ps []Persisted) {
 	defer f.mu.Unlock()
 	f.order = nil
 	f.rows = map[string]Persisted{}
+	f.gone = nil
 	for _, p := range ps {
 		f.rows[p.ID] = p
 		f.order = append(f.order, p.ID)
@@ -104,6 +110,9 @@ func (f *fakeStore) row(id string) (Persisted, bool) {
 }
 
 func (f *fakeStore) Load(context.Context) ([]Persisted, error) {
+	if f.loadHook != nil {
+		f.loadHook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.loadErr != nil {
@@ -126,7 +135,21 @@ func (f *fakeStore) Save(_ context.Context, p Persisted) error {
 		f.order = append(f.order, p.ID)
 	}
 	f.rows[p.ID] = p
+	// Saving a row un-deletes it. Without this, deleted() keeps reporting true
+	// for an ID that Load now returns, so a test covering delete-then-re-add
+	// would be asserting against a contradiction the real store cannot produce.
+	delete(f.gone, p.ID)
+	f.saves++
 	return nil
+}
+
+// saveCount reports how many times Save was called. Tests use it to assert a
+// NEGATIVE — that a quiet tick wrote nothing — which row() cannot express,
+// since a Save that rewrites identical content leaves no trace in rows.
+func (f *fakeStore) saveCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.saves
 }
 
 func (f *fakeStore) Delete(_ context.Context, id string) error {

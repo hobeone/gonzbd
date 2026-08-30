@@ -77,7 +77,7 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // straight from Snapshot instead, which drops a Queue.mu acquisition that
 // bought this function nothing.
 func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
-	h, ok := d.headerFor(j.ID())
+	h, seq, ok := d.entryFor(j.ID())
 	if !ok {
 		// Evicted (D-B12) or removed between snapshotOrder and here: nothing
 		// left in the registry to attach a Header to.
@@ -87,7 +87,14 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	// carries only the job's own StateView and Intent, so Render's Queue.mu
 	// acquisition would buy nothing this row records.
 	s := j.Snapshot()
-	p := Persisted{ID: j.ID(), Header: h, State: s.State, Intent: s.Intent}
+	p := Persisted{
+		ID:      j.ID(),
+		SortKey: seq,
+		Header:  h,
+		Policy:  j.Policy(),
+		State:   s.State,
+		Intent:  s.Intent,
+	}
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return
 	}
