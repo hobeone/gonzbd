@@ -422,20 +422,28 @@ func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 
 // TestHeaderFor_RoundTrip is a direct-call test for the registry lookup
 // persistIfChanged uses to attach a Header to a Persisted row.
-func TestHeaderFor_RoundTrip(t *testing.T) {
+// TestEntryFor_RoundTrip covers the accessor persistIfChanged uses to read the
+// Header and the sequence together. Reading them in one acquisition is the
+// point: composing two correct accessors across a lock boundary let a job
+// removed in between be persisted back with the not-registered sentinel as its
+// key.
+func TestEntryFor_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
 	h := Header{Name: "n", Category: "tv"}
 	if err := d.Add(job.New("j1", "n", job.Policy{}), h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
-	got, ok := d.headerFor("j1")
+	got, seq, ok := d.entryFor("j1")
 	if !ok || got != h {
-		t.Errorf("headerFor(j1) = (%+v, %v), want (%+v, true)", got, ok, h)
+		t.Errorf("entryFor(j1) = (%+v, %v), want (%+v, true)", got, ok, h)
+	}
+	if seq != 0 {
+		t.Errorf("entryFor(j1) seq = %d, want 0 for the first job added", seq)
 	}
 
-	if _, ok := d.headerFor("nope"); ok {
-		t.Error("headerFor(nope) = ok, want false for an unregistered ID")
+	if got, gotSeq, ok := d.entryFor("nope"); ok {
+		t.Errorf("entryFor(nope) = (%+v, %d, true), want ok false for an unregistered ID", got, gotSeq)
 	}
 }
 

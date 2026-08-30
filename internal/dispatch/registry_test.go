@@ -1,7 +1,9 @@
 package dispatch
 
 import (
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -217,5 +219,41 @@ func TestRegister_TakesTheSequenceItIsGivenAndAdvancesPast(t *testing.T) {
 
 	if err := d.register(job.New("a", "dup", job.Policy{}), Header{Name: "dup"}, 99); err == nil {
 		t.Error("register accepted a duplicate ID; a silent overwrite would strand the first job's resources")
+	}
+}
+
+// TestAdd_ConcurrentCallsGetDistinctSortKeys pins that the sequence is
+// allocated under the same lock span that uses it.
+//
+// An Add that reads d.nextSeq, releases d.mu, and only then registers hands two
+// concurrent callers the SAME key. Nothing fails at the time: both jobs
+// register, both persist, and the queue looks right. The damage appears on the
+// NEXT restart, when the ID tiebreak orders the colliding pair alphabetically
+// instead of by insertion.
+func TestAdd_ConcurrentCallsGetDistinctSortKeys(t *testing.T) {
+	d := newTestDispatcher(t)
+	const n = 64
+
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			id := fmt.Sprintf("j%02d", i)
+			if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+				t.Errorf("Add(%s): %v", id, err)
+			}
+		})
+	}
+	wg.Wait()
+
+	seen := make(map[int64]string, n)
+	for _, r := range d.List() {
+		k := d.sortKeyOf(r.ID)
+		if other, dup := seen[k]; dup {
+			t.Fatalf("%s and %s both got sort key %d — two Adds allocated the same sequence", other, r.ID, k)
+		}
+		seen[k] = r.ID
+	}
+	if len(seen) != n {
+		t.Fatalf("got %d distinct sort keys across %d jobs, want %d", len(seen), n, n)
 	}
 }

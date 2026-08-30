@@ -77,7 +77,7 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // straight from Snapshot instead, which drops a Queue.mu acquisition that
 // bought this function nothing.
 func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
-	h, ok := d.headerFor(j.ID())
+	h, seq, ok := d.entryFor(j.ID())
 	if !ok {
 		// Evicted (D-B12) or removed between snapshotOrder and here: nothing
 		// left in the registry to attach a Header to.
@@ -89,7 +89,7 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	s := j.Snapshot()
 	p := Persisted{
 		ID:      j.ID(),
-		SortKey: d.sortKeyOf(j.ID()),
+		SortKey: seq,
 		Header:  h,
 		Policy:  j.Policy(),
 		State:   s.State,

@@ -54,16 +54,26 @@ type entry struct {
 // route by which a job's resources are returned, so replacing an entry would
 // strand whatever the displaced job held, with nothing left to release it.
 func (d *Dispatcher) Add(j *job.Job, h Header) error {
-	d.mu.Lock()
-	seq := d.nextSeq
-	d.mu.Unlock()
-	return d.register(j, h, seq)
+	return d.register(j, h, seqNext)
 }
 
-// register is the only path by which a job enters the registry, and the only
-// writer of d.byID, d.order and d.nextSeq. Add calls it with the next unused
-// sequence; restore calls it with the sequence the store recorded, which is
-// what preserves queue order across a restart.
+// seqNext tells register to allocate the next unused sequence itself. It is a
+// sentinel rather than Add reading d.nextSeq and passing the value, because
+// reading it in one lock span and using it in another lets two concurrent Adds
+// allocate the SAME key. Nothing fails at the time — both jobs register, both
+// persist, the queue looks right — and the damage only appears on the next
+// restart, when the ID tiebreak orders the colliding pair alphabetically
+// instead of by insertion. TestAdd_ConcurrentCallsGetDistinctSortKeys pins it.
+//
+// A negative value is safe as the sentinel because register is the only writer
+// of the column and never writes one.
+const seqNext int64 = -1
+
+// register is the only path by which a job ENTERS the registry — the sole
+// writer of d.nextSeq, and the sole inserter into d.byID and d.order, which
+// remove is the only other writer of (it deletes from both). Add calls it with
+// seqNext to have a sequence allocated; restore calls it with the sequence the
+// store recorded, which is what preserves queue order across a restart.
 //
 // One path rather than two because the alternative had already produced a
 // defect in review: a restore that registered through Add was handed a FRESH
@@ -82,6 +92,9 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: job %q is already registered", j.ID())
 	}
+	if seq == seqNext {
+		seq = d.nextSeq
+	}
 	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
 	d.order = append(d.order, j.ID())
 	d.nextSeq = max(d.nextSeq, seq+1)
@@ -95,6 +108,8 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 // registered. Tests use it to assert on the key itself: asserting on List order
 // instead would prove nothing about the sequence, since register appends
 // unconditionally and a new job is therefore last either way.
+//
+// Production code uses entryFor instead — see the note there.
 func (d *Dispatcher) sortKeyOf(id string) int64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -103,6 +118,28 @@ func (d *Dispatcher) sortKeyOf(id string) int64 {
 		return -1
 	}
 	return e.seq
+}
+
+// entryFor returns everything persistIfChanged needs from the registry, in ONE
+// d.mu acquisition.
+//
+// It replaced a headerFor call followed by a separate sortKeyOf call, which
+// left a window: a job removed between the two passed the header check and then
+// got sortKeyOf's not-registered sentinel, so persistIfChanged built a row with
+// SortKey -1, found no matching lastWritten (remove prunes d.written too), and
+// Saved a job that had just been deleted back into the store. A resurrected row
+// with a negative key sorts ahead of the entire queue.
+//
+// The general shape is worth naming: two correct accessors composed across a
+// lock boundary are not equivalent to one accessor that reads both fields.
+func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return Header{}, 0, false
+	}
+	return e.h, e.seq, true
 }
 
 // snapshotOrder copies the registry in queue order. The copy exists so the tick

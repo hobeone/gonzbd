@@ -709,19 +709,6 @@ func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.In
 	return j, nil
 }
 
-// headerFor returns the Header a registered job was added with. persistIfChanged
-// (tick.go) is the caller: it needs the Header to build the Persisted row
-// Render alone cannot supply, since job.Job carries only id, name and policy.
-func (d *Dispatcher) headerFor(id string) (Header, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	e, ok := d.byID[id]
-	if !ok {
-		return Header{}, false
-	}
-	return e.h, true
-}
-
 // lastWritten and markWritten are persistIfChanged's two touches of d.written,
 // each taking d.mu for one map operation and releasing it immediately. D-B9
 // forbids holding d.mu across the Render/Save calls between them — see

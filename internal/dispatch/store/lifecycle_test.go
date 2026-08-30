@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -69,15 +71,16 @@ type wantJob struct {
 	pol job.Policy
 }
 
-// TestDispatcher_RoundTripsThroughRealSQLite is the only test anywhere that
-// runs a Dispatcher against a real database — every test in internal/dispatch
-// uses an in-memory fakeStore, so nothing else exercises driver behaviour
-// (type coercion, scan errors on an unexpected NULL, real constraint
-// violations) from the dispatcher's side.
+// This file holds the only tests that run a Dispatcher against a real database.
+// Every test in internal/dispatch uses an in-memory fakeStore, so nothing
+// outside this file exercises driver behaviour — type coercion, scan errors,
+// real constraint violations — from the dispatcher's side.
 //
-// It asserts the property B2.4 will depend on: a queue persisted by one
-// Dispatcher comes back from a second one with its order, headers, policies
-// and axes intact.
+// TestDispatcher_RoundTripsThroughRealSQLite asserts the property B2.4 will
+// depend on: a queue persisted by one Dispatcher comes back from a second one
+// with its order, headers, policies and axes intact. Policy is checked through
+// the store rather than through List, because Row carries a Header and a
+// RenderView and deliberately does not expose Policy.
 func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := history.Open(t.Context(), dbPath)
@@ -155,6 +158,29 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 			t.Errorf("second came back with Intent %s, want IntentCancel — the cancel did not survive the round trip", r.View.Intent)
 		}
 	}
+
+	// Policy is not on Row, so it is asserted against the store. Without this
+	// the comment above claims more than the test checks: three jobs with
+	// three different policies would round-trip identically through a Policy
+	// column that was never written.
+	stored, err := st.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	byID := make(map[string]dispatch.Persisted, len(stored))
+	for _, p := range stored {
+		byID[p.ID] = p
+	}
+	for _, w := range want {
+		p, ok := byID[w.id]
+		if !ok {
+			t.Errorf("%s is not in the store after the round trip", w.id)
+			continue
+		}
+		if p.Policy != w.pol {
+			t.Errorf("%s Policy = %v, want %v", w.id, p.Policy, w.pol)
+		}
+	}
 	for i, w := range want {
 		if rows[i].ID != w.id {
 			t.Errorf("row %d is %s, want %s — queue order did not survive the round trip", i, rows[i].ID, w.id)
@@ -203,23 +229,40 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 
 	// Two more full restarts. If restore and persistIfChanged disagree about
 	// what is stored, the keys drift on each one.
-	for range 2 {
+	//
+	// Each restart adds a probe job and waits for IT to appear. Waiting on the
+	// original row count would be vacuous: those rows are already on disk
+	// before Start is called, so the predicate holds on the first poll and the
+	// test would stop the dispatcher without a single tick having run — proving
+	// nothing about what a tick does to restored rows. The probe only appears
+	// once persistIfChanged has actually executed.
+	for i := range 2 {
+		probe := fmt.Sprintf("probe%d", i)
 		d := newDispatcher()
 		if err := d.Start(t.Context()); err != nil {
 			t.Fatalf("restart Start: %v", err)
 		}
-		waitFor(t, st, "a tick to run", rowCount(len(ids))) // ensure the loop ran
+		if err := d.Add(job.New(probe, probe, job.Policy{}), dispatch.Header{Name: probe}); err != nil {
+			t.Fatalf("Add(%s): %v", probe, err)
+		}
+		waitFor(t, st, "the probe job to persist, proving a tick ran", func(rows []dispatch.Persisted) bool {
+			return slices.ContainsFunc(rows, func(p dispatch.Persisted) bool { return p.ID == probe })
+		})
 		if err := d.Stop(); err != nil {
 			t.Fatalf("restart Stop: %v", err)
 		}
 	}
 
-	afterRestarts, err := st.Load(t.Context())
+	all, err := st.Load(t.Context())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	// Compare only the original jobs; the probes are scaffolding.
+	afterRestarts := slices.DeleteFunc(all, func(p dispatch.Persisted) bool {
+		return !slices.Contains(ids, p.ID)
+	})
 	if len(afterRestarts) != len(afterFirst) {
-		t.Fatalf("row count changed across restarts: %d -> %d", len(afterFirst), len(afterRestarts))
+		t.Fatalf("row count for the original jobs changed across restarts: %d -> %d", len(afterFirst), len(afterRestarts))
 	}
 	for i := range afterFirst {
 		if afterFirst[i] != afterRestarts[i] {
