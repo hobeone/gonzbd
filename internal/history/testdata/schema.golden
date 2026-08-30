@@ -1,14 +1,17 @@
+index idx_dispatch_jobs_sort_key: CREATE INDEX idx_dispatch_jobs_sort_key ON dispatch_jobs(sort_key)
 index idx_history_archive_completed: CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC)
 index idx_history_nzo_id: CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id)
 index idx_job_files_job_id: CREATE INDEX idx_job_files_job_id ON job_files(job_id)
 index idx_jobs_md5: CREATE INDEX idx_jobs_md5 ON jobs(md5)
 index idx_jobs_name: CREATE INDEX idx_jobs_name ON jobs(name)
 index idx_jobs_sort_key: CREATE INDEX idx_jobs_sort_key ON jobs(sort_key)
+index sqlite_autoindex_dispatch_jobs_1: (implicit)
 index sqlite_autoindex_history_1: (implicit)
 index sqlite_autoindex_history_job_files_1: (implicit)
 index sqlite_autoindex_job_files_1: (implicit)
 index sqlite_autoindex_jobs_1: (implicit)
 index sqlite_autoindex_queue_meta_1: (implicit)
+table dispatch_jobs: CREATE TABLE dispatch_jobs ( id TEXT PRIMARY KEY, sort_key INTEGER NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0, verify INTEGER NOT NULL DEFAULT 0, repair INTEGER NOT NULL DEFAULT 0, unpack INTEGER NOT NULL DEFAULT 0, delete_ok INTEGER NOT NULL DEFAULT 0, state INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 0, activity INTEGER NOT NULL DEFAULT 0, outcome INTEGER NOT NULL DEFAULT 0, assessed INTEGER NOT NULL DEFAULT 0, intent INTEGER NOT NULL DEFAULT 0 )
 table durable_runs: CREATE TABLE durable_runs ( job_id TEXT NOT NULL, file_idx INTEGER NOT NULL, first_art_idx INTEGER NOT NULL, last_art_idx INTEGER NOT NULL, offset INTEGER NOT NULL, length INTEGER NOT NULL, crc32 INTEGER NOT NULL, PRIMARY KEY (job_id, file_idx, offset) ) WITHOUT ROWID
 table failed_articles: CREATE TABLE failed_articles ( job_id TEXT NOT NULL, art_idx INTEGER NOT NULL, PRIMARY KEY (job_id, art_idx) ) WITHOUT ROWID
 table history: CREATE TABLE history ( id INTEGER PRIMARY KEY, completed INTEGER, name TEXT, nzb_name TEXT, category TEXT, pp TEXT, script TEXT, report TEXT, url TEXT, status TEXT, nzo_id TEXT UNIQUE, storage TEXT, path TEXT, script_log BLOB, script_line TEXT, download_time INTEGER, postproc_time INTEGER, stage_log TEXT, downloaded INTEGER, completeness INTEGER, fail_message TEXT, url_info TEXT, bytes INTEGER, meta TEXT, series TEXT, md5sum TEXT, password TEXT, duplicate_key TEXT, archive INTEGER DEFAULT 0, time_added INTEGER, nzb_backup TEXT NOT NULL DEFAULT '' )
