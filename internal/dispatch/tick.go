@@ -69,10 +69,13 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // traffic — Persisted is a plain comparable struct (no slices or maps), so
 // `last == p` is a real equality check, not a reference comparison.
 //
-// D-B9: d.mu is never held across the Render or Save calls. lastWritten and
+// D-B9: d.mu is never held across the Snapshot or Save calls. lastWritten and
 // markWritten each take d.mu for one map operation and release it
-// immediately; Render (into sched) and Save (into Store) both run unlocked
-// between them.
+// immediately; Snapshot (into job, taking Job.mu) and Save (into Store) both
+// run unlocked between them. This read was d.q.Render until the two facts
+// Persisted records — the job's own StateView and Intent — were taken
+// straight from Snapshot instead, which drops a Queue.mu acquisition that
+// bought this function nothing.
 func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	h, ok := d.headerFor(j.ID())
 	if !ok {
@@ -80,8 +83,11 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 		// left in the registry to attach a Header to.
 		return
 	}
-	v := d.q.Render(j)
-	p := Persisted{ID: j.ID(), Header: h, State: v.StateView, Intent: v.Intent}
+	// Snapshot for the same reason as evictCancelledNeverRun: Persisted
+	// carries only the job's own StateView and Intent, so Render's Queue.mu
+	// acquisition would buy nothing this row records.
+	s := j.Snapshot()
+	p := Persisted{ID: j.ID(), Header: h, State: s.State, Intent: s.Intent}
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return
 	}
@@ -121,8 +127,14 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 // a lease nor a slot, so there is nothing for this function to release before
 // removing the job.
 func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) bool {
-	v := d.q.Render(j)
-	if v.State != job.StateUnset || v.Intent != job.IntentCancel {
+	// j.Snapshot, not d.q.Render: the two fields this reads are the JOB's
+	// own, and Snapshot takes them under one Job.mu acquisition. Render would
+	// additionally take Queue.mu to compute Running, Reason and Holds, none
+	// of which this function consults. Nothing is weakened by the narrower
+	// read — Snapshot is atomic for what it returns, so the pair cannot be
+	// observed torn, which is the only property the decision below needs.
+	s := j.Snapshot()
+	if s.State.State != job.StateUnset || s.Intent != job.IntentCancel {
 		return false
 	}
 	if err := d.store.Delete(ctx, j.ID()); err != nil {
