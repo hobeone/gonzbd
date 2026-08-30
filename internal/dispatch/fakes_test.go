@@ -195,21 +195,18 @@ func newTestDispatcher(t *testing.T, mods ...func(*testOpts)) *Dispatcher {
 	for _, m := range mods {
 		m(&o)
 	}
-	return &Dispatcher{
-		byID:      map[string]*entry{},
-		resident:  map[string]bool{},
-		launched:  map[string]bool{},
-		written:   map[string]Persisted{},
-		q:         sched.New(o.leaseCap, o.slotCap, testClock, o.workers),
-		wake:      make(chan struct{}, 1),
-		res:       o.res,
-		store:     o.store,
-		runner:    o.runner,
-		tickEvery: time.Hour, // long, so only explicit d.tick calls advance anything
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		log:       slog.New(slog.DiscardHandler),
-	}
+	// Built through New, not by a second struct literal. Repeating New's
+	// initialisation here made a second constructor for one type — the first
+	// smell Standing Design Rule 2 names — and it silently diverges the
+	// moment New gains a field or an invariant, which is exactly the failure
+	// a test helper cannot afford. tickEvery is an hour so that only explicit
+	// d.tick calls advance anything.
+	//
+	// The log is the one deliberate override: New leaves slog.Default, and a
+	// test that exercises error paths would otherwise print them.
+	d := New(o.leaseCap, o.slotCap, time.Hour, testClock, o.workers, o.res, o.store, o.runner)
+	d.log = slog.New(slog.DiscardHandler)
+	return d
 }
 
 // The with* options each vary one axis of the test dispatcher, so every
