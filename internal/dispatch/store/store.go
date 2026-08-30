@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
-	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // Store persists the dispatcher's queue in the dispatch_jobs table.
@@ -44,42 +42,28 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 
 	var out []dispatch.Persisted
 	for rows.Next() {
-		var (
-			p                              dispatch.Persisted
-			verify, repair, unpack, delOK  int
-			state, next, activity, outcome int
-			assessed, intent               int
-		)
+		// Scanned straight into the destination fields. database/sql converts
+		// an INTEGER column to a *bool, and narrows into a named uint8 type
+		// (job.State and friends) with its own range check — a 256 in the
+		// state column fails the scan with `converting driver.Value type
+		// int64 ("256") to a uint8: value out of range` rather than
+		// truncating to 0, which is StateUnset and would read as a legal
+		// never-run job.
+		//
+		// That check is why there is no hand-written narrowing helper here.
+		// An earlier revision scanned into ten intermediate ints and
+		// range-checked them itself, which allocated per row and duplicated
+		// what the standard library already guarantees.
+		var p dispatch.Persisted
 		if err := rows.Scan(
-			&p.ID, &p.SortKey, &p.Header.Name, &p.Header.Category, &p.Header.Priority, &p.Header.Bytes,
-			&verify, &repair, &unpack, &delOK,
-			&state, &next, &activity, &outcome, &assessed, &intent,
+			&p.ID, &p.SortKey,
+			&p.Header.Name, &p.Header.Category, &p.Header.Priority, &p.Header.Bytes,
+			&p.Policy.Verify, &p.Policy.Repair, &p.Policy.Unpack, &p.Policy.Delete,
+			&p.State.State, &p.State.Next, &p.State.Activity, &p.State.Outcome,
+			&p.State.Assessed, &p.Intent,
 		); err != nil {
 			return nil, fmt.Errorf("dispatch/store: load: scan: %w", err)
 		}
-		p.Policy = job.Policy{
-			Verify: verify != 0, Repair: repair != 0,
-			Unpack: unpack != 0, Delete: delOK != 0,
-		}
-		// Range-check before narrowing to uint8. A plain conversion truncates,
-		// and truncation is worse here than a wrong value: 256 becomes 0, which
-		// is StateUnset — a LEGAL persisted position meaning "never ran". A
-		// corrupt row would therefore restore as a plausible queued job rather
-		// than failing, and reconstruct could not tell the difference, because
-		// StateUnset is exactly the shape it accepts without opening an
-		// attempt.
-		enums, err := narrowAll(p.ID, state, next, activity, outcome, intent)
-		if err != nil {
-			return nil, err
-		}
-		p.State = job.StateView{
-			State:    job.State(enums[0]),
-			Next:     job.State(enums[1]),
-			Activity: job.Activity(enums[2]),
-			Outcome:  job.Outcome(enums[3]),
-			Assessed: assessed != 0,
-		}
-		p.Intent = job.Intent(enums[4])
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -109,9 +93,9 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		   activity=excluded.activity, outcome=excluded.outcome,
 		   assessed=excluded.assessed, intent=excluded.intent`,
 		p.ID, p.SortKey, p.Header.Name, p.Header.Category, p.Header.Priority, p.Header.Bytes,
-		b2i(p.Policy.Verify), b2i(p.Policy.Repair), b2i(p.Policy.Unpack), b2i(p.Policy.Delete),
-		int(p.State.State), int(p.State.Next), int(p.State.Activity), int(p.State.Outcome),
-		b2i(p.State.Assessed), int(p.Intent),
+		p.Policy.Verify, p.Policy.Repair, p.Policy.Unpack, p.Policy.Delete,
+		p.State.State, p.State.Next, p.State.Activity, p.State.Outcome,
+		p.State.Assessed, p.Intent,
 	)
 	if err != nil {
 		return fmt.Errorf("dispatch/store: save %s: %w", p.ID, err)
@@ -130,30 +114,4 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("dispatch/store: delete %s: %w", id, err)
 	}
 	return nil
-}
-
-// narrowAll converts each stored enum value to the uint8 the job package's
-// types are built on, refusing any that would not survive the narrowing.
-//
-// It reports the offending value rather than clamping: a row outside the range
-// cannot have been written by this package, so the honest answer is to fail the
-// load rather than invent a position for it.
-func narrowAll(id string, vs ...int) ([]uint8, error) {
-	out := make([]uint8, len(vs))
-	for i, v := range vs {
-		if v < 0 || v > math.MaxUint8 {
-			return nil, fmt.Errorf("dispatch/store: load %s: enum value %d is out of range", id, v)
-		}
-		out[i] = uint8(v)
-	}
-	return out, nil
-}
-
-// b2i maps a Go bool to the integer SQLite stores. The columns are INTEGER
-// rather than a boolean type because SQLite has none.
-func b2i(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

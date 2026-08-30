@@ -34,10 +34,16 @@ type Store interface {
 // could disagree with State after a restore.
 type Persisted struct {
 	ID string
-	// SortKey is queue order: the monotonic insertion sequence register
-	// assigns, carried here so a restart can rebuild the order rather than
-	// inherit whatever order the store happened to return rows in. Queue
-	// order is the priority policy sched consults, so this is not cosmetic.
+	// SortKey is queue order: the insertion sequence register assigns, carried
+	// here so a restart can rebuild the order rather than inherit whatever
+	// order the store happened to return rows in. Queue order is the priority
+	// policy sched consults, so this is not cosmetic.
+	//
+	// Restore reads order from this field ALONE. That is what makes reordering
+	// B2.4's problem rather than a free extension: a /api?mode=switch move that
+	// did not rewrite keys would survive in memory and vanish at the next
+	// restart, so B2.4 needs an atomic whole-queue resequence in the store.
+	// See entry.seq (registry.go).
 	SortKey int64
 	Header  Header
 	// Policy is what the job is permitted to do, stored resolved rather than

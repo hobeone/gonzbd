@@ -257,3 +257,58 @@ func TestAdd_ConcurrentCallsGetDistinctSortKeys(t *testing.T) {
 		t.Fatalf("got %d distinct sort keys across %d jobs, want %d", len(seen), n, n)
 	}
 }
+
+// TestAdd_RefusedOnAStoppedDispatcher pins that a job offered to a dead
+// dispatcher is rejected rather than accepted and stranded.
+//
+// Without the check Add succeeded: it allocated a sequence, registered the job,
+// and primed d.wake with no loop left to read it. The caller got nil and the
+// job was never ticked, never persisted and never run — the worst shape of
+// failure, since nothing anywhere reports it.
+func TestAdd_RefusedOnAStoppedDispatcher(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err == nil {
+		t.Fatal("Add on a stopped dispatcher returned nil; the job would be registered with no loop to run it")
+	}
+	if got := len(d.List()); got != 0 {
+		t.Errorf("registry holds %d jobs after a refused Add, want 0", got)
+	}
+}
+
+// TestAdd_RefusedWhileRestoring pins that a job cannot be interleaved into the
+// registry while restore is rebuilding it.
+//
+// Two things go wrong if it can. The intruder takes a sequence from the
+// counter before restore has raised it past the stored keys, so it collides
+// with a row still to be registered; and restore's rollback removes only the
+// IDs it registered itself, so a failing restore leaves the intruder behind in
+// a dispatcher that never started.
+func TestAdd_RefusedWhileRestoring(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{{ID: "stored", SortKey: 10, Header: Header{Name: "stored"}}})
+	d := newTestDispatcher(t, withStore(st))
+
+	var addErr error
+	st.loadHook = func() {
+		addErr = d.Add(job.New("intruder", "n", job.Policy{}), Header{Name: "n"})
+	}
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+
+	if addErr == nil {
+		t.Fatal("Add during restore returned nil; it would take a sequence before restore raised the counter past the stored keys")
+	}
+	for _, r := range d.List() {
+		if r.ID == "intruder" {
+			t.Error("the intruding job is in the registry; a failing restore's rollback would not have removed it")
+		}
+	}
+}

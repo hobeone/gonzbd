@@ -245,6 +245,11 @@ func TestStore_DeleteAnAbsentRowIsNotAnError(t *testing.T) {
 // TestStore_LoadRejectsAnOutOfRangeEnum pins that a value too large for the
 // uint8 the job enums are built on fails the load rather than truncating.
 //
+// The check belongs to database/sql's Scan rather than to this package, which
+// is exactly why it is pinned here: it is a guarantee this code DEPENDS on but
+// does not implement, so nothing in this package would fail if it stopped
+// holding.
+//
 // Truncation is the dangerous outcome, not merely a wrong one: 256 narrows to
 // 0, which is StateUnset — a LEGAL persisted position meaning "this job never
 // ran". A corrupt row would restore as a plausible queued job, and reconstruct

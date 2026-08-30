@@ -10,22 +10,24 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// TestRestore_RegistersEveryStoredJobInOrder pins that restore preserves the
-// store's row order in the registry (D-B11's read-once-at-startup), rather
-// than reordering by ID or by any other key.
 // TestRestore_RegistersEveryStoredJobInOrder asserts restore rebuilds queue
 // order from SortKey, not from the order Load happened to return rows in.
+// (Before B2.2 it asserted the opposite — that Load's slice order WAS the
+// order — which is the premise this change replaced.)
 //
-// The seeded rows are deliberately out of both orders at once: "c" sorts after
-// "a" alphabetically and is returned FIRST by Load, yet carries the lower key,
-// so only a restore that reads SortKey produces [c a]. Before B2.2 this test
-// seeded no keys and passed on Load's slice order alone, which is the premise
-// this change replaced.
+// The seed order is what makes it discriminate, and it has to disagree with
+// BOTH of the other two orders the code could accidentally produce. Load
+// returns [a, c] because that is seed order; SortKey order is [c, a]; and
+// alphabetical is [a, c]. Only a restore that actually sorts by SortKey yields
+// [c, a], so deleting the sort turns this red.
+//
+// Seeding c before a would NOT discriminate: Load order and SortKey order would
+// then agree, and the test would pass with the sort removed.
 func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{
-		{ID: "c", SortKey: 1, Header: Header{Name: "c"}},
 		{ID: "a", SortKey: 2, Header: Header{Name: "a"}},
+		{ID: "c", SortKey: 1, Header: Header{Name: "c"}},
 	})
 	d := newTestDispatcher(t, withStore(st))
 
@@ -499,11 +501,17 @@ func TestFakeStore_RowsAndOrderStayInStep(t *testing.T) {
 // List and Stop operate on a queue that was never fully restored.
 func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
 	st := &fakeStore{}
+	// The SortKeys are explicit and ascending because restore SORTS before
+	// registering, and both rows defaulting to 0 made the ID tiebreak put
+	// "bad" first — so reconstruct failed on the first row, nothing was ever
+	// registered, and the rollback loop this test exists for ran zero times
+	// while the test still passed. Deleting d.remove(id) from restore did not
+	// turn it red.
 	st.seed([]Persisted{
-		{ID: "good", Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
+		{ID: "good", SortKey: 1, Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
 		// StateUnset carrying a Next is a position no attempt can hold, so
 		// reconstruct rejects it — a stand-in for any row that fails partway.
-		{ID: "bad", Header: Header{Name: "b"}, State: job.StateView{State: job.StateUnset, Next: job.Assessing}},
+		{ID: "bad", SortKey: 2, Header: Header{Name: "b"}, State: job.StateView{State: job.StateUnset, Next: job.Assessing}},
 	})
 	d := newTestDispatcher(t, withStore(st))
 
@@ -519,7 +527,7 @@ func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
 
 	// The retry is the consequence that bites: same store, now readable.
 	st.seed([]Persisted{
-		{ID: "good", Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
+		{ID: "good", SortKey: 1, Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
 	})
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("second Start: %v — a retry after a failed restore must be able "+
@@ -669,5 +677,22 @@ func TestRestore_DoesNotRewriteRowsItJustRead(t *testing.T) {
 
 	if got := st.saveCount() - before; got != 0 {
 		t.Fatalf("a quiet pass over restored jobs issued %d Save calls, want 0 — restore and persistIfChanged disagree about what was stored", got)
+	}
+}
+
+// TestReconstruct_RejectsAssessedOnAStateUnsetRow completes the never-run
+// guard. A job that never ran cannot have been assessed, and Assessed was the
+// one StateView field the guard did not check.
+//
+// The cost of accepting such a row is not a wrong position but a permanent
+// disagreement: job.New produces Assessed false, while restore records
+// lastWritten with Assessed true, so persistIfChanged sees a change that is not
+// there and writes on every otherwise-quiet tick, forever.
+func TestReconstruct_RejectsAssessedOnAStateUnsetRow(t *testing.T) {
+	_, err := reconstruct("j1", "n", job.Policy{},
+		job.StateView{State: job.StateUnset, Assessed: true},
+		job.IntentRun, time.Now())
+	if err == nil {
+		t.Fatal("reconstruct accepted a StateUnset row with Assessed true; no attempt can hold that position")
 	}
 }

@@ -61,11 +61,21 @@ type Dispatcher struct {
 	launched map[string]bool
 	written  map[string]Persisted
 
-	// nextSeq is the sequence register will hand the next job. register is
-	// its only writer: `git grep -n 'd\.nextSeq = ' internal/dispatch` returns
-	// 1 line, register's own max(). Add reads it and passes the value on, but
-	// does not advance it.
+	// nextSeq is the sequence register will hand the next job, and register is
+	// its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch` returns
+	// 1 line, register's own max().
+	//
+	// It is also register's sole reader. That half is stated rather than
+	// cited, because "reads this field" has no pattern that separates the code
+	// from the prose describing it. What matters is that Add does NOT read it:
+	// it passes seqNext and lets register allocate under the lock it already
+	// holds, which is what stops two concurrent Adds taking the same key.
 	nextSeq int64
+
+	// restoring is true for the whole of restore — from before the store read
+	// to after the last row is registered. Add refuses while it is set; see
+	// Add (registry.go) for what an interleaved registration costs.
+	restoring bool
 
 	q    *sched.Queue
 	wake chan struct{}
@@ -486,6 +496,15 @@ func (d *Dispatcher) Stop() error {
 // persistIfChanged has nothing new to say about it and costs no store
 // traffic until the job actually moves.
 func (d *Dispatcher) restore(ctx context.Context) error {
+	d.mu.Lock()
+	d.restoring = true
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		d.restoring = false
+		d.mu.Unlock()
+	}()
+
 	rows, err := d.store.Load(ctx)
 	if err != nil {
 		return fmt.Errorf("dispatch: restore: load: %w", err)
@@ -507,11 +526,11 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	// disagreement is non-deterministic. Keeping the sort here also means
 	// Load's ordering is a performance property rather than a correctness
 	// one, which is the safer place for it.
-	slices.SortStableFunc(rows, func(a, b Persisted) int {
-		if c := cmp.Compare(a.SortKey, b.SortKey); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.ID, b.ID)
+	// SortFunc, not SortStableFunc: ID is the store's primary key, so
+	// (SortKey, ID) is a strict total order and there are no equal elements
+	// for stability to preserve.
+	slices.SortFunc(rows, func(a, b Persisted) int {
+		return cmp.Or(cmp.Compare(a.SortKey, b.SortKey), cmp.Compare(a.ID, b.ID))
 	})
 
 	now := time.Now()
@@ -641,9 +660,19 @@ func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.In
 		// Never ran: no attempt to open. This package never persists a row
 		// shaped like this with anything else set — persistIfChanged always
 		// renders State from a live job.Job, and a never-run job's Next,
-		// Activity and Outcome are all their zero values — so a row that
-		// claims otherwise names a position no attempt could have produced.
-		if v.Next != job.StateUnset || v.Activity != job.ActNone || v.Outcome != job.OutcomePending {
+		// Activity, Outcome and Assessed are all their zero values — so a row
+		// that claims otherwise names a position no attempt could have
+		// produced.
+		//
+		// The comparison is against the whole zero StateView rather than an
+		// enumeration of its fields. An enumeration has to be revisited every
+		// time StateView gains a field, and it already missed one: Assessed
+		// was omitted, and accepting such a row cost a permanent disagreement
+		// rather than a wrong position — job.New produces Assessed false while
+		// restore records lastWritten with Assessed true, so persistIfChanged
+		// would see a change that is not there and write on every otherwise
+		// quiet tick, forever.
+		if v != (job.StateView{}) {
 			return nil, fmt.Errorf("job %s: StateUnset row carries %+v, which no attempt can hold", id, v)
 		}
 		if err := j.SetIntent(intent); err != nil {
