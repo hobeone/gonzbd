@@ -581,6 +581,55 @@ func TestSeedFromRuns_StaysAdditive(t *testing.T) {
 	}
 }
 
+// TestSeedFromRuns_AppliesNothingWhenAnyRunIsRefused pins that a refused run
+// aborts the whole batch rather than the remainder of it.
+//
+// runsCoverage refuses a run whose article range does not lie inside the file
+// it names, and what that means is that the manifest was rebuilt to a
+// different shape under rows keyed on the old numbering. That is a fact about
+// the BATCH, not about the one row: the rows ordered before it are keyed on
+// the same stale numbering and cleared the bounds check only because their
+// indices happened to land inside a valid range. Applying them marks articles
+// done that were never fetched, and markDone is one-way on this path (R9) and
+// decrements pendingArticles, which ForEachUnfinishedArticle skips a job on —
+// so the skipped downloads never come back as work and the file assembles
+// short, silently. That is the outcome runsCoverage refuses loudly to permit,
+// and applying a prefix of the batch reintroduces it behind the refusal.
+//
+// It also pins the caller's premise. seedFromCommittedRuns logs this error and
+// carries on because "a failure here costs a re-fetch and nothing else", which
+// is only true while a failure applies nothing.
+func TestSeedFromRuns_AppliesNothingWhenAnyRunIsRefused(t *testing.T) {
+	const nFiles, nArts = 2, 3
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir))
+	job := makeMultiFileJob(t, "job-1", nFiles, nArts)
+	job.ID = "job-1"
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// File 0 covers global articles [0,3) and file 1 covers [3,6). The first
+	// run is honest about file 0. The second names file 1 but carries file 0's
+	// numbering, which is exactly the shape a rebuilt manifest leaves behind.
+	runs := append(
+		fileRunsOf(0, 0, 0),
+		durability.Run{FileIdx: 1, FirstArtIdx: 0, LastArtIdx: 0, Length: 1},
+	)
+
+	if err := q.SeedFromRuns("job-1", runs); err == nil {
+		t.Fatal("SeedFromRuns accepted a run whose range lies outside the file it names; " +
+			"the rest of this test is about what that refusal must leave behind")
+	}
+
+	if p := q.SnapshotJob("job-1").Progress(); p.ArticleDone(0) {
+		t.Error("article 0 was marked Done by the run ordered before the refused one, so a " +
+			"batch that failed validation still applied part of itself; those articles are " +
+			"now Done without having been fetched and ForEachUnfinishedArticle will not " +
+			"offer them again")
+	}
+}
+
 // TestMarkNotDone_GuardsWhatItMayUndo pins the inverse of markDone at its own
 // level, because two of its three arms are invisible from ReplaceFromRuns'
 // return value — it reports nothing, and both refusals leave the article

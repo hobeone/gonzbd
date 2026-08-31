@@ -11,25 +11,40 @@ import (
 // bodies until B2.4a; their Queue methods are now lookup plus one of these
 // plus queue bookkeeping.
 //
-// EVERY METHOD HERE MUST BE CALLED WITH Queue.mu HELD FOR WRITING, and every
-// one begins with j.resident(). The residency call is not defensive
-// duplication of the caller's check — it is the gate itself in its Job-level
-// form (#261), and TestManifestAccessIsGated fails any method in this file
-// that dereferences j.manifest without it.
+// EVERY METHOD HERE MUST BE CALLED WITH Queue.mu HELD, and every one begins
+// with j.resident(). The residency call is not defensive duplication of the
+// caller's check — it is the gate itself in its Job-level form (#261), and
+// TestManifestAccessIsGated fails any method in this file that dereferences
+// j.manifest without it.
 //
-// # Why these return fully-formed errors
+// Held for WRITING by every method here but one, because they mutate progress.
+// The exception is countUnfinishedArticles, which only reads: its caller
+// Queue.CountUnfinishedArticles holds q.mu for reading. Stated as an
+// enumeration rather than as a universal because the universal was false as
+// soon as the one query moved in with the mutations.
 //
-// Each error here names the job, and the Queue wrappers pass it through
-// unchanged rather than re-wrapping. That is not a style choice: before
-// B2.4a, Queue.residentJob built the residency error with the ID and the
-// method body built the index error with the ID, so both already carried it.
-// A wrapper that re-wrapped whatever came back would produce
+// # What these return
+//
+// Every method here returns an error naming the job except undeferRecovery,
+// which reports a bare changed bool — its two callers differ on whether an
+// out-of-range index is a refusal or a no-op, so the rejecting one gets its
+// error from checkFileIdxs instead and this one has nothing left to report.
+//
+// Where an error IS returned, the Queue wrapper passes it through unchanged
+// rather than re-wrapping. That is not a style choice: before B2.4a,
+// Queue.residentJob built the residency error with the ID and the method body
+// built the index error with the ID, so both already carried it. A wrapper
+// that re-wrapped whatever came back would produce
 //
 //	queue: fileIdx 9 out of range for job j1: j1
 //
-// AckDurable and SeedFromRuns are the two exceptions, and they were exceptions
-// before this change too: both add their own "queue: <method> <id>: " prefix,
-// so the ID legitimately appears twice in their output.
+// AckDurable and SeedFromRuns are the exceptions, and they were exceptions
+// before this change too: both add their own "queue: <method> <id>: " prefix.
+// For AckDurable the ID appears twice in the result, because every error it
+// returns already carries it. For SeedFromRuns that holds of the residency
+// error only — the coverage error comes from runsCoverage, which names the
+// file and article range but not the job, so the wrapper's prefix supplies the
+// single occurrence.
 // TestManifestTierErrorShapes pins all of it, and passed against the unmoved
 // code before this file existed.
 
@@ -216,16 +231,38 @@ func (j *Job) ackDurable(arts []int32) (invalid, nArt int, err error) {
 }
 
 // seedFromRuns marks every article covered by runs as done.
+//
+// Every run is checked before any article is marked, which is the same
+// validate-then-apply shape ReplaceFromRuns uses to build its covered set.
+// The interleaved form this replaced applied each run as it cleared, which
+// leaked exactly the corruption runsCoverage exists to detect: a run it
+// refuses means the manifest was rebuilt under rows keyed on the old
+// numbering, and that is a statement about the whole batch, not about the one
+// row. The rows ordered before it are keyed on the same stale numbering and
+// passed only because their indices happened to land inside a valid range, so
+// applying them marks arbitrary articles done. markDone is one-way on this
+// path (R9) and decrements pendingArticles, which is what
+// ForEachUnfinishedArticle skips a job on, so those articles are never
+// enumerated for dispatch again — the silent skipped download runsCoverage
+// refuses loudly to allow. It also restores this method's contract to what
+// its caller already documents: seedFromCommittedRuns logs the error and
+// carries on because "a failure here costs a re-fetch and nothing else",
+// which only holds if a failure applies nothing.
 func (j *Job) seedFromRuns(runs []durability.Run) error {
 	if err := j.resident(); err != nil {
 		return fmt.Errorf("%w: %s", err, j.ID)
 	}
+	type span struct{ lo, hi int }
+	spans := make([]span, 0, len(runs))
 	for _, r := range runs {
 		lo, hi, err := runsCoverage(j.manifest, r)
 		if err != nil {
 			return err
 		}
-		for i := lo; i <= hi; i++ {
+		spans = append(spans, span{lo: lo, hi: hi})
+	}
+	for _, s := range spans {
+		for i := s.lo; i <= s.hi; i++ {
 			j.progress.markDone(j.manifest, i)
 		}
 	}
