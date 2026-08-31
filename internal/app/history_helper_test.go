@@ -64,7 +64,10 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	if err := q1.RecordDownload(job1q.ID, "serverB", 1024*1024*15); err != nil { // 15 MB
 		t.Fatalf("RecordDownload: %v", err)
 	}
-	job1q.MarkDownloadFinished(now.Add(-2 * time.Second)) // 8 seconds after start
+	// 8 seconds after start.
+	if err := q1.MarkDownloadFinished(job1q.ID, now.Add(-2*time.Second)); err != nil {
+		t.Fatalf("MarkDownloadFinished: %v", err)
+	}
 
 	job1 := &postproc.Job{
 		Queue:       job1q,

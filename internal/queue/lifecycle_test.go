@@ -642,8 +642,14 @@ func TestMarkJobStarted(t *testing.T) {
 //
 // It matters beyond symmetry. DownloadFinished feeds the history record's
 // elapsed time, so a second write moves a completed job's reported duration.
-// The untested rule is also why #457 went unnoticed: Job.MarkDownloadFinished
-// assigns unconditionally, and nothing asserted the two should agree.
+// The untested rule is also why #457 went unnoticed: Job carried an exported
+// MarkDownloadFinished that assigned unconditionally, and nothing asserted the
+// two should agree. #457 deleted it rather than guarding it. Now
+// `git grep -nE 'downloadFinished[[:space:]]*=' -- '*.go' ':!*_test.go'`
+// returns 5 writers: the two that APPLY the finish transition — this
+// method's markDownloadFinishedOnce and SetPostProcStarted, both IsZero-
+// guarded — plus ResetForRetry clearing it and two restore paths. So this
+// test and TestSetPostProcStarted between them cover the transition class.
 func TestMarkDownloadFinished(t *testing.T) {
 	t.Parallel()
 	q := New()

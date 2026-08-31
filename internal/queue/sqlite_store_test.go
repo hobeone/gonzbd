@@ -591,7 +591,18 @@ func TestSQLiteStore_AddErrorPaths(t *testing.T) {
 		store, repo, _ := setupTestStore(t)
 		job := newTestJobWithManifest(t, "dl-finished-job", "dl-finished", 1, 1)
 		want := time.Unix(1700001000, 0).UTC()
-		job.MarkDownloadFinished(want)
+		// Set the timestamp through the queue, which is the only door now
+		// that #457 deleted Job.MarkDownloadFinished — and this file is an
+		// external test package, so it cannot write the field. The queue is
+		// scaffolding for that one call; store.Add below is still what is
+		// under test.
+		q := queue.New()
+		if err := q.Add(job); err != nil {
+			t.Fatalf("q.Add: %v", err)
+		}
+		if err := q.MarkDownloadFinished(job.ID, want); err != nil {
+			t.Fatalf("MarkDownloadFinished: %v", err)
+		}
 		if err := store.Add(ctx, job); err != nil {
 			t.Fatalf("Add: %v", err)
 		}

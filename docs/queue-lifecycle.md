@@ -433,8 +433,13 @@ Recorded so these are not re-investigated as open questions:
   durability work, which replaced the assembler's six ack sites with
   `Queue.AckDurable`/`AckPermanentFailure` — wrote the guard inverted —
   `if job.manifest != nil && job.progress != nil { ...whole body... }` — so a
-  search for `== nil` does not find them, and `MarkDownloadFinished` and
-  `MarkJobStarted` hide their dead progress guard the same way. This is the
+  search for `== nil` does not find them. The two timestamp marks hid a dead
+  progress guard the same way, and are also gone: B2.4a moved their bodies to
+  `Job.markStartedOnce`/`Job.markDownloadFinishedOnce`, which dereference
+  progress unguarded because it is permanently resident, and #457 deleted the
+  exported `Job.MarkDownloadFinished` that still carried one. The inverted-guard
+  shape is what outlives the examples — it evades an `== nil` search, which is
+  why none of these was ever found by grepping for one. This is the
   third time a hand search over this surface has returned a different subset
   (#267 records the first two), which is why the invariant is now enforced by
   `TestManifestAccessIsGated` rather than by reading: it walks the package AST

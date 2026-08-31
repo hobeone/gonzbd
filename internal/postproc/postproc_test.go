@@ -1197,7 +1197,9 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		if err := q.MarkJobStarted(qjob.ID, now); err != nil {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
-		qjob.MarkDownloadFinished(now.Add(5 * time.Second))
+		if err := q.MarkDownloadFinished(qjob.ID, now.Add(5*time.Second)); err != nil {
+			t.Fatalf("MarkDownloadFinished: %v", err)
+		}
 		job := &Job{
 			Queue:       qjob,
 			DownloadDir: t.TempDir(),

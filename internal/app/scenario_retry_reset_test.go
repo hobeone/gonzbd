@@ -83,7 +83,9 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 		t.Fatalf("record the durable run: %v", err)
 	}
 	ackFailed(t, q, jobID, "a2@t")
-	seeded.MarkDownloadFinished(finished)
+	if err := q.MarkDownloadFinished(jobID, finished); err != nil {
+		t.Fatalf("MarkDownloadFinished: %v", err)
+	}
 	if err := q.Save(h.adminDir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
