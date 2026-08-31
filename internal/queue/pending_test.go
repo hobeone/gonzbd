@@ -84,6 +84,7 @@ func artID(fi, ai int) string {
 }
 
 func TestPendingCounter_Add(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job := makeTestJob("j1", 2, 3)
 	if err := q.Add(job); err != nil {
@@ -96,6 +97,7 @@ func TestPendingCounter_Add(t *testing.T) {
 }
 
 func TestPendingCounter_EmitAndClear(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job := makeTestJob("j1", 2, 3)
 	_ = q.Add(job)
@@ -127,6 +129,7 @@ func TestPendingCounter_EmitAndClear(t *testing.T) {
 }
 
 func TestPendingCounter_MarkDone(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job := makeTestJob("j1", 2, 3)
 	_ = q.Add(job)
@@ -147,6 +150,7 @@ func TestPendingCounter_MarkDone(t *testing.T) {
 }
 
 func TestPendingCounter_MarkFailed(t *testing.T) {
+	t.Parallel()
 	q := New()
 	_ = q.Add(makeTestJob("j1", 1, 3))
 
@@ -161,6 +165,7 @@ func TestPendingCounter_MarkFailed(t *testing.T) {
 }
 
 func TestPendingCounter_BatchDone(t *testing.T) {
+	t.Parallel()
 	q := New()
 	_ = q.Add(makeTestJob("j1", 2, 3))
 
@@ -177,6 +182,7 @@ func TestPendingCounter_BatchDone(t *testing.T) {
 }
 
 func TestPendingCounter_BatchFailed(t *testing.T) {
+	t.Parallel()
 	q := New()
 	_ = q.Add(makeTestJob("j1", 1, 4))
 
@@ -190,6 +196,7 @@ func TestPendingCounter_BatchFailed(t *testing.T) {
 }
 
 func TestPendingCounter_ClearAllEmitted(t *testing.T) {
+	t.Parallel()
 	q := New()
 	_ = q.Add(makeTestJob("j1", 2, 3))
 
@@ -207,6 +214,7 @@ func TestPendingCounter_ClearAllEmitted(t *testing.T) {
 }
 
 func TestPendingCounter_ForEachSkipsCompletedFiles(t *testing.T) {
+	t.Parallel()
 	q := New()
 	_ = q.Add(makeTestJob("j1", 2, 2))
 
@@ -232,6 +240,7 @@ func TestPendingCounter_ForEachSkipsCompletedFiles(t *testing.T) {
 }
 
 func TestPendingCounter_ForEachSkipsCompletedJobs(t *testing.T) {
+	t.Parallel()
 	q := New()
 	_ = q.Add(makeTestJob("j1", 1, 2))
 	_ = q.Add(makeTestJob("j2", 1, 1))
@@ -252,6 +261,7 @@ func TestPendingCounter_ForEachSkipsCompletedJobs(t *testing.T) {
 }
 
 func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
+	t.Parallel()
 	// Create queue, add job, mark some articles, save
 	q := New()
 	_ = q.Add(makeTestJob("j1", 2, 3))
@@ -277,6 +287,7 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 }
 
 func TestBytesDownloaded_TrackedByDurableAcks(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job := makeTestJob("j1", 2, 3) // 6 articles × 1000 bytes = 6000 bytes total
 	_ = q.Add(job)
@@ -308,6 +319,7 @@ func TestBytesDownloaded_TrackedByDurableAcks(t *testing.T) {
 }
 
 func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job := makeTestJob("j1", 2, 2)
 	_ = q.Add(job)
@@ -332,6 +344,7 @@ func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
 // documented in CLAUDE.md where incremental Pending/BytesDownloaded
 // updates diverge from ground truth over a sequence of mutations.
 func TestCounterConsistencyUnderRandomMutations(t *testing.T) {
+	t.Parallel()
 	const seed1, seed2 = 0xdeadbeef, 0xcafef00d
 	rng := rand.New(rand.NewPCG(seed1, seed2))
 

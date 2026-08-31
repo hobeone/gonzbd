@@ -8,6 +8,7 @@ import "testing"
 // CRC oracle proved unnecessary. Widening the predicate to `!= FetchAlways`
 // must fail this test.
 func TestDeferredRecoveryIndices_ExcludesDiscarded(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 1000, Articles: []JobArticle{{ID: "a1", Bytes: 1000}}},
 		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
@@ -28,6 +29,7 @@ func TestDeferredRecoveryIndices_ExcludesDiscarded(t *testing.T) {
 // a discarded volume counted as held costs a verification pass per completion
 // event for the rest of the job.
 func TestHasDeferredPar2_FalseOnceEverythingIsDecided(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 1000, Articles: []JobArticle{{ID: "a1", Bytes: 1000}}},
 		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
@@ -49,6 +51,7 @@ func TestHasDeferredPar2_FalseOnceEverythingIsDecided(t *testing.T) {
 // go false at that point. Reported as HasDeferredPar2, the "par2 on-demand"
 // badge would disappear at the exact moment the feature succeeds.
 func TestUsesOnDemandPar2(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 1000, Articles: []JobArticle{{ID: "a1", Bytes: 1000}}},
 		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
@@ -78,6 +81,7 @@ func TestUsesOnDemandPar2(t *testing.T) {
 // derived figures, not just remaining. Expected must drop it too, or the
 // downloaded identity in internal/app/history_helper.go over-reports.
 func TestSizeFigures_ExcludesDiscarded(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 1000, Articles: []JobArticle{{ID: "a1", Bytes: 1000}}},
 		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},

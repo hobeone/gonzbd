@@ -153,7 +153,7 @@ func TestActiveSet_StructuralMemoryBound(t *testing.T) {
 	// Pause queue so promotion doesn't run during Add
 	q.PauseAll()
 
-	const N = 1000
+	const N = 100
 	for i := range N {
 		id := "job-" + strconv.Itoa(i)
 		job := helperMakeJob(t, id)

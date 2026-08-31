@@ -30,6 +30,7 @@ import (
 // store has never persisted them — the payload carried them only as far as
 // the history entry's Meta string, which buildHistoryEntry still writes.
 func TestJobStateSurvivesStoreRoundTrip(t *testing.T) {
+	t.Parallel()
 	// File 0 carries the per-article states; file 1 carries the complete
 	// flag. Keeping them on separate files is deliberate: a complete file's
 	// failed bits are dropped on restore (#300), so seeding both on one
@@ -93,6 +94,7 @@ func TestSave_ClearsDirtyOnSuccess(t *testing.T) {
 }
 
 func TestSave_RestoresDirtyOnError(t *testing.T) {
+	t.Parallel()
 	// A failing Store, not an unwritable directory: since #266 a Queue with
 	// no Store has nothing to persist and Save cannot fail, so the error
 	// path only exists for the store-backed configuration production uses.
@@ -130,6 +132,7 @@ func TestSave_RestoresDirtyOnError(t *testing.T) {
 // TestSaveStore_Success pins the happy path: jobs and the paused flag both
 // land in the store, and Prune runs afterward without error.
 func TestSaveStore_Success(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	j := makeMultiFileJob(t, "savestore-ok", 1, 2)
@@ -157,6 +160,7 @@ func TestSaveStore_Success(t *testing.T) {
 // reported (wrapped), and that Prune — which trusts the just-written jobs
 // row as the live set — never runs when that write failed.
 func TestSaveStore_JobsErrorPropagates(t *testing.T) {
+	t.Parallel()
 	real, dir := setupResidencyTestStore(t)
 	fs := &failingStore{Store: real, failUpdateBatch: true}
 	q := New(WithStore(fs), WithStateDir(dir))
@@ -196,6 +200,7 @@ func TestSaveStore_JobsErrorPropagates(t *testing.T) {
 // a checkpoint failure needs to see both problems, not just the first one
 // hit.
 func TestSaveStore_BothWritesFailAreJoined(t *testing.T) {
+	t.Parallel()
 	real, dir := setupResidencyTestStore(t)
 	fs := &failingStore{Store: real, failUpdateBatch: true, failSetPaused: true}
 	q := New(WithStore(fs), WithStateDir(dir))
@@ -224,6 +229,7 @@ func TestSaveStore_BothWritesFailAreJoined(t *testing.T) {
 // are attempted independently and their errors joined, rather than the
 // first success hiding the second failure.
 func TestSaveStore_PausedErrorPropagates(t *testing.T) {
+	t.Parallel()
 	real, dir := setupResidencyTestStore(t)
 	fs := &failingStore{Store: real, failSetPaused: true}
 	q := New(WithStore(fs), WithStateDir(dir))
@@ -274,6 +280,7 @@ func TestSaveStore_PausedErrorPropagates(t *testing.T) {
 // TestSaveStore_PruneErrorPropagates pins that a Prune failure, reached only
 // once both writes above succeed, is reported wrapped rather than swallowed.
 func TestSaveStore_PruneErrorPropagates(t *testing.T) {
+	t.Parallel()
 	real, dir := setupResidencyTestStore(t)
 	fs := &failingStore{Store: real, failPrune: true}
 	q := New(WithStore(fs), WithStateDir(dir))
@@ -299,6 +306,7 @@ func TestSaveStore_PruneErrorPropagates(t *testing.T) {
 // TestReadGzJSON_RoundTrip pins the success path shared with writeGzJSON:
 // what was encoded comes back equal.
 func TestReadGzJSON_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "roundtrip.json.gz")
 	type payload struct {
@@ -323,6 +331,7 @@ func TestReadGzJSON_RoundTrip(t *testing.T) {
 // os.ErrNotExist, letting callers like hydrateJobLocked distinguish "never
 // persisted" from a real I/O error.
 func TestReadGzJSON_MissingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var v map[string]int
 	err := readGzJSON(filepath.Join(dir, "missing.json.gz"), &v)
@@ -337,6 +346,7 @@ func TestReadGzJSON_MissingFile(t *testing.T) {
 // TestReadGzJSON_NotGzip pins the gunzip-failure branch: a file that exists
 // but is not valid gzip data must error rather than hand back garbage.
 func TestReadGzJSON_NotGzip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "not-gzip.json.gz")
 	if err := os.WriteFile(path, []byte("not actually gzip data"), 0o600); err != nil {
@@ -356,6 +366,7 @@ func TestReadGzJSON_NotGzip(t *testing.T) {
 // TestReadGzJSON_CorruptJSON pins the decode-failure branch: valid gzip
 // wrapping invalid JSON must error rather than silently leave v untouched.
 func TestReadGzJSON_CorruptJSON(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corrupt.json.gz")
 	// writeGzJSON only ever encodes valid JSON, so build the gzip stream by
@@ -392,6 +403,7 @@ func TestReadGzJSON_CorruptJSON(t *testing.T) {
 // store writes, so it is where the atomic temp+fsync+rename pattern has to
 // hold.
 func TestManifestWrite_NoLeftoverTempFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
@@ -536,6 +548,7 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 // round-trip, not a byte-compatibility one. Also confirms the transient
 // emitted flags and the derived counters never appear in the marshaled bytes.
 func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "content1.bin", Bytes: 200, Articles: []nzb.Article{
 			{ID: "c1a@x", Bytes: 100, Number: 1},
@@ -660,6 +673,7 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 // ---------- Direct Persistence/Job Helpers ----------
 
 func TestJob_RecomputePending_Direct(t *testing.T) {
+	t.Parallel()
 	job := &Job{ID: "test-job"}
 	job.manifest = newManifest([]JobFile{
 		{
@@ -687,6 +701,7 @@ func TestJob_RecomputePending_Direct(t *testing.T) {
 // counters are rebuilt on load. They are excluded from persistence, so a job
 // that came back with them at zero would never dispatch.
 func TestStoreRoundTrip_RecomputesPending(t *testing.T) {
+	t.Parallel()
 	j := makeMultiFileJob(t, "load-recompute", 1, 3)
 	// Articles start !Done, !Emitted from NewJob — all pending by default.
 
@@ -758,6 +773,7 @@ func TestLoad_WithLogger(t *testing.T) {
 // progress restored, so the daemon resumes the download instead of starting
 // it over.
 func TestLoad_RehydratesResidentJob(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 
 	seed := New(WithStore(store), WithStateDir(dir))
@@ -807,6 +823,7 @@ func TestLoad_RehydratesResidentJob(t *testing.T) {
 // to a partial answer would put the daemon back in the silent-wrong-numbers
 // state the residency work removed.
 func TestLoad_StoreQueryFailuresPropagate(t *testing.T) {
+	t.Parallel()
 	real, dir := setupResidencyTestStore(t)
 	for _, tc := range []struct {
 		name string

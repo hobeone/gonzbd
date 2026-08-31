@@ -26,6 +26,7 @@ func newWriteTxStore(t *testing.T) (*SQLiteStore, string) {
 // once withWriteTx returns nil. The helper owns the commit, so a caller has
 // no other way to know its writes landed.
 func TestWithWriteTx_CommitsOnSuccess(t *testing.T) {
+	t.Parallel()
 	store, _ := newWriteTxStore(t)
 
 	err := store.withWriteTx(t.Context(), func(tx *sql.Tx) error {
@@ -56,6 +57,7 @@ func TestWithWriteTx_CommitsOnSuccess(t *testing.T) {
 // q.mu — 48.8s measured. busy_timeout is the whole retry policy now, and
 // this pins that nothing has quietly reintroduced a loop on top of it.
 func TestWithWriteTx_RollsBackAndRunsOnce(t *testing.T) {
+	t.Parallel()
 	store, _ := newWriteTxStore(t)
 	sentinel := errors.New("caller's own failure")
 
@@ -88,6 +90,7 @@ func TestWithWriteTx_RollsBackAndRunsOnce(t *testing.T) {
 // TestWithWriteTx_ReportsBeginFailure pins that a database which cannot open
 // a transaction at all is reported rather than retried into the timeout.
 func TestWithWriteTx_ReportsBeginFailure(t *testing.T) {
+	t.Parallel()
 	store, _ := newWriteTxStore(t)
 	if err := store.db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -109,6 +112,7 @@ func TestWithWriteTx_ReportsBeginFailure(t *testing.T) {
 // TestWithWriteTx_HonoursContextCancellation pins that a cancelled context
 // stops the helper rather than opening a transaction.
 func TestWithWriteTx_HonoursContextCancellation(t *testing.T) {
+	t.Parallel()
 	store, _ := newWriteTxStore(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -122,6 +126,7 @@ func TestWithWriteTx_HonoursContextCancellation(t *testing.T) {
 // from the manifest write its caller performs, which is the split that keeps
 // the transaction safe to run again after contention.
 func TestAddTx_InsertsJobAndFiles(t *testing.T) {
+	t.Parallel()
 	store, _ := newWriteTxStore(t)
 	ctx := t.Context()
 
@@ -164,6 +169,7 @@ func TestAddTx_InsertsJobAndFiles(t *testing.T) {
 // split out for retry: the reorder itself, and the not-found case that must
 // travel out through withWriteTx unretried.
 func TestShiftSortKeyTx_ReordersAndReportsMissing(t *testing.T) {
+	t.Parallel()
 	store, _ := newWriteTxStore(t)
 	ctx := t.Context()
 

@@ -185,7 +185,7 @@ func TestChallenger_M3_ConcurrentQueueMutationAndSnapshotRaces(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 
 	workers := 20

@@ -13,6 +13,7 @@ import (
 // the whole-file CRC, and none of those questions is asked here. Selecting
 // them anyway would make the boot read wider for no consumer.
 func TestRunRangesForJob_ReadsOnlyTheNamedJobsSpans(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupResidencyTestStoreWithDB(t)
 	ctx := context.Background()
 	if _, err := store.db.ExecContext(ctx, `
@@ -54,6 +55,7 @@ func TestRunRangesForJob_ReadsOnlyTheNamedJobsSpans(t *testing.T) {
 // It is also bounded to the file's own range: a helper that walked the whole
 // job would mark another file's articles from this file's row.
 func TestApplyResolution_MarksFailedBeforeDone(t *testing.T) {
+	t.Parallel()
 	const perFile = 2
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
@@ -101,6 +103,7 @@ func TestApplyResolution_MarksFailedBeforeDone(t *testing.T) {
 // so the running sum reproduces it — and a boot path that skipped the
 // conversion would place every file's flags at the job's first article.
 func TestFillResolution_DerivesFileLocalFlagsWithoutAManifest(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupResidencyTestStoreWithDB(t)
 	ctx := context.Background()
 	// File 0 owns global articles 0-1, file 1 owns 2-4. One run covers

@@ -24,6 +24,7 @@ func minimalNZB() *nzb.NZB {
 }
 
 func TestNewJob_CategoryPPInherit(t *testing.T) {
+	t.Parallel()
 	cats := []config.CategoryConfig{
 		{Name: "tv", PP: 3, Script: "tv.sh", Priority: int(constants.HighPriority)},
 	}
@@ -45,6 +46,7 @@ func TestNewJob_CategoryPPInherit(t *testing.T) {
 }
 
 func TestNewJob_CategoryPriorityInherit(t *testing.T) {
+	t.Parallel()
 	cats := []config.CategoryConfig{
 		{Name: "movies", Priority: int(constants.HighPriority)},
 	}
@@ -63,6 +65,7 @@ func TestNewJob_CategoryPriorityInherit(t *testing.T) {
 }
 
 func TestNewJob_ExplicitOverridesCategory(t *testing.T) {
+	t.Parallel()
 	cats := []config.CategoryConfig{
 		{Name: "tv", PP: 3, Script: "tv.sh", Priority: int(constants.LowPriority)},
 	}
@@ -89,6 +92,7 @@ func TestNewJob_ExplicitOverridesCategory(t *testing.T) {
 }
 
 func TestNewJob_ClampsPPAbove3(t *testing.T) {
+	t.Parallel()
 	// 4e6d545: legacy bitmask PP values (e.g. 7) are clamped to the max valid
 	// level 3, not passed through. Without the clamp, job.PP would be 7.
 	job, err := NewJob(minimalNZB(), AddOptions{
@@ -104,6 +108,7 @@ func TestNewJob_ClampsPPAbove3(t *testing.T) {
 }
 
 func TestNewJob_NoCategoriesFallback(t *testing.T) {
+	t.Parallel()
 	// No Categories: sentinels resolve through FindCategory which
 	// falls back to BuiltinDefaultCategory (PP=3, Priority=Normal).
 	// This must NEVER return PP=0 — that would silently disable
@@ -129,6 +134,7 @@ func TestNewJob_NoCategoriesFallback(t *testing.T) {
 }
 
 func TestNewJob_CategoryFallbackToDefault(t *testing.T) {
+	t.Parallel()
 	cats := []config.CategoryConfig{
 		{Name: "Default", PP: 2, Script: "fallback.sh"},
 	}
@@ -152,6 +158,7 @@ func TestNewJob_CategoryFallbackToDefault(t *testing.T) {
 // ---------- IsEarlyAbort ----------
 
 func TestIsEarlyAbort_NotEnoughSamples(t *testing.T) {
+	t.Parallel()
 	j := &Job{progress: &JobProgress{articlesResolved: 5, articlesFailed: 5}}
 	if j.IsEarlyAbort() {
 		t.Error("fired with only 5 resolved articles, need 10")
@@ -159,6 +166,7 @@ func TestIsEarlyAbort_NotEnoughSamples(t *testing.T) {
 }
 
 func TestIsEarlyAbort_HighFailRate(t *testing.T) {
+	t.Parallel()
 	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 8}} // 80%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at 80% failure rate with 10 resolved")
@@ -169,6 +177,7 @@ func TestIsEarlyAbort_HighFailRate(t *testing.T) {
 }
 
 func TestIsEarlyAbort_UnderThreshold(t *testing.T) {
+	t.Parallel()
 	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 7}} // 70%
 	if j.IsEarlyAbort() {
 		t.Error("should not fire at 70% failure rate")
@@ -176,6 +185,7 @@ func TestIsEarlyAbort_UnderThreshold(t *testing.T) {
 }
 
 func TestIsEarlyAbort_OnlyFiresOnce(t *testing.T) {
+	t.Parallel()
 	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 10}}
 	if !j.IsEarlyAbort() {
 		t.Fatal("first call should fire")
@@ -186,6 +196,7 @@ func TestIsEarlyAbort_OnlyFiresOnce(t *testing.T) {
 }
 
 func TestIsEarlyAbort_ExactThreshold(t *testing.T) {
+	t.Parallel()
 	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 8}} // exactly 80%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at exactly 80%")
@@ -193,6 +204,7 @@ func TestIsEarlyAbort_ExactThreshold(t *testing.T) {
 }
 
 func TestIsEarlyAbort_AllFailed(t *testing.T) {
+	t.Parallel()
 	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 10}} // 100%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at 100% failure rate")
@@ -206,6 +218,7 @@ func TestIsEarlyAbort_AllFailed(t *testing.T) {
 // how many articles had already resolved/failed, corrupting the
 // IsEarlyAbort heuristic for jobs resumed mid-download.
 func TestRecomputePending_SeedsEarlyAbortCounters(t *testing.T) {
+	t.Parallel()
 	files := []JobFile{
 		{Articles: []JobArticle{
 			{ID: "a1", Bytes: 100},
@@ -244,6 +257,7 @@ func TestRecomputePending_SeedsEarlyAbortCounters(t *testing.T) {
 // still trip the early-abort heuristic on the very first post-reload
 // check, without needing 10 fresh failures in the new session.
 func TestRecomputePending_EarlyAbortFiresAfterReload(t *testing.T) {
+	t.Parallel()
 	articles := make([]JobArticle, 0, 10)
 	for i := range 10 {
 		articles = append(articles, JobArticle{ID: fmt.Sprintf("a%d", i), Bytes: 100})
@@ -268,6 +282,7 @@ func TestRecomputePending_EarlyAbortFiresAfterReload(t *testing.T) {
 }
 
 func TestJobUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
 	// 1. stripNZBExt
 	testsStrip := []struct {
 		in   string
@@ -367,6 +382,7 @@ func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
 // the per-file/job-level FailedBytes recomputed from what remains), and
 // Complete should be cleared only for files that had a reset.
 func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "f0", Bytes: 300, Articles: []nzb.Article{
 			{ID: "f0a0@t", Bytes: 100, Number: 1},

@@ -17,6 +17,7 @@ func art(id string) nzb.Article {
 // (movie.part01.rar, movie.part02.rar, …) sort before non-RAR files and are
 // ordered by volume number, regardless of their position in the NZB.
 func TestNewJob_SortsNewStyleRarVolumesFirst(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{Subject: "movie.nfo", Bytes: 100, Articles: []nzb.Article{art("nfo@x")}},
@@ -48,6 +49,7 @@ func TestNewJob_SortsNewStyleRarVolumesFirst(t *testing.T) {
 // TestNewJob_SortsLegacyRarVolumesFirst verifies that legacy-style RAR volumes
 // (movie.rar = vol1, movie.r00 = vol2, movie.r01 = vol3) are reordered correctly.
 func TestNewJob_SortsLegacyRarVolumesFirst(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{Subject: "show.sfv", Bytes: 100, Articles: []nzb.Article{art("sfv@x")}},
@@ -80,6 +82,7 @@ func TestNewJob_SortsLegacyRarVolumesFirst(t *testing.T) {
 // two independent RAR sets, both sets are sorted by volume number and the
 // sets are stable relative to each other.
 func TestNewJob_SortsMultipleRarSetsInOrder(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{Subject: "extras.part02.rar", Bytes: 100, Articles: []nzb.Article{art("e2@x")}},
@@ -114,6 +117,7 @@ func TestNewJob_SortsMultipleRarSetsInOrder(t *testing.T) {
 // TestNewJob_NonRarNzbUnchanged verifies that an NZB with no RAR files is
 // left in document order (sort is a stable no-op).
 func TestNewJob_NonRarNzbUnchanged(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{Subject: "readme.nfo", Bytes: 100, Articles: []nzb.Article{art("nfo@x")}},

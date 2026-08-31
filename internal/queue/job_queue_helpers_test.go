@@ -27,6 +27,7 @@ import (
 // entire contract: it copies exactly the five manifest totals onto the job,
 // nothing more and nothing less.
 func TestSetScalarsFromManifest_CopiesFiveTotals(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 1000, Articles: []JobArticle{{ID: "a1", Bytes: 1000}}},
 		{Subject: "a.vol00+01.par2", Bytes: 500, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 500}}},
@@ -56,6 +57,7 @@ func TestSetScalarsFromManifest_CopiesFiveTotals(t *testing.T) {
 // arguments, but par2Bytes/par2Files are deliberately left alone (they come
 // from setRecoveryScalarsFromStore instead).
 func TestSetAggregateScalarsFromFiles_LeavesRecoveryUntouched(t *testing.T) {
+	t.Parallel()
 	j := &Job{}
 	j.setRecoveryScalarsFromStore(999, 3) // pre-set to a sentinel this call must not disturb
 	j.setAggregateScalarsFromFiles(12345, 4, 20)
@@ -80,6 +82,7 @@ func TestSetAggregateScalarsFromFiles_LeavesRecoveryUntouched(t *testing.T) {
 // TestSetPar2ScalarsFromStore_SetsOnlyThePair pins that it writes exactly
 // par2Bytes/par2Files and nothing else.
 func TestSetRecoveryScalarsFromStore_SetsOnlyThePair(t *testing.T) {
+	t.Parallel()
 	j := &Job{}
 	j.setAggregateScalarsFromFiles(111, 2, 5)
 	j.setRecoveryScalarsFromStore(777, 1)
@@ -99,6 +102,7 @@ func TestSetRecoveryScalarsFromStore_SetsOnlyThePair(t *testing.T) {
 // entire contract: it nils out the manifest, records progress, and stashes
 // the error so a later Manifest() call surfaces it.
 func TestSetHydrateFailure_ManifestReturnsTheError(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{{Subject: "a", Articles: []JobArticle{{ID: "a1", Bytes: 1}}}})
 	j := &Job{}
 	j.manifest = m
@@ -118,6 +122,7 @@ func TestSetHydrateFailure_ManifestReturnsTheError(t *testing.T) {
 // TestResidentJob_ThreeOutcomes pins residentJob's three-way contract: not
 // found, found but non-resident, and found and resident.
 func TestResidentJob_ThreeOutcomes(t *testing.T) {
+	t.Parallel()
 	q := New()
 
 	if _, err := q.residentJob("missing"); !errors.Is(err, ErrNotFound) {
@@ -145,6 +150,7 @@ func TestResidentJob_ThreeOutcomes(t *testing.T) {
 // paused queues, resident/promoting/post-proc jobs, and picks the first
 // eligible StatusQueued job in q.jobs order.
 func TestFindNextQueuedCandidateLocked_SkipsIneligible(t *testing.T) {
+	t.Parallel()
 	q := New()
 	skip1 := makeTestJob("skip-resident", 1, 1)
 	skip1.Status = constants.StatusQueued
@@ -174,6 +180,7 @@ func TestFindNextQueuedCandidateLocked_SkipsIneligible(t *testing.T) {
 // documented contract: only the manifest is released, progress stays
 // resident.
 func TestEvictJobLocked_ReleasesManifestKeepsProgress(t *testing.T) {
+	t.Parallel()
 	q := New(WithStateDir(t.TempDir()))
 	job := makeTestJob("evict-me", 1, 2)
 	q.activeSet.Add(job)
@@ -218,6 +225,7 @@ func (s *recordingMoveStore) MoveToHistory(_ context.Context, job *Job, entry hi
 // the corrupt manifest file, moving the job to history) using what was
 // captured.
 func TestPrepareAndFinishClaimFailure_EvictsAndRenamesManifest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	probe := &recordingMoveStore{}
 	q := New(WithStore(probe), WithStateDir(dir))
@@ -271,6 +279,7 @@ func TestPrepareAndFinishClaimFailure_EvictsAndRenamesManifest(t *testing.T) {
 // transitioning into a resident status, and is a no-op for a
 // non-resident-status target.
 func TestHydrateResidentLocked_HydratesForResidentStatus(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
 	filler := makeMultiFileJob(t, "hydrate-filler", 1, 1)
@@ -319,6 +328,7 @@ func TestHydrateResidentLocked_HydratesForResidentStatus(t *testing.T) {
 // return value and side effects directly, distinct from the exported
 // UndeferRecoveryVolumes wrapper's own end-to-end tests.
 func TestUndeferRecovery_ClearsDeferredAndRecomputes(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "content.bin", Bytes: 1000, Articles: []JobArticle{{ID: "c1", Bytes: 1000}}},
 		{Subject: "content.vol00+01.par2", Bytes: 500, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 500}}},
@@ -359,6 +369,7 @@ func TestUndeferRecovery_ClearsDeferredAndRecomputes(t *testing.T) {
 // TestSetStatusLocked_ValidatesTransitions pins that setStatusLocked applies
 // a legal transition and rejects an illegal one without mutating job.Status.
 func TestSetStatusLocked_ValidatesTransitions(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job := &Job{ID: "j1", Status: constants.StatusQueued}
 

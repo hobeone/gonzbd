@@ -90,6 +90,7 @@ func newTestJobWithManifest(t *testing.T, id, name string, nFiles, nArticles int
 }
 
 func TestSQLiteStore_CRUD(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -159,6 +160,7 @@ func TestSQLiteStore_CRUD(t *testing.T) {
 }
 
 func TestSQLiteStore_MoveToHistory(t *testing.T) {
+	t.Parallel()
 	store, repo, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -223,6 +225,7 @@ func TestSQLiteStore_MoveToHistory(t *testing.T) {
 }
 
 func TestSQLiteStore_ShiftSortKey(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -265,6 +268,7 @@ func TestSQLiteStore_ShiftSortKey(t *testing.T) {
 }
 
 func TestSQLiteStore_QueryPlan(t *testing.T) {
+	t.Parallel()
 	_, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -294,6 +298,7 @@ func TestSQLiteStore_QueryPlan(t *testing.T) {
 }
 
 func TestSQLiteStore_ManifestAndFiles(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -327,6 +332,7 @@ func TestSQLiteStore_ManifestAndFiles(t *testing.T) {
 }
 
 func TestSQLiteStore_ExistsAndPauseAndPrune(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -383,6 +389,7 @@ func TestSQLiteStore_ExistsAndPauseAndPrune(t *testing.T) {
 }
 
 func TestSQLiteStore_ArticleProgressAndQuarantine(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -410,6 +417,7 @@ func TestSQLiteStore_ArticleProgressAndQuarantine(t *testing.T) {
 }
 
 func TestQueue_WithStoreAndSave(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
 	if q.Store() != store {
@@ -446,6 +454,7 @@ func TestQueue_WithStoreAndSave(t *testing.T) {
 }
 
 func TestSQLiteStore_UpdateBatch(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -484,6 +493,7 @@ func TestSQLiteStore_UpdateBatch(t *testing.T) {
 }
 
 func TestSQLiteStore_UpdateBatchRollsBackAllOnFailure(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -525,6 +535,7 @@ func TestSQLiteStore_UpdateBatchRollsBackAllOnFailure(t *testing.T) {
 // a resident job with a non-zero download-finished timestamp (the
 // download_finished branch, which newTestJob's fresh jobs never hit).
 func TestSQLiteStore_AddErrorPaths(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 
 	t.Run("begin tx fails on a closed pool", func(t *testing.T) {
@@ -630,6 +641,7 @@ func TestSQLiteStore_AddErrorPaths(t *testing.T) {
 }
 
 func TestSQLiteStore_ErrorCoverage(t *testing.T) {
+	t.Parallel()
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -677,6 +689,7 @@ func TestSQLiteStore_ErrorCoverage(t *testing.T) {
 }
 
 func TestSQLiteStore_AbsentManifestHandling(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -712,6 +725,7 @@ func TestSQLiteStore_AbsentManifestHandling(t *testing.T) {
 }
 
 func TestSQLiteStore_GetFailsClosedOnFileCountQueryError(t *testing.T) {
+	t.Parallel()
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -738,6 +752,7 @@ func TestSQLiteStore_GetFailsClosedOnFileCountQueryError(t *testing.T) {
 // own on every update. So the fixture writes what a barrier would have written
 // and the reload has to derive the same answer from it.
 func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
+	t.Parallel()
 	store, repo, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -795,6 +810,7 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 }
 
 func TestSQLiteStore_DownloadTimestampsPersistence(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
 
@@ -869,6 +885,7 @@ func TestSQLiteStore_DownloadTimestampsPersistence(t *testing.T) {
 }
 
 func TestSQLiteStore_GetNullTextColumns(t *testing.T) {
+	t.Parallel()
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -916,6 +933,7 @@ VALUES (?, ?, ?, NULL, NULL, NULL, 0, 'FETCHING', 3, NULL, ?, 'md5-null', ?, NUL
 // here too, but nothing ever wrote it: it was left over from a pre-SQLite
 // layout and went with the payload format in #298.
 func TestSQLiteStore_DeleteJobArtifactsReportsRemovalFailures(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 
 	const id = "job0000000000009"
@@ -940,6 +958,7 @@ func TestSQLiteStore_DeleteJobArtifactsReportsRemovalFailures(t *testing.T) {
 // a job whose artifacts were never written, or were already cleaned up, must
 // not make removal fail. Queue.Remove calls this unconditionally.
 func TestSQLiteStore_DeleteJobArtifactsMissingIsNotAnError(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 
 	if err := store.DeleteJobArtifacts(t.Context(), "job0000000000010"); err != nil {
@@ -951,6 +970,7 @@ func TestSQLiteStore_DeleteJobArtifactsMissingIsNotAnError(t *testing.T) {
 // manifests. A job written by an older build has 0, which must be
 // distinguishable from a real count so the caller can fall back.
 func TestSQLiteStore_ArticleCountRoundTrips(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -980,6 +1000,7 @@ func TestSQLiteStore_ArticleCountRoundTrips(t *testing.T) {
 // partial delete) must have each count attributed by its actual file_index,
 // not by scan-order position.
 func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
+	t.Parallel()
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -1034,6 +1055,7 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 // The assertion below checks "must match the manifest" rather than "must be
 // zero"; it is the same property, against a source that can answer it.
 func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -1120,6 +1142,7 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 // resident-manifest branch is unaffected — isolating the failure to
 // exactly the aggregate query under test.
 func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing.T) {
+	t.Parallel()
 	// Swap the default logger before the store is built, not after: the store
 	// captures a component-scoped logger once in NewSQLiteStore rather than
 	// reaching for slog.Default() at each call site, so a swap performed
@@ -1173,6 +1196,7 @@ func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing
 // File 1 is deliberately left unnamed. Restoring a constant, or copying file
 // 0's name across every row, would satisfy an assertion about file 0 alone.
 func TestRestoreJobProgress_RestoresTheResolvedFilename(t *testing.T) {
+	t.Parallel()
 	store, _, dir := setupTestStore(t)
 	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
 
