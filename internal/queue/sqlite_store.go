@@ -1344,7 +1344,7 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		// fp already carries whatever NewJob just decided while rebuilding the
 		// job from the re-parsed NZB — FetchIfNeeded on every recovery volume
 		// when OnDemandPar2 is on (see NewJob) — and that fresh decision is
-		// what must win, not the row: an undeferRecoveryLocked release (a
+		// what must win, not the row: an undeferRecovery release (a
 		// permanent article failure, or a completed download that needed
 		// repair) sets FetchAlways and persists it, and a subsequent
 		// MoveToHistory retains that value. Assigning fp.Fetch = f.Fetch
@@ -1356,7 +1356,7 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		//
 		// This is where the two retry routes actually disagree. On the live
 		// route (Queue.Retry -> ResetForRetry, job.go), a volume that
-		// undeferRecoveryLocked released to FetchAlways because damage was
+		// undeferRecovery released to FetchAlways because damage was
 		// found is not FetchNever, so ResetForRetry's downgrade skips it and
 		// it stays FetchAlways — re-downloaded. On this history route, that
 		// same retained FetchAlways is skipped by the condition below, so fp

@@ -525,7 +525,7 @@ func (p *JobProgress) HasDeferredPar2() bool {
 // held pending the verdict.
 //
 // FetchIfNeeded only, and that exclusion is load-bearing rather than tidy.
-// undeferRecoveryLocked walks this list on any first-time permanent article
+// undeferRecovery walks this list on any first-time permanent article
 // failure while the job is not yet par2-recovered. If a discarded volume
 // appeared here, one late failure would re-activate exactly the volumes the
 // CRC oracle proved unnecessary — undoing on-demand par2 entirely.
@@ -579,7 +579,7 @@ func (p *JobProgress) clone() *JobProgress {
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
 // Called after Add and Load, and after any bulk state change
-// (ClearAllEmitted, undeferRecoveryLocked) where incremental tracking is
+// (ClearAllEmitted, undeferRecovery) where incremental tracking is
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
