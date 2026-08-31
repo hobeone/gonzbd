@@ -1,7 +1,7 @@
 package app
 
 import (
-	"os"
+	"errors"
 	"testing"
 )
 
@@ -20,12 +20,14 @@ func TestCheckDependencies(t *testing.T) {
 
 func TestCheckDependencies_Missing(t *testing.T) {
 	t.Parallel()
-	// Mock PATH to ensure it doesn't find anything
-	oldPath := os.Getenv("PATH")
-	os.Setenv("PATH", "")
-	defer os.Setenv("PATH", oldPath)
+	// Inject a lookup that finds nothing, rather than mutating the real PATH
+	// env var — PATH is process-global, so mutating it would race with any
+	// other parallel test resolving a binary through the real PATH.
+	notFound := func(file string) (string, error) {
+		return "", errors.New("not found")
+	}
 
-	warnings := CheckDependencies()
+	warnings := checkDependencies(notFound)
 	expected := []string{
 		`External program "par2" not found in PATH. PAR2 repair will fail.`,
 		`Neither "7-zip" nor "unrar" found in PATH. Archive extraction will fail.`,
