@@ -110,6 +110,34 @@ func TestManifestTierErrorShapes(t *testing.T) {
 		}
 	})
 
+	// The two prefixing methods build their not-found error by hand since
+	// B2.4a: the wrapper no longer calls residentJob, so it composes
+	// "queue: <method> %s: %w: %s" itself. That reconstruction is the single
+	// most error-prone line in the change and had no test — lifecycle_test.go
+	// only asserts SeedFromRuns("bogus") returns non-nil. At origin/main the
+	// string came from residentJob's "%w: %s" wrapped a second time by the
+	// caller, so the ID appears twice; getting it wrong here would be silent.
+	t.Run("the prefixing methods name a missing job twice, as they always did", func(t *testing.T) {
+		t.Parallel()
+		q := New()
+
+		seedErr := q.SeedFromRuns("bogus", []durability.Run{{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Length: 1}})
+		if !errors.Is(seedErr, ErrNotFound) {
+			t.Fatalf("SeedFromRuns err = %v, want ErrNotFound", seedErr)
+		}
+		if got, want := seedErr.Error(), "queue: SeedFromRuns bogus: queue: job not found: bogus"; got != want {
+			t.Errorf("SeedFromRuns err = %q\nwant %q", got, want)
+		}
+
+		ackErr := q.AckDurable(mintProof(t, "bogus", []int32{0}))
+		if !errors.Is(ackErr, ErrNotFound) {
+			t.Fatalf("AckDurable err = %v, want ErrNotFound", ackErr)
+		}
+		if got, want := ackErr.Error(), "queue: AckDurable bogus: queue: job not found: bogus"; got != want {
+			t.Errorf("AckDurable err = %q\nwant %q", got, want)
+		}
+	})
+
 	t.Run("RecordDownload returns the bare sentinel, unlike its neighbours", func(t *testing.T) {
 		t.Parallel()
 		q := New()
