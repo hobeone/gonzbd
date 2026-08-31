@@ -127,8 +127,12 @@ func (k syncOpKind) String() string {
 // this bound applied underneath the caller's, the two are separable — see
 // submit and waitEnded.
 //
-// Five seconds matches diskCheckTimeout, the other bound this package places
-// on a syscall against a possibly-dead mount.
+// Five seconds is also diskCheckTimeout's default, the other bound this
+// package places on a syscall against a possibly-dead mount — but the two are
+// independently overridable via Options.BarrierOpTimeout/DiskCheckTimeout and
+// SetBarrierOpTimeout, so the equality holds only when both are left at their
+// defaults; a caller (tests included) that sets one without the other breaks
+// it deliberately.
 const barrierOpTimeout = 5 * time.Second
 
 // syncReply carries a worker answer back to the barrier's goroutine.
