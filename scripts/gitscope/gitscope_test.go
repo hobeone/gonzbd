@@ -1,37 +1,61 @@
 package gitscope
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
+
+var (
+	baseRepoOnce sync.Once
+	baseRepoDir  string
+)
+
+func getBaseRepo() string {
+	baseRepoOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gitscope-template-*")
+		if err != nil {
+			panic(err)
+		}
+		run := func(args ...string) {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				panic(fmt.Sprintf("git %s: %v\n%s", strings.Join(args, " "), err, out))
+			}
+		}
+		run("init", "-q", "-b", "main")
+		run("config", "user.email", "test@example.com")
+		run("config", "user.name", "Test")
+		path := filepath.Join(dir, "committed.go")
+		if err := os.WriteFile(path, []byte("package p\n\nfunc A() {}\n"), 0o600); err != nil {
+			panic(err)
+		}
+		run("add", ".")
+		run("commit", "-q", "-m", "initial")
+		baseRepoDir = dir
+	})
+	return baseRepoDir
+}
 
 // newRepo builds a throwaway git repo with one commit on main and chdirs into
 // it for the duration of the test. gitscope shells out to git against the
 // process working directory, so the tests need a real repo rather than a fake.
 func newRepo(t *testing.T) string {
 	t.Helper()
+	template := getBaseRepo()
 	dir := t.TempDir()
 
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-		}
+	cmd := exec.Command("cp", "-a", template+"/.", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("cp template: %v\n%s", err, out)
 	}
-	run("init", "-q", "-b", "main")
-	run("config", "user.email", "test@example.com")
-	run("config", "user.name", "Test")
-
-	writeFile(t, dir, "committed.go", "package p\n\nfunc A() {}\n")
-	run("add", ".")
-	run("commit", "-q", "-m", "initial")
 
 	t.Chdir(dir)
 	return dir
