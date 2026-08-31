@@ -605,9 +605,15 @@ func TestSnapshotJob_Audit(t *testing.T) {
 // The second half is what makes the first safe, and it is the half a reader
 // cannot get from the gate alone — which is how #461 came to be filed.
 //
-// Store-backed on purpose: without one, PromoteNext's rehydration derives
-// counters from the manifest alone, the 90% rate does not survive the
-// round-trip, and the deferral half would pass for the wrong reason.
+// Store-backed on purpose, and the store is load-bearing rather than
+// scenery: PromoteNext restores the persisted counters only when
+// q.store != nil, so without one the rehydration starts from
+// newJobProgress alone, the 90% rate does not survive the round-trip, and
+// the deferral half fails outright — swapping WithStore for a bare
+// WithStateDir here produces "CheckEarlyAbort = false after the job resumed
+// at a 90% failure rate" at the half-two assertion below. That is a
+// property of the fixture, not a production configuration; the enumeration
+// is in CheckEarlyAbort's own comment.
 func TestCheckEarlyAbort_NonResidentDefersRatherThanAborts(t *testing.T) {
 	t.Parallel()
 

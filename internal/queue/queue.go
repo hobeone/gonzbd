@@ -1849,13 +1849,25 @@ func (q *Queue) CheckEarlyAbort(jobID string) bool {
 	// Answering "true" there would emit a WARN saying the job was aborted
 	// while nothing aborted it.
 	//
-	// Nothing is lost by declining. The verdict is deferred, not discarded:
-	// PromoteNext rebuilds JobProgress from newJobProgress plus the store's
-	// persisted counters, earlyAborted is deliberately not persisted (see
-	// jobProgressJSON), and the failure rate that would have fired the abort
-	// is re-derived from failed_articles — so the check fires on the first
-	// failure after the job is downloading again, which is when it can act.
-	// TestCheckEarlyAbort_NonResidentDefersRatherThanAborts pins both halves.
+	// The verdict is deferred, not discarded: PromoteNext rebuilds JobProgress
+	// from newJobProgress plus the store's persisted counters, earlyAborted is
+	// deliberately not persisted (see jobProgressJSON), and the failure rate
+	// that would have fired the abort is re-derived from failed_articles — so
+	// the check fires on the first failure after the job is downloading again,
+	// which is when it can act.
+	//
+	// That deferral rides on the store, and says nothing about a queue without
+	// one: PromoteNext's RestoreJobProgress call is guarded on q.store != nil,
+	// and newJobProgress alone starts the counters at zero, so a store-less
+	// queue loses the rate across the round-trip and the abort never re-fires.
+	// Production has no such queue — `git grep -n 'WithStateDir(' -- '*.go'
+	// ':!*_test.go' ':!internal/queue/queue.go'` returns 0, and app.go:344's
+	// sole queue.Load passes WithStore whenever repo.DB() is non-nil, which
+	// both cmd/gonzbd entry points guarantee by aborting startup if
+	// history.Open fails. The store-less form is test scaffolding, so this
+	// states the condition rather than claiming nothing is ever lost.
+	// TestCheckEarlyAbort_NonResidentDefersRatherThanAborts pins both halves,
+	// store-backed for exactly that reason.
 	job, err := q.residentJob(jobID)
 	if err != nil {
 		return false
