@@ -541,12 +541,18 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // markDownloadFinishedOnce records the download completion time, reporting
 // whether it took. A later call is a no-op: first finish wins.
 //
-// Named for the condition rather than the field because Job already has an
-// exported MarkDownloadFinished that assigns UNCONDITIONALLY. The two differ
-// only in this guard, which is too much semantic distance for one capital
-// letter to carry. That divergence is #457 and predates this method; it is
-// not resolved here, because collapsing the two is a behaviour change and
-// B2.4a makes none.
+// Named for the condition rather than the field because Job used to carry an
+// exported MarkDownloadFinished that assigned UNCONDITIONALLY — two methods
+// one capital letter apart, differing only in this guard. #457 resolved that
+// by deleting the exported one rather than guarding it: it had no production
+// caller, and guarding it would have added a THIRD enforcement site for the
+// first-finish-wins rule. There are already two — this method, and
+// Queue.SetPostProcStarted, which applies the same IsZero test to the same
+// field without routing through here. That second site is not this change's
+// to remove, and since #457's review it is tested: TestSetPostProcStarted's
+// "does not overwrite a finish time MarkDownloadFinished already set" subtest
+// is what holds the two writers to the same rule. The name stays because it
+// still says what the method does, which the field name did not.
 //
 // A zero t is refused rather than stored (#459). The zero value is the
 // sentinel the field guard tests against, so storing it would report a
@@ -1059,16 +1065,6 @@ func (j *Job) ResetForRetry() {
 		}
 	}
 	j.progress.recompute(j.manifest)
-}
-
-// MarkDownloadFinished sets the job's download-finished timestamp. Intended
-// for callers that already hold an owned clone (e.g. a Queue.SnapshotJob
-// result) rather than a live queue reference — it performs no queue
-// locking of its own.
-func (j *Job) MarkDownloadFinished(t time.Time) {
-	if j.progress != nil {
-		j.progress.downloadFinished = t
-	}
 }
 
 // jobJSON is Job's on-disk shape: header fields plus the two nested

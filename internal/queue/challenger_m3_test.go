@@ -253,9 +253,21 @@ func TestChallenger_M3_SnapshotMutationIsolation(t *testing.T) {
 		t.Fatal("SnapshotJob returned nil")
 	}
 
-	// Mutate the snapshot clone directly (e.g. legacy/buggy code trying to alter snapshot)
+	// Mutate the snapshot clone directly (e.g. legacy/buggy code trying to
+	// alter snapshot). The progress arm writes the field rather than going
+	// through a setter: what is under test is whether cloneJob deep-copied
+	// JobProgress, and a setter would put its own guard between the test and
+	// the property. This test used to call the exported
+	// Job.MarkDownloadFinished, whose deletion in #457 is what surfaced that
+	// — under a first-wins guard the write would have been refused, the
+	// assertion below would still have passed, and it would have proved
+	// nothing.
+	origFinished := snap.Progress().DownloadFinished()
+	if origFinished.IsZero() {
+		t.Fatal("SetPostProcStarted did not set DownloadFinished; the mutation below would write into an empty field and prove nothing")
+	}
 	mutatedTime := time.Now().Add(5 * time.Hour).Truncate(time.Second).UTC()
-	snap.MarkDownloadFinished(mutatedTime)
+	snap.progress.downloadFinished = mutatedTime
 	snap.PostProc = false
 	snap.Status = constants.StatusFailed
 
@@ -267,7 +279,10 @@ func TestChallenger_M3_SnapshotMutationIsolation(t *testing.T) {
 	if freshSnap.Status != constants.StatusVerifying {
 		t.Errorf("Live queue Status was mutated by snapshot edit! got %v, want %v", freshSnap.Status, constants.StatusVerifying)
 	}
-	if freshSnap.Progress().DownloadFinished().Unix() == mutatedTime.Unix() {
-		t.Errorf("Live queue DownloadFinished was mutated by snapshot edit!")
+	// Equality against the value read BEFORE the mutation, not merely
+	// inequality against mutatedTime: the negative form passes for any value
+	// the live job might hold, including one no writer produced.
+	if got := freshSnap.Progress().DownloadFinished(); !got.Equal(origFinished) {
+		t.Errorf("Live queue DownloadFinished was mutated by snapshot edit: got %v, want %v", got, origFinished)
 	}
 }

@@ -67,14 +67,3 @@ func TestChallenger_ConcurrentPromotionAndPauseResumeLoops(t *testing.T) {
 		t.Errorf("INVARIANT VIOLATION: ActiveSet.Len() (%d) > MaxActive (%d)", activeLen, maxActive)
 	}
 }
-
-func TestJob_MarkDownloadFinished_NilProgressGuard(t *testing.T) {
-	job := &Job{
-		ID:       "non-resident-job",
-		Status:   constants.StatusQueued,
-		progress: nil,
-	}
-
-	// Should not panic on non-resident job with progress == nil
-	job.MarkDownloadFinished(time.Now())
-}
