@@ -287,13 +287,21 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // StatusQueued jobs, and evictJobLocked releases it when a job leaves the
 // active set, in both cases leaving the job in the map.
 //
-// This is now a property of the whole file, not just the direction of
-// travel: every manifest-tier mutation on *Queue routes through here, so none
-// of them can report success for work it did not do (#261). That is enforced
-// rather than asserted — TestManifestAccessIsGated walks the package AST and
-// fails any *Queue or *Job method that dereferences a manifest without
-// calling this or Job.resident, because hand searches over this surface have
-// three times now returned a different subset of it.
+// This is now a property of the whole package, not just the direction of
+// travel: every manifest-tier mutation passes a residency gate, so none of
+// them can report success for work it did not do (#261). The gate is no
+// longer this function alone. B2.4a moved the manifest-tier bodies onto *Job,
+// and each one now opens with Job.resident; the *Queue wrappers that call
+// them look their job up in q.byID directly. AckPermanentFailure and
+// ReplaceFromRuns still start here, because they need the manifest in the
+// wrapper itself rather than only inside the moved body.
+//
+// Which of the two entry points a given method uses is not the invariant and
+// should not be asserted method by method — that is enforced rather than
+// asserted, because hand searches over this surface have three times now
+// returned a different subset of it. TestManifestAccessIsGated walks the
+// package AST and fails any *Queue or *Job method that dereferences a
+// manifest without calling this or Job.resident.
 //
 // The condition itself lives on Job.resident, which this delegates to; the
 // two are one gate with two entry points, not two gates. This one is for a
