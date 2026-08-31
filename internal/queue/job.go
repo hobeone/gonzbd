@@ -416,6 +416,152 @@ func (j *Job) setHydrateFailure(p *JobProgress, err error) {
 	j.hydrateErr = err
 }
 
+// resident reports whether this job's evictable tier is in memory, returning
+// ErrJobNotResident when it is not. It is the manifest gate in its Job-level
+// form: a *Job method that dereferences j.manifest calls this first, so a
+// non-resident job is reported rather than silently skipped (#261).
+//
+// Queue.residentJob is the same gate for a caller that starts from an ID, and
+// delegates here rather than repeating the condition — one owner for "is this
+// job resident", two entry points to it.
+//
+// The error carries no job ID. Both callers have one and add it: residentJob
+// wraps with the ID it was passed, and a *Job method wraps with j.ID.
+//
+// Takes no lock, and must be called with Queue.mu held. It reads the pointer
+// fields residencyMu also guards, and every path that reaches it does so from
+// a Queue method holding mu — the same discipline the manifest-tier bodies
+// themselves run under. Taking residencyMu here would nest it inside mu on
+// every article operation, which is the cost ForEachUnfinishedArticle already
+// hoists work to avoid paying once per job.
+//
+// The progress == nil clause is defence in depth rather than a reachable
+// state. Queue.residentJob's comment carries the argument for why it is
+// unreachable — progress is permanently resident, so a non-resident job is
+// manifest-nil/progress-live rather than both-nil — and that part is written
+// down only there. The gate rule the two clauses serve (gate on residency iff
+// the method needs the manifest) is also stated in docs/queue-lifecycle.md,
+// which credits that comment as its source.
+func (j *Job) resident() error {
+	if j.manifest == nil || j.progress == nil {
+		return ErrJobNotResident
+	}
+	return nil
+}
+
+// The single-job mutations below were Queue method bodies until B2.4a. Each
+// Queue method is now lookup plus one of these plus its own bookkeeping —
+// q.dirty, q.notifyLocked, q.store.Update — which stays on the Queue because
+// it is queue state, not job state.
+//
+// ALL OF THEM MUST BE CALLED WITH Queue.mu HELD FOR WRITING. They take no
+// lock of their own: q.mu is still the sole guard on job content, and
+// residencyMu covers only the manifest/progress pointer fields (see its own
+// comment). They are unexported so that this precondition is satisfiable by
+// construction — the only callers are in this package, holding mu. Giving Job
+// a content lock and exporting these is B2.4a₂, deliberately separate: it has
+// to answer what happens to the multi-job readers' cross-job atomicity, which
+// moving a body does not.
+//
+// The ones that return bool report whether they changed anything, so the
+// caller can decide about q.dirty rather than being told. Signalling that by
+// side effect would need a back-pointer to the Queue, which is the coupling
+// this move exists to remove.
+
+// setPP sets the post-processing level. The 0-3 validation stays on
+// Queue.SetPP: it runs before the lookup there, so an invalid level on a
+// missing job reports the level rather than ErrNotFound, and moving the check
+// here would silently swap that precedence.
+func (j *Job) setPP(pp int) { j.PP = pp }
+
+// setName sets the display name. The caller sanitizes: stripNZBExt is
+// package-level, but CleanupName and SanitizeFolderName read Queue.sOpts,
+// which is queue-level configuration a Job has no access to and no business
+// reading.
+func (j *Job) setName(name string) { j.Name = name }
+
+// setScript sets the post-processing script name.
+func (j *Job) setScript(script string) { j.Script = script }
+
+// setWarning attaches a human-readable reason to the job (R27).
+//
+// Header tier: Warning is a plain string on the Job itself, so this needs
+// neither the manifest nor residency and cannot fail on either — which
+// matters, because the condition it reports is most likely to arrive when the
+// job is in an unusual state.
+func (j *Job) setWarning(warning string) { j.Warning = warning }
+
+// setPar2ReleaseReason records why the job's par2 volumes were released.
+//
+// Progress tier: the reason is a plain string on JobProgress, which is
+// permanently resident, so this neither needs the manifest nor can fail on
+// residency. It used to require both and return nil when either was absent,
+// which meant the reason was silently dropped for exactly the non-resident
+// jobs the on-demand par2 path operates on.
+func (j *Job) setPar2ReleaseReason(reason string) { j.progress.par2ReleaseReason = reason }
+
+// recordDownload adds bytes to the running total for one server.
+//
+// No residency guard: per-server byte counts live on JobProgress, which is
+// permanently resident, and Add repairs any job entering q.byID with nil
+// progress. Downloaded bytes must be recorded whether or not the manifest
+// happens to be in memory.
+func (j *Job) recordDownload(server string, bytes int) {
+	if j.progress.serverStats == nil {
+		j.progress.serverStats = make(map[string]int64)
+	}
+	j.progress.serverStats[server] += int64(bytes)
+}
+
+// markStartedOnce records the first download's start time, reporting whether
+// it took. A later call is a no-op: first start wins.
+//
+// Progress tier, so the IsZero test is a business condition rather than a
+// check for absence — progress is permanently resident and cannot be missing.
+func (j *Job) markStartedOnce(t time.Time) bool {
+	if !j.progress.downloadStarted.IsZero() {
+		return false
+	}
+	j.progress.downloadStarted = t
+	return true
+}
+
+// markDownloadFinishedOnce records the download completion time, reporting
+// whether it took. A later call is a no-op: first finish wins.
+//
+// Named for the condition rather than the field because Job already has an
+// exported MarkDownloadFinished that assigns UNCONDITIONALLY. The two differ
+// only in this guard, which is too much semantic distance for one capital
+// letter to carry. That divergence is #457 and predates this method; it is
+// not resolved here, because collapsing the two is a behaviour change and
+// B2.4a makes none.
+func (j *Job) markDownloadFinishedOnce(t time.Time) bool {
+	if !j.progress.downloadFinished.IsZero() {
+		return false
+	}
+	j.progress.downloadFinished = t
+	return true
+}
+
+// discardDeferredPar2 marks every recovery volume still awaiting the CRC
+// verdict as never-fetch, reporting whether any file changed.
+//
+// Progress tier, like setPar2ReleaseReason: the fetch policy lives on
+// JobProgress, which is permanently resident, so this walks progress.files by
+// index and reads no manifest. It used to require the manifest — to walk and
+// rebuild it — and so returned ErrJobNotResident for a job whose manifest had
+// been evicted for exceeding MaxActiveJobs.
+func (j *Job) discardDeferredPar2() bool {
+	changed := false
+	for fi := range len(j.progress.files) {
+		if j.progress.files[fi].Fetch == FetchIfNeeded {
+			j.progress.files[fi].Fetch = FetchNever
+			changed = true
+		}
+	}
+	return changed
+}
+
 // JobPhase represents the high-level operational phase of a download job.
 type JobPhase int
 

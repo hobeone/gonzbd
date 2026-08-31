@@ -525,7 +525,7 @@ func (p *JobProgress) HasDeferredPar2() bool {
 // held pending the verdict.
 //
 // FetchIfNeeded only, and that exclusion is load-bearing rather than tidy.
-// undeferRecoveryLocked walks this list on any first-time permanent article
+// undeferRecovery walks this list on any first-time permanent article
 // failure while the job is not yet par2-recovered. If a discarded volume
 // appeared here, one late failure would re-activate exactly the volumes the
 // CRC oracle proved unnecessary — undoing on-demand par2 entirely.
@@ -579,7 +579,7 @@ func (p *JobProgress) clone() *JobProgress {
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
 // Called after Add and Load, and after any bulk state change
-// (ClearAllEmitted, undeferRecoveryLocked) where incremental tracking is
+// (ClearAllEmitted, undeferRecovery) where incremental tracking is
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
@@ -842,10 +842,13 @@ type fileProgressJSON struct {
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
 // marks an article as resolved, and nothing sets it from dispatch: markDone is
-// reached from AckDurable, which needs a DurableProof a completed fsync
-// minted; from SeedFromRuns/ReplaceFromRuns, which replay runs that same fsync
-// recorded; and from applyResolution, which replays the resolution derived
-// from those same records on re-hydration. markFailed sets it too, for an
+// reached from ackDurable, whose only caller Queue.AckDurable needs a
+// DurableProof a completed fsync minted; from seedFromRuns and
+// ReplaceFromRuns, which replay runs that same fsync recorded; and from
+// applyResolution, which replays the resolution derived from those same
+// records on re-hydration. The first two became unexported *Job methods in
+// B2.4a — the doors and their evidence are unchanged, only the receiver moved.
+// markFailed sets it too, for an
 // article whose bytes will
 // never arrive. So a persisted done bit always stands on a completed fsync or
 // a permanent failure — never on a write that was merely attempted (#355) —

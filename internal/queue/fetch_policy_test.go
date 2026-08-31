@@ -3,7 +3,7 @@ package queue
 import "testing"
 
 // TestDeferredRecoveryIndices_ExcludesDiscarded pins the resurrection guard.
-// undeferRecoveryLocked walks this list on any first-time permanent article
+// undeferRecovery walks this list on any first-time permanent article
 // failure, so a discarded volume appearing here re-downloads exactly what the
 // CRC oracle proved unnecessary. Widening the predicate to `!= FetchAlways`
 // must fail this test.

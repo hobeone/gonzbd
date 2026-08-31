@@ -80,7 +80,7 @@ func TestDiscardDeferredPar2_LeavesFiguresUnchanged(t *testing.T) {
 }
 
 // TestDiscardDeferredPar2_LateFailureDoesNotResurrect is the hazard #318
-// names. undeferRecoveryLocked runs on a first-time permanent failure; a
+// names. undeferRecovery runs on a first-time permanent failure; a
 // discarded volume must not come back.
 func TestDiscardDeferredPar2_LateFailureDoesNotResurrect(t *testing.T) {
 	q := New()

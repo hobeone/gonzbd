@@ -31,7 +31,7 @@ func TestAllFetchPolicies_Exhaustive(t *testing.T) {
 
 	for name, value := range declared {
 		if !listed[value] {
-			t.Errorf("%s is declared in progress.go but missing from AllFetchPolicies(); add it there, then decide what it means at each site that reads the policy — the `!= FetchAlways` aggregates (sizeFigures, recompute, Job.IsComplete, Queue.ForEachUnfinishedArticle), the `== FetchIfNeeded` guards (HasDeferredPar2, DeferredRecoveryIndices, undeferRecoveryLocked), and api.fileState's switch", name)
+			t.Errorf("%s is declared in progress.go but missing from AllFetchPolicies(); add it there, then decide what it means at each site that reads the policy — the `!= FetchAlways` aggregates (sizeFigures, recompute, Job.IsComplete, Queue.ForEachUnfinishedArticle), the `== FetchIfNeeded` guards (HasDeferredPar2, DeferredRecoveryIndices, undeferRecovery), and api.fileState's switch", name)
 		}
 	}
 	if len(AllFetchPolicies()) != len(declared) {

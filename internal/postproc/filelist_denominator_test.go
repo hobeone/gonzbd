@@ -22,7 +22,7 @@ import (
 // known to be needed — which would leave nothing held back. The state where
 // held volumes and failures coexist is the one this test builds: the CRC
 // oracle rules the volumes unnecessary (FetchNever), and only afterwards does
-// an article fail permanently. undeferRecoveryLocked skips anything that is
+// an article fail permanently. Job.undeferRecovery skips anything that is
 // not FetchIfNeeded, so the volumes stay held and the denominators diverge.
 func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing.T) {
 	dir := t.TempDir()

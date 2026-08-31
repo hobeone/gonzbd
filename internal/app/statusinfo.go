@@ -203,11 +203,15 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // counter of its own, because on this design they are the same quantity.
 // Everything that marks an article Done ultimately stands on a barrier's
 // fsync: Queue.AckDurable, which takes a DurableProof no path outside a
-// completed barrier can mint; the two seeding entry points — SeedFromRuns,
-// which replays the runs a barrier recorded, and ReplaceFromRuns, which
+// completed barrier can mint and hands its articles to queue.ackDurable; the
+// two seeding entry points — Queue.SeedFromRuns, which replays the runs a
+// barrier recorded through queue.seedFromRuns, and ReplaceFromRuns, which
 // installs what the startup sweep's stat left standing; and
 // queue.applyResolution, which replays the resolution derived from those same
-// records when a job is re-hydrated. queue.markFailed sets the bit too, for an
+// records when a job is re-hydrated. The two markDone calls behind the first
+// two entry points moved onto unexported *Job methods in B2.4a; the entry
+// points and the evidence they require are unchanged.
+// queue.markFailed sets the bit too, for an
 // article whose bytes will never arrive and which therefore contributes no
 // downloaded bytes.
 //

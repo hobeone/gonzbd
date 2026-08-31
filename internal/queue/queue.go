@@ -287,30 +287,56 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // StatusQueued jobs, and evictJobLocked releases it when a job leaves the
 // active set, in both cases leaving the job in the map.
 //
-// This is now a property of the whole file, not just the direction of
-// travel: every manifest-tier mutation routes through here, so none of them
-// can report success for work it did not do (#261). That is enforced rather
-// than asserted — TestManifestAccessIsGated walks the package AST and fails
-// any *Queue method that dereferences job.manifest without calling this,
-// because hand searches over this surface have three times now returned a
-// different subset of it.
+// This is now a property of the whole package, not just the direction of
+// travel: every manifest-tier mutation passes a residency gate, so none of
+// them can report success for work it did not do (#261). The gate is no
+// longer this function alone. B2.4a moved the manifest-tier bodies onto *Job,
+// and each one now opens with Job.resident; the *Queue wrappers that call
+// them look their job up in q.byID directly. AckPermanentFailure and
+// ReplaceFromRuns still start here, because they need the manifest in the
+// wrapper itself rather than only inside the moved body.
 //
-// The progress-tier methods deliberately do not route through here.
-// JobProgress is permanently resident, so gating them on residency would
-// refuse work they are always able to perform. Adding a residency check to a
-// method that reads only progress is a bug in the same family, not caution:
-// SetPar2ReleaseReason had one, and it silently dropped the reason a job's
-// par2 volumes were released for every non-resident job.
+// CheckEarlyAbort is the third caller and the one that does not fit the rule
+// below: it reads only progress — Job.IsEarlyAbort is j.progress.isEarlyAbort()
+// — yet gates on residency, so it answers "do not abort" for a job whose
+// manifest is not in memory. It predates the rule and is #461, not an
+// exception to be preserved. Counted here rather than left out because an
+// enumeration that lists the callers it agrees with is how the claim above
+// this one came to be false.
+//
+// Which of the two entry points a given method uses is not the invariant and
+// should not be asserted method by method — that is enforced rather than
+// asserted, because hand searches over this surface have three times now
+// returned a different subset of it. TestManifestAccessIsGated walks the
+// package AST and fails any *Queue or *Job method that dereferences a
+// manifest without calling this or Job.resident.
+//
+// The condition itself lives on Job.resident, which this delegates to; the
+// two are one gate with two entry points, not two gates. This one is for a
+// caller that starts from an ID and adds the ID to the error, that one for a
+// caller that already holds the *Job.
+//
+// The progress-tier methods do not route through here, with the single
+// exception recorded above. JobProgress is permanently resident, so gating
+// them on residency would refuse work they are always able to perform. Adding
+// a residency check to a method that reads only progress is a bug in the same
+// family, not caution: SetPar2ReleaseReason had one, and it silently dropped
+// the reason a job's par2 volumes were released for every non-resident job.
+// CheckEarlyAbort still has one; that it is the rule's counterexample rather
+// than its refinement is the whole of #461.
 //
 // Manifest is the only residency signal now: JobProgress is permanently
 // resident (docs/queue-lifecycle.md) and never nil for a job in q.byID, so a
 // non-resident job is manifest-nil/progress-live, not both-nil — that state
 // is the ordinary steady state for every StatusQueued/StatusPaused job, not
 // a half-hydration hazard. Skipping work on ErrJobNotResident is still safe,
-// for a reason that no longer depends on progress's presence: every caller
-// through this gate needs the manifest itself to resolve what it was asked
-// to mutate (a message ID or article index only means something against a
-// resident Manifest), so there is no correct mutation to perform without one.
+// for a reason that no longer depends on progress's presence: every MUTATING
+// caller through this gate needs the manifest itself to resolve what it was
+// asked to mutate (a message ID or article index only means something against
+// a resident Manifest), so there is no correct mutation to perform without
+// one. That argument is what CheckEarlyAbort falls outside of — it mutates
+// nothing and resolves no index, so the safety it relies on is not the safety
+// this paragraph establishes (#461).
 // And should a caller somehow bypass that, whatever it wrote would not
 // survive anyway — the moment the job returns to resident, hydrateJobLocked
 // unconditionally rebuilds JobProgress from the manifest plus
@@ -318,9 +344,9 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // live beforehand. The skipped mutation is moot because promotion
 // supersedes it, not because progress was about to vanish.
 //
-// The job.progress == nil clause below is not load-bearing for any known
-// caller — no code path leaves a job in q.byID with nil progress — but it
-// stays as defense in depth: everything downstream of this gate assumes
+// The job.progress == nil clause, now on Job.resident, is not load-bearing
+// for any known caller — no code path leaves a job in q.byID with nil
+// progress — but it stays as defense in depth: everything downstream of this gate assumes
 // job.progress is safe to dereference, and every worker goroutine that could
 // hit a violation carries no recover(), so the cost of keeping a redundant
 // check is a single comparison against the cost of a process crash if that
@@ -330,8 +356,8 @@ func (q *Queue) residentJob(id string) (*Job, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if job.manifest == nil || job.progress == nil {
-		return nil, fmt.Errorf("%w: %s", ErrJobNotResident, id)
+	if err := job.resident(); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, id)
 	}
 	return job, nil
 }
@@ -351,27 +377,11 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	// Report non-residency as an error rather than a zero count: callers read
 	// a successful 0 as "this file has nothing left to download", which for a
 	// merely de-hydrated job is wrong and silent.
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return 0, err
+	job, ok := q.byID[jobID]
+	if !ok {
+		return 0, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return 0, fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	// Count from the article state directly rather than using
-	// file.Pending. Pending tracks !Done && !Emitted, but this
-	// method counts !Done (including Emitted articles). The
-	// difference matters for resume where Emitted articles
-	// shouldn't be counted as "unfinished" yet haven't been
-	// durably committed.
-	var count int
-	lo, hi := job.manifest.FileRange(fileIdx)
-	for i := lo; i < hi; i++ {
-		if !job.progress.done.Get(i) {
-			count++
-		}
-	}
-	return count, nil
+	return job.countUnfinishedArticles(fileIdx)
 }
 
 // List returns a snapshot slice of the queue's jobs in current order.
@@ -1054,7 +1064,7 @@ func (q *Queue) SetPP(id string, pp int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	job.PP = pp
+	job.setPP(pp)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1072,7 +1082,7 @@ func (q *Queue) SetName(id, name string) error {
 	name = stripNZBExt(name)
 	name = fsutil.CleanupName(name, q.sOpts)
 	name = fsutil.SanitizeFolderName(name, q.sOpts)
-	job.Name = name
+	job.setName(name)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1086,7 +1096,7 @@ func (q *Queue) SetScript(id, script string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	job.Script = script
+	job.setScript(script)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1374,11 +1384,10 @@ func (q *Queue) MarkDownloadFinished(id string, t time.Time) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	// Progress tier: no residency guard. The IsZero test is a business
-	// condition (first finish wins), not a check for absence — progress is
-	// permanently resident.
-	if job.progress.downloadFinished.IsZero() {
-		job.progress.downloadFinished = t
+	// Progress tier: no residency guard. The first-finish-wins test is a
+	// business condition, not a check for absence — progress is permanently
+	// resident — and it lives on the Job with the field it guards.
+	if job.markDownloadFinishedOnce(t) {
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the finish timestamp consistent; tracked in #229
 		}
@@ -1396,10 +1405,9 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	// Progress tier: see MarkDownloadFinished. IsZero is "first start wins",
-	// not a residency check.
-	if job.progress.downloadStarted.IsZero() {
-		job.progress.downloadStarted = t
+	// Progress tier: see MarkDownloadFinished. "First start wins" is a
+	// business condition, not a residency check.
+	if job.markStartedOnce(t) {
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the start timestamp consistent; tracked in #229
 		}
@@ -1416,14 +1424,7 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	if !ok {
 		return ErrNotFound
 	}
-	// No residency guard: per-server byte counts live on JobProgress, which
-	// is permanently resident, and Add repairs any job entering q.byID with
-	// nil progress. Downloaded bytes must be recorded whether or not the
-	// manifest happens to be in memory.
-	if job.progress.serverStats == nil {
-		job.progress.serverStats = make(map[string]int64)
-	}
-	job.progress.serverStats[server] += int64(bytes)
+	job.recordDownload(server, bytes)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1551,18 +1552,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// Non-residency and a genuine bounds violation were previously reported
-	// with the same "out of range" message, which misdiagnoses a de-hydrated
-	// job as a caller bug. Keep them separate.
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
-		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
-	}
-	job.progress.markEmitted(job.manifest, int(artIdx))
-	return nil
+	return job.markArticleEmittedByIdx(artIdx)
 }
 
 // ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx,
@@ -1581,18 +1575,13 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 	// from persistence, and the progress holding it is discarded on eviction,
 	// so PromoteNext rebuilds it all-false from stored state and the article is
 	// offered again.
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.clearArticleEmittedByIdx(artIdx); err != nil {
 		return err
 	}
-	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
-		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
-	}
-	// clearEmitted only restores the article to pending if it is not already
-	// done. An article can have Emitted=true and Done=true when AckDurable ran
-	// first (e.g. a late assembler flush after a downloader reload); it is
-	// finished then, and must not be counted as pending.
-	job.progress.clearEmitted(job.manifest, int(artIdx))
 	q.notifyLocked()
 	return nil
 }
@@ -1830,9 +1819,21 @@ func (q *Queue) TotalRemainingBytes() int64 {
 func (q *Queue) CheckEarlyAbort(jobID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// A non-resident job has no live JobProgress, so there is no failure rate
-	// to evaluate and nothing to abort. Match the not-found answer rather than
-	// inventing a third outcome for a method with no error channel.
+	// This gate is wrong and is #461. Its stated reason was that "a non-
+	// resident job has no live JobProgress, so there is no failure rate to
+	// evaluate", which is false: progress is permanently resident, so a
+	// non-resident job is manifest-nil/progress-live and its failure rate is
+	// sitting right there. IsEarlyAbort reads only progress and needs no
+	// manifest, so this refuses an answer it is always able to give — the
+	// defect residentJob's comment names, in the method that comment now has
+	// to except.
+	//
+	// Left in place here because changing it is a behaviour change and B2.4a
+	// makes none. Not currently reachable: the only caller is the article
+	// result path (app/pipeline.go), and a job whose articles are in flight is
+	// in the active set and therefore resident. A result arriving after an
+	// eviction is the window, and there the cost is a DMCA'd or expired job
+	// going on burning bandwidth because the abort never fires.
 	job, err := q.residentJob(jobID)
 	if err != nil {
 		return false
@@ -1853,16 +1854,17 @@ func (q *Queue) CheckEarlyAbort(jobID string) bool {
 func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.checkFileIdxs(fileIdxs); err != nil {
 		return err
 	}
-	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= job.manifest.NumFiles() {
-			return fmt.Errorf("queue: fileIdx %d out of range for job %s", fi, jobID)
-		}
+	if job.undeferRecovery(fileIdxs) {
+		q.dirty.Store(true)
+		q.notifyLocked()
 	}
-	q.undeferRecoveryLocked(job, fileIdxs)
 	return nil
 }
 
@@ -1874,13 +1876,7 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	// Progress tier: the reason is a plain string on JobProgress, which is
-	// permanently resident, so this neither needs the manifest nor can fail
-	// on residency. It used to require both and return nil when either was
-	// absent, which meant the reason for releasing a job's par2 volumes was
-	// silently dropped for exactly the non-resident jobs the on-demand par2
-	// path operates on.
-	job.progress.par2ReleaseReason = reason
+	job.setPar2ReleaseReason(reason)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1903,7 +1899,7 @@ func (q *Queue) SetWarning(jobID, warning string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	job.Warning = warning
+	job.setWarning(warning)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1956,43 +1952,10 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 
-	changed := false
-	for fi := range len(job.progress.files) {
-		if job.progress.files[fi].Fetch == FetchIfNeeded {
-			job.progress.files[fi].Fetch = FetchNever
-			changed = true
-		}
-	}
-	if changed {
+	if job.discardDeferredPar2() {
 		q.dirty.Store(true)
 	}
 	return nil
-}
-
-// undeferRecoveryLocked clears Deferred on the given file indices of job. If
-// any file changed it marks Par2Recovered, recomputes pending counters from
-// ground truth, and wakes the dispatcher. RemainingBytes needs no fixup of
-// its own here: it derives from the Deferred flag on every read, so
-// clearing it is what makes the file's bytes start counting as remaining —
-// see derivedRemainingBytes. Indices that are out of range or not deferred
-// are ignored. Must be called with q.mu held for writing. Returns true if
-// anything changed.
-func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
-	changed := false
-	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= job.manifest.NumFiles() || job.progress.files[fi].Fetch != FetchIfNeeded {
-			continue
-		}
-		job.progress.files[fi].Fetch = FetchAlways
-		changed = true
-	}
-	if changed {
-		job.progress.par2Recovered = true
-		job.progress.recompute(job.manifest)
-		q.dirty.Store(true)
-		q.notifyLocked()
-	}
-	return changed
 }
 
 // MarkFileComplete marks the file at fileIdx within jobID as fully assembled
@@ -2000,14 +1963,13 @@ func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.markFileComplete(fileIdx); err != nil {
 		return err
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	job.progress.files[fileIdx].Complete = true
 	q.dirty.Store(true)
 	return nil
 }
@@ -2016,14 +1978,13 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.setFileFilename(fileIdx, filename); err != nil {
 		return err
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	job.progress.files[fileIdx].Filename = filename
 	q.dirty.Store(true)
 	return nil
 }
@@ -2084,22 +2045,17 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 func (q *Queue) SetFileCRC32FromRuns(jobID string, fileIdx int, runs []durability.Run) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	stored, err := job.setFileCRC32FromRuns(fileIdx, runs)
 	if err != nil {
 		return err
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	if stored {
+		q.dirty.Store(true)
 	}
-	if len(runs) != 1 || runs[0].Offset != 0 {
-		return nil
-	}
-	lo, hi := job.manifest.FileRange(fileIdx)
-	if int(runs[0].FirstArtIdx) != lo || int(runs[0].LastArtIdx) != hi-1 {
-		return nil
-	}
-	job.progress.files[fileIdx].AssembledCRC32 = runs[0].CRC32
-	q.dirty.Store(true)
 	return nil
 }
 

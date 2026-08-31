@@ -416,7 +416,7 @@ Recorded so these are not re-investigated as open questions:
 
 - **#261** (methods returning nil while silently skipping) is resolved, and it
   split along the tier boundary exactly as predicted. Of the seventeen entries
-  it listed, ten were manifest-tier and now route through `residentJob`,
+  it listed, ten were manifest-tier and now route through the residency gate,
   returning `ErrJobNotResident` where they used to return `nil`. The other
   seven are progress-tier and needed no gate at all — for two of them the
   guard was not merely redundant but wrong: `SetPar2ReleaseReason` demanded a
@@ -438,10 +438,19 @@ Recorded so these are not re-investigated as open questions:
   third time a hand search over this surface has returned a different subset
   (#267 records the first two), which is why the invariant is now enforced by
   `TestManifestAccessIsGated` rather than by reading: it walks the package AST
-  and fails any `*Queue` method that dereferences `job.manifest` without going
-  through `residentJob`. Its exemption list is written to shrink — a new
-  method is a failure until someone gates it or records why it does not need
-  to be.
+  and fails any `*Queue` **or `*Job`** method that dereferences a manifest
+  without going through a residency gate. Its exemption list is written to
+  shrink — a new method is a failure until someone gates it or records why it
+  does not need to be.
+
+  There are two entry points to that one gate, since B2.4a moved the
+  manifest-tier bodies onto `*Job`: `Queue.residentJob` for a caller starting
+  from an ID, which adds the ID to the error, and `Job.resident` for a caller
+  that already holds the `*Job`. The second is the condition; the first
+  delegates to it. Widening the walk to `*Job` is what keeps the enforcement
+  where the code went — a walk still matching only `*Queue` would have gone
+  blind without going red, because the test's vacuity guards are satisfied by
+  the `*Queue` methods that remain.
 
   The rule that falls out, and that `residentJob`'s doc comment now states:
   **gate on residency if and only if the method needs the manifest.** Adding a

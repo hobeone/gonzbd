@@ -53,20 +53,15 @@ func (q *Queue) AckDurable(p durability.DurableProof) error {
 	jobID := p.JobID()
 
 	q.mu.Lock()
-	job, err := q.residentJob(jobID)
+	job, ok := q.byID[jobID]
+	if !ok {
+		q.mu.Unlock()
+		return fmt.Errorf("queue: AckDurable %s: %w: %s", jobID, ErrNotFound, jobID)
+	}
+	invalidCount, nArt, err := job.ackDurable(arts)
 	if err != nil {
 		q.mu.Unlock()
 		return fmt.Errorf("queue: AckDurable %s: %w", jobID, err)
-	}
-	nArt := job.manifest.NumArticles()
-	var invalidCount int
-	for _, idx := range arts {
-		i := int(idx)
-		if i < 0 || i >= nArt {
-			invalidCount++
-			continue
-		}
-		job.progress.markDone(job.manifest, i)
 	}
 	q.dirty.Store(true)
 	q.mu.Unlock()
@@ -161,7 +156,7 @@ func (q *Queue) AckPermanentFailure(jobID string, artIdxs []int32) error {
 		// the connection is live and the articles are freshest — rather than
 		// waiting for the download-complete verify.
 		if !job.progress.par2Recovered && job.manifest.RecoveryFiles() > 0 {
-			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
+			if job.undeferRecovery(job.progress.DeferredRecoveryIndices()) {
 				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
 				releasedPar2 = true
 			}
@@ -252,19 +247,12 @@ func (q *Queue) SeedFromRuns(jobID string, runs []durability.Run) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return fmt.Errorf("queue: SeedFromRuns %s: %w", jobID, err)
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("queue: SeedFromRuns %s: %w: %s", jobID, ErrNotFound, jobID)
 	}
-	m := job.manifest
-	for _, r := range runs {
-		lo, hi, err := runsCoverage(m, r)
-		if err != nil {
-			return fmt.Errorf("queue: SeedFromRuns %s: %w", jobID, err)
-		}
-		for i := lo; i <= hi; i++ {
-			job.progress.markDone(m, i)
-		}
+	if err := job.seedFromRuns(runs); err != nil {
+		return fmt.Errorf("queue: SeedFromRuns %s: %w", jobID, err)
 	}
 	q.dirty.Store(true)
 	return nil

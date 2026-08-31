@@ -135,7 +135,7 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 // here: NewJob rebuilding the retried job from the re-parsed NZB has
 // already set FetchIfNeeded on every recovery volume when OnDemandPar2 is
 // on, but the row this overlay reads can legitimately say FetchAlways — a
-// prior run's undeferRecoveryLocked release, persisted before the job
+// prior run's undeferRecovery release, persisted before the job
 // failed and moved to history. Unlike RestoreJobProgress (whose progress
 // was itself sized from the same rows via ArticleCountsByJob, so row and
 // memory cannot disagree there), row and memory can disagree here, and the
@@ -168,7 +168,7 @@ func TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet(t *testing.T
 	}
 
 	// Simulate a prior run that released the volume (e.g. a permanent
-	// article failure via undeferRecoveryLocked) and persisted that release
+	// article failure via undeferRecovery) and persisted that release
 	// before the job later failed and moved to history.
 	job.progress.files[2].Fetch = FetchAlways
 	if err := store.Update(t.Context(), job); err != nil {
