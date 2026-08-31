@@ -1,8 +1,10 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
@@ -576,38 +579,55 @@ func TestSnapshotJob_Audit(t *testing.T) {
 	})
 }
 
-// TestCheckEarlyAbort_NonResidentJobStillAborts pins #461: the heuristic reads
-// only progress, and progress is permanently resident, so evicting a job's
-// manifest must not change the answer.
+// TestCheckEarlyAbort_NonResidentDefersRatherThanAborts pins the two halves of
+// why CheckEarlyAbort's residency gate is correct — which is the opposite of
+// what #461 concluded, and the reason that issue closed as not-a-defect.
 //
-// It used to. CheckEarlyAbort obtained its job through Queue.residentJob and
-// returned false on ErrJobNotResident, so a job whose manifest had been
-// released answered "do not abort" no matter what failure rate was sitting in
-// its live JobProgress. The rationale given was that "a non-resident job has
-// no live JobProgress, so there is no failure rate to evaluate" — false since
-// JobProgress became permanently resident (docs/queue-lifecycle.md): a
-// non-resident job is manifest-nil/progress-live.
+// #461's premise was that the gate refused an answer the method could always
+// give, costing "a DMCA'd or expired job continuing to burn bandwidth". Both
+// clauses are wrong. IsResident is PhaseActive or PhaseProcessing, so a
+// non-resident job is Queued/Propagating/Paused/terminal and is not
+// downloading; and no legal status edge runs from any of those to
+// StatusVerifying, so the abort's only consumer — pipeline.go's onJobHopeless
+// → maybeFinalize → SetPostProcStarted — fails with
+// ErrIllegalStatusTransition and drops the verdict silently. Ungating it
+// produced a WARN saying a job had been aborted while nothing aborted it.
 //
-// The window was narrow rather than absent. The sole caller is the article
-// result path (internal/app/pipeline.go), and a job with articles in flight is
-// in the active set and so resident; what reached the gate was a result
-// arriving after an eviction, where the cost of not aborting is a DMCA'd or
-// expired job going on burning bandwidth.
+// So the two halves:
 //
-// A state directory is required, not incidental: evictJobLocked only nils the
-// manifest when q.store != nil || q.stateDir != "", so a bare New() would keep
-// the job resident and this test would pass against the unfixed code.
-func TestCheckEarlyAbort_NonResidentJobStillAborts(t *testing.T) {
+//   - GATED: a non-resident job at a failure rate well past the threshold
+//     still answers false.
+//   - DEFERRED, NOT DISCARDED: once the job is downloading again the same
+//     rate fires the abort. PromoteNext rebuilds JobProgress
+//     (newJobProgress + the store's persisted counters) and earlyAborted is
+//     deliberately not persisted, so nothing carries a spent latch across.
+//
+// The second half is what makes the first safe, and it is the half a reader
+// cannot get from the gate alone — which is how #461 came to be filed.
+//
+// Store-backed on purpose: without one, PromoteNext's rehydration derives
+// counters from the manifest alone, the 90% rate does not survive the
+// round-trip, and the deferral half would pass for the wrong reason.
+func TestCheckEarlyAbort_NonResidentDefersRatherThanAborts(t *testing.T) {
 	t.Parallel()
 
-	q := New(WithStateDir(t.TempDir()))
-	j := makeMultiFileJob(t, "ea-evicted", 1, 20)
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	q := New(WithStore(NewSQLiteStore(repo.DB(), dir, repo)))
+
+	j := makeMultiFileJob(t, "ea-defer", 1, 20)
 	if err := q.Add(j); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	q.PromoteNext(context.Background())
 
-	// Collect the Message-IDs while the manifest is still there to read them
-	// from; the acks below resolve 10 articles at a 90% failure rate.
+	// 9 failed + 1 done = 10 resolved at a 90% failure rate, past the 80%
+	// threshold. Message-IDs are read while the manifest is still attached.
 	ids := make([]string, 10)
 	for i := range ids {
 		ids[i] = mustManifest(t, j).ArticleID(i)
@@ -618,18 +638,33 @@ func TestCheckEarlyAbort_NonResidentJobStillAborts(t *testing.T) {
 	if err := q.Pause(j.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-
-	// Guard the fixture: if Pause stopped releasing the manifest, the
-	// assertion below would pass without exercising the bug at all.
-	q.mu.RLock()
-	stillResident := q.byID[j.ID].manifest != nil
-	q.mu.RUnlock()
-	if stillResident {
-		t.Fatal("fixture is not exercising #461: job still resident after Pause")
+	if manifestResident(q.byID[j.ID]) {
+		t.Fatal("fixture is not exercising the gate: job still resident after Pause")
 	}
 
+	// Half one: gated.
+	if q.CheckEarlyAbort(j.ID) {
+		t.Error("CheckEarlyAbort = true for a paused job; the verdict cannot be actioned " +
+			"(no legal edge from Paused to Verifying) and the job is not downloading, " +
+			"so answering true only emits a WARN for an abort that does not happen")
+	}
+
+	// The abort's consumer, to show that answering true would go nowhere.
+	if _, err := q.SetPostProcStarted(j.ID); err == nil {
+		t.Error("SetPostProcStarted succeeded on a paused job; the gate above is justified by " +
+			"this failing, so if the status edges gained Paused->Verifying this test is the " +
+			"place that should notice")
+	}
+
+	// Half two: deferred, not discarded.
+	if err := q.Resume(j.ID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !manifestResident(q.byID[j.ID]) {
+		t.Fatal("job did not become resident on Resume; the deferral half is unreachable")
+	}
 	if !q.CheckEarlyAbort(j.ID) {
-		t.Error("CheckEarlyAbort = false for a non-resident job at a 90% failure rate; " +
-			"the heuristic reads only progress, which eviction does not release")
+		t.Error("CheckEarlyAbort = false after the job resumed at a 90% failure rate; " +
+			"declining while non-resident must defer the verdict, not discard it")
 	}
 }
