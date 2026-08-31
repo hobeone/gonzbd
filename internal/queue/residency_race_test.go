@@ -34,7 +34,7 @@ func TestJobManifestProgressResidencyRace(t *testing.T) {
 
 	// Add's own PromoteNext call should have promoted the sole queued job to
 	// Downloading (resident) immediately, since MaxActiveJobs defaults to 4.
-	got, err := q.Get(job.ID)
+	got, err := q.liveJob(job.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestJobScalarGettersRace(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	got, err := q.Get(job.ID)
+	got, err := q.liveJob(job.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

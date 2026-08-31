@@ -61,9 +61,9 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 		t.Fatalf("q.Add failed: %v", err)
 	}
 
-	gotJob, err := q.Get(job.ID)
-	if err != nil || gotJob == nil {
-		t.Fatalf("q.Get failed: %v", err)
+	gotJob := q.SnapshotJob(job.ID)
+	if gotJob == nil {
+		t.Fatalf("q.Get failed")
 	}
 
 	m := mustManifest(t, gotJob)
@@ -95,7 +95,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	// Mark article 3 (first article of File 1) done by ArtIdx
 	ackDoneIdx(t, q, job.ID, 3)
 
-	snap, _ := q.Get(job.ID)
+	snap := q.SnapshotJob(job.ID)
 	p := snap.Progress()
 	if p.FilePending(0) != 3 {
 		t.Errorf("File 0 pending should be 3, got %d", p.FilePending(0))
@@ -114,7 +114,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	}
 	ackDoneIdx(t, q, job.ID, allIdxs...)
 
-	snap, _ = q.Get(job.ID)
+	snap = q.SnapshotJob(job.ID)
 	p = snap.Progress()
 	if p.PendingArticles() != 0 {
 		t.Errorf("Expected 0 pending articles after marking all done, got %d", p.PendingArticles())

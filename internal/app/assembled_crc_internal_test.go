@@ -77,9 +77,9 @@ func TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped(t *tes
 
 	application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if got := snap.Progress().FileAssembledCRC32(0); got != 0 {
 		t.Errorf("assembled CRC = %#x, want 0 — the record does not account for "+
@@ -130,9 +130,9 @@ func TestRecordAssembledCRC_ThreadsAWholeFileCRCToTheQueue(t *testing.T) {
 
 	application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if got := snap.Progress().FileAssembledCRC32(0); got != want {
 		t.Errorf("assembled CRC = %#x, want %#x (CRC32 of the file's bytes) — with none "+
@@ -186,9 +186,9 @@ func TestRecordAssembledCRC_RecordsNothingForAHoledFile(t *testing.T) {
 
 	application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if got := snap.Progress().FileAssembledCRC32(0); got != 0 {
 		t.Errorf("assembled CRC = %#x for a file with a hole in it; that value covers "+
@@ -254,9 +254,9 @@ func TestRecordAssembledCRC_RecordsNothingForAnOverlappedFile(t *testing.T) {
 
 	application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if got := snap.Progress().FileAssembledCRC32(0); got != 0 {
 		t.Errorf("assembled CRC = %#x for a file holding a displaced article's bytes "+
@@ -283,9 +283,9 @@ func TestRecordAssembledCRC_RecordsNothingWhenTheOnlyRunDoesNotStartAtZero(t *te
 
 	application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if got := snap.Progress().FileAssembledCRC32(0); got != 0 {
 		t.Errorf("assembled CRC = %#x from a single run starting at 100; it covers a "+
@@ -310,9 +310,9 @@ func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
 
 		application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-		snap, err := application.queue.Get(job.ID)
-		if err != nil {
-			t.Fatal(err)
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("snap is nil")
 		}
 		if got := snap.Progress().FileAssembledCRC32(0); got != 0 {
 			t.Errorf("assembled CRC = %#x with no run store", got)
@@ -332,9 +332,9 @@ func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
 
 		application.recordAssembledCRC(t.Context(), job.ID, 0)
 
-		snap, err := application.queue.Get(job.ID)
-		if err != nil {
-			t.Fatal(err)
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("snap is nil")
 		}
 		if got := snap.Progress().FileAssembledCRC32(0); got != 0 {
 			t.Errorf("assembled CRC = %#x from a store that returned an error; a "+
@@ -381,9 +381,9 @@ func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
 
 		application.recordAssembledCRC(t.Context(), job.ID, 1)
 
-		snap, err := application.queue.Get(job.ID)
-		if err != nil {
-			t.Fatal(err)
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("snap is nil")
 		}
 		if got := snap.Progress().FileAssembledCRC32(1); got != 0 {
 			t.Errorf("file 1 got CRC %#x from file 0's run; the query must be scoped to "+
@@ -392,9 +392,9 @@ func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
 		// Grounding: file 0's own run must still be reachable, or the
 		// assertion above passes because the fixture stored nothing at all.
 		application.recordAssembledCRC(t.Context(), job.ID, 0)
-		snap, err = application.queue.Get(job.ID)
-		if err != nil {
-			t.Fatal(err)
+		snap = application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("snap is nil")
 		}
 		if got := snap.Progress().FileAssembledCRC32(0); got != want {
 			t.Fatalf("file 0's CRC = %#x, want %#x; the fixture stored no usable run", got, want)

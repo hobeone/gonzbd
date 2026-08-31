@@ -26,7 +26,7 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 		t.Fatalf("Add job: %v", err)
 	}
 
-	gotJob, err := q.Get(job.ID)
+	gotJob, err := q.liveJob(job.ID)
 	if err != nil || gotJob == nil || !manifestResident(gotJob) {
 		t.Fatalf("Get job failed: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 	t.Run("valid indices update progress correctly", func(t *testing.T) {
 		ackDoneIdx(t, q, job.ID, 0)
 
-		snap, err := q.Get(job.ID)
+		snap, err := q.liveJob(job.ID)
 		if err != nil {
 			t.Fatalf("Get job: %v", err)
 		}
@@ -76,7 +76,7 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 		if err := q.MarkArticleEmittedByIdx(job.ID, 1); err != nil {
 			t.Errorf("MarkArticleEmittedByIdx(1) failed: %v", err)
 		}
-		snap, _ := q.Get(job.ID)
+		snap, _ := q.liveJob(job.ID)
 		if !snap.Progress().ArticleEmitted(1) {
 			t.Errorf("Expected article 1 to be Emitted")
 		}
@@ -84,7 +84,7 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 		if err := q.ClearArticleEmittedByIdx(job.ID, 1); err != nil {
 			t.Errorf("ClearArticleEmittedByIdx(1) failed: %v", err)
 		}
-		snap, _ = q.Get(job.ID)
+		snap, _ = q.liveJob(job.ID)
 		if snap.Progress().ArticleEmitted(1) {
 			t.Errorf("Expected article 1 to no longer be Emitted")
 		}
@@ -101,7 +101,7 @@ func TestArtIdx_ConcurrentStress(t *testing.T) {
 		t.Fatalf("Add job: %v", err)
 	}
 
-	gotJob, _ := q.Get(job.ID)
+	gotJob, _ := q.liveJob(job.ID)
 	nArt := mustManifest(t, gotJob).NumArticles()
 
 	var wg sync.WaitGroup

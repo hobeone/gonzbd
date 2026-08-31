@@ -30,9 +30,9 @@ import (
 // artIdxFor resolves a message ID to its global article index.
 func artIdxFor(t *testing.T, q *queue.Queue, jobID, msgID string) int32 {
 	t.Helper()
-	job, err := q.Get(jobID)
-	if err != nil {
-		t.Fatalf("artIdxFor: job %s not in queue: %v", jobID, err)
+	job := q.SnapshotJob(jobID)
+	if job == nil {
+		t.Fatalf("artIdxFor: job %s not in queue", jobID)
 	}
 	m, err := job.Manifest()
 	if err != nil {
@@ -60,9 +60,9 @@ func ackDoneIdx(t *testing.T, q *queue.Queue, jobID string, artIdxs ...int32) {
 		return
 	}
 
-	job, err := q.Get(jobID)
-	if err != nil {
-		t.Fatalf("ackDoneIdx: job %s not in queue: %v", jobID, err)
+	job := q.SnapshotJob(jobID)
+	if job == nil {
+		t.Fatalf("ackDoneIdx: job %s not in queue", jobID)
 	}
 	m, err := job.Manifest()
 	if err != nil {

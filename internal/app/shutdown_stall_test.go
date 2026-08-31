@@ -39,9 +39,9 @@ func TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier(t *testing.T) {
 
 	application.Stall(job.ID, storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if snap.Status == constants.StatusPaused {
 		t.Errorf("the job was parked by the clean-shutdown barrier: warning=%q. "+
@@ -62,9 +62,9 @@ func TestStall_StillParksWhenTheProcessIsNotStopping(t *testing.T) {
 
 	application.Stall(job.ID, storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if snap.Status != constants.StatusPaused {
 		t.Fatal("a wedged mount left the job running; it sits at N% with no reason the " +

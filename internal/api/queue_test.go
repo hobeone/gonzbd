@@ -317,9 +317,9 @@ func TestQueueList_GlobalPauseOverridesDownloadingToPaused(t *testing.T) {
 	}
 
 	// Verify internal state is still Downloading (not mutated).
-	j, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	j := q.SnapshotJob(job.ID)
+	if j == nil {
+		t.Fatalf("Get")
 	}
 	if j.Status != constants.StatusDownloading {
 		t.Errorf("internal status = %q; want Downloading (should not be mutated)", j.Status)
@@ -566,9 +566,9 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 	job := addLargeTestJob(t, q, 4) // 4 segments × 1 MiB
 
 	// Mark 2 of 4 articles done so file shows partial progress.
-	jobInternal, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	jobInternal := q.SnapshotJob(job.ID)
+	if jobInternal == nil {
+		t.Fatalf("Get")
 	}
 	m := mustManifest(t, jobInternal)
 	if m.NumFiles() != 1 {
@@ -723,9 +723,9 @@ func TestQueuePause(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
-	j, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	j := q.SnapshotJob(job.ID)
+	if j == nil {
+		t.Fatalf("Get")
 	}
 	if j.Status != constants.StatusPaused {
 		t.Errorf("status = %q; want Paused", j.Status)
@@ -745,9 +745,9 @@ func TestQueueResume(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
-	j, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	j := q.SnapshotJob(job.ID)
+	if j == nil {
+		t.Fatalf("Get")
 	}
 	if j.Status != constants.StatusDownloading {
 		t.Errorf("status = %q; want Downloading", j.Status)
@@ -869,9 +869,9 @@ func TestAddFile_Multipart(t *testing.T) {
 		t.Errorf("queue len = %d; want 1 after addfile", q.Len())
 	}
 	// Verify the job ID matches.
-	job, err := q.Get(resp.NzoIDs[0])
-	if err != nil {
-		t.Fatalf("queue.Get(%q): %v", resp.NzoIDs[0], err)
+	job := q.SnapshotJob(resp.NzoIDs[0])
+	if job == nil {
+		t.Fatalf("queue.Get(%q)", resp.NzoIDs[0])
 	}
 	if job.Filename != "test.nzb" {
 		t.Errorf("filename = %q; want test.nzb", job.Filename)
@@ -1092,9 +1092,9 @@ func TestQueueRename_Success(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	updated, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	updated := q.SnapshotJob(job.ID)
+	if updated == nil {
+		t.Fatalf("Get")
 	}
 	if updated.Name != "NewName" {
 		t.Errorf("Name = %q; want %q", updated.Name, "NewName")
@@ -1267,9 +1267,9 @@ func TestQueuePriority_Action(t *testing.T) {
 		t.Errorf("nzo_ids = %v; want [%s]", resp.NzoIDs, job.ID)
 	}
 	// Verify priority actually changed.
-	updated, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	updated := q.SnapshotJob(job.ID)
+	if updated == nil {
+		t.Fatalf("Get")
 	}
 	if updated.Priority != constants.HighPriority {
 		t.Errorf("priority = %d; want %d (HighPriority)", updated.Priority, constants.HighPriority)
@@ -1516,9 +1516,9 @@ func TestQueueChangeOpts_Success(t *testing.T) {
 	}
 
 	// Verify the queue was updated.
-	got, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	got := q.SnapshotJob(job.ID)
+	if got == nil {
+		t.Fatalf("Get")
 	}
 	if got.PP != 3 {
 		t.Errorf("PP = %d; want 3", got.PP)
@@ -1615,9 +1615,9 @@ func TestQueueChangeCat_Success(t *testing.T) {
 	}
 
 	// Verify queue was updated with the new category's inherited settings.
-	got, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	got := q.SnapshotJob(job.ID)
+	if got == nil {
+		t.Fatalf("Get")
 	}
 	if got.Category != "movies" {
 		t.Errorf("Category = %q; want movies", got.Category)
@@ -1649,9 +1649,9 @@ func TestQueueChangeCat_EmptyValue2FallsBackToDefault(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	got, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	got := q.SnapshotJob(job.ID)
+	if got == nil {
+		t.Fatalf("Get")
 	}
 	if got.Category != "Default" {
 		t.Errorf("Category = %q; want Default", got.Category)
@@ -2123,9 +2123,9 @@ func TestQueueChangeScript_Sanitization(t *testing.T) {
 				t.Fatalf("status = %d; want 200", rr.Code)
 			}
 
-			got, err := q.Get(job.ID)
-			if err != nil {
-				t.Fatalf("Get: %v", err)
+			got := q.SnapshotJob(job.ID)
+			if got == nil {
+				t.Fatalf("Get")
 			}
 			if got.Script != tt.wantScript {
 				t.Errorf("Script = %q; want %q", got.Script, tt.wantScript)
@@ -2472,9 +2472,9 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		if m["status"] != true {
 			t.Errorf("status = %v; want true", m["status"])
 		}
-		got, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("q.Get(%s): %v", job.ID, err)
+		got := q.SnapshotJob(job.ID)
+		if got == nil {
+			t.Fatalf("q.Get(%s)", job.ID)
 		}
 		if got.Name != "NewName" {
 			t.Errorf("got.Name = %q; want NewName", got.Name)
@@ -2682,9 +2682,9 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	}
 	ackFailed(t, q, job.ID, "big-article-001@example.com")
 
-	live, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	live := q.SnapshotJob(job.ID)
+	if live == nil {
+		t.Fatalf("Get")
 	}
 
 	const speed = 1024.0 * 1024.0 // 1 MiB/s; well above the noise floor

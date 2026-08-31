@@ -207,7 +207,7 @@ func TestDiscardDeferredPar2_RowsStayAtTheirIndices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	rj, err := reloaded.Get(job.ID)
+	rj, err := reloaded.liveJob(job.ID)
 	if err != nil {
 		t.Fatalf("the job did not survive the reload: %v", err)
 	}

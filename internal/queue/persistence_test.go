@@ -780,7 +780,7 @@ func TestLoad_RehydratesResidentJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got, err := loaded.Get(job.ID)
+	got, err := loaded.liveJob(job.ID)
 	if err != nil {
 		t.Fatalf("Get after Load: %v", err)
 	}

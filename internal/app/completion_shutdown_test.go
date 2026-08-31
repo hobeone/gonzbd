@@ -98,9 +98,9 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	}
 
 	// Verify all 150 files were marked complete.
-	qJob, err := application.Queue().Get(job.ID)
-	if err != nil || qJob == nil {
-		t.Fatalf("job %s not found in queue: %v", job.ID, err)
+	qJob := application.Queue().SnapshotJob(job.ID)
+	if qJob == nil {
+		t.Fatalf("job %s not found in queue", job.ID)
 	}
 	m, p := mustManifest(t, qJob), qJob.Progress()
 	if m != nil && p != nil {

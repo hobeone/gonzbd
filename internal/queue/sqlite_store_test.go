@@ -1194,9 +1194,9 @@ func TestRestoreJobProgress_RestoresTheResolvedFilename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got, err := reloaded.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get after reload: %v", err)
+	got := reloaded.SnapshotJob(job.ID)
+	if got == nil {
+		t.Fatalf("SnapshotJob after reload: job %s not in queue", job.ID)
 	}
 	if _, mErr := got.Manifest(); mErr != nil {
 		t.Fatalf("fixture guard: the reloaded job is not resident (%v), so RestoreJobProgress never ran", mErr)

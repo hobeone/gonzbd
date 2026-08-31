@@ -171,7 +171,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 	p.handleFailureResult(t.Context(), resRetryable)
 
-	if gotJob, _ := q.Get(job.ID); gotJob != nil && gotJob.Progress().ArticleEmitted(0) {
+	if gotJob := q.SnapshotJob(job.ID); gotJob != nil && gotJob.Progress().ArticleEmitted(0) {
 		t.Error("expected Emitted to be cleared after retryable failure")
 	}
 	if got := telemetry.ArticlesRetried.Value(); got != retriesBefore+1 {
@@ -217,7 +217,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	}
 	p.handleSuccessResult(t.Context(), resSuccess)
 
-	gotJob, _ := q.Get(job.ID)
+	gotJob := q.SnapshotJob(job.ID)
 	if gotJob == nil {
 		t.Fatal("Get returned nil")
 	}
