@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -489,6 +490,164 @@ func TestJobDeferredRecoveryIndices_NilProgress(t *testing.T) {
 	job := &Job{ID: "no-progress"}
 	if got := job.DeferredRecoveryIndices(); got != nil {
 		t.Errorf("DeferredRecoveryIndices() with nil progress = %v, want nil", got)
+	}
+}
+
+// TestJobSetters_AreRawWithPolicyOnTheWrapper pins the division of labour
+// B2.4a chose, which is the part of these one-line setters that is not
+// obvious from reading them.
+//
+// Each Job setter assigns and nothing else; the validation and sanitization
+// stay on the Queue wrapper. That is deliberate in two cases and load-bearing
+// in both:
+//
+//   - setPP does NOT range-check. Queue.SetPP validates BEFORE the lookup, so
+//     an invalid level on a missing job reports the level rather than
+//     ErrNotFound. Moving the check here would silently swap that precedence.
+//   - setName does NOT sanitize. CleanupName and SanitizeFolderName read
+//     Queue.sOpts, which a Job cannot reach — so a caller who acquires a *Job
+//     and calls setName directly gets the raw string, and any future exported
+//     form of it must sanitize at its own door.
+//
+// Asserting the raw behaviour is what makes a later "tidying" that folds
+// policy down into the Job a test failure rather than a silent change.
+func TestJobSetters_AreRawWithPolicyOnTheWrapper(t *testing.T) {
+	t.Parallel()
+
+	j := &Job{ID: "j1", progress: &JobProgress{}}
+
+	// Out of the 0-3 range Queue.SetPP enforces: the setter takes it anyway.
+	j.setPP(99)
+	if j.PP != 99 {
+		t.Errorf("setPP(99) left PP = %d, want 99 — validation belongs to Queue.SetPP, not here", j.PP)
+	}
+
+	// Neither stripped of its extension nor sanitized: Queue.SetName does both.
+	const raw = "a/b: name.nzb"
+	j.setName(raw)
+	if j.Name != raw {
+		t.Errorf("setName(%q) stored %q, want it verbatim — sanitization belongs to Queue.SetName, which alone can read q.sOpts", raw, j.Name)
+	}
+
+	j.setScript("post.sh")
+	if j.Script != "post.sh" {
+		t.Errorf("setScript stored %q, want %q", j.Script, "post.sh")
+	}
+
+	j.setWarning("disk full")
+	if j.Warning != "disk full" {
+		t.Errorf("setWarning stored %q, want %q", j.Warning, "disk full")
+	}
+
+	j.setPar2ReleaseReason("volume 3 damaged")
+	if got := j.progress.par2ReleaseReason; got != "volume 3 damaged" {
+		t.Errorf("setPar2ReleaseReason stored %q, want %q", got, "volume 3 damaged")
+	}
+}
+
+// TestJobMarkOnce_ReportsWhetherItTook pins the bool contract of
+// markStartedOnce and markDownloadFinishedOnce, which their Queue wrappers
+// use and which no other test observes.
+//
+// TestMarkJobStarted and TestMarkDownloadFinished assert the timestamp does
+// not move on a second call — but a setter that correctly refuses the write
+// and still returned true would pass both, while making the wrapper issue a
+// redundant store.Update and mark the queue dirty on every repeat call. The
+// timestamp is the effect; the bool is the interface.
+func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	later := now.Add(time.Hour)
+
+	t.Run("markStartedOnce", func(t *testing.T) {
+		t.Parallel()
+		j := &Job{ID: "j1", progress: &JobProgress{}}
+		if !j.markStartedOnce(now) {
+			t.Fatal("first call returned false, want true")
+		}
+		if j.markStartedOnce(later) {
+			t.Error("second call returned true; the wrapper would persist and dirty the queue for a write that did not happen")
+		}
+		if !j.progress.downloadStarted.Equal(now) {
+			t.Errorf("downloadStarted = %v, want %v", j.progress.downloadStarted, now)
+		}
+	})
+
+	t.Run("markDownloadFinishedOnce", func(t *testing.T) {
+		t.Parallel()
+		j := &Job{ID: "j1", progress: &JobProgress{}}
+		if !j.markDownloadFinishedOnce(now) {
+			t.Fatal("first call returned false, want true")
+		}
+		if j.markDownloadFinishedOnce(later) {
+			t.Error("second call returned true; the wrapper would persist and dirty the queue for a write that did not happen")
+		}
+		if !j.progress.downloadFinished.Equal(now) {
+			t.Errorf("downloadFinished = %v, want %v", j.progress.downloadFinished, now)
+		}
+	})
+}
+
+// TestJobRecordDownload_AccumulatesPerServer pins that recordDownload adds to
+// the running total rather than replacing it, and initialises the map on
+// first use.
+//
+// The lazy init is why the setter cannot be a one-line map write: a Job whose
+// progress has never recorded a byte has a nil serverStats, and assigning
+// into a nil map panics. Queue.RecordDownload is called once per completed
+// article, so both the first call and the millionth run through here.
+func TestJobRecordDownload_AccumulatesPerServer(t *testing.T) {
+	t.Parallel()
+
+	j := &Job{ID: "j1", progress: &JobProgress{}}
+	if j.progress.serverStats != nil {
+		t.Fatal("fixture already has serverStats; the nil-map path is what this test covers")
+	}
+
+	j.recordDownload("news.example.com", 100)
+	j.recordDownload("news.example.com", 50)
+	j.recordDownload("backup.example.com", 7)
+
+	if got := j.progress.serverStats["news.example.com"]; got != 150 {
+		t.Errorf("news.example.com = %d, want 150 — the second call must add, not replace", got)
+	}
+	if got := j.progress.serverStats["backup.example.com"]; got != 7 {
+		t.Errorf("backup.example.com = %d, want 7", got)
+	}
+}
+
+// TestJobDiscardDeferredPar2_OnlyTouchesIfNeeded pins which files the discard
+// applies to, and that it reports no change when there is nothing to discard.
+//
+// Selectivity is the whole content of the method: FetchAlways files are being
+// downloaded and must keep being downloaded, and FetchNever files are already
+// discarded. Only FetchIfNeeded — a recovery volume still awaiting the CRC
+// verdict — is the method's business. The false return matters because
+// Queue.DiscardDeferredPar2 marks the queue dirty on it, and a method that
+// always reported true would checkpoint on every no-op call.
+func TestJobDiscardDeferredPar2_OnlyTouchesIfNeeded(t *testing.T) {
+	t.Parallel()
+
+	j := &Job{ID: "j1", progress: &JobProgress{files: []FileProgress{
+		{Fetch: FetchAlways},
+		{Fetch: FetchIfNeeded},
+		{Fetch: FetchNever},
+		{Fetch: FetchIfNeeded},
+	}}}
+
+	if !j.discardDeferredPar2() {
+		t.Fatal("returned false with two FetchIfNeeded files, want true")
+	}
+	want := []FetchPolicy{FetchAlways, FetchNever, FetchNever, FetchNever}
+	for i, w := range want {
+		if got := j.progress.files[i].Fetch; got != w {
+			t.Errorf("file %d policy = %v, want %v", i, got, w)
+		}
+	}
+
+	if j.discardDeferredPar2() {
+		t.Error("second call returned true with nothing left to discard; the wrapper would dirty the queue for a no-op")
 	}
 }
 

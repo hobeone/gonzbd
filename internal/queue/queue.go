@@ -1059,7 +1059,7 @@ func (q *Queue) SetPP(id string, pp int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	job.PP = pp
+	job.setPP(pp)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1077,7 +1077,7 @@ func (q *Queue) SetName(id, name string) error {
 	name = stripNZBExt(name)
 	name = fsutil.CleanupName(name, q.sOpts)
 	name = fsutil.SanitizeFolderName(name, q.sOpts)
-	job.Name = name
+	job.setName(name)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1091,7 +1091,7 @@ func (q *Queue) SetScript(id, script string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	job.Script = script
+	job.setScript(script)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1379,11 +1379,10 @@ func (q *Queue) MarkDownloadFinished(id string, t time.Time) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	// Progress tier: no residency guard. The IsZero test is a business
-	// condition (first finish wins), not a check for absence — progress is
-	// permanently resident.
-	if job.progress.downloadFinished.IsZero() {
-		job.progress.downloadFinished = t
+	// Progress tier: no residency guard. The first-finish-wins test is a
+	// business condition, not a check for absence — progress is permanently
+	// resident — and it lives on the Job with the field it guards.
+	if job.markDownloadFinishedOnce(t) {
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the finish timestamp consistent; tracked in #229
 		}
@@ -1401,10 +1400,9 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	// Progress tier: see MarkDownloadFinished. IsZero is "first start wins",
-	// not a residency check.
-	if job.progress.downloadStarted.IsZero() {
-		job.progress.downloadStarted = t
+	// Progress tier: see MarkDownloadFinished. "First start wins" is a
+	// business condition, not a residency check.
+	if job.markStartedOnce(t) {
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the start timestamp consistent; tracked in #229
 		}
@@ -1421,14 +1419,7 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	if !ok {
 		return ErrNotFound
 	}
-	// No residency guard: per-server byte counts live on JobProgress, which
-	// is permanently resident, and Add repairs any job entering q.byID with
-	// nil progress. Downloaded bytes must be recorded whether or not the
-	// manifest happens to be in memory.
-	if job.progress.serverStats == nil {
-		job.progress.serverStats = make(map[string]int64)
-	}
-	job.progress.serverStats[server] += int64(bytes)
+	job.recordDownload(server, bytes)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1879,13 +1870,7 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	// Progress tier: the reason is a plain string on JobProgress, which is
-	// permanently resident, so this neither needs the manifest nor can fail
-	// on residency. It used to require both and return nil when either was
-	// absent, which meant the reason for releasing a job's par2 volumes was
-	// silently dropped for exactly the non-resident jobs the on-demand par2
-	// path operates on.
-	job.progress.par2ReleaseReason = reason
+	job.setPar2ReleaseReason(reason)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1908,7 +1893,7 @@ func (q *Queue) SetWarning(jobID, warning string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	job.Warning = warning
+	job.setWarning(warning)
 	q.dirty.Store(true)
 	return nil
 }
@@ -1961,14 +1946,7 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 
-	changed := false
-	for fi := range len(job.progress.files) {
-		if job.progress.files[fi].Fetch == FetchIfNeeded {
-			job.progress.files[fi].Fetch = FetchNever
-			changed = true
-		}
-	}
-	if changed {
+	if job.discardDeferredPar2() {
 		q.dirty.Store(true)
 	}
 	return nil

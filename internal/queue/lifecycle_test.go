@@ -630,6 +630,57 @@ func TestMarkJobStarted(t *testing.T) {
 	})
 }
 
+// TestMarkDownloadFinished mirrors TestMarkJobStarted for the finish
+// timestamp, whose first-wins rule had no test at all.
+//
+// The gap was found by mutation during B2.4a: neutering the IsZero guard in
+// markDownloadFinishedOnce left the whole suite green, while the same
+// mutation on markStartedOnce was caught immediately by the sibling above.
+// Before this, the only test touching Queue.MarkDownloadFinished was a
+// concurrency challenger that discards the error and never re-marks.
+//
+// It matters beyond symmetry. DownloadFinished feeds the history record's
+// elapsed time, so a second write moves a completed job's reported duration.
+// The untested rule is also why #457 went unnoticed: Job.MarkDownloadFinished
+// assigns unconditionally, and nothing asserted the two should agree.
+func TestMarkDownloadFinished(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeJob(t, "finished", constants.NormalPriority)
+	_ = q.Add(j)
+
+	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("sets finish time on first call", func(t *testing.T) {
+		if err := q.MarkDownloadFinished(j.ID, now); err != nil {
+			t.Fatalf("MarkDownloadFinished: %v", err)
+		}
+		got, _ := q.Get(j.ID)
+		if !got.Progress().DownloadFinished().Equal(now) {
+			t.Errorf("DownloadFinished = %v, want %v", got.Progress().DownloadFinished(), now)
+		}
+	})
+
+	t.Run("no-op on subsequent calls", func(t *testing.T) {
+		later := now.Add(time.Hour)
+		if err := q.MarkDownloadFinished(j.ID, later); err != nil {
+			t.Fatalf("MarkDownloadFinished: %v", err)
+		}
+		got, _ := q.Get(j.ID)
+		if !got.Progress().DownloadFinished().Equal(now) {
+			t.Errorf("DownloadFinished should not change: got %v, want %v — first finish wins, "+
+				"and a later write would move a completed job's reported duration",
+				got.Progress().DownloadFinished(), now)
+		}
+	})
+
+	t.Run("error on nonexistent job", func(t *testing.T) {
+		if err := q.MarkDownloadFinished("bogus", now); !errors.Is(err, ErrNotFound) {
+			t.Errorf("got %v, want ErrNotFound", err)
+		}
+	})
+}
+
 // ---------- RecordDownload ----------
 
 func TestRecordDownload(t *testing.T) {
