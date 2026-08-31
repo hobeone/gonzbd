@@ -296,13 +296,12 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // ReplaceFromRuns still start here, because they need the manifest in the
 // wrapper itself rather than only inside the moved body.
 //
-// CheckEarlyAbort is the third caller and the one that does not fit the rule
-// below: it reads only progress — Job.IsEarlyAbort is j.progress.isEarlyAbort()
-// — yet gates on residency, so it answers "do not abort" for a job whose
-// manifest is not in memory. It predates the rule and is #461, not an
-// exception to be preserved. Counted here rather than left out because an
-// enumeration that lists the callers it agrees with is how the claim above
-// this one came to be false.
+// Those two are now the whole list: `git grep -n 'q\.residentJob(' -- '*.go'
+// ':!*_test.go'` returns 2, both in workset.go. CheckEarlyAbort was a third
+// until #461 — it read only progress yet gated on residency, so it answered
+// "do not abort" for a job whose manifest was not in memory — and it now
+// looks its job up in q.byID like every other progress-tier reader. The rule
+// below therefore has no exception left to record.
 //
 // Which of the two entry points a given method uses is not the invariant and
 // should not be asserted method by method — that is enforced rather than
@@ -316,14 +315,14 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // caller that starts from an ID and adds the ID to the error, that one for a
 // caller that already holds the *Job.
 //
-// The progress-tier methods do not route through here, with the single
-// exception recorded above. JobProgress is permanently resident, so gating
-// them on residency would refuse work they are always able to perform. Adding
-// a residency check to a method that reads only progress is a bug in the same
-// family, not caution: SetPar2ReleaseReason had one, and it silently dropped
-// the reason a job's par2 volumes were released for every non-resident job.
-// CheckEarlyAbort still has one; that it is the rule's counterexample rather
-// than its refinement is the whole of #461.
+// The progress-tier methods do not route through here. JobProgress is
+// permanently resident, so gating them on residency would refuse work they are
+// always able to perform. Adding a residency check to a method that reads only
+// progress is a bug in the same family, not caution, and both known instances
+// are now fixed rather than documented as exceptions: SetPar2ReleaseReason
+// silently dropped the reason a job's par2 volumes were released for every
+// non-resident job, and CheckEarlyAbort refused the abort heuristic for one
+// (#461).
 //
 // Manifest is the only residency signal now: JobProgress is permanently
 // resident (docs/queue-lifecycle.md) and never nil for a job in q.byID, so a
@@ -334,9 +333,12 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // caller through this gate needs the manifest itself to resolve what it was
 // asked to mutate (a message ID or article index only means something against
 // a resident Manifest), so there is no correct mutation to perform without
-// one. That argument is what CheckEarlyAbort falls outside of — it mutates
-// nothing and resolves no index, so the safety it relies on is not the safety
-// this paragraph establishes (#461).
+// one. Note what this argument turns on: not that the caller does not write,
+// but that what it writes is INDEXED BY THE MANIFEST. CheckEarlyAbort was
+// mistaken for a read on the strength of the first reading — it does write,
+// latching progress.earlyAborted so the heuristic fires once — and it is
+// nevertheless correct outside this gate, because that latch is progress-tier
+// and needs no manifest to resolve (#461).
 // And should a caller somehow bypass that, whatever it wrote would not
 // survive anyway — the moment the job returns to resident, hydrateJobLocked
 // unconditionally rebuilds JobProgress from the manifest plus
@@ -1819,23 +1821,25 @@ func (q *Queue) TotalRemainingBytes() int64 {
 func (q *Queue) CheckEarlyAbort(jobID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// This gate is wrong and is #461. Its stated reason was that "a non-
-	// resident job has no live JobProgress, so there is no failure rate to
-	// evaluate", which is false: progress is permanently resident, so a
-	// non-resident job is manifest-nil/progress-live and its failure rate is
-	// sitting right there. IsEarlyAbort reads only progress and needs no
-	// manifest, so this refuses an answer it is always able to give — the
-	// defect residentJob's comment names, in the method that comment now has
-	// to except.
+	// Looked up in q.byID rather than through residentJob, which is what every
+	// other progress-tier reader does. This used to take the residency gate,
+	// on the stated grounds that "a non-resident job has no live JobProgress,
+	// so there is no failure rate to evaluate" — false, because progress is
+	// permanently resident: a non-resident job is manifest-nil/progress-live
+	// and its failure rate is sitting right there. The gate made this answer
+	// "do not abort" for a question it was always able to answer (#461).
 	//
-	// Left in place here because changing it is a behaviour change and B2.4a
-	// makes none. Not currently reachable: the only caller is the article
-	// result path (app/pipeline.go), and a job whose articles are in flight is
-	// in the active set and therefore resident. A result arriving after an
-	// eviction is the window, and there the cost is a DMCA'd or expired job
-	// going on burning bandwidth because the abort never fires.
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	// The window it lost was narrow — the sole caller is the article result
+	// path (internal/app/pipeline.go), and a job whose articles are in flight
+	// is in the active set and so resident — but a result arriving after an
+	// eviction found the abort refused, and the cost there is a DMCA'd or
+	// expired job going on burning bandwidth.
+	//
+	// A job that is genuinely absent still reports false: there is nothing to
+	// abort. That is the one case the old code got right, and it is the reason
+	// the two were collapsed in the first place.
+	job, ok := q.byID[jobID]
+	if !ok {
 		return false
 	}
 	return job.IsEarlyAbort()

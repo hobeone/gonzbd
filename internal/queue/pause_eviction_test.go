@@ -118,10 +118,19 @@ func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
 		{
 			name: "CheckEarlyAbort",
 			call: func(t *testing.T, q *Queue, jobID string) error {
-				// No error channel. A non-resident job has no live JobProgress,
-				// so there is no failure rate to evaluate and nothing to abort.
+				// No error channel, and non-residency is not why the answer is
+				// false: this fixture's job has resolved no articles, so it is
+				// below earlyAbortSample. That distinction is the whole of
+				// #461 — CheckEarlyAbort used to gate on residency and answer
+				// false regardless of the failure rate, justified here by "a
+				// non-resident job has no live JobProgress, so there is no
+				// failure rate to evaluate", which was false: progress is
+				// permanently resident. This row's job is what belongs in a
+				// do-not-panic table; the case where non-residency USED to
+				// change the answer is TestCheckEarlyAbort_NonResidentJob-
+				// StillAborts, which this one cannot reach.
 				if q.CheckEarlyAbort(jobID) {
-					t.Error("CheckEarlyAbort = true for a non-resident job, want false")
+					t.Error("CheckEarlyAbort = true for a job with no resolved articles, want false")
 				}
 				return nil
 			},

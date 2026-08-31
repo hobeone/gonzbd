@@ -575,3 +575,61 @@ func TestSnapshotJob_Audit(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckEarlyAbort_NonResidentJobStillAborts pins #461: the heuristic reads
+// only progress, and progress is permanently resident, so evicting a job's
+// manifest must not change the answer.
+//
+// It used to. CheckEarlyAbort obtained its job through Queue.residentJob and
+// returned false on ErrJobNotResident, so a job whose manifest had been
+// released answered "do not abort" no matter what failure rate was sitting in
+// its live JobProgress. The rationale given was that "a non-resident job has
+// no live JobProgress, so there is no failure rate to evaluate" — false since
+// JobProgress became permanently resident (docs/queue-lifecycle.md): a
+// non-resident job is manifest-nil/progress-live.
+//
+// The window was narrow rather than absent. The sole caller is the article
+// result path (internal/app/pipeline.go), and a job with articles in flight is
+// in the active set and so resident; what reached the gate was a result
+// arriving after an eviction, where the cost of not aborting is a DMCA'd or
+// expired job going on burning bandwidth.
+//
+// A state directory is required, not incidental: evictJobLocked only nils the
+// manifest when q.store != nil || q.stateDir != "", so a bare New() would keep
+// the job resident and this test would pass against the unfixed code.
+func TestCheckEarlyAbort_NonResidentJobStillAborts(t *testing.T) {
+	t.Parallel()
+
+	q := New(WithStateDir(t.TempDir()))
+	j := makeMultiFileJob(t, "ea-evicted", 1, 20)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Collect the Message-IDs while the manifest is still there to read them
+	// from; the acks below resolve 10 articles at a 90% failure rate.
+	ids := make([]string, 10)
+	for i := range ids {
+		ids[i] = mustManifest(t, j).ArticleID(i)
+	}
+	ackFailed(t, q, j.ID, ids[:9]...)
+	ackDone(t, q, j.ID, ids[9])
+
+	if err := q.Pause(j.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Guard the fixture: if Pause stopped releasing the manifest, the
+	// assertion below would pass without exercising the bug at all.
+	q.mu.RLock()
+	stillResident := q.byID[j.ID].manifest != nil
+	q.mu.RUnlock()
+	if stillResident {
+		t.Fatal("fixture is not exercising #461: job still resident after Pause")
+	}
+
+	if !q.CheckEarlyAbort(j.ID) {
+		t.Error("CheckEarlyAbort = false for a non-resident job at a 90% failure rate; " +
+			"the heuristic reads only progress, which eviction does not release")
+	}
+}
