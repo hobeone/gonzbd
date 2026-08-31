@@ -204,6 +204,35 @@ Three things make this specific rather than an exhortation to be careful:
   is the worked example: the same enumeration had gone stale twice in two
   unlinked files, and a grep from either one could not reach the other.
 
+**A claim about BEHAVIOUR is scoped by the branch that makes it true.** The
+rule above governs a population of code and is settled by a command. A claim
+about what *happens* has neither: you cannot grep "is anything lost?", and what
+would settle it is a path through the code rather than a set of lines. It fails
+the same way — a sentence asserting more than was checked — so it belongs here,
+with a different check.
+
+> **Before writing that something holds, find the branch it depends on and name
+> it.** If the sentence would be false under some reachable configuration, say
+> which one it assumes.
+
+`CheckEarlyAbort`'s comment read "Nothing is lost by declining. The verdict is
+deferred, not discarded." True, and only while `q.store != nil`: `PromoteNext`
+guards its `RestoreJobProgress` call on exactly that, and `newJobProgress`
+alone starts the counters at zero, so a store-less queue loses the failure rate
+across pause/resume and the abort never re-fires. The condition sat one branch
+away from the sentence and survived a full review round, because nothing in the
+claim pointed at it. Rule 4's trigger words did not fire either — "nothing is
+lost" quantifies over outcomes, not over writers or callers.
+
+**The same failure wears a second costume, in tests: an assertion that passes
+through a branch you did not mean to exercise.** #465's "does not restamp"
+subtest pinned `if job.PostProc { return false, nil }` rather than the `IsZero`
+guard it was written for, and was indistinguishable from a working test until a
+mutation SURVIVED. That half *is* machine-checkable, and `scripts/mutate` is
+the check — see "the red check is mechanical, not mental" below. Where a
+behavioural claim is pinned by a test, mutate the branch and require the test to
+die; where it lives only in a comment, name the branch in the sentence.
+
 **The narrowing half of this is already stated** under "Two checks on what you
 WROTE" in the commit cycle below — *narrowing a referent must not broaden a
 scope*. That clause governs a sentence a change **falsified**; this rule governs
@@ -332,13 +361,38 @@ shipped anyway. Two ways they slip through: an assertion that degenerates to a
 tautology, and an assertion on a value the code only produces under conditions
 the test never creates.
 
+**Use `scripts/mutate` rather than hand-rolling the revert.** Write a spec
+naming the package, the test, and each mutation; the tool applies them one at a
+time, requires each to produce a red result, and restores the file on every
+exit path including SIGINT.
+
 ```bash
-SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
-cp internal/pkg/target.go "$SCRATCH/target.bak.go"
-# ... revert the fix in place, or neuter its condition ...
-go test -count=1 ./internal/pkg/ -run TestTheNewPin   # MUST fail, for the right reason
-cp "$SCRATCH/target.bak.go" internal/pkg/target.go
+go run ./scripts/mutate path/to/the.spec     # exits non-zero unless every mutation is KILLED
 ```
+
+```text
+pkg ./internal/queue/
+run TestTheNewPin
+
+[the guard neutered]
+file internal/queue/queue.go
+--- anchor
+	if job.progress.downloadFinished.IsZero() {
+--- replace
+	if true {
+--- end
+```
+
+`scripts/mutate/testdata/self.spec` is the worked example — it is the tool's own
+red check, and running it is how you verify a change to the tool.
+
+The rest of this section is what the tool enforces, and is stated here because
+the reasons outlive the implementation. The tool exists because stating them was
+measurably not enough: one session produced **eight** hand-rolled harnesses of
+this shape, and of the three invariants below, the two that this file supplies
+as copy-pasteable text held in 8 of 8, while the one it supplies only as prose —
+anchor uniqueness — held in 7 of 8. A rule re-typed from memory per use has a
+per-use failure rate.
 
 **`-count=1` is not optional.** Go caches a successful test result keyed on the
 test binary and its inputs, and prints `(cached)` where it would have printed a
@@ -528,11 +582,23 @@ go test -race ./...                   # Unit tests with the race detector
 golangci-lint run ./...               # Must pass (no new issues)
 ```
 
-Two gates in the Per-Change Commit Cycle above are not scripts and so are not
-in that block, but they are not optional: the **observed** red check (step 2)
-and the **claim sweep** (step 4). Neither has a tool that fails the build, which
-is exactly why both have been skipped in practice while every scripted gate
-stayed green.
+Two gates in the Per-Change Commit Cycle above are not in that block, and
+neither runs on its own — but they are not optional: the **observed** red check
+(step 2) and the **claim sweep** (step 4). Both were skipped in practice while
+every scripted gate stayed green, which is why each now has a runner covering
+the part of it a machine can do:
+
+```bash
+go run ./scripts/mutate <spec>          # step 2 — every mutation must be KILLED
+go run ./scripts/check_citations        # step 4 — the enumerations that carry a command
+```
+
+**Neither runner makes its gate automatic.** `scripts/mutate` checks the
+mutations you thought to write, so it cannot tell you about the branch you did
+not think to mutate; `check_citations` reaches only claims that embed a command,
+and a claim about behaviour has none (see Rule 4). Both still have to be
+invoked, and choosing what to put in the spec remains the judgment the gate is
+actually made of.
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
 detector, so `go test -race ./...` is a separate, required step.
@@ -612,6 +678,12 @@ nothing, and one in `internal/job/job.go` that could not run at all because it
 carried no path argument, so `grep` waited on stdin and reported zero.
 
 ### Mutation Testing (periodic, not a per-commit gate)
+
+**Not to be confused with `scripts/mutate`.** That runs the *targeted* red
+check of step 2: mutations you name, against a test you name, to prove one pin
+discriminates. `gremlins` generates mutants across a whole package to find
+behaviour nothing pins at all. Different questions — "does this test work?"
+versus "what is untested?" — so neither substitutes for the other.
 
 `gremlins` is **not** part of the per-commit quality gates above — it's too
 slow and, with `--diff` broken upstream when scoped to a package, has no fast
