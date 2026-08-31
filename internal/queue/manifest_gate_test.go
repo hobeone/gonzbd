@@ -89,14 +89,15 @@ func TestManifestAccessIsGated(t *testing.T) {
 			if gated {
 				continue
 			}
-			key := receiverName(fn) + "." + fn.Name.Name
+			recv, name := receiverName(fn), fn.Name.Name
+			key := recv + "." + name
 			if _, exempt := manifestGateExempt[key]; exempt {
 				seenExempt[key] = true
 				continue
 			}
-			t.Errorf("(*%s) dereferences a manifest without going through a residency gate, so a non-resident job is skipped silently instead of reported (#261).\n"+
+			t.Errorf("(*%s).%s dereferences a manifest without going through a residency gate, so a non-resident job is skipped silently instead of reported (#261).\n"+
 				"    Route it through Queue.residentJob or Job.resident, or add %q to manifestGateExempt with the reason it does not need the gate.\n"+
-				"    at %s", key, key, fset.Position(fn.Pos()))
+				"    at %s", recv, name, key, fset.Position(fn.Pos()))
 		}
 	}
 
@@ -149,22 +150,43 @@ func isGatedReceiver(fn *ast.FuncDecl) bool {
 }
 
 // manifestUse reports whether body reads a `.manifest` field and whether it
-// routes through a residency gate. Both are matched on the selector name
-// alone, which is sufficient here: `manifest` is not a field or method name
-// on anything else in this package, and the two gates are single unexported
-// methods — Queue.residentJob, which looks a job up and checks it, and
-// Job.resident, which checks the job it is called on.
+// routes through a residency gate.
+//
+// The manifest read is matched on the selector name alone, which is
+// sufficient: `manifest` is not a field or method name on anything else in
+// this package.
+//
+// The gate is matched as a CALL — an *ast.CallExpr whose function is a
+// selector named `resident` or `residentJob` — not as a bare selector. A
+// selector match alone accepts two things that are not gates. `_ = j.resident`
+// references the method without invoking it, so nothing is checked. More
+// pressingly, `resident` is also the name of ActiveSet's `map[string]*Job`
+// field, so any method that reached that map while touching a manifest would
+// be recorded as gated without calling anything. Neither is reachable in the
+// package as it stands, which is the point: this test is what stops them
+// becoming reachable silently, and a gate that can be satisfied by an
+// identifier rather than a call is not checking what it reports.
+//
+// What this still does not verify is ORDER — that the gate dominates the
+// manifest access rather than merely appearing somewhere in the body. Proving
+// that needs a control-flow graph rather than a syntax walk. The residency
+// errors are load-bearing enough that a method reaching its manifest before
+// its gate would fail TestManifestTierErrorShapes, so the coarse check is the
+// canary and the error-shape tests are the proof.
 func manifestUse(body *ast.BlockStmt) (touches, gated bool) {
 	ast.Inspect(body, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		switch sel.Sel.Name {
-		case "manifest":
-			touches = true
-		case "residentJob", "resident":
-			gated = true
+		switch n := n.(type) {
+		case *ast.SelectorExpr:
+			if n.Sel.Name == "manifest" {
+				touches = true
+			}
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "residentJob", "resident":
+					gated = true
+				}
+			}
 		}
 		return true
 	})
