@@ -118,10 +118,21 @@ func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
 		{
 			name: "CheckEarlyAbort",
 			call: func(t *testing.T, q *Queue, jobID string) error {
-				// No error channel. A non-resident job has no live JobProgress,
-				// so there is no failure rate to evaluate and nothing to abort.
+				// No error channel. Two independent reasons make this false,
+				// and this row cannot tell them apart: the job has resolved
+				// no articles (below earlyAbortSample) AND it is non-resident.
+				// So this row belongs to the do-not-panic contract only.
+				//
+				// The residency half is pinned by
+				// TestCheckEarlyAbort_NonResidentDefersRatherThanAborts, which
+				// drives the rate past the threshold first. This comment used
+				// to justify the answer with "a non-resident job has no live
+				// JobProgress, so there is no failure rate to evaluate" —
+				// false since progress became permanently resident, and the
+				// copy that outlived the same sentence's deletion from
+				// queue.go. Believing it is what produced #461.
 				if q.CheckEarlyAbort(jobID) {
-					t.Error("CheckEarlyAbort = true for a non-resident job, want false")
+					t.Error("CheckEarlyAbort = true for a job with no resolved articles, want false")
 				}
 				return nil
 			},
