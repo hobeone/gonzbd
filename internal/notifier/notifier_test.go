@@ -160,17 +160,22 @@ func TestAppriseTypeMapping(t *testing.T) {
 		{Warning, "warning"},
 		{DownloadStarted, "info"},
 	}
+
+	var (
+		mu       sync.Mutex
+		received map[string]string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test helper
+		mu.Lock()
+		_ = json.Unmarshal(body, &received)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
 	for _, tc := range cases {
 		t.Run(tc.et.String(), func(t *testing.T) {
-			t.Parallel()
-			var received map[string]string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body) //nolint:errcheck // test helper
-				_ = json.Unmarshal(body, &received)
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer srv.Close()
-
 			n := NewAppriseNotifier(AppriseConfig{
 				URL:        srv.URL,
 				ServiceURL: "ntfy://topic",
@@ -181,7 +186,10 @@ func TestAppriseTypeMapping(t *testing.T) {
 			if err := n.Send(t.Context(), ev); err != nil {
 				t.Fatalf("Send: %v", err)
 			}
-			if got := received["type"]; got != tc.wantType {
+			mu.Lock()
+			got := received["type"]
+			mu.Unlock()
+			if got != tc.wantType {
 				t.Errorf("type = %q, want %q", got, tc.wantType)
 			}
 		})
