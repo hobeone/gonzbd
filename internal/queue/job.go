@@ -516,10 +516,22 @@ func (j *Job) recordDownload(server string, bytes int) {
 // markStartedOnce records the first download's start time, reporting whether
 // it took. A later call is a no-op: first start wins.
 //
-// Progress tier, so the IsZero test is a business condition rather than a
-// check for absence — progress is permanently resident and cannot be missing.
+// Progress tier, so the field's IsZero test is a business condition rather
+// than a check for absence — progress is permanently resident and cannot be
+// missing.
+//
+// A zero t is refused rather than stored, and that is not defensiveness about
+// a caller mistake: the zero value is the sentinel this method's own guard
+// tests against, so storing it would leave the field indistinguishable from
+// unset while having reported success. See markDownloadFinishedOnce for the
+// three consequences that follow (#459); they are identical for both.
+//
+// Unlike that sibling, this one IS on a production path: internal/app/
+// pipeline.go:412 calls Queue.MarkJobStarted(res.JobID, time.Now()). A zero
+// time is therefore not reachable today, and refusing it is hardening against
+// a future caller rather than a live defect.
 func (j *Job) markStartedOnce(t time.Time) bool {
-	if !j.progress.downloadStarted.IsZero() {
+	if t.IsZero() || !j.progress.downloadStarted.IsZero() {
 		return false
 	}
 	j.progress.downloadStarted = t
@@ -535,8 +547,30 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // letter to carry. That divergence is #457 and predates this method; it is
 // not resolved here, because collapsing the two is a behaviour change and
 // B2.4a makes none.
+//
+// A zero t is refused rather than stored (#459). The zero value is the
+// sentinel the field guard tests against, so storing it would report a
+// successful mark while leaving the field unset, and three things would follow
+// from that one contradiction:
+//
+//   - the caller marks the queue dirty and runs store.Update for a write that
+//     did not happen;
+//   - the field being still zero, a later real timestamp passes the guard and
+//     overwrites, so "first finish wins" is violated;
+//   - the store is therefore written twice for one job finish.
+//
+// Refusing costs nothing a caller wants, and the enumeration is narrower than
+// the sibling's: this method has no production caller at all. `git grep -l
+// 'MarkDownloadFinished\|markDownloadFinishedOnce' -- '*.go' ':!*_test.go'`
+// returns 2 files, both in this package — this declaration and the Queue
+// wrapper in queue.go — so every call site is a test. Production reaches
+// downloadFinished through Queue.SetPostProcStarted, which assigns
+// time.Now().UTC() directly under its own IsZero guard. So this is hardening
+// against a future caller rather than a live defect. Crucially the refusal
+// does NOT consume the first-wins slot; a real timestamp arriving afterwards
+// is still the first mark.
 func (j *Job) markDownloadFinishedOnce(t time.Time) bool {
-	if !j.progress.downloadFinished.IsZero() {
+	if t.IsZero() || !j.progress.downloadFinished.IsZero() {
 		return false
 	}
 	j.progress.downloadFinished = t

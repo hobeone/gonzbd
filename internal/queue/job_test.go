@@ -589,6 +589,76 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 	})
 }
 
+// TestJobMarkOnce_RefusesAZeroTimestamp pins that a zero time is refused
+// rather than reported as a successful first mark (#459).
+//
+// The guard used to read the FIELD only. Handed time.Time{}, the field stayed
+// zero and the method still returned true, so three things went wrong at once:
+// the wrapper marked the queue dirty and ran store.Update for a write that did
+// not happen, and — because the field was still zero — a later call with a real
+// timestamp passed the guard again and overwrote, so "first wins" was violated
+// and the store was written twice for one job start.
+//
+// The zero value is the sentinel these methods test against, so it is the one
+// argument they cannot store without destroying their own guard.
+//
+// Neither is reachable from production today, but for different reasons, and
+// conflating them is what an earlier draft of this comment did. markStartedOnce
+// has one production caller — internal/app/pipeline.go:412, which passes
+// time.Now(). markDownloadFinishedOnce has none at all; production reaches
+// downloadFinished through Queue.SetPostProcStarted. Both are therefore
+// hardening rather than a live defect, which is why the real assertion is the
+// third one: that refusing does not consume the first-wins slot.
+func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name  string
+		mark  func(j *Job, t time.Time) bool
+		field func(j *Job) time.Time
+	}{
+		{"markStartedOnce",
+			func(j *Job, t time.Time) bool { return j.markStartedOnce(t) },
+			func(j *Job) time.Time { return j.progress.downloadStarted }},
+		{"markDownloadFinishedOnce",
+			func(j *Job, t time.Time) bool { return j.markDownloadFinishedOnce(t) },
+			func(j *Job) time.Time { return j.progress.downloadFinished }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j := &Job{ID: "j1", progress: &JobProgress{}}
+
+			if tc.mark(j, time.Time{}) {
+				t.Error("a zero timestamp reported a successful mark; the wrapper would persist and dirty the queue for a write that did not happen")
+			}
+			if got := tc.field(j); !got.IsZero() {
+				t.Errorf("field = %v after a refused zero mark, want the zero time", got)
+			}
+			// The refusal must not consume the first-wins slot: a real
+			// timestamp arriving afterwards is still the FIRST mark.
+			if !tc.mark(j, real) {
+				t.Fatal("a real timestamp after a refused zero one returned false; the refusal consumed the first-wins slot")
+			}
+			if got := tc.field(j); !got.Equal(real) {
+				t.Errorf("field = %v, want %v", got, real)
+			}
+			// The other order: a zero arriving AFTER a real mark must not
+			// clobber it. A guard that stored t before returning false —
+			// `if t.IsZero() { j.progress.f = t; return false }` — refuses
+			// correctly on the empty job above and still destroys the
+			// timestamp here, so the assertions above cannot see it.
+			if tc.mark(j, time.Time{}) {
+				t.Error("a zero timestamp after a real one reported a successful mark")
+			}
+			if got := tc.field(j); !got.Equal(real) {
+				t.Errorf("field = %v after a refused zero mark clobbered it, want %v", got, real)
+			}
+		})
+	}
+}
+
 // TestJobRecordDownload_AccumulatesPerServer pins that recordDownload adds to
 // the running total rather than replacing it, and initialises the map on
 // first use.
