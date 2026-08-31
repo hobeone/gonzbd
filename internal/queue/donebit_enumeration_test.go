@@ -29,8 +29,16 @@ import (
 //
 //   - internal/queue/progress.go, jobProgressJSON's doc comment
 //   - internal/app/statusinfo.go, JobDurability's doc comment
-//   - internal/app/durability_test.go, TestJobDurability_ReportsDownloadedBytes-
+//   - internal/app/statusinfo_test.go, TestJobDurability_ReportsDownloadedBytes-
 //     AsDurable, which restates the enumeration at the assertion
+//
+// The third path said internal/app/durability_test.go until B2.4a, and no such
+// file exists — the enumeration's own map to its copies had drifted. It is
+// corrected above rather than noted, because a wrong path here costs the next
+// sweep the site it was written to protect. The third copy states the
+// enumeration by ROLE ("the ack, and the replays of the runs a barrier
+// recorded") rather than by function name, so unlike the other two it does not
+// go stale when a name moves.
 //
 // The test asserts the enumeration, not a count. A bare count would go green
 // against a call site that moved from one function to another, which is
@@ -39,15 +47,23 @@ import (
 // doneMarkers is every function in this package that reaches markDone.
 //
 // Each is a door onto the same bit, and each stands on a completed fsync:
-// AckDurable takes a DurableProof no path outside a finished barrier can mint;
-// SeedFromRuns and ReplaceFromRuns replay the runs such a barrier recorded;
-// applyResolution replays the resolution derived from those same records when
-// a job is re-hydrated.
+// ackDurable applies a DurableProof no path outside a finished barrier can
+// mint; seedFromRuns and ReplaceFromRuns replay the runs such a barrier
+// recorded; applyResolution replays the resolution derived from those same
+// records when a job is re-hydrated.
+//
+// Two of the four are unexported *Job methods since B2.4a, where they were
+// Queue method bodies. The door did not move — Queue.AckDurable and
+// Queue.SeedFromRuns are still the only callers, and Queue.AckDurable still
+// takes the DurableProof and unwraps it before calling ackDurable, so the
+// evidence each door stands on is unchanged. What moved is which function
+// name this scan reports, which is precisely the drift the prose sites must
+// be kept in step with.
 var doneMarkers = []string{
-	"AckDurable",
 	"ReplaceFromRuns",
-	"SeedFromRuns",
+	"ackDurable",
 	"applyResolution",
+	"seedFromRuns",
 }
 
 // doneBitSetters is every function that sets p.done WITHOUT going through

@@ -356,27 +356,11 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	// Report non-residency as an error rather than a zero count: callers read
 	// a successful 0 as "this file has nothing left to download", which for a
 	// merely de-hydrated job is wrong and silent.
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return 0, err
+	job, ok := q.byID[jobID]
+	if !ok {
+		return 0, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return 0, fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	// Count from the article state directly rather than using
-	// file.Pending. Pending tracks !Done && !Emitted, but this
-	// method counts !Done (including Emitted articles). The
-	// difference matters for resume where Emitted articles
-	// shouldn't be counted as "unfinished" yet haven't been
-	// durably committed.
-	var count int
-	lo, hi := job.manifest.FileRange(fileIdx)
-	for i := lo; i < hi; i++ {
-		if !job.progress.done.Get(i) {
-			count++
-		}
-	}
-	return count, nil
+	return job.countUnfinishedArticles(fileIdx)
 }
 
 // List returns a snapshot slice of the queue's jobs in current order.
@@ -1547,18 +1531,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// Non-residency and a genuine bounds violation were previously reported
-	// with the same "out of range" message, which misdiagnoses a de-hydrated
-	// job as a caller bug. Keep them separate.
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
-		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
-	}
-	job.progress.markEmitted(job.manifest, int(artIdx))
-	return nil
+	return job.markArticleEmittedByIdx(artIdx)
 }
 
 // ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx,
@@ -1577,18 +1554,13 @@ func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 	// from persistence, and the progress holding it is discarded on eviction,
 	// so PromoteNext rebuilds it all-false from stored state and the article is
 	// offered again.
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.clearArticleEmittedByIdx(artIdx); err != nil {
 		return err
 	}
-	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
-		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
-	}
-	// clearEmitted only restores the article to pending if it is not already
-	// done. An article can have Emitted=true and Done=true when AckDurable ran
-	// first (e.g. a late assembler flush after a downloader reload); it is
-	// finished then, and must not be counted as pending.
-	job.progress.clearEmitted(job.manifest, int(artIdx))
 	q.notifyLocked()
 	return nil
 }
@@ -1849,16 +1821,17 @@ func (q *Queue) CheckEarlyAbort(jobID string) bool {
 func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.checkFileIdxs(fileIdxs); err != nil {
 		return err
 	}
-	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= job.manifest.NumFiles() {
-			return fmt.Errorf("queue: fileIdx %d out of range for job %s", fi, jobID)
-		}
+	if job.undeferRecovery(fileIdxs) {
+		q.dirty.Store(true)
+		q.notifyLocked()
 	}
-	q.undeferRecoveryLocked(job, fileIdxs)
 	return nil
 }
 
@@ -1952,45 +1925,18 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	return nil
 }
 
-// undeferRecoveryLocked clears Deferred on the given file indices of job. If
-// any file changed it marks Par2Recovered, recomputes pending counters from
-// ground truth, and wakes the dispatcher. RemainingBytes needs no fixup of
-// its own here: it derives from the Deferred flag on every read, so
-// clearing it is what makes the file's bytes start counting as remaining —
-// see derivedRemainingBytes. Indices that are out of range or not deferred
-// are ignored. Must be called with q.mu held for writing. Returns true if
-// anything changed.
-func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
-	changed := false
-	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= job.manifest.NumFiles() || job.progress.files[fi].Fetch != FetchIfNeeded {
-			continue
-		}
-		job.progress.files[fi].Fetch = FetchAlways
-		changed = true
-	}
-	if changed {
-		job.progress.par2Recovered = true
-		job.progress.recompute(job.manifest)
-		q.dirty.Store(true)
-		q.notifyLocked()
-	}
-	return changed
-}
-
 // MarkFileComplete marks the file at fileIdx within jobID as fully assembled
 // and complete. Returns ErrNotFound if the job or index is invalid.
 func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.markFileComplete(fileIdx); err != nil {
 		return err
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	job.progress.files[fileIdx].Complete = true
 	q.dirty.Store(true)
 	return nil
 }
@@ -1999,14 +1945,13 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if err := job.setFileFilename(fileIdx, filename); err != nil {
 		return err
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
-	}
-	job.progress.files[fileIdx].Filename = filename
 	q.dirty.Store(true)
 	return nil
 }
@@ -2067,22 +2012,17 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 func (q *Queue) SetFileCRC32FromRuns(jobID string, fileIdx int, runs []durability.Run) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	stored, err := job.setFileCRC32FromRuns(fileIdx, runs)
 	if err != nil {
 		return err
 	}
-	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
-		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	if stored {
+		q.dirty.Store(true)
 	}
-	if len(runs) != 1 || runs[0].Offset != 0 {
-		return nil
-	}
-	lo, hi := job.manifest.FileRange(fileIdx)
-	if int(runs[0].FirstArtIdx) != lo || int(runs[0].LastArtIdx) != hi-1 {
-		return nil
-	}
-	job.progress.files[fileIdx].AssembledCRC32 = runs[0].CRC32
-	q.dirty.Store(true)
 	return nil
 }
 

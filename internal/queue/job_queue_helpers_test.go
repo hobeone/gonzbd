@@ -315,10 +315,10 @@ func TestHydrateResidentLocked_HydratesForResidentStatus(t *testing.T) {
 	}
 }
 
-// TestUndeferRecoveryLocked_ClearsDeferredAndRecomputes pins its documented
+// TestUndeferRecovery_ClearsDeferredAndRecomputes pins its documented
 // return value and side effects directly, distinct from the exported
 // UndeferRecoveryVolumes wrapper's own end-to-end tests.
-func TestUndeferRecoveryLocked_ClearsDeferredAndRecomputes(t *testing.T) {
+func TestUndeferRecovery_ClearsDeferredAndRecomputes(t *testing.T) {
 	m := newManifest([]JobFile{
 		{Subject: "content.bin", Bytes: 1000, Articles: []JobArticle{{ID: "c1", Bytes: 1000}}},
 		{Subject: "content.vol00+01.par2", Bytes: 500, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 500}}},
@@ -335,21 +335,21 @@ func TestUndeferRecoveryLocked_ClearsDeferredAndRecomputes(t *testing.T) {
 
 	q.mu.Lock()
 	// Out-of-range and not-deferred indices must be ignored, not change anything.
-	if changed := q.undeferRecoveryLocked(job, []int{99, 0}); changed {
+	if changed := job.undeferRecovery([]int{99, 0}); changed {
 		q.mu.Unlock()
-		t.Fatal("undeferRecoveryLocked reported a change for out-of-range/non-deferred indices only")
+		t.Fatal("undeferRecovery reported a change for out-of-range/non-deferred indices only")
 	}
-	changed := q.undeferRecoveryLocked(job, []int{1})
+	changed := job.undeferRecovery([]int{1})
 	q.mu.Unlock()
 
 	if !changed {
-		t.Fatal("undeferRecoveryLocked reported no change for a genuinely deferred index")
+		t.Fatal("undeferRecovery reported no change for a genuinely deferred index")
 	}
 	if job.progress.FileFetchPolicy(1) != FetchAlways {
-		t.Error("file 1 still Deferred after undeferRecoveryLocked")
+		t.Error("file 1 still Deferred after undeferRecovery")
 	}
 	if !job.progress.Par2Recovered() {
-		t.Error("Par2Recovered not set by undeferRecoveryLocked")
+		t.Error("Par2Recovered not set by undeferRecovery")
 	}
 	if got, want := job.progress.RemainingBytes(), int64(1500); got != want {
 		t.Errorf("RemainingBytes = %d, want %d (recovery volume now counted)", got, want)

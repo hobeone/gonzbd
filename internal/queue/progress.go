@@ -842,10 +842,13 @@ type fileProgressJSON struct {
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
 // marks an article as resolved, and nothing sets it from dispatch: markDone is
-// reached from AckDurable, which needs a DurableProof a completed fsync
-// minted; from SeedFromRuns/ReplaceFromRuns, which replay runs that same fsync
-// recorded; and from applyResolution, which replays the resolution derived
-// from those same records on re-hydration. markFailed sets it too, for an
+// reached from ackDurable, whose only caller Queue.AckDurable needs a
+// DurableProof a completed fsync minted; from seedFromRuns and
+// ReplaceFromRuns, which replay runs that same fsync recorded; and from
+// applyResolution, which replays the resolution derived from those same
+// records on re-hydration. The first two became unexported *Job methods in
+// B2.4a — the doors and their evidence are unchanged, only the receiver moved.
+// markFailed sets it too, for an
 // article whose bytes will
 // never arrive. So a persisted done bit always stands on a completed fsync or
 // a permanent failure — never on a write that was merely attempted (#355) —

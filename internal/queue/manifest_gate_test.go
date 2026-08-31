@@ -32,7 +32,6 @@ var manifestGateExempt = map[string]string{
 	"Queue.SnapshotJob":              "clones and hydrates; reads the field to decide whether hydration is needed",
 	"Queue.PromoteNext":              "hydration machinery; runs before the job is resident",
 	"Queue.Retry":                    "hydrates the job itself, then operates on the result",
-	"Queue.undeferRecoveryLocked":    "takes an already-resolved *Job from a gated caller",
 	"Queue.ClearAllEmitted":          "sweeps every job; skipping the non-resident ones is the correct behaviour, not a dropped request",
 	"Queue.ForEachUnfinishedArticle": "enumerates dispatchable work across all jobs; a non-resident job has none to contribute",
 
