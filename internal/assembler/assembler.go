@@ -295,6 +295,10 @@ type Options struct {
 	// BarrierOpTimeout bounds each barrier operation submitted to the worker.
 	// Zero selects the default (5 seconds).
 	BarrierOpTimeout time.Duration
+
+	// DiskCheckTimeout bounds each FreeBytes call in checkDiskSpace.
+	// Zero selects the default (5 seconds).
+	DiskCheckTimeout time.Duration
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -2070,7 +2074,11 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		// owns all open file handles and is the only drainer of a.reqs, so
 		// an uninterruptible statfs on a stuck mount would stall the whole
 		// pipeline. See diskCheckTimeout.
-		ctx, cancel := context.WithTimeout(context.Background(), diskCheckTimeout)
+		timeout := a.opts.DiskCheckTimeout
+		if timeout <= 0 {
+			timeout = diskCheckTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		free, err := a.diskProbe.FreeBytes(ctx, dir)
 		cancel()
 		if err != nil {
