@@ -525,6 +525,11 @@ func (j *Job) recordDownload(server string, bytes int) {
 // tests against, so storing it would leave the field indistinguishable from
 // unset while having reported success. See markDownloadFinishedOnce for the
 // three consequences that follow (#459); they are identical for both.
+//
+// Unlike that sibling, this one IS on a production path: internal/app/
+// pipeline.go:412 calls Queue.MarkJobStarted(res.JobID, time.Now()). A zero
+// time is therefore not reachable today, and refusing it is hardening against
+// a future caller rather than a live defect.
 func (j *Job) markStartedOnce(t time.Time) bool {
 	if t.IsZero() || !j.progress.downloadStarted.IsZero() {
 		return false
@@ -554,11 +559,16 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 //     overwrites, so "first finish wins" is violated;
 //   - the store is therefore written twice for one job finish.
 //
-// Refusing costs nothing a caller wants: no production path passes a zero time
-// — internal/app/pipeline.go passes time.Now() — so this is hardening against
-// a future caller rather than a live defect. Crucially the refusal does NOT
-// consume the first-wins slot; a real timestamp arriving afterwards is still
-// the first mark.
+// Refusing costs nothing a caller wants, and the enumeration is narrower than
+// the sibling's: this method has no production caller at all. `git grep -l
+// 'MarkDownloadFinished\|markDownloadFinishedOnce' -- '*.go' ':!*_test.go'`
+// returns 2 files, both in this package — this declaration and the Queue
+// wrapper in queue.go — so every call site is a test. Production reaches
+// downloadFinished through Queue.SetPostProcStarted, which assigns
+// time.Now().UTC() directly under its own IsZero guard. So this is hardening
+// against a future caller rather than a live defect. Crucially the refusal
+// does NOT consume the first-wins slot; a real timestamp arriving afterwards
+// is still the first mark.
 func (j *Job) markDownloadFinishedOnce(t time.Time) bool {
 	if t.IsZero() || !j.progress.downloadFinished.IsZero() {
 		return false

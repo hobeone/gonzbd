@@ -600,10 +600,15 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 // and the store was written twice for one job start.
 //
 // The zero value is the sentinel these methods test against, so it is the one
-// argument they cannot store without destroying their own guard. Not reachable
-// from production today — internal/app/pipeline.go passes time.Now() — which is
-// why this is hardening rather than a live defect, and why the real assertion
-// is the third one: that refusing does not consume the first-wins slot.
+// argument they cannot store without destroying their own guard.
+//
+// Neither is reachable from production today, but for different reasons, and
+// conflating them is what an earlier draft of this comment did. markStartedOnce
+// has one production caller — internal/app/pipeline.go:412, which passes
+// time.Now(). markDownloadFinishedOnce has none at all; production reaches
+// downloadFinished through Queue.SetPostProcStarted. Both are therefore
+// hardening rather than a live defect, which is why the real assertion is the
+// third one: that refusing does not consume the first-wins slot.
 func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
 	t.Parallel()
 
@@ -638,6 +643,17 @@ func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
 			}
 			if got := tc.field(j); !got.Equal(real) {
 				t.Errorf("field = %v, want %v", got, real)
+			}
+			// The other order: a zero arriving AFTER a real mark must not
+			// clobber it. A guard that stored t before returning false —
+			// `if t.IsZero() { j.progress.f = t; return false }` — refuses
+			// correctly on the empty job above and still destroys the
+			// timestamp here, so the assertions above cannot see it.
+			if tc.mark(j, time.Time{}) {
+				t.Error("a zero timestamp after a real one reported a successful mark")
+			}
+			if got := tc.field(j); !got.Equal(real) {
+				t.Errorf("field = %v after a refused zero mark clobbered it, want %v", got, real)
 			}
 		})
 	}

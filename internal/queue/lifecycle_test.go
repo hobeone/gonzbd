@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -1147,5 +1148,93 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 	}
 	if count != 1 { // art 0 done, art 1 failed, art 2 unfinished
 		t.Errorf("unfinished count after load = %d, want 1", count)
+	}
+}
+
+// updateCountingStore counts Update calls so a test can assert that a mark
+// which reported no change did not reach persistence.
+type updateCountingStore struct {
+	Store
+	updates int
+}
+
+func (s *updateCountingStore) Update(_ context.Context, _ *Job) error {
+	s.updates++
+	return nil
+}
+
+// TestMarkTimestamp_ZeroIsRefusedAtTheQueueWrapper covers what
+// TestJobMarkOnce_RefusesAZeroTimestamp cannot see.
+//
+// That test calls the unexported *Job methods on a standalone struct, so it
+// pins the bool and the field but not the consequences the bool exists to
+// control. Those consequences are the whole argument for #459 — a zero time
+// that reported success made the wrapper dirty the queue and run store.Update
+// for a write that did not happen — and they live in Queue.MarkJobStarted and
+// Queue.MarkDownloadFinished, which branch on the bool.
+//
+// So this asserts at the wrapper: no store write, no dirty flag, and the
+// first-wins slot still open for a real timestamp afterwards.
+func TestMarkTimestamp_ZeroIsRefusedAtTheQueueWrapper(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name  string
+		mark  func(q *Queue, id string, t time.Time) error
+		field func(j *Job) time.Time
+	}{
+		{"MarkJobStarted",
+			func(q *Queue, id string, t time.Time) error { return q.MarkJobStarted(id, t) },
+			func(j *Job) time.Time { return j.Progress().DownloadStarted() }},
+		{"MarkDownloadFinished",
+			func(q *Queue, id string, t time.Time) error { return q.MarkDownloadFinished(id, t) },
+			func(j *Job) time.Time { return j.Progress().DownloadFinished() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Add before the store is attached, so the only Update the probe
+			// can see comes from the marks below.
+			q := New()
+			j := makeJob(t, "zero-"+tc.name, constants.NormalPriority)
+			if err := q.Add(j); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			probe := &updateCountingStore{}
+			q.store = probe
+			q.dirty.Store(false)
+
+			if err := tc.mark(q, j.ID, time.Time{}); err != nil {
+				t.Fatalf("marking with a zero time: %v", err)
+			}
+			if probe.updates != 0 {
+				t.Errorf("store.Update ran %d time(s) for a refused zero mark, want 0", probe.updates)
+			}
+			if q.IsDirty() {
+				t.Error("queue went dirty for a refused zero mark")
+			}
+			got, _ := q.Get(j.ID)
+			if f := tc.field(got); !f.IsZero() {
+				t.Errorf("field = %v after a refused zero mark, want the zero time", f)
+			}
+
+			// The refusal must leave the first-wins slot open, and the real
+			// mark must then do the persistence the zero one did not.
+			if err := tc.mark(q, j.ID, real); err != nil {
+				t.Fatalf("marking with a real time: %v", err)
+			}
+			if probe.updates != 1 {
+				t.Errorf("store.Update ran %d time(s) for the real mark, want 1", probe.updates)
+			}
+			if !q.IsDirty() {
+				t.Error("queue stayed clean after a real mark")
+			}
+			got, _ = q.Get(j.ID)
+			if f := tc.field(got); !f.Equal(real) {
+				t.Errorf("field = %v, want %v — the refusal consumed the first-wins slot", f, real)
+			}
+		})
 	}
 }
