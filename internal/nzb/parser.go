@@ -59,14 +59,41 @@ func charsetReader(label string, input io.Reader) (io.Reader, error) {
 	return nil, fmt.Errorf("nzb: unsupported XML charset %q", label)
 }
 
-// Parse decodes an NZB document from r. Gzip and bzip2 envelopes are
-// detected by magic bytes and transparently unwrapped, so callers can
-// pass the raw file handle without inspecting the extension.
+// ParserLimits configures resource bounds for the NZB parser.
+type ParserLimits struct {
+	MaxNZBSize  int64
+	MaxFiles    int
+	MaxSegments int
+}
+
+func (l ParserLimits) normalized() ParserLimits {
+	if l.MaxNZBSize <= 0 {
+		l.MaxNZBSize = maxNZBSize
+	}
+	if l.MaxFiles <= 0 {
+		l.MaxFiles = maxFiles
+	}
+	if l.MaxSegments <= 0 {
+		l.MaxSegments = maxSegments
+	}
+	return l
+}
+
+// Parse decodes an NZB from r. The stream may be plain XML, gzip-
+// compressed, or bzip2-compressed; the wrapper is selected from the
+// first two magic bytes.
 //
 // A structurally broken document returns (nil, error). Counters on the
 // returned *NZB record recoverable issues (duplicate parts, implausible
 // sizes, empty files); Parse never fails for those alone.
 func Parse(r io.Reader) (*NZB, error) {
+	return ParseWithLimits(r, ParserLimits{})
+}
+
+// ParseWithLimits parses an NZB stream with configurable resource bounds.
+// Zero or negative limits fall back to package defaults.
+func ParseWithLimits(r io.Reader, limits ParserLimits) (*NZB, error) {
+	limits = limits.normalized()
 	br := bufio.NewReader(r)
 	magic, err := br.Peek(2)
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -79,20 +106,32 @@ func Parse(r io.Reader) (*NZB, error) {
 		return nil, errors.New("nzb: empty input")
 	}
 
-	src, closer, err := unwrapEnvelope(br, magic)
+	src, closer, err := unwrapEnvelope(br, magic, limits.MaxNZBSize)
 	if err != nil {
 		return nil, err
 	}
 	if closer != nil {
 		defer closer() //nolint:errcheck // best-effort close of decompressor on the read path
 	}
-	return parseXML(src)
+	return parseXML(src, limits)
+}
+
+func defaultParserLimits() ParserLimits {
+	return ParserLimits{
+		MaxNZBSize:  maxNZBSize,
+		MaxFiles:    maxFiles,
+		MaxSegments: maxSegments,
+	}
 }
 
 // unwrapEnvelope returns a reader yielding plain XML, plus an optional
 // closer for underlying decompressors. gzip.Reader must be closed to
 // free its buffer; bzip2.Reader has no Close.
-func unwrapEnvelope(br *bufio.Reader, magic []byte) (io.Reader, func() error, error) {
+func unwrapEnvelope(br *bufio.Reader, magic []byte, maxSize ...int64) (io.Reader, func() error, error) {
+	limit := int64(maxNZBSize)
+	if len(maxSize) > 0 && maxSize[0] > 0 {
+		limit = maxSize[0]
+	}
 	if len(magic) < 2 {
 		return br, nil, nil
 	}
@@ -102,9 +141,9 @@ func unwrapEnvelope(br *bufio.Reader, magic []byte) (io.Reader, func() error, er
 		if err != nil {
 			return nil, nil, fmt.Errorf("nzb: gzip envelope: %w", err)
 		}
-		return io.LimitReader(gz, maxNZBSize), gz.Close, nil
+		return io.LimitReader(gz, limit), gz.Close, nil
 	case magic[0] == 'B' && magic[1] == 'Z':
-		return io.LimitReader(bzip2.NewReader(br), maxNZBSize), nil, nil
+		return io.LimitReader(bzip2.NewReader(br), limit), nil, nil
 	}
 	return br, nil, nil
 }
@@ -134,8 +173,9 @@ type xmlSegment struct {
 // parseXML walks the document at token granularity, decoding each
 // <head> and <file> subtree with DecodeElement. This keeps memory
 // proportional to the largest single <file>, not the whole document.
-func parseXML(r io.Reader) (*NZB, error) {
-	dec := xml.NewDecoder(io.LimitReader(r, maxNZBSize))
+func parseXML(r io.Reader, limits ParserLimits) (*NZB, error) {
+	limits = limits.normalized()
+	dec := xml.NewDecoder(io.LimitReader(r, limits.MaxNZBSize))
 	// Namespaces are present in real NZBs (xmlns="http://www.newzbin.com/DTD/2003/nzb").
 	// We match by Local name only.
 	dec.CharsetReader = charsetReader
@@ -174,16 +214,16 @@ func parseXML(r io.Reader) (*NZB, error) {
 				return nil, err
 			}
 		case "file":
-			if len(out.Files)+out.SkippedFiles >= maxFiles {
-				return nil, fmt.Errorf("nzb: file count exceeds limit of %d", maxFiles)
+			if len(out.Files)+out.SkippedFiles >= limits.MaxFiles {
+				return nil, fmt.Errorf("nzb: file count exceeds limit of %d", limits.MaxFiles)
 			}
 			ts, segs, err := absorbFile(dec, &se, out, digest, seenGroups, seenIDs, now)
 			if err != nil {
 				return nil, err
 			}
 			totalSegments += segs
-			if totalSegments > maxSegments {
-				return nil, fmt.Errorf("nzb: segment count exceeds limit of %d", maxSegments)
+			if totalSegments > limits.MaxSegments {
+				return nil, fmt.Errorf("nzb: segment count exceeds limit of %d", limits.MaxSegments)
 			}
 			if ts != 0 {
 				ageSum += ts

@@ -371,22 +371,23 @@ func TestParseISO88591(t *testing.T) {
 // TestParse_InputSizeLimit verifies that an NZB exceeding maxNZBSize is
 // rejected rather than consuming unbounded memory (C5 – XML bomb).
 func TestParse_InputSizeLimit(t *testing.T) {
-	// Use a streaming reader that yields XML content exceeding maxNZBSize
+	// Use a streaming reader that yields XML content exceeding MaxNZBSize
 	// without allocating the full buffer in memory.
 	// Structure: prolog + <nzb><head><meta type="junk"> + N×'A' + </meta></head></nzb>
 	prolog := []byte(`<?xml version="1.0"?><nzb><head><meta type="junk">`)
 	epilog := []byte(`</meta></head></nzb>`)
 
-	// The oversize reader streams: prolog, then maxNZBSize+1024 bytes of 'A', then epilog.
+	testLimit := int64(1024)
+	// The oversize reader streams: prolog, then testLimit+1024 bytes of 'A', then epilog.
 	r := io.MultiReader(
 		bytes.NewReader(prolog),
-		io.LimitReader(&infiniteAReader{}, maxNZBSize+1024),
+		io.LimitReader(&infiniteAReader{}, testLimit+1024),
 		bytes.NewReader(epilog),
 	)
 
-	_, err := Parse(r)
+	_, err := ParseWithLimits(r, ParserLimits{MaxNZBSize: testLimit})
 	if err == nil {
-		t.Fatal("expected error for NZB exceeding maxNZBSize")
+		t.Fatal("expected error for NZB exceeding MaxNZBSize")
 	}
 }
 
@@ -403,9 +404,10 @@ func (infiniteAReader) Read(p []byte) (int, error) {
 // TestParse_ExcessiveFiles verifies that the parser rejects NZBs with
 // more than maxFiles <file> elements (H2 – unbounded file count).
 func TestParse_ExcessiveFiles(t *testing.T) {
+	const limit = 20
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><nzb>`)
-	for i := range maxFiles + 1 {
+	for i := range limit + 1 {
 		fmt.Fprintf(&b, `<file subject="f%d" date="1700000000">`+
 			`<groups><group>g</group></groups>`+
 			`<segments><segment bytes="100" number="1">id%d@h</segment></segments>`+
@@ -413,7 +415,7 @@ func TestParse_ExcessiveFiles(t *testing.T) {
 	}
 	b.WriteString(`</nzb>`)
 
-	_, err := Parse(strings.NewReader(b.String()))
+	_, err := ParseWithLimits(strings.NewReader(b.String()), ParserLimits{MaxFiles: limit})
 	if err == nil {
 		t.Fatal("expected error for excessive file count")
 	}
@@ -425,16 +427,17 @@ func TestParse_ExcessiveFiles(t *testing.T) {
 // TestParse_ExcessiveSegments verifies that the parser rejects NZBs with
 // more than maxSegments total segments (H2 – unbounded segment count).
 func TestParse_ExcessiveSegments(t *testing.T) {
+	const limit = 20
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><nzb>`)
 	b.WriteString(`<file subject="big" date="1700000000">`)
 	b.WriteString(`<groups><group>g</group></groups><segments>`)
-	for i := range maxSegments + 1 {
+	for i := range limit + 1 {
 		fmt.Fprintf(&b, `<segment bytes="100" number="%d">id%d@h</segment>`, i+1, i)
 	}
 	b.WriteString(`</segments></file></nzb>`)
 
-	_, err := Parse(strings.NewReader(b.String()))
+	_, err := ParseWithLimits(strings.NewReader(b.String()), ParserLimits{MaxSegments: limit})
 	if err == nil {
 		t.Fatal("expected error for excessive segment count")
 	}
@@ -629,7 +632,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
     <segments><segment bytes="100" number="1">id@h</segment></segments>
   </file>
 </nzb>`
-		got, err := parseXML(strings.NewReader(doc))
+		got, err := parseXML(strings.NewReader(doc), ParserLimits{})
 		if err != nil {
 			t.Fatalf("parseXML: %v", err)
 		}
@@ -718,14 +721,15 @@ func TestParseNoValidFiles(t *testing.T) {
 }
 
 func TestParse_MaxFilesWithSkipped(t *testing.T) {
+	const limit = 20
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><nzb>`)
-	for range maxFiles + 1 {
+	for range limit + 1 {
 		b.WriteString(`<file subject="f"><groups><group>g</group></groups><segments></segments></file>`)
 	}
 	b.WriteString(`</nzb>`)
 
-	_, err := Parse(strings.NewReader(b.String()))
+	_, err := ParseWithLimits(strings.NewReader(b.String()), ParserLimits{MaxFiles: limit})
 	if err == nil {
 		t.Fatal("expected error for file count matching or exceeding maxFiles via skipped files")
 	}
@@ -735,6 +739,7 @@ func TestParse_MaxFilesWithSkipped(t *testing.T) {
 }
 
 func TestParse_ExactMaxSegments(t *testing.T) {
+	const limit = 20
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><nzb>`)
 	b.WriteString(`<file subject="big" date="1700000000">`)
@@ -742,7 +747,7 @@ func TestParse_ExactMaxSegments(t *testing.T) {
 	// Distinct Message-IDs per segment: the parser drops a repeat as a
 	// duplicate, and this test's subject is the segment-count limit, not
 	// deduplication. A real NZB never repeats an ID across segments either.
-	for i := 1; i <= maxSegments; i++ {
+	for i := 1; i <= limit; i++ {
 		b.WriteString(`<segment bytes="100" number="`)
 		b.WriteString(strconv.Itoa(i))
 		b.WriteString(`">id`)
@@ -751,15 +756,28 @@ func TestParse_ExactMaxSegments(t *testing.T) {
 	}
 	b.WriteString(`</segments></file></nzb>`)
 
-	got, err := Parse(strings.NewReader(b.String()))
+	got, err := ParseWithLimits(strings.NewReader(b.String()), ParserLimits{MaxSegments: limit})
 	if err != nil {
 		t.Fatalf("expected no error for exactly maxSegments, got: %v", err)
 	}
 	if len(got.Files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(got.Files))
 	}
-	if len(got.Files[0].Articles) != maxSegments {
-		t.Fatalf("expected %d articles, got %d", maxSegments, len(got.Files[0].Articles))
+	if len(got.Files[0].Articles) != limit {
+		t.Fatalf("expected %d articles, got %d", limit, len(got.Files[0].Articles))
+	}
+}
+
+func TestParserLimits_DefaultConstants(t *testing.T) {
+	defaults := defaultParserLimits()
+	if defaults.MaxNZBSize != 256*1024*1024 {
+		t.Errorf("MaxNZBSize = %d, want 256MB", defaults.MaxNZBSize)
+	}
+	if defaults.MaxFiles != 50_000 {
+		t.Errorf("MaxFiles = %d, want 50,000", defaults.MaxFiles)
+	}
+	if defaults.MaxSegments != 500_000 {
+		t.Errorf("MaxSegments = %d, want 500,000", defaults.MaxSegments)
 	}
 }
 
