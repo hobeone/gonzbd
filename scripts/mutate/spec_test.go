@@ -106,6 +106,18 @@ func TestParseSpec_Rejects(t *testing.T) {
 		body: "pkg ./p/\n[m]\nfile a.go\n--- anchor\nx\n--- replace\nx\n--- end\n",
 		want: "identical",
 	}, {
+		// A missing or misspelled `--- replace` leaves the replacement empty
+		// and turns the mutation into a DELETION, which AGENTS.md warns
+		// against precisely because a deletion breaks the build instead of
+		// the test.
+		name: "missing replace section",
+		body: "pkg ./p/\n[m]\nfile a.go\n--- anchor\nx\n--- end\n",
+		want: "no `--- replace` section",
+	}, {
+		name: "global directive inside a mutation block",
+		body: "pkg ./p/\n[m]\nfile a.go\nrun TestFoo\n--- anchor\nx\n--- replace\ny\n--- end\n",
+		want: "global directive",
+	}, {
 		// An empty anchor matches at every byte offset, so it would mutate
 		// the head of the file rather than the site the author meant.
 		name: "empty anchor",
@@ -156,6 +168,49 @@ func TestParseSpec_Rejects(t *testing.T) {
 				t.Errorf("error = %q, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseSpec_HandlesCRLFSpecFiles(t *testing.T) {
+	t.Parallel()
+
+	// Stripping the CR only from delimiters left anchors holding \r\n, which
+	// match zero sites in an LF source file — so every mutation in a CRLF
+	// spec failed as ANCHOR, blaming the anchor for the file's encoding.
+	body := "pkg ./p/\r\nrun TestFoo\r\n\r\n[m]\r\nfile a.go\r\n" +
+		"--- anchor\r\nif a {\r\n--- replace\r\nif b {\r\n--- end\r\n"
+
+	sp, err := parseSpec(write(t, body))
+	if err != nil {
+		t.Fatalf("parseSpec: %v", err)
+	}
+	if got := sp.mutations[0].anchor; got != "if a {" {
+		t.Errorf("anchor = %q, want %q with no carriage return", got, "if a {")
+	}
+	if got := sp.mutations[0].replace; got != "if b {" {
+		t.Errorf("replace = %q, want %q", got, "if b {")
+	}
+	if sp.pkg != "./p/" {
+		t.Errorf("pkg = %q", sp.pkg)
+	}
+}
+
+func TestParseSpec_ParsesTags(t *testing.T) {
+	t.Parallel()
+
+	// test/integration, test/uitest and test/crash are all behind //go:build
+	// tags, so no pin in any of them is red-checkable without this.
+	body := "pkg ./test/integration/\ntags integration\n\n" +
+		"[m]\nfile a.go\n--- anchor\nx\n--- replace\ny\n--- end\n"
+	sp, err := parseSpec(write(t, body))
+	if err != nil {
+		t.Fatalf("parseSpec: %v", err)
+	}
+	if sp.tags != "integration" {
+		t.Errorf("tags = %q, want %q", sp.tags, "integration")
+	}
+	if got := strings.Join(testArgs(sp), " "); !strings.Contains(got, "-tags=integration") {
+		t.Errorf("testArgs = %q, missing -tags", got)
 	}
 }
 

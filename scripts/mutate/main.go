@@ -46,6 +46,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -83,6 +84,7 @@ type mutation struct {
 type spec struct {
 	pkg       string
 	run       string
+	tags      string
 	timeout   time.Duration
 	mutations []mutation
 }
@@ -94,12 +96,22 @@ type result struct {
 	evidence string
 }
 
-// pending records the file currently mutated, so a signal can put it back.
-// Mutations run one at a time, so a single slot suffices.
+// pending records the file currently mutated, so a signal can put it back,
+// plus the cancel func for the running `go test` so an interrupt does not
+// orphan a compiler in the background. Mutations run one at a time, so a
+// single slot suffices.
+//
+// The mutex covers the restore itself, not just these fields. SIGINT reaches
+// the whole process group, so the child dies, cmd.CombinedOutput returns, and
+// the deferred restore starts running at the same moment the handler does —
+// two writers to one path, and a race on removing the backup directory out
+// from under the other.
 var pending struct {
 	sync.Mutex
-	path   string
-	backup string
+	path     string
+	backup   string
+	original []byte
+	cancel   context.CancelFunc
 }
 
 func main() {
@@ -127,12 +139,26 @@ func main() {
 	// about what the mutation changed, and that claim is empty if the test was
 	// not passing to begin with.
 	fmt.Printf("baseline: go %s\n", strings.Join(testArgs(sp), " "))
-	out, code := goTest(root, sp)
+	out, code, launchErr := goTest(root, sp)
+	if launchErr != nil {
+		fatal("could not run go test: %v", launchErr)
+	}
 	if code != 0 {
 		fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
 			"Every verdict this command produces is a statement about what the\n"+
 			"mutation changed. A test that already fails yields KILLED for any\n"+
 			"mutation, and none of them mean anything.\n\n%s\n", indent(out))
+		os.Exit(1)
+	}
+	if ranNothing(out) {
+		// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
+		// a misspelled run filter reads as a green baseline and then reports
+		// every mutation SURVIVED — a full sweep of "nothing pins this",
+		// against a test that never executed.
+		fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
+			"go test exited 0 without executing anything, which usually means the\n"+
+			"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
+			"mutation as SURVIVED.\n\n%s\n", sp.pkg, indent(out))
 		os.Exit(1)
 	}
 	fmt.Println("baseline: PASS")
@@ -173,11 +199,22 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 	}()
 
 	mutated := strings.Replace(string(original), m.anchor, m.replace, 1)
-	if err := os.WriteFile(path, []byte(mutated), 0o600); err != nil { //nolint:gosec // G703: path is checked by resolve to be inside the repository
-		fatal("write %s: %v", m.file, err)
+	if err := writeFile(path, []byte(mutated), 0o600); err != nil {
+		// WriteFile opens with O_TRUNC, so a failure here can leave the file
+		// empty or half-written. fatal calls os.Exit, which skips the defer
+		// above, so the restore has to happen before the exit rather than
+		// through it — otherwise the tree keeps a truncated source file and
+		// the only copy sits in a temp dir nobody was told about.
+		if rerr := restore(path, backup, original); rerr != nil {
+			fatal("write %s: %v\nRESTORE ALSO FAILED: %v\nRecover from %s.", m.file, err, rerr, backup)
+		}
+		fatal("write %s: %v (the file was restored)", m.file, err)
 	}
 
-	out, code := goTest(root, sp)
+	out, code, launchErr := goTest(root, sp)
+	if launchErr != nil {
+		fatal("could not run go test: %v", launchErr)
+	}
 	if verbose {
 		fmt.Printf("--- %s ---\n%s\n", m.name, indent(out))
 	}
@@ -203,14 +240,30 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 // that into a refusal before any byte is written.
 func resolve(root, file string) (string, error) {
 	abs := filepath.Clean(filepath.Join(root, file))
-	rel, err := filepath.Rel(root, abs)
+
+	// Lexical containment alone is not enough: an in-repository symlink whose
+	// target is outside the tree passes the ".." test and then gets written
+	// through. Resolve both sides — the root too, since a repository under a
+	// symlinked path would otherwise fail its own containment check.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// A path that does not exist cannot be mutated; report it as itself
+		// rather than as a containment failure.
+		return "", fmt.Errorf("resolve %s: %w", file, err)
+	}
+
+	rel, err := filepath.Rel(realRoot, realAbs)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", file, err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s resolves outside the repository", file)
 	}
-	return abs, nil
+	return realAbs, nil
 }
 
 // checkAnchor requires the anchor to identify exactly one site, and runs
@@ -243,25 +296,43 @@ func writeBackup(path string, content []byte) (string, error) {
 		return "", err
 	}
 	backup := filepath.Join(dir, filepath.Base(path)+".bak")
-	if err := os.WriteFile(backup, content, 0o600); err != nil { //nolint:gosec // G703: backup is a path this function just created under os.MkdirTemp
+	if err := writeFile(backup, content, 0o600); err != nil {
+		// Nothing has registered this directory yet, so no defer and no
+		// signal handler will ever come back for it.
+		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	pending.Lock()
-	pending.path, pending.backup = path, backup
+	pending.path, pending.backup, pending.original = path, backup, content
 	pending.Unlock()
 	return backup, nil
 }
 
-// readFile is a seam so the read-back below can be made to disagree with what
-// was written, which is the one path a test cannot reach by writing files: a
-// successful WriteFile followed by different bytes on disk. Same pattern as
-// the `var osOpen = os.Open` seams elsewhere in this repository.
-var readFile = os.ReadFile
+// I/O seams, in the pattern of the `var osOpen = os.Open` seams elsewhere in
+// this repository.
+//
+// Both exist for branches a test cannot reach by writing real files: a
+// successful write followed by different bytes on disk, and a write that
+// fails inside a directory this process just created. Both branches end with
+// mutated source left in the working tree, which is this command's worst
+// outcome, so neither should go unpinned for want of a seam.
+var (
+	readFile  = os.ReadFile
+	writeFile = os.WriteFile
+)
 
 // restore puts the original bytes back and proves it, rather than trusting the
 // write's error return. "Exit codes lie; observed state doesn't."
 func restore(path, backup string, original []byte) error {
-	if err := os.WriteFile(path, original, 0o600); err != nil { //nolint:gosec // G703: path was checked by resolve before the mutation was written
+	pending.Lock()
+	defer pending.Unlock()
+	return restoreLocked(path, backup, original)
+}
+
+// restoreLocked is restore's body, for callers that already hold the lock.
+// The signal handler is the other one, and it must not race this.
+func restoreLocked(path, backup string, original []byte) error {
+	if err := writeFile(path, original, 0o600); err != nil {
 		return err
 	}
 	got, err := readFile(path)
@@ -271,9 +342,7 @@ func restore(path, backup string, original []byte) error {
 	if !bytes.Equal(got, original) {
 		return fmt.Errorf("file differs from the original after restore")
 	}
-	pending.Lock()
-	pending.path, pending.backup = "", ""
-	pending.Unlock()
+	pending.path, pending.backup, pending.original = "", "", nil
 	_ = os.RemoveAll(filepath.Dir(backup)) //nolint:gosec // G703: removes the os.MkdirTemp directory this run created
 	return nil
 }
@@ -283,19 +352,37 @@ func restore(path, backup string, original []byte) error {
 // mutated code in the working tree, where it reads as a real edit.
 func installSignalRestore() {
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	// SIGHUP as well: closing a terminal or dropping an SSH session while a
+	// mutation is applied would otherwise kill the process by default action,
+	// running neither the defer nor this handler and stranding mutated source.
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		sig := <-ch
 		pending.Lock()
-		path, backup := pending.path, pending.backup
-		pending.Unlock()
+		// Stop the child compiler before restoring. os.Exit does not wait on
+		// or signal children, so without this a `go test` keeps running
+		// against the restored tree, competing for the build cache.
+		if pending.cancel != nil {
+			pending.cancel()
+		}
+		path, backup, original := pending.path, pending.backup, pending.original
+		var err error
 		if path != "" {
-			if content, err := os.ReadFile(backup); err == nil { //nolint:gosec // G304: backup is our own os.MkdirTemp path
-				_ = os.WriteFile(path, content, 0o600) //nolint:gosec // G703: path was checked by resolve before it was mutated
-				fmt.Fprintf(os.Stderr, "\ninterrupted: restored %s\n", path)
-			} else {
-				fmt.Fprintf(os.Stderr, "\ninterrupted: COULD NOT RESTORE %s — recover from %s\n", path, backup)
-			}
+			err = restoreLocked(path, backup, original)
+		}
+		pending.Unlock()
+
+		switch {
+		case path == "":
+			// Nothing was mutated; there is nothing to say.
+		case err != nil:
+			// Reporting a restore that did not happen is worse than not
+			// reporting one: the mutated source stays in the tree reading as
+			// a real edit, and the author has been told it is gone.
+			fmt.Fprintf(os.Stderr, "\ninterrupted: COULD NOT RESTORE %s: %v\n"+
+				"recover from %s\n", path, err, backup)
+		default:
+			fmt.Fprintf(os.Stderr, "\ninterrupted: restored %s\n", path)
 		}
 		if s, ok := sig.(syscall.Signal); ok {
 			os.Exit(int(s) | 0x80)
@@ -308,6 +395,12 @@ func installSignalRestore() {
 // that actually ran rather than a hand-written approximation of it.
 func testArgs(sp *spec) []string {
 	args := []string{"test", "-count=1", sp.pkg}
+	if sp.tags != "" {
+		// test/integration, test/uitest and test/crash are all behind
+		// //go:build tags, so without this no pin in any of them can be
+		// red-checked by this command.
+		args = append(args, "-tags="+sp.tags)
+	}
 	if sp.run != "" {
 		args = append(args, "-run", sp.run)
 	}
@@ -321,21 +414,39 @@ func testArgs(sp *spec) []string {
 // result keyed on the binary and its inputs, so a mutation run without it can
 // replay the pre-mutation pass and report ok — which reads as "the test does
 // not discriminate" and is the exact opposite of the truth.
-func goTest(root string, sp *spec) (output string, exitCode int) {
+func goTest(root string, sp *spec) (output string, exitCode int, launchErr error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// G204: the package and -run pattern come from a spec file the developer
 	// running this command wrote, the same trust level as the shell they typed
 	// it in. The binary is always "go".
-	cmd := exec.Command("go", testArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec
+	cmd := exec.CommandContext(ctx, "go", testArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec
 	cmd.Dir = root
+
+	pending.Lock()
+	pending.cancel = cancel
+	pending.Unlock()
+	defer func() {
+		pending.Lock()
+		pending.cancel = nil
+		pending.Unlock()
+	}()
+
 	out, err := cmd.CombinedOutput()
-	code := 0
 	if err != nil {
-		code = 1
-		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-			code = ee.ExitCode()
+		// A failure to START the process — go not on PATH, EAGAIN, EACCES —
+		// is not an ExitError and says nothing about the test. Returning it
+		// as a non-zero exit would classify the mutation KILLED and count an
+		// unexecuted test as a discriminating pin, which is the same false
+		// green COMPILE_ERROR exists to prevent.
+		ee, ok := errors.AsType[*exec.ExitError](err)
+		if !ok {
+			return string(out), 0, err
 		}
+		return string(out), ee.ExitCode(), nil
 	}
-	return string(out), code
+	return string(out), 0, nil
 }
 
 // buildFailedRe matches the summary line `go test` prints instead of running
@@ -371,19 +482,47 @@ func firstBuildError(out string) string {
 	return "the package does not compile"
 }
 
+// ranNothingRe matches go test's summary for a package where the -run filter
+// selected nothing. The exit status is 0, so only the output distinguishes it
+// from a genuine pass.
+var ranNothingRe = regexp.MustCompile(`(?m)^(?:ok|\?)\s+\S+.*\[no tests to run\]`)
+
+func ranNothing(out string) bool {
+	return ranNothingRe.MatchString(out) || strings.Contains(out, "warning: no tests to run")
+}
+
 // assertionRe matches the location a failing test prints for t.Error/t.Fatal.
-var assertionRe = regexp.MustCompile(`^\S*\.go:\d+: `)
+//
+// The trailing separator is optional: `t.Errorf("\ngot %v", got)` makes the
+// testing package emit `file.go:12:` alone on its line, with the message
+// indented beneath, and requiring a space there dropped to the "--- FAIL"
+// banner — which names the test but says nothing about behaviour.
+var assertionRe = regexp.MustCompile(`^\S*\.go:\d+:(?:\s|$)`)
 
 // firstAssertion pulls out the message the test printed, which is what
 // AGENTS.md asks to be recorded: "A red-green claim without the message it
 // produced is an assertion, not evidence."
 func firstAssertion(out string) string {
-	for line := range strings.SplitSeq(out, "\n") {
+	lines := strings.Split(out, "\n")
+
+	// Scan from the first "--- FAIL" rather than from the top. t.Log and
+	// t.Error format identically as file.go:line: message, and go test
+	// flushes a test's logs together with its failure, so a fixture that logs
+	// its setup would otherwise donate the evidence line — a benign setup
+	// message printed as the reason the mutation was caught.
+	start := 0
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "--- FAIL") {
+			start = i + 1
+			break
+		}
+	}
+	for _, line := range lines[start:] {
 		if s := strings.TrimSpace(line); assertionRe.MatchString(s) {
 			return s
 		}
 	}
-	for line := range strings.SplitSeq(out, "\n") {
+	for _, line := range lines {
 		if s := strings.TrimSpace(line); strings.HasPrefix(s, "--- FAIL") || strings.HasPrefix(s, "panic:") {
 			return s
 		}

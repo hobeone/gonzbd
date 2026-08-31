@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,27 +65,69 @@ func TestBuildFailed_IgnoresTheMarkerInsideATestMessage(t *testing.T) {
 func TestResolve_RefusesPathsOutsideTheRepository(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	// The root and the escape target are siblings, so "../outside.go" from
+	// inside the root names a real file — the containment check has to be
+	// what rejects it, not the file's absence.
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	mustWrite(t, filepath.Join(base, "outside.go"), "package outside\n")
+	mustWrite(t, filepath.Join(root, "internal", "in.go"), "package in\n")
+	mustWrite(t, filepath.Join(root, "..dotfile.go"), "package dot\n")
 
 	// The cost of a typo'd `file ../../etc/thing` is a clobbered file outside
 	// the tree, with a backup the author never thinks to look for.
-	for _, bad := range []string{"../outside.go", "internal/../../outside.go", ".."} {
+	for _, bad := range []string{"../outside.go", "internal/../../outside.go"} {
 		if _, err := resolve(root, bad); err == nil {
 			t.Errorf("resolve accepted %q, which escapes the repository", bad)
 		}
 	}
 
-	got, err := resolve(root, "internal/queue/queue.go")
+	got, err := resolve(root, "internal/in.go")
 	if err != nil {
 		t.Fatalf("resolve rejected a path inside the repo: %v", err)
 	}
-	if want := filepath.Join(root, "internal/queue/queue.go"); got != want {
+	want, err := filepath.EvalSymlinks(filepath.Join(root, "internal", "in.go"))
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if got != want {
 		t.Errorf("resolve = %q, want %q", got, want)
 	}
 
-	// A path that merely starts with the same characters as ".." is fine.
+	// A name that merely starts with the same characters as ".." is fine.
 	if _, err := resolve(root, "..dotfile.go"); err != nil {
 		t.Errorf("resolve rejected %q: %v", "..dotfile.go", err)
+	}
+}
+
+func TestResolve_RefusesASymlinkOutOfTheRepository(t *testing.T) {
+	t.Parallel()
+
+	// Lexical containment passes here: "link.go" contains no "..". Only
+	// following the link shows that a write would land outside the tree.
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	outside := filepath.Join(base, "outside.go")
+	mustWrite(t, outside, "package outside\n")
+	if err := os.Symlink(outside, filepath.Join(root, "link.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, err := resolve(root, "link.go"); err == nil {
+		t.Error("resolve accepted an in-repo symlink whose target is outside the repository")
+	}
+}
+
+func mustWrite(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -252,6 +295,96 @@ func TestRestore_ReportsAReadBackThatDisagrees(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "differs from the original") {
 		t.Errorf("error = %q, want it to name the mismatch", err)
+	}
+}
+
+func TestRanNothing_CatchesARunFilterThatMatchesNoTest(t *testing.T) {
+	t.Parallel()
+
+	// Measured: `go test -count=1 . -run TestTypo` prints this and exits 0.
+	// Without the check a misspelled run filter yields a green baseline and
+	// then reports every mutation SURVIVED against a test that never ran.
+	if !ranNothing("ok  \tnotest\t0.001s [no tests to run]\n") {
+		t.Error("the [no tests to run] summary was read as a genuine pass")
+	}
+	if !ranNothing("testing: warning: no tests to run\nPASS\nok \tpkg\t0.1s\n") {
+		t.Error("the warning form was read as a genuine pass")
+	}
+	if ranNothing("ok  \tgithub.com/hobeone/gonzbd/internal/queue\t1.105s\n") {
+		t.Error("a real pass was reported as having run nothing")
+	}
+	// A test whose own message quotes the phrase must not trip it, the same
+	// way a quoted [setup failed] must not read as a compile error.
+	if ranNothing("--- FAIL: TestX\n    x_test.go:9: wanted [no tests to run] here\nFAIL\n") {
+		t.Error("a test message quoting the phrase was read as having run nothing")
+	}
+}
+
+func TestFirstAssertion_IgnoresSetupLogsBeforeTheFailure(t *testing.T) {
+	t.Parallel()
+
+	// t.Log and t.Error format identically, and go test flushes a test's
+	// logs with its failure. Scanning from the top hands the evidence column
+	// a benign setup line as the reason the mutation was caught.
+	out := "=== RUN   TestX\n" +
+		"    x_test.go:10: seeding fixture with 20 articles\n" +
+		"--- FAIL: TestX (0.09s)\n" +
+		"    x_test.go:42: CheckEarlyAbort = true for a paused job\n" +
+		"FAIL\n"
+	got := firstAssertion(out)
+	if want := "x_test.go:42: CheckEarlyAbort = true for a paused job"; got != want {
+		t.Errorf("firstAssertion = %q, want %q", got, want)
+	}
+}
+
+func TestFirstAssertion_MatchesALocationOnItsOwnLine(t *testing.T) {
+	t.Parallel()
+
+	// t.Errorf("\ngot %v, want %v", ...) puts the location alone on its line
+	// with the message indented beneath. Requiring a trailing space here fell
+	// through to the "--- FAIL" banner, which names the test but says nothing
+	// about behaviour.
+	out := "--- FAIL: TestX (0.00s)\n    x_test.go:42:\n        got 1, want 2\nFAIL\n"
+	if got := firstAssertion(out); got != "x_test.go:42:" {
+		t.Errorf("firstAssertion = %q, want the bare location line", got)
+	}
+}
+
+func TestWriteBackup_RemovesItsTempDirWhenTheWriteFails(t *testing.T) {
+	// Not parallel: it swaps the package-level writeFile seam.
+	var attempted string
+	saved := writeFile
+	t.Cleanup(func() { writeFile = saved })
+	writeFile = func(name string, _ []byte, _ os.FileMode) error {
+		attempted = name
+		return errors.New("disk full")
+	}
+
+	if _, err := writeBackup(filepath.Join(t.TempDir(), "target.go"), []byte("x")); err == nil {
+		t.Fatal("writeBackup reported success when the backup write failed")
+	}
+
+	// Nothing has registered the directory at this point, so no defer and no
+	// signal handler would ever come back for it.
+	dir := filepath.Dir(attempted)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("writeBackup left %s behind after a failed write (stat err = %v)", dir, err)
+	}
+}
+
+func TestGoTest_ReportsALaunchFailureRatherThanAFailedTest(t *testing.T) {
+	t.Parallel()
+
+	// A working directory that does not exist makes the child fail to start.
+	// The error is not an *exec.ExitError, and reporting it as a non-zero
+	// exit would classify the mutation KILLED — counting an unexecuted test
+	// as a discriminating pin.
+	_, code, launchErr := goTest(filepath.Join(t.TempDir(), "absent"), &spec{pkg: "./..."})
+	if launchErr == nil {
+		t.Fatal("goTest reported no launch error for an unusable working directory")
+	}
+	if code != 0 {
+		t.Errorf("exitCode = %d alongside a launch error; run() would read that as KILLED", code)
 	}
 }
 

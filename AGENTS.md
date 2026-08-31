@@ -370,7 +370,7 @@ exit path including SIGINT.
 go run ./scripts/mutate path/to/the.spec     # exits non-zero unless every mutation is KILLED
 ```
 
-```
+```text
 pkg ./internal/queue/
 run TestTheNewPin
 

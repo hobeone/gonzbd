@@ -135,15 +135,34 @@ The required order for any fix:
    alongside a fix, revert the fix and confirm the test goes red. Read the
    failure message — it must fail because of the bug, not a typo or wrong setup.
 
-   Revert by copying the file aside and restoring from that copy:
+   Use `scripts/mutate` rather than reverting by hand. Write a spec naming the
+   package, the test, and each mutation; it applies them one at a time,
+   requires each to produce a red result, and restores the file on every exit
+   path including SIGINT:
 
    ```bash
-   SCRATCH="$(mktemp -d)"; trap 'rm -rf "$SCRATCH"' EXIT
-   cp internal/pkg/target.go "$SCRATCH/target.bak.go"
-   # revert the fix in place, or neuter its condition
-   go test ./internal/pkg/ -run TestTheNewPin   # MUST fail, for the right reason
-   cp "$SCRATCH/target.bak.go" internal/pkg/target.go
+   go run ./scripts/mutate path/to/the.spec
    ```
+
+   ```text
+   pkg ./internal/pkg/
+   run TestTheNewPin
+
+   [the guard neutered]
+   file internal/pkg/target.go
+   --- anchor
+   	if deadline.IsZero() {
+   --- replace
+   	if true {
+   --- end
+   ```
+
+   **`-count=1` is not optional, which is why the runner always passes it.**
+   Go caches a passing result keyed on the test binary and its inputs, so a
+   mutation run without it can replay the *pre-mutation* pass and print `ok`
+   — which reads as "the test does not discriminate" and is the exact
+   opposite of the truth. The hand-rolled snippet that stood here omitted the
+   flag entirely.
 
    **Never `git stash`** — the stash stack is shared with any other session
    working in this repo, and a pop can take their work. Prefer restoring from
@@ -159,7 +178,13 @@ The required order for any fix:
 
    **Confirm the mutation landed where you meant.** A scripted string-replace
    can match an identical branch elsewhere in the same file and produce a red
-   result that proves nothing. Anchor on text unique to the target.
+   result that proves nothing. Anchor on text unique to the target — the
+   runner refuses to apply an anchor that does not match exactly once, which
+   is the invariant hand-rolled harnesses dropped most often.
+
+   **A compile error is not a red result.** The runner reports it as
+   `COMPILE_ERROR` rather than `KILLED` for that reason; treat a mutation that
+   breaks the build as a mutation that has not been run yet.
 3. **Apply the fix**, confirm the test now passes, and confirm the rest of the
    suite stays green.
 

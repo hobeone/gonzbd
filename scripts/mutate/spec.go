@@ -33,6 +33,7 @@ func parseSpec(path string) (*spec, error) {
 	var cur *mutation
 	var section string
 	var buf []string
+	var sawReplace bool
 
 	// flush attaches the lines collected since the last delimiter.
 	flush := func() {
@@ -59,6 +60,14 @@ func parseSpec(path string) (*spec, error) {
 			return fmt.Errorf("line %d: [%s] has no `file` line", lineNo, cur.name)
 		case cur.anchor == "":
 			return fmt.Errorf("line %d: [%s] has an empty anchor", lineNo, cur.name)
+		case !sawReplace:
+			// Without this, a missing or misspelled `--- replace` leaves the
+			// replacement empty and the mutation DELETES the anchor. That is
+			// the shape AGENTS.md warns against — "prefer neutering a
+			// condition to deleting a block", because a deletion usually
+			// breaks the build and COMPILE_ERROR is not evidence — so the
+			// typo would quietly convert a valid pin into a useless run.
+			return fmt.Errorf("line %d: [%s] has no `%s` section", lineNo, cur.name, delimReplace)
 		case cur.anchor == cur.replace:
 			// A no-op mutation always SURVIVES, and reads as though the test
 			// failed to discriminate when in truth nothing was changed.
@@ -69,16 +78,23 @@ func parseSpec(path string) (*spec, error) {
 		return nil
 	}
 
-	for i, raw := range strings.Split(string(data), "\n") {
+	for i, rawLine := range strings.Split(string(data), "\n") {
 		lineNo := i + 1
+
+		// Strip the CR once, for content lines as well as delimiters. Doing
+		// it only for delimiters left anchors holding CRLF, which then match
+		// zero sites in an LF source file — every mutation in a CRLF spec
+		// would fail as ANCHOR, blaming the anchor for the file's encoding.
+		raw := strings.TrimRight(rawLine, "\r")
 
 		// Inside a content section every line is literal, including blanks
 		// and anything that looks like a comment.
 		if section != "" {
-			switch strings.TrimRight(raw, "\r") {
+			switch raw {
 			case delimReplace:
 				flush()
 				section = delimReplace
+				sawReplace = true
 				continue
 			case delimEnd:
 				flush()
@@ -106,6 +122,7 @@ func parseSpec(path string) (*spec, error) {
 				return nil, fmt.Errorf("line %d: mutation name is empty", lineNo)
 			}
 			cur = &mutation{name: name}
+			sawReplace = false
 			continue
 		}
 
@@ -123,11 +140,21 @@ func parseSpec(path string) (*spec, error) {
 		}
 		value = strings.TrimSpace(value)
 
+		// pkg, run, tags and timeout configure the whole run. Accepting one
+		// inside a [mutation] block would read as per-mutation scoping and
+		// silently rewrite the setting for the baseline and for every other
+		// mutation, including those already parsed.
+		if cur != nil && key != "file" {
+			return nil, fmt.Errorf("line %d: `%s` is a global directive and cannot appear inside [%s]", lineNo, key, cur.name)
+		}
+
 		switch key {
 		case "pkg":
 			sp.pkg = value
 		case "run":
 			sp.run = value
+		case "tags":
+			sp.tags = value
 		case "timeout":
 			d, err := time.ParseDuration(value)
 			if err != nil {
