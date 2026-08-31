@@ -436,8 +436,12 @@ func (j *Job) setHydrateFailure(p *JobProgress, err error) {
 // hoists work to avoid paying once per job.
 //
 // The progress == nil clause is defence in depth rather than a reachable
-// state; Queue.residentJob's comment carries the full argument for both
-// clauses and is the one place it is written down.
+// state. Queue.residentJob's comment carries the argument for why it is
+// unreachable — progress is permanently resident, so a non-resident job is
+// manifest-nil/progress-live rather than both-nil — and that part is written
+// down only there. The gate rule the two clauses serve (gate on residency iff
+// the method needs the manifest) is also stated in docs/queue-lifecycle.md,
+// which credits that comment as its source.
 func (j *Job) resident() error {
 	if j.manifest == nil || j.progress == nil {
 		return ErrJobNotResident

@@ -25,10 +25,14 @@ import (
 //
 // # What these return
 //
-// Every method here returns an error naming the job except undeferRecovery,
-// which reports a bare changed bool — its two callers differ on whether an
-// out-of-range index is a refusal or a no-op, so the rejecting one gets its
-// error from checkFileIdxs instead and this one has nothing left to report.
+// Two methods do not return an error naming the job. undeferRecovery returns
+// no error at all, reporting a bare changed bool — its two callers differ on
+// whether an out-of-range index is a refusal or a no-op, so the rejecting one
+// gets its error from checkFileIdxs instead and this one has nothing left to
+// report. seedFromRuns names the job in its residency error but not in its
+// coverage error, which comes from runsCoverage unwrapped; see below for what
+// supplies the ID there. Every other method here names the job in every error
+// it returns.
 //
 // Where an error IS returned, the Queue wrapper passes it through unchanged
 // rather than re-wrapping. That is not a style choice: before B2.4a,

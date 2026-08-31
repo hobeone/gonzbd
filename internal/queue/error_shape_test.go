@@ -18,9 +18,17 @@ import (
 //
 //	queue: fileIdx 9 out of range for job j1: j1
 //
-// — which is why the wrappers wrap ONLY the residency sentinel and pass index
-// errors through untouched. That distinction is invisible in the types and
-// survives only if something asserts the strings.
+// — which is why the ID is added exactly once, and by the moved Job method
+// rather than by the wrapper. Each one opens with
+//
+//	if err := j.resident(); err != nil { return fmt.Errorf("%w: %s", err, j.ID) }
+//
+// and builds its index errors with j.ID the same way, so both kinds reach the
+// wrapper already named and the wrapper returns them untouched. An earlier
+// draft of this comment put the residency wrapping in the wrapper; that shape
+// yields the same strings, which is precisely why it is worth stating which
+// one was built. The distinction is invisible in the types and survives only
+// if something asserts the strings.
 //
 // This test must pass BEFORE Task 3 and after it. One that only passes
 // afterwards is describing the new behaviour, not preserving the old.
