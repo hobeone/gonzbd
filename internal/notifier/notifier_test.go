@@ -289,11 +289,11 @@ func TestScriptNonZeroExit(t *testing.T) {
 func TestScriptTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	p := writeScript(t, dir, "slow.sh", `sleep 10`)
+	p := writeScript(t, dir, "slow.sh", `exec sleep 10`)
 
 	n := NewScriptNotifier(ScriptConfig{
 		Path:      p,
-		Timeout:   100 * time.Millisecond,
+		Timeout:   50 * time.Millisecond,
 		EventMask: []EventType{QueueDone},
 	})
 	start := time.Now()
@@ -303,8 +303,7 @@ func TestScriptTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	// Allow up to 5s: 100ms timeout + 2s WaitDelay + scheduling slack.
-	// The script sleeps 10s, so if we return before 5s the kill path fired.
+	// The script sleeps 10s, so if we return well before 10s the kill path fired.
 	if elapsed > 5*time.Second {
 		t.Errorf("timeout not enforced: elapsed %v", elapsed)
 	}
