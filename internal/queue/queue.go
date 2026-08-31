@@ -288,12 +288,17 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // active set, in both cases leaving the job in the map.
 //
 // This is now a property of the whole file, not just the direction of
-// travel: every manifest-tier mutation routes through here, so none of them
-// can report success for work it did not do (#261). That is enforced rather
-// than asserted — TestManifestAccessIsGated walks the package AST and fails
-// any *Queue method that dereferences job.manifest without calling this,
-// because hand searches over this surface have three times now returned a
-// different subset of it.
+// travel: every manifest-tier mutation on *Queue routes through here, so none
+// of them can report success for work it did not do (#261). That is enforced
+// rather than asserted — TestManifestAccessIsGated walks the package AST and
+// fails any *Queue or *Job method that dereferences a manifest without
+// calling this or Job.resident, because hand searches over this surface have
+// three times now returned a different subset of it.
+//
+// The condition itself lives on Job.resident, which this delegates to; the
+// two are one gate with two entry points, not two gates. This one is for a
+// caller that starts from an ID and adds the ID to the error, that one for a
+// caller that already holds the *Job.
 //
 // The progress-tier methods deliberately do not route through here.
 // JobProgress is permanently resident, so gating them on residency would
@@ -318,9 +323,9 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // live beforehand. The skipped mutation is moot because promotion
 // supersedes it, not because progress was about to vanish.
 //
-// The job.progress == nil clause below is not load-bearing for any known
-// caller — no code path leaves a job in q.byID with nil progress — but it
-// stays as defense in depth: everything downstream of this gate assumes
+// The job.progress == nil clause, now on Job.resident, is not load-bearing
+// for any known caller — no code path leaves a job in q.byID with nil
+// progress — but it stays as defense in depth: everything downstream of this gate assumes
 // job.progress is safe to dereference, and every worker goroutine that could
 // hit a violation carries no recover(), so the cost of keeping a redundant
 // check is a single comparison against the cost of a process crash if that
@@ -330,8 +335,8 @@ func (q *Queue) residentJob(id string) (*Job, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if job.manifest == nil || job.progress == nil {
-		return nil, fmt.Errorf("%w: %s", ErrJobNotResident, id)
+	if err := job.resident(); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, id)
 	}
 	return job, nil
 }

@@ -416,6 +416,35 @@ func (j *Job) setHydrateFailure(p *JobProgress, err error) {
 	j.hydrateErr = err
 }
 
+// resident reports whether this job's evictable tier is in memory, returning
+// ErrJobNotResident when it is not. It is the manifest gate in its Job-level
+// form: a *Job method that dereferences j.manifest calls this first, so a
+// non-resident job is reported rather than silently skipped (#261).
+//
+// Queue.residentJob is the same gate for a caller that starts from an ID, and
+// delegates here rather than repeating the condition — one owner for "is this
+// job resident", two entry points to it.
+//
+// The error carries no job ID. Both callers have one and add it: residentJob
+// wraps with the ID it was passed, and a *Job method wraps with j.ID.
+//
+// Takes no lock, and must be called with Queue.mu held. It reads the pointer
+// fields residencyMu also guards, and every path that reaches it does so from
+// a Queue method holding mu — the same discipline the manifest-tier bodies
+// themselves run under. Taking residencyMu here would nest it inside mu on
+// every article operation, which is the cost ForEachUnfinishedArticle already
+// hoists work to avoid paying once per job.
+//
+// The progress == nil clause is defence in depth rather than a reachable
+// state; Queue.residentJob's comment carries the full argument for both
+// clauses and is the one place it is written down.
+func (j *Job) resident() error {
+	if j.manifest == nil || j.progress == nil {
+		return ErrJobNotResident
+	}
+	return nil
+}
+
 // JobPhase represents the high-level operational phase of a download job.
 type JobPhase int
 

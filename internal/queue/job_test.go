@@ -1,7 +1,9 @@
 package queue
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -487,5 +489,47 @@ func TestJobDeferredRecoveryIndices_NilProgress(t *testing.T) {
 	job := &Job{ID: "no-progress"}
 	if got := job.DeferredRecoveryIndices(); got != nil {
 		t.Errorf("DeferredRecoveryIndices() with nil progress = %v, want nil", got)
+	}
+}
+
+// TestJobResident covers all four combinations of the two pointer fields
+// Job.resident tests, rather than only the two that occur in practice.
+//
+// The manifest-nil/progress-live row is the ordinary steady state for every
+// queued or paused job, and the row that matters most: it must report
+// ErrJobNotResident, because a manifest-tier caller that treated it as
+// resident would dereference nil (#261). The both-nil and manifest-live/
+// progress-nil rows are unreachable today — nothing leaves a job in q.byID
+// with nil progress — and are asserted anyway, because that unreachability
+// is a property of the callers and this gate must not depend on it.
+func TestJobResident(t *testing.T) {
+	t.Parallel()
+
+	m := &Manifest{}
+	p := &JobProgress{}
+
+	for _, tc := range []struct {
+		name     string
+		manifest *Manifest
+		progress *JobProgress
+		want     error
+	}{
+		{"both present", m, p, nil},
+		{"evicted: no manifest, progress stays", nil, p, ErrJobNotResident},
+		{"no progress", m, nil, ErrJobNotResident},
+		{"neither", nil, nil, ErrJobNotResident},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j := &Job{ID: "j1", manifest: tc.manifest, progress: tc.progress}
+			err := j.resident()
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("resident() = %v, want %v", err, tc.want)
+			}
+			if err != nil && strings.Contains(err.Error(), "j1") {
+				t.Errorf("resident() = %q, which names the job; the ID is the caller's to add "+
+					"(Queue.residentJob wraps with the ID it was passed) and including it here double-names it", err)
+			}
+		})
 	}
 }
