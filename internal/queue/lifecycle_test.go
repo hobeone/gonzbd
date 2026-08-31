@@ -565,13 +565,28 @@ func TestSetPostProcStarted(t *testing.T) {
 	_ = q.Add(j)
 	_ = q.SetStatus(j.ID, constants.StatusDownloading)
 
-	t.Run("first call returns true", func(t *testing.T) {
+	// SetPostProcStarted is the second of the two writers that apply the
+	// finish transition (TestMarkDownloadFinished names the enumeration), and
+	// its write of downloadFinished was untested until #457's review: the two
+	// subtests below asserted only the bool and job.PostProc, so deleting the
+	// assignment at queue.go's `job.progress.downloadFinished = time.Now()`
+	// left them green. firstFinish captures it so the idempotent case can
+	// assert the field does not move either.
+	var firstFinish time.Time
+
+	t.Run("first call returns true and stamps the finish time", func(t *testing.T) {
 		ok, err := q.SetPostProcStarted(j.ID)
 		if err != nil {
 			t.Fatalf("SetPostProcStarted: %v", err)
 		}
 		if !ok {
 			t.Error("expected true on first call")
+		}
+		got, _ := q.Get(j.ID)
+		firstFinish = got.Progress().DownloadFinished()
+		if firstFinish.IsZero() {
+			t.Error("DownloadFinished still zero; SetPostProcStarted did not stamp the finish time, " +
+				"which feeds the history record's elapsed figure")
 		}
 	})
 
@@ -582,6 +597,41 @@ func TestSetPostProcStarted(t *testing.T) {
 		}
 		if ok {
 			t.Error("expected false on second call")
+		}
+		// The field not moving here is the job.PostProc early return, NOT the
+		// IsZero guard — that return fires before the stamp is reached, so
+		// removing the guard leaves this subtest green. Mutation-checked. The
+		// case the guard actually covers is the subtest below.
+		got, _ := q.Get(j.ID)
+		if f := got.Progress().DownloadFinished(); !f.Equal(firstFinish) {
+			t.Errorf("DownloadFinished moved on the second call: got %v, want %v", f, firstFinish)
+		}
+	})
+
+	// What the IsZero guard is for: a job whose finish time was already set by
+	// Queue.MarkDownloadFinished, reaching SetPostProcStarted for the first
+	// time. PostProc is still false, so the early return above does not fire
+	// and the guard is the only thing standing between the two writers.
+	t.Run("does not overwrite a finish time MarkDownloadFinished already set", func(t *testing.T) {
+		q2 := New()
+		j2 := makeJob(t, "postproc-preset", constants.NormalPriority)
+		if err := q2.Add(j2); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if err := q2.SetStatus(j2.ID, constants.StatusDownloading); err != nil {
+			t.Fatalf("SetStatus: %v", err)
+		}
+		marked := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+		if err := q2.MarkDownloadFinished(j2.ID, marked); err != nil {
+			t.Fatalf("MarkDownloadFinished: %v", err)
+		}
+		if _, err := q2.SetPostProcStarted(j2.ID); err != nil {
+			t.Fatalf("SetPostProcStarted: %v", err)
+		}
+		got, _ := q2.Get(j2.ID)
+		if f := got.Progress().DownloadFinished(); !f.Equal(marked) {
+			t.Errorf("DownloadFinished = %v, want %v — SetPostProcStarted overwrote a finish "+
+				"time another writer had already set, moving the job's reported duration", f, marked)
 		}
 	})
 
@@ -650,6 +700,10 @@ func TestMarkJobStarted(t *testing.T) {
 // method's markDownloadFinishedOnce and SetPostProcStarted, both IsZero-
 // guarded — plus ResetForRetry clearing it and two restore paths. So this
 // test and TestSetPostProcStarted between them cover the transition class.
+// That was not true when first written: TestSetPostProcStarted asserted only
+// its bool and job.PostProc, so deleting its stamp of downloadFinished left
+// it green. #457's review caught the overclaim and the assertions were added
+// rather than the sentence weakened.
 func TestMarkDownloadFinished(t *testing.T) {
 	t.Parallel()
 	q := New()

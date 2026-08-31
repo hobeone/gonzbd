@@ -596,19 +596,29 @@ func TestSQLiteStore_AddErrorPaths(t *testing.T) {
 		// external test package, so it cannot write the field. The queue is
 		// scaffolding for that one call; store.Add below is still what is
 		// under test.
+		//
+		// PauseAll first: Queue.Add ends in PromoteNext, which would promote
+		// this job to StatusDownloading and make the non-resident premise
+		// below false. That premise is asserted rather than stated, because
+		// the scaffolding is what threatens it.
 		q := queue.New()
+		q.PauseAll()
 		if err := q.Add(job); err != nil {
 			t.Fatalf("q.Add: %v", err)
 		}
 		if err := q.MarkDownloadFinished(job.ID, want); err != nil {
 			t.Fatalf("MarkDownloadFinished: %v", err)
 		}
+		if job.Status != constants.StatusQueued {
+			t.Fatalf("scaffolding queue promoted the job to %v; the direct-column assertion below "+
+				"is premised on it staying non-resident", job.Status)
+		}
 		if err := store.Add(ctx, job); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		// job.Status defaults to non-resident (StatusQueued), so Get won't
-		// attach a manifest/progress to read the timestamp back from; assert
-		// against the raw column via a direct query instead.
+		// job.Status is the non-resident StatusQueued (asserted above), so Get
+		// won't attach a manifest/progress to read the timestamp back from;
+		// assert against the raw column via a direct query instead.
 		var dlFinishedUnix int64
 		if err := repo.DB().QueryRowContext(ctx, "SELECT download_finished FROM jobs WHERE id = ?", job.ID).Scan(&dlFinishedUnix); err != nil {
 			t.Fatalf("query download_finished: %v", err)

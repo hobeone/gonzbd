@@ -545,9 +545,14 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // exported MarkDownloadFinished that assigned UNCONDITIONALLY — two methods
 // one capital letter apart, differing only in this guard. #457 resolved that
 // by deleting the exported one rather than guarding it: it had no production
-// caller, and adding a guard would have left the invariant enforced at two
-// sites instead of one. The name stays because it still says what the method
-// does, which the field name did not.
+// caller, and guarding it would have added a THIRD enforcement site for the
+// first-finish-wins rule. There are already two — this method, and
+// Queue.SetPostProcStarted, which applies the same IsZero test to the same
+// field without routing through here. That second site is not this change's
+// to remove, and since #457's review it is tested: TestSetPostProcStarted's
+// "does not overwrite a finish time MarkDownloadFinished already set" subtest
+// is what holds the two writers to the same rule. The name stays because it
+// still says what the method does, which the field name did not.
 //
 // A zero t is refused rather than stored (#459). The zero value is the
 // sentinel the field guard tests against, so storing it would report a
