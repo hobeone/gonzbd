@@ -110,6 +110,7 @@ func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job)
 }
 
 func TestPar2NeedsRecovery(t *testing.T) {
+	t.Parallel()
 	log := slog.New(slog.DiscardHandler)
 	deferredVol := par2FileSpec{subject: "data.vol000+01.par2", bytes: 1}
 
@@ -179,6 +180,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 }
 
 func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
+	t.Parallel()
 	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
 

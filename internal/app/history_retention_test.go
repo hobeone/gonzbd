@@ -68,6 +68,7 @@ func seedEntry(t *testing.T, repo *history.Repository, adminDir, id, status stri
 // grow admin/nzb/ without bound, which is the same leak the payload format
 // had before #298.
 func TestPruneHistory_RemovesExpiredEntriesAndTheirBackups(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetentionApp(t, 30, 0)
 
 	oldPath := seedEntry(t, repo, adminDir, "pruneold00000001", string(constants.StatusCompleted), 90)
@@ -101,6 +102,7 @@ func TestPruneHistory_RemovesExpiredEntriesAndTheirBackups(t *testing.T) {
 // failed job, which is the one an operator keeps in order to retry it — and
 // retrying needs the backup this would have deleted.
 func TestPruneHistory_KeepsFailedJobsWhenOnlySuccessesExpire(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetentionApp(t, 30, 0)
 
 	failedPath := seedEntry(t, repo, adminDir, "prunefailed00001", string(constants.StatusFailed), 90)
@@ -126,6 +128,7 @@ func TestPruneHistory_KeepsFailedJobsWhenOnlySuccessesExpire(t *testing.T) {
 // mistake here deletes history on every startup of every unconfigured
 // install.
 func TestPruneHistory_DefaultKeepsEverything(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetentionApp(t, 0, 0)
 
 	path := seedEntry(t, repo, adminDir, "prunenever000001", string(constants.StatusCompleted), 3650)

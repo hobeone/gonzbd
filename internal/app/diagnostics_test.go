@@ -6,6 +6,7 @@ import (
 )
 
 func TestCheckDependencies(t *testing.T) {
+	t.Parallel()
 	// This test depends on the environment, but we can at least verify it returns
 	// something.
 	warnings := CheckDependencies()
@@ -18,6 +19,7 @@ func TestCheckDependencies(t *testing.T) {
 }
 
 func TestCheckDependencies_Missing(t *testing.T) {
+	t.Parallel()
 	// Mock PATH to ensure it doesn't find anything
 	oldPath := os.Getenv("PATH")
 	os.Setenv("PATH", "")

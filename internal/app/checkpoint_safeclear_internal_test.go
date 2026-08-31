@@ -31,6 +31,7 @@ import (
 // exercises the same arm budget exhaustion does, without having to starve a
 // real budget.
 func TestCheckpointJob_ReportsUnsafeWhenTheContextIsAlreadySpent(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
@@ -48,6 +49,7 @@ func TestCheckpointJob_ReportsUnsafeWhenTheContextIsAlreadySpent(t *testing.T) {
 // TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier is the ordinary path:
 // the articles are acked, so nothing a clear could strand remains.
 func TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
@@ -64,6 +66,7 @@ func TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier(t *testing.T) {
 // checkpointAll keeps listing it and no barrier can run for it. Its written
 // bytes are unacked exactly as in the timeout case.
 func TestCheckpointJob_ReportsUnsafeWhenNoBarrierRan(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
@@ -89,6 +92,7 @@ func TestCheckpointJob_ReportsUnsafeWhenNoBarrierRan(t *testing.T) {
 // the old downloader is never acked, so that stall would not self-clear.
 // finalizeCompletedFile cases it out for the same reason (durability.go:868).
 func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
@@ -112,6 +116,7 @@ func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
 // history.Open errors. Pinned so the test-only path does not silently start
 // stranding Emitted bits.
 func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
@@ -134,6 +139,7 @@ func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
 // design. Starving the per-job share is what drives a job through
 // checkpointJob and out the unsafe arm — the issue's first named cause.
 func TestCheckpointAllShare_ReportsTheJobsItCouldNotProtect(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
@@ -159,6 +165,7 @@ func TestCheckpointAllShare_ReportsTheJobsItCouldNotProtect(t *testing.T) {
 // a queue with a few dozen open jobs gives each about 200ms and marks many of
 // them unsafe on ordinary hardware.
 func TestCheckpointJob_ReportsSafeWhenNothingWasWrittenSinceTheLastBarrier(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	// Deliberately NO noteJobBytes: nothing is at risk.
@@ -187,6 +194,7 @@ func TestCheckpointJob_ReportsSafeWhenNothingWasWrittenSinceTheLastBarrier(t *te
 // Answering "clear everything" there would let one timed-out listing undo the
 // whole fix, so it answers from the accumulator instead.
 func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
 	if got := application.jobsAtRisk(); got != nil {
@@ -251,6 +259,7 @@ func (s blockingCommitStore) Commit(ctx context.Context, jobID string, arts []du
 // across its run, but the OpenJobIDs failure path never calls checkpointJob at
 // all; it reads the accumulator directly, and barrierMu is a leaf.
 func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -313,6 +322,7 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 // across its run, but the OpenJobIDs failure path never calls checkpointJob at
 // all — it reads the accumulator directly, and barrierMu is a leaf.
 func TestJobsAtRisk_NamesAJobWhoseBarrierIsStillInFlight(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.noteJobBytes(job.ID, 4096)
 
@@ -347,6 +357,7 @@ func TestJobsAtRisk_NamesAJobWhoseBarrierIsStillInFlight(t *testing.T) {
 // a failed barrier leaves the bytes at risk — but it now holds because nothing
 // removed them, rather than because something put them back.
 func TestJobsAtRisk_KeepsAFailedBarriersBytesAtRisk(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.noteJobBytes(job.ID, 4096)
 
@@ -366,6 +377,7 @@ func TestJobsAtRisk_KeepsAFailedBarriersBytesAtRisk(t *testing.T) {
 // TestNothingAtRisk_TracksTheAccumulator pins the per-job predicate the unsafe
 // arms narrow themselves with.
 func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
 	if !application.nothingAtRisk(job.ID) {
@@ -400,6 +412,7 @@ func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
 // the ordinary reload must not withhold anything, or every settings change
 // would stall the articles it was supposed to re-dispatch.
 func TestCheckpointAllShare_ReportsNothingWhenEveryJobIsAcked(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard

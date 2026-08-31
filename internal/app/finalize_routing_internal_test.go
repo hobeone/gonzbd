@@ -26,6 +26,7 @@ import (
 // context half; TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier drives
 // the flag, which is the half that covers Shutdown's own barrier.
 func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -56,6 +57,7 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 // indistinguishable by error value, so a guard keyed on the error would have
 // swallowed both.
 func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// Grounding: the application must NOT be stopping, or this test passes for
@@ -88,6 +90,7 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 // from the record after the resume — but the FIRST-attempt path classified it as
 // storage and stalled the job over a queue-residency condition.
 func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", queue.ErrJobNotResident)
@@ -107,6 +110,7 @@ func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
 // wholesale — an EIO on the finalize path still has to park the job with a
 // reason an operator can act on.
 func TestRouteFinalizeFailure_StillStallsOnARealStorageError(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", errRealDiskFailure)

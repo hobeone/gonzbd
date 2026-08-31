@@ -48,6 +48,7 @@ func newRemoveJobTestApp(t *testing.T) *Application {
 }
 
 func TestRemoveJob(t *testing.T) {
+	t.Parallel()
 	a := newRemoveJobTestApp(t)
 	downloadDir := a.config.GetGeneral().DownloadDir
 
@@ -96,6 +97,7 @@ func TestRemoveJob(t *testing.T) {
 // unsynchronized and unconditional (app.downloader.DisconnectAll()), which
 // would have panicked here.
 func TestRemoveJob_NilDownloader(t *testing.T) {
+	t.Parallel()
 	a := newRemoveJobTestApp(t)
 	a.downloader = nil
 
@@ -142,6 +144,7 @@ func (removeRefusingStore) Remove(context.Context, string) error {
 // staying resident is true both before and after the fix, because the store
 // delete fails either way. Only the file's survival tells them apart.
 func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
 	ctx := t.Context()
 
@@ -259,6 +262,7 @@ func removeJobFixture(t *testing.T, application *Application, name string) (*que
 // on both the fixed and the unfixed code, so only the file's survival tells
 // them apart.
 func TestRemoveJob_KeepingFilesLeavesAFileTheAssemblerHoldsOpen(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	job, path := removeJobFixture(t, application, "kept")
 
@@ -286,6 +290,7 @@ func TestRemoveJob_KeepingFilesLeavesAFileTheAssemblerHoldsOpen(t *testing.T) {
 // What this covers instead is the pair: that fixing #433 did not quietly
 // invert the true case while making the false case work.
 func TestRemoveJob_DeletingFilesRemovesAFileTheAssemblerHoldsOpen(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	job, path := removeJobFixture(t, application, "swept")
 

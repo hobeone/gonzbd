@@ -25,6 +25,7 @@ import (
 // failed in a drain, and the old single-index signature could report only one
 // of them. The rest were left neither Done, nor Failed, nor Outstanding.
 func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	for _, idx := range []int32{0, 1} {
@@ -71,6 +72,7 @@ func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 // not be silent either (A2), which is why the branch exists rather than the
 // error being discarded at the call.
 func TestHandleArticlesUnwritten_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 2)
 
 	// No job with this ID was ever added, which is the same state the queue
@@ -81,6 +83,7 @@ func TestHandleArticlesUnwritten_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 // TestHandleWriteFault_RoutesOnPermanence pins the branch that decides whether
 // the job can ever recover, on the same R18 rule the barrier uses.
 func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
+	t.Parallel()
 	t.Run("retryable stalls", func(t *testing.T) {
 		application, job := newDurabilityTestApp(t, 1, 2)
 		f := storagefault.Classify("write", "/d/a.bin", syscall.ENOSPC)
@@ -136,6 +139,7 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 // count against par2's recovery budget and lets a job proceed to a repair that
 // cannot succeed.
 func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	if err := application.queue.MarkArticleEmittedByIdx(job.ID, 1); err != nil {
@@ -177,6 +181,7 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 // not be silent either (A2), which is why the branch exists rather than the
 // error being discarded at the call.
 func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 2)
 
 	// No job with this ID was ever added, which is the same state the queue
@@ -192,6 +197,7 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 // the issue describes — a user watching a download fail with no way to tell a
 // bad post from a bad disk.
 func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	const reason = "Overlapping segments in a.rar: <x> and <y> both claim byte offset 0"
@@ -213,6 +219,7 @@ func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
 // its job has been cancelled or moved to history. Nothing is left to warn
 // about, which is ordinary — but not silent (A2).
 func TestHandlePostAnomaly_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 2)
 
 	application.handlePostAnomaly("job-that-never-existed", 0, "overlapping segments")
@@ -232,6 +239,7 @@ func TestHandlePostAnomaly_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 // that whole timeout. The margin under test is five seconds against
 // microseconds, which is why a wall-clock assertion is sound here.
 func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
+	t.Parallel()
 	application, job, release := newWedgedApp(t)
 	defer release()
 

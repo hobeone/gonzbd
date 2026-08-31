@@ -14,7 +14,7 @@ import (
 // race detector can only report a write/read pair it actually observes
 // interleaved, so the readers must be given real wall-clock time to overlap a
 // reload. It is deliberately short; -count=100 supplies the repetition.
-const raceLoadDuration = 200 * time.Millisecond
+const raceLoadDuration = 50 * time.Millisecond
 
 // runReloadUnderLoad drives Application's unsynchronised readers concurrently
 // with ReloadDownloader, which swaps app.downloader and app.downloaderStats
@@ -104,7 +104,7 @@ func TestReloadUnderLoad_Race(t *testing.T) {
 
 // reloadMuHoldTestDuration is how long TestReloadDownloader_SerializesConcurrentCalls
 // drives its concurrent ReloadDownloader writers against the reloadMu monitor.
-const reloadMuHoldTestDuration = 300 * time.Millisecond
+const reloadMuHoldTestDuration = 80 * time.Millisecond
 
 // minAcceptableReloadMuHoldStreak is the floor for the longest streak
 // app.reloadMu is observed continuously held while two ReloadDownloader

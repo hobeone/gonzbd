@@ -26,6 +26,7 @@ import (
 // checkpoint_test.go.  This scenario-level test exercises the full
 // crash-recovery path (no Shutdown call, reload from disk).
 func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	const conns = 4
@@ -222,6 +223,7 @@ func (s *crashStage) Run(ctx context.Context, _ *postproc.Job) error {
 // queue, sees PostProc == true, and re-enqueues the job to the post-processor,
 // which restarts its stage chain from the beginning (stages[0]).
 func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	const jobID = "recover-postproc-0001"

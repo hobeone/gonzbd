@@ -11,6 +11,7 @@ import (
 // errors) correctly moves to history as "Failed" instead of getting stuck in
 // the active queue.
 func TestScenario_DecodeError(t *testing.T) {
+	t.Parallel()
 	h := newScenarioHarness(t)
 	h.Start()
 
@@ -55,6 +56,7 @@ func TestScenario_DecodeError(t *testing.T) {
 // TestScenario_DecodeJunkRecovery verifies that the decoder can recover from
 // server-injected junk or poster introductions before the =ybegin line.
 func TestScenario_DecodeJunkRecovery(t *testing.T) {
+	t.Parallel()
 	h := newScenarioHarness(t)
 	h.Start()
 

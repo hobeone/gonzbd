@@ -32,6 +32,7 @@ import (
 // and so the ack under test comes from the cadence rather than from the
 // completion path.
 func TestDurability_DoneMeansOnDisk(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	server := nntptest.New(t)
@@ -125,6 +126,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 // Without this, moving the ack back to the accept path (defect #355, refiled
 // as #356) passes every other test in this package.
 func TestDurability_AcceptedIsNotDone(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	server := nntptest.New(t)
@@ -188,6 +190,7 @@ func TestDurability_AcceptedIsNotDone(t *testing.T) {
 // separation the test passes whichever bound is wired and neither, if the
 // default 30s tick happened to land.
 func TestBarrierFiresOnByteBound(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	server := nntptest.New(t)
@@ -248,6 +251,7 @@ func TestBarrierFiresOnByteBound(t *testing.T) {
 // beyond anything the fixture can reach so a run is attributable to the ticker
 // alone.
 func TestBarrierFiresOnTimeBound(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	server := nntptest.New(t)
@@ -296,6 +300,7 @@ func TestBarrierFiresOnTimeBound(t *testing.T) {
 // re-downloading. The cadence is pinned open — an hour and a terabyte — so the
 // only thing that can produce a run is Shutdown itself.
 func TestBarrierRunsOnCleanShutdown(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	server := nntptest.New(t)

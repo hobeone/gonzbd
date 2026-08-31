@@ -66,7 +66,8 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 // mutations (article/file state changes), the periodic ticker saves within
 // the configured interval.
 func TestCheckpointFires_AfterMutation(t *testing.T) {
-	const checkInterval = 50 * time.Millisecond
+	t.Parallel()
+	const checkInterval = 10 * time.Millisecond
 	application, job, _ := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -107,7 +108,8 @@ func TestCheckpointFires_AfterMutation(t *testing.T) {
 // TestCheckpointSkips_WhenClean verifies that when no mutations happen after
 // a save the periodic ticker does not re-write the queue index.
 func TestCheckpointSkips_WhenClean(t *testing.T) {
-	const checkInterval = 50 * time.Millisecond
+	t.Parallel()
+	const checkInterval = 10 * time.Millisecond
 	application, job, repo := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())

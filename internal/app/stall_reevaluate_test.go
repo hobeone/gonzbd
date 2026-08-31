@@ -27,6 +27,7 @@ import (
 // file being marked complete and its article being acked durable come first;
 // the unpause is asserted afterwards, as a consequence.
 func TestReevaluateStall_FinishesTheFinalizeTheStallInterrupted(t *testing.T) {
+	t.Parallel()
 	application, job, release := newWedgedApp(t)
 	ctx := t.Context()
 
@@ -79,6 +80,7 @@ func TestReevaluateStall_FinishesTheFinalizeTheStallInterrupted(t *testing.T) {
 // have opposite failure modes. That one fails if the re-evaluation resumes too
 // early; this one fails if it never resumes at all.
 func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
 	application.Stall(job.ID, &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC})
@@ -111,6 +113,7 @@ func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
 // The sentinel matters as much as the refusal: it is what keeps the caller
 // from re-classifying this as a storage fault, which is A1 running backwards.
 func TestRetryFinalize_RefusesAFileWhoseHandleIsGone(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -136,6 +139,7 @@ func TestRetryFinalize_RefusesAFileWhoseHandleIsGone(t *testing.T) {
 // instruction gone. A2 asks for an ACTIONABLE reason; that one tells the
 // operator to wait for a condition that will never clear.
 func TestReevaluateStall_KeepsTheActionableReasonForALostFile(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.Stall(job.ID, &storagefault.Fault{
@@ -170,6 +174,7 @@ func TestReevaluateStall_KeepsTheActionableReasonForALostFile(t *testing.T) {
 // lasts. Resuming before the retry has landed therefore turns a stall into a
 // repeating re-download against a dead mount.
 func TestReevaluateStall_DoesNotResumeAJobWhoseFinalizeStillFails(t *testing.T) {
+	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 
 	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
@@ -203,6 +208,7 @@ func TestReevaluateStall_DoesNotResumeAJobWhoseFinalizeStillFails(t *testing.T) 
 // state rather than as timing: under a first-failure return only file 1 would
 // be classified.
 func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.Stall(job.ID, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
@@ -236,6 +242,7 @@ func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) 
 // The handle is deliberately still open here, so the earlier guard cannot be
 // what produces the refusal.
 func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	if err := application.queue.Remove(job.ID); err != nil {
@@ -265,6 +272,7 @@ func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 // used to notice it was gone — it would be retried on every interval for the
 // life of the process, re-logging its routed fault each time.
 func TestReevaluateStall_ForgetsADepartedJobWithWorkOutstanding(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.Stall(job.ID, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})

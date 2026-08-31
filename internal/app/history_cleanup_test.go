@@ -59,6 +59,7 @@ func writeBackupFor(t *testing.T, repo *history.Repository, adminDir, nzoID, bac
 // can be retried, so an entry that outlives nothing must not leave a file
 // behind — that accumulation is the whole defect this replaces.
 func TestRemoveHistoryJob_DeletesNZBBackup(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newCleanupTestApp(t)
 	path := writeBackupFor(t, repo, adminDir, "cleanupjob000001", "cleanup-job.nzb.gz")
 
@@ -76,6 +77,7 @@ func TestRemoveHistoryJob_DeletesNZBBackup(t *testing.T) {
 // by hand — still deletes cleanly. The backup was never required for the
 // download, so its absence must not block removing the entry.
 func TestRemoveHistoryJob_ToleratesMissingBackup(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newCleanupTestApp(t)
 	path := writeBackupFor(t, repo, adminDir, "cleanupjob000002", "gone.nzb.gz")
 	if err := os.Remove(path); err != nil {

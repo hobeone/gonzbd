@@ -33,6 +33,7 @@ func (downloaderOnly) DisconnectAll()                                   {}
 // disqualifies them from that exemption under AGENTS.md's own rule, and the
 // nil case was untested prior to this change.
 func TestSpeed_NilDownloaderStats(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil, WithDownloader(downloaderOnly{}))
 	if err != nil {
@@ -45,6 +46,7 @@ func TestSpeed_NilDownloaderStats(t *testing.T) {
 }
 
 func TestServerStatus_NilDownloaderStats(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil, WithDownloader(downloaderOnly{}))
 	if err != nil {
@@ -63,6 +65,7 @@ func TestServerStatus_NilDownloaderStats(t *testing.T) {
 // specifically so this test can distinguish "delegated and got a value" from
 // "the nil-guard fired."
 func TestSpeed_DelegatesToDownloaderStats(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	fd := newFakeDownloader()
 	fd.speed = 42.5
@@ -78,6 +81,7 @@ func TestSpeed_DelegatesToDownloaderStats(t *testing.T) {
 }
 
 func TestServerStatus_DelegatesToDownloaderStats(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	fd := newFakeDownloader()
 	fd.serverStatus = []downloader.ServerSnapshot{{Name: "sentinel-server"}}
@@ -102,6 +106,7 @@ func TestServerStatus_DelegatesToDownloaderStats(t *testing.T) {
 // direct struct construction rather than the public constructor, matching
 // the pattern used by TestBuildDownloaderOptions_Defaults.
 func TestHandleLowDisk_NilDownloader(t *testing.T) {
+	t.Parallel()
 	app := &Application{log: slog.New(slog.DiscardHandler)}
 
 	app.handleLowDisk("/tmp/somewhere", 1024)
@@ -110,6 +115,7 @@ func TestHandleLowDisk_NilDownloader(t *testing.T) {
 // TestHandleLowDisk_PausesDownloader pins the non-nil branch: a real
 // downloader must be paused when free disk space drops below threshold.
 func TestHandleLowDisk_PausesDownloader(t *testing.T) {
+	t.Parallel()
 	fd := newFakeDownloader()
 	app := &Application{log: slog.New(slog.DiscardHandler), downloader: fd}
 

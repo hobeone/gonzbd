@@ -14,6 +14,7 @@ import (
 // built without history. Returning nil here would report a deletion that
 // never happened.
 func TestRemoveHistoryJob_NoRepositoryWired(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir(), config.ServerConfig{
 		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
 	})
@@ -29,6 +30,7 @@ func TestRemoveHistoryJob_NoRepositoryWired(t *testing.T) {
 // TestRemoveHistoryJob_UnknownEntry pins that a missing entry is an error
 // rather than a silent no-op, so a client deleting a stale id learns of it.
 func TestRemoveHistoryJob_UnknownEntry(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newCleanupTestApp(t)
 	if err := application.RemoveHistoryJob(t.Context(), "missing000000001", false); err == nil {
 		t.Fatal("removal of an unknown entry reported success")
@@ -38,6 +40,7 @@ func TestRemoveHistoryJob_UnknownEntry(t *testing.T) {
 // TestRemoveHistoryJob_DeletesFilesWhenAsked pins the deleteFiles branch: the
 // job's output directory goes when requested, and survives when not.
 func TestRemoveHistoryJob_DeletesFilesWhenAsked(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name        string
 		deleteFiles bool
@@ -97,6 +100,7 @@ func TestRemoveHistoryJob_DeletesFilesWhenAsked(t *testing.T) {
 // entry.Path is written by us but a database on disk is not a trust boundary
 // after the fact, and deleteFiles is reachable from the API.
 func TestRemoveHistoryJob_RefusesPathOutsideManagedDirs(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newCleanupTestApp(t)
 
 	outside := filepath.Join(t.TempDir(), "not-ours")
@@ -126,6 +130,7 @@ func TestRemoveHistoryJob_RefusesPathOutsideManagedDirs(t *testing.T) {
 // deletion. The entry is the thing the operator asked to remove; a stranded
 // file must not keep it alive.
 func TestRemoveHistoryJob_UndeletableBackupStillRemovesEntry(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newCleanupTestApp(t)
 
 	// A non-empty directory where the backup file belongs: os.Remove fails

@@ -77,6 +77,7 @@ func newRetryTestApp(t *testing.T) (*app.Application, *history.Repository, strin
 // a failed entry is rebuilt by re-parsing the NZB recorded on it, with no
 // serialized job payload involved.
 func TestRetryHistoryJob_RebuildsFromNZBBackup(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
 	writeGzNZB(t, adminDir, "retryme.nzb.gz", retryNZB(3))
 
@@ -115,6 +116,7 @@ func TestRetryHistoryJob_RebuildsFromNZBBackup(t *testing.T) {
 // would silently drop to its category defaults and, for an encrypted
 // archive, fail to unpack.
 func TestRetryHistoryJob_PreservesJobOptions(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
 	writeGzNZB(t, adminDir, "opts.nzb.gz", retryNZB(2))
 
@@ -155,6 +157,7 @@ func TestRetryHistoryJob_PreservesJobOptions(t *testing.T) {
 // script and password columns have existed since the initial migration and
 // were never populated.
 func TestBuildHistoryEntry_RecordsJobOptions(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
 	writeGzNZB(t, adminDir, "roundtrip.nzb.gz", retryNZB(1))
 	_ = application
@@ -187,6 +190,7 @@ func TestBuildHistoryEntry_RecordsJobOptions(t *testing.T) {
 // for status = Failed. A completed job has nothing to retry; permitting it is
 // what forced retry state to be kept for every download.
 func TestRetryHistoryJob_RefusesCompletedEntry(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
 	writeGzNZB(t, adminDir, "donejob.nzb.gz", retryNZB(2))
 
@@ -217,6 +221,7 @@ func TestRetryHistoryJob_RefusesCompletedEntry(t *testing.T) {
 // is reachable — and it must not look like a successful retry that quietly
 // enqueued nothing.
 func TestRetryHistoryJob_ReportsMissingBackup(t *testing.T) {
+	t.Parallel()
 	application, repo, _ := newRetryTestApp(t)
 
 	if err := repo.Add(t.Context(), history.Entry{

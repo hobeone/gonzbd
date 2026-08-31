@@ -239,6 +239,7 @@ FROM durable_runs ORDER BY job_id, file_idx, offset`)
 // TestResumeAtStartup_SeedsDurableArticles is the base claim: what a previous
 // run fsynced comes back Done, and what it did not comes back Outstanding.
 func TestResumeAtStartup_SeedsDurableArticles(t *testing.T) {
+	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
 	f.recordRuns(0, 2)
@@ -256,6 +257,7 @@ func TestResumeAtStartup_SeedsDurableArticles(t *testing.T) {
 // fails this one, because the request for a durable article is already on the
 // wire by the time its bit is set.
 func TestResumeAtStartup_DurableArticlesAreNeverRefetched(t *testing.T) {
+	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
 	f.recordRuns(0, 2)
@@ -293,6 +295,7 @@ func TestResumeAtStartup_DurableArticlesAreNeverRefetched(t *testing.T) {
 // direction. §3.4 prices it: the alternative is reading every partial file at
 // every startup.
 func TestResumeAtStartup_ShortFileIsNotAdopted(t *testing.T) {
+	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0)
 	f.recordRuns(0, 1, 2)
@@ -313,6 +316,7 @@ func TestResumeAtStartup_ShortFileIsNotAdopted(t *testing.T) {
 // bit. If the missing file were ignored and the recorded runs adopted anyway,
 // two of them would come back Done.
 func TestResumeAtStartup_MissingFileLeavesEverythingOutstanding(t *testing.T) {
+	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
 	f.recordRuns(0, 2)
@@ -343,6 +347,7 @@ func TestResumeAtStartup_MissingFileLeavesEverythingOutstanding(t *testing.T) {
 // fault routing" change would silently start binning recoverable jobs on a
 // boot-order EROFS.
 func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		// fault makes the target file's stat fail, and reports whether the
@@ -435,6 +440,7 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 // The other half of the asymmetry, the discard, is pinned by
 // TestResumeAtStartup_ShortFileIsNotAdopted.
 func TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts(t *testing.T) {
+	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
 	f.recordRuns(0, 2)
@@ -527,6 +533,7 @@ func (f *resumeFixture) recordDoneAndComplete(done ...int) {
 // pre-allocating the file underneath the gate — a file of zeros at full length
 // would pass the size comparison the truncated one fails.
 func TestResumeAtStartup_ShortenedPartialIsRefetched(t *testing.T) {
+	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 1, 2)
 	f.recordRuns(0, 1, 2)

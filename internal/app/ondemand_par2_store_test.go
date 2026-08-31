@@ -40,6 +40,7 @@ func storeBackedQueue(t *testing.T) *queue.Queue {
 // and they had already been downloaded with everything else — the opposite of
 // what the feature promises.
 func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	cfg, err := config.Default()
 	if err != nil {
@@ -111,6 +112,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
 // The other half: when the data is damaged the volumes must be un-deferred so
 // they are fetched for repair. Also store-backed, for the same reason.
 func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	cfg, err := config.Default()
 	if err != nil {
@@ -172,6 +174,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
 // comparison cannot be made, and finalizing would ship a download that may
 // need a repair nothing checked for.
 func TestMaybeReleaseRecoveryVolumes_UnreadableManifest(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	cfg, err := config.Default()
 	if err != nil {

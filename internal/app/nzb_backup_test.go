@@ -55,6 +55,7 @@ func addBackupTestJob(t *testing.T, filename, articleID string) (*queue.Job, []b
 // the backup it actually wrote. Retry resolves admin/nzb/<basename>, so an
 // unrecorded name makes the job unretryable even though the file is present.
 func TestAddJob_RecordsNZBBackupName(t *testing.T) {
+	t.Parallel()
 	application, adminDir := newBackupTestApp(t)
 
 	job, raw := addBackupTestJob(t, "Show.S01E01.nzb", "a@t")
@@ -79,6 +80,7 @@ func TestAddJob_RecordsNZBBackupName(t *testing.T) {
 // original file intact, since admin/nzb/ is browsable by the name the job was
 // submitted under and overwriting would lose the first NZB.
 func TestAddJob_ForcedDuplicateKeepsBothBackups(t *testing.T) {
+	t.Parallel()
 	application, adminDir := newBackupTestApp(t)
 
 	first, firstRaw := addBackupTestJob(t, "Show.S01E01.nzb", "a@t")

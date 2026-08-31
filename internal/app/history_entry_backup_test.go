@@ -12,6 +12,7 @@ import (
 // entry back to the NZB, so dropping it here strands the file: present on
 // disk, unreachable from the entry that needs it.
 func TestBuildHistoryEntry_CarriesNZBBackup(t *testing.T) {
+	t.Parallel()
 	entry := buildHistoryEntry(&postproc.Job{
 		Queue: &queue.Job{
 			ID:        "carrybackup00001",

@@ -27,6 +27,7 @@ import (
 // The fixture reproduces the ordering rather than calling Shutdown, because
 // Shutdown tears down collaborators this assertion needs alive.
 func TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// Exactly the state Shutdown is in when its step-2 barrier runs: stopping,
@@ -54,6 +55,7 @@ func TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier(t *testing.T) {
 // TestStall_StillParksWhenTheProcessIsNotStopping is the half that keeps the
 // guard above honest. Without it, "never park" satisfies the test.
 func TestStall_StillParksWhenTheProcessIsNotStopping(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	if application.stopping.Load() {
@@ -82,6 +84,7 @@ func TestStall_StillParksWhenTheProcessIsNotStopping(t *testing.T) {
 // everything those jobs downloaded since their last barrier is then re-fetched
 // on the next start.
 func TestPerJobShare(t *testing.T) {
+	t.Parallel()
 	const total = 10 * time.Second
 	for _, tc := range []struct {
 		jobs int
@@ -113,6 +116,7 @@ func TestPerJobShare(t *testing.T) {
 // returns, because "true at the end" holds under a store placed anywhere in
 // the function — including after the barrier it is supposed to cover.
 func TestShutdown_MarksTheProcessStoppingBeforeItsBarrier(t *testing.T) {
+	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 2)
 	application.started.Store(true)
 	// The fixture builds an application without running Start, so its
@@ -153,6 +157,7 @@ func TestShutdown_MarksTheProcessStoppingBeforeItsBarrier(t *testing.T) {
 // leaves a worker parked in an fsync blocking the single loop that also owns
 // stall re-evaluation and the queue save.
 func TestCheckpointAllWithBudget_ImposesThePolicysDeadline(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -215,6 +220,7 @@ func TestCheckpointAllWithBudget_ImposesThePolicysDeadline(t *testing.T) {
 // Application.Fail → maybeFinalize → enqueuePostProc → forgetJobBarrierState,
 // all beneath the checkpointJob call that holds the mutex.
 func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	held := application.jobBarrierLock("job-a")
@@ -269,6 +275,7 @@ func TestForgetJobBarrierState_DoesNotDropAMutexAHolderIsStandingOn(t *testing.T
 // is either settled or still in the accumulator, and never both, and never
 // neither.
 func TestSettleJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	// High enough that noteJobBytes never crosses it and blocks on the kick
 	// channel; the accumulator arithmetic is what is under test.

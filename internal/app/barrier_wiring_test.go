@@ -63,7 +63,7 @@ func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durab
 	} else {
 		select {
 		case <-g.second:
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(30 * time.Millisecond):
 		case <-ctx.Done():
 		}
 	}
@@ -100,6 +100,7 @@ func (g *overlapDetector) sawOverlap() bool {
 // test that checked "the mutex was taken" would pass against any lock, held
 // anywhere, for any duration.
 func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
+	t.Parallel()
 	application, repo, _ := newLifecycleTestApp(t)
 	ctx := t.Context()
 

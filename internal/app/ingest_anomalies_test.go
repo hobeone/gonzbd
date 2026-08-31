@@ -14,6 +14,7 @@ import (
 // the user's first evidence would be a file that never completes. The warning
 // has to name what was dropped, not merely that something was.
 func TestLogParseAnomalies_ReportsWhatWasDiscarded(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -40,6 +41,7 @@ func TestLogParseAnomalies_ReportsWhatWasDiscarded(t *testing.T) {
 
 // A clean NZB must not produce a warning, or the signal is worthless.
 func TestLogParseAnomalies_SilentOnACleanNZB(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -53,6 +55,7 @@ func TestLogParseAnomalies_SilentOnACleanNZB(t *testing.T) {
 // Two call sites pass a logger that can be nil, and one passes a parsed
 // document that a failed parse leaves nil. Neither may panic during ingest.
 func TestLogParseAnomalies_ToleratesNilInputs(t *testing.T) {
+	t.Parallel()
 	logParseAnomalies(nil, "x.nzb", &nzb.NZB{BadArticles: 1})
 
 	var buf bytes.Buffer

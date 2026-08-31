@@ -28,6 +28,7 @@ func testFault(op string) *storagefault.Fault {
 // record those files exist at all — the assembler reports a file complete
 // exactly once — and dropping it re-opens concern 8 through a second fault.
 func TestNoteStall_ReplacesTheReasonAndKeepsTheRecoverySet(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.noteStall("job-1", testFault("write"))
@@ -54,6 +55,7 @@ func TestNoteStall_ReplacesTheReasonAndKeepsTheRecoverySet(t *testing.T) {
 // dropped only when its completion has landed, and the job stops being stalled
 // exactly when nothing is left.
 func TestStallRecord_TracksRecoveryPerFileAndForgetsTheJobWhenEmpty(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.noteStall("job-1", testFault("write"))
@@ -91,6 +93,7 @@ func TestStallRecord_TracksRecoveryPerFileAndForgetsTheJobWhenEmpty(t *testing.T
 // a permanently faulted job leaves the queue and must not be re-evaluated
 // however much recovery work it still had.
 func TestClearStall_ForgetsAJobWithOutstandingRecoveryWork(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("job-1", testFault("write"))
 	application.notePendingFinalize("job-1", 0)
@@ -107,6 +110,7 @@ func TestClearStall_ForgetsAJobWithOutstandingRecoveryWork(t *testing.T) {
 // API depends on: an empty reason means "not stalled", so a job that never
 // stalled must not produce one.
 func TestStallReason_ReportsNothingForAJobThatIsNotParked(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	if got := application.StallReason("nobody"); got.Reason != "" || !got.Since.IsZero() {
 		t.Errorf("StallReason = %+v for an unknown job, want the zero value", got)
@@ -119,6 +123,7 @@ func TestStallReason_ReportsNothingForAJobThatIsNotParked(t *testing.T) {
 // the rest of a departed job's state is what keeps the map from growing for the
 // life of the process.
 func TestNoteBarrierRun_StampsOnlyASuccessfulBarrier(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	before := time.Now()
@@ -140,6 +145,7 @@ func TestNoteBarrierRun_StampsOnlyASuccessfulBarrier(t *testing.T) {
 // process can trim it, and resuming the job anyway would let the completion
 // through with pre-allocation's trailing zeros intact.
 func TestReevaluateStall_LeavesAJobWhoseFileCanNoLongerBeFinalized(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -166,6 +172,7 @@ func TestReevaluateStall_LeavesAJobWhoseFileCanNoLongerBeFinalized(t *testing.T)
 // the record would re-evaluate a job that no longer exists on every interval,
 // forever.
 func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("gone", testFault("write"))
 
@@ -180,6 +187,7 @@ func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 // loop that stopped at the first job would leave every other stalled download
 // parked behind one wedged mount.
 func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("gone-a", testFault("write"))
 	application.noteStall("gone-b", testFault("write"))
@@ -197,6 +205,7 @@ func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 // cost a barrier timeout per file, so a sweep that ignored cancellation would
 // hold the checkpoint loop past the shutdown deadline.
 func TestReevaluateStalls_StopsOnACancelledContext(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("gone-a", testFault("write"))
 	application.noteStall("gone-b", testFault("write"))
@@ -216,6 +225,7 @@ func TestReevaluateStalls_StopsOnACancelledContext(t *testing.T) {
 // a re-evaluation does barrier I/O against a mount that may be wedged, so the
 // call must return immediately however many times it is made.
 func TestReevaluateStalls_KickIsDeliveredOnceAndNeverBlocks(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	done := make(chan struct{})
@@ -243,6 +253,7 @@ func TestReevaluateStalls_KickIsDeliveredOnceAndNeverBlocks(t *testing.T) {
 // here first, and a file dropped because no record existed yet is a file
 // nothing will ever finalize.
 func TestNotePendingFinalize_RecordsAFileForAJobNotYetOnTheStalledList(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.notePendingFinalize("job-1", 2)
@@ -261,6 +272,7 @@ func TestNotePendingFinalize_RecordsAFileForAJobNotYetOnTheStalledList(t *testin
 // place tells the user to fix a mount they have already fixed, while the job
 // waits for something that will never happen.
 func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteStall(job.ID, testFault("sync"))
@@ -288,6 +300,7 @@ func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
 // whether the handle is still open, and treating that as success ships an
 // untrimmed file.
 func TestRetryFinalize_ReportsRatherThanAssumesWhenItCannotAsk(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteStall(job.ID, testFault("sync"))
@@ -316,6 +329,7 @@ func TestRetryFinalize_ReportsRatherThanAssumesWhenItCannotAsk(t *testing.T) {
 // database, where nothing acks and nothing finalizes. The retry must not
 // report success there either, or the stall clears and the file ships.
 func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.barrier = nil
 	application.noteStall(job.ID, testFault("sync"))
@@ -336,6 +350,7 @@ func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
 // not. Queue.Resume only makes a job eligible for promotion; the active set may
 // have no room. Dropping the entry then loses the completion for good.
 func TestReevaluateStall_KeepsAFileWhoseCompletionTheQueueRefused(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.noteStall(job.ID, testFault("sync"))
 	if err := application.queue.Pause(job.ID); err != nil {
@@ -359,6 +374,7 @@ func TestReevaluateStall_KeepsAFileWhoseCompletionTheQueueRefused(t *testing.T) 
 // as file state, and one it refused must come back as an error rather than as
 // a silent nil (#261) — the retry has no other way to tell them apart.
 func TestCompleteFinalizedFile_MarksTheFileAndReportsARefusal(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
 	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0}); err != nil {
@@ -386,6 +402,7 @@ func TestCompleteFinalizedFile_MarksTheFileAndReportsARefusal(t *testing.T) {
 // This drives the real loop and asserts the job actually leaves Paused, which
 // only happens if the ticker arm reaches reevaluateStalls.
 func TestRunCheckpoint_ReevaluatesStallsOnItsTicker(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(10*time.Millisecond))
 	job := addStallTestJob(t, application, "ticker-job")
 	application.Stall(job.ID, testFault("write"))
@@ -406,6 +423,7 @@ func TestRunCheckpoint_ReevaluatesStallsOnItsTicker(t *testing.T) {
 // user action" — through the same real loop, so that ReevaluateStalls is shown
 // to reach reevaluateStalls rather than only to increment something.
 func TestRunCheckpoint_ReevaluatesStallsOnAKick(t *testing.T) {
+	t.Parallel()
 	// An interval far longer than the test, so only the kick can explain a
 	// resumed job.
 	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(time.Hour))
@@ -464,6 +482,7 @@ func waitForResumed(t *testing.T, application *Application, jobID, why string) {
 // instruction erased. This path keeps the text the caller wrote, and creates
 // the record when the job is not yet on the stalled list.
 func TestNoteStallReason_RecordsAReasonThatIsNotAStorageFault(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.noteStallReason("job-1", "Stalled: restart gonzbd to recover this job")
@@ -496,6 +515,7 @@ func TestNoteStallReason_RecordsAReasonThatIsNotAStorageFault(t *testing.T) {
 // articles stay Outstanding on a file the assembler has already tombstoned, so
 // no re-fetch can ever resolve them.
 func TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	ctx := t.Context()
 	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
@@ -527,6 +547,7 @@ func TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
 // history database, where there is no record to replay. The re-evaluation must
 // still complete rather than panicking on a nil store.
 func TestSeedFromCommittedRuns_IsInertWithoutARunStore(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.runs = nil
 
@@ -542,6 +563,7 @@ func TestSeedFromCommittedRuns_IsInertWithoutARunStore(t *testing.T) {
 // The articles stay Outstanding and are re-fetched, which is the safe
 // direction, and it must not abort the rest of the re-evaluation.
 func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
 	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
@@ -570,6 +592,7 @@ func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
 // job simply re-fetches, and the re-evaluation carries on to deliver the
 // completions it was in the middle of.
 func TestSeedFromCommittedRuns_ReportsAFailedLoad(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	if _, err := application.runs.Commit(t.Context(), job.ID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
@@ -593,6 +616,7 @@ func TestSeedFromCommittedRuns_ReportsAFailedLoad(t *testing.T) {
 // that only updated an existing record would silently drop the reason and
 // leave the job off the stalled list, unreachable by any re-evaluation.
 func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.stallMu.Lock()
@@ -630,6 +654,7 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 // phase 3 switched to the replacing entry point, ./internal/app and
 // ./internal/api were both still green before this test existed.
 func TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	ctx := t.Context()
 

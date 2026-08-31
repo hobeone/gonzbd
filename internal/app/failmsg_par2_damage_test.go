@@ -28,6 +28,7 @@ import (
 // Removing the index from the capacity figure breaks that tie, so the
 // numerator has to say what it always meant.
 func TestFailMsgForJob_FailedPar2DoesNotCondemnIntactContent(t *testing.T) {
+	t.Parallel()
 	t.Run("index-only set, the index itself fails", func(t *testing.T) {
 		job := buildFailMsgJob(t, []failMsgFile{
 			{subject: "movie.part01.rar", bytes: 1000},

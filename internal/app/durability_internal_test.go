@@ -97,6 +97,7 @@ func writeFixtureArticle(t *testing.T, application *Application, jobID string, f
 // marking one failed would burn its retry budget and degrade the job's
 // reported health from something the user fixes in seconds.
 func TestStall_PausesTheJobAndSurfacesTheReason(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.Stall(job.ID, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
@@ -135,6 +136,7 @@ func TestStall_PausesTheJobAndSurfacesTheReason(t *testing.T) {
 // but it says nothing about any article's availability, so the health figure
 // must keep describing the download rather than the disk.
 func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.Fail(job.ID, storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
@@ -168,6 +170,7 @@ func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
 // steady trickle below it must produce nothing: a kick per article would run a
 // barrier per article, which is a few dozen fsyncs each.
 func TestNoteJobBytes_KicksOnlyOnceTheBoundIsCrossed(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.checkpointBytes = 100
 
@@ -210,6 +213,7 @@ func TestNoteJobBytes_KicksOnlyOnceTheBoundIsCrossed(t *testing.T) {
 // The retirement is on the SUCCESS path now, not before the run, so this models
 // a barrier that read its window and then earned it.
 func TestSettleJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.checkpointBytes = 100
 
@@ -240,6 +244,7 @@ func TestSettleJobBytes_MakesTheBoundMeasureTheWindowBetweenBarriers(t *testing.
 // with no history database has no barrier, so accumulating bytes and kicking a
 // loop that will do nothing with them is pure growth.
 func TestNoteJobBytes_IsInertWithoutABarrier(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.barrier = nil
 	application.checkpointBytes = 1
@@ -263,6 +268,7 @@ func TestNoteJobBytes_IsInertWithoutABarrier(t *testing.T) {
 // serialise nothing — and two jobs must get different ones, or one job's slow
 // mount parks every other job's checkpoint.
 func TestJobBarrierLock_IsPerJobAndStable(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	a1 := application.jobBarrierLock("job-a")
@@ -302,6 +308,7 @@ func TestJobBarrierLock_IsPerJobAndStable(t *testing.T) {
 // are keyed by job ID, so without this they hold one entry per job ever
 // downloaded for the life of the process.
 func TestForgetJobBarrierState_DropsBothMaps(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.checkpointBytes = 1 << 30
 
@@ -347,6 +354,7 @@ func TestForgetJobBarrierState_DropsBothMaps(t *testing.T) {
 // anyway, so reaching the barrier only to fail there would turn an ordinary
 // event into a logged error.
 func TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	if got := application.syncTargetFor("no-such-job"); got != nil {
@@ -368,6 +376,7 @@ func TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe(t *testing.T) {
 // assembler's fact and R8 bounds barrier cost by exactly that set; deriving it
 // from job status would be a second copy of one fact, free to drift.
 func TestCheckpointAll_CoversEveryJobWithAnOpenFile(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 2, 1)
 	ctx := t.Context()
 
@@ -403,6 +412,7 @@ func TestCheckpointAll_CoversEveryJobWithAnOpenFile(t *testing.T) {
 // barrier means no run is even attempted, rather than a nil dereference on the
 // checkpoint goroutine.
 func TestCheckpointJob_IsInertWithoutABarrier(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.barrier = nil
@@ -418,6 +428,7 @@ func TestCheckpointJob_IsInertWithoutABarrier(t *testing.T) {
 // is written a crash re-fetches them anyway, so saving before the barrier
 // would persist a snapshot that is stale by construction.
 func TestRunCheckpoint_SavesTheQueueAfterEachCheckpoint(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -450,6 +461,7 @@ func TestRunCheckpoint_SavesTheQueueAfterEachCheckpoint(t *testing.T) {
 // every tick and every kick, and rewriting an unchanged queue on each would be
 // a file write per checkpoint for a job that is idle.
 func TestSaveQueueIfDirty_SkipsACleanQueue(t *testing.T) {
+	t.Parallel()
 	application, _, adminDir := newLifecycleTestApp(t)
 	statePath := filepath.Join(adminDir, "queue")
 
@@ -470,6 +482,7 @@ func TestSaveQueueIfDirty_SkipsACleanQueue(t *testing.T) {
 // pass costs nothing in the degraded mode, rather than dereferencing nil on
 // the way out of every process that has no history database.
 func TestShutdownCheckpoint_IsInertWithoutABarrier(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.barrier = nil
 	application.shutdownCheckpoint()
@@ -482,6 +495,7 @@ func TestShutdownCheckpoint_IsInertWithoutABarrier(t *testing.T) {
 // unit level, complementing the end-to-end pin in
 // TestBarrierRunsOnCleanShutdown.
 func TestShutdownCheckpoint_CheckpointsAndSaves(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -507,6 +521,7 @@ func TestShutdownCheckpoint_CheckpointsAndSaves(t *testing.T) {
 // guard each drained completion would classify that error, stall its job and
 // pause it.
 func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	if err := application.assembler.Stop(); err != nil {
@@ -535,6 +550,7 @@ func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T)
 // the assembler handoff: the barrier gets the file while it is still open, and
 // the handle comes back afterwards.
 func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
 	writeFixtureArticle(t, application, job.ID, 0, 0)
@@ -597,6 +613,7 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 // and the queue owns failed_articles. A cleanup that reached only one of them
 // would leave half a departed job's rows behind.
 func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
 
@@ -627,6 +644,7 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 
 // TestDeleteJobDurability_IsInertWithoutStores pins the degraded mode.
 func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
+	t.Parallel()
 	application := &Application{log: slog.New(slog.DiscardHandler)}
 	application.deleteJobDurability(context.Background(), "job-a")
 }
@@ -640,6 +658,7 @@ func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 // recorded run to adopt for anything downloaded since the last barrier. See
 // checkpointSettings for why that is not the same as re-fetching everything.
 func TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		interval       time.Duration
@@ -728,6 +747,7 @@ func (r *recordingRunStore) DeleteJob(_ context.Context, jobID string) error {
 // stall reaches the queue the job has been removed. Both queue writes fail and
 // neither may take the process down or abort the other.
 func TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.Stall("no-such-job", storagefault.Classify("sync", "/x", syscall.ENOSPC))
@@ -739,6 +759,7 @@ func TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft(t *testing.T) {
 // so syncTargetFor answers nil rather than handing the barrier a target for a
 // job it cannot resolve.
 func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
 	// Remove the manifest file the queue would hydrate from, then evict the
@@ -777,6 +798,7 @@ func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
 // a single early return would leave one owner's rows for a departed job while
 // the other's were collected.
 func TestDeleteJobDurability_ReportsAFailedDelete(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	boom := errors.New("database is locked")
 
@@ -817,6 +839,7 @@ func (r *recordingEmitter) Broadcast(e Event) { r.events = append(r.events, e) }
 // and the UI keeps showing the pre-stall state until something else happens to
 // refresh it.
 func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	rec := &recordingEmitter{}
 	application.emitter = rec
@@ -857,6 +880,7 @@ func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
 // only read the field would pass against a Start-time resolution the moment
 // the test happened to call Start first.
 func TestNew_ResolvesBothCheckpointBoundsBeforeAnythingRuns(t *testing.T) {
+	t.Parallel()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
 		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
@@ -1011,6 +1035,7 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
 // exactly the condition barrierOpTimeout exists for, and it is reproducible
 // without a dead mount.
 func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T) {
+	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 
 	err := application.finalizeCompletedFile(t.Context(), job.ID, 0)
@@ -1062,6 +1087,7 @@ func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T
 // condition of storage, and attributing it to an article would burn its retry
 // budget and degrade the job's reported health (A1, R21).
 func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing.T) {
+	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 
 	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
@@ -1092,6 +1118,7 @@ func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing
 // without telling them which volume or which mount to look at — and both
 // polarities matter, because the "" case is what a caller must not branch on.
 func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -1161,6 +1188,7 @@ func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
 // that can be distinguished by any observer is caught by at least one, and the
 // one mutation two of them miss is caught by the third.
 func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testing.T) {
+	t.Parallel()
 	const path = "/mnt/ro/movie.rar"
 
 	t.Run("permanent", func(t *testing.T) {
@@ -1360,6 +1388,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 // guess: the wedged worker makes the finalize sit on a 5s bound, and the drop
 // happens a second in.
 func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
+	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 	application.assembler.SetBarrierOpTimeout(100 * time.Millisecond)
 
@@ -1422,6 +1451,7 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 // checkpointAll's OpenJobIDs and this call, and a manifest that cannot be
 // read.
 func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 	application.noteJobBytes(job.ID, 4096)
@@ -1475,6 +1505,7 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 // file. Without them the bound is the end offset of the re-fetched articles
 // alone and the rest of the partial is destroyed silently.
 func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		status   constants.Status

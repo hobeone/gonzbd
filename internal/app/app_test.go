@@ -30,6 +30,7 @@ import (
 )
 
 func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -123,6 +124,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 }
 
 func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -218,6 +220,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 }
 
 func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -372,6 +375,7 @@ func (m *mockEmitter) Events() []app.Event {
 }
 
 func TestRetryHistoryJob(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -478,6 +482,7 @@ func TestRetryHistoryJob(t *testing.T) {
 }
 
 func TestQueuePersistenceAcrossRestart(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -559,6 +564,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 }
 
 func TestFullDownloadLifecycle(t *testing.T) {
+	t.Parallel()
 	const (
 		fileSize = 100 * 1024
 		partSize = 50 * 1024
@@ -818,6 +824,7 @@ func dotStuff(body []byte) []byte {
 // TestStart_DoubleStartReturnsError verifies that calling Start twice returns
 // ErrAlreadyStarted and the first start remains functional.
 func TestStart_DoubleStartReturnsError(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -869,6 +876,7 @@ func TestStart_DoubleStartReturnsError(t *testing.T) {
 // Before the fix: started was set to true before assembler.Start; a failure
 // left the application permanently stuck in a "started but not running" state.
 func TestStart_FailedStartResetsStartedFlag(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -928,6 +936,7 @@ func TestStart_FailedStartResetsStartedFlag(t *testing.T) {
 // TestReloadDownloader_ServerChanges verifies that ReloadDownloader correctly
 // accepts new server configurations without error.
 func TestReloadDownloader_ServerChanges(t *testing.T) {
+	t.Parallel()
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
@@ -986,6 +995,7 @@ func TestReloadDownloader_ServerChanges(t *testing.T) {
 
 // TestReloadPostProcOptions verifies that ReloadPostProcOptions successfully
 func TestReloadPostProcOptions(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	dlDir := filepath.Join(tmpDir, "incomplete")
 	compDir := filepath.Join(tmpDir, "complete")
@@ -1048,6 +1058,7 @@ func TestReloadPostProcOptions(t *testing.T) {
 }
 
 func TestApplication_SettersAndOptions(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1140,6 +1151,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 }
 
 func TestApplication_EdgeCases(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1338,6 +1350,7 @@ func TestApplication_EdgeCases(t *testing.T) {
 }
 
 func TestApplication_PersistAndCommitError(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1394,6 +1407,7 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 }
 
 func TestApplication_ShutdownWithOptions(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1442,6 +1456,7 @@ func TestApplication_ShutdownWithOptions(t *testing.T) {
 // instead of requiring one DirectUnpackStatus(jobID) call — and therefore one
 // app.mu acquisition — per job.
 func TestDirectUnpackStatuses_ReturnsAllActiveJobs(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1470,6 +1485,7 @@ func TestDirectUnpackStatuses_ReturnsAllActiveJobs(t *testing.T) {
 }
 
 func TestApp_EventLoopStarvation(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1554,6 +1570,7 @@ func (n *contextCheckingNotifier) Send(ctx context.Context, _ notifier.Event) er
 }
 
 func TestApp_ShutdownContextInheritance(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1632,6 +1649,7 @@ func (n *deadlineCheckingNotifier) Send(ctx context.Context, _ notifier.Event) e
 }
 
 func TestApp_FireCompletionNotificationTimeout(t *testing.T) {
+	t.Parallel()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -1693,6 +1711,7 @@ func (w *wedgedDownloader) Stop() error {
 }
 
 func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
+	t.Parallel()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir)
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))

@@ -41,6 +41,7 @@ func recordRuns(t *testing.T, application *Application, jobID string, arts ...du
 // index no article contributed — and the single run therefore cannot cover the
 // file's whole range. main enforced the same thing as prefixWalk.consumedAll.
 func TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 3)
 
 	// Articles 0 and 2 both claim offset 0; article 1 abuts article 0. The
@@ -110,6 +111,7 @@ func recordRunsReportingCollisions(t *testing.T, application *Application, jobID
 // took their NoCRC branch: full par2 verify, and every recovery volume fetched
 // even for a bit-perfect download.
 func TestRecordAssembledCRC_ThreadsAWholeFileCRCToTheQueue(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	a0 := make([]byte, 100)
@@ -165,6 +167,7 @@ func TestRecordAssembledCRC_ThreadsAWholeFileCRCToTheQueue(t *testing.T) {
 // This case is ALSO satisfied by the wrong predicate (see the overlap test
 // below), which is exactly why pinning it alone is not enough.
 func TestRecordAssembledCRC_RecordsNothingForAHoledFile(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 3)
 
 	// Article 1 permanently failed: nothing covers [100,200).
@@ -222,6 +225,7 @@ func TestRecordAssembledCRC_RecordsNothingForAHoledFile(t *testing.T) {
 // Without this test the holed-file case above passes under both predicates and
 // nothing distinguishes them.
 func TestRecordAssembledCRC_RecordsNothingForAnOverlappedFile(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 3)
 
 	recordRuns(t, application, job.ID,
@@ -274,6 +278,7 @@ func TestRecordAssembledCRC_RecordsNothingForAnOverlappedFile(t *testing.T) {
 // crc32 as the file's would describe a suffix while claiming to describe the
 // whole.
 func TestRecordAssembledCRC_RecordsNothingWhenTheOnlyRunDoesNotStartAtZero(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// Article 0 permanently failed, so the file's only run starts at 100.
@@ -302,6 +307,7 @@ func TestRecordAssembledCRC_RecordsNothingWhenTheOnlyRunDoesNotStartAtZero(t *te
 // the behaviour that shipped before the CRC existed — while the cost of
 // failing the finalize is a file that never completes.
 func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
+	t.Parallel()
 	t.Run("no run store configured", func(t *testing.T) {
 		application, job := newDurabilityTestApp(t, 1, 2)
 		saved := application.runs

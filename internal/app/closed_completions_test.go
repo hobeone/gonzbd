@@ -36,6 +36,7 @@ func newClosedCompletionsApp(t *testing.T) *Application {
 }
 
 func TestDrainCompletionsTerminatesWhenChannelClosed(t *testing.T) {
+	t.Parallel()
 	application := newClosedCompletionsApp(t)
 
 	done := make(chan struct{})
@@ -53,6 +54,7 @@ func TestDrainCompletionsTerminatesWhenChannelClosed(t *testing.T) {
 }
 
 func TestWatchCompletionsTerminatesWhenChannelClosed(t *testing.T) {
+	t.Parallel()
 	application := newClosedCompletionsApp(t)
 
 	done := make(chan struct{})
