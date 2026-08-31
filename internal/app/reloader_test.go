@@ -221,15 +221,14 @@ func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T)
 
 func TestApplication_RunMetricsPush(t *testing.T) {
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
-	emitter := &eventCounter{}
-	app, err := New(cfg, nil, WithEventEmitter(emitter))
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+
+	emitter := &eventCounter{onBroadcast: cancel}
+	app, err := New(cfg, nil, WithEventEmitter(emitter), WithMetricsPushInterval(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-
-	// Widen timeout to 3 seconds to avoid race flake with the 1s ticker.
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
 
 	app.runMetricsPush(ctx)
 
@@ -239,11 +238,15 @@ func TestApplication_RunMetricsPush(t *testing.T) {
 }
 
 type eventCounter struct {
-	count int
+	count       int
+	onBroadcast func()
 }
 
 func (e *eventCounter) Broadcast(ev Event) {
 	e.count++
+	if e.onBroadcast != nil {
+		e.onBroadcast()
+	}
 }
 
 // TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage

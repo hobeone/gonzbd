@@ -221,7 +221,7 @@ func (t *jobSyncTarget) submit(ctx context.Context, op syncOp) (syncReply, error
 	t.a.mu.Unlock()
 	defer t.a.wg.Done()
 
-	opCtx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, t.a.BarrierOpTimeout())
 	defer cancel()
 
 	req := WriteRequest{JobID: "", FileIdx: fileIdxSyncOp, syncOp: &op}
@@ -266,7 +266,12 @@ func (t *jobSyncTarget) waitEnded(caller context.Context, op syncOp) error {
 	// timeout handler on the condition it is reporting is how a bound stops
 	// being a bound. Barrier.raise fills the path in; it already has it, and
 	// it is not the thing that is stuck.
-	return storagefault.Classify(op.kind.String(), "", errWorkerUnresponsive)
+	timeout := t.a.BarrierOpTimeout()
+	err := errWorkerUnresponsive
+	if timeout != barrierOpTimeout {
+		err = fmt.Errorf("the assembler worker did not answer within %v: %w", timeout, errWorkerUnresponsive)
+	}
+	return storagefault.Classify(op.kind.String(), "", err)
 }
 
 // Files returns the job's currently open files. R8 bounds barrier cost by this

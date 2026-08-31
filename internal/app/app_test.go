@@ -1706,7 +1706,7 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 	t.Cleanup(func() { close(stopCh) })
 	dl := &wedgedDownloader{stopCh: stopCh}
 
-	application, err := app.New(cfg, repo, app.WithDownloader(dl))
+	application, err := app.New(cfg, repo, app.WithDownloader(dl), app.WithShutdownStepTimeout(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("build app: %v", err)
 	}
@@ -1744,8 +1744,8 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 	select {
 	case err := <-done:
 		elapsed := time.Since(start)
-		if elapsed > 25*time.Second {
-			t.Errorf("Shutdown took %v, expected budget ~15s", elapsed)
+		if elapsed > 2*time.Second {
+			t.Errorf("Shutdown took %v, expected budget ~50ms", elapsed)
 		}
 		if err == nil {
 			t.Error("expected shutdown error due to wedged downloader, got nil")
@@ -1760,7 +1760,7 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		if _, getErr := reloaded.Get(job.ID); getErr != nil {
 			t.Errorf("job %s did not survive shutdown with a wedged component: %v", job.ID, getErr)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown hung indefinitely on wedged downloader")
 	}
 }

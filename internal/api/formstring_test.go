@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // M14: Verify formValue reads values correctly without triggering
@@ -65,10 +69,21 @@ func TestFormValue_MissingKey(t *testing.T) {
 // unreachable host. This is correct for a Usenet client where users
 // may run local NNTP servers on RFC 1918 addresses.
 
+type privateIPTestApp struct {
+	apitest.NopApp
+	calledHost string
+}
+
+func (p *privateIPTestApp) TestNNTPServer(_ context.Context, cfg config.ServerConfig) (app.NNTPTestResult, error) {
+	p.calledHost = cfg.Host
+	return app.NNTPTestResult{}, errors.New("dial tcp " + cfg.Host + ":119: connect: network is unreachable")
+}
+
 func TestConfigTestServer_PrivateIPNotRejected(t *testing.T) {
 	t.Parallel()
 	s := testServer()
-	s.setAppServices(&app.Application{})
+	mockApp := &privateIPTestApp{}
+	s.setAppServices(mockApp)
 
 	// 10.255.255.1 is a private (RFC 1918) address. The handler should
 	// accept it and return a connection-failed result (not a 400 reject).
@@ -76,14 +91,17 @@ func TestConfigTestServer_PrivateIPNotRejected(t *testing.T) {
 	if rr.Code != 200 {
 		t.Fatalf("status = %d; want 200 (handler should not reject private IPs)", rr.Code)
 	}
+	if mockApp.calledHost != "10.255.255.1" {
+		t.Errorf("calledHost = %q; want 10.255.255.1", mockApp.calledHost)
+	}
 	m := decodeJSON(t, rr)
 	result, ok := m["result"].(map[string]any)
 	if !ok {
 		t.Fatalf("result missing or not a map: %v", m["result"])
 	}
-	// Connection to a private IP should fail (timeout), not panic.
+	// Connection to a private IP should fail, not panic or reject.
 	if result["passed"] != false {
-		t.Errorf("passed = %v; want false (private IP is unreachable in CI)", result["passed"])
+		t.Errorf("passed = %v; want false (private IP is unreachable)", result["passed"])
 	}
 }
 

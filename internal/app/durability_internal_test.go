@@ -956,8 +956,11 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
 		release: make(chan struct{}),
 		inner:   application.pipeline.resolveFileInfo,
 	}
-	application.assembler = assembler.New(assembler.Options{FileInfo: wedge.resolve},
-		slog.New(slog.DiscardHandler))
+	application.assembler = assembler.New(assembler.Options{
+		FileInfo:         wedge.resolve,
+		BarrierOpTimeout: 20 * time.Millisecond,
+	}, slog.New(slog.DiscardHandler))
+	application.closeHandlesTimeout = 20 * time.Millisecond
 	application.pipeline.assembler = application.assembler
 	if err := application.assembler.Start(ctx); err != nil {
 		t.Fatalf("start the wedging assembler: %v", err)
@@ -1358,6 +1361,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 // happens a second in.
 func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 	application, job, _ := newWedgedApp(t)
+	application.assembler.SetBarrierOpTimeout(100 * time.Millisecond)
 
 	want, err := application.pipeline.resolveFileInfo(job.ID, 0)
 	if err != nil {
@@ -1373,8 +1377,8 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 		application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
 	}()
 
-	// Well inside the finalize's 5s bound, and well after it has begun.
-	time.Sleep(time.Second)
+	// Well inside the finalize's 100ms bound, and well after it has begun.
+	time.Sleep(15 * time.Millisecond)
 	application.pipeline.forgetJob(job.ID)
 	if got := application.filePathFor(job.ID, 0); got != "" {
 		t.Fatalf("filePathFor still returns %q after the cache was dropped; the fixture "+
@@ -1383,7 +1387,7 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(60 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("handleFileComplete never returned")
 	}
 

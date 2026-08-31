@@ -291,6 +291,10 @@ type Options struct {
 	// sequential write patterns. Zero disables caching (each article is
 	// written individually, which is the pre-5.0 behavior).
 	WriteCacheBytes int64
+
+	// BarrierOpTimeout bounds each barrier operation submitted to the worker.
+	// Zero selects the default (5 seconds).
+	BarrierOpTimeout time.Duration
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -369,9 +373,10 @@ type Assembler struct {
 	putBuffer func([]byte)
 
 	// mu guards the started/stopped state and the stopCh channel.
-	mu      sync.Mutex
-	started bool
-	stopped bool
+	mu               sync.Mutex
+	started          bool
+	stopped          bool
+	barrierOpTimeout time.Duration
 
 	// stopCh is closed by Stop to signal the worker to begin draining.
 	// We use a dedicated stop channel rather than closing reqs, because
@@ -433,6 +438,30 @@ func (a *Assembler) releaseBuffer(buf []byte) {
 // write-coalescing cache. Safe to call from any goroutine.
 func (a *Assembler) CacheUsageBytes() int64 {
 	return a.cacheUsedBytes.Load()
+}
+
+// BarrierOpTimeout returns the configured barrier operation timeout, or the default.
+func (a *Assembler) BarrierOpTimeout() time.Duration {
+	if a != nil {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.barrierOpTimeout > 0 {
+			return a.barrierOpTimeout
+		}
+		if a.opts.BarrierOpTimeout > 0 {
+			return a.opts.BarrierOpTimeout
+		}
+	}
+	return barrierOpTimeout
+}
+
+// SetBarrierOpTimeout updates the barrier operation timeout. Thread-safe.
+func (a *Assembler) SetBarrierOpTimeout(d time.Duration) {
+	if a != nil {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.barrierOpTimeout = d
+	}
 }
 
 // Start launches the worker goroutine. It returns an error if called more than
