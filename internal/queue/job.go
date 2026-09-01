@@ -536,9 +536,9 @@ func (j *Job) recordDownload(server string, bytes int) {
 // markStartedOnce records the first download's start time, reporting whether
 // it took. A later call is a no-op: first start wins.
 //
-// Progress tier, so the field's IsZero test is a business condition rather
-// than a check for absence — progress is permanently resident and cannot be
-// missing.
+// Progress tier, so the owner's IsZero test on the field is a business
+// condition rather than a check for absence — progress is permanently resident
+// and cannot be missing.
 //
 // The guard is not here: this delegates to JobProgress.setDownloadStartedOnce,
 // which owns both halves of the rule — that the stamp is one the store can

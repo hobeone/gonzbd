@@ -37,8 +37,11 @@ var stampFieldOwner = map[string]string{
 //   - Whole-struct copy. JobProgress.clone does `cp := *p`, which propagates
 //     both fields and mints neither. It is cited by name rather than by line
 //     because #464 inserted ~90 lines above it in the same file.
-//   - Test sources. The scan skips *_test.go: challenger_m3_test.go assigns
-//     downloadFinished directly, by design and with its own justification.
+//   - Test sources. The scan skips *_test.go, and more than one of them writes
+//     these fields directly: challenger_m3_test.go assigns downloadFinished by
+//     selector, and progress_test.go builds a keyed JobProgress literal that
+//     the composite-literal arm would otherwise match. Each has its own
+//     justification at the site.
 //   - Field identity. The AssignStmt and IncDecStmt arms match on the selector
 //     NAME alone, with no go/types resolution, so a second struct declaring a
 //     field of either name would poison the set.

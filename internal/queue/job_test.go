@@ -631,10 +631,11 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 	})
 }
 
-// TestJobMarkOnce_RefusesAZeroTimestamp pins that a timestamp the store cannot
-// distinguish from absent is refused rather than reported as a successful first
-// mark. It began as #459's zero-value pin; #464 widened the rule from one value
-// to an interval, and the subtests are the interval's boundary.
+// TestJobMarkOnce_RefusesAStampTheStoreCannotDistinguish pins that a timestamp
+// the store cannot distinguish from absent is refused rather than reported as
+// a successful first mark. It began as #459's zero-value pin, under the name
+// TestJobMarkOnce_RefusesAZeroTimestamp; #464 widened the rule from one value
+// to an interval and renamed it, because a test's name is a claim too.
 //
 // The guard used to read the FIELD only. Handed time.Time{}, the field stayed
 // zero and the method still returned true, so three things went wrong at once:
@@ -652,12 +653,18 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 //
 // Neither is reachable from production today, but for different reasons, and
 // conflating them is what an earlier draft of this comment did. markStartedOnce
-// has one production caller — internal/app/pipeline.go:412, which passes
-// time.Now(). markDownloadFinishedOnce has none at all; production reaches
-// downloadFinished through Queue.SetPostProcStarted. Both are therefore
-// hardening rather than a live defect, which is why the real assertion is the
-// third one: that refusing does not consume the first-wins slot.
-func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
+// has one production caller — internal/app/pipeline.go's MarkJobStarted call,
+// which passes time.Now(); markStartedOnce's own doc comment carries the grep
+// that locates it. markDownloadFinishedOnce has none at all; production reaches
+// downloadFinished through Queue.SetPostProcStarted, which since #464 passes
+// its own time.Now().UTC() to the same owner.
+//
+// Both are therefore hardening rather than a live defect, which is why the
+// load-bearing assertions are not the refusal itself but the two after it:
+// that refusing does not consume the first-wins slot, and that a refusal
+// arriving after a real mark does not clobber it. Deleting either leaves a
+// guard that stores the bad value before returning false looking correct.
+func TestJobMarkOnce_RefusesAStampTheStoreCannotDistinguish(t *testing.T) {
 	t.Parallel()
 
 	real := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)

@@ -189,6 +189,15 @@ reason.
 > is why it has stayed invisible. **File it as an issue; do not fix it here**, because giving
 > that method the first-wins test is a behaviour change and this half asserts it makes none.
 
+**Resolved — the table above is a frozen record, not current.** The deferred finding is what
+#457 and then #464 closed: #457 deleted the unguarded `Job.MarkDownloadFinished` rather than
+guarding it, and #464 gave both stamps a single owner in `progress.go`, so the writer count
+above (6) and every line number in the table are as of 2026-08-30. It is left uncorrected
+deliberately: it records the state that motivated the issue, and rewriting it would delete the
+argument for filing it. The current population is enforced by
+`TestDownloadStampWriters_MatchTheEnumerationStatedInProse`; the prose it matches is
+`setDownloadStartedOnce`'s doc comment in `internal/queue/progress.go`.
+
 ### Manifest-tier — body dereferences `job.manifest`, so residency gates it (7 move)
 
 | `*Queue` method | Line | Becomes | Wrapper keeps |

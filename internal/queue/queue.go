@@ -1374,7 +1374,8 @@ func (q *Queue) MarkDownloadFinished(id string, t time.Time) error {
 	}
 	// Progress tier: no residency guard. The first-finish-wins test is a
 	// business condition, not a check for absence — progress is permanently
-	// resident — and it lives on the Job with the field it guards.
+	// resident — and since #464 it lives on JobProgress with the field it
+	// guards, which markDownloadFinishedOnce delegates to.
 	if job.markDownloadFinishedOnce(t) {
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the finish timestamp consistent; tracked in #229

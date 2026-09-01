@@ -1,5 +1,14 @@
 # Download-Stamp Owner Implementation Plan
 
+> **Executed and complete — this is a frozen record, not open work.** All seven tasks landed on
+> the `fix-464-timestamp-encoding` branch. The document stays in the future tense throughout,
+> including the Rule 4 sweep list below, which reads as an open TODO and is not one. It is left
+> uncorrected for the same reason the b24a plan's stale writers table is: a plan records what was
+> believed before the work, and rewriting it to match the outcome deletes the reasoning that
+> justified the approach — including the three defects successive review rounds removed from it.
+> Where the plan and the code disagree, the code is right. The writer population it argues for is
+> enforced by `TestDownloadStampWriters_MatchTheEnumerationStatedInProse`, not by this file.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make it impossible for `JobProgress.downloadStarted`/`downloadFinished` to hold an

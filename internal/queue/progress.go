@@ -500,8 +500,9 @@ func (p *JobProgress) DownloadFinished() time.Time {
 // construction.
 //
 // It also subsumes the IsZero() test that markStartedOnce and
-// markDownloadFinishedOnce apply today: time.Time{} is year 1, whose Unix() is
-// -62135596800. Once those two delegate here they need one predicate, not two.
+// markDownloadFinishedOnce used to apply: time.Time{} is year 1, whose Unix()
+// is -62135596800. Both delegate here now, so the rule is one predicate rather
+// than two that happened to agree.
 //
 // That no job timestamp is at or before the Unix epoch is a decision settled on
 // #464, not something derived from the code. Every production path stamps from
@@ -547,9 +548,9 @@ func (p *JobProgress) setDownloadFinishedOnce(t time.Time) bool {
 	return true
 }
 
-// clearDownloadStamps reopens both first-wins slots. Two callers: ResetForRetry,
-// because a re-download legitimately re-stamps, and restoreDownloadStamps
-// below, which clears before installing.
+// clearDownloadStamps reopens both first-wins slots. Two non-test callers:
+// ResetForRetry, because a re-download legitimately re-stamps, and
+// restoreDownloadStamps below, which clears before installing.
 //
 // restoreDownloadStamps(time.Time{}, time.Time{}) would do the same thing, so
 // this is a degenerate case of its sibling. It exists because the two are read
@@ -569,7 +570,10 @@ func (p *JobProgress) clearDownloadStamps() {
 // It still applies isJobStamp, so a stamp failing the rule is dropped rather
 // than restored. Under Standing Rule 1 no persisted row is owed compatibility,
 // so this is not a migration path — it is the one place a value arrives from
-// outside this process and the rule must be re-checked.
+// outside this process and the rule must be re-checked. Its two callers are
+// the store's Get decode (sqlite_store.go) and UnmarshalJSON below in this
+// file, which are the only two paths that read a stamp the process did not
+// mint.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.clearDownloadStamps()
 	if isJobStamp(started) {

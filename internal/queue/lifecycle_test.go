@@ -568,10 +568,12 @@ func TestSetPostProcStarted(t *testing.T) {
 	// SetPostProcStarted is the second of the two writers that apply the
 	// finish transition (TestMarkDownloadFinished names the enumeration), and
 	// its write of downloadFinished was untested until #457's review: the two
-	// subtests below asserted only the bool and job.PostProc, so deleting the
-	// assignment at queue.go's `job.progress.downloadFinished = time.Now()`
-	// left them green. firstFinish captures it so the idempotent case can
-	// assert the field does not move either.
+	// subtests below asserted only the bool and job.PostProc, so deleting its
+	// stamp of downloadFinished left them green. #464 replaced that site's
+	// literal assignment with a call to the owner,
+	// JobProgress.setDownloadFinishedOnce, which is what this test now
+	// defends — see testdata/postproc_stamp.spec. firstFinish captures the
+	// stamp so the idempotent case can assert the field does not move either.
 	var firstFinish time.Time
 
 	t.Run("first call returns true and stamps the finish time", func(t *testing.T) {
@@ -599,19 +601,22 @@ func TestSetPostProcStarted(t *testing.T) {
 			t.Error("expected false on second call")
 		}
 		// The field not moving here is the job.PostProc early return, NOT the
-		// IsZero guard — that return fires before the stamp is reached, so
-		// removing the guard leaves this subtest green. Mutation-checked. The
-		// case the guard actually covers is the subtest below.
+		// first-wins guard — that return fires before the stamp is reached, so
+		// neutering the guard in the owner leaves this subtest green.
+		// Mutation-checked. The case the guard actually covers is the subtest
+		// below, which is where testdata/postproc_stamp.spec lands its kill.
 		got, _ := q.liveJob(j.ID)
 		if f := got.Progress().DownloadFinished(); !f.Equal(firstFinish) {
 			t.Errorf("DownloadFinished moved on the second call: got %v, want %v", f, firstFinish)
 		}
 	})
 
-	// What the IsZero guard is for: a job whose finish time was already set by
-	// Queue.MarkDownloadFinished, reaching SetPostProcStarted for the first
-	// time. PostProc is still false, so the early return above does not fire
-	// and the guard is the only thing standing between the two writers.
+	// What the first-wins guard is for: a job whose finish time was already
+	// set by Queue.MarkDownloadFinished, reaching SetPostProcStarted for the
+	// first time. PostProc is still false, so the early return above does not
+	// fire and the guard is the only thing standing between the two writers.
+	// Since #464 both of them reach it through the same owner method, so the
+	// guard is one implementation rather than two that agreed by inspection.
 	t.Run("does not overwrite a finish time MarkDownloadFinished already set", func(t *testing.T) {
 		q2 := New()
 		j2 := makeJob(t, "postproc-preset", constants.NormalPriority)
@@ -696,15 +701,15 @@ func TestMarkJobStarted(t *testing.T) {
 // MarkDownloadFinished that assigned unconditionally, and nothing asserted the
 // two should agree. #457 deleted it rather than guarding it.
 //
-// The writer set is mid-restructure under #464, which is giving both download
-// timestamps a single owner in progress.go. This comment used to carry a
-// counted citation of
-// `git grep -nE 'downloadFinished[[:space:]]*=' -- '*.go' ':!*_test.go'`; the
-// count churns on every one of that change's commits (5 before it, 8 once the
-// owner exists, then down to 3 as each writer is routed), so a number stated
-// here would be wrong at three of them and would fail check_citations rather
-// than merely read stale. The count is restored, with the settled figure, in
-// the commit that routes the last writer.
+// #464 settled the writer set: both download timestamps have one owner in
+// progress.go, and `git grep -nE 'downloadFinished[[:space:]]*=' -- '*.go'
+// ':!*_test.go'` returns 3 lines, all of them inside it. The count was 5
+// before that change and 8 midway through it, which is why this citation spent
+// several commits as prose — a number stated then would have been wrong at
+// three of them, and check_citations would have failed rather than merely read
+// stale. The population is now pinned by
+// TestDownloadStampWriters_MatchTheEnumerationStatedInProse, which fails when
+// the set moves; this count is orientation, not the guarantee.
 //
 // What does not change is the claim this comment exists to make: the two
 // callers that APPLY the finish transition are markDownloadFinishedOnce and
@@ -1234,7 +1239,7 @@ func (s *updateCountingStore) Update(_ context.Context, _ *Job) error {
 }
 
 // TestMarkTimestamp_ZeroIsRefusedAtTheQueueWrapper covers what
-// TestJobMarkOnce_RefusesAZeroTimestamp cannot see.
+// TestJobMarkOnce_RefusesAStampTheStoreCannotDistinguish cannot see.
 //
 // That test calls the unexported *Job methods on a standalone struct, so it
 // pins the bool and the field but not the consequences the bool exists to
