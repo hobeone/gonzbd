@@ -17,16 +17,12 @@ running or modifying tests.**
 | Config contract | `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` | none | none | <1s |
 | Tagged-file compile check | `go vet -tags=integration,uitest,crash ./...` | all three | none (host GOOS only; `crash` files are `crash && linux`, so they are skipped off Linux) | 0.2s warm, 6.9s cold |
 
-### Convenience Scripts
+### Convenience Script
 
-Two wrapper scripts in `scripts/` run the full suite with a single command:
-
-| Script | What it does |
-|--------|-------------|
-| `scripts/run_tests.sh` | Runs unit → integration → crash-consistency → UI vitest → `bun run build` → uitest sequentially |
-| `scripts/run_tests_parallel.sh` | Same phases except crash-consistency, which it does not run; unit/integration/vitest/build run concurrently, uitest starts once build finishes. Faster on multi-core machines. Per-phase logs written to `logs/`. |
-
-Use `run_tests.sh` as the canonical pre-commit gate (matches CLAUDE.md quality gates). Use `run_tests_parallel.sh` for faster feedback during active development.
+`scripts/run_tests.sh` runs the full suite with a single command: unit →
+integration → crash-consistency → UI vitest → `bun run build` → uitest
+sequentially. Use it as the canonical pre-commit gate (matches CLAUDE.md
+quality gates).
 
 ## 1. Unit Tests (`go test ./...`)
 
