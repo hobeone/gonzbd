@@ -3,6 +3,7 @@ package job
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -462,9 +463,10 @@ func TestJob_SnapshotIsAtomic(t *testing.T) {
 	j := newTestJob(t)
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	var reads atomic.Int64
 	go func() {
 		defer close(done)
-		for i := range 2000 {
+		for i := 0; (i < 2000 || reads.Load() < 2000) && i < 100_000; i++ {
 			select {
 			case <-stop:
 				return
@@ -487,7 +489,11 @@ func TestJob_SnapshotIsAtomic(t *testing.T) {
 	// oscillating invariant below is never given a chance to observe one. That
 	// was measured, not guessed: with a 20,000-read cap the torn mutation went
 	// undetected by invariant 2.
-	reads := 0
+	//
+	// The mutator runs for at least 2,000 cycles and until the reader has
+	// completed at least 2,000 snapshots, ensuring both sides race each other
+	// even under scheduler jitter where the mutator completes 2,000 cycles
+	// before the reader reaches 2,000 reads.
 loop:
 	for {
 		select {
@@ -496,7 +502,7 @@ loop:
 		default:
 		}
 		s := j.Snapshot()
-		reads++
+		reads.Add(1)
 		if s.HasRun != (s.State.State != StateUnset) {
 			t.Fatalf("torn snapshot: HasRun=%v but position=%v; a job has run if and only if "+
 				"it is at a position", s.HasRun, s.State.State)
@@ -510,8 +516,8 @@ loop:
 	}
 	// Without a floor this passes vacuously if the mutator ever finishes
 	// before the first read.
-	if reads < 2000 {
-		t.Fatalf("only %d snapshots taken; too few to have raced the 2,000 mutation cycles", reads)
+	if got := reads.Load(); got < 2000 {
+		t.Fatalf("only %d snapshots taken; too few to have raced the 2,000 mutation cycles", got)
 	}
 }
 
