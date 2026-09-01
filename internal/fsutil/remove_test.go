@@ -2,8 +2,10 @@ package fsutil
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -82,11 +84,15 @@ func TestIsBusyOrNotEmpty(t *testing.T) {
 		{"EACCES", syscall.EACCES, true},
 		{"ENOENT", syscall.ENOENT, false},
 		{"nil", nil, false},
+		{"PathError wrapping EBUSY", &os.PathError{Op: "remove", Path: "/tmp/foo", Err: syscall.EBUSY}, true},
+		{"fmt.Errorf wrapping EACCES", fmt.Errorf("wrapped: %w", syscall.EACCES), true},
 	}
 	for _, tc := range tests {
-		if got := isBusyOrNotEmpty(tc.err); got != tc.want {
-			t.Errorf("isBusyOrNotEmpty(%v) = %v, want %v", tc.err, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBusyOrNotEmpty(tc.err); got != tc.want {
+				t.Errorf("isBusyOrNotEmpty(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -104,7 +110,7 @@ func TestSetRemoveBackoffsForTest(t *testing.T) {
 	}
 
 	restore()
-	if len(removeBackoffs) != len(origBackoffs) {
+	if !slices.Equal(removeBackoffs, origBackoffs) {
 		t.Fatalf("removeBackoffs after restore = %v, want original schedule %v", removeBackoffs, origBackoffs)
 	}
 }

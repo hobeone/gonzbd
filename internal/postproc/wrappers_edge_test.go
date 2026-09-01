@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
@@ -567,7 +566,7 @@ func TestDeobfuscateStage_FullFlow(t *testing.T) {
 // removeBackoffs package var, which is safe only while this test runs
 // serially (see the same note on TestSetRemoveBackoffsForTest).
 func TestCleanupStage_LogOnFailure(t *testing.T) {
-	restore := fsutil.SetRemoveBackoffsForTest([]time.Duration{time.Millisecond, time.Millisecond})
+	restore := fsutil.SetRemoveBackoffsForTest(nil)
 	defer restore()
 
 	dir := t.TempDir()
@@ -593,12 +592,8 @@ func TestCleanupStage_LogOnFailure(t *testing.T) {
 		_ = os.Chmod(adminDir, 0o755)
 	}()
 
-	oldLogger := slog.Default()
 	handler := &testLogHandler{}
-	slog.SetDefault(slog.New(handler))
-	defer slog.SetDefault(oldLogger)
-
-	stage := NewCleanupStage()
+	stage := &CleanupStage{Log: slog.New(handler)}
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
