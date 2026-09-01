@@ -677,19 +677,61 @@ need in order to be in any other state cannot be deserialized.
 
 ### 10.1 The barrier reconciles itself
 
+> **SUPERSEDED 2026-09-01 — this section is wrong, and implementing it would
+> now be a correctness regression.** Reconciliation is a **phase-bounded
+> startup sweep**, `Application.resumeAllJobs`
+> (`internal/app/resume_startup.go`), built that way deliberately in #362. The
+> reasoning below was written before that work and does not survive it.
+>
+> **Its premise does not hold: the barrier is not per-lease.** There is one
+> `Barrier` per process, built once in `app.New` — `git grep -n 'NewBarrier('
+> -- '*.go' ':!*_test.go'` returns 2 lines, the constructor and its single
+> call site at `internal/app/app.go:498` — and it holds a cross-job `reported`
+> map. `NewBarrier` reconciles nothing; it assigns four fields and returns.
+>
+> **Reconciling at lease issuance is too late.** `durability.Resumer` compares
+> a file's size against what its runs claim. If the assembler has already
+> re-created and pre-allocated a deleted partial, that comparison runs against
+> a file of zeros and passes. Nothing inside `Resumer` can notice, so the sweep
+> must precede dispatch — it runs synchronously inside `Start`, after
+> `queue.Load` and before the downloader dispatches.
+>
+> **Reconciling on EVERY lease issuance would destroy durable records.** The
+> sweep covers `PhaseActive` and Paused only, excluding `PhaseProcessing`,
+> because there the assembler is not the sole writer: par2 repairs in place,
+> unpack reads, and a move relocates the file. A moved file's path no longer
+> exists, `Resume` reports `Restart`, and `Resumer.discard`
+> (`internal/durability/resume.go:146`) **deletes the file's runs** — erasing
+> the record that those bytes were ever made durable, and the erasure survives
+> the restart the seed exists to survive. This section's model has no phase
+> bound and would reach exactly those jobs.
+>
+> **So "`App` never has resume logic" is withdrawn as a goal**, not merely
+> unmet. The sweep's full argument, including what would break it, is at
+> `internal/app/resume_startup.go:31-142` and is the authority for this area.
+> `resumeAllJobs` is correspondingly **removed from plan 2's Deletes column**
+> below: it is the mechanism, not a thing the swap replaces.
+>
+> One hazard the sweep names and nothing enforces: its phase guard is sound
+> only because nothing currently assigns `constants.StatusFetching`, a
+> repair-time status that sits inside `PhaseActive`. That is a claim about
+> writers, not an invariant, and wants an enumeration test.
+
 Something must reconcile *what the durability record claims* against *what is
 actually on disk* after a crash. That belongs to the component whose stated
 purpose is owning durable storage.
 
-**The `StorageBarrier` reconciles at construction** — it reads its own record,
-stats the files it claims, drops any claim longer than reality, and only then
-is handed over inside a lease. That happens on **every** lease issuance, of
-which the first after a restart is merely one instance.
+~~**The `StorageBarrier` reconciles at construction**~~ — ~~it reads its own
+record, stats the files it claims, drops any claim longer than reality, and only
+then is handed over inside a lease. That happens on **every** lease issuance, of
+which the first after a restart is merely one instance.~~
 
-Two consequences: `App` never has resume logic, and "crash recovery" stops
-being a distinct concern. A crash is just a restart where the record disagrees
-with the disk, and resolving that disagreement is the barrier's normal
-constructor. Exceptional paths that run rarely are exactly the ones that rot.
+~~Two consequences: `App` never has resume logic, and "crash recovery" stops
+being a distinct concern.~~ A crash is just a restart where the record disagrees
+with the disk — that much stands, and resolving the disagreement is the startup
+sweep's job rather than a constructor's. Exceptional paths that run rarely are
+exactly the ones that rot, which is why the sweep runs unconditionally at every
+start rather than only after an unclean shutdown.
 
 ### 10.2 The Checkpointer is the sole DB writer
 
@@ -844,7 +886,7 @@ that plan 2's deletions have somewhere to land.
 | # | Plan | Delivers | Deletes |
 |---|---|---|---|
 | 1 | **Lifecycle core** — `internal/job` | `State`/`Activity`/`Outcome`/`Policy`/`WaitReason`, the transition machine, `Attempt`, `Job` with its own lock, `ToSABnzbd` | nothing — the package is standalone and unimported |
-| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; `Assess` + `Verdict` in `internal/par2`; the new `Queue` with two pools and lease issuance; `Checkpointer`; barrier self-reconciliation; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, `par2NeedsRecovery`, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage, `NeedRequeue`/`RequeueBlocksNeeded`, `resumeAllJobs`, `shouldSkipForPP`, `Job.PostProc` |
+| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` + `Verdict` in `internal/par2`~~ **(moved ahead of the swap — see the status block)**; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, `par2NeedsRecovery`, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage, `NeedRequeue`/`RequeueBlocksNeeded`, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
 | 3 | **Dispatch and speculation** | `job.NextArticle()`/`AddArticle()`, the Queue-owned dispatcher over `LeasedJobs`, DirectUnpack promote/discard | `dispatchPass`'s queue-walking article loop, `duOrch`'s current wiring |
 
 > **Status, 2026-09-01.** Plan 1 landed (#439, #447). **Four of plan 2's
@@ -861,13 +903,36 @@ that plan 2's deletions have somewhere to land.
 > what this section specifies and is not drift; it is recorded here so the
 > difference is not mistaken for one.
 >
-> Plan 2 still owes: `Manifest`/`JobProgress` rehomed (the destination is
-> reopened — this section says `internal/job`, #456's D1 had settled on a
-> rename to `internal/jobstate` without evaluating `internal/job`); `Assess` +
-> `Verdict` in `internal/par2`; `Checkpointer`; §10.1's barrier
-> self-reconciliation (may be satisfied by the durable-runs work — unverified);
-> `app`/`downloader`/`postproc` rewired; and the whole Deletes column, which is
-> still entirely intact.
+> **Three questions were settled on #456 before plan 2 is written**, and two of
+> them changed this section:
+>
+>   - **Destination — `internal/job`, confirmed.** #456's D1 had settled on a
+>     rename to `internal/jobstate` without ever evaluating `internal/job`; its
+>     size objection was raised against `internal/dispatch` and does not
+>     transfer. `manifest.go` and `progress.go` reference no `Queue` state at
+>     all, so this is a move rather than an untangle; `bitset.go` and
+>     `repair.go` travel with them. Two consequences plan 2 must carry: the one
+>     `nzb.MessageIDIsFetchable` call falsifies `internal/sched`'s "depends on
+>     internal/job and nothing else", and the residency boundary stops being
+>     compiler-enforced — so an enumeration test in `internal/dispatch` is a
+>     plan 2 deliverable, not a follow-up.
+>   - **§10.1 is superseded, not owed.** See its banner below.
+>   - **`Assess` + `Verdict` moves AHEAD of the swap.** It is a Standing Design
+>     Rule 2 consolidation that stands on its own — `par2NeedsRecovery`
+>     (`internal/app/app.go:1517-1577`) and the `quickcheck` stage answer one
+>     question twice, and `NeedRequeue` is written by the repair stage and read
+>     as a control decision nowhere. Landing it first *removes* three entries
+>     from the Deletes column and shrinks the swap. `Checkpointer` stays inside
+>     plan 2: `Job` already does no I/O and the batched write at
+>     `internal/queue/persistence.go:56` is already snapshot-shaped, leaving one
+>     residual writer at `internal/queue/queue.go:898` whose justification is a
+>     transition the swap replaces.
+>
+> So plan 2 still owes: `Manifest`/`JobProgress` rehomed into `internal/job`;
+> `Checkpointer`; `app`/`downloader`/`postproc` rewired; and the Deletes column
+> minus `resumeAllJobs`, which is still otherwise intact.
+>
+> Sequence: **`Assess`/`Verdict` → plan 2 → plan 3.**
 
 Plan 2 is large and deliberately so. It is the commit where the daemon stops
 running the old model, and splitting it would mean shipping exactly the
