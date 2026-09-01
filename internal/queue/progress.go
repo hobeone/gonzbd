@@ -511,17 +511,21 @@ func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 // setDownloadStartedOnce records the download start, reporting whether it took.
 // A later call is a no-op: first start wins.
 //
-// This and its three siblings below WILL BE the only functions in this
-// package's non-test sources that assign p.downloadStarted or
-// p.downloadFinished by name, once #464 routes the remaining writers through
-// them. markStartedOnce, markDownloadFinishedOnce and SetPostProcStarted have
-// been routed; ResetForRetry in job.go, UnmarshalJSON below in this file, and
-// the Get decode in sqlite_store.go have not.
+// This and its three siblings below are the only functions in this package's
+// non-test sources that assign p.downloadStarted or p.downloadFinished by
+// name. `git grep -nE '(downloadStarted|downloadFinished)[[:space:]]*=[^=]'
+// -- '*.go' ':!*_test.go'` returns 6 lines, and all six are in the four
+// bodies below. #464 routed the six former writers here: markStartedOnce,
+// markDownloadFinishedOnce and ResetForRetry in job.go, SetPostProcStarted in
+// queue.go, UnmarshalJSON below in this file, and the Get decode in
+// sqlite_store.go.
 //
-// The sentence is in the future tense deliberately: at this commit those
-// writers still exist, and the test that makes the claim checkable —
-// TestDownloadStampWriters_MatchTheEnumerationStatedInProse — arrives with the
-// last of them. Tighten this to the present tense in that same commit.
+// The claim is a grep, so it goes stale silently — a seventh assignment
+// anywhere in the package falsifies it and nothing fails. #464's last task
+// replaces this citation with
+// TestDownloadStampWriters_MatchTheEnumerationStatedInProse, which walks the
+// package AST and fails when the writer set moves. Until then the command
+// above is the only check, and it has to be run by hand.
 //
 // Refusing a non-stamp does NOT consume the first-wins slot: a real timestamp
 // arriving afterwards is still the first mark.
@@ -1006,8 +1010,7 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	}
 	p.failedBytes = pj.FailedBytes
 	p.serverStats = pj.ServerStats
-	p.downloadStarted = pj.DownloadStarted
-	p.downloadFinished = pj.DownloadFinished
+	p.restoreDownloadStamps(pj.DownloadStarted, pj.DownloadFinished)
 	p.par2Recovered = pj.Par2Recovered
 	p.par2ReleaseReason = pj.Par2ReleaseReason
 	return nil

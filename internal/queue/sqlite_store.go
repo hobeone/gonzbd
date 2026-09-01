@@ -564,12 +564,10 @@ FROM jobs WHERE id = ?`
 			job.manifest = &manifest
 			job.setScalarsFromManifest(&manifest)
 			job.progress = newJobProgress(&manifest)
-			if dlStartedUnix > 0 {
-				job.progress.downloadStarted = time.Unix(dlStartedUnix, 0).UTC()
-			}
-			if dlFinishedUnix > 0 {
-				job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
-			}
+			// The > 0 guards these two lines replaced are not lost: the owner
+			// applies isJobStamp, which is the same test on the same values.
+			job.progress.restoreDownloadStamps(
+				time.Unix(dlStartedUnix, 0).UTC(), time.Unix(dlFinishedUnix, 0).UTC())
 			_ = s.RestoreJobProgress(ctx, &job)
 		}
 	}

@@ -1066,8 +1066,7 @@ func (j *Job) ResetForRetry() {
 	if j.progress == nil || j.manifest == nil {
 		return
 	}
-	j.progress.downloadStarted = time.Time{}
-	j.progress.downloadFinished = time.Time{}
+	j.progress.clearDownloadStamps()
 	j.progress.serverStats = nil
 	j.progress.failedBytes = 0 // recompute below is the owner; this keeps the reset block uniform
 	j.progress.earlyAborted = false

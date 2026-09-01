@@ -381,6 +381,11 @@ func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
 // failed. Only the failed articles' done/failed bits should be reset (and
 // the per-file/job-level FailedBytes recomputed from what remains), and
 // Complete should be cleared only for files that had a reset.
+//
+// It also pins the download stamps being cleared, which #464 routed through
+// JobProgress.clearDownloadStamps. That belongs here rather than in a test of
+// its own because this is the only place ResetForRetry is called directly on a
+// job whose stamps were set.
 func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 	t.Parallel()
 	parsed := &nzb.NZB{Files: []nzb.File{
@@ -423,7 +428,28 @@ func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 	}
 	remainingBeforeReset := snap.Progress().RemainingBytes()
 
+	// Seed the download stamps so the assertion that they are cleared is not
+	// vacuous. A job that never had stamps reads as cleared whatever the reset
+	// does, which is how app.RetryHistoryJob's coverage looked like a pin and
+	// was not: that path rebuilds the job with NewJob, so its stamps are zero
+	// because the job is new. Neutering the clear in ResetForRetry left that
+	// test green.
+	started := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if !snap.markStartedOnce(started) {
+		t.Fatal("seeding downloadStarted failed; the reset assertion below would be vacuous")
+	}
+	if !snap.markDownloadFinishedOnce(started.Add(time.Hour)) {
+		t.Fatal("seeding downloadFinished failed; the reset assertion below would be vacuous")
+	}
+
 	snap.ResetForRetry()
+
+	if got := snap.Progress().DownloadStarted(); !got.IsZero() {
+		t.Errorf("DownloadStarted = %v after the reset, want zero", got)
+	}
+	if got := snap.Progress().DownloadFinished(); !got.IsZero() {
+		t.Errorf("DownloadFinished = %v after the reset, want zero", got)
+	}
 
 	if snap.Status != constants.StatusQueued {
 		t.Errorf("Status = %q, want Queued", snap.Status)
