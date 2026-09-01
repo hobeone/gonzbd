@@ -105,6 +105,7 @@ var storeMethods = map[string]bool{
 	"RestoreRetryProgress": true,
 	"DeleteJobArtifacts":   true,
 	"ArticleCountsByJob":   true,
+	"DownloadStampsByJob":  true,
 	"RecordFailedArticles": true,
 	"ClearFailedArticles":  true,
 	// The per-article reversal ClearAllEmitted uses since #426. Registered

@@ -530,7 +530,13 @@ func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 // Refusing a non-stamp does NOT consume the first-wins slot: a real timestamp
 // arriving afterwards is still the first mark.
 func (p *JobProgress) setDownloadStartedOnce(t time.Time) bool {
-	if !isJobStamp(t) || !p.downloadStarted.IsZero() {
+	// The downloadFinished test is the ordering half of the rule: a start may
+	// not be recorded once a finish is. Without it a job whose first 10
+	// articles all fail early-aborts with no start recorded, stamps a finish
+	// through SetPostProcStarted, and an article still in flight then stamps a
+	// start that post-dates it — a negative duration in the history record.
+	// See TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish.
+	if !isJobStamp(t) || !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
 		return false
 	}
 	p.downloadStarted = t
@@ -548,9 +554,11 @@ func (p *JobProgress) setDownloadFinishedOnce(t time.Time) bool {
 	return true
 }
 
-// clearDownloadStamps reopens both first-wins slots. Two non-test callers:
-// ResetForRetry, because a re-download legitimately re-stamps, and
-// restoreDownloadStamps below, which clears before installing.
+// clearDownloadStamps reopens both first-wins slots. `git grep -c
+// 'clearDownloadStamps()' -- '*.go' ':!*_test.go'` returns 2 lines, one per
+// file: job.go, where ResetForRetry calls it because a re-download legitimately
+// re-stamps, and this file, where restoreDownloadStamps below clears before
+// installing.
 //
 // restoreDownloadStamps(time.Time{}, time.Time{}) would do the same thing, so
 // this is a degenerate case of its sibling. It exists because the two are read
@@ -567,13 +575,24 @@ func (p *JobProgress) clearDownloadStamps() {
 // first-wins because a restore is not a mark: the slots it fills were already
 // won in the run that wrote them.
 //
-// It still applies isJobStamp, so a stamp failing the rule is dropped rather
-// than restored. Under Standing Rule 1 no persisted row is owed compatibility,
-// so this is not a migration path — it is the one place a value arrives from
-// outside this process and the rule must be re-checked. Its two callers are
-// the store's Get decode (sqlite_store.go) and UnmarshalJSON below in this
-// file, which are the only two paths that read a stamp the process did not
-// mint.
+// It applies isJobStamp because this is the owner's entry point for values it
+// did not mint. That is Rule 2, not a migration path: Rule 1 waives any duty to
+// a row an earlier build wrote, and the guard is not here for one. It is here
+// so that no caller can install a stamp the store cannot represent — the same
+// reason the setters test it, applied at the door the setters do not cover.
+//
+// Via the store the guard is currently redundant, and deliberately kept:
+// decodeJobStamp already yields either a positive stamp or time.Time{}. The
+// redundancy is the point of a gatekeeper — it holds for the next caller too,
+// and a check that only pays off when someone makes a mistake reads as dead
+// code until the mistake.
+//
+// Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
+// returns 3 lines, one per file rather than one per site — this file, which
+// holds the declaration and the UnmarshalJSON call; sqlite_store.go, which
+// holds the Get decode for a resident job; and persistence.go, where Load
+// hydrates a non-resident one. All three read a stamp the process did not
+// mint, which is what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.clearDownloadStamps()
 	if isJobStamp(started) {

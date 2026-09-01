@@ -544,9 +544,13 @@ func (j *Job) recordDownload(server string, bytes int) {
 // which owns both halves of the rule — that the stamp is one the store can
 // distinguish from absent, and that the first one wins. #464 moved it there
 // because the first-wins test was written out at three sites and they had
-// already diverged: these two methods, plus Queue.SetPostProcStarted, which
-// tested IsZero on the field and nothing at all on the value it was about to
-// store. All three now delegate.
+// already diverged. Scoped to downloadStarted, which is the field this method
+// writes, there was only ever one enforcement site — this one. The divergence
+// was on the sibling field: downloadFinished had two, markDownloadFinishedOnce
+// and Queue.SetPostProcStarted, and the second tested IsZero on the field and
+// nothing at all on the value it was about to store. All three sites delegate
+// now, so the rule is one implementation rather than three that agreed by
+// inspection.
 //
 // What is refused widened with that move. #459 refused the zero value, the
 // sentinel this method's own guard used to test against; the owner refuses

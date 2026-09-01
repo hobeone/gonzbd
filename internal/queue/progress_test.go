@@ -278,6 +278,51 @@ func TestJobStampCodec_RoundTripsAndAgreesWithTheOwnersBound(t *testing.T) {
 	}
 }
 
+// TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish pins the ordering half
+// of the owner's rule.
+//
+// The path is real, not defensive. MarkJobStarted is called on every successful
+// article (internal/app/pipeline.go), so downloadStarted is normally stamped
+// long before any finish. But IsEarlyAbort fires once 10 articles have RESOLVED
+// with an 80% failure rate, and a resolution counts a failure — so a job whose
+// first 10 articles all fail aborts with downloadStarted still zero. The abort
+// runs maybeFinalize -> SetPostProcStarted, which stamps downloadFinished. An
+// article still in flight that then succeeds calls MarkJobStarted, and without
+// this guard it stamps a start that post-dates the finish.
+//
+// The consequence is not cosmetic: internal/app/history_helper.go guards its
+// duration against == 0 but not against < 0, so the negative reaches
+// history.Entry.DownloadTime and SAB_DOWNLOAD_TIME in user scripts.
+func TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish(t *testing.T) {
+	t.Parallel()
+
+	finished := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	p := &JobProgress{}
+	if !p.setDownloadFinishedOnce(finished) {
+		t.Fatal("seeding the finish failed; the assertion below would be vacuous")
+	}
+	if p.setDownloadStartedOnce(finished.Add(time.Second)) {
+		t.Error("a start after the finish was accepted; the reported duration goes negative")
+	}
+	if got := p.DownloadStarted(); !got.IsZero() {
+		t.Errorf("downloadStarted = %v after a refused out-of-order mark, want the zero time", got)
+	}
+
+	// A start BEFORE an already-recorded finish is the ordinary restore-free
+	// ordering and must still be refused for the same reason a second mark is:
+	// the finish is already recorded, so this job's start is not being observed
+	// for the first time. Asserting it keeps the guard's shape honest — it is
+	// "no start once a finish exists", not a comparison.
+	q := &JobProgress{}
+	if !q.setDownloadFinishedOnce(finished) {
+		t.Fatal("seeding the finish failed")
+	}
+	if q.setDownloadStartedOnce(finished.Add(-time.Hour)) {
+		t.Error("a start was accepted after the finish was already recorded")
+	}
+}
+
 func TestClearDownloadStamps_ClearsBothFields(t *testing.T) {
 	t.Parallel()
 

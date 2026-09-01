@@ -884,6 +884,91 @@ func TestSQLiteStore_DownloadTimestampsPersistence(t *testing.T) {
 	}
 }
 
+// TestSQLiteStore_NonResidentJobKeepsItsDownloadStamps covers the case
+// TestSQLiteStore_DownloadTimestampsPersistence cannot: that test drives the
+// job to StatusVerifying, which is a RESIDENT phase, so its round trip goes
+// through SQLiteStore.Get's resident branch. A paused job takes the other
+// branch, and the stamps were being dropped there and then destroyed on the
+// next write.
+//
+// The sequence is the one a user produces by pausing a job that has already
+// downloaded: Get leaves progress nil for a non-resident status, Load builds a
+// fresh zero-valued JobProgress, and the next updateTx encodes those zeros over
+// the real values in SQLite. The final assertion is the destructive half — the
+// stamps must still be in the database after an unrelated update.
+func TestSQLiteStore_NonResidentJobKeepsItsDownloadStamps(t *testing.T) {
+	t.Parallel()
+	store, _, dir := setupTestStore(t)
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{Subject: "f1", Articles: []nzb.Article{{ID: "art1", Number: 1}}, Bytes: 100},
+		},
+	}
+	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "paused-stamps"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.SetStatus(job.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("SetStatus(Downloading): %v", err)
+	}
+
+	startTime := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	finishTime := startTime.Add(5 * time.Minute)
+	if err := q.MarkJobStarted(job.ID, startTime); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if err := q.MarkDownloadFinished(job.ID, finishTime); err != nil {
+		t.Fatalf("MarkDownloadFinished: %v", err)
+	}
+	if err := q.SetStatus(job.ID, constants.StatusPaused); err != nil {
+		t.Fatalf("SetStatus(Paused): %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loadedQ, err := queue.Load(dir, queue.WithStore(store))
+	if err != nil {
+		t.Fatalf("queue.Load: %v", err)
+	}
+	loaded := loadedQ.SnapshotJob(job.ID)
+	if loaded == nil {
+		t.Fatal("paused job missing from queue after reload")
+	}
+	if got := loaded.Progress().DownloadStarted(); got.Unix() != startTime.Unix() {
+		t.Errorf("reloaded DownloadStarted = %v, want %v", got, startTime)
+	}
+	if got := loaded.Progress().DownloadFinished(); got.Unix() != finishTime.Unix() {
+		t.Errorf("reloaded DownloadFinished = %v, want %v", got, finishTime)
+	}
+
+	// The destructive half: any update on the reloaded job writes the stamp
+	// columns, so zeros in memory become zeros on disk permanently.
+	if err := loadedQ.SetPriority(job.ID, constants.HighPriority); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+	reloadedQ, err := queue.Load(dir, queue.WithStore(store))
+	if err != nil {
+		t.Fatalf("second queue.Load: %v", err)
+	}
+	again := reloadedQ.SnapshotJob(job.ID)
+	if again == nil {
+		t.Fatal("paused job missing after the second reload")
+	}
+	if got := again.Progress().DownloadStarted(); got.Unix() != startTime.Unix() {
+		t.Errorf("after an unrelated update, DownloadStarted = %v, want %v — "+
+			"the update overwrote the persisted stamp with the zero it held in memory", got, startTime)
+	}
+	if got := again.Progress().DownloadFinished(); got.Unix() != finishTime.Unix() {
+		t.Errorf("after an unrelated update, DownloadFinished = %v, want %v", got, finishTime)
+	}
+}
+
 func TestSQLiteStore_GetNullTextColumns(t *testing.T) {
 	t.Parallel()
 	store, repo, _ := setupTestStore(t)

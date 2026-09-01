@@ -1,5 +1,5 @@
 pkg ./internal/queue/
-run TestIsJobStamp|TestSetDownloadStamp|TestClearDownloadStamps|TestRestoreDownloadStamps
+run TestIsJobStamp|TestSetDownloadStamp|TestSetDownloadStartedOnce|TestClearDownloadStamps|TestRestoreDownloadStamps
 
 [the bound relaxed to After(epoch), admitting the sub-second interval]
 file internal/queue/progress.go
@@ -20,9 +20,9 @@ func isJobStamp(t time.Time) bool { return !t.IsZero() }
 [first-wins neutered on started]
 file internal/queue/progress.go
 --- anchor
-	if !isJobStamp(t) || !p.downloadStarted.IsZero() {
+	if !isJobStamp(t) || !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
 --- replace
-	if !isJobStamp(t) {
+	if !isJobStamp(t) || !p.downloadFinished.IsZero() {
 --- end
 
 [first-wins neutered on finished]
@@ -62,4 +62,12 @@ file internal/queue/progress.go
 	}
 --- replace
 	p.downloadFinished = finished
+--- end
+
+[the ordering half of the start guard dropped]
+file internal/queue/progress.go
+--- anchor
+	if !isJobStamp(t) || !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
+--- replace
+	if !isJobStamp(t) || !p.downloadStarted.IsZero() {
 --- end

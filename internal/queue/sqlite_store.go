@@ -67,6 +67,41 @@ func decodeJobStamp(unix int64) time.Time {
 	return time.Unix(unix, 0).UTC()
 }
 
+// DownloadStamps carries one job's two persisted download timestamps, already
+// decoded. Either may be the zero time, meaning the column held the absent
+// sentinel.
+type DownloadStamps struct {
+	Started  time.Time
+	Finished time.Time
+}
+
+// DownloadStampsByJob implements Store.
+func (s *SQLiteStore) DownloadStampsByJob(ctx context.Context) (map[string]DownloadStamps, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, download_started, download_finished FROM jobs")
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store download stamps query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]DownloadStamps)
+	for rows.Next() {
+		var id string
+		var startedUnix, finishedUnix int64
+		if err := rows.Scan(&id, &startedUnix, &finishedUnix); err != nil {
+			return nil, fmt.Errorf("sqlite store download stamps scan: %w", err)
+		}
+		out[id] = DownloadStamps{
+			Started:  decodeJobStamp(startedUnix),
+			Finished: decodeJobStamp(finishedUnix),
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store download stamps rows: %w", err)
+	}
+	return out, nil
+}
+
 // Dir returns the persistent root directory managed by the store.
 func (s *SQLiteStore) Dir() string {
 	return s.dir
