@@ -60,6 +60,24 @@ echo -e "\n[1/6] Running Static Analysis & Linters..."
 echo "Running go vet..."
 go vet ./...
 
+# The same vet again, with every build tag in use. `go vet ./...` above sees
+# only untagged files, and the tagged suites below are each path-scoped
+# (step 3 to ./test/integration/..., step 5 to ./test/uitest/...), so six
+# tagged files are compiled by nothing else in this script:
+# internal/par2/par2_integration_test.go and all five of test/crash/. That gap
+# let internal/app/integration_test.go sit uncompilable for six weeks (#475).
+#
+# This matters most for test/crash/, which is deliberately NOT run here (see
+# the note before the summary block below) — so on a machine where the crash
+# suite cannot run at all, this is the only thing that compiles it.
+#
+# Compiles without running, so it needs none of the tools those suites need.
+# -tags=e2e is absent on purpose: test/e2e carries no build constraint
+# (`git grep -c '^//go:build' -- 'test/e2e/*.go'` returns 0 matching lines)
+# and is gated at runtime by E2E_CONFIG instead.
+echo "Running go vet over build-tagged files..."
+go vet -tags=integration,uitest,crash ./...
+
 echo "Running golangci-lint..."
 golangci-lint run ./...
 
