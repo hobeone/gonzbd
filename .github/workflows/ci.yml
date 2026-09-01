@@ -113,3 +113,46 @@ jobs:
       # gate — keep it last so cheaper checks fail first.
       - name: Coverage check
         run: go run scripts/check_coverage/main.go
+
+  crash:
+    name: Crash-consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # TestMain builds ./cmd/gonzbd itself, and that build fails without
+      # ui/dist (//go:embed all:dist in ui/embed.go) — the usual worktree
+      # caveat, here for a fresh runner checkout instead. Only the build
+      # output is needed, so this skips the type-check and vitest steps the
+      # `test` job runs.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --frozen-lockfile
+
+      - name: Build UI
+        working-directory: ui
+        run: bun run build
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Go dependencies
+        run: go mod download
+
+      # A separate job, not a step in `test` above, deliberately: it builds
+      # and SIGKILLs a real child process and is Linux-only (test/crash's
+      # files carry `//go:build crash && linux`), so isolating it means a
+      # runner that cannot build or kill that child fails this job alone
+      # rather than the whole workflow. No `needs:` on `test` either, so the
+      # two run concurrently rather than serialize.
+      - name: Run crash-consistency suite
+        run: go test -tags=crash -timeout=20m ./test/crash/
