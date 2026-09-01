@@ -544,9 +544,9 @@ func (j *Job) recordDownload(server string, bytes int) {
 // which owns both halves of the rule — that the stamp is one the store can
 // distinguish from absent, and that the first one wins. #464 moved it there
 // because the first-wins test was written out at three sites and they had
-// already diverged: these two methods, plus Queue.SetPostProcStarted
-// (queue.go:1355), which tests IsZero on the field and nothing at all on the
-// value it is about to store. Task 3 of #464 routes that one here too.
+// already diverged: these two methods, plus Queue.SetPostProcStarted, which
+// tested IsZero on the field and nothing at all on the value it was about to
+// store. All three now delegate.
 //
 // What is refused widened with that move. #459 refused the zero value, the
 // sentinel this method's own guard used to test against; the owner refuses
@@ -576,13 +576,15 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // one capital letter apart, differing only in this guard. #457 resolved that
 // by deleting the exported one rather than guarding it: it had no production
 // caller, and guarding it would have added a THIRD enforcement site for the
-// first-finish-wins rule. There are still two — the owner this method
-// delegates to, and Queue.SetPostProcStarted, which applies the same IsZero
-// test to the same field without routing through either. That second site is not this change's
-// to remove, and since #457's review it is tested: TestSetPostProcStarted's
-// "does not overwrite a finish time MarkDownloadFinished already set" subtest
-// is what holds the two writers to the same rule. The name stays because it
-// still says what the method does, which the field name did not.
+// first-finish-wins rule. There were two at the time — this method, and
+// Queue.SetPostProcStarted, which applied the same IsZero test to the same
+// field without routing through here. #464 left one: both now delegate to
+// JobProgress.setDownloadFinishedOnce, which is the only place the rule is
+// written down. TestSetPostProcStarted's "does not overwrite a finish time
+// MarkDownloadFinished already set" subtest is what held the two writers to
+// the same rule while there were two, and it is now the regression net for the
+// delegation. The name stays because it still says what the method does, which
+// the field name did not.
 //
 // The guard is not here: this delegates to
 // JobProgress.setDownloadFinishedOnce, which owns it. #459 refused the zero
@@ -606,8 +608,9 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // returns 3 files — this declaration, the Queue wrapper in queue.go, and
 // progress.go, where #464's stamp owner names both in prose — so every call
 // site is a test. Production reaches downloadFinished through
-// Queue.SetPostProcStarted, which assigns time.Now().UTC() directly under its
-// own IsZero guard. So this is hardening
+// Queue.SetPostProcStarted, which since #464 passes time.Now().UTC() to the
+// same owner this method calls rather than assigning under a guard of its own.
+// So this is hardening
 // against a future caller rather than a live defect. Crucially the refusal
 // does NOT consume the first-wins slot; a real timestamp arriving afterwards
 // is still the first mark.

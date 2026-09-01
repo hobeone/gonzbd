@@ -514,9 +514,9 @@ func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 // This and its three siblings below WILL BE the only functions in this
 // package's non-test sources that assign p.downloadStarted or
 // p.downloadFinished by name, once #464 routes the remaining writers through
-// them: markStartedOnce, markDownloadFinishedOnce and ResetForRetry in job.go,
-// SetPostProcStarted in queue.go, UnmarshalJSON below in this file, and the
-// Get decode in sqlite_store.go.
+// them. markStartedOnce, markDownloadFinishedOnce and SetPostProcStarted have
+// been routed; ResetForRetry in job.go, UnmarshalJSON below in this file, and
+// the Get decode in sqlite_store.go have not.
 //
 // The sentence is in the future tense deliberately: at this commit those
 // writers still exist, and the test that makes the claim checkable —
