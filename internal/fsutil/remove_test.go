@@ -2,8 +2,10 @@ package fsutil
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -65,6 +67,51 @@ func TestContainsOnlySillyRenames(t *testing.T) {
 	ok, _, err = ContainsOnlySillyRenames(dir)
 	if err != nil || ok {
 		t.Errorf("with normal file: got (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+func TestIsBusyOrNotEmpty(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"EBUSY", syscall.EBUSY, true},
+		{"ENOTEMPTY", syscall.ENOTEMPTY, true},
+		{"EEXIST", syscall.EEXIST, true},
+		{"EPERM", syscall.EPERM, true},
+		{"EACCES", syscall.EACCES, true},
+		{"ENOENT", syscall.ENOENT, false},
+		{"nil", nil, false},
+		{"PathError wrapping EBUSY", &os.PathError{Op: "remove", Path: "/tmp/foo", Err: syscall.EBUSY}, true},
+		{"fmt.Errorf wrapping EACCES", fmt.Errorf("wrapped: %w", syscall.EACCES), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBusyOrNotEmpty(tc.err); got != tc.want {
+				t.Errorf("isBusyOrNotEmpty(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// Must stay non-parallel: mutates the shared removeBackoffs package var.
+// t.Parallel siblings pause until this test returns, so the mutate/restore
+// pair here is safe only as long as this test runs serially.
+func TestSetRemoveBackoffsForTest(t *testing.T) {
+	origBackoffs := removeBackoffs
+	t.Cleanup(func() { removeBackoffs = origBackoffs })
+
+	shortened := []time.Duration{time.Millisecond}
+	restore := SetRemoveBackoffsForTest(shortened)
+	if len(removeBackoffs) != 1 || removeBackoffs[0] != time.Millisecond {
+		t.Fatalf("removeBackoffs after override = %v, want %v", removeBackoffs, shortened)
+	}
+
+	restore()
+	if !slices.Equal(removeBackoffs, origBackoffs) {
+		t.Fatalf("removeBackoffs after restore = %v, want original schedule %v", removeBackoffs, origBackoffs)
 	}
 }
 
