@@ -147,10 +147,10 @@ func TestLimiterActive(t *testing.T) {
 	// NewLimiter floors burst at minBurst (256 KiB), which at a realistic rate
 	// makes the refill this test waits out take a full second. Bypass that
 	// floor by constructing the wrapped rate.Limiter directly (same-package
-	// access to the unexported lim field) with a small burst/rate pair that
-	// preserves the same ratio — refill from empty to burst takes burst/bps
-	// seconds regardless of scale, so this exercises the identical blocking
-	// behavior NewLimiter's production floor does, just faster.
+	// access to the unexported lim field) with a smaller burst/rate pair:
+	// refill from empty to burst takes burst/bps seconds at any scale, so a
+	// 10x-smaller burst/bps here exercises the identical blocking behavior
+	// NewLimiter's production floor does, just 10x faster in wall-clock terms.
 	const bps = 1000  // 1000 tokens/sec
 	const burst = 100 // refill from empty takes burst/bps = 100ms
 	l := &Limiter{lim: rate.NewLimiter(rate.Limit(bps), burst)}
