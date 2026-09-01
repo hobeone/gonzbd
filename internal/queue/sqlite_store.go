@@ -38,6 +38,70 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 	}
 }
 
+// encodeJobStamp is the wire form of a download timestamp: 0 means absent.
+//
+// The sentinel is unambiguous because isJobStamp — the owner's bound in
+// progress.go — is defined on t.Unix() > 0, the same quantity this writes. Any
+// stamp the owner accepts encodes to a positive integer, and no stamp it
+// accepts encodes to 0. That equivalence is what let #464 close without making
+// the columns nullable, and
+// TestJobStampCodec_RoundTripsAndAgreesWithTheOwnersBound asserts it rather
+// than trusting this sentence.
+//
+// It exists because addTx and updateTx carried byte-identical copies of this
+// conversion — issue #464's option 3, worth doing whether or not the epoch bug
+// existed. Those copies also read the field through IsZero, which is precisely
+// the test that admits time.Unix(0,0) and encodes it to the absent sentinel.
+func encodeJobStamp(t time.Time) int64 {
+	if !isJobStamp(t) {
+		return 0
+	}
+	return t.Unix()
+}
+
+// decodeJobStamp inverts encodeJobStamp.
+func decodeJobStamp(unix int64) time.Time {
+	if unix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0).UTC()
+}
+
+// DownloadStamps carries one job's two persisted download timestamps, already
+// decoded. Either may be the zero time, meaning the column held the absent
+// sentinel.
+type DownloadStamps struct {
+	Started  time.Time
+	Finished time.Time
+}
+
+// DownloadStampsByJob implements Store.
+func (s *SQLiteStore) DownloadStampsByJob(ctx context.Context) (map[string]DownloadStamps, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, download_started, download_finished FROM jobs")
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store download stamps query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]DownloadStamps)
+	for rows.Next() {
+		var id string
+		var startedUnix, finishedUnix int64
+		if err := rows.Scan(&id, &startedUnix, &finishedUnix); err != nil {
+			return nil, fmt.Errorf("sqlite store download stamps scan: %w", err)
+		}
+		out[id] = DownloadStamps{
+			Started:  decodeJobStamp(startedUnix),
+			Finished: decodeJobStamp(finishedUnix),
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store download stamps rows: %w", err)
+	}
+	return out, nil
+}
+
 // Dir returns the persistent root directory managed by the store.
 func (s *SQLiteStore) Dir() string {
 	return s.dir
@@ -403,13 +467,9 @@ func (s *SQLiteStore) addTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manife
 	metaJSON, _ := json.Marshal(job.Meta)
 
 	var dlStartedUnix, dlFinishedUnix int64
-	if job.Progress() != nil {
-		if !job.Progress().DownloadStarted().IsZero() {
-			dlStartedUnix = job.Progress().DownloadStarted().Unix()
-		}
-		if !job.Progress().DownloadFinished().IsZero() {
-			dlFinishedUnix = job.Progress().DownloadFinished().Unix()
-		}
+	if p := job.Progress(); p != nil {
+		dlStartedUnix = encodeJobStamp(p.DownloadStarted())
+		dlFinishedUnix = encodeJobStamp(p.DownloadFinished())
 	}
 
 	const qJobs = `
@@ -564,12 +624,8 @@ FROM jobs WHERE id = ?`
 			job.manifest = &manifest
 			job.setScalarsFromManifest(&manifest)
 			job.progress = newJobProgress(&manifest)
-			if dlStartedUnix > 0 {
-				job.progress.downloadStarted = time.Unix(dlStartedUnix, 0).UTC()
-			}
-			if dlFinishedUnix > 0 {
-				job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
-			}
+			job.progress.restoreDownloadStamps(
+				decodeJobStamp(dlStartedUnix), decodeJobStamp(dlFinishedUnix))
 			_ = s.RestoreJobProgress(ctx, &job)
 		}
 	}
@@ -1010,13 +1066,9 @@ WHERE id = ?`
 	}
 
 	var dlStartedUnix, dlFinishedUnix int64
-	if job.Progress() != nil {
-		if !job.Progress().DownloadStarted().IsZero() {
-			dlStartedUnix = job.Progress().DownloadStarted().Unix()
-		}
-		if !job.Progress().DownloadFinished().IsZero() {
-			dlFinishedUnix = job.Progress().DownloadFinished().Unix()
-		}
+	if p := job.Progress(); p != nil {
+		dlStartedUnix = encodeJobStamp(p.DownloadStarted())
+		dlFinishedUnix = encodeJobStamp(p.DownloadFinished())
 	}
 
 	res, err := execer.ExecContext(ctx, q,

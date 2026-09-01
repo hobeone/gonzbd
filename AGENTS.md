@@ -375,13 +375,25 @@ pkg ./internal/queue/
 run TestTheNewPin
 
 [the guard neutered]
-file internal/queue/queue.go
+file internal/queue/progress.go
 --- anchor
-	if job.progress.downloadFinished.IsZero() {
+	if !isJobStamp(t) || !p.downloadFinished.IsZero() {
 --- replace
-	if true {
+	if false {
 --- end
 ```
+
+That anchor is a real line, and keeping it one is deliberate: an example
+anchored on text the tree no longer contains still reads as a working example,
+but every reader who runs it gets `ANCHOR — anchor matched no site` and has to
+work out whether the tool or the example is broken. This example used to name
+`internal/queue/queue.go`'s `if job.progress.downloadFinished.IsZero() {`,
+which is exactly what happened to it: #464 deleted that line when it gave the
+download timestamps a single owner. `internal/queue/testdata/postproc_stamp.spec`
+is the same mutation against the line that replaced it, kept as a committed
+spec — so the mutation above is one this repository actually runs. Its `run`
+line is still a placeholder: `TestTheNewPin` names no test, and the committed
+spec runs `TestSetPostProcStarted`.
 
 `scripts/mutate/testdata/self.spec` is the worked example — it is the tool's own
 red check, and running it is how you verify a change to the tool.

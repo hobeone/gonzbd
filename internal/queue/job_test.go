@@ -381,6 +381,11 @@ func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
 // failed. Only the failed articles' done/failed bits should be reset (and
 // the per-file/job-level FailedBytes recomputed from what remains), and
 // Complete should be cleared only for files that had a reset.
+//
+// It also pins the download stamps being cleared, which #464 routed through
+// JobProgress.clearDownloadStamps. That belongs here rather than in a test of
+// its own because this is the only place ResetForRetry is called directly on a
+// job whose stamps were set.
 func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 	t.Parallel()
 	parsed := &nzb.NZB{Files: []nzb.File{
@@ -423,7 +428,28 @@ func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 	}
 	remainingBeforeReset := snap.Progress().RemainingBytes()
 
+	// Seed the download stamps so the assertion that they are cleared is not
+	// vacuous. A job that never had stamps reads as cleared whatever the reset
+	// does, which is how app.RetryHistoryJob's coverage looked like a pin and
+	// was not: that path rebuilds the job with NewJob, so its stamps are zero
+	// because the job is new. Neutering the clear in ResetForRetry left that
+	// test green.
+	started := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if !snap.markStartedOnce(started) {
+		t.Fatal("seeding downloadStarted failed; the reset assertion below would be vacuous")
+	}
+	if !snap.markDownloadFinishedOnce(started.Add(time.Hour)) {
+		t.Fatal("seeding downloadFinished failed; the reset assertion below would be vacuous")
+	}
+
 	snap.ResetForRetry()
+
+	if got := snap.Progress().DownloadStarted(); !got.IsZero() {
+		t.Errorf("DownloadStarted = %v after the reset, want zero", got)
+	}
+	if got := snap.Progress().DownloadFinished(); !got.IsZero() {
+		t.Errorf("DownloadFinished = %v after the reset, want zero", got)
+	}
 
 	if snap.Status != constants.StatusQueued {
 		t.Errorf("Status = %q, want Queued", snap.Status)
@@ -605,8 +631,11 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 	})
 }
 
-// TestJobMarkOnce_RefusesAZeroTimestamp pins that a zero time is refused
-// rather than reported as a successful first mark (#459).
+// TestJobMarkOnce_RefusesAStampTheStoreCannotDistinguish pins that a timestamp
+// the store cannot distinguish from absent is refused rather than reported as
+// a successful first mark. It began as #459's zero-value pin, under the name
+// TestJobMarkOnce_RefusesAZeroTimestamp; #464 widened the rule from one value
+// to an interval and renamed it, because a test's name is a claim too.
 //
 // The guard used to read the FIELD only. Handed time.Time{}, the field stayed
 // zero and the method still returned true, so three things went wrong at once:
@@ -615,17 +644,27 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 // timestamp passed the guard again and overwrote, so "first wins" was violated
 // and the store was written twice for one job start.
 //
-// The zero value is the sentinel these methods test against, so it is the one
-// argument they cannot store without destroying their own guard.
+// What the methods cannot store is now every t whose Unix() is not positive:
+// the zero value, because it is the sentinel their own first-wins test reads,
+// and the rest of the interval because the SQLite column encodes it as the 0
+// that the store decodes back to "absent". "half a second after the epoch" is
+// the case that separates the two rules — it is not IsZero, so #459's guard
+// admitted it, and it still encodes to 0.
 //
 // Neither is reachable from production today, but for different reasons, and
 // conflating them is what an earlier draft of this comment did. markStartedOnce
-// has one production caller — internal/app/pipeline.go:412, which passes
-// time.Now(). markDownloadFinishedOnce has none at all; production reaches
-// downloadFinished through Queue.SetPostProcStarted. Both are therefore
-// hardening rather than a live defect, which is why the real assertion is the
-// third one: that refusing does not consume the first-wins slot.
-func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
+// has one production caller — internal/app/pipeline.go's MarkJobStarted call,
+// which passes time.Now(); markStartedOnce's own doc comment carries the grep
+// that locates it. markDownloadFinishedOnce has none at all; production reaches
+// downloadFinished through Queue.SetPostProcStarted, which since #464 passes
+// its own time.Now().UTC() to the same owner.
+//
+// Both are therefore hardening rather than a live defect, which is why the
+// load-bearing assertions are not the refusal itself but the two after it:
+// that refusing does not consume the first-wins slot, and that a refusal
+// arriving after a real mark does not clobber it. Deleting either leaves a
+// guard that stores the bad value before returning false looking correct.
+func TestJobMarkOnce_RefusesAStampTheStoreCannotDistinguish(t *testing.T) {
 	t.Parallel()
 
 	real := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -644,32 +683,50 @@ func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			j := &Job{ID: "j1", progress: &JobProgress{}}
 
-			if tc.mark(j, time.Time{}) {
-				t.Error("a zero timestamp reported a successful mark; the wrapper would persist and dirty the queue for a write that did not happen")
-			}
-			if got := tc.field(j); !got.IsZero() {
-				t.Errorf("field = %v after a refused zero mark, want the zero time", got)
-			}
-			// The refusal must not consume the first-wins slot: a real
-			// timestamp arriving afterwards is still the FIRST mark.
-			if !tc.mark(j, real) {
-				t.Fatal("a real timestamp after a refused zero one returned false; the refusal consumed the first-wins slot")
-			}
-			if got := tc.field(j); !got.Equal(real) {
-				t.Errorf("field = %v, want %v", got, real)
-			}
-			// The other order: a zero arriving AFTER a real mark must not
-			// clobber it. A guard that stored t before returning false —
-			// `if t.IsZero() { j.progress.f = t; return false }` — refuses
-			// correctly on the empty job above and still destroys the
-			// timestamp here, so the assertions above cannot see it.
-			if tc.mark(j, time.Time{}) {
-				t.Error("a zero timestamp after a real one reported a successful mark")
-			}
-			if got := tc.field(j); !got.Equal(real) {
-				t.Errorf("field = %v after a refused zero mark clobbered it, want %v", got, real)
+			for _, bad := range []struct {
+				name string
+				in   time.Time
+			}{
+				{"the zero value", time.Time{}},
+				{"the epoch", time.Unix(0, 0)},
+				{"half a second after the epoch", time.Unix(0, 500000000)},
+			} {
+				t.Run(bad.name, func(t *testing.T) {
+					t.Parallel()
+					// The fixture belongs inside this loop, not outside it:
+					// shared across cases, the second one would start against
+					// a job already holding real and Fatal below on a refusal
+					// that is first-wins working correctly.
+					j := &Job{ID: "j1", progress: &JobProgress{}}
+
+					if tc.mark(j, bad.in) {
+						t.Errorf("%s reported a successful mark; the wrapper would persist and dirty the queue for a write that did not happen", bad.name)
+					}
+					if got := tc.field(j); !got.IsZero() {
+						t.Errorf("field = %v after a refused %s, want the zero time", got, bad.name)
+					}
+					// The refusal must not consume the first-wins slot: a real
+					// timestamp arriving afterwards is still the FIRST mark.
+					if !tc.mark(j, real) {
+						t.Fatalf("a real timestamp after a refused %s returned false; the refusal consumed the first-wins slot", bad.name)
+					}
+					if got := tc.field(j); !got.Equal(real) {
+						t.Errorf("field = %v, want %v", got, real)
+					}
+					// The other order: a bad value arriving AFTER a real mark
+					// must not clobber it. A guard that stored t before
+					// returning false — `if !isJobStamp(t) { j.progress.f = t;
+					// return false }` — refuses correctly on the empty job
+					// above and still destroys the timestamp here, so the
+					// assertions above cannot see it.
+					if tc.mark(j, bad.in) {
+						t.Errorf("%s after a real one reported a successful mark", bad.name)
+					}
+					if got := tc.field(j); !got.Equal(real) {
+						t.Errorf("field = %v after a refused %s clobbered it, want %v", got, bad.name, real)
+					}
+				})
 			}
 		})
 	}

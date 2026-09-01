@@ -3,6 +3,7 @@ package queue
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestJobProgressArticleAccessorsOutOfRange pins the bounds-guard branch on
@@ -126,5 +127,238 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 	}
 	if got := p.PendingArticles(); got != 0 {
 		t.Errorf("PendingArticles() on nil = %d, want 0", got)
+	}
+}
+
+// TestIsJobStamp_MatchesTheWireForm pins the bound that #464 turns on.
+//
+// The sub-second case is the one that matters: it is the value the rejected
+// t.After(time.Unix(0,0)) formulation would have admitted, and it still
+// encodes to the integer 0 that the store reads as "absent".
+func TestIsJobStamp_MatchesTheWireForm(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   time.Time
+		want bool
+	}{
+		{"zero value", time.Time{}, false},
+		{"the epoch itself", time.Unix(0, 0), false},
+		{"one second before the epoch", time.Unix(-1, 0), false},
+		{"half a second after the epoch", time.Unix(0, 500000000), false},
+		{"one second after the epoch", time.Unix(1, 0), true},
+		{"a plausible now", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isJobStamp(tc.in); got != tc.want {
+				t.Errorf("isJobStamp(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSetDownloadStampOnce_FirstWinsAndRefusesNonStamps covers both setters.
+//
+// The table is parameterised by the getter as well as the setter: that is what
+// catches a setter miswired to write its sibling's field, which a table keyed
+// on the setter alone would pass.
+func TestSetDownloadStampOnce_FirstWinsAndRefusesNonStamps(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name    string
+		set     func(*JobProgress, time.Time) bool
+		get     func(*JobProgress) time.Time
+		sibling func(*JobProgress) time.Time
+	}{
+		{"started", (*JobProgress).setDownloadStartedOnce,
+			(*JobProgress).DownloadStarted, (*JobProgress).DownloadFinished},
+		{"finished", (*JobProgress).setDownloadFinishedOnce,
+			(*JobProgress).DownloadFinished, (*JobProgress).DownloadStarted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := &JobProgress{}
+			if !tc.set(p, real) {
+				t.Fatal("first real stamp was refused")
+			}
+			if !tc.get(p).Equal(real) {
+				t.Fatalf("stamp = %v, want %v", tc.get(p), real)
+			}
+			// Asserting the target field alone would pass a setter that wrote
+			// BOTH fields, which is a plausible copy-paste result given how
+			// alike the two bodies are.
+			if !tc.sibling(p).IsZero() {
+				t.Errorf("the sibling field was also written: %v", tc.sibling(p))
+			}
+			if tc.set(p, real.Add(time.Hour)) {
+				t.Error("second stamp took; first-wins was not enforced")
+			}
+			if !tc.get(p).Equal(real) {
+				t.Errorf("stamp moved to %v", tc.get(p))
+			}
+
+			// A refusal must not consume the slot.
+			q := &JobProgress{}
+			if tc.set(q, time.Unix(0, 0)) {
+				t.Error("epoch zero was accepted")
+			}
+			if !tc.get(q).IsZero() {
+				t.Errorf("epoch zero was stored: %v", tc.get(q))
+			}
+			if !tc.set(q, real) {
+				t.Error("the refusal consumed the first-wins slot")
+			}
+		})
+	}
+}
+
+// TestJobStampCodec_RoundTripsAndAgreesWithTheOwnersBound pins the two halves
+// of #464 that have to agree: what the owner will hold in memory, and what the
+// store's integer column can represent.
+//
+// 0 is the column's "absent" sentinel, so the codec is only unambiguous if no
+// stamp the owner ACCEPTS encodes to 0. That equivalence is what let #464 close
+// without making the columns nullable, so it is asserted rather than argued for
+// in a comment.
+//
+// The load-bearing assertion is the PRE-EPOCH one at the end, not the
+// sign-agreement loop before it — see the comment there for why the loop is
+// circular and what it is still worth.
+func TestJobStampCodec_RoundTripsAndAgreesWithTheOwnersBound(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	if got := encodeJobStamp(real); got != real.Unix() {
+		t.Errorf("encodeJobStamp(%v) = %d, want %d", real, got, real.Unix())
+	}
+	if got := encodeJobStamp(time.Time{}); got != 0 {
+		t.Errorf("encodeJobStamp(zero) = %d, want 0", got)
+	}
+	if got := decodeJobStamp(real.Unix()); !got.Equal(real) {
+		t.Errorf("decodeJobStamp(%d) = %v, want %v", real.Unix(), got, real)
+	}
+	for _, absent := range []int64{0, -1} {
+		if got := decodeJobStamp(absent); !got.IsZero() {
+			t.Errorf("decodeJobStamp(%d) = %v, want the zero value", absent, got)
+		}
+	}
+
+	for _, tc := range []time.Time{
+		{}, time.Unix(0, 0), time.Unix(0, 500000000), time.Unix(1, 0), real,
+	} {
+		if isJobStamp(tc) != (encodeJobStamp(tc) > 0) {
+			t.Errorf("isJobStamp(%v) = %v but encodeJobStamp gives %d",
+				tc, isJobStamp(tc), encodeJobStamp(tc))
+		}
+	}
+
+	// The loop above compares signs, and encodeJobStamp is implemented in
+	// terms of isJobStamp, so it holds by construction today — it is a change
+	// detector for a future reimplementation, not a proof.
+	//
+	// This is the assertion that is not circular. A plausible rewrite guarding
+	// on IsZero rather than isJobStamp passes every assertion above, because
+	// every value they cover has Unix() == 0 either way; it differs only for a
+	// pre-epoch time, which it would write to the column verbatim. The column
+	// must hold a positive stamp or the absent sentinel and nothing else, so
+	// pin the value rather than its sign.
+	for _, preEpoch := range []time.Time{time.Unix(-1, 0), time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC)} {
+		if got := encodeJobStamp(preEpoch); got != 0 {
+			t.Errorf("encodeJobStamp(%v) = %d, want the 0 sentinel — a negative "+
+				"reaches the column as a value the decode reads as absent anyway, "+
+				"so the two disagree about what was stored", preEpoch, got)
+		}
+	}
+}
+
+// TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish pins the ordering half
+// of the owner's rule.
+//
+// The path is real, not defensive. MarkJobStarted is called on every successful
+// article (internal/app/pipeline.go), so downloadStarted is normally stamped
+// long before any finish. But IsEarlyAbort fires once 10 articles have RESOLVED
+// with an 80% failure rate, and a resolution counts a failure — so a job whose
+// first 10 articles all fail aborts with downloadStarted still zero. The abort
+// runs maybeFinalize -> SetPostProcStarted, which stamps downloadFinished. An
+// article still in flight that then succeeds calls MarkJobStarted, and without
+// this guard it stamps a start that post-dates the finish.
+//
+// The consequence is not cosmetic: internal/app/history_helper.go guards its
+// duration against == 0 but not against < 0, so the negative reaches
+// history.Entry.DownloadTime and SAB_DOWNLOAD_TIME in user scripts.
+func TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish(t *testing.T) {
+	t.Parallel()
+
+	finished := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	p := &JobProgress{}
+	if !p.setDownloadFinishedOnce(finished) {
+		t.Fatal("seeding the finish failed; the assertion below would be vacuous")
+	}
+	if p.setDownloadStartedOnce(finished.Add(time.Second)) {
+		t.Error("a start after the finish was accepted; the reported duration goes negative")
+	}
+	if got := p.DownloadStarted(); !got.IsZero() {
+		t.Errorf("downloadStarted = %v after a refused out-of-order mark, want the zero time", got)
+	}
+
+	// A start BEFORE an already-recorded finish is the ordinary restore-free
+	// ordering and must still be refused for the same reason a second mark is:
+	// the finish is already recorded, so this job's start is not being observed
+	// for the first time. Asserting it keeps the guard's shape honest — it is
+	// "no start once a finish exists", not a comparison.
+	q := &JobProgress{}
+	if !q.setDownloadFinishedOnce(finished) {
+		t.Fatal("seeding the finish failed")
+	}
+	if q.setDownloadStartedOnce(finished.Add(-time.Hour)) {
+		t.Error("a start was accepted after the finish was already recorded")
+	}
+}
+
+func TestClearDownloadStamps_ClearsBothFields(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	p := &JobProgress{downloadStarted: real, downloadFinished: real.Add(time.Hour)}
+	p.clearDownloadStamps()
+	if !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
+		t.Errorf("after clear: started=%v finished=%v, want both zero",
+			p.downloadStarted, p.downloadFinished)
+	}
+}
+
+func TestRestoreDownloadStamps_FiltersEachFieldIndependently(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name                      string
+		started, finished         time.Time
+		wantStarted, wantFinished time.Time
+	}{
+		{"both real", real, real, real, real},
+		{"started fails the rule", time.Unix(0, 0), real, time.Time{}, real},
+		{"finished fails the rule", real, time.Unix(0, 0), real, time.Time{}},
+		{"both fail", time.Unix(0, 0), time.Time{}, time.Time{}, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &JobProgress{}
+			p.restoreDownloadStamps(tc.started, tc.finished)
+			if !p.downloadStarted.Equal(tc.wantStarted) {
+				t.Errorf("started = %v, want %v", p.downloadStarted, tc.wantStarted)
+			}
+			if !p.downloadFinished.Equal(tc.wantFinished) {
+				t.Errorf("finished = %v, want %v", p.downloadFinished, tc.wantFinished)
+			}
+		})
 	}
 }

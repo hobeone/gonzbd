@@ -489,6 +489,120 @@ func (p *JobProgress) DownloadFinished() time.Time {
 	return p.downloadFinished
 }
 
+// isJobStamp reports whether t may be stored as a download timestamp.
+//
+// The bound is expressed on t.Unix() rather than on t itself, and that is the
+// point. SQLiteStore encodes these fields with t.Unix() and reads 0 as
+// "absent". A bound of t.After(time.Unix(0, 0)) would admit the whole interval
+// (epoch, epoch+1s), every member of which encodes to 0 and reads back as
+// time.Time{} — the round-trip loss #464 reports, merely narrowed. Comparing on
+// the encoded value makes the predicate and the wire form the same set by
+// construction.
+//
+// It also subsumes the IsZero() test that markStartedOnce and
+// markDownloadFinishedOnce used to apply: time.Time{} is year 1, whose Unix()
+// is -62135596800. Both delegate here now, so the rule is one predicate rather
+// than two that happened to agree.
+//
+// That no job timestamp is at or before the Unix epoch is a decision settled on
+// #464, not something derived from the code. Every production path stamps from
+// time.Now(), so a value failing this test is a programming error, not data.
+func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
+
+// setDownloadStartedOnce records the download start, reporting whether it took.
+// A later call is a no-op: first start wins.
+//
+// This and its three siblings below are the only functions in this package's
+// non-test sources that assign p.downloadStarted or p.downloadFinished by
+// name. #464 routed the six former writers here: markStartedOnce,
+// markDownloadFinishedOnce and ResetForRetry in job.go, SetPostProcStarted in
+// queue.go, UnmarshalJSON below in this file, and the Get decode in
+// sqlite_store.go.
+//
+// That claim is enforced rather than cited.
+// TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
+// AST and fails when the writer set moves, per field rather than as a union —
+// which a grep could not do, and which is what makes a setter miswired to
+// write its sibling's field visible here. It replaced a hand-run grep that
+// stated a count: the count was correct and would have gone stale silently,
+// because a comment is neither compiled nor executed.
+//
+// Refusing a non-stamp does NOT consume the first-wins slot: a real timestamp
+// arriving afterwards is still the first mark.
+func (p *JobProgress) setDownloadStartedOnce(t time.Time) bool {
+	// The downloadFinished test is the ordering half of the rule: a start may
+	// not be recorded once a finish is. Without it a job whose first 10
+	// articles all fail early-aborts with no start recorded, stamps a finish
+	// through SetPostProcStarted, and an article still in flight then stamps a
+	// start that post-dates it — a negative duration in the history record.
+	// See TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish.
+	if !isJobStamp(t) || !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
+		return false
+	}
+	p.downloadStarted = t
+	return true
+}
+
+// setDownloadFinishedOnce records the download completion, reporting whether it
+// took. A later call is a no-op: first finish wins. See setDownloadStartedOnce
+// for the ownership rule both obey.
+func (p *JobProgress) setDownloadFinishedOnce(t time.Time) bool {
+	if !isJobStamp(t) || !p.downloadFinished.IsZero() {
+		return false
+	}
+	p.downloadFinished = t
+	return true
+}
+
+// clearDownloadStamps reopens both first-wins slots. `git grep -c
+// 'clearDownloadStamps()' -- '*.go' ':!*_test.go'` returns 2 lines, one per
+// file: job.go, where ResetForRetry calls it because a re-download legitimately
+// re-stamps, and this file, where restoreDownloadStamps below clears before
+// installing.
+//
+// restoreDownloadStamps(time.Time{}, time.Time{}) would do the same thing, so
+// this is a degenerate case of its sibling. It exists because the two are read
+// at call sites that mean different things — a retry reopens slots it intends
+// to re-win, a load installs slots already won in another run — and a reader of
+// ResetForRetry should not have to evaluate isJobStamp(time.Time{}) to see that
+// the line clears.
+func (p *JobProgress) clearDownloadStamps() {
+	p.downloadStarted = time.Time{}
+	p.downloadFinished = time.Time{}
+}
+
+// restoreDownloadStamps installs stamps read back from persistence, bypassing
+// first-wins because a restore is not a mark: the slots it fills were already
+// won in the run that wrote them.
+//
+// It applies isJobStamp because this is the owner's entry point for values it
+// did not mint. That is Rule 2, not a migration path: Rule 1 waives any duty to
+// a row an earlier build wrote, and the guard is not here for one. It is here
+// so that no caller can install a stamp the store cannot represent — the same
+// reason the setters test it, applied at the door the setters do not cover.
+//
+// Via the store the guard is currently redundant, and deliberately kept:
+// decodeJobStamp already yields either a positive stamp or time.Time{}. The
+// redundancy is the point of a gatekeeper — it holds for the next caller too,
+// and a check that only pays off when someone makes a mistake reads as dead
+// code until the mistake.
+//
+// Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
+// returns 3 lines, one per file rather than one per site — this file, which
+// holds the declaration and the UnmarshalJSON call; sqlite_store.go, which
+// holds the Get decode for a resident job; and persistence.go, where Load
+// hydrates a non-resident one. All three read a stamp the process did not
+// mint, which is what this method is the door for.
+func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
+	p.clearDownloadStamps()
+	if isJobStamp(started) {
+		p.downloadStarted = started
+	}
+	if isJobStamp(finished) {
+		p.downloadFinished = finished
+	}
+}
+
 // Par2Recovered reports whether on-demand par2 has un-deferred this job's recovery volumes.
 func (p *JobProgress) Par2Recovered() bool {
 	if p == nil {
@@ -918,8 +1032,7 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	}
 	p.failedBytes = pj.FailedBytes
 	p.serverStats = pj.ServerStats
-	p.downloadStarted = pj.DownloadStarted
-	p.downloadFinished = pj.DownloadFinished
+	p.restoreDownloadStamps(pj.DownloadStarted, pj.DownloadFinished)
 	p.par2Recovered = pj.Par2Recovered
 	p.par2ReleaseReason = pj.Par2ReleaseReason
 	return nil
