@@ -17,6 +17,7 @@ var (
 	removeAllFunc     = os.RemoveAll
 	removeFunc        = os.Remove
 	rootRemoveAllFunc = func(r *os.Root, name string) error { return r.RemoveAll(name) }
+	removeBackoffs    = []time.Duration{25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
 )
 
 // IsSillyRenameFile reports whether filename is an NFS, SMB, or FUSE
@@ -73,7 +74,7 @@ func isBusyOrNotEmpty(err error) bool {
 //     returns nil so pipeline stages succeed without error.
 func RemoveAll(path string) error {
 	var lastErr error
-	backoffs := []time.Duration{25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
+	backoffs := removeBackoffs
 
 	for i := 0; i <= len(backoffs); i++ {
 		err := removeAllFunc(path)
@@ -110,7 +111,7 @@ func RemoveAll(path string) error {
 // ignoring persistent failures on individual silly-rename files.
 func Remove(path string) error {
 	var lastErr error
-	backoffs := []time.Duration{25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
+	backoffs := removeBackoffs
 
 	for i := 0; i <= len(backoffs); i++ {
 		err := removeFunc(path)
@@ -139,7 +140,7 @@ func Remove(path string) error {
 // ignoring lingering silly-rename files).
 func RemoveRootAll(root *os.Root, rel, fullPath string) error {
 	var lastErr error
-	backoffs := []time.Duration{25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
+	backoffs := removeBackoffs
 
 	for i := 0; i <= len(backoffs); i++ {
 		err := rootRemoveAllFunc(root, rel)

@@ -36,6 +36,7 @@ func (failingCommitStore) Commit(context.Context, string, []durability.DurableAr
 // SnapshotJob, which hydrates a manifest from disk and does not touch the
 // mount at all.
 func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// Grounding: a job with no open file is exactly what a wedged Files()
@@ -76,6 +77,7 @@ func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
 // everything written since the last real barrier is". The failure branch did
 // not apply the same rule.
 func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.noteJobBytes(job.ID, 400)
@@ -105,6 +107,7 @@ func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T
 // with megabytes unsynced reported zero bytes pending, and because the stall
 // pauses it nothing re-accumulated.
 func TestCheckpointJob_LeavesThePendingBytesWhenTheRunFails(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	writeFixtureArticle(t, application, job.ID, 0, 0)
 
@@ -142,6 +145,7 @@ func TestCheckpointJob_LeavesThePendingBytesWhenTheRunFails(t *testing.T) {
 // discard exactly those — the most recently written bytes, and the ones least
 // likely to be on disk — so only the figure the barrier actually read comes off.
 func TestSettleJobBytes_SubtractsRatherThanClears(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// The window the barrier read before it started.
@@ -161,6 +165,7 @@ func TestSettleJobBytes_SubtractsRatherThanClears(t *testing.T) {
 // TestSettleJobBytes_IgnoresANonPositiveAmount pins the guard that keeps a
 // job with nothing pending out of the map entirely.
 func TestSettleJobBytes_IgnoresANonPositiveAmount(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.settleJobBytes(job.ID, 0)
@@ -178,6 +183,7 @@ func TestSettleJobBytes_IgnoresANonPositiveAmount(t *testing.T) {
 // job from lingering as a zero entry, which would leak one map entry per job
 // ever downloaded.
 func TestSettleJobBytes_RemovesTheEntryWhenTheWindowIsFullyRetired(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	application.noteJobBytes(job.ID, 400)

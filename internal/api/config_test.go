@@ -209,7 +209,7 @@ func TestModeConfig_TestServer_UnreachableHost(t *testing.T) {
 	s := testServer()
 	s.setAppServices(&app.Application{})
 
-	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=192.0.2.1&port=119&apikey="+testAPIKey)
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=127.0.0.1&port=1&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}

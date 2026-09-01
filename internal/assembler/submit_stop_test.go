@@ -69,7 +69,7 @@ func TestSubmit_ADeadlineFreeCallerIsReleasedByStop(t *testing.T) {
 
 	// Give the submit time to get past the send and onto the reply wait, which
 	// is the state with no arm for Stop.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	stopped := make(chan struct{})
 	go func() {

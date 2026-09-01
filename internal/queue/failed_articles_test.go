@@ -15,6 +15,7 @@ import (
 // recorded comes back, a repeat is a no-op rather than an error, and the clear
 // removes exactly one job's rows.
 func TestRecordAndClearFailedArticles_RoundTrip(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupResidencyTestStoreWithDB(t)
 	ctx := context.Background()
 
@@ -67,6 +68,7 @@ func TestRecordAndClearFailedArticles_RoundTrip(t *testing.T) {
 // retry and makes the next restart mark the retry's re-fetched article failed,
 // so Queue.Retry rolls back on it.
 func TestFailedArticleWrites_SurfaceADatabaseFailure(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupResidencyTestStoreWithDB(t)
 	if err := store.db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -93,6 +95,7 @@ func TestFailedArticleWrites_SurfaceADatabaseFailure(t *testing.T) {
 // empty resolution makes every article of the job Outstanding, so a restart
 // re-downloads a job that is already on disk — and says nothing about why.
 func TestResolutionForJob_SurfacesAReadFailure(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupResidencyTestStoreWithDB(t)
 	if err := store.db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -109,6 +112,7 @@ func TestResolutionForJob_SurfacesAReadFailure(t *testing.T) {
 // that named neither would leave a reader unable to tell which record could
 // not be read.
 func TestScanAll_NamesTheFailingSweep(t *testing.T) {
+	t.Parallel()
 	store, _, _ := setupResidencyTestStoreWithDB(t)
 	ctx := context.Background()
 

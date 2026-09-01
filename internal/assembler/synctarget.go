@@ -127,8 +127,12 @@ func (k syncOpKind) String() string {
 // this bound applied underneath the caller's, the two are separable — see
 // submit and waitEnded.
 //
-// Five seconds matches diskCheckTimeout, the other bound this package places
-// on a syscall against a possibly-dead mount.
+// Five seconds is also diskCheckTimeout's default, the other bound this
+// package places on a syscall against a possibly-dead mount — but the two are
+// independently overridable via Options.BarrierOpTimeout/DiskCheckTimeout and
+// SetBarrierOpTimeout, so the equality holds only when both are left at their
+// defaults; a caller (tests included) that sets one without the other breaks
+// it deliberately.
 const barrierOpTimeout = 5 * time.Second
 
 // syncReply carries a worker answer back to the barrier's goroutine.
@@ -221,7 +225,7 @@ func (t *jobSyncTarget) submit(ctx context.Context, op syncOp) (syncReply, error
 	t.a.mu.Unlock()
 	defer t.a.wg.Done()
 
-	opCtx, cancel := context.WithTimeout(ctx, barrierOpTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, t.a.BarrierOpTimeout())
 	defer cancel()
 
 	req := WriteRequest{JobID: "", FileIdx: fileIdxSyncOp, syncOp: &op}
@@ -266,7 +270,12 @@ func (t *jobSyncTarget) waitEnded(caller context.Context, op syncOp) error {
 	// timeout handler on the condition it is reporting is how a bound stops
 	// being a bound. Barrier.raise fills the path in; it already has it, and
 	// it is not the thing that is stuck.
-	return storagefault.Classify(op.kind.String(), "", errWorkerUnresponsive)
+	timeout := t.a.BarrierOpTimeout()
+	err := errWorkerUnresponsive
+	if timeout != barrierOpTimeout {
+		err = fmt.Errorf("the assembler worker did not answer within %v: %w", timeout, errWorkerUnresponsive)
+	}
+	return storagefault.Classify(op.kind.String(), "", err)
 }
 
 // Files returns the job's currently open files. R8 bounds barrier cost by this

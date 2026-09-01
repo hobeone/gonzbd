@@ -316,15 +316,12 @@ func TestDirectUnpack_Abort(t *testing.T) {
 		names = append(names, name)
 	}
 
-	// Use OnLine to detect when extraction has started.
-	onLine, started := waitForStarted()
-
 	du := New(
 		testLogger(t),
 		"test-job",
 		workDir,
 		extractDir,
-		Options{OnLine: onLine},
+		Options{},
 	)
 
 	du.SetAllFilenames(names)
@@ -335,13 +332,8 @@ func TestDirectUnpack_Abort(t *testing.T) {
 	// Feed vol 1 only — extraction will start and block on vol 2 via WaitFS.
 	du.Add(ctx, "multi_new.part01.rar", filepath.Join(workDir, "multi_new.part01.rar"))
 
-	// Wait for extraction to begin (OnLine fires when first file extracts from vol 1).
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		// Even if no files extract from vol 1 alone, the goroutine started.
-		// Continue with abort test.
-	}
+	// Let extraction start and block waiting for vol 2.
+	time.Sleep(20 * time.Millisecond)
 
 	// Abort instead of feeding remaining volumes.
 	du.Abort()
@@ -393,7 +385,7 @@ func TestDirectUnpack_ContextCancel(t *testing.T) {
 	du.Add(ctx, "multi_new.part01.rar", filepath.Join(workDir, "multi_new.part01.rar"))
 
 	// Let extraction start.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	// Cancel context — WaitFS.Open() should return ctx.Err().
 	cancel()
@@ -541,7 +533,7 @@ func TestDirectUnpack_Abort_RecordsFailures(t *testing.T) {
 	du.Add(ctx, "single_rar5.rar", filepath.Join(workDir, "single_rar5.rar"))
 
 	// Let goroutine start.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	// Abort — should record failures for both sets.
 	du.Abort()

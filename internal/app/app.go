@@ -235,6 +235,10 @@ type Application struct {
 	// just before its barrier. Same discipline as checkpointHook.
 	jobCheckpointHook func(context.Context)
 
+	shutdownStepTimeout time.Duration
+	closeHandlesTimeout time.Duration
+	metricsPushInterval time.Duration
+
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
@@ -307,6 +311,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.stallRecheckInterval = stallRecheckInterval
 	app.checkpointInterval = time.Duration(dl.CheckpointInterval) * time.Second
 	app.checkpointBytes = int64(dl.CheckpointBytes)
+	app.shutdownStepTimeout = 15 * time.Second
+	app.closeHandlesTimeout = closeHandlesTimeout
+	app.metricsPushInterval = 1000 * time.Millisecond
 	for _, o := range opts {
 		o(app)
 	}
@@ -559,6 +566,21 @@ func WithStallRecheckInterval(d time.Duration) func(*Application) {
 // download 64 MiB to see one barrier.
 func WithCheckpointBytes(n int64) func(*Application) {
 	return func(a *Application) { a.checkpointBytes = n }
+}
+
+// WithShutdownStepTimeout overrides the per-step shutdown timeout for tests.
+func WithShutdownStepTimeout(d time.Duration) func(*Application) {
+	return func(a *Application) { a.shutdownStepTimeout = d }
+}
+
+// WithCloseHandlesTimeout overrides the handle close timeout before post-processing for tests.
+func WithCloseHandlesTimeout(d time.Duration) func(*Application) {
+	return func(a *Application) { a.closeHandlesTimeout = d }
+}
+
+// WithMetricsPushInterval overrides the interval at which metrics are pushed to the emitter.
+func WithMetricsPushInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.metricsPushInterval = d }
 }
 
 // Queue returns the application's download queue.
@@ -1196,7 +1218,10 @@ func (app *Application) Shutdown() error {
 	app.stopping.Store(true)
 
 	var errs []error
-	const stepTimeout = 15 * time.Second
+	stepTimeout := app.shutdownStepTimeout
+	if stepTimeout <= 0 {
+		stepTimeout = 15 * time.Second
+	}
 
 	app.stopWorkers(stepTimeout, &errs, barrierOnStop)
 
@@ -1615,7 +1640,11 @@ func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defens
 		// consumer, or the checkpoint loop inside a barrier — for as long as
 		// the mount stays down. Handles that outlive the timeout are closed by
 		// the worker's shutdown drain instead.
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), closeHandlesTimeout)
+		closeTimeout := app.closeHandlesTimeout
+		if closeTimeout <= 0 {
+			closeTimeout = closeHandlesTimeout
+		}
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
 		err := app.assembler.CloseJobHandles(closeCtx, jobID)
 		closeCancel()
 		if err != nil {

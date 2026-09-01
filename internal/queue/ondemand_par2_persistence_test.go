@@ -51,6 +51,7 @@ func addOnDemandPar2Job(t *testing.T, q *Queue, name string) *Job {
 // defers nothing at all: the recovery volumes are downloaded along with
 // everything else, which is precisely what the feature exists to avoid.
 func TestOnDemandPar2_DeferralSurvivesTheStore(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := addOnDemandPar2Job(t, q, "store-deferral")
@@ -66,6 +67,7 @@ func TestOnDemandPar2_DeferralSurvivesTheStore(t *testing.T) {
 // The same, read back through the store rather than from the live job, which
 // is what promotion does.
 func TestOnDemandPar2_DeferralRestoresFromTheStore(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := addOnDemandPar2Job(t, q, "store-restore")
@@ -96,6 +98,7 @@ func TestOnDemandPar2_DeferralRestoresFromTheStore(t *testing.T) {
 // Without a store nothing refills it, so the loss is total and visible
 // directly.
 func TestOnDemandPar2_SnapshotKeepsDeferralWithoutAStore(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	q := New(WithStateDir(dir), WithMaxActiveJobs(1))
 
@@ -185,6 +188,7 @@ func buildTornManifest(t *testing.T, name string) (*Queue, *Job) {
 // progress. Handing a mismatched pair to recompute panics by design, on a
 // background goroutine with no recover.
 func TestStaleManifest_TornWriteIsReportedNotPanicked(t *testing.T) {
+	t.Parallel()
 	q, job := buildTornManifest(t, "stale-discard")
 	after, err := job.Manifest()
 	if err != nil {
@@ -223,6 +227,7 @@ func TestStaleManifest_TornWriteIsReportedNotPanicked(t *testing.T) {
 // live q.jobs entry rather than a clone. Promotion must fail closed, not
 // crash the process.
 func TestStaleManifest_HydrateJobLockedFailsClosed(t *testing.T) {
+	t.Parallel()
 	q, job := buildTornManifest(t, "stale-hydrate")
 
 	if err := q.SetStatus(job.ID, constants.StatusPaused); err != nil {
@@ -249,6 +254,7 @@ func TestStaleManifest_HydrateJobLockedFailsClosed(t *testing.T) {
 // is masked by RestoreJobProgress re-reading the persisted column, so the
 // no-store configuration is the one that shows it.
 func TestOnDemandPar2_DeferralSurvivesPromotionWithoutAStore(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	q := New(WithStateDir(dir), WithMaxActiveJobs(1))
 

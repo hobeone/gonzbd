@@ -43,6 +43,7 @@ func newFailingStartApp(t *testing.T, startErr error) *Application {
 // entirely. Repeated failed starts therefore accumulate context nodes that can
 // never be cancelled.
 func TestStart_CancelsContextOnFailure(t *testing.T) {
+	t.Parallel()
 	wantErr := errors.New("downloader boom")
 	application := newFailingStartApp(t, wantErr)
 
@@ -75,6 +76,7 @@ func TestStart_CancelsContextOnFailure(t *testing.T) {
 // point cannot be retried at all, since postproc has no reset for its own
 // started flag.
 func TestStart_LeavesCleanStateAfterFailure(t *testing.T) {
+	t.Parallel()
 	application := newFailingStartApp(t, errors.New("downloader boom"))
 
 	if err := application.Start(t.Context()); err == nil {
@@ -89,6 +91,7 @@ func TestStart_LeavesCleanStateAfterFailure(t *testing.T) {
 // Shutdown's early return on !started is what makes the leak possible; pin it
 // so the fix cannot be quietly undone by relaxing that guard instead.
 func TestShutdown_NoOpsWhenStartFailed(t *testing.T) {
+	t.Parallel()
 	application := newFailingStartApp(t, errors.New("downloader boom"))
 
 	if err := application.Start(t.Context()); err == nil {

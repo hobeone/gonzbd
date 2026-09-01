@@ -18,6 +18,7 @@ var _ = (*Application).enqueuePostProc
 var _ = (*pipeline).run
 
 func TestApplication_ArticleCacheBytes_ReturnsZeroInitially(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
 	if err != nil {
@@ -31,6 +32,7 @@ func TestApplication_ArticleCacheBytes_ReturnsZeroInitially(t *testing.T) {
 }
 
 func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T) {
+	t.Parallel()
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
@@ -49,6 +51,7 @@ func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T
 }
 
 func TestApplication_DownloadDirFreeBytes_NilDiskProbeFallback(t *testing.T) {
+	t.Parallel()
 	dlDir := t.TempDir()
 	appNoProbe := &Application{
 		config: testConfig(dlDir, t.TempDir(), t.TempDir()),
@@ -64,6 +67,7 @@ func TestApplication_DownloadDirFreeBytes_NilDiskProbeFallback(t *testing.T) {
 }
 
 func TestApplication_TestDownloadDirWriteSpeedMBPerSec_ReturnsPositive(t *testing.T) {
+	t.Parallel()
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
@@ -82,6 +86,7 @@ func TestApplication_TestDownloadDirWriteSpeedMBPerSec_ReturnsPositive(t *testin
 }
 
 func TestApplication_BinaryVersionsInfo_StableAcrossCalls(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
 	if err != nil {
@@ -102,6 +107,7 @@ func TestApplication_BinaryVersionsInfo_StableAcrossCalls(t *testing.T) {
 }
 
 func TestApplication_IsPipelineHealthy(t *testing.T) {
+	t.Parallel()
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
@@ -195,6 +201,7 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 // anything, are both real and both invisible if the map were keyed off one
 // source.
 func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteJobBytes("wrote-only", 512)
 	application.noteBarrierRun("barriered-only")
@@ -246,6 +253,7 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 // `DurableBytesOf` could `return 0` unconditionally and every assertion in this
 // file still passed.
 func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 3)
 	if got := DurableBytesOf(application.queue.SnapshotJob(job.ID).Progress()); got != 0 {
 		t.Fatalf("fixture already reports %d durable bytes; the assertion below cannot tell "+
@@ -277,6 +285,7 @@ func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
 // can reach: Job.Progress() is nil for a job whose hydration failed, and a
 // panic in a queue poll takes the whole API down.
 func TestDurableBytesOf_IsSafeOnAJobWithNoProgress(t *testing.T) {
+	t.Parallel()
 	if got := DurableBytesOf(nil); got != 0 {
 		t.Errorf("DurableBytesOf(nil) = %d, want 0", got)
 	}
@@ -287,6 +296,7 @@ func TestDurableBytesOf_IsSafeOnAJobWithNoProgress(t *testing.T) {
 // come from three different maps under two different locks, and a job that has
 // only one of them must still report that one.
 func TestCheckpointState_ComposesTheThreeSourcesForOneJob(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteJobBytes("job-1", 128)
 	application.noteBarrierRun("job-1")

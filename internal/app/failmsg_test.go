@@ -56,6 +56,7 @@ func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *queue.J
 // user sees on an aborted job. Every branch is a different verdict, so each
 // one is pinned here rather than covered incidentally through the pipeline.
 func TestFailMsgForJob(t *testing.T) {
+	t.Parallel()
 	const (
 		dataA = "movie.part01.rar"
 		dataB = "movie.part02.rar"
@@ -123,6 +124,7 @@ func TestFailMsgForJob(t *testing.T) {
 // been evicted. It used to read job.Manifest().TotalBytes() and would have
 // nil-dereferenced there.
 func TestFailMsgForJob_WithoutResidentManifest(t *testing.T) {
+	t.Parallel()
 	job := buildFailMsgJob(t,
 		[]failMsgFile{{"movie.part01.rar", 100}, {"movie.part02.rar", 100}, {"movie.vol01+02.par2", 50}},
 		0)

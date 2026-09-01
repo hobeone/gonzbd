@@ -150,6 +150,7 @@ func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *ap
 // sendToPostProcessor → SetPostProcStarted, saw PostProc already true,
 // and silently dropped the handoff — stranding the job forever.
 func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000001"
 
@@ -219,6 +220,7 @@ func waitUntil(timeout time.Duration, cond func() bool) bool {
 }
 
 func TestRecovery_DuplicateJobInHistory(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000002"
 
@@ -275,6 +277,7 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 // transaction — so the window is closed by construction and there is nothing
 // left to simulate.
 func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
+	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	const (

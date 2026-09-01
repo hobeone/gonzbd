@@ -25,6 +25,7 @@ import (
 // Asserting on the whole struct rather than field by field is what makes a
 // new field fail this: a field-by-field check would keep passing.
 func TestRefFor_CarriesEveryIdentityField(t *testing.T) {
+	t.Parallel()
 	res := &downloader.ArticleResult{
 		JobID:     "job-7",
 		FileIdx:   4,
@@ -81,6 +82,7 @@ func helperPipeline(t *testing.T, q *queue.Queue) *pipeline {
 }
 
 func TestResolveFileInfo(t *testing.T) {
+	t.Parallel()
 	q, job := helperJob(t, "resolve", 1, 2)
 	p := helperPipeline(t, q)
 
@@ -114,6 +116,7 @@ func TestResolveFileInfo(t *testing.T) {
 }
 
 func TestForgetJob(t *testing.T) {
+	t.Parallel()
 	// The cache would otherwise grow for the lifetime of the process, one
 	// entry per file of every job ever downloaded.
 	qA, jobA := helperJob(t, "forgetA", 2, 1)
@@ -168,6 +171,7 @@ func TestForgetJob(t *testing.T) {
 // Each subtest builds its own job. MarkJobStarted is first-start-wins and
 // never resets, so a shared fixture would make the assertions order-dependent.
 func TestHandleResult_RoutesOnError(t *testing.T) {
+	t.Parallel()
 	newCase := func(t *testing.T, name string) (*pipeline, *queue.Job) {
 		t.Helper()
 		q, job := helperJob(t, name, 1, 2)
@@ -255,6 +259,7 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 // the cancellation arm is what stops a wedged write from blocking a config
 // reload forever, so it needs its own case rather than inheriting coverage.
 func TestAwaitInFlight(t *testing.T) {
+	t.Parallel()
 	t.Run("returns true once the outstanding work is done", func(t *testing.T) {
 		p := &pipeline{log: slog.New(slog.DiscardHandler)}
 		// Go adds before it returns, so the counter is already 1 when the
@@ -295,6 +300,7 @@ func TestAwaitInFlight(t *testing.T) {
 // The failure results take the retryable path, which needs no assembler — the
 // point under test is the run loop's accounting, not what a worker does.
 func TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel(t *testing.T) {
+	t.Parallel()
 	const results = 16
 	const perResult = 5 * time.Millisecond
 
@@ -349,6 +355,7 @@ func TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel(t *testing.T) {
 }
 
 func TestSetCompletions(t *testing.T) {
+	t.Parallel()
 	t.Run("swaps the channel and blocks until run acknowledges", func(t *testing.T) {
 		p := &pipeline{
 			log:      slog.Default(),

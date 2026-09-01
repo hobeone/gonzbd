@@ -8,7 +8,6 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -808,32 +807,10 @@ func countParsablePackets(t *testing.T, path string) int {
 // starts P+1..P+7 and silently dropping a packet whenever 1–7 junk bytes
 // precede it. Uses a real par2-generated file so the packet layout is genuine.
 func TestScanForMagic_RecoversPacketAfterShortJunk(t *testing.T) {
-	par2Path, err := exec.LookPath("par2")
-	if err != nil {
-		t.Skip("par2 binary not installed")
-	}
-
-	dir := t.TempDir()
-	dataFile := filepath.Join(dir, "data.bin")
-	// Enough data that the index .par2 holds several packets (we need a 2nd one).
-	payload := make([]byte, 64*1024)
-	for i := range payload {
-		payload[i] = byte(i)
-	}
-	if err := os.WriteFile(dataFile, payload, 0o644); err != nil {
-		t.Fatalf("write data file: %v", err)
-	}
-
-	cmd := exec.Command(par2Path, "create", "-q", "-n1", "base.par2", "data.bin")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("par2 create failed: %v\n%s", err, out)
-	}
-
-	cleanPath := filepath.Join(dir, "base.par2")
+	cleanPath := "../../test/fixtures/par2/data.par2"
 	clean, err := os.ReadFile(cleanPath)
 	if err != nil {
-		t.Fatalf("read par2 index: %v", err)
+		t.Fatalf("read par2 fixture: %v", err)
 	}
 
 	cleanCount := countParsablePackets(t, cleanPath)
@@ -849,6 +826,7 @@ func TestScanForMagic_RecoversPacketAfterShortJunk(t *testing.T) {
 		t.Fatalf("could not find a second PAR2 packet magic in the index file")
 	}
 	second := rel + len(magic)
+	dir := t.TempDir()
 
 	for k := 1; k <= 7; k++ {
 		junked := make([]byte, 0, len(clean)+k)

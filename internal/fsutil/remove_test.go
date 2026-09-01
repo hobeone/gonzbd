@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/testutil"
 )
@@ -76,7 +77,12 @@ func TestRemoveAll_RetryAndSillyRenameDetection(t *testing.T) {
 	}
 
 	origRemoveAll := removeAllFunc
-	defer func() { removeAllFunc = origRemoveAll }()
+	origBackoffs := removeBackoffs
+	defer func() {
+		removeAllFunc = origRemoveAll
+		removeBackoffs = origBackoffs
+	}()
+	removeBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
 
 	// Test 1: Retry succeeds on second attempt.
 	attempts := 0
@@ -129,7 +135,12 @@ func TestRemove_RetryAndSillyRenameDetection(t *testing.T) {
 	}
 
 	origRemove := removeFunc
-	defer func() { removeFunc = origRemove }()
+	origBackoffs := removeBackoffs
+	defer func() {
+		removeFunc = origRemove
+		removeBackoffs = origBackoffs
+	}()
+	removeBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
 
 	// Test 1: Retry succeeds on second attempt.
 	attempts := 0
@@ -189,7 +200,12 @@ func TestRemoveRootAll_RetryAndSillyRenameDetection(t *testing.T) {
 	defer root.Close()
 
 	origRootRemoveAll := rootRemoveAllFunc
-	defer func() { rootRemoveAllFunc = origRootRemoveAll }()
+	origBackoffs := removeBackoffs
+	defer func() {
+		rootRemoveAllFunc = origRootRemoveAll
+		removeBackoffs = origBackoffs
+	}()
+	removeBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
 
 	// Test 1: Retry succeeds on second attempt.
 	attempts := 0

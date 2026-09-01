@@ -13,8 +13,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
-// TestPostProc_Par2VerifyOK generates a par2 set for a known-good file,
-// then verifies it.
+// TestPostProc_Par2VerifyOK verifies a par2 set for a known-good file using
+// pre-built fixtures.
 func TestPostProc_Par2VerifyOK(t *testing.T) {
 	t.Parallel()
 
@@ -23,23 +23,11 @@ func TestPostProc_Par2VerifyOK(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	payload := []byte("integration test payload for par2 verification\n")
-	dataFile := filepath.Join(dir, "data.bin")
-	if err := os.WriteFile(dataFile, payload, 0o600); err != nil {
-		t.Fatalf("write data file: %v", err)
-	}
+	copyPar2Fixture(t, "data.bin", dir, "data.bin")
+	parFile := copyPar2Fixture(t, "data.par2", dir, "data.par2")
 
-	// Create par2 set using the binary (test setup only).
-	parFile := filepath.Join(dir, "data.par2")
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-
-	//nolint:gosec // G204: par2 binary called with test-generated paths under TempDir
-	cmd := exec.CommandContext(ctx, "par2", "create", parFile, dataFile)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("par2 create: %v\noutput: %s", err, out)
-	}
 
 	// Verify the par2 set.
 	result, err := par2.RepairWith(ctx, par2.RunOptions{}, parFile)
@@ -59,7 +47,8 @@ func TestPostProc_Par2VerifyOK(t *testing.T) {
 }
 
 // TestPostProc_Par2VerifyAndRepair corrupts a byte in the protected file,
-// verifies (expecting damage), repairs, then verifies again (expecting OK).
+// verifies (expecting damage), repairs, then verifies again (expecting OK) using
+// pre-built fixtures.
 func TestPostProc_Par2VerifyAndRepair(t *testing.T) {
 	t.Parallel()
 
@@ -68,36 +57,23 @@ func TestPostProc_Par2VerifyAndRepair(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+	dataFile := copyPar2Fixture(t, "data.bin", dir, "data.bin")
+	parFile := copyPar2Fixture(t, "data.par2", dir, "data.par2")
+	copyPar2Fixture(t, "data.vol000+102.par2", dir, "data.vol000+102.par2")
 
-	// Write a payload large enough for par2 to have recovery blocks.
-	payload := make([]byte, 4096)
-	for i := range payload {
-		payload[i] = byte(i % 256)
-	}
-	dataFile := filepath.Join(dir, "repairable.bin")
-	if err := os.WriteFile(dataFile, payload, 0o600); err != nil {
-		t.Fatalf("write data file: %v", err)
+	expected, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatalf("read original data file: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
-	// Create par2 set.
-	parFile := filepath.Join(dir, "repairable.par2")
-	//nolint:gosec // G204: par2 binary called with test paths
-	cmd := exec.CommandContext(ctx, "par2", "create", "-r5", parFile, dataFile)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("par2 create: %v\noutput: %s", err, out)
-	}
-
 	// Corrupt one byte in the data file.
-	data, err := os.ReadFile(dataFile) //nolint:gosec // G304: test path
-	if err != nil {
-		t.Fatalf("read data file: %v", err)
-	}
-	data[42] ^= 0xFF
-	if err := os.WriteFile(dataFile, data, 0o600); err != nil {
+	corrupt := make([]byte, len(expected))
+	copy(corrupt, expected)
+	corrupt[len(corrupt)/2] ^= 0xFF
+	if err := os.WriteFile(dataFile, corrupt, 0o600); err != nil {
 		t.Fatalf("corrupt data file: %v", err)
 	}
 
@@ -122,11 +98,11 @@ func TestPostProc_Par2VerifyAndRepair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read restored data file: %v", err)
 	}
-	if len(restored) != len(payload) {
-		t.Fatalf("restored length %d, want %d", len(restored), len(payload))
+	if len(restored) != len(expected) {
+		t.Fatalf("restored length %d, want %d", len(restored), len(expected))
 	}
-	for i := range payload {
-		if restored[i] != payload[i] {
+	for i := range expected {
+		if restored[i] != expected[i] {
 			t.Fatalf("mismatch at byte %d", i)
 		}
 	}

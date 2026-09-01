@@ -729,8 +729,11 @@ conflation running in reverse.
 
 ### 10. Every barrier syscall on the critical path is timeout-bounded
 
-B4/R22. **Every** operation submitted to the worker carries `barrierOpTimeout`
-(5s, matching `diskCheckTimeout`) on the *wait* for the worker's reply, applied
+B4/R22. **Every** operation submitted to the worker carries a barrier-op
+timeout (5s default, matching `diskCheckTimeout`'s default — the two are
+independently overridable via `Options.BarrierOpTimeout`/`DiskCheckTimeout`
+and `SetBarrierOpTimeout`, so the values match only when both are left at
+their defaults) on the *wait* for the worker's reply, applied
 by `jobSyncTarget.submit` itself. It is imposed by `internal/assembler` rather
 than by the caller, because a wedged worker cannot answer whatever deadline it
 was given — and it sits in `submit` rather than in each method because

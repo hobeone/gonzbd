@@ -46,6 +46,7 @@ func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application
 // by calling it on a zero-value Application whose historyRepo is nil, which
 // would panic if the empty check were ever removed or reordered.
 func TestDeleteHistoryEntries_EmptyIsNoOp(t *testing.T) {
+	t.Parallel()
 	application := &Application{}
 	n, err := application.deleteHistoryEntries(t.Context(), nil)
 	if err != nil {
@@ -59,6 +60,7 @@ func TestDeleteHistoryEntries_EmptyIsNoOp(t *testing.T) {
 // TestDeleteHistoryEntries_RemovesRowAndBackup pins the normal path: both
 // the history row and the NZB backup it owns go together.
 func TestDeleteHistoryEntries_RemovesRowAndBackup(t *testing.T) {
+	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
 	nzbDir := filepath.Join(adminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
@@ -93,6 +95,7 @@ func TestDeleteHistoryEntries_RemovesRowAndBackup(t *testing.T) {
 // backup was never required for the download to have completed, so its
 // absence must not block removing the row.
 func TestDeleteHistoryEntries_ToleratesMissingBackup(t *testing.T) {
+	t.Parallel()
 	application, repo, _ := newLifecycleTestApp(t)
 	entry := history.Entry{NzoID: "deleteentry00002", Name: "job2", Status: "Failed", NZBBackup: "gone.nzb.gz"}
 	if err := repo.Add(t.Context(), entry); err != nil {
@@ -112,6 +115,7 @@ func TestDeleteHistoryEntries_ToleratesMissingBackup(t *testing.T) {
 // the rows (here: the database already closed) surfaces to the caller
 // rather than being reported as a silent success.
 func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
+	t.Parallel()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
 		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
@@ -145,6 +149,7 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 // the effect (IsDirty transitioning to false) is attributable to
 // runCheckpoint alone.
 func TestRunCheckpoint_SavesWhenDirty(t *testing.T) {
+	t.Parallel()
 	const interval = 20 * time.Millisecond
 	application, _, _ := newLifecycleTestApp(t)
 
@@ -194,7 +199,8 @@ func TestRunCheckpoint_SavesWhenDirty(t *testing.T) {
 // directly to the row only a save would overwrite makes the assertion exact
 // rather than relying on mtime.
 func TestRunCheckpoint_SkipsWhenClean(t *testing.T) {
-	const interval = 20 * time.Millisecond
+	t.Parallel()
+	const interval = 5 * time.Millisecond
 	application, repo, _ := newLifecycleTestApp(t)
 
 	parsed := &nzb.NZB{Files: []nzb.File{{
@@ -251,6 +257,7 @@ func TestRunCheckpoint_SkipsWhenClean(t *testing.T) {
 // promptly once ctx is cancelled, rather than only on the next tick or
 // never — Shutdown's wg.Wait depends on this to unblock.
 func TestRunCheckpoint_ExitsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	// An interval far longer than the test timeout: if the goroutine only
@@ -331,6 +338,7 @@ func waitForFileComplete(t *testing.T, application *Application, jobID string, f
 // path: a completion event sent on internalFileComplete is applied to the
 // queue while the goroutine is running.
 func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
+	t.Parallel()
 	application, job := newWatchCompletionsTestApp(t)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -373,6 +381,7 @@ func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
 // drainCompletions removed still applies all of them by the fc branch
 // winning the race every single time falls off as 2^-n.
 func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
+	t.Parallel()
 	const nEvents = 6
 	application, job := newWatchCompletionsTestAppN(t, nEvents)
 

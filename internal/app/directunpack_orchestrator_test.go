@@ -91,6 +91,7 @@ func (o *directUnpackOrchestrator) countsForTest() (unpackers, active int) {
 // The concurrency counter is shared mutable state and nothing proved it was
 // accounted correctly: one unpacker per job, created once, counted once.
 func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
+	t.Parallel()
 	o, _, job := duFixture(t, 0) // 0 = unlimited
 
 	o.maybeStart(FileComplete{JobID: job.ID, FileIdx: 0})
@@ -111,6 +112,7 @@ func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
 // With the limit already reached, no unpacker is created and the counter is
 // left alone. Incrementing here would leak a slot no unpacker ever releases.
 func TestMaybeStart_RefusesWhenConcurrencyLimitReached(t *testing.T) {
+	t.Parallel()
 	o, _, job := duFixture(t, 1)
 	o.setActive(1) // the one permitted slot is taken by another job
 
@@ -129,6 +131,7 @@ func TestMaybeStart_RefusesWhenConcurrencyLimitReached(t *testing.T) {
 // the right size but has gaps. Extraction must not treat it as sound, so the
 // set is marked corrupt before the volume is handed over.
 func TestMaybeStart_MarksSetCorruptWhenTheVolumeHasFailedArticles(t *testing.T) {
+	t.Parallel()
 	o, q, job, logBuf := duFixtureLogged(t, 0)
 
 	ackFailed(t, q, job.ID, "v2a1@t")
@@ -152,6 +155,7 @@ func TestMaybeStart_MarksSetCorruptWhenTheVolumeHasFailedArticles(t *testing.T) 
 // The guards before any state is touched. Each returns early, and none may
 // create an unpacker or move the counter.
 func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		mutate  func(t *testing.T, q *queue.Queue, job *queue.Job)

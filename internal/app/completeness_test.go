@@ -3,6 +3,7 @@ package app
 import "testing"
 
 func TestDownloadCompleteness(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		totalBytes  int64
@@ -37,6 +38,7 @@ func TestDownloadCompleteness(t *testing.T) {
 // always read ~100% on a finished job. Any non-zero failed bytes must now
 // produce a completeness strictly below 100.
 func TestDownloadCompletenessFailedBytesNotComplete(t *testing.T) {
+	t.Parallel()
 	// ~3.4% of bytes failed (the originally-reported "9.9 MiB failed").
 	const total int64 = 291 * 1024 * 1024
 	const failed int64 = 10380902 // 9.9 MiB

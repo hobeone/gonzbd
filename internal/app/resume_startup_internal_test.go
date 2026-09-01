@@ -194,6 +194,7 @@ func (f *resumeUnitFixture) snapshot(t *testing.T) (*queue.Job, *queue.Manifest)
 // "I looked and found nothing" — which must return its articles to Outstanding
 // — from "I never looked", which must leave them alone.
 func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
+	t.Parallel()
 	f := newResumeUnitFixture(t)
 	snap, m := f.snapshot(t)
 
@@ -251,6 +252,7 @@ func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 // reachability argument is on resumeAllJobs, at the arm itself. It is a guard,
 // not a branch with a test owing against it.
 func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
+	t.Parallel()
 	f := newResumeUnitFixture(t)
 
 	// A second job, paused so the queue evicts its manifest — and so the
@@ -380,6 +382,7 @@ func (c *countingResumer) Resume(ctx context.Context, jobID string, fileIdx int3
 // existence of an error: an error is produced by the cancelled context
 // reaching SQLite whether or not either check exists.
 func TestResumeAllJobs_CancelBetweenFilesStopsAtTheNextFile(t *testing.T) {
+	t.Parallel()
 	f := newResumeUnitFixture(t)
 	f.nameSecondFile(t)
 
@@ -405,6 +408,7 @@ func TestResumeAllJobs_CancelBetweenFilesStopsAtTheNextFile(t *testing.T) {
 // skips the job, finds nothing else, and returns nil — a cancelled startup
 // that reports success.
 func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
+	t.Parallel()
 	f := newResumeUnitFixture(t)
 	if err := f.app.queue.SetStatus(f.job.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(Paused): %v", err)
@@ -466,6 +470,7 @@ func (c *cancelledDuringResume) Resume(_ context.Context, jobID string, fileIdx 
 // "An error came back" is the assertion shape that made the cancellation test
 // inert twice on this branch.
 func TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault(t *testing.T) {
+	t.Parallel()
 	f := newResumeUnitFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -507,6 +512,7 @@ func TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault(t *testing.T) {
 // assertion that discriminates is that file 0's durable article is Done
 // anyway.
 func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
+	t.Parallel()
 	f := newResumeUnitFixture(t)
 	f.faultOnSecondFile(t)
 
@@ -539,6 +545,7 @@ func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
 // file where the assembler wrote it, and that a name recorded in the queue
 // cannot walk out of the job's own directory.
 func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	root := application.pipeline.downloadDir
 
@@ -608,6 +615,7 @@ func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 // would discard its runs, clear real progress, drop Complete and throw away
 // the assembled CRC on a file that is fine.
 func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		// walk is the transition path from Downloading, because SetStatus
@@ -707,6 +715,7 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 // does own leaves a disproven Done bit to be re-committed by the next
 // checkpoint, and the file finalizes over a hole (#362).
 func TestSweptStatus(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		status constants.Status
 		want   bool

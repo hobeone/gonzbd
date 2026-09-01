@@ -6,6 +6,7 @@ import (
 )
 
 func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "payload.rar", Bytes: 5000, Articles: []JobArticle{{ID: "a1", Bytes: 2500}, {ID: "a2", Bytes: 2500}}},
 		{Subject: "payload.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "b1", Bytes: 800}}},
@@ -30,6 +31,7 @@ func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
 // TotalRemainingBytes still agrees with the residency-parity guarantee
 // TestTotalRemainingBytes_RestartReconstructsNonResident pins.
 func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
+	t.Parallel()
 	store, dir, _ := setupResidencyTestStoreWithDB(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "sized-roundtrip", 3, 2)
@@ -88,6 +90,7 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 }
 
 func TestMarkFailed_AccumulatesPerFileFailedBytes(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
 		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
@@ -123,6 +126,7 @@ func TestMarkFailed_AccumulatesPerFileFailedBytes(t *testing.T) {
 // The nil-receiver branch is covered separately by
 // TestJobProgress_ExportedReadersAreNilSafe.
 func TestFileFailedBytes_GuardBranches(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 1500, Articles: []JobArticle{{ID: "a1", Bytes: 1500}}},
 	})
@@ -140,6 +144,7 @@ func TestFileFailedBytes_GuardBranches(t *testing.T) {
 }
 
 func TestResetForReload_ReturnsFailedBytesToTheFile(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},
 	})
@@ -160,6 +165,7 @@ func TestResetForReload_ReturnsFailedBytesToTheFile(t *testing.T) {
 }
 
 func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
 	job := makeMultiFileJob(t, "restore-bytes", 3, 2)
@@ -209,6 +215,7 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 // that same seeded progress — precisely the seed-plus-replay this test
 // targets, reached through a public entry point.
 func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	job := makeMultiFileJob(t, "failed-bytes-hydrate", 2, 2)
 	m, err := job.Manifest()
@@ -267,6 +274,7 @@ func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 // newJobProgressSized via fileMetaFromManifest, so the delegation in the
 // next step is provably behaviour-preserving.
 func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
 		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
@@ -335,6 +343,7 @@ func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
 //   - second file failed: b1 (2000) fails, adding 2000 to b.rar's
 //     FailedBytes. remaining = 0 (a.rar excluded) + (2000-0-2000) = 0.
 func TestDerivedRemaining_MatchesHandComputedValues(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
 		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
@@ -365,6 +374,7 @@ func TestDerivedRemaining_MatchesHandComputedValues(t *testing.T) {
 // consumer of these figures depends on: downloaded = expected - failed -
 // remaining, for each kind of file a job can hold at once.
 func TestExpectedBytes_ClosesTheDownloadedIdentity(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		// Fully downloaded and complete.
 		{Subject: "done.rar", Bytes: 2000, Articles: []JobArticle{{ID: "d1", Bytes: 2000}}},
@@ -407,6 +417,7 @@ func TestExpectedBytes_ClosesTheDownloadedIdentity(t *testing.T) {
 // user-visible symptom directly: the percentage a queue row shows for a job
 // whose recovery volumes are deferred and whose content is untouched.
 func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "content.rar", Bytes: 10_000, Articles: []JobArticle{{ID: "c1", Bytes: 10_000}}},
 		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 1_000}}},
@@ -430,6 +441,7 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 }
 
 func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},
 		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
@@ -456,6 +468,7 @@ func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 // here are the per-file contributions, since that is where a predicate moving
 // on one figure but not the other shows up.
 func TestSizeFigures_SharedAndDivergentPredicates(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		// Partly downloaded: contributes to both.
 		{Subject: "partial.rar", Bytes: 1000, Articles: []JobArticle{{ID: "p1", Bytes: 500}, {ID: "p2", Bytes: 500}}},
@@ -535,6 +548,7 @@ func TestSizeFigures_SharedAndDivergentPredicates(t *testing.T) {
 // file the job has already finished with, and the queue would never reach
 // zero remaining.
 func TestSizeFigures_RemainingSkipsCompleteFileWithUnresolvedArticles(t *testing.T) {
+	t.Parallel()
 	m := newManifest([]JobFile{
 		{Subject: "done.rar", Bytes: 1000, Articles: []JobArticle{{ID: "d1", Bytes: 500}, {ID: "d2", Bytes: 500}}},
 	})

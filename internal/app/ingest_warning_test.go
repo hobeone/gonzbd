@@ -12,6 +12,7 @@ import (
 // a short download is worth re-adding from another indexer. A parse anomaly
 // that only ever appears in a log is invisible to them.
 func TestParseAnomalySummary_NamesEachDiscardKind(t *testing.T) {
+	t.Parallel()
 	got := parseAnomalySummary(&nzb.NZB{
 		DuplicateMessageIDs: 2,
 		DuplicateArticles:   1,
@@ -40,6 +41,7 @@ func TestParseAnomalySummary_NamesEachDiscardKind(t *testing.T) {
 // A clean document must produce no warning, or every job carries one and the
 // queue's warning column stops meaning anything.
 func TestParseAnomalySummary_EmptyForACleanNZB(t *testing.T) {
+	t.Parallel()
 	if got := parseAnomalySummary(&nzb.NZB{}); got != "" {
 		t.Errorf("clean NZB produced a warning: %q", got)
 	}
@@ -51,6 +53,7 @@ func TestParseAnomalySummary_EmptyForACleanNZB(t *testing.T) {
 // Only the counters that fired are named, so the warning stays readable in a
 // queue row rather than listing four zeroes.
 func TestParseAnomalySummary_OmitsCountersThatDidNotFire(t *testing.T) {
+	t.Parallel()
 	got := parseAnomalySummary(&nzb.NZB{DuplicateMessageIDs: 1})
 
 	if !strings.Contains(got, "1 repeated message-id") {
@@ -69,6 +72,7 @@ func TestParseAnomalySummary_OmitsCountersThatDidNotFire(t *testing.T) {
 // segments were discarded when none were, on a job that will download in
 // full. Those counters belong in the log alone.
 func TestParseAnomalySummary_IgnoresAnomaliesOnKeptSegments(t *testing.T) {
+	t.Parallel()
 	got := parseAnomalySummary(&nzb.NZB{
 		NonConformantMessageIDs: 3,
 		NonASCIIMessageIDs:      2,
@@ -82,6 +86,7 @@ func TestParseAnomalySummary_IgnoresAnomaliesOnKeptSegments(t *testing.T) {
 // A document with both kinds reports only the discarded half, and the counts
 // it prints must not silently absorb the kept ones.
 func TestParseAnomalySummary_SeparatesKeptFromDiscarded(t *testing.T) {
+	t.Parallel()
 	got := parseAnomalySummary(&nzb.NZB{
 		EmptyMessageIDs:         1,
 		NonASCIIMessageIDs:      7,

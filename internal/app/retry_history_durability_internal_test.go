@@ -111,6 +111,7 @@ func failJobIntoHistory(t *testing.T, application *Application, job *queue.Job, 
 // and must NOT survive the retry, for the opposite-facing reason — see
 // TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset.
 func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
+	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
 	seedDurability(t, application, job.ID)
@@ -157,6 +158,7 @@ func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 // the surviving durable run asserted below is the observable proof, because
 // the !progressApplied branch would have dropped it.
 func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
+	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
 	// Article 0 is covered by a durable run; article 1 is permanently failed.
@@ -214,6 +216,7 @@ func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
 // worse than the bug being fixed: a stale row is authoritative for a truncate
 // bound, where a missing one only costs a re-fetch.
 func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
+	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
 	seedDurability(t, application, job.ID)
@@ -267,6 +270,7 @@ func (f failingDeleteRunStore) DeleteJob(context.Context, string) error { return
 // because it precedes every commit: the history entry is untouched and no job
 // enters the queue, which is what the second assertion pins.
 func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
+	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
 	seedDurability(t, application, job.ID)

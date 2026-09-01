@@ -51,6 +51,7 @@ func makeJob(t *testing.T, name string, pri constants.Priority) *Job {
 }
 
 func TestNewJobDerivesName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		filename string
 		want     string
@@ -78,6 +79,7 @@ func TestNewJobDerivesName(t *testing.T) {
 // stripped from explicitly provided Name values (e.g. Sonarr's nzbname
 // parameter). Without this, download directories end up named "movie.nzb/".
 func TestNewJobStripsNZBFromExplicitName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		want string
@@ -106,6 +108,7 @@ func TestNewJobStripsNZBFromExplicitName(t *testing.T) {
 }
 
 func TestNewJobAssignsUniqueID(t *testing.T) {
+	t.Parallel()
 	seen := make(map[string]struct{})
 	for range 100 {
 		j, err := NewJob(makeParsed(t, 1), AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
@@ -123,6 +126,7 @@ func TestNewJobAssignsUniqueID(t *testing.T) {
 }
 
 func TestNewJobCopiesArticleState(t *testing.T) {
+	t.Parallel()
 	parsed := makeParsed(t, 2)
 	j, err := NewJob(parsed, AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
 	if err != nil {
@@ -145,6 +149,7 @@ func TestNewJobCopiesArticleState(t *testing.T) {
 }
 
 func TestAddInsertsInPriorityOrder(t *testing.T) {
+	t.Parallel()
 	q := New()
 	// Add in scrambled order.
 	low := makeJob(t, "low", constants.LowPriority)
@@ -167,6 +172,7 @@ func TestAddInsertsInPriorityOrder(t *testing.T) {
 }
 
 func TestAddWithinTierIsFIFO(t *testing.T) {
+	t.Parallel()
 	q := New()
 	a := makeJob(t, "a", constants.NormalPriority)
 	b := makeJob(t, "b", constants.NormalPriority)
@@ -184,6 +190,7 @@ func TestAddWithinTierIsFIFO(t *testing.T) {
 }
 
 func TestQueue_HasDownloadingAndPostProcJobs(t *testing.T) {
+	t.Parallel()
 	q := New()
 	if q.HasDownloadingJobs() {
 		t.Error("expected HasDownloadingJobs=false for empty queue")
@@ -221,6 +228,7 @@ func TestQueue_HasDownloadingAndPostProcJobs(t *testing.T) {
 }
 
 func TestAddDuplicateIDFails(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
 	if err := q.Add(j); err != nil {
@@ -243,6 +251,7 @@ func TestAddDuplicateIDFails(t *testing.T) {
 // an unhydrated &Job{Status: StatusQueued} to exercise PromoteNext's own
 // hydration-failure path (see claimfailure_lock_test.go).
 func TestAddRepairsNilProgress(t *testing.T) {
+	t.Parallel()
 	t.Run("no manifest", func(t *testing.T) {
 		q := New()
 		job := &Job{ID: "bare-job", Name: "bare", Status: constants.StatusQueued}
@@ -276,6 +285,7 @@ func TestAddRepairsNilProgress(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
+	t.Parallel()
 	q := New()
 	a := makeJob(t, "a", constants.NormalPriority)
 	b := makeJob(t, "b", constants.NormalPriority)
@@ -302,6 +312,7 @@ func TestRemove(t *testing.T) {
 // Without this, the pointer remains reachable inside the slice's backing
 // array even after the slice is shortened.
 func TestRemove_NilZerosSlotForGC(t *testing.T) {
+	t.Parallel()
 	q := New()
 	a := makeJob(t, "a", constants.NormalPriority)
 	b := makeJob(t, "b", constants.NormalPriority)
@@ -326,6 +337,7 @@ func TestRemove_NilZerosSlotForGC(t *testing.T) {
 }
 
 func TestSetStatusEnforcesStateMachine(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j) // Queued
@@ -351,6 +363,7 @@ func TestSetStatusEnforcesStateMachine(t *testing.T) {
 }
 
 func TestPauseResumePerJob(t *testing.T) {
+	t.Parallel()
 	q := New()
 	q.PauseAll()
 	j := makeJob(t, "j", constants.NormalPriority)
@@ -383,6 +396,7 @@ func TestPauseResumePerJob(t *testing.T) {
 }
 
 func TestPauseAllResumeAll(t *testing.T) {
+	t.Parallel()
 	q := New()
 	if q.IsPaused() {
 		t.Error("new queue should not be paused")
@@ -408,6 +422,7 @@ func TestPauseAllResumeAll(t *testing.T) {
 }
 
 func TestReorder(t *testing.T) {
+	t.Parallel()
 	q := New()
 	a := makeJob(t, "a", constants.NormalPriority)
 	b := makeJob(t, "b", constants.NormalPriority)
@@ -442,6 +457,7 @@ func TestReorder(t *testing.T) {
 }
 
 func TestMarkFileComplete(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
@@ -462,6 +478,7 @@ func TestMarkFileComplete(t *testing.T) {
 }
 
 func TestMarkArticleFailed(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
@@ -489,6 +506,7 @@ func TestMarkArticleFailed(t *testing.T) {
 }
 
 func TestNotifyCoalesces(t *testing.T) {
+	t.Parallel()
 	q := New()
 	for range 5 {
 		_ = q.Add(makeJob(t, "j", constants.NormalPriority))
@@ -510,6 +528,7 @@ loop:
 }
 
 func TestNotifyFiresOnAdd(t *testing.T) {
+	t.Parallel()
 	q := New()
 	done := make(chan struct{})
 	go func() {
@@ -529,6 +548,7 @@ func TestNotifyFiresOnAdd(t *testing.T) {
 // say against the JSON engine that no production path could reach; it is now
 // store-backed, which is the configuration the daemon actually restarts in.
 func TestSaveLoadRoundTrip(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 
 	original := New(WithStore(store), WithStateDir(dir))
@@ -582,6 +602,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestLoadMissingReturnsEmptyQueue(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	q, err := Load(dir)
 	if err != nil {
@@ -595,6 +616,7 @@ func TestLoadMissingReturnsEmptyQueue(t *testing.T) {
 // TestConcurrentAddRemove drives many goroutines hitting the queue
 // simultaneously. Run under -race to catch any missed locking.
 func TestConcurrentAddRemove(t *testing.T) {
+	t.Parallel()
 	q := New()
 	const workers = 16
 	const perWorker = 25
@@ -637,6 +659,7 @@ func TestConcurrentAddRemove(t *testing.T) {
 // TestIsDirty verifies the dirty-flag lifecycle: fresh queue is clean,
 // mutations set dirty, Save clears it.
 func TestIsDirty(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	q := New()
 
@@ -701,6 +724,7 @@ func TestIsDirty(t *testing.T) {
 }
 
 func TestDirtyFlagOnMutations(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// WithStateDir(dir) up front (rather than a bare New() plus a later
 	// Save(dir) that only assigns q.stateDir retroactively) so Add persists
@@ -804,6 +828,7 @@ func equalSlice(a, b []string) bool {
 }
 
 func TestSetPriority(t *testing.T) {
+	t.Parallel()
 	q := New()
 	jHigh := makeJob(t, "high", constants.HighPriority)
 	jNorm := makeJob(t, "normal", constants.NormalPriority)
@@ -859,6 +884,7 @@ func TestSetPriority(t *testing.T) {
 }
 
 func TestSetPriority_InvalidPriority(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "pri-invalid", constants.NormalPriority)
 	if err := q.Add(j); err != nil {
@@ -875,6 +901,7 @@ func TestSetPriority_InvalidPriority(t *testing.T) {
 }
 
 func TestSetPP(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "pp-test", constants.NormalPriority)
 	j.PP = 1 // Start with +Repair.
@@ -911,6 +938,7 @@ func TestSetPP(t *testing.T) {
 }
 
 func TestSetPP_InvalidLevel(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "pp-invalid", constants.NormalPriority)
 	if err := q.Add(j); err != nil {
@@ -927,6 +955,7 @@ func TestSetPP_InvalidLevel(t *testing.T) {
 }
 
 func TestSetCategory(t *testing.T) {
+	t.Parallel()
 	cats := []config.CategoryConfig{
 		{Name: "Default", PP: 3, Script: "default.sh", Priority: int(constants.NormalPriority)},
 		{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
@@ -1335,6 +1364,7 @@ func (b *blockingArtifactStore) DeleteJobArtifacts(ctx context.Context, id strin
 // under RLock and hydrates it after unlocking, so an unlink racing ahead of
 // the job's removal from byID can catch a snapshot mid-hydration.
 func TestRemove_NoIOUnderLock(t *testing.T) {
+	t.Parallel()
 	real, dir := setupResidencyTestStore(t)
 	bs := &blockingArtifactStore{
 		Store:   real,
@@ -1409,6 +1439,7 @@ func TestAckPermanentFailure_EmptyBatch(t *testing.T) {
 }
 
 func TestAckPermanentFailure_SignalsNotify(t *testing.T) {
+	t.Parallel()
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
@@ -1481,6 +1512,7 @@ func TestQueue_PauseErrors(t *testing.T) {
 }
 
 func TestNew_WithLogger(t *testing.T) {
+	t.Parallel()
 	l := slog.Default()
 	q := New(WithLogger(l))
 	if q.log == nil {

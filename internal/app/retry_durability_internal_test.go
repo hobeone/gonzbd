@@ -64,6 +64,7 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // the whole picture, and an early return would leave one owner's rows behind
 // for a job that is about to be re-downloaded over them.
 func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	seedDurability(t, application, job.ID)
 
@@ -108,6 +109,7 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 // assembler's maxWritten seed are both gone here, so the retained RUNS are the
 // replacement — which makes their retention load-bearing rather than tidy.
 func TestPersistAndCommit_KeepsDurabilityForAFailedJob(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	seedDurability(t, application, job.ID)
 
@@ -140,6 +142,7 @@ func TestPersistAndCommit_KeepsDurabilityForAFailedJob(t *testing.T) {
 // job_files; this keeps the two in step, so "retained for retry" means the same
 // thing on both sides.
 func TestPersistAndCommit_DropsDurabilityForACompletedJob(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	seedDurability(t, application, job.ID)
 

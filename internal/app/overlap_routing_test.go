@@ -134,6 +134,7 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 // makes it a decision rather than an accident: if the warning ever becomes a
 // list, this test fails and asks the question.
 func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	jobID := addStallTestJob(t, application, "warnable").ID
 
@@ -158,11 +159,13 @@ func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 // returning a finding and the report being routed, because the report is
 // deliberately made after the per-job mutex is released.
 func TestPostAnomaly_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.postAnomaly("no-such-job", 0, "barrier", "malformed")
 }
 
 func TestCheckpointJob_RoutesAnOverlapToTheJobWarning(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	application, jobID := overlapFixture(t, ctx)
 	application.checkpointJob(ctx, jobID)
@@ -170,6 +173,7 @@ func TestCheckpointJob_RoutesAnOverlapToTheJobWarning(t *testing.T) {
 }
 
 func TestFinalizeFile_RoutesAnOverlapToTheJobWarning(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	application, jobID := overlapFixture(t, ctx)
 	if err := application.finalizeCompletedFile(ctx, jobID, 0); err != nil {

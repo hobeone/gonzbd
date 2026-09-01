@@ -18,6 +18,7 @@ import (
 // for that reason; see
 // TestFailMsgForJob_UnrecognizedPar2WithholdsTheZeroCapacityVerdict.
 func TestFailMsgForJob_IndexIsNotCountedAsRecognizedCapacity(t *testing.T) {
+	t.Parallel()
 	job := buildFailMsgJob(t, []failMsgFile{
 		{subject: "movie.part01.rar", bytes: 1000},
 		{subject: "movie.par2", bytes: 100}, // no .volNNN+MM segment
@@ -61,6 +62,7 @@ func TestFailMsgForJob_IndexIsNotCountedAsRecognizedCapacity(t *testing.T) {
 // both denominators, so it would pass on unpatched code and on a half-applied
 // change alike.
 func TestFailMsgForJob_AgreesWithDispatcherOnPartialFailure(t *testing.T) {
+	t.Parallel()
 	job := buildFailMsgJob(t, []failMsgFile{
 		{subject: "movie.part01.rar", bytes: 1000},
 		{subject: "movie.par2", bytes: 50},           // index: content, not capacity

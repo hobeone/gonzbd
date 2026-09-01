@@ -442,3 +442,23 @@ func copyFixture(t *testing.T, srcName, destDir, destName string) string {
 	}
 	return dest
 }
+
+// copyPar2Fixture copies a pre-generated fixture from test/fixtures/par2/ to destDir.
+func copyPar2Fixture(t *testing.T, srcName, destDir, destName string) string {
+	t.Helper()
+	src := filepath.Join("..", "..", "test", "fixtures", "par2", srcName)
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		t.Fatal(fmt.Errorf("absolute path of %s: %w", src, err))
+	}
+	content, err := os.ReadFile(absSrc)
+	if err != nil {
+		t.Fatal(fmt.Errorf("read par2 fixture %s: %w", absSrc, err))
+	}
+	dest := filepath.Join(destDir, destName)
+	if err := os.WriteFile(dest, content, 0o600); err != nil {
+		t.Fatal(fmt.Errorf("write file %s: %w", dest, err))
+	}
+	return dest
+}
+

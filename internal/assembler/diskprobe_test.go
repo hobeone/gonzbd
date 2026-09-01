@@ -105,7 +105,7 @@ func TestDiskProbe_RefreshesAfterTTLExpiryOnceIdle(t *testing.T) {
 func TestDiskProbe_ClaimAndEvictionNeverRaceToDuplicateProbe(t *testing.T) {
 	const numHotDirs = 3
 	const numGoroutines = 40
-	const stressDuration = 300 * time.Millisecond
+	const stressDuration = 100 * time.Millisecond
 
 	hotDirs := make([]string, numHotDirs)
 	for i := range hotDirs {

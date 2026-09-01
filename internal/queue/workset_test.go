@@ -124,6 +124,7 @@ func outstandingFor(q *Queue, jobID string) []int32 {
 }
 
 func TestAckDurable_MarksArticlesResolved(t *testing.T) {
+	t.Parallel()
 	q := newTestQueueWithJob(t, "job-1", 10)
 	p := mintProof(t, "job-1", []int32{0, 3, 7})
 
@@ -146,6 +147,7 @@ func TestAckDurable_MarksArticlesResolved(t *testing.T) {
 // article a previous Drain returned, so a replayed proof must not double-count
 // bytes.
 func TestAckDurable_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	q := newTestQueueWithJob(t, "job-1", 10)
 	p := mintProof(t, "job-1", []int32{0, 1, 2})
 	if err := q.AckDurable(p); err != nil {
@@ -171,6 +173,7 @@ func TestAckDurable_IsIdempotent(t *testing.T) {
 // already on disk. The out-of-range one is a numbering defect upstream, and it
 // is logged rather than silently ignored (A2).
 func TestAckDurable_OutOfRangeArticleDoesNotAbortTheBatch(t *testing.T) {
+	t.Parallel()
 	q := newTestQueueWithJob(t, "job-1", 4)
 	// artCount 8 lets the barrier place article 6, which the 4-article job
 	// does not have — the mismatch this test is about.
@@ -201,6 +204,7 @@ func TestAckDurable_OutOfRangeArticleDoesNotAbortTheBatch(t *testing.T) {
 // states the bound and why the seeding doors are held by their contracts and
 // their own tests rather than by the compiler.
 func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
+	t.Parallel()
 	forbidden := []string{
 		"MarkArticleDone", "MarkArticleFailed",
 		"MarkArticlesDone", "MarkArticlesDoneByIdx",
@@ -222,6 +226,7 @@ func TestQueue_HasNoNonBarrierAckPath(t *testing.T) {
 // durability.DurableProof, whose zero value is useless and which no package
 // outside internal/durability can construct with content.
 func TestAckDurable_RequiresAProof(t *testing.T) {
+	t.Parallel()
 	m, ok := reflect.TypeFor[*Queue]().MethodByName("AckDurable")
 	if !ok {
 		t.Fatal("Queue.AckDurable is missing — the barrier has no way to ack")
@@ -241,6 +246,7 @@ func TestAckDurable_RequiresAProof(t *testing.T) {
 // needed the manifest or residency would drop the reason for exactly the jobs
 // that have one. An unknown job is reported rather than silently ignored (A2).
 func TestSetWarning_IsReadableWithoutResidency(t *testing.T) {
+	t.Parallel()
 	q := newTestQueueWithJob(t, "job-1", 4)
 
 	if err := q.SetWarning("job-1", "Stalled: storage retryable fault on sync \"/mnt/x\": no space left on device"); err != nil {
@@ -344,6 +350,7 @@ func restoreDone(t *testing.T, q *Queue, jobID string, nArts int, done ...int) {
 // The run below names articles outside the file's range, which is what
 // runsCoverage refuses.
 func TestReplaceFromRuns_EvictsAHydratedJobOnAValidationError(t *testing.T) {
+	t.Parallel()
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)
 
@@ -372,6 +379,7 @@ func TestReplaceFromRuns_EvictsAHydratedJobOnAValidationError(t *testing.T) {
 }
 
 func TestReplaceFromRuns_ClearsArticlesNoSurvivingRunCovers(t *testing.T) {
+	t.Parallel()
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)
 	restoreDone(t, q, "job-1", nArts, 0, 1, 2)
@@ -409,6 +417,7 @@ func TestReplaceFromRuns_ClearsArticlesNoSurvivingRunCovers(t *testing.T) {
 // the assertion is on agreement with ground truth rather than on figures a
 // test author computed by hand.
 func TestReplaceFromRuns_CorrectsTheDerivedFigures(t *testing.T) {
+	t.Parallel()
 	const nArts = 4
 	type figures struct {
 		fileDownloaded, fileFailed, remaining int64
@@ -469,6 +478,7 @@ func TestReplaceFromRuns_CorrectsTheDerivedFigures(t *testing.T) {
 //	file 1 — Complete, every article recorded done, one of them disproved.
 //	         The flag and the assembled CRC both go.
 func TestReplaceFromRuns_HandlesAFileAlreadyComplete(t *testing.T) {
+	t.Parallel()
 	const perFile = 3
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
@@ -560,6 +570,7 @@ func TestReplaceFromRuns_HandlesAFileAlreadyComplete(t *testing.T) {
 // this process made since the last commit — the exact bits that phase exists
 // to preserve.
 func TestSeedFromRuns_StaysAdditive(t *testing.T) {
+	t.Parallel()
 	const nArts = 4
 	q := newTestQueueWithJob(t, "job-1", nArts)
 	restoreDone(t, q, "job-1", nArts, 1)
@@ -600,6 +611,7 @@ func TestSeedFromRuns_StaysAdditive(t *testing.T) {
 // carries on because "a failure here costs a re-fetch and nothing else", which
 // is only true while a failure applies nothing.
 func TestSeedFromRuns_AppliesNothingWhenAnyRunIsRefused(t *testing.T) {
+	t.Parallel()
 	const nFiles, nArts = 2, 3
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
@@ -640,6 +652,7 @@ func TestSeedFromRuns_AppliesNothingWhenAnyRunIsRefused(t *testing.T) {
 // bytes were never on disk, re-fetch it on every restart and return its bytes
 // to the job's health figures as if they might still arrive.
 func TestMarkNotDone_GuardsWhatItMayUndo(t *testing.T) {
+	t.Parallel()
 	q := newTestQueueWithJob(t, "job-1", 3)
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -694,6 +707,7 @@ func TestMarkNotDone_GuardsWhatItMayUndo(t *testing.T) {
 // The accept case is here too, because a check that refused everything would
 // satisfy the refusal arms on its own.
 func TestRunsCoverage_RefusesARunOutsideItsFile(t *testing.T) {
+	t.Parallel()
 	const perFile = 4
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
@@ -754,6 +768,7 @@ func TestRunsCoverage_RefusesARunOutsideItsFile(t *testing.T) {
 // proof must leave it EXACTLY there — neither widening it (the over-claim the
 // design forbids) nor erroring.
 func TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing(t *testing.T) {
+	t.Parallel()
 	const jobID, nArts = "empty-proof", 4
 	q := newTestQueueWithJob(t, jobID, nArts)
 

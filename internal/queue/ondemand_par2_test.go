@@ -21,6 +21,7 @@ func par2NZB() *nzb.NZB {
 }
 
 func TestNewJob_OnDemandPar2Classification(t *testing.T) {
+	t.Parallel()
 	t.Run("defers recovery volume when enabled", func(t *testing.T) {
 		job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
 		if err != nil {
@@ -60,6 +61,7 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 }
 
 func TestOnDemandPar2_PendingAndCompletion(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
 	if err != nil {
@@ -113,6 +115,7 @@ func TestOnDemandPar2_PendingAndCompletion(t *testing.T) {
 }
 
 func TestUndeferRecoveryVolumes(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
 	if err != nil {
@@ -153,6 +156,7 @@ func TestUndeferRecoveryVolumes(t *testing.T) {
 }
 
 func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
 	if err != nil {
@@ -189,6 +193,7 @@ func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
 }
 
 func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
+	t.Parallel()
 	q := New()
 	if err := q.UndeferRecoveryVolumes("missing", []int{0}); err == nil {
 		t.Error("expected ErrNotFound for missing job")
@@ -233,6 +238,7 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 // size figures (which already exclude a non-fetched file, deferred or
 // discarded alike) do not move either.
 func TestDiscardDeferredPar2(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
 	if err != nil {
@@ -290,6 +296,7 @@ func TestDiscardDeferredPar2(t *testing.T) {
 // DiscardDeferredPar2 no longer calls setScalarsFromManifest) all stay
 // exactly where they were.
 func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{Subject: "content-1.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "c1@x", Bytes: 1000, Number: 1}}},
@@ -393,6 +400,7 @@ func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
 // nothing to discard — matching today's code, which gates its entire
 // mutation block on discardedBytes > 0.
 func TestDiscardDeferredPar2_NoOpWhenNothingDeferred(t *testing.T) {
+	t.Parallel()
 	q := New()
 	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: false}, fsutil.SanitizeOptions{})
 	if err != nil {

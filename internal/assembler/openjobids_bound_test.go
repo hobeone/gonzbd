@@ -37,6 +37,7 @@ func TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked(t *testing.T) {
 	release := make(chan struct{})
 	blocked := make(chan struct{}, 1)
 	opts := makeOpts(dir, files)
+	opts.BarrierOpTimeout = 20 * time.Millisecond
 	inner := opts.FileInfo
 	opts.FileInfo = func(jobID string, fileIdx int) (FileInfo, error) {
 		select {
@@ -97,10 +98,10 @@ func TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked(t *testing.T) {
 		if !errors.Is(got.err, errWorkerUnresponsive) {
 			t.Errorf("err = %v, want it to name the unresponsive worker", got.err)
 		}
-		if got.dur > 3*barrierOpTimeout {
-			t.Errorf("returned after %v, want roughly barrierOpTimeout (%v)", got.dur, barrierOpTimeout)
+		if got.dur > 3*a.BarrierOpTimeout() {
+			t.Errorf("returned after %v, want roughly %v", got.dur, a.BarrierOpTimeout())
 		}
-	case <-time.After(3 * barrierOpTimeout):
+	case <-time.After(3 * a.BarrierOpTimeout()):
 		t.Fatal("OpenJobIDs did not return while the worker was blocked. " +
 			"runCheckpoint is launched with a context cancelled only at shutdown, so " +
 			"this blocks the single loop that owns checkpointing, stall re-evaluation " +

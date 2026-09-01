@@ -69,7 +69,8 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 		FileInfo: func(string, int) (FileInfo, error) {
 			return FileInfo{}, nil
 		},
-		OnLowDisk: func(string, int64) { lowDiskCalls++ },
+		OnLowDisk:        func(string, int64) { lowDiskCalls++ },
+		DiskCheckTimeout: 20 * time.Millisecond,
 	}
 	a := New(opts, nil)
 	a.SetMinFreeBytes(1) // any positive value enables the check
@@ -93,7 +94,7 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 	case <-done:
 		// checkDiskSpace returned promptly despite the hung statfs — proves
 		// it now bounds the call instead of blocking forever.
-	case <-time.After(diskCheckTimeout + 5*time.Second):
+	case <-time.After(opts.DiskCheckTimeout + 2*time.Second):
 		t.Fatal("checkDiskSpace did not return within the bounded timeout; " +
 			"a hung statfs would stall the assembler worker indefinitely")
 	}

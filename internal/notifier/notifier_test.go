@@ -160,17 +160,22 @@ func TestAppriseTypeMapping(t *testing.T) {
 		{Warning, "warning"},
 		{DownloadStarted, "info"},
 	}
+
+	var (
+		mu       sync.Mutex
+		received map[string]string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test helper
+		mu.Lock()
+		_ = json.Unmarshal(body, &received)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
 	for _, tc := range cases {
 		t.Run(tc.et.String(), func(t *testing.T) {
-			t.Parallel()
-			var received map[string]string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body) //nolint:errcheck // test helper
-				_ = json.Unmarshal(body, &received)
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer srv.Close()
-
 			n := NewAppriseNotifier(AppriseConfig{
 				URL:        srv.URL,
 				ServiceURL: "ntfy://topic",
@@ -181,7 +186,10 @@ func TestAppriseTypeMapping(t *testing.T) {
 			if err := n.Send(t.Context(), ev); err != nil {
 				t.Fatalf("Send: %v", err)
 			}
-			if got := received["type"]; got != tc.wantType {
+			mu.Lock()
+			got := received["type"]
+			mu.Unlock()
+			if got != tc.wantType {
 				t.Errorf("type = %q, want %q", got, tc.wantType)
 			}
 		})
@@ -289,11 +297,11 @@ func TestScriptNonZeroExit(t *testing.T) {
 func TestScriptTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	p := writeScript(t, dir, "slow.sh", `sleep 10`)
+	p := writeScript(t, dir, "slow.sh", `exec sleep 10`)
 
 	n := NewScriptNotifier(ScriptConfig{
 		Path:      p,
-		Timeout:   100 * time.Millisecond,
+		Timeout:   50 * time.Millisecond,
 		EventMask: []EventType{QueueDone},
 	})
 	start := time.Now()
@@ -303,8 +311,7 @@ func TestScriptTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	// Allow up to 5s: 100ms timeout + 2s WaitDelay + scheduling slack.
-	// The script sleeps 10s, so if we return before 5s the kill path fired.
+	// The script sleeps 10s, so if we return well before 10s the kill path fired.
 	if elapsed > 5*time.Second {
 		t.Errorf("timeout not enforced: elapsed %v", elapsed)
 	}

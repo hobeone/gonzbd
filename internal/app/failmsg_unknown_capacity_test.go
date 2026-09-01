@@ -28,6 +28,7 @@ import (
 // par2 files but none recognized as volumes. It still fires when the job has
 // no par2 files at all, where zero really is zero.
 func TestFailMsgForJob_UnrecognizedPar2WithholdsTheZeroCapacityVerdict(t *testing.T) {
+	t.Parallel()
 	t.Run("plainly-named par2 present: capacity unknown, do not condemn", func(t *testing.T) {
 		// One par2 file, conventionally named as an index. We cannot know
 		// from here whether it carries recovery slices.

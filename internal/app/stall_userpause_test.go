@@ -20,6 +20,7 @@ import (
 // CloseJobHandles runs only from maybeFinalize — so the next checkpoint fails
 // the same way and the record is recreated as fast as it is cleared.
 func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	if err := application.queue.Pause(job.ID); err != nil {
@@ -52,6 +53,7 @@ func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
 // parked by a storage fault stays parked after the operator fixes the mount,
 // which is the L2 violation R19 exists to prevent.
 func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
+	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// What Application.Stall does: record the reason, then pause.
@@ -80,6 +82,7 @@ func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
 // TestWeParked pins the predicate directly, because its two false cases have
 // different causes and only one of them is exercised end to end.
 func TestWeParked(t *testing.T) {
+	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
 	if application.weParked("never-seen") {

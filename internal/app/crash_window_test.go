@@ -124,6 +124,7 @@ func newCrashWindowFixture(t *testing.T, recordArts ...int32) *crashWindowFixtur
 // from the article bits: Complete means the finalize RAN, and the truncate is
 // the part the bits cannot witness.
 func TestResumeSweep_FinishesAFinalizeACrashInterrupted(t *testing.T) {
+	t.Parallel()
 	f := newCrashWindowFixture(t, 0, 1)
 
 	// Fixture guards. Without these the assertions below pass for a job that
@@ -179,6 +180,7 @@ func TestResumeSweep_FinishesAFinalizeACrashInterrupted(t *testing.T) {
 // would claim a file whose second half is pre-allocation's zeros, while
 // trimming it would cut the region the missing article is going to fill.
 func TestResumeSweep_LeavesAnUnfinishedFileAlone(t *testing.T) {
+	t.Parallel()
 	f := newCrashWindowFixture(t, 0)
 
 	if err := f.app.resumeAllJobs(t.Context()); err != nil {
@@ -212,6 +214,7 @@ func TestResumeSweep_LeavesAnUnfinishedFileAlone(t *testing.T) {
 // all share one FetchPolicy in any fixture the sweep will accept, and an empty
 // article range cannot be built through queue.NewJob at all.
 func TestStrandedComplete_Predicate(t *testing.T) {
+	t.Parallel()
 	f := newCrashWindowFixture(t, 0, 1)
 	if err := f.app.queue.SeedFromRuns(f.job.ID, []durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: crashDecoded},
@@ -256,6 +259,7 @@ func TestStrandedComplete_Predicate(t *testing.T) {
 // on this file wrote — the never-grow guard in TrimToRuns catches the too-long
 // direction, and nothing catches the too-short one but this.
 func TestRunsForFile_SelectsOneFilesRows(t *testing.T) {
+	t.Parallel()
 	all := []durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Offset: 0, Length: 100},
 		{FileIdx: 1, FirstArtIdx: 5, LastArtIdx: 5, Offset: 0, Length: 900},
@@ -282,6 +286,7 @@ func TestRunsForFile_SelectsOneFilesRows(t *testing.T) {
 // It runs after the sweep rather than instead of it, because these are error
 // arms the sweep's own fixtures cannot produce.
 func TestCompleteStrandedFiles_ToleratesWhatItCannotRepair(t *testing.T) {
+	t.Parallel()
 	f := newCrashWindowFixture(t, 0, 1)
 	snap := f.app.queue.SnapshotJob(f.job.ID)
 	m, err := snap.Manifest()
@@ -330,6 +335,7 @@ func TestCompleteStrandedFiles_ToleratesWhatItCannotRepair(t *testing.T) {
 // DURABLE byte, so the file is cut back to article 0's end rather than kept at
 // pre-allocation's length with a hole where article 1 was to go.
 func TestResumeSweep_CompletesAFileWhoseTailArticleFailedPermanently(t *testing.T) {
+	t.Parallel()
 	f := newCrashWindowFixture(t, 0)
 
 	if err := f.app.queue.AckPermanentFailure(f.job.ID, []int32{1}); err != nil {

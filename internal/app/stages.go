@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -23,19 +24,38 @@ type binaryProbe struct {
 	SevenzInfo unpack.SevenzInfo
 }
 
+var (
+	probeCacheMu sync.RWMutex
+	probeCache   = make(map[string]binaryProbe)
+)
+
 // probeBinaries probes the three external tool binaries used by the
 // post-processing pipeline and logs what was found. Separated from
 // buildStages so tests can skip the probe by constructing a binaryProbe
 // directly. Also fixes the accidental double-detection of unrar that
 // previously occurred (once in New() and once in buildStages).
 func probeBinaries(ctx context.Context, cfg *config.Config, log *slog.Logger) binaryProbe {
-	ppLog := log.With("component", "postproc")
-
 	pp := cfg.GetPostProc()
 	par2Command := pp.Par2Command
 	par2Turbo := pp.Par2Turbo
 	unrarCommand := pp.UnrarCommand
 	sevenzCommand := pp.SevenzCommand
+
+	cacheKey := fmt.Sprintf("%s|%t|%s|%s", par2Command, par2Turbo, unrarCommand, sevenzCommand)
+	probeCacheMu.RLock()
+	cached, ok := probeCache[cacheKey]
+	probeCacheMu.RUnlock()
+	if ok {
+		return cached
+	}
+
+	probeCacheMu.Lock()
+	defer probeCacheMu.Unlock()
+	if cached, ok := probeCache[cacheKey]; ok {
+		return cached
+	}
+
+	ppLog := log.With("component", "postproc")
 
 	par2Caps := par2.DetectCapabilities(ctx, par2Command)
 	if par2Caps.IsTurbo && !par2Turbo {
@@ -62,11 +82,13 @@ func probeBinaries(ctx context.Context, cfg *config.Config, log *slog.Logger) bi
 		ppLog.Warn("7z binary not found; 7-Zip extraction will not be available")
 	}
 
-	return binaryProbe{
+	probe := binaryProbe{
 		Par2Caps:   par2Caps,
 		UnrarInfo:  unrarInfo,
 		SevenzInfo: sevenzInfo,
 	}
+	probeCache[cacheKey] = probe
+	return probe
 }
 
 // builtStages bundles the stage list with the individually addressable stages

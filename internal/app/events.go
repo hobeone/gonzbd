@@ -69,7 +69,11 @@ func (app *Application) emit(e Event) {
 }
 
 func (app *Application) runMetricsPush(ctx context.Context) {
-	ticker := time.NewTicker(1000 * time.Millisecond)
+	interval := app.metricsPushInterval
+	if interval <= 0 {
+		interval = 1000 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

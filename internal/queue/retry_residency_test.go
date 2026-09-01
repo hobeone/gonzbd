@@ -28,6 +28,7 @@ import (
 // state this test needs is on disk before the Save runs. Measured, not
 // assumed: neutering the Save below leaves this test green.
 func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
 
@@ -131,6 +132,7 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 // cannot be read from disk, Retry must return an error and must not mutate
 // job.Status, matching SetStatus/SetStatusIf's existing behavior.
 func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
 
@@ -178,6 +180,7 @@ func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
 // never decoded, so nothing was written for it and no fsync could have
 // recorded it. The done bit it gets is resolveArticles', not a run's.
 func TestResolveArticles_KeepsAFailedArticleDistinctFromAPlainDoneOne(t *testing.T) {
+	t.Parallel()
 	// Article 0 is covered by a run; article 1 permanently failed; articles
 	// 2 and 3 are still outstanding.
 	done, failed := resolveArticles([]artRange{{First: 0, Last: 0}}, []int32{1}, 4)
@@ -202,6 +205,7 @@ func TestResolveArticles_KeepsAFailedArticleDistinctFromAPlainDoneOne(t *testing
 // condition RetryHistoryJob decides and drops the rows for. Anything reaching
 // here has escaped that, and it must not index out of bounds on the boot path.
 func TestResolveArticles_ClampsARunOutsideTheManifest(t *testing.T) {
+	t.Parallel()
 	done, failed := resolveArticles([]artRange{{First: -3, Last: 99}}, []int32{-1, 42}, 2)
 
 	if len(done) != 2 || len(failed) != 2 {
@@ -221,6 +225,7 @@ func TestResolveArticles_ClampsARunOutsideTheManifest(t *testing.T) {
 // process restart (not just an in-process eviction), since RestoreJobProgress
 // and Loader.Load both derive it from the same failed_articles rows.
 func TestRetry_RestartRoundTrip_PreservesFailedSet(t *testing.T) {
+	t.Parallel()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
 

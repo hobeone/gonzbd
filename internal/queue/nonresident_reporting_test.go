@@ -39,6 +39,7 @@ func nonResidentJob(t *testing.T) (*Queue, *Job) {
 // can still do so, but now by saying so with errors.Is rather than by being
 // unable to tell.
 func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		call func(q *Queue, id string) error
@@ -82,6 +83,7 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 // ErrJobNotResident: "you are asking about nothing" and "this job's manifest
 // is not loaded" are different answers and callers key off the difference.
 func TestNonResident_AbsentJobStillReportsNotFound(t *testing.T) {
+	t.Parallel()
 	q, _ := nonResidentJob(t)
 	if err := q.MarkFileComplete("no-such-job", 0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("MarkFileComplete on an absent job = %v, want ErrNotFound", err)
@@ -97,6 +99,7 @@ func TestNonResident_AbsentJobStillReportsNotFound(t *testing.T) {
 // that cannot occur, and SetPar2ReleaseReason additionally demanded a
 // manifest it never reads. Both must simply do the work.
 func TestNonResident_ProgressTierDoesTheWork(t *testing.T) {
+	t.Parallel()
 	t.Run("SetPar2ReleaseReason", func(t *testing.T) {
 		q, job := nonResidentJob(t)
 		const reason = "damage detected in volume 3"
@@ -174,6 +177,7 @@ func TestNonResident_ProgressTierDoesTheWork(t *testing.T) {
 // that used to check the returned slice's length now check the same claim
 // indirectly through FailedBytes/ArticleFailed state instead.
 func TestAckPermanentFailure_WorkingPaths(t *testing.T) {
+	t.Parallel()
 	t.Run("empty input does nothing", func(t *testing.T) {
 		q, job := nonResidentJob(t)
 		// Deliberately a non-resident job: the length check precedes the

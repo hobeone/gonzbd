@@ -61,6 +61,7 @@ const rebuildNZBBody = `<?xml version="1.0" encoding="iso-8859-1" ?>
 // ID in particular has to match, or the retained progress keyed on it and the
 // job's existing incomplete directory both go unfound.
 func TestRebuildJobFromNZB_Success(t *testing.T) {
+	t.Parallel()
 	a, adminDir := rebuildTestApp(t)
 	writeBackup(t, adminDir, "show.nzb.gz", []byte(rebuildNZBBody))
 
@@ -96,6 +97,7 @@ func TestRebuildJobFromNZB_Success(t *testing.T) {
 // inheriting from the category rather than failing the retry. The column is
 // written by us, but a hand-edited database should degrade, not block.
 func TestRebuildJobFromNZB_UnparseablePP(t *testing.T) {
+	t.Parallel()
 	a, adminDir := rebuildTestApp(t)
 	writeBackup(t, adminDir, "show.nzb.gz", []byte(rebuildNZBBody))
 
@@ -118,6 +120,7 @@ func TestRebuildJobFromNZB_UnparseablePP(t *testing.T) {
 // is absent or unreadable, and an opaque error here is the difference between
 // "re-add the NZB by hand" and "no idea why retry did nothing".
 func TestRebuildJobFromNZB_Failures(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		backup  string
@@ -186,6 +189,7 @@ func TestRebuildJobFromNZB_Failures(t *testing.T) {
 // separators cannot reach outside it. The column is ours, but the database is
 // a file on disk and not a trust boundary we control after the fact.
 func TestRebuildJobFromNZB_IgnoresPathSeparators(t *testing.T) {
+	t.Parallel()
 	a, adminDir := rebuildTestApp(t)
 	writeBackup(t, adminDir, "show.nzb.gz", []byte(rebuildNZBBody))
 

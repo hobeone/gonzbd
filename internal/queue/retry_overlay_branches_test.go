@@ -18,6 +18,7 @@ import (
 // orders by file_index, so this only arises when rows are missing or
 // duplicated, which is exactly when guessing is worst.
 func TestRetainedMatchesManifest_RejectsOutOfOrderIndexes(t *testing.T) {
+	t.Parallel()
 	j := makeMultiFileJob(t, "guard", 2, 3)
 	m := j.manifest
 
@@ -51,6 +52,7 @@ func TestRetainedMatchesManifest_RejectsOutOfOrderIndexes(t *testing.T) {
 // RestoreRetryProgress runs on a job built outside the queue, so it cannot
 // rely on Add's residency repair having happened yet.
 func TestRestoreRetryProgress_NoProgressOrManifest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
@@ -76,6 +78,7 @@ func TestRestoreRetryProgress_NoProgressOrManifest(t *testing.T) {
 // retry that lost Deferred would fetch volumes on-demand par2 exists to
 // avoid; one that lost Complete would refetch a file already assembled.
 func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
@@ -144,6 +147,7 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 // release path entirely and pulling the volume's bytes into every reported
 // figure for a job that never actually needed it downloaded.
 func TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
@@ -227,6 +231,7 @@ func TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet(t *testing.T
 // OnDemandPar2 config flag, so a held volume still gets a fresh ruling and
 // is never stranded — it is at most an extra decision, never lost data.
 func TestRestoreRetryProgress_DowngradesRetainedFetchNever(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
@@ -291,6 +296,7 @@ func TestRestoreRetryProgress_DowngradesRetainedFetchNever(t *testing.T) {
 // instructions: one says re-download the job, the other says the database is
 // unusable, and conflating them would quietly refetch everything.
 func TestRestoreRetryProgress_QueryFailurePropagates(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {

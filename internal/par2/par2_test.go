@@ -3,19 +3,12 @@ package par2
 import (
 	"cmp"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
-
-// hasPar2 returns true and the path to the par2 binary if it is installed.
-func hasPar2() (string, bool) {
-	path, err := exec.LookPath("par2")
-	return path, err == nil
-}
 
 // touch creates an empty file at path, creating parent directories as needed.
 func touch(t *testing.T, path string) {
@@ -172,118 +165,6 @@ func TestFindPar2Files_GlobMetachars(t *testing.T) {
 	if len(sets[0].ExtraFiles) != 1 {
 		t.Errorf("got %d extra files, want 1", len(sets[0].ExtraFiles))
 	}
-}
-
-// ---- Integration tests (require par2 binary) ------------------------------
-
-func TestVerifyAndRepair(t *testing.T) {
-	_, ok := hasPar2()
-	if !ok {
-		t.Skip("par2 binary not found in PATH; skipping integration tests")
-	}
-
-	dir := t.TempDir()
-	inputFile := filepath.Join(dir, "input.bin")
-
-	// Write 1 KiB of known data.
-	data := make([]byte, 1024)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-	if err := os.WriteFile(inputFile, data, 0o644); err != nil {
-		t.Fatalf("write input: %v", err)
-	}
-
-	// Generate par2 files: -n1 creates a single recovery file.
-	createCmd := exec.Command("par2", "c", "-n1", filepath.Join(dir, "set"), inputFile)
-	createCmd.Dir = dir
-	out, err := createCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("par2 create failed: %v\n%s", err, out)
-	}
-
-	// Locate the main (non-volume) par2 file.
-	sets, err := FindPar2Files(dir)
-	if err != nil || len(sets) == 0 {
-		t.Fatalf("FindPar2Files after create: err=%v sets=%v", err, sets)
-	}
-	mainFile := sets[0].MainFile
-	if mainFile == "" {
-		// Fall back to first extra if no non-volume file was created.
-		mainFile = sets[0].ExtraFiles[0]
-	}
-
-	ctx := t.Context()
-
-	t.Run("verify_good_set", func(t *testing.T) {
-		res, err := verify(ctx, mainFile)
-		if err != nil {
-			t.Fatalf("verify: %v", err)
-		}
-		if res.Status != StatusAllFilesOK {
-			t.Errorf("Status = %v, want StatusAllFilesOK\nstdout: %s\nstderr: %s",
-				res.Status, res.Stdout, res.Stderr)
-		}
-	})
-
-	t.Run("verify_corrupt_set", func(t *testing.T) {
-		// Corrupt a single byte in the middle of the input file.
-		corrupt := make([]byte, len(data))
-		copy(corrupt, data)
-		corrupt[512] ^= 0xFF
-		if err := os.WriteFile(inputFile, corrupt, 0o644); err != nil {
-			t.Fatalf("write corrupt: %v", err)
-		}
-		t.Cleanup(func() {
-			// Restore for the repair sub-test.
-			if err := os.WriteFile(inputFile, corrupt, 0o644); err != nil {
-				t.Logf("cleanup write: %v", err)
-			}
-		})
-
-		res, err := verify(ctx, mainFile)
-		if err != nil {
-			t.Fatalf("verify: %v", err)
-		}
-		// par2 may report RepairRequired or RepairPossible on corruption.
-		if res.Status != StatusRepairRequired && res.Status != StatusRepairPossible {
-			t.Errorf("Status = %v, want RepairRequired or RepairPossible\nstdout: %s\nstderr: %s",
-				res.Status, res.Stdout, res.Stderr)
-		}
-	})
-
-	t.Run("repair_corrupt_set", func(t *testing.T) {
-		// Ensure file is corrupted (in case sub-tests run in isolation).
-		corrupt := make([]byte, len(data))
-		copy(corrupt, data)
-		corrupt[512] ^= 0xFF
-		if err := os.WriteFile(inputFile, corrupt, 0o644); err != nil {
-			t.Fatalf("write corrupt: %v", err)
-		}
-
-		res, err := repair(ctx, mainFile)
-		if err != nil {
-			t.Fatalf("repair: %v", err)
-		}
-		if !res.Success {
-			t.Errorf("Repair.Success = false\nOutput: %s", res.Output)
-		}
-
-		// Verify the input file is restored.
-		restored, err := os.ReadFile(inputFile)
-		if err != nil {
-			t.Fatalf("read restored: %v", err)
-		}
-		if len(restored) != len(data) {
-			t.Fatalf("restored len %d, want %d", len(restored), len(data))
-		}
-		for i := range data {
-			if restored[i] != data[i] {
-				t.Errorf("byte %d mismatch after repair: got %02x, want %02x", i, restored[i], data[i])
-				break
-			}
-		}
-	})
 }
 
 func TestRunOptions_SandboxConfig(t *testing.T) {

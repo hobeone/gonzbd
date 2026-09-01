@@ -12,6 +12,7 @@ import (
 // what lets the rest of the system reason about "a manifest" without asking
 // which constructor made it.
 func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
+	t.Parallel()
 	files := []JobFile{
 		{
 			Subject: "a.bin",
@@ -70,6 +71,7 @@ func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
 // one — otherwise the persisted copy is a second source of truth and the one
 // that can drift.
 func TestManifestDerivesTotalBytesRatherThanTrustingTheBlob(t *testing.T) {
+	t.Parallel()
 	blob := []byte(`{"files":[{"subject":"a.bin","bytes":300,"articles":[` +
 		`{"id":"a1@h","bytes":100,"number":1},{"id":"a2@h","bytes":200,"number":2}]}],` +
 		`"total_bytes":999999}`)
@@ -98,6 +100,7 @@ func TestManifestDerivesTotalBytesRatherThanTrustingTheBlob(t *testing.T) {
 // the caller treats the error as a corrupt manifest and fails the job
 // visibly, where a silent drop would leave a job quietly short of articles.
 func TestManifestRefusesAnUnfetchableMessageIDFromDisk(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, id string }{
 		{"carriage return", "a\r\nDATA@h"},
 		{"line feed", "a\nb@h"},
@@ -126,6 +129,7 @@ func TestManifestRefusesAnUnfetchableMessageIDFromDisk(t *testing.T) {
 // A well-formed manifest must still load, or the check above would refuse
 // every job on restart.
 func TestManifestAcceptsOrdinaryMessageIDsFromDisk(t *testing.T) {
+	t.Parallel()
 	blob, err := json.Marshal(manifestJSON{Files: []manifestJSONFile{{
 		Subject:  "a.bin",
 		Bytes:    100,

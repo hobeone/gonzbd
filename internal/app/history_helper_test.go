@@ -42,6 +42,7 @@ func buildHistoryTestJob(t *testing.T, id, name string, added time.Time, nArticl
 }
 
 func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 
 	// 1. Success case, no repair needed, download time > 0.
@@ -179,6 +180,7 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 // is still resident — this is the only place a divergence between the scalar
 // and the manifest would surface as a wrong number the user keeps.
 func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
+	t.Parallel()
 	_, qjob := buildHistoryTestJob(t, "hist-evict", "evicted", time.Now(), 4)
 	pj := &postproc.Job{Queue: qjob}
 
@@ -226,6 +228,7 @@ func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 // && opts.OnDemandPar2). The fixture is constructed directly here instead of
 // widening the shared helper for one test.
 func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{
