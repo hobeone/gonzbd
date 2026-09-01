@@ -441,10 +441,13 @@ current size. `docs/queue-lifecycle.md` already assigns residency to the
 > never superseded and which this section contradicted without citing.
 >
 > §15 rejects staged behaviour-preserving decomposition on direction ("Rip and
-> replace, not migrate", `:829`), makes the swap one commit ("splitting it would
-> mean shipping exactly the adapters this decomposition exists to avoid",
-> `:850-852`), and forbids writing a plan ahead of its predecessor ("speculation
-> formatted as instructions", `:856-858`). The B2.1–B2.4 table below, and the
+> replace, not migrate"), makes the swap one commit ("splitting it would mean
+> shipping exactly the adapters this decomposition exists to avoid"), and
+> forbids writing a plan ahead of its predecessor ("speculation formatted as
+> instructions"). Those are quoted rather than cited by line: a line number into
+> another document is falsified by any edit above it, and the first draft of
+> this banner was already stale by the time its companion commit landed. Grep
+> the quoted phrase. The B2.1–B2.4 table below, and the
 > B2.4a…e sub-decomposition it spawned in #456, violate all three — the last of
 > them demonstrably, in a B2.4bc plan that referenced six symbols which do not
 > exist.
@@ -487,7 +490,7 @@ Proposed decomposition, for discussion:
 | **B2.1** | `Settle` + `settleLocked` extraction, `Park`, `Pause`/`Resume`/`Paused`, `Render`. Still imported by nothing. | this RFC |
 | **B2.2** | Persistence of `State`, `Next`, `Outcome`, `Intent` ~~— a new `goose` migration~~. **Landed.** Scope shrank: B2.3 shipped `reconstruct` ahead of it, so this was the `dispatch_jobs` table plus `internal/dispatch/store`. Per #454 the table was edited into `001_initial.sql` rather than added as a migration, and `Persisted` also gained `SortKey` and `Policy` — see #454's D2 amendment and D3 reversal. | B2.1 |
 | **B2.3** | The dispatcher and the composed view together: `Workers` implementation, residency, worker yield → `Park`, tick → `Advance`, §4.4's `ToSABnzbd` inputs. **Landed, out of order** — it merged before B2.2, which was harmless because nothing imports `internal/dispatch` yet. | B2.1, ~~B2.2~~ |
-| ~~**B2.4**~~ | ~~The swap: repoint the five production files, rewrite tests, delete `internal/queue`~~ **WITHDRAWN.** This row and the B2.4a…e sub-decomposition in #456 are retired; the swap is §15's plan 2, one commit. Its "five production files" figure was also wrong — it counted files naming `queue.Queue`, and #456 re-measured 16 non-test importers. D1's `internal/jobstate` destination is reopened against §15's, which is `internal/job`. | — |
+| ~~**B2.4**~~ | ~~The swap: repoint the five production files, rewrite tests, delete `internal/queue`~~ **WITHDRAWN.** This row and the B2.4a…e sub-decomposition in #456 are retired; the swap is §15's plan 2, one commit. Its "five production files" figure was also wrong — it counted files naming `queue.Queue`, and #456 re-measured 16 non-test importers. D1's `internal/jobstate` destination was reopened against §15's and **re-settled on `internal/job`** — see the job-lifecycle spec's §15 status block. | — |
 
 `crossed` is deliberately absent from that list. It is derived from `State` —
 `func (a *Attempt) crossed() bool { return IsProduction(a.state) }`

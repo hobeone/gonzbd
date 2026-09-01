@@ -28,7 +28,15 @@
 // returns 1 file. The bracket around the last letter is deliberate — it makes
 // the pattern match a real import line while NOT matching this sentence, and a
 // citation that counts its own prose is worse than none.
-// B2.4 repoints production onto it and deletes internal/queue. Row carries a Header supplied at Add rather than byte and
-// article progress, because internal/job.Job holds only id, name and policy —
-// the progress tier is still in internal/queue until B2.4.
+// Plan 2 of docs/superpowers/specs/2026-08-25-job-lifecycle-design.md §15 —
+// "the swap" — repoints production onto it. That plan moves Manifest and
+// JobProgress into internal/job rather than deleting internal/queue outright;
+// what remains of internal/queue after the move is what the swap deletes.
+// (An earlier decomposition called this step B2.4 and had it delete
+// internal/queue wholesale. It was withdrawn in favour of §15, which it
+// contradicted without citing.)
+//
+// Row carries a Header supplied at Add rather than byte and article progress,
+// because internal/job.Job holds only id, name and policy — the progress tier
+// is still in internal/queue until that move.
 package dispatch

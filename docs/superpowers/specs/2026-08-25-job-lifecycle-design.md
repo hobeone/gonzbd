@@ -440,11 +440,11 @@ Everything else reads.
 
 | Component | Owns | Never does |
 |---|---|---|
-| **App** | NZB ingestion and validation; process construction; reading persisted rows into `Job`s | resume or recovery logic (§10) |
+| **App** | NZB ingestion and validation; process construction; reading persisted rows into `Job`s; ~~*never* resume logic~~ **the startup resume sweep — see §10.1's banner** | ~~resume or recovery logic (§10)~~ **— withdrawn; `Application.resumeAllJobs` is the owner** |
 | **Queue** | the priority-ordered job list; lease issuance; compute-slot issuance; the dispatcher | mutate job state except through `Job` methods |
 | **Job** | all of its own state, behind its own `sync.RWMutex`; answers `IsDone()`; holds its `Lease` | call any `Queue` method (§7.1) |
 | **Lease** | the grant of manifest + barrier + pool-A capacity | outlive the crossing |
-| **StorageBarrier** | persisting article bytes to durable storage; write caching; reconciling its own record against the disk at construction | mark an article done without an fsync |
+| **StorageBarrier** | persisting article bytes to durable storage; write caching; ~~reconciling its own record against the disk at construction~~ **— withdrawn, see §10.1's banner; reconciliation is the startup sweep's, and the barrier is process-level rather than per-lease** | mark an article done without an fsync |
 | **Assessor** (`internal/par2`) | the verdict — the single answer to *are these bytes right?* | mutate the job, or accept a `queue` type (§7.3) |
 | **Dispatcher** | server pools, connection lending, per-article retry and penalty policy | hold per-job state of its own (§9) |
 | **Checkpointer** | writing job state to SQLite; sole DB writer for job rows | read anything but snapshots |
@@ -886,7 +886,7 @@ that plan 2's deletions have somewhere to land.
 | # | Plan | Delivers | Deletes |
 |---|---|---|---|
 | 1 | **Lifecycle core** — `internal/job` | `State`/`Activity`/`Outcome`/`Policy`/`WaitReason`, the transition machine, `Attempt`, `Job` with its own lock, `ToSABnzbd` | nothing — the package is standalone and unimported |
-| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` + `Verdict` in `internal/par2`~~ **(moved ahead of the swap — see the status block)**; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, `par2NeedsRecovery`, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage, `NeedRequeue`/`RequeueBlocksNeeded`, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
+| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` + `Verdict` in `internal/par2`~~ **(moved ahead of the swap — see the status block)**; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, ~~`par2NeedsRecovery`~~, `maybeReleaseRecoveryVolumes`, ~~the `quickcheck` stage~~, ~~`NeedRequeue`/`RequeueBlocksNeeded`~~ **(these three go with `Assess`+`Verdict`, ahead of the swap)**, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
 | 3 | **Dispatch and speculation** | `job.NextArticle()`/`AddArticle()`, the Queue-owned dispatcher over `LeasedJobs`, DirectUnpack promote/discard | `dispatchPass`'s queue-walking article loop, `duOrch`'s current wiring |
 
 > **Status, 2026-09-01.** Plan 1 landed (#439, #447). **Four of plan 2's
@@ -916,7 +916,7 @@ that plan 2's deletions have somewhere to land.
 >     internal/job and nothing else", and the residency boundary stops being
 >     compiler-enforced — so an enumeration test in `internal/dispatch` is a
 >     plan 2 deliverable, not a follow-up.
->   - **§10.1 is superseded, not owed.** See its banner below.
+>   - **§10.1 is superseded, not owed.** See its banner, ~200 lines above.
 >   - **`Assess` + `Verdict` moves AHEAD of the swap.** It is a Standing Design
 >     Rule 2 consolidation that stands on its own — `par2NeedsRecovery`
 >     (`internal/app/app.go:1517-1577`) and the `quickcheck` stage answer one
@@ -924,9 +924,27 @@ that plan 2's deletions have somewhere to land.
 >     as a control decision nowhere. Landing it first *removes* three entries
 >     from the Deletes column and shrinks the swap. `Checkpointer` stays inside
 >     plan 2: `Job` already does no I/O and the batched write at
->     `internal/queue/persistence.go:56` is already snapshot-shaped, leaving one
->     residual writer at `internal/queue/queue.go:898` whose justification is a
->     transition the swap replaces.
+>     `internal/queue/persistence.go:56` is already snapshot-shaped. But the
+>     single-job writers are **six**, not one — `git grep -n 'store\.Update(' --
+>     internal/queue/ ':!*_test.go'` returns 6 lines: `queue.go:755`, `:898`,
+>     `:1361`, `:1381`, `:1401`, and `workset.go:453`. Every one carries a
+>     `//lockio:` marker naming the transition it protects, and three are
+>     already tagged `tracked in #229`.
+>
+>     That changes the Checkpointer's size materially: it is not "name the
+>     batched path and resolve one straggler" but a six-site consolidation, and
+>     `workset.go:453` is reached from `ReplaceFromRuns` via `resumeAllJobs` —
+>     which §10.1's banner establishes is KEPT — so it does not retire with the
+>     swap and needs its own answer.
+>
+>     (Two earlier counts here were wrong: "one" in the first draft, "two" after
+>     the first review round. Both were grep artefacts rather than
+>     measurements — the first pattern matched `.Update(ctx` and missed every
+>     `context.Background()` call site; the second was a spot-fix that added the
+>     one instance found rather than re-running a corrected pattern. The
+>     population is "callers of `Store.Update`", and it wants the method name,
+>     not an argument spelling. Recorded because a corrected count reached by
+>     patching the previous one is not a count.)
 >
 > So plan 2 still owes: `Manifest`/`JobProgress` rehomed into `internal/job`;
 > `Checkpointer`; `app`/`downloader`/`postproc` rewired; and the Deletes column
