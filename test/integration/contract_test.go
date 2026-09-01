@@ -5,7 +5,6 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -474,44 +473,6 @@ func assertJSONType[T any](t *testing.T, m map[string]json.RawMessage, key, cont
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Errorf("%s.%s: expected type %T, unmarshal error: %v (raw: %s)", context, key, v, err, raw)
 	}
-}
-
-// apiDoPost sends a multipart POST with an NZB file to the API server.
-func apiDoPost(t *testing.T, ts *httptest.Server, query, filename string, nzbData []byte) *http.Response {
-	t.Helper()
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	fw, _ := mw.CreateFormFile("nzbfile", filename)
-	fw.Write(nzbData)
-	mw.Close()
-
-	url := ts.URL + "/api?" + query
-	req, err := http.NewRequest(http.MethodPost, url, &buf)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	return resp
-}
-
-// apiAddFile posts an NZB and returns the nzo_id.
-func apiAddFile(t *testing.T, ts *httptest.Server, filename string, nzbData []byte) string {
-	t.Helper()
-	resp := apiDoPost(t, ts, "mode=addfile&apikey="+integrationAPIKey, filename, nzbData)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("addfile: status %d", resp.StatusCode)
-	}
-	m := decodeAPIJSON(t, resp)
-	ids, ok := m["nzo_ids"].([]any)
-	if !ok || len(ids) == 0 {
-		t.Fatalf("addfile: no nzo_ids in response: %v", m)
-	}
-	return ids[0].(string)
 }
 
 // apiDoSetConfig sends a set_config POST request.

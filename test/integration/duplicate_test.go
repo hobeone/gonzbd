@@ -72,13 +72,12 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	// 1. Add first NZB
 	addNZBJob(t, a, rawNZB, "duplicate")
 
-	// Verify NZB backup exists under the original filename
-	nzbBackupDir := filepath.Join(dir, "admin", "queue", "nzb")
-	// Wait, newTestAppWithDir sets AdminDir = downloadDir (which is 'dir' here)
-	// Actually buildAppConfig in testhelpers_test.go:
-	// AdminDir: downloadDir
-	// And AddJob uses filepath.Join(app.cfg.AdminDir, "nzb")
-	nzbBackupDir = filepath.Join(dir, "nzb")
+	// Verify NZB backup exists under the original filename.
+	//
+	// newTestAppWithDir sets AdminDir = downloadDir (dir here), and AddJob
+	// backs up under filepath.Join(app.cfg.AdminDir, "nzb") -- see
+	// buildAppConfig in testhelpers_test.go.
+	nzbBackupDir := filepath.Join(dir, "nzb")
 	backupPath := filepath.Join(nzbBackupDir, "duplicate.nzb.gz")
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Errorf("NZB gzip backup missing: %v", err)

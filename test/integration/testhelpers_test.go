@@ -44,10 +44,7 @@ func SplitIntoParts(payload []byte, partSize int) [][]byte {
 	}
 	var parts [][]byte
 	for off := 0; off < len(payload); off += partSize {
-		end := off + partSize
-		if end > len(payload) {
-			end = len(payload)
-		}
+		end := min(off+partSize, len(payload))
 		parts = append(parts, payload[off:end])
 	}
 	return parts

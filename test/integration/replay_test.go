@@ -67,7 +67,6 @@ func TestReplay_HistoricalNZB(t *testing.T) {
 	}
 
 	for _, path := range nzbPaths {
-		path := path // capture
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			t.Parallel()
 			replayOneNZB(t, path)
@@ -211,10 +210,7 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 
 	// Wait for all files to complete or timeout.
 	// Scale timeout with number of segments, with a minimum of 30s.
-	timeout := time.Duration(countSegments(parsed)/10+30) * time.Second
-	if timeout > 120*time.Second {
-		timeout = 120 * time.Second
-	}
+	timeout := min(time.Duration(countSegments(parsed)/10+30)*time.Second, 120*time.Second)
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()

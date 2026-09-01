@@ -116,7 +116,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(true),
+		Headless: new(true),
 	})
 	if err != nil {
 		_ = pw.Stop()
@@ -146,7 +146,7 @@ func newTestEnv(t *testing.T) *testEnv {
 }
 
 // newPage creates a new browser page for a test.
-func (e *testEnv) newPage(t *testing.T) playwright.Page {
+func (e *testEnv) newPage(t *testing.T) playwright.Page { //nolint:ireturn // playwright.Page is the interface Browser.NewPage itself returns; there is no concrete type to return instead
 	t.Helper()
 	page, err := e.Browser.NewPage()
 	if err != nil {
@@ -267,8 +267,8 @@ func screenshotOnFailure(t *testing.T, page playwright.Page) {
 			_ = os.MkdirAll("screenshots", 0o755)
 			path := fmt.Sprintf("screenshots/%s.png", t.Name())
 			if _, err := page.Screenshot(playwright.PageScreenshotOptions{
-				Path:     playwright.String(path),
-				FullPage: playwright.Bool(true),
+				Path:     new(path),
+				FullPage: new(true),
 			}); err != nil {
 				t.Logf("screenshot failed: %v", err)
 			} else {

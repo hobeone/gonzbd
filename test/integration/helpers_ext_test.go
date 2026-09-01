@@ -50,7 +50,7 @@ func verifyFileAtPath(t *testing.T, path string, wantSHA []byte) {
 		// List parent dir contents to aid debugging.
 		parent := filepath.Dir(path)
 		entries, _ := os.ReadDir(parent)
-		var names []string
+		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
@@ -75,27 +75,12 @@ func verifyFileAtPath(t *testing.T, path string, wantSHA []byte) {
 	}
 }
 
-// verifyDirExists asserts the path exists and is a directory.
-func verifyDirExists(t *testing.T, path string) {
-	t.Helper()
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		t.Fatalf("directory %q does not exist", path)
-	}
-	if err != nil {
-		t.Fatalf("stat %q: %v", path, err)
-	}
-	if !info.IsDir() {
-		t.Fatalf("expected directory at %q but found file", path)
-	}
-}
-
 // verifyDirNotExists asserts the path does not exist.
 func verifyDirNotExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err == nil {
 		entries, _ := os.ReadDir(path)
-		var names []string
+		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
@@ -248,66 +233,6 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 	return a, downloadDir, completeDir
 }
 
-// ---------------------------------------------------------------------------
-// Fixture creation helpers
-// ---------------------------------------------------------------------------
-
-// createPar2Fixture creates a par2 recovery set for the named files in dir.
-// Returns the path to the main .par2 file. Skips if par2 is not available.
-func createPar2Fixture(t *testing.T, dir string, filenames ...string) string {
-	t.Helper()
-	requireTool(t, "par2")
-
-	parFile := filepath.Join(dir, "recovery.par2")
-	args := append([]string{"create", "-r5", "-n1", parFile}, filenames...)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	//nolint:gosec // G204: test code
-	cmd := exec.CommandContext(ctx, "par2", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("par2 create: %v\noutput: %s", err, out)
-	}
-	return parFile
-}
-
-// create7zFixture creates a 7z archive in dir. Returns the archive path.
-// Skips if 7z is not available.
-func create7zFixture(t *testing.T, dir, archiveName string, files map[string][]byte) string {
-	t.Helper()
-	bin := requireTool(t, "7z")
-
-	for name, data := range files {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-
-	archivePath := filepath.Join(dir, archiveName)
-	args := []string{"a", archivePath}
-	for name := range files {
-		args = append(args, filepath.Join(dir, name))
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	//nolint:gosec // G204: test code
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("7z create %s: %v\noutput: %s", archiveName, err, out)
-	}
-
-	// Delete source files.
-	for name := range files {
-		os.Remove(filepath.Join(dir, name))
-	}
-
-	return archivePath
-}
-
 // fixtureToTestFiles reads all files from dir and wraps them as TestFile
 // entries suitable for RegisterArticles and BuildNZB. Each file becomes a
 // multi-part article when larger than partSize bytes.
@@ -348,7 +273,10 @@ func fixtureToTestFilesRecursive(t *testing.T, dir string, partSize int) []TestF
 	t.Helper()
 	var files []TestFile
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
 			return nil
 		}
 		rel, relErr := filepath.Rel(dir, path)
@@ -461,4 +389,3 @@ func copyPar2Fixture(t *testing.T, srcName, destDir, destName string) string {
 	}
 	return dest
 }
-

@@ -111,7 +111,7 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 	}
 
 	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(true),
+		Headless: new(true),
 	})
 	if err != nil {
 		_ = pw.Stop()
