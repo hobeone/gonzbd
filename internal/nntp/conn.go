@@ -219,8 +219,10 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 // Dial connects to the server described by cfg, performs the greeting
 // handshake, authenticates if credentials are supplied, probes
 // capabilities, and returns a ready-to-use *Conn. The context governs
-// the full handshake; once Dial returns, cancellation is per-request
-// via Fetch's ctx.
+// the full handshake — cancelling it aborts the handshake promptly — and
+// the handshake is additionally bounded by cfg.Timeout even if ctx itself
+// carries no deadline of its own. Once Dial returns, cancellation is
+// per-request via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
@@ -288,7 +290,16 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
-	if err := c.handshake(ctx, cfg); err != nil {
+	// The handshake phase gets its own bound from the server's configured
+	// timeout, same as TCP connect (dopts.dialer.Timeout via net.Dialer)
+	// and post-handshake idle reads (idleTimeoutReader) already do — a
+	// caller with no deadline of its own (the common case: internal/downloader
+	// passes a cancel-only, never-timed-out pauseCtx) previously could hang
+	// the handshake indefinitely if the server completed TCP connect but
+	// never sent a greeting.
+	hctx, hcancel := context.WithTimeout(ctx, dopts.dialer.Timeout)
+	defer hcancel()
+	if err := c.handshake(hctx, cfg); err != nil {
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
@@ -304,10 +315,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 // reader loop starts. That simplifies the auth/caps sequence: each
 // step reads exactly one response with no FIFO bookkeeping.
 func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
-	cleanup, err := c.setupHandshakeDeadline(ctx)
-	if err != nil {
-		return err
-	}
+	cleanup := c.setupHandshakeDeadline(ctx)
 	defer cleanup()
 
 	if err := c.expectGreeting(); err != nil {
@@ -359,28 +367,22 @@ func (c *Conn) expectGreeting() error {
 	return c.setState(StateConnected)
 }
 
-// setupHandshakeDeadline applies the context deadline to the socket, or
-// starts a background watcher to force-close it if the context is
-// cancelled. Returns a cleanup function to be deferred by the caller.
-func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
-	if deadline, ok := ctx.Deadline(); ok {
-		c.log.Debug("handshake: setting deadline", "deadline", deadline)
-		if err := c.nc.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("nntp: set deadline: %w", err)
-		}
-		return func() { _ = c.nc.SetDeadline(time.Time{}) }, nil //nolint:errcheck // best-effort; socket might be closed
-	}
-
-	c.log.Debug("handshake: no context deadline, watching for cancellation")
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
-		case <-done:
-		}
-	}()
-	return func() { close(done) }, nil
+// setupHandshakeDeadline arranges to force-close the socket if ctx ends
+// before the handshake does — from the bound Dial derived from the
+// server's configured timeout elapsing, or from an early cancellation
+// (app pause/shutdown) reaching Dial's ctx. Returns a cleanup function to
+// be deferred by the caller.
+//
+// context.AfterFunc's stop() is race-free against the scheduled func by
+// construction (gated by an internal sync.Once): whichever of stop() or
+// ctx's own cancellation reaches it first is authoritative, so cleanup
+// racing a concurrent cancellation can no longer stamp a stray deadline on
+// a connection that has already returned to service (#396).
+func (c *Conn) setupHandshakeDeadline(ctx context.Context) func() {
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
+	})
+	return func() { stop() }
 }
 
 // validateCredential rejects credentials that contain characters

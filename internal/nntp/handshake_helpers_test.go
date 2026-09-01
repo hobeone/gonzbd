@@ -130,17 +130,14 @@ func TestExpectGreetingReadError(t *testing.T) {
 	}
 }
 
-// setupHandshakeDeadline has two shapes. With a context deadline it sets one
-// on the socket and hands back a cleanup that clears it.
+// setupHandshakeDeadline watches ctx unconditionally — given a deadline, a
+// cancellation, or both, it fires once when ctx ends.
 func TestSetupHandshakeDeadlineWithDeadline(t *testing.T) {
 	c, _ := newPipeConn(t)
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(time.Hour))
 	defer cancel()
 
-	cleanup, err := c.setupHandshakeDeadline(ctx)
-	if err != nil {
-		t.Fatalf("setupHandshakeDeadline: %v", err)
-	}
+	cleanup := c.setupHandshakeDeadline(ctx)
 	if cleanup == nil {
 		t.Fatal("cleanup = nil, want a callable")
 	}
@@ -172,24 +169,15 @@ func TestSetupHandshakeDeadlineWithDeadline(t *testing.T) {
 	}
 }
 
-// Without a context deadline it spawns a watcher that unblocks the socket on
-// cancellation — the case the goroutine exists for.
-//
-// There is deliberately no companion test asserting that cleanup() reliably
-// STOPS that watcher, because it does not. cleanup closes `done` while
-// cancellation closes ctx.Done(), and when both land together the select
-// picks pseudo-randomly, so the watcher can still stamp SetDeadline(now) on a
-// connection that is past its handshake and serving fetches. Surfaced
-// separately; a test asserting the opposite would flake about half the time,
-// and writing one would have converted a real defect into a flaky test.
+// Without a context deadline it still watches for cancellation via
+// context.AfterFunc, and unblocks the socket when it fires — the case the
+// watcher exists for. See TestSetupHandshakeDeadlineWithoutDeadlineCleanupBeatsCancel
+// below for the companion case: cleanup() racing a concurrent cancellation.
 func TestSetupHandshakeDeadlineWithoutDeadlineUnblocksOnCancel(t *testing.T) {
 	c, _ := newPipeConn(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cleanup, err := c.setupHandshakeDeadline(ctx)
-	if err != nil {
-		t.Fatalf("setupHandshakeDeadline: %v", err)
-	}
+	cleanup := c.setupHandshakeDeadline(ctx)
 	defer cleanup()
 
 	done := make(chan error, 1)
@@ -206,6 +194,49 @@ func TestSetupHandshakeDeadlineWithoutDeadlineUnblocksOnCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Error("read stayed blocked after cancellation; the watcher did not fire")
+	}
+}
+
+// Companion to the case above: a cleanup() that has already returned, with
+// cancellation following it (the shape of a real caller — handshake's
+// defer cleanup() runs and completes before the caller's own defer
+// cancel() fires). The old hand-rolled watcher could still fire after
+// cleanup in this exact ordering, because its select didn't know which of
+// the two channels became ready first — only that both were ready by the
+// time it got scheduled. context.AfterFunc's stop() has no such window: it
+// is gated by an internal sync.Once that resolves synchronously inside the
+// call, so a cleanup() that has returned has unconditionally retired the
+// watcher before cancel() runs (see setupHandshakeDeadline).
+func TestSetupHandshakeDeadlineWithoutDeadlineCleanupBeatsCancel(t *testing.T) {
+	const (
+		iterations = 30
+		grace      = 5 * time.Millisecond
+	)
+	for i := range iterations {
+		c, _ := newPipeConn(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cleanup := c.setupHandshakeDeadline(ctx)
+
+		cleanup()
+		cancel()
+
+		// If the watcher fired after cleanup, the socket now carries a
+		// SetDeadline(now) and a read returns immediately with an error. If
+		// cleanup won, no deadline was set and the read stays blocked.
+		blocked := make(chan error, 1)
+		go func() {
+			_, err := c.br.ReadString('\n')
+			blocked <- err
+		}()
+		select {
+		case err := <-blocked:
+			t.Fatalf("iteration %d: read returned %v, want it blocked — cleanup() should have prevented the watcher's SetDeadline", i, err)
+		case <-time.After(grace):
+		}
+
+		// Retire the blocked reader before the next iteration / t.Cleanup.
+		_ = c.nc.SetDeadline(time.Now())
+		<-blocked
 	}
 }
 
