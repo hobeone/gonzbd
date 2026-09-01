@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_tests.sh - Comprehensive test suite for sabnzbd-go
 # Includes Go static analysis, linters, unit tests (-race), Go integration tests,
-# Svelte UI checks/tests, and Playwright E2E tests.
+# the crash-consistency suite, Svelte UI checks/tests, and Playwright E2E tests.
 
 set -e # Exit on first error
 
@@ -45,7 +45,7 @@ fi
 echo -e "${GREEN}✓ All prerequisites met${NC}"
 
 # 0. UI Validation & Build
-echo -e "\n[0/6] Checking and Building UI..."
+echo -e "\n[0/7] Checking and Building UI..."
 (
     cd ui
     echo "Running UI Type-Check..."
@@ -56,7 +56,7 @@ echo -e "\n[0/6] Checking and Building UI..."
 echo -e "${GREEN}✓ UI Build & Type-Check Passed${NC}"
 
 # 1. Static Analysis & Linters
-echo -e "\n[1/6] Running Static Analysis & Linters..."
+echo -e "\n[1/7] Running Static Analysis & Linters..."
 echo "Running go vet..."
 go vet ./...
 
@@ -81,12 +81,15 @@ go vet ./...
 # GOOS=windows -- see #480).
 #
 # Why it is needed at all: the tagged suites below are each path-scoped (step 3
-# to ./test/integration/... and ./internal/par2/..., step 5 to
-# ./test/uitest/...), so test/crash/'s five files are compiled by nothing else
-# in this script. That is the gap that let internal/app/integration_test.go sit
-# uncompilable for six weeks (#475). test/crash is deliberately NOT run here
-# (see the note before the summary block below), so on a machine where the
-# crash suite cannot run, this is the only thing that compiles it.
+# to ./test/integration/... and ./internal/par2/..., step 4 to ./test/crash/,
+# step 6 to ./test/uitest/...), so nothing else in this script would otherwise
+# compile a tagged file outside its own path -- e.g. a build-tagged file added
+# under internal/ that no path-scoped step happens to cover. That is the gap
+# that let internal/app/integration_test.go sit uncompilable for six weeks
+# (#475). Step 4 below also compiles test/crash/ as a side effect of running
+# it, so this pass is redundant for that one tag specifically -- kept anyway
+# because it is one flag away from the other two and confirms compilation
+# before step 2's ~100s race run, rather than after it.
 #
 # -tags=e2e is absent on purpose: test/e2e carries no build constraint at all
 # and is gated at runtime by E2E_CONFIG. See test/e2e/e2e_test.go's package doc.
@@ -101,7 +104,7 @@ golangci-lint run ./...
 #
 # It exits non-zero for any finding, including one in the Go standard library
 # that is fixed only by upgrading the toolchain. Under `set -e` that aborted
-# the script at this line, so steps 2-5 — every Go test, every UI test — never
+# the script at this line, so steps 2-6 — every Go test, every UI test — never
 # ran, and the run still looked like "the suite failed on vulnerabilities". A
 # finding must not be able to hide the test results; the script still fails, it
 # just fails after reporting everything.
@@ -114,8 +117,8 @@ fi
 echo -e "${GREEN}✓ Static Analysis & Linters Passed${NC}"
 
 # 2. Go Unit Tests (with Race Detector)
-echo -e "\n[2/6] Running Go Unit Tests (with race detector)..."
-go test -race ./...
+echo -e "\n[2/7] Running Go Unit Tests (with race detector)..."
+go test -race -p 32 ./...
 echo -e "${GREEN}✓ Go Unit Tests Passed${NC}"
 
 # Go Test Alignment Check (unexported helpers coverage check).
@@ -153,32 +156,36 @@ go run ./scripts/check_review_banner
 echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
 
 # 3. Go Integration Tests
-echo -e "\n[3/6] Running Go Integration Tests..."
+echo -e "\n[3/7] Running Go Integration Tests..."
 go test -v -tags=integration ./test/integration/... ./internal/par2/...
 echo -e "${GREEN}✓ Go Integration Tests Passed${NC}"
 
-# 4. UI Component Tests
-echo -e "\n[4/6] Running UI Component Tests..."
+# 4. Crash-Consistency Tests
+#
+# Linux-only: `TestMain` builds `./cmd/gonzbd` into a temp directory itself
+# and SIGKILLs it as a real child process (docs/TESTING.md §3a), so this step
+# assumes a Linux host that can build and signal a child process. It is not
+# gated by `uname -s` the way the `crash && linux` build constraint itself is
+# -- a non-Linux run fails loudly here rather than silently skipping, which
+# is the intended behaviour: this script's other prerequisite checks (par2,
+# unrar, 7z, bun) already fail the same way on a missing dependency rather
+# than skip the step that needs it.
+echo -e "\n[4/7] Running Crash-Consistency Tests..."
+go test -tags=crash -timeout=20m ./test/crash/
+echo -e "${GREEN}✓ Crash-Consistency Tests Passed${NC}"
+
+# 5. UI Component Tests
+echo -e "\n[5/7] Running UI Component Tests..."
 (
     cd ui
     bun run test
 )
 echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
 
-# 5. UI E2E Tests (requires built UI + Playwright browsers)
-echo -e "\n[5/6] Running UI E2E Tests..."
+# 6. UI E2E Tests (requires built UI + Playwright browsers)
+echo -e "\n[6/7] Running UI E2E Tests..."
 go test -tags=uitest -v ./test/uitest/...
 echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
-
-# The crash-consistency suite (`-tags=crash`, test/crash/) is deliberately NOT
-# run here. It builds and SIGKILLs a real child process, so it needs a working
-# `go build` of ./cmd/gonzbd and is Linux-only, and its cost is dominated by
-# process startup rather than by anything this script already does. Keeping it
-# out means this script stays runnable on a machine where the child cannot be
-# built or killed. All six of its tests pass (docs/TESTING.md §3a). Run it
-# directly:
-#
-#   go test -tags=crash -timeout=20m ./test/crash/
 
 if [ "$VULN_STATUS" -ne 0 ]; then
     echo -e "\n${RED}===================================================="
@@ -191,5 +198,3 @@ fi
 echo -e "\n${GREEN}===================================================="
 echo "ALL TESTS PASSED SUCCESSFULLY"
 echo -e "====================================================${NC}"
-
-

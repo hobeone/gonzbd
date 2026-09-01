@@ -17,16 +17,12 @@ running or modifying tests.**
 | Config contract | `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` | none | none | <1s |
 | Tagged-file compile check | `go vet -tags=integration,uitest,crash ./...` | all three | none (host GOOS only; `crash` files are `crash && linux`, so they are skipped off Linux) | 0.2s warm, 6.9s cold |
 
-### Convenience Scripts
+### Convenience Script
 
-Two wrapper scripts in `scripts/` run the full suite with a single command:
-
-| Script | What it does |
-|--------|-------------|
-| `scripts/run_tests.sh` | Runs unit → integration → UI vitest → `bun run build` → uitest sequentially |
-| `scripts/run_tests_parallel.sh` | Same phases, but unit/integration/vitest/build run concurrently; uitest starts once build finishes. Faster on multi-core machines. Per-phase logs written to `logs/`. |
-
-Use `run_tests.sh` as the canonical pre-commit gate (matches CLAUDE.md quality gates). Use `run_tests_parallel.sh` for faster feedback during active development.
+`scripts/run_tests.sh` runs the full suite with a single command: unit →
+integration → crash-consistency → UI vitest → `bun run build` → uitest
+sequentially. Use it as the canonical pre-commit gate (matches CLAUDE.md
+quality gates).
 
 ## 1. Unit Tests (`go test ./...`)
 
@@ -164,8 +160,10 @@ E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/
 **When to run:** After any change to `internal/durability`, `internal/assembler`,
 the checkpoint cadence in `internal/app/durability.go`, the startup resume sweep
 in `internal/app/resume_startup.go`, or the queue's per-article persistence.
-Not run in CI and **not** part of `scripts/run_tests.sh` — see the status note
-at the end of this section.
+Not run in CI (see "Continuous Integration" in AGENTS.md — `ci.yml` is
+dispatch-only for every suite, not specifically this one), but it **is** part
+of `scripts/run_tests.sh` (step 4/7) — see the status note at the end of this
+section for pass/fail history.
 
 **Location:** `test/crash/`
 
