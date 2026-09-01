@@ -3,6 +3,7 @@ package queue
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestJobProgressArticleAccessorsOutOfRange pins the bounds-guard branch on
@@ -126,5 +127,133 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 	}
 	if got := p.PendingArticles(); got != 0 {
 		t.Errorf("PendingArticles() on nil = %d, want 0", got)
+	}
+}
+
+// TestIsJobStamp_MatchesTheWireForm pins the bound that #464 turns on.
+//
+// The sub-second case is the one that matters: it is the value the rejected
+// t.After(time.Unix(0,0)) formulation would have admitted, and it still
+// encodes to the integer 0 that the store reads as "absent".
+func TestIsJobStamp_MatchesTheWireForm(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   time.Time
+		want bool
+	}{
+		{"zero value", time.Time{}, false},
+		{"the epoch itself", time.Unix(0, 0), false},
+		{"one second before the epoch", time.Unix(-1, 0), false},
+		{"half a second after the epoch", time.Unix(0, 500000000), false},
+		{"one second after the epoch", time.Unix(1, 0), true},
+		{"a plausible now", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isJobStamp(tc.in); got != tc.want {
+				t.Errorf("isJobStamp(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSetDownloadStampOnce_FirstWinsAndRefusesNonStamps covers both setters.
+//
+// The table is parameterised by the getter as well as the setter: that is what
+// catches a setter miswired to write its sibling's field, which a table keyed
+// on the setter alone would pass.
+func TestSetDownloadStampOnce_FirstWinsAndRefusesNonStamps(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name    string
+		set     func(*JobProgress, time.Time) bool
+		get     func(*JobProgress) time.Time
+		sibling func(*JobProgress) time.Time
+	}{
+		{"started", (*JobProgress).setDownloadStartedOnce,
+			(*JobProgress).DownloadStarted, (*JobProgress).DownloadFinished},
+		{"finished", (*JobProgress).setDownloadFinishedOnce,
+			(*JobProgress).DownloadFinished, (*JobProgress).DownloadStarted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := &JobProgress{}
+			if !tc.set(p, real) {
+				t.Fatal("first real stamp was refused")
+			}
+			if !tc.get(p).Equal(real) {
+				t.Fatalf("stamp = %v, want %v", tc.get(p), real)
+			}
+			// Asserting the target field alone would pass a setter that wrote
+			// BOTH fields, which is a plausible copy-paste result given how
+			// alike the two bodies are.
+			if !tc.sibling(p).IsZero() {
+				t.Errorf("the sibling field was also written: %v", tc.sibling(p))
+			}
+			if tc.set(p, real.Add(time.Hour)) {
+				t.Error("second stamp took; first-wins was not enforced")
+			}
+			if !tc.get(p).Equal(real) {
+				t.Errorf("stamp moved to %v", tc.get(p))
+			}
+
+			// A refusal must not consume the slot.
+			q := &JobProgress{}
+			if tc.set(q, time.Unix(0, 0)) {
+				t.Error("epoch zero was accepted")
+			}
+			if !tc.get(q).IsZero() {
+				t.Errorf("epoch zero was stored: %v", tc.get(q))
+			}
+			if !tc.set(q, real) {
+				t.Error("the refusal consumed the first-wins slot")
+			}
+		})
+	}
+}
+
+func TestClearDownloadStamps_ClearsBothFields(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	p := &JobProgress{downloadStarted: real, downloadFinished: real.Add(time.Hour)}
+	p.clearDownloadStamps()
+	if !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
+		t.Errorf("after clear: started=%v finished=%v, want both zero",
+			p.downloadStarted, p.downloadFinished)
+	}
+}
+
+func TestRestoreDownloadStamps_FiltersEachFieldIndependently(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name                      string
+		started, finished         time.Time
+		wantStarted, wantFinished time.Time
+	}{
+		{"both real", real, real, real, real},
+		{"started fails the rule", time.Unix(0, 0), real, time.Time{}, real},
+		{"finished fails the rule", real, time.Unix(0, 0), real, time.Time{}},
+		{"both fail", time.Unix(0, 0), time.Time{}, time.Time{}, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &JobProgress{}
+			p.restoreDownloadStamps(tc.started, tc.finished)
+			if !p.downloadStarted.Equal(tc.wantStarted) {
+				t.Errorf("started = %v, want %v", p.downloadStarted, tc.wantStarted)
+			}
+			if !p.downloadFinished.Equal(tc.wantFinished) {
+				t.Errorf("finished = %v, want %v", p.downloadFinished, tc.wantFinished)
+			}
+		})
 	}
 }

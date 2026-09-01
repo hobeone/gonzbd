@@ -588,10 +588,11 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // Refusing costs nothing a caller wants, and the enumeration is narrower than
 // the sibling's: this method has no production caller at all. `git grep -l
 // 'MarkDownloadFinished\|markDownloadFinishedOnce' -- '*.go' ':!*_test.go'`
-// returns 2 files, both in this package — this declaration and the Queue
-// wrapper in queue.go — so every call site is a test. Production reaches
-// downloadFinished through Queue.SetPostProcStarted, which assigns
-// time.Now().UTC() directly under its own IsZero guard. So this is hardening
+// returns 3 files — this declaration, the Queue wrapper in queue.go, and
+// progress.go, where #464's stamp owner names both in prose — so every call
+// site is a test. Production reaches downloadFinished through
+// Queue.SetPostProcStarted, which assigns time.Now().UTC() directly under its
+// own IsZero guard. So this is hardening
 // against a future caller rather than a live defect. Crucially the refusal
 // does NOT consume the first-wins slot; a real timestamp arriving afterwards
 // is still the first mark.

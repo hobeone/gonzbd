@@ -489,6 +489,94 @@ func (p *JobProgress) DownloadFinished() time.Time {
 	return p.downloadFinished
 }
 
+// isJobStamp reports whether t may be stored as a download timestamp.
+//
+// The bound is expressed on t.Unix() rather than on t itself, and that is the
+// point. SQLiteStore encodes these fields with t.Unix() and reads 0 as
+// "absent". A bound of t.After(time.Unix(0, 0)) would admit the whole interval
+// (epoch, epoch+1s), every member of which encodes to 0 and reads back as
+// time.Time{} — the round-trip loss #464 reports, merely narrowed. Comparing on
+// the encoded value makes the predicate and the wire form the same set by
+// construction.
+//
+// It also subsumes the IsZero() test that markStartedOnce and
+// markDownloadFinishedOnce apply today: time.Time{} is year 1, whose Unix() is
+// -62135596800. Once those two delegate here they need one predicate, not two.
+//
+// That no job timestamp is at or before the Unix epoch is a decision settled on
+// #464, not something derived from the code. Every production path stamps from
+// time.Now(), so a value failing this test is a programming error, not data.
+func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
+
+// setDownloadStartedOnce records the download start, reporting whether it took.
+// A later call is a no-op: first start wins.
+//
+// This and its three siblings below WILL BE the only functions in this
+// package's non-test sources that assign p.downloadStarted or
+// p.downloadFinished by name, once #464 routes the remaining writers through
+// them: markStartedOnce, markDownloadFinishedOnce and ResetForRetry in job.go,
+// SetPostProcStarted in queue.go, UnmarshalJSON below in this file, and the
+// Get decode in sqlite_store.go.
+//
+// The sentence is in the future tense deliberately: at this commit those
+// writers still exist, and the test that makes the claim checkable —
+// TestDownloadStampWriters_MatchTheEnumerationStatedInProse — arrives with the
+// last of them. Tighten this to the present tense in that same commit.
+//
+// Refusing a non-stamp does NOT consume the first-wins slot: a real timestamp
+// arriving afterwards is still the first mark.
+func (p *JobProgress) setDownloadStartedOnce(t time.Time) bool {
+	if !isJobStamp(t) || !p.downloadStarted.IsZero() {
+		return false
+	}
+	p.downloadStarted = t
+	return true
+}
+
+// setDownloadFinishedOnce records the download completion, reporting whether it
+// took. A later call is a no-op: first finish wins. See setDownloadStartedOnce
+// for the ownership rule both obey.
+func (p *JobProgress) setDownloadFinishedOnce(t time.Time) bool {
+	if !isJobStamp(t) || !p.downloadFinished.IsZero() {
+		return false
+	}
+	p.downloadFinished = t
+	return true
+}
+
+// clearDownloadStamps reopens both first-wins slots. Two callers: ResetForRetry,
+// because a re-download legitimately re-stamps, and restoreDownloadStamps
+// below, which clears before installing.
+//
+// restoreDownloadStamps(time.Time{}, time.Time{}) would do the same thing, so
+// this is a degenerate case of its sibling. It exists because the two are read
+// at call sites that mean different things — a retry reopens slots it intends
+// to re-win, a load installs slots already won in another run — and a reader of
+// ResetForRetry should not have to evaluate isJobStamp(time.Time{}) to see that
+// the line clears.
+func (p *JobProgress) clearDownloadStamps() {
+	p.downloadStarted = time.Time{}
+	p.downloadFinished = time.Time{}
+}
+
+// restoreDownloadStamps installs stamps read back from persistence, bypassing
+// first-wins because a restore is not a mark: the slots it fills were already
+// won in the run that wrote them.
+//
+// It still applies isJobStamp, so a stamp failing the rule is dropped rather
+// than restored. Under Standing Rule 1 no persisted row is owed compatibility,
+// so this is not a migration path — it is the one place a value arrives from
+// outside this process and the rule must be re-checked.
+func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
+	p.clearDownloadStamps()
+	if isJobStamp(started) {
+		p.downloadStarted = started
+	}
+	if isJobStamp(finished) {
+		p.downloadFinished = finished
+	}
+}
+
 // Par2Recovered reports whether on-demand par2 has un-deferred this job's recovery volumes.
 func (p *JobProgress) Par2Recovered() bool {
 	if p == nil {

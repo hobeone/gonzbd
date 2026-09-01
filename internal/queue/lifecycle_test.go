@@ -694,12 +694,22 @@ func TestMarkJobStarted(t *testing.T) {
 // elapsed time, so a second write moves a completed job's reported duration.
 // The untested rule is also why #457 went unnoticed: Job carried an exported
 // MarkDownloadFinished that assigned unconditionally, and nothing asserted the
-// two should agree. #457 deleted it rather than guarding it. Now
-// `git grep -nE 'downloadFinished[[:space:]]*=' -- '*.go' ':!*_test.go'`
-// returns 5 writers: the two that APPLY the finish transition — this
-// method's markDownloadFinishedOnce and SetPostProcStarted, both IsZero-
-// guarded — plus ResetForRetry clearing it and two restore paths. So this
-// test and TestSetPostProcStarted between them cover the transition class.
+// two should agree. #457 deleted it rather than guarding it.
+//
+// The writer set is mid-restructure under #464, which is giving both download
+// timestamps a single owner in progress.go. This comment used to carry a
+// counted citation of
+// `git grep -nE 'downloadFinished[[:space:]]*=' -- '*.go' ':!*_test.go'`; the
+// count churns on every one of that change's commits (5 before it, 8 once the
+// owner exists, then down to 3 as each writer is routed), so a number stated
+// here would be wrong at three of them and would fail check_citations rather
+// than merely read stale. The count is restored, with the settled figure, in
+// the commit that routes the last writer.
+//
+// What does not change is the claim this comment exists to make: the two
+// callers that APPLY the finish transition are markDownloadFinishedOnce and
+// SetPostProcStarted, so this test and TestSetPostProcStarted between them
+// cover the transition class.
 // That was not true when first written: TestSetPostProcStarted asserted only
 // its bool and job.PostProc, so deleting its stamp of downloadFinished left
 // it green. #457's review caught the overclaim and the assertions were added
