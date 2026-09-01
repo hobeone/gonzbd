@@ -38,6 +38,35 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 	}
 }
 
+// encodeJobStamp is the wire form of a download timestamp: 0 means absent.
+//
+// The sentinel is unambiguous because isJobStamp — the owner's bound in
+// progress.go — is defined on t.Unix() > 0, the same quantity this writes. Any
+// stamp the owner accepts encodes to a positive integer, and no stamp it
+// accepts encodes to 0. That equivalence is what let #464 close without making
+// the columns nullable, and
+// TestJobStampCodec_RoundTripsAndAgreesWithTheOwnersBound asserts it rather
+// than trusting this sentence.
+//
+// It exists because addTx and updateTx carried byte-identical copies of this
+// conversion — issue #464's option 3, worth doing whether or not the epoch bug
+// existed. Those copies also read the field through IsZero, which is precisely
+// the test that admits time.Unix(0,0) and encodes it to the absent sentinel.
+func encodeJobStamp(t time.Time) int64 {
+	if !isJobStamp(t) {
+		return 0
+	}
+	return t.Unix()
+}
+
+// decodeJobStamp inverts encodeJobStamp.
+func decodeJobStamp(unix int64) time.Time {
+	if unix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0).UTC()
+}
+
 // Dir returns the persistent root directory managed by the store.
 func (s *SQLiteStore) Dir() string {
 	return s.dir
@@ -403,13 +432,9 @@ func (s *SQLiteStore) addTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manife
 	metaJSON, _ := json.Marshal(job.Meta)
 
 	var dlStartedUnix, dlFinishedUnix int64
-	if job.Progress() != nil {
-		if !job.Progress().DownloadStarted().IsZero() {
-			dlStartedUnix = job.Progress().DownloadStarted().Unix()
-		}
-		if !job.Progress().DownloadFinished().IsZero() {
-			dlFinishedUnix = job.Progress().DownloadFinished().Unix()
-		}
+	if p := job.Progress(); p != nil {
+		dlStartedUnix = encodeJobStamp(p.DownloadStarted())
+		dlFinishedUnix = encodeJobStamp(p.DownloadFinished())
 	}
 
 	const qJobs = `
@@ -564,10 +589,8 @@ FROM jobs WHERE id = ?`
 			job.manifest = &manifest
 			job.setScalarsFromManifest(&manifest)
 			job.progress = newJobProgress(&manifest)
-			// The > 0 guards these two lines replaced are not lost: the owner
-			// applies isJobStamp, which is the same test on the same values.
 			job.progress.restoreDownloadStamps(
-				time.Unix(dlStartedUnix, 0).UTC(), time.Unix(dlFinishedUnix, 0).UTC())
+				decodeJobStamp(dlStartedUnix), decodeJobStamp(dlFinishedUnix))
 			_ = s.RestoreJobProgress(ctx, &job)
 		}
 	}
@@ -1008,13 +1031,9 @@ WHERE id = ?`
 	}
 
 	var dlStartedUnix, dlFinishedUnix int64
-	if job.Progress() != nil {
-		if !job.Progress().DownloadStarted().IsZero() {
-			dlStartedUnix = job.Progress().DownloadStarted().Unix()
-		}
-		if !job.Progress().DownloadFinished().IsZero() {
-			dlFinishedUnix = job.Progress().DownloadFinished().Unix()
-		}
+	if p := job.Progress(); p != nil {
+		dlStartedUnix = encodeJobStamp(p.DownloadStarted())
+		dlFinishedUnix = encodeJobStamp(p.DownloadFinished())
 	}
 
 	res, err := execer.ExecContext(ctx, q,
