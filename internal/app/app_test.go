@@ -677,8 +677,10 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	}
 }
 
-// Reuse helper functions from integration_test.go logic (re-implemented here
-// to avoid build-tag exclusion issues during unit tests).
+// Fixture helpers for the download path, shared across this package's test
+// files. They live in an untagged file so the untagged tests can use them;
+// that was already their reason before #475 deleted the tagged
+// integration_test.go this comment used to name.
 
 func makeDeterministic(n int) []byte {
 	out := make([]byte, n)
