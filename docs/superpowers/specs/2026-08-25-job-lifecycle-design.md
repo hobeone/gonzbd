@@ -847,6 +847,28 @@ that plan 2's deletions have somewhere to land.
 | 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; `Assess` + `Verdict` in `internal/par2`; the new `Queue` with two pools and lease issuance; `Checkpointer`; barrier self-reconciliation; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, `par2NeedsRecovery`, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage, `NeedRequeue`/`RequeueBlocksNeeded`, `resumeAllJobs`, `shouldSkipForPP`, `Job.PostProc` |
 | 3 | **Dispatch and speculation** | `job.NextArticle()`/`AddArticle()`, the Queue-owned dispatcher over `LeasedJobs`, DirectUnpack promote/discard | `dispatchPass`'s queue-walking article loop, `duOrch`'s current wiring |
 
+> **Status, 2026-09-01.** Plan 1 landed (#439, #447). **Four of plan 2's
+> deliverables landed early**, against a competing B2.1–B2.4 decomposition that
+> has since been withdrawn (`2026-08-28-sched-exported-surface-design.md`, and
+> #456): `Lease` (#447, `internal/job/lease.go`); the two-pool `Queue` with
+> lease issuance, as `internal/sched` (#448, #452); the job registry, residency
+> and tick loop, as `internal/dispatch` (#453); and their persistence (#455).
+>
+> **One deliberate departure from this section.** §15 puts the pools, lease
+> issuance and registry inside a single "new `Queue`". They landed as two
+> packages — `internal/sched` for the decisions, `internal/dispatch` for the
+> registry, residency and loop — argued in #450. That split is an improvement on
+> what this section specifies and is not drift; it is recorded here so the
+> difference is not mistaken for one.
+>
+> Plan 2 still owes: `Manifest`/`JobProgress` rehomed (the destination is
+> reopened — this section says `internal/job`, #456's D1 had settled on a
+> rename to `internal/jobstate` without evaluating `internal/job`); `Assess` +
+> `Verdict` in `internal/par2`; `Checkpointer`; §10.1's barrier
+> self-reconciliation (may be satisfied by the durable-runs work — unverified);
+> `app`/`downloader`/`postproc` rewired; and the whole Deletes column, which is
+> still entirely intact.
+
 Plan 2 is large and deliberately so. It is the commit where the daemon stops
 running the old model, and splitting it would mean shipping exactly the
 adapters this decomposition exists to avoid. It is also where §1.3 is retired
