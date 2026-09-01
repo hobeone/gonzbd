@@ -20,6 +20,19 @@ var (
 	removeBackoffs    = []time.Duration{25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
 )
 
+// SetRemoveBackoffsForTest overrides the retry backoff schedule used by
+// RemoveAll, Remove, and RemoveRootAll, returning a func that restores the
+// production schedule. Test-only: callers outside this package's tests
+// exist so that a caller hitting the retry path (e.g. a chmod-simulated
+// EACCES) does not have to pay the real ~775ms exhaustion cost. Does not
+// import "testing", so it carries no flag-registration risk for
+// production binaries that transitively import this package.
+func SetRemoveBackoffsForTest(backoffs []time.Duration) (restore func()) {
+	orig := removeBackoffs
+	removeBackoffs = backoffs
+	return func() { removeBackoffs = orig }
+}
+
 // IsSillyRenameFile reports whether filename is an NFS, SMB, or FUSE
 // "silly rename" artifact created when an open file is deleted.
 func IsSillyRenameFile(name string) bool {

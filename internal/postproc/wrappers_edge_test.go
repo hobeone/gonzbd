@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // ---------- FinalizeStage edge cases ----------
@@ -560,7 +563,13 @@ func TestDeobfuscateStage_FullFlow(t *testing.T) {
 	}
 }
 
+// Must stay non-parallel: SetRemoveBackoffsForTest mutates fsutil's shared
+// removeBackoffs package var, which is safe only while this test runs
+// serially (see the same note on TestSetRemoveBackoffsForTest).
 func TestCleanupStage_LogOnFailure(t *testing.T) {
+	restore := fsutil.SetRemoveBackoffsForTest([]time.Duration{time.Millisecond, time.Millisecond})
+	defer restore()
+
 	dir := t.TempDir()
 	adminDir := filepath.Join(dir, "__ADMIN__")
 	if err := os.MkdirAll(adminDir, 0o755); err != nil {
