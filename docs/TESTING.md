@@ -160,10 +160,11 @@ E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/
 **When to run:** After any change to `internal/durability`, `internal/assembler`,
 the checkpoint cadence in `internal/app/durability.go`, the startup resume sweep
 in `internal/app/resume_startup.go`, or the queue's per-article persistence.
-Not run in CI (see "Continuous Integration" in AGENTS.md — `ci.yml` is
-dispatch-only for every suite, not specifically this one), but it **is** part
-of `scripts/run_tests.sh` (step 4/7) — see the status note at the end of this
-section for pass/fail history.
+Not run automatically (see "Continuous Integration" in AGENTS.md — `ci.yml`
+is dispatch-only for every suite, not specifically this one), but it **is**
+part of `scripts/run_tests.sh` (step 4/7) and, when `ci.yml` is dispatched by
+hand, its own `crash` job — see the status note at the end of this section
+for pass/fail history.
 
 **Location:** `test/crash/`
 
