@@ -10,12 +10,12 @@ running or modifying tests.**
 |-------|---------|-----------|---------------|----------|
 | Unit tests | `go test ./...` | none | none | ~30s |
 | Unit + race | `go test -race ./...` | none | none | ~100s |
-| Integration | `go test -v -tags=integration ./test/integration/...` | `integration` | par2, rar, unrar, 7z | ~35s |
+| Integration | `go test -v -tags=integration ./test/integration/... ./internal/par2/...` | `integration` | par2, rar, unrar, 7z | ~35s |
 | UI (Playwright) | `go test -v -tags=uitest ./test/uitest/...` | `uitest` | Chromium (Playwright), pre-built UI | ~30s |
 | E2E | `go test -timeout=10m ./test/e2e/` | none (runtime env-var gates) | live Usenet server | ~5min |
 | Crash consistency | `go test -tags=crash -timeout=20m ./test/crash/` | `crash` | Linux; builds `./cmd/gonzbd` itself | ~10s |
 | Config contract | `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` | none | none | <1s |
-| Tagged-file compile check | `go vet -tags=integration,uitest,crash ./...` | all three | none | 0.2s warm, 7s cold |
+| Tagged-file compile check | `go vet -tags=integration,uitest,crash ./...` | all three | none (host GOOS only; `crash` files are `crash && linux`, so they are skipped off Linux) | 0.2s warm, 6.9s cold |
 
 ### Convenience Scripts
 
@@ -106,13 +106,13 @@ sudo apt install unrar rar par2 p7zip-full
 
 ```bash
 # Full suite (verbose recommended for pipeline tests)
-go test -v -tags=integration ./test/integration/...
+go test -v -tags=integration ./test/integration/... ./internal/par2/...
 
 # Single test
 go test -v -tags=integration -run TestPipeline_SubdirectoryUnrar ./test/integration/...
 
 # With race detector (slower but catches concurrency bugs)
-go test -v -race -tags=integration ./test/integration/...
+go test -v -race -tags=integration ./test/integration/... ./internal/par2/...
 ```
 
 ### Adding New Integration Tests

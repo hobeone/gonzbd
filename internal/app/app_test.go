@@ -677,10 +677,13 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	}
 }
 
-// Fixture helpers for the download path, shared across this package's test
-// files. They live in an untagged file so the untagged tests can use them;
-// that was already their reason before #475 deleted the tagged
-// integration_test.go this comment used to name.
+// Fixture helpers for the download path. Only startMockNNTP is used outside
+// this file, by checkpoint_test.go; makeDeterministic, yencEncodePart,
+// mockNNTP and dotStuff have no caller elsewhere in the package
+// (`git grep -l 'yencEncodePart' -- 'internal/app/*_test.go'` returns 1 file).
+// They live in an untagged file so untagged tests can reach them, which was
+// already their reason before #475 deleted the tagged integration_test.go
+// that this comment used to name.
 
 func makeDeterministic(n int) []byte {
 	out := make([]byte, n)

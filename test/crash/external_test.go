@@ -1,4 +1,4 @@
-//go:build crash
+//go:build crash && linux
 
 package crash
 
