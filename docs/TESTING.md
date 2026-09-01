@@ -15,6 +15,7 @@ running or modifying tests.**
 | E2E | `go test -timeout=10m ./test/e2e/` | none (runtime env-var gates) | live Usenet server | ~5min |
 | Crash consistency | `go test -tags=crash -timeout=20m ./test/crash/` | `crash` | Linux; builds `./cmd/gonzbd` itself | ~10s |
 | Config contract | `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` | none | none | <1s |
+| Tagged-file compile check | `go vet -tags=integration,uitest,crash ./...` | all three | none | 0.2s warm, 7s cold |
 
 ### Convenience Scripts
 

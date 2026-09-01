@@ -67,6 +67,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Build-tagged files are excluded from every command above, so a
+      # signature change can leave one uncompilable indefinitely (#475).
+      # This compiles them without running them, and needs none of the
+      # external tools the tagged suites need.
+      - name: Vet (build-tagged files)
+        run: go vet -tags=integration,uitest,crash ./...
+
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:

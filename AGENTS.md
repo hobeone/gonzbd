@@ -307,7 +307,7 @@ go test -run TestFoo ./internal/nzb/                        # Run a single test
 go test -bench=. ./internal/decoder/                        # Run benchmarks
 go test -v -tags=integration ./test/integration/...         # Integration (requires par2, rar, unrar, 7z)
 go test -v -tags=uitest ./test/uitest/...                   # UI/Playwright (requires pre-built UI + Playwright Chromium)
-go test -tags=e2e -timeout=10m ./test/e2e/                  # E2E (requires live Usenet server)
+go test -timeout=10m ./test/e2e/                            # E2E (requires live Usenet server; env-gated, not tag-gated)
 go test -tags=crash -timeout=20m ./test/crash/              # Crash consistency (Linux; kills a real child process)
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
@@ -577,6 +577,7 @@ Whenever you create, edit, or refactor a `.go` file, immediately run:
 go fix ./...                          # Apply modernizations
 goimports -w .                        # Format + resolve imports
 go vet ./...                          # Must pass
+go vet -tags=integration,uitest,crash ./...       # Every tagged file still compiles
 go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
@@ -603,6 +604,23 @@ actually made of.
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
 detector, so `go test -race ./...` is a separate, required step.
 Note: Standard `go test ./...` and `go test -race ./...` exclude files with `//go:build integration`. Whenever modifying files in `test/integration/` or changing startup wiring in `cmd/gonzbd/main.go` that integration tests consume, you MUST run `go test -tags=integration ./test/integration/...` locally before committing or pushing.
+
+**A tagged file is invisible to every default gate, and it rots silently.** The
+exclusion above is not specific to `integration`: `uitest` and `crash` are
+excluded the same way, and so is any path the mandated command does not
+name. `internal/app/integration_test.go` was uncompilable for six weeks (#475)
+because `app.New`'s signature changed under it — `go build`, `go vet` and
+`go test -race` all skipped it for being tagged, and the mandated integration
+command is scoped to `./test/integration/...`, which does not reach
+`internal/app`. Nothing failed; the test simply stopped existing.
+
+`go vet -tags=integration,uitest,crash ./...` closes that. It **compiles**
+every tagged file in the module without running any of it, needs none of the
+external tools the tagged suites need (par2, rar, unrar, 7z, Playwright, a live
+Usenet server), and is cheap enough to run unconditionally — measured at 7.0 s
+with a cold build cache and 0.24 s warm — which is why it is in the gate block
+above rather than in the conditional note here. It does not replace
+running the suites; it only guarantees they can still be built.
 
 If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
 these checks** to make a commit go through. **Never insert dummy tests or dummy
