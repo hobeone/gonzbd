@@ -1,17 +1,23 @@
 // Package e2e contains end-to-end tests that download real articles from a
-// live Usenet provider. These tests are gated behind the "e2e" build tag
-// and require a configured gonzbd.yaml with valid server credentials.
+// live Usenet provider. They are gated at RUNTIME, not by a build tag: no
+// file in this package carries a build-constraint line (`git grep -c
+// '^//go:build' -- 'test/e2e/*.go'` prints nothing and exits 1, which is how
+// git grep reports no match), so -tags=e2e does nothing at all.
+//
+// loadConfig in testhelpers_test.go t.Skip()s unless it finds a config with at
+// least one enabled server, looking at $E2E_CONFIG, then ../../gonzbd.yaml,
+// then $HOME/software/gonzbd/gonzbd.yaml.
 //
 // Self-posting tests (POST articles then download them) require E2E_POST=1.
 // Provided-NZB test requires E2E_NZB=/path/to/file.nzb.
 //
 // Run with:
 //
-//	go test -tags=e2e -timeout=10m ./test/e2e/                                   # provided NZB only
-//	E2E_POST=1 go test -tags=e2e -timeout=10m ./test/e2e/                        # self-post tests
-//	E2E_NZB=/tmp/test.nzb go test -tags=e2e -timeout=10m ./test/e2e/             # download a specific NZB
-//	E2E_POST=1 E2E_DEBUG=1 go test -tags=e2e -timeout=10m -v ./test/e2e/         # with pipeline debug logging
-//	E2E_KEEP_FILES=1 E2E_NZB=... go test -tags=e2e ...                           # leave files in place
+//	go test -timeout=10m ./test/e2e/                                   # skips all four: needs E2E_NZB or E2E_POST
+//	E2E_POST=1 go test -timeout=10m ./test/e2e/                        # self-post tests
+//	E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/             # download a specific NZB
+//	E2E_POST=1 E2E_DEBUG=1 go test -timeout=10m -v ./test/e2e/         # with pipeline debug logging
+//	E2E_KEEP_FILES=1 E2E_NZB=... go test ...                           # leave files in place
 package e2e
 
 import (

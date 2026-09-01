@@ -60,6 +60,39 @@ echo -e "\n[1/6] Running Static Analysis & Linters..."
 echo "Running go vet..."
 go vet ./...
 
+# The same vet again, with the three build tags this repo defines
+# (integration, uitest, crash). Two things to know about it:
+#
+# It is a SUPERSET of `go vet ./...` above, not a complement. Build tags are
+# additive and nothing here carries a negative constraint (`git grep -c
+# '^//go:build.*!\(integration\|uitest\|crash\)' -- '*.go'` prints nothing
+# and exits 1, which is how git grep reports no match -- do not run it under
+# `set -e`), so this pass analyses every package the plain pass does.
+# The plain pass is kept anyway, deliberately: it runs first, so an untagged
+# problem is reported on its own before a broken tagged file can fail a whole
+# package and hide it. Measured cost of keeping it, on a cold cache: 6.9 s for
+# the plain pass and 2.2 s for this one after it, against 6.9 s for this one
+# alone -- so the duplication is ~2.2 s, not a second full pass.
+#
+# What it covers, exactly: files carrying one of those three tags, built for
+# the HOST GOOS/GOARCH. It says nothing about files behind an OS constraint
+# (internal/fsutil/crossdevice_windows.go and eight others are invisible on
+# Linux, and crossdevice_windows.go does not currently compile under
+# GOOS=windows -- see #480).
+#
+# Why it is needed at all: the tagged suites below are each path-scoped (step 3
+# to ./test/integration/... and ./internal/par2/..., step 5 to
+# ./test/uitest/...), so test/crash/'s five files are compiled by nothing else
+# in this script. That is the gap that let internal/app/integration_test.go sit
+# uncompilable for six weeks (#475). test/crash is deliberately NOT run here
+# (see the note before the summary block below), so on a machine where the
+# crash suite cannot run, this is the only thing that compiles it.
+#
+# -tags=e2e is absent on purpose: test/e2e carries no build constraint at all
+# and is gated at runtime by E2E_CONFIG. See test/e2e/e2e_test.go's package doc.
+echo "Running go vet over build-tagged files..."
+go vet -tags=integration,uitest,crash ./...
+
 echo "Running golangci-lint..."
 golangci-lint run ./...
 
@@ -121,7 +154,7 @@ echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
 
 # 3. Go Integration Tests
 echo -e "\n[3/6] Running Go Integration Tests..."
-go test -v -tags=integration ./test/integration/...
+go test -v -tags=integration ./test/integration/... ./internal/par2/...
 echo -e "${GREEN}✓ Go Integration Tests Passed${NC}"
 
 # 4. UI Component Tests

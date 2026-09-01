@@ -67,6 +67,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Build-tagged files are excluded from every command above, so a
+      # signature change can leave one uncompilable indefinitely (#475).
+      # This compiles them without running them, and needs none of the
+      # external tools the tagged suites need.
+      - name: Vet (build-tagged files)
+        run: go vet -tags=integration,uitest,crash ./...
+
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -100,7 +107,7 @@ jobs:
         run: go test -race ./...
 
       - name: Run integration tests
-        run: go test -tags=integration ./test/integration/...
+        run: go test -tags=integration ./test/integration/... ./internal/par2/...
 
       # Runs `go test -coverprofile` per changed package, so it is the slowest
       # gate — keep it last so cheaper checks fail first.

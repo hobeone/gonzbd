@@ -1,4 +1,4 @@
-//go:build crash
+//go:build crash && linux
 
 // Package crash runs the real gonzbd binary as a child process and kills it,
 // so that the durability design's central claim is measured rather than
