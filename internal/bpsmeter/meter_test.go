@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // --- helpers -----------------------------------------------------------------
@@ -142,29 +144,36 @@ func TestLimiterDisabled(t *testing.T) {
 
 func TestLimiterActive(t *testing.T) {
 	t.Parallel()
-	// Rate: 256 KiB/s. Burst clamps to minBurst=256 KiB (max of bps and minBurst).
-	// First Wait(burst) drains all pre-accumulated tokens immediately.
-	// Second Wait(burst) must block ~1 second while new tokens accumulate.
-	const bps = 256 * 1024 // 256 KiB/s
-	l := NewLimiter(bps)
+	// NewLimiter floors burst at minBurst (256 KiB), which at a realistic rate
+	// makes the refill this test waits out take a full second. Bypass that
+	// floor by constructing the wrapped rate.Limiter directly (same-package
+	// access to the unexported lim field) with a smaller burst/rate pair:
+	// refill from empty to burst takes burst/bps seconds at any scale, so a
+	// 10x-smaller burst/bps here exercises the identical blocking behavior
+	// NewLimiter's production floor does, just 10x faster in wall-clock terms.
+	const bps = 1000  // 1000 tokens/sec
+	const burst = 100 // refill from empty takes burst/bps = 100ms
+	l := &Limiter{lim: rate.NewLimiter(rate.Limit(bps), burst)}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	// Drain the initial burst.
-	if err := l.Wait(ctx, minBurst); err != nil {
+	if err := l.Wait(ctx, burst); err != nil {
 		t.Fatalf("first Wait returned error: %v", err)
 	}
 
 	// This second request must wait for tokens to refill.
 	start := time.Now()
-	if err := l.Wait(ctx, minBurst); err != nil {
+	if err := l.Wait(ctx, burst); err != nil {
 		t.Fatalf("second Wait returned error: %v", err)
 	}
 	elapsed := time.Since(start)
-	// At 256 KiB/s, 256 KiB takes ~1 s. Use 400 ms as lower bound with CI slack.
-	if elapsed < 400*time.Millisecond {
-		t.Fatalf("limiter too fast on second Wait: elapsed %v, expected >=400ms", elapsed)
+	// At 1000 tokens/s with a 100-token burst, refill takes ~100ms. Use 40ms
+	// as lower bound with CI slack (the same 40% margin the original
+	// 400ms/1s check used).
+	if elapsed < 40*time.Millisecond {
+		t.Fatalf("limiter too fast on second Wait: elapsed %v, expected >=40ms", elapsed)
 	}
 }
 
