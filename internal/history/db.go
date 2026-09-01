@@ -66,15 +66,6 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("history: open %q: %w", path, err)
 	}
 
-	// Bound the pool — SQLite serializes writes anyway, and keeping
-	// many idle connections just wastes file descriptors.
-	//
-	// This is not the steady-state value: it is raised to 25 at the end of
-	// this function, so 4 governs only the startup below (ping, WAL,
-	// migrations, VACUUM). See #302 — the two bounds arrived in separate
-	// commits and it is unresolved whether the staging is deliberate.
-	sqlDB.SetMaxOpenConns(4)
-
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close() // superseded by ping error
 		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
@@ -146,10 +137,12 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// fixed above by _txlock=immediate, which takes the write lock at BEGIN
 	// so contention is an ordinary wait that busy_timeout does cover.
 	//
-	// Note the pool is bounded twice in this function: 4 near the top, which
-	// governs startup through the migrations and VACUUM, and 25 here for
-	// everything after. Whether that staging is intended is unresolved —
-	// see #302.
+	// This is the pool's only bound (#302): an earlier commit also capped it
+	// at 4 immediately after sql.Open, on the reasoning that a narrow pool
+	// suits the startup work above (ping, WAL, migrations, VACUUM). That
+	// reasoning does not hold: startup runs sequentially on one connection
+	// regardless of the cap, so the 4-wide bound never had any effect to
+	// begin with and has been deleted rather than kept as a second bound.
 	sqlDB.SetMaxOpenConns(25)
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
