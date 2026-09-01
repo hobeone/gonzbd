@@ -219,10 +219,8 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 // Dial connects to the server described by cfg, performs the greeting
 // handshake, authenticates if credentials are supplied, probes
 // capabilities, and returns a ready-to-use *Conn. The context governs
-// the full handshake — cancelling it aborts the handshake promptly — and
-// the handshake is additionally bounded by cfg.Timeout even if ctx itself
-// carries no deadline of its own. Once Dial returns, cancellation is
-// per-request via Fetch's ctx.
+// the full handshake; once Dial returns, cancellation is per-request
+// via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
@@ -290,16 +288,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
-	// The handshake phase gets its own bound from the server's configured
-	// timeout, same as TCP connect (dopts.dialer.Timeout via net.Dialer)
-	// and post-handshake idle reads (idleTimeoutReader) already do — a
-	// caller with no deadline of its own (the common case: internal/downloader
-	// passes a cancel-only, never-timed-out pauseCtx) previously could hang
-	// the handshake indefinitely if the server completed TCP connect but
-	// never sent a greeting.
-	hctx, hcancel := context.WithTimeout(ctx, dopts.dialer.Timeout)
-	defer hcancel()
-	if err := c.handshake(hctx, cfg); err != nil {
+	if err := c.handshake(ctx, cfg); err != nil {
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
