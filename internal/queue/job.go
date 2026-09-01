@@ -156,13 +156,23 @@ type Job struct {
 	// reader's involvement, so a reader that holds a live *Job but not q.mu
 	// would race those reassignments (issue #263).
 	//
-	// #463 deleted Queue.Get and Queue.List, which is where such readers used
-	// to come from, so the population is now in-package: cloneJob reads the
-	// pointer pair while building a snapshot (snapshot.go:185), and
-	// Job.Manifest()/Job.Progress() read it on a live Job — `git grep -n
-	// 'residencyMu\.RLock' -- 'internal/queue/*.go' ':!*_test.go'` returns 8.
-	// The lock is therefore still required; only the identity of who could
-	// race it changed.
+	// #463 deleted Queue.Get and Queue.List, which is where such readers came
+	// from, and that removed the contention rather than relocating it. Every
+	// live-Job reader of this pair now also holds q.mu — cloneJob's three
+	// callers (Snapshot, SnapshotJob, saveStore) take q.mu.RLock across the
+	// call, and every setResidency on a live Job runs under q.mu.Lock (Add,
+	// Retry, PromoteNext, evictJobLocked, hydrateJobLocked) — so RWMutex
+	// already excludes them from each other.
+	//
+	// What still uses this lock outside q.mu is snapshot hydration:
+	// SnapshotJob releases q.mu before calling hydrateSnapshot, which calls
+	// setResidency on the clone (snapshot.go:102) and hands it to a caller
+	// that reads through Manifest()/Progress(). That is a single goroutine
+	// working on a clone nobody else holds, so it is uncontended too.
+	//
+	// The lock is therefore retained rather than load-bearing on any path
+	// enumerated today; whether it can be removed is #476, not a claim to
+	// make here.
 	//
 	// It is a sync.RWMutex value, not a *sync.RWMutex, so every
 	// construction path (struct literals, a zero-value `var job Job`,

@@ -82,40 +82,50 @@ func TestNoExportedDoorHandsOutALiveJob(t *testing.T) {
 
 	fset := token.NewFileSet()
 	files := parseProductionFiles(t, fset)
+	types := namedStructs(files)
 
 	var found []string
 	for name, file := range files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil || !fn.Name.IsExported() || fn.Type.Results == nil {
+			if !ok || !fn.Name.IsExported() || cloning[fn.Name.Name] {
 				continue
 			}
-			if !isQueueReceiver(fn.Recv) {
+			if !reachesQueueStorage(fn) {
 				continue
 			}
-			for _, res := range fn.Type.Results.List {
-				if !returnsJob(res.Type) {
-					continue
-				}
-				if !cloning[fn.Name.Name] {
+			// Results, plus the parameter shapes that pass a Job in the
+			// OUTWARD direction. `ForEachJob(fn func(*Job))` returns nothing
+			// and still hands the caller a live Job, and so would `chan *Job`.
+			// A plain `*Job` parameter is the opposite direction — Add and
+			// ActiveSet.Add receive a job — so scanning every parameter type
+			// would flag the queue's own entry points.
+			for _, l := range fieldLists(fn.Type.Params, fn.Type.Results) {
+				outward := l == fn.Type.Results
+				for _, f := range l.List {
+					if !outward && !handsOutward(f.Type) {
+						continue
+					}
+					if !carriesJob(types, f.Type, 0) {
+						continue
+					}
 					found = append(found, fmt.Sprintf("%s (%s:%d)",
 						fn.Name.Name, name, fset.Position(fn.Pos()).Line))
-					// One entry per method. A multi-result door such as
-					// `ActivePair() (*Job, *Job)` would otherwise report the
-					// same function and line once per result.
-					break
+					goto next
 				}
 			}
+		next:
 		}
 	}
 
 	slices.Sort(found)
 	if len(found) != 0 {
-		t.Errorf("exported *Queue methods returning a *Job that is not a clone: %v\n"+
+		t.Errorf("exported declarations that can hand out a live *Job: %v\n"+
 			"Every *Job leaving this package must be a snapshot — see Progress's doc "+
 			"comment for what a live one exposes, and #463 for why Get and List were "+
-			"deleted. If this method must exist, route it through cloneJob under q.mu "+
-			"and add it to the map above.", found)
+			"deleted. This covers results, callback and channel parameters, and "+
+			"package-level functions taking a *Queue. If the declaration must exist, "+
+			"route the Job through cloneJob under q.mu and add it to the map above.", found)
 	}
 
 	// The map must not go stale in the other direction: a door listed here
@@ -137,10 +147,50 @@ func TestNoExportedDoorHandsOutALiveJob(t *testing.T) {
 // would hand out queue-owned memory exactly as the deleted Get did, and
 // matching only *ast.StarExpr would skip it silently.
 func isQueueReceiver(recv *ast.FieldList) bool {
-	if len(recv.List) == 0 {
+	if recv == nil || len(recv.List) == 0 {
 		return false
 	}
 	return isQueueType(recv.List[0].Type)
+}
+
+// reachesQueueStorage reports whether a declaration could touch the queue's
+// own jobs: a method on Queue, or a package-level function handed a *Queue.
+//
+// The second case is not hypothetical padding — `func JobByID(q *Queue, id
+// string) *Job` is an ordinary shape and a receiver-only scan skips it
+// entirely. Requiring a Queue parameter rather than flagging every exported
+// function is what keeps NewJob out of the results: it builds a fresh Job
+// from an NZB and never sees queue storage.
+// handsOutward reports whether a PARAMETER type is one the queue would use to
+// pass a Job to its caller rather than receive one: a callback it invokes, or
+// a channel it sends on.
+func handsOutward(t ast.Expr) bool {
+	switch e := t.(type) {
+	case *ast.FuncType:
+		return true
+	case *ast.ChanType:
+		return true
+	case *ast.ParenExpr:
+		return handsOutward(e.X)
+	case *ast.StarExpr:
+		return handsOutward(e.X)
+	}
+	return false
+}
+
+func reachesQueueStorage(fn *ast.FuncDecl) bool {
+	if fn.Recv != nil {
+		return isQueueReceiver(fn.Recv)
+	}
+	if fn.Type.Params == nil {
+		return false
+	}
+	for _, f := range fn.Type.Params.List {
+		if isQueueType(f.Type) {
+			return true
+		}
+	}
+	return false
 }
 
 func isQueueType(e ast.Expr) bool {
@@ -159,8 +209,8 @@ func isQueueType(e ast.Expr) bool {
 	return false
 }
 
-// returnsJob reports whether a result type can carry a *Job out of the
-// package, through any container rather than only a pointer or a slice.
+// returnsJob reports whether a type can carry a *Job out of the package,
+// through any container rather than only a pointer or a slice.
 //
 // The containers matter as much as the bare pointer: `iter.Seq[*Job]`, `chan
 // *Job`, `map[string]*Job` and a returned `func() *Job` all hand the caller
@@ -168,37 +218,141 @@ func isQueueType(e ast.Expr) bool {
 // would wave every one of them through. Go 1.23's range-over-func makes the
 // iterator form a natural thing for a future author to reach for, which is
 // exactly why it is enumerated here rather than left to be noticed.
+//
+// A bare `Job` counts too. Returning one by value shallow-copies its
+// unexported manifest/progress POINTERS, so the caller gets a live
+// *JobProgress even though the struct itself was copied. `*q.byID[id]` would
+// trip go vet's copylocks on residencyMu, but a hand-built
+// `Job{progress: j.progress}` would not.
 func returnsJob(t ast.Expr) bool {
+	return carriesJob(nil, t, 0)
+}
+
+// carriesJob is returnsJob with the package's named struct types in hand, so
+// that a wrapper like `type JobResult struct{ J *Job }` is followed rather
+// than treated as an opaque identifier.
+func carriesJob(types map[string]*ast.StructType, t ast.Expr, depth int) bool {
+	// Bounded: a named type can refer to itself, directly or through a cycle.
+	if depth > 8 {
+		return false
+	}
+	rec := func(e ast.Expr) bool { return carriesJob(types, e, depth+1) }
+
 	switch e := t.(type) {
-	case *ast.StarExpr: // *Job
-		id, ok := e.X.(*ast.Ident)
-		return ok && id.Name == "Job"
+	case *ast.StarExpr: // *Job, and *T for a T that carries one
+		return rec(e.X)
+	case *ast.Ident: // Job by value, or a named type that wraps one
+		if e.Name == "Job" {
+			return true
+		}
+		if st, ok := types[e.Name]; ok {
+			return carriesJob(withoutType(types, e.Name), st, depth+1)
+		}
+	case *ast.StructType: // struct{ J *Job }
+		for _, f := range e.Fields.List {
+			// Only exported fields. ActiveSet holds `resident map[string]*Job`
+			// — live queue jobs — and is handed out by Queue.ActiveSet(), yet
+			// no caller outside this package can reach that map or any *Job
+			// through it, because the field is unexported and no exported
+			// ActiveSet method returns one. Counting unexported fields flags
+			// every such manager as a door and teaches the reader to ignore
+			// the test.
+			if !exportedField(f) {
+				continue
+			}
+			if rec(f.Type) {
+				return true
+			}
+		}
 	case *ast.ArrayType: // []*Job, [N]*Job
-		return returnsJob(e.Elt)
+		return rec(e.Elt)
 	case *ast.Ellipsis: // ...*Job
-		return returnsJob(e.Elt)
+		return rec(e.Elt)
 	case *ast.ChanType: // chan *Job, <-chan *Job
-		return returnsJob(e.Value)
+		return rec(e.Value)
 	case *ast.MapType: // map[*Job]T and map[T]*Job
-		return returnsJob(e.Key) || returnsJob(e.Value)
+		return rec(e.Key) || rec(e.Value)
 	case *ast.ParenExpr:
-		return returnsJob(e.X)
+		return rec(e.X)
 	case *ast.IndexExpr: // iter.Seq[*Job]
-		return returnsJob(e.Index)
+		return rec(e.Index)
 	case *ast.IndexListExpr: // iter.Seq2[K, *Job]
-		if slices.ContainsFunc(e.Indices, returnsJob) {
+		if slices.ContainsFunc(e.Indices, rec) {
 			return true
 		}
 	case *ast.FuncType: // func() *Job, func(*Job)
 		for _, l := range fieldLists(e.Params, e.Results) {
 			for _, f := range l.List {
-				if returnsJob(f.Type) {
+				if rec(f.Type) {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+// withoutType drops one name from the type map, so a self-referential struct
+// terminates instead of recursing on itself.
+// exportedField reports whether a struct field is reachable from outside the
+// package. An embedded field is named by its type, and is exported when that
+// type name is.
+func exportedField(f *ast.Field) bool {
+	if len(f.Names) == 0 { // embedded
+		t := f.Type
+		for {
+			switch e := t.(type) {
+			case *ast.StarExpr:
+				t = e.X
+				continue
+			case *ast.Ident:
+				return e.IsExported()
+			case *ast.SelectorExpr:
+				return e.Sel.IsExported()
+			}
+			return false
+		}
+	}
+	for _, n := range f.Names {
+		if n.IsExported() {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutType(types map[string]*ast.StructType, name string) map[string]*ast.StructType {
+	out := make(map[string]*ast.StructType, len(types))
+	for k, v := range types {
+		if k != name {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// namedStructs collects the package's named struct types, so carriesJob can
+// follow a wrapper rather than stopping at its name.
+func namedStructs(files map[string]*ast.File) map[string]*ast.StructType {
+	out := make(map[string]*ast.StructType)
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				if st, ok := ts.Type.(*ast.StructType); ok {
+					out[ts.Name.Name] = st
+				}
+			}
+		}
+	}
+	return out
 }
 
 func fieldLists(ls ...*ast.FieldList) []*ast.FieldList {
@@ -211,14 +365,6 @@ func fieldLists(ls ...*ast.FieldList) []*ast.FieldList {
 	return out
 }
 
-// hasExportedJobDoor reports whether name is still an exported *Queue method
-// that returns a Job.
-//
-// Checking the name alone was not enough: if Snapshot were refactored to
-// return something other than a Job, the allow-list entry would keep matching
-// and would go on excusing a name that no longer describes a door. The
-// staleness check has to test the same property the allow-list grants an
-// exemption from.
 func hasExportedJobDoor(files map[string]*ast.File, name string) bool {
 	for _, file := range files {
 		for _, decl := range file.Decls {
@@ -366,6 +512,13 @@ func TestReturnsJob_SeesALiveJobThroughAnyContainer(t *testing.T) {
 		{"func (q *Queue) Err() error { return nil }", false},
 		{"func (q *Queue) Seen() map[string]bool { return nil }", false},
 		{"func (q *Queue) Done() <-chan struct{} { return nil }", false},
+		// A Job by value still carries live manifest/progress POINTERS.
+		{"func (q *Queue) Val() Job { return Job{} }", true},
+		{"func (q *Queue) Anon() struct{ J *Job } { return struct{ J *Job }{} }", true},
+		// An unexported field is unreachable outside the package: this is the
+		// ActiveSet shape (`resident map[string]*Job`), which is handed out
+		// but exposes nothing.
+		{"func (q *Queue) Priv() struct{ j *Job } { return struct{ j *Job }{} }", false},
 	}
 
 	for _, tc := range cases {

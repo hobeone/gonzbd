@@ -15,9 +15,11 @@ import (
 //
 // #463 deleted Queue.Get and Queue.List, so no such pointer leaves the
 // package any more and this fixture reaches one through liveJob, the
-// in-package test door. The race it pins is unchanged: cloneJob reads the
-// same pointer pair under residencyMu while building every snapshot, so the
-// reassignment it guards against is still live on the production path.
+// in-package test door. That also means the race is no longer reachable in
+// production: every live-Job reader of the pointer pair now holds q.mu, which
+// excludes the writers that reassign it. This test constructs the contended
+// case deliberately, so it pins residencyMu's behaviour rather than
+// demonstrating a race a caller could still hit — see #476.
 //
 // The fixture deliberately never lets the race window close: it flips the
 // job between Downloading (resident) and Paused (evicted) on one goroutine
