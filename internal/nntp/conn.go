@@ -356,11 +356,12 @@ func (c *Conn) expectGreeting() error {
 	return c.setState(StateConnected)
 }
 
-// setupHandshakeDeadline arranges to force-close the socket if ctx ends
-// before the handshake does — from the bound Dial derived from the
-// server's configured timeout elapsing, or from an early cancellation
-// (app pause/shutdown) reaching Dial's ctx. Returns a cleanup function to
-// be deferred by the caller.
+// setupHandshakeDeadline arranges to force-unblock any pending read/write
+// on the socket if ctx ends before the handshake does — whether ctx
+// carries its own deadline (as the admin test-connection handlers'
+// context.WithTimeout callers do) or ends only via cancellation (as the
+// download path's pauseCtx, which never carries a deadline, does).
+// Returns a cleanup function to be deferred by the caller.
 //
 // context.AfterFunc's stop() is race-free against the scheduled func by
 // construction (gated by an internal sync.Once): whichever of stop() or
