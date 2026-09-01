@@ -799,8 +799,11 @@ happened.
 Pause takes the same path. Surrendering the lease evicts the `Manifest` and
 `StorageBarrier` with it — §6 is explicit that there is no other way to hold
 either — so a paused job holds nothing, exactly like a restarted one. Resume
-re-acquires, re-reads `manifests/<id>.json.gz`, and the barrier reconciles
-against the disk (§10.1). **Pause/resume and crash/restart are one code path**,
+re-acquires and re-reads `manifests/<id>.json.gz`. ~~and the barrier reconciles
+against the disk (§10.1)~~ — **withdrawn 2026-09-01: §10.1 is superseded, and
+reconciliation is a startup sweep rather than something a resume triggers. The
+claim below still holds, but for a narrower reason than this sentence gave it.**
+**Pause/resume and crash/restart are one code path**,
 and that is a property of the design rather than a coincidence: both are "this
 job holds nothing and its work is unfinished".
 
