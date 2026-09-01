@@ -10,11 +10,15 @@
 // # Concurrency model
 //
 // All public methods on *Queue are safe for concurrent use. Read-heavy
-// operations (List, Len, Get) take the read lock; structural mutations
-// (Add, Remove, Reorder, status changes) take the write lock.
+// operations (Snapshot, SnapshotJob, Len, GetJobStatus among them) take the
+// read lock; structural mutations (Add, Remove, Reorder, status changes) take
+// the write lock.
 //
-// Jobs returned from List/Get are shared references into the Queue's
-// internal storage. Job.Manifest() and Job.Progress() are safe to call
+// Jobs returned from Snapshot/SnapshotJob are deep copies, not references
+// into the Queue's storage: #463 deleted Get and List, which were the exits
+// for a live *Job, and TestNoExportedDoorHandsOutALiveJob enumerates the
+// exported surface from source on every run to keep that true.
+// Job.Manifest() and Job.Progress() are safe to call
 // without the queue lock — each takes the Job's own residency lock to
 // synchronize against lazy eviction/hydration reassigning which
 // Manifest/JobProgress the Job currently points to. That lock does NOT
@@ -147,12 +151,28 @@ type Job struct {
 	PostProc bool
 
 	// residencyMu guards only the manifest/progress *pointer fields* below —
-	// not their contents. Queue.Get/List hand out *Job pointers that alias
-	// queue storage, and lazy eviction (evictJobLocked) and lazy
+	// not their contents. Lazy eviction (evictJobLocked) and lazy
 	// hydration/promotion reassign these pointers under q.mu without the
-	// caller's involvement. A caller holding an aliased pointer but not
-	// q.mu — the documented, intended way to use Manifest()/Progress() —
-	// would otherwise race those reassignments (issue #263).
+	// reader's involvement, so a reader that holds a live *Job but not q.mu
+	// would race those reassignments (issue #263).
+	//
+	// #463 deleted Queue.Get and Queue.List, which is where such readers came
+	// from, and that removed the contention rather than relocating it. Every
+	// live-Job reader of this pair now also holds q.mu — cloneJob's three
+	// callers (Snapshot, SnapshotJob, saveStore) take q.mu.RLock across the
+	// call, and every setResidency on a live Job runs under q.mu.Lock (Add,
+	// Retry, PromoteNext, evictJobLocked, hydrateJobLocked) — so RWMutex
+	// already excludes them from each other.
+	//
+	// What still uses this lock outside q.mu is snapshot hydration:
+	// SnapshotJob releases q.mu before calling hydrateSnapshot, which calls
+	// setResidency on the clone (snapshot.go:102) and hands it to a caller
+	// that reads through Manifest()/Progress(). That is a single goroutine
+	// working on a clone nobody else holds, so it is uncontended too.
+	//
+	// The lock is therefore retained rather than load-bearing on any path
+	// enumerated today; whether it can be removed is #476, not a claim to
+	// make here.
 	//
 	// It is a sync.RWMutex value, not a *sync.RWMutex, so every
 	// construction path (struct literals, a zero-value `var job Job`,

@@ -254,17 +254,6 @@ func (q *Queue) IsPaused() bool {
 	return q.paused
 }
 
-// Get returns the job with the given ID or ErrNotFound.
-func (q *Queue) Get(id string) (*Job, error) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	job, ok := q.byID[id]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
-	}
-	return job, nil
-}
-
 // GetJobStatus returns the lifecycle state of the job with the given
 // ID. Returns ErrNotFound if the job is absent. Safe for concurrent use.
 func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
@@ -391,18 +380,6 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 		return 0, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 	return job.countUnfinishedArticles(fileIdx)
-}
-
-// List returns a snapshot slice of the queue's jobs in current order.
-// The returned slice is a fresh allocation; callers can iterate it
-// without holding the queue lock. The *Job pointers inside alias the
-// queue's storage and must not be mutated directly.
-func (q *Queue) List() []*Job {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	out := make([]*Job, len(q.jobs))
-	copy(out, q.jobs)
-	return out
 }
 
 // HasDownloadableJobs reports whether any job in the queue is still

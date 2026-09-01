@@ -31,7 +31,7 @@ func TestSetStatusIf(t *testing.T) {
 		if err := q.SetStatusIf(j.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 			t.Fatalf("SetStatusIf: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Status != constants.StatusDownloading {
 			t.Errorf("Status = %q, want %q", got.Status, constants.StatusDownloading)
 		}
@@ -54,7 +54,7 @@ func TestSetStatusIf(t *testing.T) {
 		if err := q.SetStatusIf(j.ID, constants.StatusDownloading, constants.StatusPaused); err != nil {
 			t.Fatalf("SetStatusIf should not error on mismatch: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Status != constants.StatusQueued {
 			t.Errorf("Status should remain Queued, got %q", got.Status)
 		}
@@ -88,7 +88,7 @@ func TestSetStatusIf(t *testing.T) {
 		// Downloading → Repairing (no-op: status is now Verifying, not Downloading)
 		_ = q.SetStatusIf(j.ID, constants.StatusRepairing, constants.StatusDownloading)
 
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Status != constants.StatusVerifying {
 			t.Errorf("Status = %q, want Verifying after failed chain step", got.Status)
 		}
@@ -353,7 +353,7 @@ func TestSetFileCRC32FromRuns(t *testing.T) {
 		if err := q.SetFileCRC32FromRuns(j.ID, 0, coveringRuns(t, mustManifest(t, j), 0, crc)); err != nil {
 			t.Fatalf("SetFileCRC32FromRuns: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Progress().FileAssembledCRC32(0) != crc {
 			t.Errorf("AssembledCRC32 = 0x%X, want 0x%X", got.Progress().FileAssembledCRC32(0), crc)
 		}
@@ -376,7 +376,7 @@ func TestSetFileCRC32FromRuns(t *testing.T) {
 		if err := q.SetFileCRC32FromRuns(j.ID, 2, coveringRuns(t, mustManifest(t, j), 2, crc)); err != nil {
 			t.Fatalf("SetFileCRC32FromRuns: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Progress().FileAssembledCRC32(2) != crc {
 			t.Errorf("AssembledCRC32 = 0x%X, want 0x%X", got.Progress().FileAssembledCRC32(2), crc)
 		}
@@ -444,7 +444,7 @@ func TestSetFileCRC32FromRuns(t *testing.T) {
 				t.Fatalf("SetFileCRC32FromRuns: %v — withholding is not an error, "+
 					"it is the ordinary answer for an incomplete record", err)
 			}
-			got, _ := q.Get(j.ID)
+			got, _ := q.liveJob(j.ID)
 			if c := got.Progress().FileAssembledCRC32(0); c != 0 {
 				t.Errorf("AssembledCRC32 = 0x%X, want 0 (withheld): %s", c, tc.why)
 			}
@@ -504,7 +504,7 @@ func TestSetFileFilename(t *testing.T) {
 		if err := q.SetFileFilename(j.ID, 0, filename); err != nil {
 			t.Fatalf("SetFileFilename: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Progress().FileFilename(0) != filename {
 			t.Errorf("Filename = %q, want %q", got.Progress().FileFilename(0), filename)
 		}
@@ -564,7 +564,7 @@ func TestSnapshotJob_Audit(t *testing.T) {
 		}
 		// Mutating the snapshot must not affect the original.
 		snap.Status = constants.StatusFailed
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Status == constants.StatusFailed {
 			t.Error("mutation of snapshot leaked to original")
 		}

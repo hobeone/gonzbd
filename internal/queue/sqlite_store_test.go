@@ -1218,9 +1218,23 @@ func TestRestoreJobProgress_RestoresTheResolvedFilename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got, err := reloaded.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get after reload: %v", err)
+	// Snapshot, not SnapshotJob: this test asserts that queue.Load restored
+	// progress into memory, and SnapshotJob hydrates a non-resident job on
+	// demand (hydrateSnapshot, reached from snapshot.go's `cp.manifest == nil`
+	// branch), reading the manifest and calling RestoreJobProgress on the
+	// clone itself. It would therefore produce a correct filename even if Load
+	// had restored nothing, making the residency guard below vacuous and the
+	// assertion a test of SnapshotJob rather than of Load. Snapshot clones
+	// under q.mu and never hydrates.
+	var got *queue.Job
+	for _, j := range reloaded.Snapshot() {
+		if j.ID == job.ID {
+			got = j
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("job %s not in queue after reload", job.ID)
 	}
 	if _, mErr := got.Manifest(); mErr != nil {
 		t.Fatalf("fixture guard: the reloaded job is not resident (%v), so RestoreJobProgress never ran", mErr)

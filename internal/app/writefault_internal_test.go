@@ -35,9 +35,9 @@ func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 	}
 	// Grounding: without this the assertions below pass on a fixture that
 	// never reached the state under test.
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if !snap.Progress().ArticleEmitted(0) || !snap.Progress().ArticleEmitted(1) {
 		t.Fatal("fixture never emitted both articles, so it cannot observe the bits being cleared")
@@ -45,9 +45,9 @@ func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 
 	application.handleArticlesUnwritten(job.ID, 0, []int32{0, 1})
 
-	snap, err = application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap = application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	for _, idx := range []int32{0, 1} {
 		if snap.Progress().ArticleEmitted(int(idx)) {
@@ -96,9 +96,9 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 		// why it must not run on the assembler's worker.
 		application.wg.Wait()
 
-		snap, err := application.queue.Get(job.ID)
-		if err != nil {
-			t.Fatal(err)
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap == nil {
+			t.Fatal("snap is nil")
 		}
 		if snap.Status != constants.StatusPaused {
 			t.Errorf("status = %v after a retryable write fault, want paused — a job that "+
@@ -119,8 +119,8 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 		// why it must not run on the assembler's worker.
 		application.wg.Wait()
 
-		snap, err := application.queue.Get(job.ID)
-		if err == nil && snap.Status == constants.StatusPaused {
+		snap := application.queue.SnapshotJob(job.ID)
+		if snap != nil && snap.Status == constants.StatusPaused {
 			t.Error("a permanent fault only paused the job; R20 says it is not " +
 				"re-evaluated, so pausing leaves it parked forever with no path out")
 		}
@@ -145,9 +145,9 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 	if err := application.queue.MarkArticleEmittedByIdx(job.ID, 1); err != nil {
 		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
 	}
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if !snap.Progress().ArticleEmitted(1) {
 		t.Fatal("fixture never emitted article 1, so it cannot observe the article being resolved")
@@ -156,9 +156,9 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 
 	application.handleArticleRejected(job.ID, 0, 1, "negative offset")
 
-	snap, err = application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap = application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if !snap.Progress().ArticleFailed(1) {
 		t.Error("the rejected article is not marked failed; its Emitted bit is still set, " +
@@ -203,9 +203,9 @@ func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
 	const reason = "Overlapping segments in a.rar: <x> and <y> both claim byte offset 0"
 	application.handlePostAnomaly(job.ID, 0, reason)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if got := snap.Warning; got != reason {
 		t.Errorf("job.Warning = %q, want %q — the anomaly reached the log but not the "+

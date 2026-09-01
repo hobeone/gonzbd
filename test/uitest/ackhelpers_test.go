@@ -15,9 +15,9 @@ import (
 // handing it the single-article Run a barrier would have recorded.
 func ackDone(t *testing.T, q *queue.Queue, jobID, msgID string) {
 	t.Helper()
-	job, err := q.Get(jobID)
-	if err != nil {
-		t.Fatalf("ackDone: job %s not in queue: %v", jobID, err)
+	job := q.SnapshotJob(jobID)
+	if job == nil {
+		t.Fatalf("ackDone: job %s not in queue", jobID)
 	}
 	m, err := job.Manifest()
 	if err != nil {

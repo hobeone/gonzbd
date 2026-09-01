@@ -582,7 +582,7 @@ func TestSetPostProcStarted(t *testing.T) {
 		if !ok {
 			t.Error("expected true on first call")
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		firstFinish = got.Progress().DownloadFinished()
 		if firstFinish.IsZero() {
 			t.Error("DownloadFinished still zero; SetPostProcStarted did not stamp the finish time, " +
@@ -602,7 +602,7 @@ func TestSetPostProcStarted(t *testing.T) {
 		// IsZero guard — that return fires before the stamp is reached, so
 		// removing the guard leaves this subtest green. Mutation-checked. The
 		// case the guard actually covers is the subtest below.
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if f := got.Progress().DownloadFinished(); !f.Equal(firstFinish) {
 			t.Errorf("DownloadFinished moved on the second call: got %v, want %v", f, firstFinish)
 		}
@@ -628,7 +628,7 @@ func TestSetPostProcStarted(t *testing.T) {
 		if _, err := q2.SetPostProcStarted(j2.ID); err != nil {
 			t.Fatalf("SetPostProcStarted: %v", err)
 		}
-		got, _ := q2.Get(j2.ID)
+		got, _ := q2.liveJob(j2.ID)
 		if f := got.Progress().DownloadFinished(); !f.Equal(marked) {
 			t.Errorf("DownloadFinished = %v, want %v — SetPostProcStarted overwrote a finish "+
 				"time another writer had already set, moving the job's reported duration", f, marked)
@@ -657,7 +657,7 @@ func TestMarkJobStarted(t *testing.T) {
 		if err := q.MarkJobStarted(j.ID, now); err != nil {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if !got.Progress().DownloadStarted().Equal(now) {
 			t.Errorf("DownloadStarted = %v, want %v", got.Progress().DownloadStarted(), now)
 		}
@@ -668,7 +668,7 @@ func TestMarkJobStarted(t *testing.T) {
 		if err := q.MarkJobStarted(j.ID, later); err != nil {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if !got.Progress().DownloadStarted().Equal(now) {
 			t.Errorf("DownloadStarted should not change: got %v, want %v", got.Progress().DownloadStarted(), now)
 		}
@@ -716,7 +716,7 @@ func TestMarkDownloadFinished(t *testing.T) {
 		if err := q.MarkDownloadFinished(j.ID, now); err != nil {
 			t.Fatalf("MarkDownloadFinished: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if !got.Progress().DownloadFinished().Equal(now) {
 			t.Errorf("DownloadFinished = %v, want %v", got.Progress().DownloadFinished(), now)
 		}
@@ -727,7 +727,7 @@ func TestMarkDownloadFinished(t *testing.T) {
 		if err := q.MarkDownloadFinished(j.ID, later); err != nil {
 			t.Fatalf("MarkDownloadFinished: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if !got.Progress().DownloadFinished().Equal(now) {
 			t.Errorf("DownloadFinished should not change: got %v, want %v — first finish wins, "+
 				"and a later write would move a completed job's reported duration",
@@ -760,7 +760,7 @@ func TestRecordDownload(t *testing.T) {
 		t.Fatalf("RecordDownload: %v", err)
 	}
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.Progress().ServerStats()["server-a"] != 1500 {
 		t.Errorf("server-a = %d, want 1500", got.Progress().ServerStats()["server-a"])
 	}
@@ -782,7 +782,7 @@ func TestIsComplete(t *testing.T) {
 	_ = q.Add(j)
 
 	t.Run("not complete initially", func(t *testing.T) {
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.IsComplete() {
 			t.Error("job should not be complete initially")
 		}
@@ -791,7 +791,7 @@ func TestIsComplete(t *testing.T) {
 	t.Run("not complete after partial file completion", func(t *testing.T) {
 		_ = q.MarkFileComplete(j.ID, 0)
 		_ = q.MarkFileComplete(j.ID, 1)
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.IsComplete() {
 			t.Error("job should not be complete with 2/3 files done")
 		}
@@ -799,7 +799,7 @@ func TestIsComplete(t *testing.T) {
 
 	t.Run("complete after all files done", func(t *testing.T) {
 		_ = q.MarkFileComplete(j.ID, 2)
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if !got.IsComplete() {
 			t.Error("job should be complete with all 3 files done")
 		}
@@ -887,7 +887,7 @@ func TestSeedFromRuns_Batch(t *testing.T) {
 
 	t.Run("marks multiple articles in one call", func(t *testing.T) {
 		ackDone(t, q, j.ID, articleID(0, 0), articleID(0, 2))
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if !got.Progress().ArticleDone(0) {
 			t.Error("article 0 should be Done")
 		}
@@ -904,10 +904,10 @@ func TestSeedFromRuns_Batch(t *testing.T) {
 	})
 
 	t.Run("idempotent: re-marking already-done articles doesn't double-decrement", func(t *testing.T) {
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		beforeRemaining := got.Progress().RemainingBytes()
 		ackDone(t, q, j.ID, articleID(0, 0)) // already done
-		got, _ = q.Get(j.ID)
+		got, _ = q.liveJob(j.ID)
 		if got.Progress().RemainingBytes() != beforeRemaining {
 			t.Errorf("RemainingBytes changed on re-mark: %d → %d", beforeRemaining, got.Progress().RemainingBytes())
 		}
@@ -938,7 +938,7 @@ func TestAckPermanentFailure_Batch(t *testing.T) {
 
 	t.Run("marks articles failed and decrements remaining/increments failed bytes", func(t *testing.T) {
 		ackFailed(t, q, j.ID, articleID(0, 0), articleID(0, 1))
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Progress().FailedBytes() != 200_000 {
 			t.Errorf("FailedBytes = %d, want 200000", got.Progress().FailedBytes())
 		}
@@ -990,7 +990,7 @@ func TestFullArticleLifecycle(t *testing.T) {
 	ackDone(t, q, j.ID, articleID(0, 0), articleID(0, 1))
 	_ = q.MarkFileComplete(j.ID, 0)
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.IsComplete() {
 		t.Error("should not be complete yet (file 1 pending)")
 	}
@@ -1002,7 +1002,7 @@ func TestFullArticleLifecycle(t *testing.T) {
 	ackDone(t, q, j.ID, articleID(1, 0), articleID(1, 1))
 	_ = q.MarkFileComplete(j.ID, 1)
 
-	got, _ = q.Get(j.ID)
+	got, _ = q.liveJob(j.ID)
 	if !got.IsComplete() {
 		t.Error("should be complete after all files done")
 	}
@@ -1053,7 +1053,7 @@ func TestArticleRetryLifecycle(t *testing.T) {
 	ackDone(t, q, j.ID, msg1)
 	_ = q.MarkFileComplete(j.ID, 0)
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if !got.IsComplete() {
 		t.Error("job should be complete after retry")
 	}
@@ -1086,7 +1086,7 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 	}
 	wg.Wait()
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if !got.IsComplete() {
 		t.Error("job should be complete after all goroutines finish")
 	}
@@ -1275,7 +1275,7 @@ func TestMarkTimestamp_ZeroIsRefusedAtTheQueueWrapper(t *testing.T) {
 			if q.IsDirty() {
 				t.Error("queue went dirty for a refused zero mark")
 			}
-			got, _ := q.Get(j.ID)
+			got, _ := q.liveJob(j.ID)
 			if f := tc.field(got); !f.IsZero() {
 				t.Errorf("field = %v after a refused zero mark, want the zero time", f)
 			}
@@ -1291,7 +1291,7 @@ func TestMarkTimestamp_ZeroIsRefusedAtTheQueueWrapper(t *testing.T) {
 			if !q.IsDirty() {
 				t.Error("queue stayed clean after a real mark")
 			}
-			got, _ = q.Get(j.ID)
+			got, _ = q.liveJob(j.ID)
 			if f := tc.field(got); !f.Equal(real) {
 				t.Errorf("field = %v, want %v — the refusal consumed the first-wins slot", f, real)
 			}

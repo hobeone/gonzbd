@@ -54,7 +54,7 @@ func TestAckDurable_RejectsAnArticleIndexAtTheArticleCount(t *testing.T) {
 			"whole ack — the in-range articles were made durable by a real fsync", err)
 	}
 
-	snap, err := q.Get("bounds-ack")
+	snap, err := q.liveJob("bounds-ack")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestAckPermanentFailure_RejectsAnArticleIndexAtTheArticleCount(t *testing.T
 			"fail the whole call", err)
 	}
 
-	snap, err := q.Get("bounds-fail")
+	snap, err := q.liveJob("bounds-fail")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestAckPermanentFailure_StillFailsTheInRangeArticlesBesideAnInvalidOne(t *t
 	if err := q.AckPermanentFailure("bounds-mixed", []int32{-1, 1, int32(n)}); err != nil {
 		t.Fatalf("AckPermanentFailure: %v", err)
 	}
-	snap, err := q.Get("bounds-mixed")
+	snap, err := q.liveJob("bounds-mixed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAck_ValidIndicesLogNoOutOfRangeWarning(t *testing.T) {
 		if err := q.AckDurable(p); err != nil {
 			t.Fatalf("AckDurable: %v", err)
 		}
-		snap, err := q.Get("clean-ack")
+		snap, err := q.liveJob("clean-ack")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -173,7 +173,7 @@ func TestAck_ValidIndicesLogNoOutOfRangeWarning(t *testing.T) {
 		if err := q.AckPermanentFailure("clean-fail", []int32{0, 1}); err != nil {
 			t.Fatalf("AckPermanentFailure: %v", err)
 		}
-		snap, err := q.Get("clean-fail")
+		snap, err := q.liveJob("clean-fail")
 		if err != nil {
 			t.Fatal(err)
 		}

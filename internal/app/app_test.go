@@ -102,7 +102,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	}
 
 	// Verify it is gone from the active queue
-	if _, err := application.Queue().Get(jobID); err == nil {
+	if snap := application.Queue().SnapshotJob(jobID); snap != nil {
 		t.Error("job still in active queue after being hopeless")
 	}
 
@@ -291,7 +291,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		}
 
 		// Verify it is gone from the active queue
-		if _, err := application.Queue().Get(jobID); err == nil {
+		if snap := application.Queue().SnapshotJob(jobID); snap != nil {
 			t.Error("job still in active queue after completion")
 		}
 
@@ -555,7 +555,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 		if application.Queue().Len() != 1 {
 			t.Errorf("Queue length after restart = %d, want 1", application.Queue().Len())
 		} else {
-			jobs := application.Queue().List()
+			jobs := application.Queue().Snapshot()
 			if jobs[0].Name != "persist-test" {
 				t.Errorf("Job name = %q, want %q", jobs[0].Name, "persist-test")
 			}
@@ -1776,8 +1776,8 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		if loadErr != nil {
 			t.Fatalf("reload queue after shutdown: %v", loadErr)
 		}
-		if _, getErr := reloaded.Get(job.ID); getErr != nil {
-			t.Errorf("job %s did not survive shutdown with a wedged component: %v", job.ID, getErr)
+		if snap := reloaded.SnapshotJob(job.ID); snap == nil {
+			t.Errorf("job %s did not survive shutdown with a wedged component", job.ID)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown hung indefinitely on wedged downloader")

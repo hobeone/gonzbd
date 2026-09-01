@@ -112,9 +112,9 @@ func TestBuildQueueFiles(t *testing.T) {
 		t.Parallel()
 		_, q := testQueueServer(t)
 		job := addLargeTestJob(t, q, 4) // 4 segments x 1 MiB
-		jobInternal, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		jobInternal := q.SnapshotJob(job.ID)
+		if jobInternal == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		m := mustManifest(t, jobInternal)
 		doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
@@ -321,9 +321,9 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		updated := q.SnapshotJob(job.ID)
+		if updated == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		if updated.Status != constants.StatusPaused {
 			t.Errorf("Status = %q; want %q", updated.Status, constants.StatusPaused)
@@ -358,9 +358,9 @@ func TestQueuePauseJobs_Direct(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	updated, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	updated := q.SnapshotJob(job.ID)
+	if updated == nil {
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if updated.Status != constants.StatusPaused {
 		t.Errorf("Status = %q; want %q", updated.Status, constants.StatusPaused)
@@ -382,9 +382,9 @@ func TestQueueResumeJobs_Direct(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	updated, err := q.Get(job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	updated := q.SnapshotJob(job.ID)
+	if updated == nil {
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if updated.Status == constants.StatusPaused {
 		t.Error("job should no longer be paused after queueResumeJobs")
@@ -409,9 +409,9 @@ func TestQueuePriority_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		updated := q.SnapshotJob(job.ID)
+		if updated == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		if updated.Priority != constants.HighPriority {
 			t.Errorf("Priority = %v; want HighPriority", updated.Priority)
@@ -461,9 +461,9 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		updated := q.SnapshotJob(job.ID)
+		if updated == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		if updated.PP != 3 {
 			t.Errorf("PP = %d; want 3", updated.PP)
@@ -511,9 +511,9 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 			if tc.want != http.StatusOK {
 				return
 			}
-			updated, err := q.Get(job.ID)
-			if err != nil {
-				t.Fatalf("Get: %v", err)
+			updated := q.SnapshotJob(job.ID)
+			if updated == nil {
+				t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 			}
 			if updated.PP != 0 {
 				t.Errorf("PP = %d; want 0", updated.PP)
@@ -554,9 +554,9 @@ func TestQueueChangeCat_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		updated := q.SnapshotJob(job.ID)
+		if updated == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		if updated.Category != "movies" || updated.PP != 2 || updated.Script != "movies.sh" {
 			t.Errorf("job = %+v; want category=movies pp=2 script=movies.sh", updated)
@@ -593,9 +593,9 @@ func TestQueueChangeName_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		updated := q.SnapshotJob(job.ID)
+		if updated == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		if updated.Name != "NewName" {
 			t.Errorf("Name = %q; want NewName", updated.Name)
@@ -634,9 +634,9 @@ func TestQueueChangeScript_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated, err := q.Get(job.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		updated := q.SnapshotJob(job.ID)
+		if updated == nil {
+			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 		}
 		if updated.Script != "evil.sh" {
 			t.Errorf("Script = %q; want sanitized to evil.sh", updated.Script)

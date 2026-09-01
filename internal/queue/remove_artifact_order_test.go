@@ -19,7 +19,7 @@ type artifactOrderStore struct {
 
 func (s *artifactOrderStore) DeleteJobArtifacts(ctx context.Context, id string) error {
 	s.called = true
-	if _, err := s.q.Get(id); err == nil {
+	if _, err := s.q.liveJob(id); err == nil {
 		// The job is still in q.byID while its on-disk artifacts are being
 		// unlinked — exactly the window that lets a concurrent
 		// Queue.SnapshotJob clone the job (under RLock) and then hydrate it

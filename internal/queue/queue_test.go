@@ -161,7 +161,7 @@ func TestAddInsertsInPriorityOrder(t *testing.T) {
 		}
 	}
 
-	got := q.List()
+	got := q.liveJobs()
 	want := []*Job{high, normal, low}
 	for i := range want {
 		if got[i].ID != want[i].ID {
@@ -182,7 +182,7 @@ func TestAddWithinTierIsFIFO(t *testing.T) {
 			t.Fatalf("Add: %v", err)
 		}
 	}
-	got := ids(q.List())
+	got := ids(q.liveJobs())
 	want := []string{a.ID, b.ID, c.ID}
 	if !equalSlice(got, want) {
 		t.Errorf("order = %v, want %v", got, want)
@@ -298,8 +298,8 @@ func TestRemove(t *testing.T) {
 	if q.Len() != 1 {
 		t.Fatalf("Len = %d, want 1", q.Len())
 	}
-	if _, err := q.Get(a.ID); err == nil {
-		t.Errorf("Get after Remove should fail")
+	if _, err := q.liveJob(a.ID); err == nil {
+		t.Errorf("liveJob after Remove should fail")
 	}
 
 	if err := q.Remove("nonexistent"); err == nil {
@@ -352,13 +352,13 @@ func TestSetStatusEnforcesStateMachine(t *testing.T) {
 		t.Fatalf("illegal transition err = %v, want ErrIllegalStatusTransition", err)
 	}
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.Status != constants.StatusDownloading {
 		t.Errorf("status changed despite illegal transition: %q", got.Status)
 	}
 
-	if _, err := q.Get("missing"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Get(missing) = %v", err)
+	if _, err := q.liveJob("missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("liveJob(missing) = %v", err)
 	}
 }
 
@@ -374,7 +374,7 @@ func TestPauseResumePerJob(t *testing.T) {
 	if err := q.Pause(j.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.Status != constants.StatusPaused {
 		t.Errorf("Status after Pause = %q, want Paused", got.Status)
 	}
@@ -382,7 +382,7 @@ func TestPauseResumePerJob(t *testing.T) {
 	if err := q.Resume(j.ID); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	got, _ = q.Get(j.ID)
+	got, _ = q.liveJob(j.ID)
 	if got.Status != constants.StatusQueued {
 		t.Errorf("Status after Resume = %q, want Queued", got.Status)
 	}
@@ -435,7 +435,7 @@ func TestReorder(t *testing.T) {
 	if err := q.Reorder(c.ID, 0); err != nil {
 		t.Fatalf("Reorder: %v", err)
 	}
-	got := ids(q.List())
+	got := ids(q.liveJobs())
 	want := []string{c.ID, a.ID, b.ID}
 	if !equalSlice(got, want) {
 		t.Errorf("after Reorder to 0: %v, want %v", got, want)
@@ -445,7 +445,7 @@ func TestReorder(t *testing.T) {
 	if err := q.Reorder(c.ID, 999); err != nil {
 		t.Fatalf("Reorder clamp: %v", err)
 	}
-	got = ids(q.List())
+	got = ids(q.liveJobs())
 	want = []string{a.ID, b.ID, c.ID}
 	if !equalSlice(got, want) {
 		t.Errorf("after clamp Reorder: %v, want %v", got, want)
@@ -466,7 +466,7 @@ func TestMarkFileComplete(t *testing.T) {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if !got.Progress().FileComplete(0) {
 		t.Error("File was not marked complete")
 	}
@@ -488,7 +488,7 @@ func TestMarkArticleFailed(t *testing.T) {
 
 	ackFailed(t, q, j.ID, msgID)
 
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if !got.Progress().ArticleDone(0) {
 		t.Error("article should be marked Done")
 	}
@@ -499,7 +499,7 @@ func TestMarkArticleFailed(t *testing.T) {
 
 	// Repeat failure is idempotent: RemainingBytes must not move again.
 	ackFailed(t, q, j.ID, msgID)
-	got, _ = q.Get(j.ID)
+	got, _ = q.liveJob(j.ID)
 	if got.Progress().RemainingBytes() != wantRemaining {
 		t.Errorf("RemainingBytes changed on repeat failure: got %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 	}
@@ -582,7 +582,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	wantOrder := []string{a.ID, b.ID, c.ID}
-	gotOrder := ids(loaded.List())
+	gotOrder := ids(loaded.liveJobs())
 	if !equalSlice(gotOrder, wantOrder) {
 		t.Errorf("order after load: %v, want %v", gotOrder, wantOrder)
 	}
@@ -591,9 +591,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	// restart that produced a nil one would break the invariant every
 	// reporting path depends on.
 	for _, id := range wantOrder {
-		restored, err := loaded.Get(id)
+		restored, err := loaded.liveJob(id)
 		if err != nil {
-			t.Fatalf("Get(%s) after load: %v", id, err)
+			t.Fatalf("liveJob(%s) after load: %v", id, err)
 		}
 		if restored.Progress() == nil {
 			t.Errorf("job %s came back from the store with no progress", id)
@@ -637,10 +637,10 @@ func TestConcurrentAddRemove(t *testing.T) {
 			}
 			for _, j := range jobs {
 				// Interleave reads.
-				_ = q.List()
+				_ = q.liveJobs()
 				_ = q.Len()
-				if _, err := q.Get(j.ID); err != nil {
-					t.Errorf("Get: %v", err)
+				if _, err := q.liveJob(j.ID); err != nil {
+					t.Errorf("liveJob: %v", err)
 					return
 				}
 				if err := q.Remove(j.ID); err != nil {
@@ -706,7 +706,7 @@ func TestIsDirty(t *testing.T) {
 	// ackDone (SeedFromRuns), batched, sets dirty.
 	j2 := makeJob(t, "batch-done", constants.NormalPriority)
 	_ = q.Add(j2)
-	gotJ2, _ := q.Get(j2.ID)
+	gotJ2, _ := q.liveJob(j2.ID)
 	ackDone(t, q, j2.ID, mustManifest(t, gotJ2).ArticleID(0), mustManifest(t, gotJ2).ArticleID(1))
 	if !q.IsDirty() {
 		t.Error("ackDone (batched) should set dirty")
@@ -716,7 +716,7 @@ func TestIsDirty(t *testing.T) {
 	// ackFailed (AckPermanentFailure), batched, sets dirty.
 	j3 := makeJob(t, "batch-fail", constants.NormalPriority)
 	_ = q.Add(j3)
-	gotJ3, _ := q.Get(j3.ID)
+	gotJ3, _ := q.liveJob(j3.ID)
 	ackFailed(t, q, j3.ID, mustManifest(t, gotJ3).ArticleID(0))
 	if !q.IsDirty() {
 		t.Error("ackFailed (batched) should set dirty")
@@ -840,7 +840,7 @@ func TestSetPriority(t *testing.T) {
 	}
 
 	// Verify initial order: high, normal, low.
-	got := ids(q.List())
+	got := ids(q.liveJobs())
 	want := []string{jHigh.ID, jNorm.ID, jLow.ID}
 	if !equalSlice(got, want) {
 		t.Fatalf("initial order = %v, want %v", got, want)
@@ -860,16 +860,16 @@ func TestSetPriority(t *testing.T) {
 	}
 
 	// Verify the job's Priority field was updated.
-	updated, err := q.Get(jLow.ID)
+	updated, err := q.liveJob(jLow.ID)
 	if err != nil {
-		t.Fatalf("Get after SetPriority: %v", err)
+		t.Fatalf("liveJob after SetPriority: %v", err)
 	}
 	if updated.Priority != constants.HighPriority {
 		t.Errorf("Priority = %d, want %d (HighPriority)", updated.Priority, constants.HighPriority)
 	}
 
 	// Verify order: jHigh, jLow (now high, end of tier), jNorm.
-	got = ids(q.List())
+	got = ids(q.liveJobs())
 	want = []string{jHigh.ID, jLow.ID, jNorm.ID}
 	if !equalSlice(got, want) {
 		t.Errorf("order after promote = %v, want %v", got, want)
@@ -921,9 +921,9 @@ func TestSetPP(t *testing.T) {
 		t.Error("SetPP should set dirty flag")
 	}
 
-	got, err := q.Get(j.ID)
+	got, err := q.liveJob(j.ID)
 	if err != nil {
-		t.Fatalf("Get after SetPP: %v", err)
+		t.Fatalf("liveJob after SetPP: %v", err)
 	}
 	if got.PP != 3 {
 		t.Errorf("PP = %d, want 3", got.PP)
@@ -977,9 +977,9 @@ func TestSetCategory(t *testing.T) {
 			t.Fatalf("SetCategory: %v", err)
 		}
 
-		got, err := q.Get(j.ID)
+		got, err := q.liveJob(j.ID)
 		if err != nil {
-			t.Fatalf("Get: %v", err)
+			t.Fatalf("liveJob: %v", err)
 		}
 		if got.Category != "movies" {
 			t.Errorf("Category = %q, want %q", got.Category, "movies")
@@ -1011,7 +1011,7 @@ func TestSetCategory(t *testing.T) {
 			}
 		}
 		// Initial order: high, normal, low.
-		got := ids(q.List())
+		got := ids(q.liveJobs())
 		want := []string{jH.ID, jN.ID, jL.ID}
 		if !equalSlice(got, want) {
 			t.Fatalf("initial order = %v, want %v", got, want)
@@ -1021,14 +1021,14 @@ func TestSetCategory(t *testing.T) {
 		if err := q.SetCategory(jN.ID, "movies", cats); err != nil {
 			t.Fatalf("SetCategory: %v", err)
 		}
-		got = ids(q.List())
+		got = ids(q.liveJobs())
 		// jH was already High; jN (now High) is appended to end of High tier; jL remains Low.
 		wantAfter := []string{jH.ID, jN.ID, jL.ID}
 		if !equalSlice(got, wantAfter) {
 			t.Errorf("order after SetCategory = %v, want %v", got, wantAfter)
 		}
 		// Verify priority was actually updated.
-		updated, _ := q.Get(jN.ID)
+		updated, _ := q.liveJob(jN.ID)
 		if updated.Priority != constants.HighPriority {
 			t.Errorf("Priority after SetCategory = %d, want HighPriority", updated.Priority)
 		}
@@ -1044,7 +1044,7 @@ func TestSetCategory(t *testing.T) {
 		if err := q.SetCategory(j.ID, "", cats); err != nil {
 			t.Fatalf("SetCategory with empty name: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		// FindCategory("") returns the "Default" entry.
 		if got.Category != "Default" {
 			t.Errorf("Category = %q, want Default", got.Category)
@@ -1063,7 +1063,7 @@ func TestSetCategory(t *testing.T) {
 		if err := q.SetCategory(j.ID, "nonexistent-cat", cats); err != nil {
 			t.Fatalf("SetCategory: %v", err)
 		}
-		got, _ := q.Get(j.ID)
+		got, _ := q.liveJob(j.ID)
 		if got.Category != "Default" {
 			t.Errorf("Category = %q, want Default fallback", got.Category)
 		}
@@ -1084,7 +1084,7 @@ func TestSetCategory(t *testing.T) {
 		if err := q.SetCategory(jA.ID, "Default", cats); err != nil {
 			t.Fatalf("SetCategory: %v", err)
 		}
-		got := ids(q.List())
+		got := ids(q.liveJobs())
 		want := []string{jA.ID, jB.ID}
 		if !equalSlice(got, want) {
 			t.Errorf("order after same-priority SetCategory = %v, want %v", got, want)
@@ -1112,7 +1112,7 @@ func TestSetName(t *testing.T) {
 	if err := q.SetName(j.ID, "new-name"); err != nil {
 		t.Fatalf("SetName: %v", err)
 	}
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.Name != "new-name" {
 		t.Errorf("Name = %q, want %q", got.Name, "new-name")
 	}
@@ -1185,9 +1185,9 @@ func TestSetName_Sanitization(t *testing.T) {
 			if err := q.SetName(j.ID, tc.inputName); err != nil {
 				t.Fatalf("SetName(%q): %v", tc.inputName, err)
 			}
-			got, err := q.Get(j.ID)
+			got, err := q.liveJob(j.ID)
 			if err != nil {
-				t.Fatalf("Get(%s) failed: %v", j.ID, err)
+				t.Fatalf("liveJob(%s) failed: %v", j.ID, err)
 			}
 			if got.Name != tc.wantName {
 				t.Errorf("SetName(%q) resulting Name = %q, want %q", tc.inputName, got.Name, tc.wantName)
@@ -1213,9 +1213,9 @@ func TestSetSanitizeOptions(t *testing.T) {
 	if err := q.SetName(j.ID, "PREFIX-Movie/Name.nzb"); err != nil {
 		t.Fatalf("SetName: %v", err)
 	}
-	got, err := q.Get(j.ID)
+	got, err := q.liveJob(j.ID)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("liveJob: %v", err)
 	}
 	if got.Name != "Movie-Name" {
 		t.Errorf("Name = %q, want %q", got.Name, "Movie-Name")
@@ -1231,7 +1231,7 @@ func TestSetScript(t *testing.T) {
 	if err := q.SetScript(j.ID, "my-script.sh"); err != nil {
 		t.Fatalf("SetScript: %v", err)
 	}
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.Script != "my-script.sh" {
 		t.Errorf("Script = %q, want %q", got.Script, "my-script.sh")
 	}
@@ -1242,7 +1242,7 @@ func TestSetScript(t *testing.T) {
 	if err := q.SetScript(j.ID, ""); err != nil {
 		t.Fatalf("SetScript empty: %v", err)
 	}
-	got, _ = q.Get(j.ID)
+	got, _ = q.liveJob(j.ID)
 	if got.Script != "" {
 		t.Errorf("Script = %q, want empty", got.Script)
 	}
@@ -1260,7 +1260,7 @@ func TestSetPar2ReleaseReason(t *testing.T) {
 	if err := q.SetPar2ReleaseReason(j.ID, "damaged"); err != nil {
 		t.Fatalf("SetPar2ReleaseReason: %v", err)
 	}
-	got, _ := q.Get(j.ID)
+	got, _ := q.liveJob(j.ID)
 	if got.Progress().Par2ReleaseReason() != "damaged" {
 		t.Errorf("Par2ReleaseReason = %q, want %q", got.Progress().Par2ReleaseReason(), "damaged")
 	}

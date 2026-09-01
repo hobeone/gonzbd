@@ -177,7 +177,7 @@ func TestActiveSet_StructuralMemoryBound(t *testing.T) {
 	residentCount := 0
 	nonResidentCount := 0
 
-	for _, j := range q.List() {
+	for _, j := range q.liveJobs() {
 		// Progress is always resident regardless of manifest residency (see
 		// docs/queue-lifecycle.md), so it is checked once here rather than
 		// per branch below, and its presence is no longer part of what

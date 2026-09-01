@@ -142,7 +142,7 @@ func TestNopApp_Contract(t *testing.T) {
 	if err := wiredApp.RemoveJob(ctx, "job1", false); err != nil {
 		t.Errorf("wired RemoveJob() = %v, want nil", err)
 	}
-	if job, _ := q.Get("job1"); job != nil {
+	if job := q.SnapshotJob("job1"); job != nil {
 		t.Error("job1 still in queue after wired RemoveJob()")
 	}
 

@@ -106,7 +106,7 @@ func TestClaimFailure_RemovesJobFromQueue(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if _, err := q.Get("job-corrupt"); err == nil {
+	if _, err := q.liveJob("job-corrupt"); err == nil {
 		t.Error("job with an unreadable manifest is still in the queue after promotion failed")
 	}
 	if n := q.Len(); n != 0 {

@@ -35,9 +35,9 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 
 	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", context.DeadlineExceeded)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if snap.Status == constants.StatusPaused {
 		t.Errorf("the job was paused because the process was stopping; that pause is "+
@@ -68,9 +68,9 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 
 	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", context.DeadlineExceeded)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if snap.Status != constants.StatusPaused {
 		t.Fatal("a barrierOpTimeout against a wedged mount left the job running; it " +
@@ -95,9 +95,9 @@ func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
 
 	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", queue.ErrJobNotResident)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if snap.Status == constants.StatusPaused {
 		t.Errorf("the job was stalled over a queue-residency condition, not a storage "+
@@ -115,9 +115,9 @@ func TestRouteFinalizeFailure_StillStallsOnARealStorageError(t *testing.T) {
 
 	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", errRealDiskFailure)
 
-	snap, err := application.queue.Get(job.ID)
-	if err != nil {
-		t.Fatal(err)
+	snap := application.queue.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("snap is nil")
 	}
 	if snap.Status != constants.StatusPaused {
 		t.Fatal("a real storage error did not stall the job; the file's bytes are not " +
