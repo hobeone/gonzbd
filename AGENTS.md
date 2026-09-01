@@ -633,11 +633,14 @@ at all (#480), and no gate in this repository notices. It also
 does not replace running the suites — it guarantees they can be built, not
 that they still assert anything.
 
-**`golangci-lint` still does not see these files at all.** It loads packages
-without build tags, so the 27 tagged files are linted by nothing —
-`--build-tags=integration,uitest,crash` surfaces 19 findings that the default
-invocation reports as 0 (#481). The vet gate closes the *compile* hole, not the
-lint one.
+**`golangci-lint` now sees these files too.** `.golangci.yml`'s `run.build-tags`
+lists all three tags, so the default `golangci-lint run ./...` — both in
+`scripts/run_tests.sh` and in `ci.yml`'s `golangci-lint-action` step — lints
+the 27 tagged files the same as everything else, with no `--build-tags` flag
+needed at either call site. It was not always this way: before #481, the
+config carried no `build-tags` key, so `golangci-lint` loaded packages without
+tags and the 27 tagged files were linted by nothing, silently — a gap the vet
+gate above does not close, since it only proves the files compile.
 
 `e2e` is deliberately not in the tag list: `test/e2e` carries no build
 constraint and is gated at runtime by `E2E_CONFIG`, so `-tags=e2e` has never
