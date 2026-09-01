@@ -304,10 +304,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 // reader loop starts. That simplifies the auth/caps sequence: each
 // step reads exactly one response with no FIFO bookkeeping.
 func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
-	cleanup, err := c.setupHandshakeDeadline(ctx)
-	if err != nil {
-		return err
-	}
+	cleanup := c.setupHandshakeDeadline(ctx)
 	defer cleanup()
 
 	if err := c.expectGreeting(); err != nil {
@@ -359,28 +356,23 @@ func (c *Conn) expectGreeting() error {
 	return c.setState(StateConnected)
 }
 
-// setupHandshakeDeadline applies the context deadline to the socket, or
-// starts a background watcher to force-close it if the context is
-// cancelled. Returns a cleanup function to be deferred by the caller.
-func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
-	if deadline, ok := ctx.Deadline(); ok {
-		c.log.Debug("handshake: setting deadline", "deadline", deadline)
-		if err := c.nc.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("nntp: set deadline: %w", err)
-		}
-		return func() { _ = c.nc.SetDeadline(time.Time{}) }, nil //nolint:errcheck // best-effort; socket might be closed
-	}
-
-	c.log.Debug("handshake: no context deadline, watching for cancellation")
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
-		case <-done:
-		}
-	}()
-	return func() { close(done) }, nil
+// setupHandshakeDeadline arranges to force-unblock any pending read/write
+// on the socket if ctx ends before the handshake does — whether ctx
+// carries its own deadline (as the admin test-connection handlers'
+// context.WithTimeout callers do) or ends only via cancellation (as the
+// download path's pauseCtx, which never carries a deadline, does).
+// Returns a cleanup function to be deferred by the caller.
+//
+// context.AfterFunc's stop() is race-free against the scheduled func by
+// construction (gated by an internal sync.Once): whichever of stop() or
+// ctx's own cancellation reaches it first is authoritative, so cleanup
+// racing a concurrent cancellation can no longer stamp a stray deadline on
+// a connection that has already returned to service (#396).
+func (c *Conn) setupHandshakeDeadline(ctx context.Context) func() {
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
+	})
+	return func() { stop() }
 }
 
 // validateCredential rejects credentials that contain characters
