@@ -81,7 +81,7 @@ sudo apt install unrar rar par2 p7zip-full
 | File | Purpose |
 |------|---------|
 | `testhelpers_test.go` | Core helpers: TestFile, BuildNZB, RegisterArticles, mock NNTP wiring |
-| `helpers_ext_test.go` | Fixture creators (createRarFixture, createPar2Fixture, create7zFixture), app builders, path verification |
+| `helpers_ext_test.go` | Fixture copiers (copyFixture, copyPar2Fixture), app builders, path verification |
 | `download_test.go` | Basic download: single-file, multi-file, multi-part, file size verification |
 | `naming_test.go` | File/directory naming: NZB extension stripping, PRiVATE subjects, quoted filenames, final move |
 | `pipeline_test.go` | Full pipelines: par2+unrar, par2 repair+unrar, 7z, rar-via-7z, missing tool, plain file, PRiVATE, **subdirectory unrar** |
@@ -115,7 +115,7 @@ go test -v -race -tags=integration ./test/integration/... ./internal/par2/...
 
 1. Use `requireTool(t, "toolname")` for any external binary dependency
 2. Use `NewTestAppSeparateDirs(t, addr, AppTestOpts{...})` for pipeline tests
-3. Use `createRarFixture` / `create7zFixture` / `createPar2Fixture` for archive fixtures
+3. Use `copyFixture` / `copyPar2Fixture` to copy pre-built archive fixtures from `test/fixtures/integration/` rather than generating them at test time
 4. Use `fixtureToTestFiles` for flat fixtures, `fixtureToTestFilesRecursive` for subdirectory structures
 5. Use `waitForPostProcWithTimeout(t, a, pipelineTimeout)` to wait for completion
 6. Use `verifyFileAtPath(t, path, sha)` for strict path + content verification
