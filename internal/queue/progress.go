@@ -513,19 +513,18 @@ func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 //
 // This and its three siblings below are the only functions in this package's
 // non-test sources that assign p.downloadStarted or p.downloadFinished by
-// name. `git grep -nE '(downloadStarted|downloadFinished)[[:space:]]*=[^=]'
-// -- '*.go' ':!*_test.go'` returns 6 lines, and all six are in the four
-// bodies below. #464 routed the six former writers here: markStartedOnce,
+// name. #464 routed the six former writers here: markStartedOnce,
 // markDownloadFinishedOnce and ResetForRetry in job.go, SetPostProcStarted in
 // queue.go, UnmarshalJSON below in this file, and the Get decode in
 // sqlite_store.go.
 //
-// The claim is a grep, so it goes stale silently — a seventh assignment
-// anywhere in the package falsifies it and nothing fails. #464's last task
-// replaces this citation with
-// TestDownloadStampWriters_MatchTheEnumerationStatedInProse, which walks the
-// package AST and fails when the writer set moves. Until then the command
-// above is the only check, and it has to be run by hand.
+// That claim is enforced rather than cited.
+// TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
+// AST and fails when the writer set moves, per field rather than as a union —
+// which a grep could not do, and which is what makes a setter miswired to
+// write its sibling's field visible here. It replaced a hand-run grep that
+// stated a count: the count was correct and would have gone stale silently,
+// because a comment is neither compiled nor executed.
 //
 // Refusing a non-stamp does NOT consume the first-wins slot: a real timestamp
 // arriving afterwards is still the first mark.
