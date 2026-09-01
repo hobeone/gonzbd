@@ -31,6 +31,19 @@ func newPipeConn(t *testing.T) (*Conn, net.Conn) {
 	return c, server
 }
 
+// startBlockedRead launches a read against c.br in its own goroutine and
+// returns a channel that carries its result. The setupHandshakeDeadline
+// tests below use it to observe whether a deadline landed on the socket:
+// a blocked read means none did, a returned error means one did.
+func startBlockedRead(c *Conn) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		_, err := c.br.ReadString('\n')
+		result <- err
+	}()
+	return result
+}
+
 // setState enforces the transition table rather than assigning blindly: a
 // rejected transition leaves the previous state intact, which is what stops a
 // closed connection from being resurrected into Ready.
@@ -142,13 +155,10 @@ func TestSetupHandshakeDeadlineWithDeadline(t *testing.T) {
 		t.Fatal("cleanup = nil, want a callable")
 	}
 
-	// The socket carries a deadline an hour out, so a read blocks rather
-	// than returning immediately.
-	blocked := make(chan error, 1)
-	go func() {
-		_, err := c.br.ReadString('\n')
-		blocked <- err
-	}()
+	// ctx doesn't end for another hour, so the AfterFunc registration stays
+	// dormant and nothing has touched the socket's deadline yet — a read
+	// blocks rather than returning immediately.
+	blocked := startBlockedRead(c)
 	select {
 	case err := <-blocked:
 		t.Fatalf("read returned %v, want it blocked under a far-future deadline", err)
@@ -158,7 +168,8 @@ func TestSetupHandshakeDeadlineWithDeadline(t *testing.T) {
 
 	// Retire the reader inside the test body rather than leaving it parked on
 	// the pipe until t.Cleanup runs. A net.Pipe read with no deadline blocks
-	// forever, and cleanup() has just cleared the one that was set.
+	// forever, and cleanup() has just retired the AfterFunc registration, so
+	// nothing else will touch the deadline — the test sets one itself.
 	if err := c.nc.SetDeadline(time.Now()); err != nil {
 		t.Fatalf("SetDeadline: %v", err)
 	}
@@ -180,11 +191,7 @@ func TestSetupHandshakeDeadlineWithoutDeadlineUnblocksOnCancel(t *testing.T) {
 	cleanup := c.setupHandshakeDeadline(ctx)
 	defer cleanup()
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := c.br.ReadString('\n')
-		done <- err
-	}()
+	done := startBlockedRead(c)
 
 	cancel()
 	select {
@@ -223,11 +230,7 @@ func TestSetupHandshakeDeadlineWithoutDeadlineCleanupBeatsCancel(t *testing.T) {
 		// If the watcher fired after cleanup, the socket now carries a
 		// SetDeadline(now) and a read returns immediately with an error. If
 		// cleanup won, no deadline was set and the read stays blocked.
-		blocked := make(chan error, 1)
-		go func() {
-			_, err := c.br.ReadString('\n')
-			blocked <- err
-		}()
+		blocked := startBlockedRead(c)
 		select {
 		case err := <-blocked:
 			t.Fatalf("iteration %d: read returned %v, want it blocked — cleanup() should have prevented the watcher's SetDeadline", i, err)
