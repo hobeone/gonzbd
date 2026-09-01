@@ -605,8 +605,10 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 	})
 }
 
-// TestJobMarkOnce_RefusesAZeroTimestamp pins that a zero time is refused
-// rather than reported as a successful first mark (#459).
+// TestJobMarkOnce_RefusesAZeroTimestamp pins that a timestamp the store cannot
+// distinguish from absent is refused rather than reported as a successful first
+// mark. It began as #459's zero-value pin; #464 widened the rule from one value
+// to an interval, and the subtests are the interval's boundary.
 //
 // The guard used to read the FIELD only. Handed time.Time{}, the field stayed
 // zero and the method still returned true, so three things went wrong at once:
@@ -615,8 +617,12 @@ func TestJobMarkOnce_ReportsWhetherItTook(t *testing.T) {
 // timestamp passed the guard again and overwrote, so "first wins" was violated
 // and the store was written twice for one job start.
 //
-// The zero value is the sentinel these methods test against, so it is the one
-// argument they cannot store without destroying their own guard.
+// What the methods cannot store is now every t whose Unix() is not positive:
+// the zero value, because it is the sentinel their own first-wins test reads,
+// and the rest of the interval because the SQLite column encodes it as the 0
+// that the store decodes back to "absent". "half a second after the epoch" is
+// the case that separates the two rules — it is not IsZero, so #459's guard
+// admitted it, and it still encodes to 0.
 //
 // Neither is reachable from production today, but for different reasons, and
 // conflating them is what an earlier draft of this comment did. markStartedOnce
@@ -644,32 +650,50 @@ func TestJobMarkOnce_RefusesAZeroTimestamp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			j := &Job{ID: "j1", progress: &JobProgress{}}
 
-			if tc.mark(j, time.Time{}) {
-				t.Error("a zero timestamp reported a successful mark; the wrapper would persist and dirty the queue for a write that did not happen")
-			}
-			if got := tc.field(j); !got.IsZero() {
-				t.Errorf("field = %v after a refused zero mark, want the zero time", got)
-			}
-			// The refusal must not consume the first-wins slot: a real
-			// timestamp arriving afterwards is still the FIRST mark.
-			if !tc.mark(j, real) {
-				t.Fatal("a real timestamp after a refused zero one returned false; the refusal consumed the first-wins slot")
-			}
-			if got := tc.field(j); !got.Equal(real) {
-				t.Errorf("field = %v, want %v", got, real)
-			}
-			// The other order: a zero arriving AFTER a real mark must not
-			// clobber it. A guard that stored t before returning false —
-			// `if t.IsZero() { j.progress.f = t; return false }` — refuses
-			// correctly on the empty job above and still destroys the
-			// timestamp here, so the assertions above cannot see it.
-			if tc.mark(j, time.Time{}) {
-				t.Error("a zero timestamp after a real one reported a successful mark")
-			}
-			if got := tc.field(j); !got.Equal(real) {
-				t.Errorf("field = %v after a refused zero mark clobbered it, want %v", got, real)
+			for _, bad := range []struct {
+				name string
+				in   time.Time
+			}{
+				{"the zero value", time.Time{}},
+				{"the epoch", time.Unix(0, 0)},
+				{"half a second after the epoch", time.Unix(0, 500000000)},
+			} {
+				t.Run(bad.name, func(t *testing.T) {
+					t.Parallel()
+					// The fixture belongs inside this loop, not outside it:
+					// shared across cases, the second one would start against
+					// a job already holding real and Fatal below on a refusal
+					// that is first-wins working correctly.
+					j := &Job{ID: "j1", progress: &JobProgress{}}
+
+					if tc.mark(j, bad.in) {
+						t.Errorf("%s reported a successful mark; the wrapper would persist and dirty the queue for a write that did not happen", bad.name)
+					}
+					if got := tc.field(j); !got.IsZero() {
+						t.Errorf("field = %v after a refused %s, want the zero time", got, bad.name)
+					}
+					// The refusal must not consume the first-wins slot: a real
+					// timestamp arriving afterwards is still the FIRST mark.
+					if !tc.mark(j, real) {
+						t.Fatalf("a real timestamp after a refused %s returned false; the refusal consumed the first-wins slot", bad.name)
+					}
+					if got := tc.field(j); !got.Equal(real) {
+						t.Errorf("field = %v, want %v", got, real)
+					}
+					// The other order: a bad value arriving AFTER a real mark
+					// must not clobber it. A guard that stored t before
+					// returning false — `if !isJobStamp(t) { j.progress.f = t;
+					// return false }` — refuses correctly on the empty job
+					// above and still destroys the timestamp here, so the
+					// assertions above cannot see it.
+					if tc.mark(j, bad.in) {
+						t.Errorf("%s after a real one reported a successful mark", bad.name)
+					}
+					if got := tc.field(j); !got.Equal(real) {
+						t.Errorf("field = %v after a refused %s clobbered it, want %v", got, bad.name, real)
+					}
+				})
 			}
 		})
 	}

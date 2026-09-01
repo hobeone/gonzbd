@@ -540,22 +540,32 @@ func (j *Job) recordDownload(server string, bytes int) {
 // than a check for absence — progress is permanently resident and cannot be
 // missing.
 //
-// A zero t is refused rather than stored, and that is not defensiveness about
-// a caller mistake: the zero value is the sentinel this method's own guard
-// tests against, so storing it would leave the field indistinguishable from
-// unset while having reported success. See markDownloadFinishedOnce for the
-// three consequences that follow (#459); they are identical for both.
+// The guard is not here: this delegates to JobProgress.setDownloadStartedOnce,
+// which owns both halves of the rule — that the stamp is one the store can
+// distinguish from absent, and that the first one wins. #464 moved it there
+// because the first-wins test was written out at three sites and they had
+// already diverged: these two methods, plus Queue.SetPostProcStarted
+// (queue.go:1355), which tests IsZero on the field and nothing at all on the
+// value it is about to store. Task 3 of #464 routes that one here too.
+//
+// What is refused widened with that move. #459 refused the zero value, the
+// sentinel this method's own guard used to test against; the owner refuses
+// every t whose Unix() is not positive, which is the interval the SQLite
+// column cannot represent as anything but absent. See isJobStamp for why the
+// bound is the encoding rather than IsZero, and markDownloadFinishedOnce for
+// the three consequences a stored-but-indistinguishable stamp produces.
 //
 // Unlike that sibling, this one IS on a production path: internal/app/
-// pipeline.go:412 calls Queue.MarkJobStarted(res.JobID, time.Now()). A zero
-// time is therefore not reachable today, and refusing it is hardening against
-// a future caller rather than a live defect.
+// pipeline.go:412 calls Queue.MarkJobStarted(res.JobID, time.Now()) — `git
+// grep -n 'MarkJobStarted(' -- '*.go' ':!*_test.go' ':!internal/queue/job.go'`
+// returns 2 lines, that call and the Queue wrapper. This file is excluded
+// because the pattern matches the sentence you are reading; every other
+// exclusion would have to be argued for, and that one cannot be.
+// A refusable time is therefore not reachable
+// today, and refusing it is hardening against a future caller rather than a
+// live defect.
 func (j *Job) markStartedOnce(t time.Time) bool {
-	if t.IsZero() || !j.progress.downloadStarted.IsZero() {
-		return false
-	}
-	j.progress.downloadStarted = t
-	return true
+	return j.progress.setDownloadStartedOnce(t)
 }
 
 // markDownloadFinishedOnce records the download completion time, reporting
@@ -566,24 +576,29 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // one capital letter apart, differing only in this guard. #457 resolved that
 // by deleting the exported one rather than guarding it: it had no production
 // caller, and guarding it would have added a THIRD enforcement site for the
-// first-finish-wins rule. There are already two — this method, and
-// Queue.SetPostProcStarted, which applies the same IsZero test to the same
-// field without routing through here. That second site is not this change's
+// first-finish-wins rule. There are still two — the owner this method
+// delegates to, and Queue.SetPostProcStarted, which applies the same IsZero
+// test to the same field without routing through either. That second site is not this change's
 // to remove, and since #457's review it is tested: TestSetPostProcStarted's
 // "does not overwrite a finish time MarkDownloadFinished already set" subtest
 // is what holds the two writers to the same rule. The name stays because it
 // still says what the method does, which the field name did not.
 //
-// A zero t is refused rather than stored (#459). The zero value is the
-// sentinel the field guard tests against, so storing it would report a
-// successful mark while leaving the field unset, and three things would follow
-// from that one contradiction:
+// The guard is not here: this delegates to
+// JobProgress.setDownloadFinishedOnce, which owns it. #459 refused the zero
+// value; #464 widened the refusal to every t whose Unix() is not positive,
+// since the SQLite column cannot tell those apart from absent either. Storing
+// one would report a successful mark for a value that reads back as unset, and
+// what follows depends on which value it was:
 //
-//   - the caller marks the queue dirty and runs store.Update for a write that
-//     did not happen;
-//   - the field being still zero, a later real timestamp passes the guard and
-//     overwrites, so "first finish wins" is violated;
-//   - the store is therefore written twice for one job finish.
+//   - either way the caller marks the queue dirty and runs store.Update for a
+//     write that persists nothing readable;
+//   - the zero value leaves the field IsZero, so a later real timestamp passes
+//     the guard and overwrites — "first finish wins" is violated and the store
+//     is written twice for one job finish;
+//   - a value in the refused interval is worse, not better: the field is no
+//     longer IsZero, so first-wins now REFUSES the real timestamp, and the job
+//     reads as never-finished for the rest of its life.
 //
 // Refusing costs nothing a caller wants, and the enumeration is narrower than
 // the sibling's: this method has no production caller at all. `git grep -l
@@ -597,11 +612,7 @@ func (j *Job) markStartedOnce(t time.Time) bool {
 // does NOT consume the first-wins slot; a real timestamp arriving afterwards
 // is still the first mark.
 func (j *Job) markDownloadFinishedOnce(t time.Time) bool {
-	if t.IsZero() || !j.progress.downloadFinished.IsZero() {
-		return false
-	}
-	j.progress.downloadFinished = t
-	return true
+	return j.progress.setDownloadFinishedOnce(t)
 }
 
 // discardDeferredPar2 marks every recovery volume still awaiting the CRC
