@@ -303,15 +303,6 @@ func parseStatus(output string) Status {
 	}
 }
 
-// verify runs `par2 v <parfile> [extraFiles...]` and parses the output to
-// determine whether the protected files are intact.  It returns a VerifyResult
-// even when par2 itself exits with a non-zero code, as long as the process
-// could be started. A returned error indicates a system-level failure (binary
-// not found, context cancelled, etc.).
-func verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
-	return verifyWith(ctx, RunOptions{}, parfile, extraFiles...)
-}
-
 // sboxForParfile returns the SandboxConfig for running par2 on parfile.
 // If opts.Sandbox.TargetDir is empty, it defaults TargetDir to the directory containing parfile.
 // If opts.Sandbox.TargetDir is non-empty, it verifies that parfile is contained within TargetDir.
@@ -341,7 +332,13 @@ func sboxForParfile(opts RunOptions, parfile string) (cmdutil.SandboxConfig, err
 	return sbox, nil
 }
 
-// verifyWith is like verify but uses the given RunOptions for binary selection.
+// verifyWith runs `par2 v <parfile> [extraFiles...]` and parses the output to
+// determine whether the protected files are intact, using opts for binary
+// selection. It returns a VerifyResult even when par2 itself exits with a
+// non-zero code, as long as the process could be started. A returned error
+// indicates a system-level failure (binary not found, context cancelled, etc.).
+//
+//nolint:unparam // Result 0 is read by TestVerifyAndRepair in par2_integration_test.go. Every default-build caller discards it on purpose, to exercise only the command-line construction path; golangci-lint's default invocation doesn't see the integration-tagged file that reads it.
 func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 6+len(extraFiles))
@@ -393,14 +390,10 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	return res, nil
 }
 
-// repair runs `par2 r <parfile> [extraFiles...]` and attempts to repair any
-// damaged files. Like verify, it returns a RepairResult even on non-zero exit
-// codes.  A non-nil error signals a system-level failure.
-func repair(ctx context.Context, parfile string, extraFiles ...string) (RepairResult, error) {
-	return RepairWith(ctx, RunOptions{}, parfile, extraFiles...)
-}
-
-// RepairWith is like Repair but uses the given RunOptions for binary selection.
+// RepairWith runs `par2 r <parfile> [extraFiles...]` and attempts to repair
+// any damaged files, using opts for binary selection. Like verifyWith, it
+// returns a RepairResult even on non-zero exit codes. A non-nil error signals
+// a system-level failure.
 func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (RepairResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 6+len(extraFiles))

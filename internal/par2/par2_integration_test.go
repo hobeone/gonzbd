@@ -35,7 +35,7 @@ func TestVerifyAndRepair(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("verify_good_set", func(t *testing.T) {
-		res, err := verify(ctx, mainFile)
+		res, err := verifyWith(ctx, RunOptions{}, mainFile)
 		if err != nil {
 			t.Fatalf("verify: %v", err)
 		}
@@ -59,7 +59,7 @@ func TestVerifyAndRepair(t *testing.T) {
 			}
 		})
 
-		res, err := verify(ctx, mainFile)
+		res, err := verifyWith(ctx, RunOptions{}, mainFile)
 		if err != nil {
 			t.Fatalf("verify: %v", err)
 		}
@@ -78,7 +78,7 @@ func TestVerifyAndRepair(t *testing.T) {
 			t.Fatalf("write corrupt: %v", err)
 		}
 
-		res, err := repair(ctx, mainFile)
+		res, err := RepairWith(ctx, RunOptions{}, mainFile)
 		if err != nil {
 			t.Fatalf("repair: %v", err)
 		}

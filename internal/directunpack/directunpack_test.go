@@ -685,17 +685,6 @@ func TestDirectUnpack_WrongPassword(t *testing.T) {
 
 // --- helpers ---
 
-// waitForStarted returns an OnLine callback and a channel that is closed
-// when the first line of extraction output is received, indicating the
-// extraction has started. This replaces time.Sleep for test synchronization.
-func waitForStarted() (func(string), <-chan struct{}) {
-	ch := make(chan struct{})
-	var once sync.Once
-	return func(string) {
-		once.Do(func() { close(ch) })
-	}, ch
-}
-
 func testLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})).
