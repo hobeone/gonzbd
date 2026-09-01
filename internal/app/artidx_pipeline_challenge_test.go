@@ -63,7 +63,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 
 	gotJob := q.SnapshotJob(job.ID)
 	if gotJob == nil {
-		t.Fatalf("q.Get failed")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 
 	m := mustManifest(t, gotJob)

@@ -782,7 +782,7 @@ func TestLoad_RehydratesResidentJob(t *testing.T) {
 	}
 	got, err := loaded.liveJob(job.ID)
 	if err != nil {
-		t.Fatalf("Get after Load: %v", err)
+		t.Fatalf("liveJob after Load: %v", err)
 	}
 	if !manifestResident(got) {
 		t.Fatal("a job that was downloading came back non-resident; it cannot be dispatched")

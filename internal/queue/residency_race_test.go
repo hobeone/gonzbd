@@ -8,10 +8,16 @@ import (
 
 // TestJobManifestProgressResidencyRace pins issue #263: Job.Manifest() and
 // Job.Progress() are documented as safe to call without holding the queue
-// lock, but a *Job returned by Queue.Get/List aliases queue storage, and
+// lock, but a live *Job aliases queue storage, and
 // evictJobLocked/PromoteNext/hydrateResidentLocked reassign job.manifest and
 // job.progress under q.mu whenever the job's residency changes (Pause
 // evicts; Resume + promotion re-hydrates).
+//
+// #463 deleted Queue.Get and Queue.List, so no such pointer leaves the
+// package any more and this fixture reaches one through liveJob, the
+// in-package test door. The race it pins is unchanged: cloneJob reads the
+// same pointer pair under residencyMu while building every snapshot, so the
+// reassignment it guards against is still live on the production path.
 //
 // The fixture deliberately never lets the race window close: it flips the
 // job between Downloading (resident) and Paused (evicted) on one goroutine
@@ -36,10 +42,10 @@ func TestJobManifestProgressResidencyRace(t *testing.T) {
 	// Downloading (resident) immediately, since MaxActiveJobs defaults to 4.
 	got, err := q.liveJob(job.ID)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("liveJob: %v", err)
 	}
 	if got != job {
-		t.Fatal("fixture assumption violated: Get did not return the same *Job pointer passed to Add")
+		t.Fatal("fixture assumption violated: liveJob did not return the same *Job pointer passed to Add")
 	}
 
 	var stop atomic.Bool
@@ -103,10 +109,10 @@ func TestJobScalarGettersRace(t *testing.T) {
 
 	got, err := q.liveJob(job.ID)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("liveJob: %v", err)
 	}
 	if got != job {
-		t.Fatal("fixture assumption violated: Get did not return the same *Job pointer passed to Add")
+		t.Fatal("fixture assumption violated: liveJob did not return the same *Job pointer passed to Add")
 	}
 
 	// Guard against the fixture going vacuous: if the scalars were never

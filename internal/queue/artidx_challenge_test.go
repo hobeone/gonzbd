@@ -28,7 +28,7 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 
 	gotJob, err := q.liveJob(job.ID)
 	if err != nil || gotJob == nil || !manifestResident(gotJob) {
-		t.Fatalf("Get job failed: %v", err)
+		t.Fatalf("liveJob job failed: %v", err)
 	}
 	nArt := mustManifest(t, gotJob).NumArticles()
 	if nArt < 2 {
@@ -48,7 +48,7 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 
 		snap, err := q.liveJob(job.ID)
 		if err != nil {
-			t.Fatalf("Get job: %v", err)
+			t.Fatalf("liveJob job: %v", err)
 		}
 		if !snap.Progress().ArticleDone(0) {
 			t.Errorf("Expected article 0 to be Done")

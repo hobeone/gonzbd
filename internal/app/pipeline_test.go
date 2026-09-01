@@ -171,7 +171,14 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 	p.handleFailureResult(t.Context(), resRetryable)
 
-	if gotJob := q.SnapshotJob(job.ID); gotJob != nil && gotJob.Progress().ArticleEmitted(0) {
+	// The nil case is a failure, not a reason to skip the check: folding it
+	// into the condition with && means a job dropped from the queue by a bug
+	// in handleFailureResult reads as "Emitted was cleared".
+	gotJob := q.SnapshotJob(job.ID)
+	if gotJob == nil {
+		t.Fatalf("job %s vanished from the queue after a retryable failure", job.ID)
+	}
+	if gotJob.Progress().ArticleEmitted(0) {
 		t.Error("expected Emitted to be cleared after retryable failure")
 	}
 	if got := telemetry.ArticlesRetried.Value(); got != retriesBefore+1 {
@@ -219,7 +226,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 
 	gotJob := q.SnapshotJob(job.ID)
 	if gotJob == nil {
-		t.Fatal("Get returned nil")
+		t.Fatal("SnapshotJob returned nil")
 	}
 	if stats := gotJob.Progress().ServerStats()["news.server.com"]; stats != 9 {
 		t.Errorf("ServerStats[news.server.com] = %d, want 9", stats)

@@ -289,7 +289,7 @@ func TestRemove(t *testing.T) {
 		t.Fatalf("Len = %d, want 1", q.Len())
 	}
 	if _, err := q.liveJob(a.ID); err == nil {
-		t.Errorf("Get after Remove should fail")
+		t.Errorf("liveJob after Remove should fail")
 	}
 
 	if err := q.Remove("nonexistent"); err == nil {
@@ -346,7 +346,7 @@ func TestSetStatusEnforcesStateMachine(t *testing.T) {
 	}
 
 	if _, err := q.liveJob("missing"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Get(missing) = %v", err)
+		t.Errorf("liveJob(missing) = %v", err)
 	}
 }
 
@@ -573,7 +573,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	for _, id := range wantOrder {
 		restored, err := loaded.liveJob(id)
 		if err != nil {
-			t.Fatalf("Get(%s) after load: %v", id, err)
+			t.Fatalf("liveJob(%s) after load: %v", id, err)
 		}
 		if restored.Progress() == nil {
 			t.Errorf("job %s came back from the store with no progress", id)
@@ -618,7 +618,7 @@ func TestConcurrentAddRemove(t *testing.T) {
 				_ = q.liveJobs()
 				_ = q.Len()
 				if _, err := q.liveJob(j.ID); err != nil {
-					t.Errorf("Get: %v", err)
+					t.Errorf("liveJob: %v", err)
 					return
 				}
 				if err := q.Remove(j.ID); err != nil {
@@ -837,7 +837,7 @@ func TestSetPriority(t *testing.T) {
 	// Verify the job's Priority field was updated.
 	updated, err := q.liveJob(jLow.ID)
 	if err != nil {
-		t.Fatalf("Get after SetPriority: %v", err)
+		t.Fatalf("liveJob after SetPriority: %v", err)
 	}
 	if updated.Priority != constants.HighPriority {
 		t.Errorf("Priority = %d, want %d (HighPriority)", updated.Priority, constants.HighPriority)
@@ -896,7 +896,7 @@ func TestSetPP(t *testing.T) {
 
 	got, err := q.liveJob(j.ID)
 	if err != nil {
-		t.Fatalf("Get after SetPP: %v", err)
+		t.Fatalf("liveJob after SetPP: %v", err)
 	}
 	if got.PP != 3 {
 		t.Errorf("PP = %d, want 3", got.PP)
@@ -950,7 +950,7 @@ func TestSetCategory(t *testing.T) {
 
 		got, err := q.liveJob(j.ID)
 		if err != nil {
-			t.Fatalf("Get: %v", err)
+			t.Fatalf("liveJob: %v", err)
 		}
 		if got.Category != "movies" {
 			t.Errorf("Category = %q, want %q", got.Category, "movies")
@@ -1158,7 +1158,7 @@ func TestSetName_Sanitization(t *testing.T) {
 			}
 			got, err := q.liveJob(j.ID)
 			if err != nil {
-				t.Fatalf("Get(%s) failed: %v", j.ID, err)
+				t.Fatalf("liveJob(%s) failed: %v", j.ID, err)
 			}
 			if got.Name != tc.wantName {
 				t.Errorf("SetName(%q) resulting Name = %q, want %q", tc.inputName, got.Name, tc.wantName)
@@ -1186,7 +1186,7 @@ func TestSetSanitizeOptions(t *testing.T) {
 	}
 	got, err := q.liveJob(j.ID)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("liveJob: %v", err)
 	}
 	if got.Name != "Movie-Name" {
 		t.Errorf("Name = %q, want %q", got.Name, "Movie-Name")

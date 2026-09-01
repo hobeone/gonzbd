@@ -10,11 +10,15 @@
 // # Concurrency model
 //
 // All public methods on *Queue are safe for concurrent use. Read-heavy
-// operations (List, Len, Get) take the read lock; structural mutations
-// (Add, Remove, Reorder, status changes) take the write lock.
+// operations (Snapshot, SnapshotJob, Len, GetJobStatus among them) take the
+// read lock; structural mutations (Add, Remove, Reorder, status changes) take
+// the write lock.
 //
-// Jobs returned from List/Get are shared references into the Queue's
-// internal storage. Job.Manifest() and Job.Progress() are safe to call
+// Jobs returned from Snapshot/SnapshotJob are deep copies, not references
+// into the Queue's storage: #463 deleted Get and List, which were the exits
+// for a live *Job, and TestNoExportedDoorHandsOutALiveJob enumerates the
+// exported surface from source on every run to keep that true.
+// Job.Manifest() and Job.Progress() are safe to call
 // without the queue lock — each takes the Job's own residency lock to
 // synchronize against lazy eviction/hydration reassigning which
 // Manifest/JobProgress the Job currently points to. That lock does NOT
@@ -147,12 +151,18 @@ type Job struct {
 	PostProc bool
 
 	// residencyMu guards only the manifest/progress *pointer fields* below —
-	// not their contents. Queue.Get/List hand out *Job pointers that alias
-	// queue storage, and lazy eviction (evictJobLocked) and lazy
+	// not their contents. Lazy eviction (evictJobLocked) and lazy
 	// hydration/promotion reassign these pointers under q.mu without the
-	// caller's involvement. A caller holding an aliased pointer but not
-	// q.mu — the documented, intended way to use Manifest()/Progress() —
-	// would otherwise race those reassignments (issue #263).
+	// reader's involvement, so a reader that holds a live *Job but not q.mu
+	// would race those reassignments (issue #263).
+	//
+	// #463 deleted Queue.Get and Queue.List, which is where such readers used
+	// to come from, so the population is now in-package: cloneJob reads the
+	// pointer pair while building a snapshot (snapshot.go:185), and
+	// Job.Manifest()/Job.Progress() read it on a live Job — `git grep -n
+	// 'residencyMu\.RLock' -- 'internal/queue/*.go' ':!*_test.go'` returns 8.
+	// The lock is therefore still required; only the identity of who could
+	// race it changed.
 	//
 	// It is a sync.RWMutex value, not a *sync.RWMutex, so every
 	// construction path (struct literals, a zero-value `var job Job`,

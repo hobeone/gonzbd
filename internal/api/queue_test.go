@@ -319,7 +319,7 @@ func TestQueueList_GlobalPauseOverridesDownloadingToPaused(t *testing.T) {
 	// Verify internal state is still Downloading (not mutated).
 	j := q.SnapshotJob(job.ID)
 	if j == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if j.Status != constants.StatusDownloading {
 		t.Errorf("internal status = %q; want Downloading (should not be mutated)", j.Status)
@@ -568,7 +568,7 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 	// Mark 2 of 4 articles done so file shows partial progress.
 	jobInternal := q.SnapshotJob(job.ID)
 	if jobInternal == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	m := mustManifest(t, jobInternal)
 	if m.NumFiles() != 1 {
@@ -725,7 +725,7 @@ func TestQueuePause(t *testing.T) {
 	}
 	j := q.SnapshotJob(job.ID)
 	if j == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if j.Status != constants.StatusPaused {
 		t.Errorf("status = %q; want Paused", j.Status)
@@ -747,7 +747,7 @@ func TestQueueResume(t *testing.T) {
 	}
 	j := q.SnapshotJob(job.ID)
 	if j == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if j.Status != constants.StatusDownloading {
 		t.Errorf("status = %q; want Downloading", j.Status)
@@ -871,7 +871,7 @@ func TestAddFile_Multipart(t *testing.T) {
 	// Verify the job ID matches.
 	job := q.SnapshotJob(resp.NzoIDs[0])
 	if job == nil {
-		t.Fatalf("queue.Get(%q)", resp.NzoIDs[0])
+		t.Fatalf("SnapshotJob(%q)", resp.NzoIDs[0])
 	}
 	if job.Filename != "test.nzb" {
 		t.Errorf("filename = %q; want test.nzb", job.Filename)
@@ -1094,7 +1094,7 @@ func TestQueueRename_Success(t *testing.T) {
 	}
 	updated := q.SnapshotJob(job.ID)
 	if updated == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if updated.Name != "NewName" {
 		t.Errorf("Name = %q; want %q", updated.Name, "NewName")
@@ -1269,7 +1269,7 @@ func TestQueuePriority_Action(t *testing.T) {
 	// Verify priority actually changed.
 	updated := q.SnapshotJob(job.ID)
 	if updated == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if updated.Priority != constants.HighPriority {
 		t.Errorf("priority = %d; want %d (HighPriority)", updated.Priority, constants.HighPriority)
@@ -1518,7 +1518,7 @@ func TestQueueChangeOpts_Success(t *testing.T) {
 	// Verify the queue was updated.
 	got := q.SnapshotJob(job.ID)
 	if got == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if got.PP != 3 {
 		t.Errorf("PP = %d; want 3", got.PP)
@@ -1617,7 +1617,7 @@ func TestQueueChangeCat_Success(t *testing.T) {
 	// Verify queue was updated with the new category's inherited settings.
 	got := q.SnapshotJob(job.ID)
 	if got == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if got.Category != "movies" {
 		t.Errorf("Category = %q; want movies", got.Category)
@@ -1651,7 +1651,7 @@ func TestQueueChangeCat_EmptyValue2FallsBackToDefault(t *testing.T) {
 	}
 	got := q.SnapshotJob(job.ID)
 	if got == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 	if got.Category != "Default" {
 		t.Errorf("Category = %q; want Default", got.Category)
@@ -2125,7 +2125,7 @@ func TestQueueChangeScript_Sanitization(t *testing.T) {
 
 			got := q.SnapshotJob(job.ID)
 			if got == nil {
-				t.Fatalf("Get")
+				t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 			}
 			if got.Script != tt.wantScript {
 				t.Errorf("Script = %q; want %q", got.Script, tt.wantScript)
@@ -2474,7 +2474,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		}
 		got := q.SnapshotJob(job.ID)
 		if got == nil {
-			t.Fatalf("q.Get(%s)", job.ID)
+			t.Fatalf("SnapshotJob(%s)", job.ID)
 		}
 		if got.Name != "NewName" {
 			t.Errorf("got.Name = %q; want NewName", got.Name)
@@ -2684,7 +2684,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 
 	live := q.SnapshotJob(job.ID)
 	if live == nil {
-		t.Fatalf("Get")
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
 
 	const speed = 1024.0 * 1024.0 // 1 MiB/s; well above the noise floor

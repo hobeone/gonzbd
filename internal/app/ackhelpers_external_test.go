@@ -11,23 +11,39 @@ import (
 // set of helpers, duplicated because the external test package (app_test)
 // cannot see the internal one's unexported identifiers.
 
-func artIdxFor(t *testing.T, q *queue.Queue, jobID, msgID string) int32 {
+// artIdxsFor resolves several message IDs against ONE snapshot.
+//
+// SnapshotJob deep-copies JobProgress, including its bitsets, so calling it
+// per message ID made a fixture that acks N articles clone the job N times to
+// read N immutable strings out of a Manifest that never changes between the
+// calls. One snapshot answers the whole batch.
+//
+//dupcomment:ok per-package copies of one test helper; the automatic same-basename exemption misses them because the app_test copy is named ackhelpers_external_test.go
+func artIdxsFor(t *testing.T, q *queue.Queue, jobID string, msgIDs ...string) []int32 {
 	t.Helper()
 	job := q.SnapshotJob(jobID)
 	if job == nil {
-		t.Fatalf("artIdxFor: job %s not in queue", jobID)
+		t.Fatalf("artIdxsFor: job %s not in queue", jobID)
 	}
 	m, err := job.Manifest()
 	if err != nil {
-		t.Fatalf("artIdxFor: job %s manifest: %v", jobID, err)
+		t.Fatalf("artIdxsFor: job %s manifest: %v", jobID, err)
 	}
+
+	byID := make(map[string]int32, m.NumArticles())
 	for i := range m.NumArticles() {
-		if m.ArticleID(i) == msgID {
-			return int32(i) //nolint:gosec // G115: article counts are far below int32
-		}
+		byID[m.ArticleID(i)] = int32(i) //nolint:gosec // G115: article counts are far below int32
 	}
-	t.Fatalf("artIdxFor: job %s has no article %s", jobID, msgID)
-	return 0
+
+	out := make([]int32, 0, len(msgIDs))
+	for _, id := range msgIDs {
+		idx, ok := byID[id]
+		if !ok {
+			t.Fatalf("artIdxsFor: job %s has no article %s", jobID, id)
+		}
+		out = append(out, idx)
+	}
+	return out
 }
 
 func ackDoneIdx(t *testing.T, q *queue.Queue, jobID string, artIdxs ...int32) {
@@ -69,19 +85,13 @@ func ackDoneIdx(t *testing.T, q *queue.Queue, jobID string, artIdxs ...int32) {
 
 func ackDone(t *testing.T, q *queue.Queue, jobID string, msgIDs ...string) {
 	t.Helper()
-	idxs := make([]int32, 0, len(msgIDs))
-	for _, id := range msgIDs {
-		idxs = append(idxs, artIdxFor(t, q, jobID, id))
-	}
+	idxs := artIdxsFor(t, q, jobID, msgIDs...)
 	ackDoneIdx(t, q, jobID, idxs...)
 }
 
 func ackFailed(t *testing.T, q *queue.Queue, jobID string, msgIDs ...string) {
 	t.Helper()
-	idxs := make([]int32, 0, len(msgIDs))
-	for _, id := range msgIDs {
-		idxs = append(idxs, artIdxFor(t, q, jobID, id))
-	}
+	idxs := artIdxsFor(t, q, jobID, msgIDs...)
 	if err := q.AckPermanentFailure(jobID, idxs); err != nil {
 		t.Fatalf("ackFailed: %v", err)
 	}
