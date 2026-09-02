@@ -279,6 +279,13 @@ func TestPar2Verdict(t *testing.T) {
 		copyFixtureSubdirPar2(t, dir) // protects Screens/data.bin
 		copyFixturePayload(t, dir, "data.bin")
 
+		// crc 0x99999999 is deliberately wrong (the fixture's real CRC32 is
+		// 0x1068AFA6), so the identified file (data.bin) also carries a CRC
+		// mismatch. That makes this fixture double as the regression case for
+		// folding CRC findings into the !id.Accounted() reason below: without
+		// it, every file this suite identifies while also leaving another
+		// entry unaccounted verifies clean, and the fold-in code would never
+		// be exercised by a non-empty CRC summary.
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
@@ -290,6 +297,12 @@ func TestPar2Verdict(t *testing.T) {
 		}
 		if !strings.Contains(reason, "not found in this download") {
 			t.Errorf("expected an unaccounted-file reason, got: %q", reason)
+		}
+		// The identified file's own CRC mismatch must not be discarded just
+		// because another entry was unaccounted for (the bug this subtest
+		// pins): both findings belong in the reason together.
+		if !strings.Contains(reason, "also corruption/CRC mismatch") {
+			t.Errorf("expected the identified file's CRC mismatch folded into the reason, got: %q", reason)
 		}
 	})
 
@@ -323,6 +336,45 @@ func TestPar2Verdict(t *testing.T) {
 		}
 		if !id.Files[0].NeedsRename() {
 			t.Error("NeedsRename() = false for an obfuscated file")
+		}
+	})
+}
+
+// TestCrcVerdictParts exercises crcVerdictParts directly (rather than only
+// through par2Verdict's two callers), pinning the per-category clause order
+// (Mismatched, then NoCRC, then Unverified) and that a category contributes
+// nothing when its count is zero.
+func TestCrcVerdictParts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all categories zero produces no parts", func(t *testing.T) {
+		got := crcVerdictParts(par2.CRCVerifyResult{})
+		if len(got) != 0 {
+			t.Fatalf("crcVerdictParts(zero value) = %v, want empty", got)
+		}
+	})
+
+	t.Run("every category renders its own clause, in order", func(t *testing.T) {
+		r := par2.CRCVerifyResult{
+			Mismatched: 1,
+			Files:      []par2.CRCResult{{FileName: "bad.rar", Match: false}},
+			NoCRC:      2,
+			NoCRCFiles: []string{"a.rar", "b.rar"},
+			Unverified: 3,
+		}
+		got := crcVerdictParts(r)
+		want := []string{
+			"corruption/CRC mismatch in 1 file(s) (bad.rar)",
+			"failed download in 2 file(s) (a.rar, b.rar)",
+			"3 file(s) unverified",
+		}
+		if len(got) != len(want) {
+			t.Fatalf("crcVerdictParts(%+v) = %v, want %v", r, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("part %d = %q, want %q", i, got[i], want[i])
+			}
 		}
 	})
 }

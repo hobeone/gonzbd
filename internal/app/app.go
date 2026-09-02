@@ -1728,14 +1728,34 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 		}
 		log.Info("on-demand par2: par2 entries matched no delivered file; fetching recovery volumes",
 			"unaccounted", len(id.Unaccounted))
-		return outcomeRepair, fmt.Sprintf("%d par2-protected file(s) not found in this download (%s)",
+		reason := fmt.Sprintf("%d par2-protected file(s) not found in this download (%s)",
 			len(id.Unaccounted), strings.Join(names, ", "))
+		// The files that WERE identified may still carry their own CRC
+		// findings; fold those in rather than discarding them, using the
+		// same summary construction crcVerdictParts builds for the
+		// all-accounted case below.
+		if crcParts := crcVerdictParts(r); len(crcParts) > 0 {
+			reason += "; also " + strings.Join(crcParts, "; ")
+		}
+		return outcomeRepair, reason
 	}
 
 	if r.Mismatched+r.NoCRC+r.Unverified == 0 {
 		return outcomeClean, ""
 	}
 
+	return outcomeRepair, strings.Join(crcVerdictParts(r), "; ")
+}
+
+// crcVerdictParts renders par2.Assessment.CRC's per-category findings
+// (mismatched, missing-CRC, unverified) as human-readable clauses, one per
+// non-zero category, in Mismatched/NoCRC/Unverified order. It is the sole
+// place this rendering happens — par2Verdict's !id.Accounted() branch and
+// its all-accounted branch both call it, rather than each building its own
+// copy: `git grep -n 'crcVerdictParts(' internal/app/app.go` finds 4 lines —
+// this comment's own self-match, the declaration below, and the two call
+// sites in par2Verdict above.
+func crcVerdictParts(r par2.CRCVerifyResult) []string {
 	var parts []string
 	if r.Mismatched > 0 {
 		var corruptFiles []string
@@ -1754,8 +1774,7 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 	if r.Unverified > 0 {
 		parts = append(parts, fmt.Sprintf("%d file(s) unverified", r.Unverified))
 	}
-
-	return outcomeRepair, strings.Join(parts, "; ")
+	return parts
 }
 
 // drainCompletions processes all buffered events on internalFileComplete.
