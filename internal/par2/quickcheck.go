@@ -9,7 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // Rename records a file relocation performed by QuickCheck.
@@ -140,9 +141,14 @@ func relocateFile(dir, flatName string, fd FileDesc, log *slog.Logger) bool {
 
 	// Security: verify the par2 filename resolves within dir.
 	// Reject path traversal like "../../../etc/passwd".
+	//
+	// fsutil.PathWithin rather than a filepath.Rel + HasPrefix("..") pair.
+	// That form rejects any name merely BEGINNING with two dots — Rel(dir,
+	// dir/"..custom.txt") is "..custom.txt" — so a legitimately-named file
+	// was refused relocation and then reported unaccounted. PathWithin tests
+	// for ".." as a whole path element, which is the actual escape.
 	targetPath := filepath.Join(dir, filepath.FromSlash(fd.FileName))
-	rel, err := filepath.Rel(dir, targetPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if !fsutil.PathWithin(dir, targetPath) {
 		log.Warn("quickcheck: rejected path traversal in par2 filename",
 			"par2name", fd.FileName)
 		return false
@@ -196,13 +202,7 @@ func ComputeHash16k(path string) ([16]byte, error) {
 	}
 	defer f.Close() //nolint:errcheck // read-only
 
-	buf := make([]byte, 16*1024)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return zero, err
-	}
-
-	return md5.Sum(buf[:n]), nil //nolint:gosec // MD5 used for par2 compatibility, not security
+	return hash16kOfReader(f)
 }
 
 // ComputeHash16kRoot computes the MD5 hash of the first 16KB of a file,
@@ -216,9 +216,27 @@ func ComputeHash16kRoot(root *os.Root, relPath string) ([16]byte, error) {
 	}
 	defer f.Close() //nolint:errcheck // read-only
 
+	return hash16kOfReader(f)
+}
+
+// hash16kOf is the single owner of what "the Hash16k of this content" means,
+// so the two exported wrappers above cannot disagree about it. They differ
+// only in how they open a file.
+//
+// Both short reads are successes, and they are different errors. io.ReadFull
+// returns io.ErrUnexpectedEOF when it read SOME of the 16 KB and io.EOF when
+// it read NONE — so treating only the former as success made a 0-byte file
+// fail to hash at all. Identify then logged "could not hash candidate" and
+// skipped it, leaving a par2 entry for an empty file permanently unaccounted
+// and fetching recovery volumes over it. par2 records the MD5 of the first
+// 16 KB, or of the whole file where it is smaller, and md5.Sum(nil) is the
+// correct answer for an empty one.
+func hash16kOfReader(r io.Reader) ([16]byte, error) {
+	var zero [16]byte
+
 	buf := make([]byte, 16*1024)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+	n, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return zero, err
 	}
 

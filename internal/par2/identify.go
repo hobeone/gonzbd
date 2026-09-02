@@ -3,9 +3,12 @@ package par2
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // MatchMethod records how a delivered file was matched to a par2 entry.
@@ -98,13 +101,24 @@ type Identification struct {
 // FileDesc.FileCRC32; see the identify-then-verify design note.
 func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 
-// ignoredExtensions are the sidecars a par2 set does not protect and which are
-// therefore never candidates for identification.
+// ignoredExtensions are the sidecars excluded from CONTENT-based matching —
+// passes 2 and 3. They are not excluded from a name match, and the difference
+// is deliberate.
 //
-// par2's own files are excluded because a set cannot describe itself. The
-// other two mirror SABnzbd's quick_check_ext_ignore (cfg.py: ["nfo", "sfv",
-// "srr"]) minus "srr", matching what this package already skipped implicitly
-// inside shouldSkipFlatFile before identification was extracted from it.
+// A par2 set genuinely can protect a .nfo or .sfv, so refusing them outright
+// would leave such an entry unaccounted on a healthy release and fetch every
+// recovery volume over it. What the list actually prevents is a sidecar being
+// claimed for a payload entry it merely resembles: a small .nfo shares its
+// first 16 KB with anything else small, so Hash16k would hand par2 the wrong
+// file. An exact name match has no such failure mode — it is the strongest
+// evidence available, not a heuristic — so pass 1 reads flatFiles directly
+// and this list does not apply there.
+//
+// par2's own files are excluded on a different ground: a set cannot describe
+// itself, so no entry can legitimately name one. The other two mirror
+// SABnzbd's quick_check_ext_ignore (cfg.py: ["nfo", "sfv", "srr"]) minus
+// "srr", matching what this package already skipped implicitly inside
+// shouldSkipFlatFile before identification was extracted from it.
 var ignoredExtensions = []string{".par2", ".sfv", ".nfo"}
 
 func isIgnoredForIdentification(name string) bool {
@@ -136,7 +150,7 @@ func isIgnoredForIdentification(name string) bool {
 // A file is claimed by at most one entry and an entry claims at most one file,
 // so no two passes can consume the same file.
 func Identify(dir string, sets []Set, log *slog.Logger) (Identification, error) {
-	return IdentifyWithOptions(dir, sets, log, ParseOptions{})
+	return IdentifyWithOptions(dir, sets, log, DefaultParseOptions())
 }
 
 // IdentifyWithOptions is Identify with explicit par2 parse options.
@@ -174,6 +188,48 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	claimedFile := make(map[string]bool, len(candidates))
 	claimedEntry := make(map[int]bool, len(manifest))
 	id := Identification{Ignored: ignored}
+
+	// Pass 0 — an entry whose par2 path already names a file on disk is that
+	// file, and nothing below can see it.
+	//
+	// scanFlatFiles reads one directory level and skips directories outright,
+	// so every later pass is blind to anything inside a subdirectory. That
+	// makes identification NOT IDEMPOTENT without this pass: QuickCheck moves
+	// "shot.jpg" to "Screens/shot.jpg" on the strength of an identification,
+	// and the very next Identify over the same directory cannot find it and
+	// reports the entry unaccounted. In internal/app the two run back to back
+	// — applyPar2Names then par2NeedsRecovery — so a healthy job with any
+	// subdirectory in its par2 set fetched every recovery volume.
+	//
+	// Restricted to entries carrying a directory component because a flat
+	// entry's par2 path IS its basename, which pass 1 matches exactly; running
+	// this for those would only relabel the same match.
+	for ei, fd := range manifest {
+		slashed := filepath.ToSlash(fd.FileName)
+		if !strings.Contains(slashed, "/") {
+			continue
+		}
+		// fd.FileName is poster-controlled, so containment is checked before
+		// it reaches a stat, on the same rule relocateFile applies before it
+		// reaches a rename.
+		target := filepath.Join(dir, filepath.FromSlash(slashed))
+		if !fsutil.PathWithin(dir, target) {
+			log.Warn("identify: rejected path traversal in par2 filename", "par2path", fd.FileName)
+			continue
+		}
+		info, sErr := os.Stat(target)
+		if sErr != nil || info.IsDir() {
+			continue
+		}
+		// Same length rule as pass 2: being at the right path is not evidence
+		// the file is whole, and claiming a truncated one would report it
+		// accounted while relocateFile — which checks — declines to touch it.
+		if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+			continue
+		}
+		claimedEntry[ei] = true
+		id.Files = append(id.Files, Identified{OnDisk: slashed, Desc: fd, By: MatchName})
+	}
 
 	// Pass 1 — every basename first, and only then every flattened form.
 	//

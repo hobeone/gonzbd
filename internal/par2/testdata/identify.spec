@@ -1,5 +1,5 @@
 pkg ./internal/par2/
-run TestIdentify|TestQuickCheck
+run TestIdentify|TestQuickCheck|TestComputeHash16k|TestRelocateFile
 
 # Identify is a pure function over a directory and a par2 manifest, so every
 # one of its properties is expressible as a mutation. These five cover the
@@ -159,4 +159,26 @@ file internal/par2/quickcheck.go
 		if false {
 			continue
 		}
+--- end
+
+# Pass 0: an entry already at its par2 path. scanFlatFiles skips directories,
+# so nothing below this pass can see a relocated file, and identification is
+# not idempotent without it -- applyPar2Names moves "shot.jpg" into "Screens/"
+# and the very next Identify reports the entry unaccounted.
+[an entry already at its par2 path is not recognised]
+file internal/par2/identify.go
+--- anchor
+		if !strings.Contains(slashed, "/") {
+--- replace
+		if true {
+--- end
+
+# The length rule on that pass, same reason it exists on pass 2: being at the
+# right path is not evidence the file is whole.
+[pass 0 claims an entry whose length disagrees]
+file internal/par2/identify.go
+--- anchor
+		if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+--- replace
+		if false { //nolint:gosec // size is non-negative
 --- end
