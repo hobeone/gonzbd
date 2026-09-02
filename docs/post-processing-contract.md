@@ -74,7 +74,7 @@ or modify its behavior:
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
 | **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`. | Skipped if disabled or `PP < 1`. | Sets `QuickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive`. |
-| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheck == Clean`, OR DirectUnpack extracted all archives without errors **and** `QuickCheck == NotRun`. | Sets `ParError`, `NeedRequeue`, `RequeueBlocksNeeded`, and `Par2Renames`. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheck == Clean`, OR DirectUnpack extracted all archives without errors **and** `QuickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir` & `OwnedFiles`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`. |
 | **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `OwnedFiles`. |
@@ -210,10 +210,11 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,
   corrupt archive) set `UnpackError = true`. Original archive files and `.par2` recovery files are
   preserved in `DownloadDir` for manual recovery.
-- **Re-queue Information (`NeedRequeue = true`)**: If `par2` requires additional
-  blocks, `NeedRequeue` and `RequeueBlocksNeeded` are recorded on `Job` for
-  history/UI reporting. Downstream stages continue running so the job reaches
-  a deterministic finished state.
+- **Insufficient Recovery Blocks**: When `par2` reports it needs more blocks
+  than are on disk, `repair` sets `ParError = true` and leaves the block count
+  in its own log line rather than on `Job` — `unpack` reads `ParError` to skip
+  extraction (`internal/postproc/stage_unpack.go:128`). Downstream stages
+  continue running so the job still reaches a deterministic finished state.
 
 ## Status
 
@@ -227,11 +228,17 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.
 
 ### Open Gaps (Target Invariants Not Yet Built)
-- **`NeedRequeue` Automatic Promotion (`internal/app`)**: `NeedRequeue` is set by
-  the repair stage but nothing in `internal/app` reads it — it is currently dead
-  state. No job finalizer inspects it or promotes un-downloaded `.par2` volumes.
-  Target: implement automatic `.par2` promotion and `StatusDownloading` transition,
-  falling back to `Status = "Failed"` when no recovery blocks remain.
+- **Block-Exact Recovery-Volume Promotion (`internal/app`)**: when `repair`
+  reports insufficient blocks, nothing currently promotes the additional
+  `.par2` volumes the job needs and re-enters `StatusDownloading` — the job
+  simply finishes with `ParError = true`. The seam for this already exists
+  and is live: `Queue.UndeferRecoveryVolumes`'s `fileIdxs` argument
+  (`internal/queue/queue.go`) is documented to accept either the full
+  deferred set (Phase 1, already used) or "a block-covering subset" (Phase 2,
+  not yet implemented). Target: compute the block-covering subset from the
+  repair stage's reported shortfall and call `UndeferRecoveryVolumes` with
+  it, falling back to `Status = "Failed"` when no further recovery volumes
+  remain to undefer.
 - **`ScriptCanFail == false` Authoritative Failure (`internal/postproc`)**: When a
   user script exits non-zero and `ScriptCanFail` is false, `ScriptStage.Run()` sets
   `StageLogEntry.Err` but does not set `job.FailMsg`, so `buildSummaryEntry` records
