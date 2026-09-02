@@ -57,8 +57,14 @@ type CRCVerifyResult struct {
 	Unverified int
 	// Files holds per-file results for files that were actually checked.
 	Files []CRCResult
-	// NoCRCFiles lists the names of par2-tracked files that could not
-	// be verified because their assembled CRC was 0 (download failures).
+	// NoCRCFiles lists the on-disk names of the files counted in NoCRC.
+	//
+	// EITHER side can be the one missing a CRC, and the list does not say
+	// which. The caller supplied none — a failed download, or a resumed file
+	// whose earlier articles were never re-fetched — or par2 recorded none,
+	// because the set carries no IFSC data for that entry. Reporting these as
+	// download failures would be wrong for the second case, and a set with no
+	// IFSC data makes it wrong for every file at once.
 	NoCRCFiles []string
 	// UnverifiedFiles lists the par2 manifest paths (which may include
 	// subdirectory components, e.g. "Screens/foo.jpg") of the entries counted

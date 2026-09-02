@@ -398,8 +398,18 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		if !strings.Contains(linesStr, fileName) {
 			t.Errorf("expected OutputLines to name the unverified file %q, got: %s", fileName, linesStr)
 		}
-		if !strings.Contains(linesStr, "not found by name") {
+		// "could not be verified", not "not found by name".
+		//
+		// Nothing is matched by name any more, and Unverified now covers two
+		// causes this line cannot tell apart: a par2 entry no delivered file
+		// was shown to be, and an identified file the queue supplied no CRC
+		// for. An operator reading "not found by name" would go looking for a
+		// filename problem that does not exist.
+		if !strings.Contains(linesStr, "could not be verified") {
 			t.Errorf("expected OutputLines to explain why, got: %s", linesStr)
+		}
+		if strings.Contains(linesStr, "not found by name") {
+			t.Errorf("OutputLines still claim a name match was attempted: %s", linesStr)
 		}
 	})
 }

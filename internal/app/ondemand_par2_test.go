@@ -18,7 +18,7 @@ import (
 )
 
 // copyFixturePar2 copies the shared par2 index fixture (which protects
-// data.bin with CRC32 0x1068AFA6) into dir, so par2Verdict can scan it.
+// data.bin with CRC32 0x1068AFA6) into dir, so par2.Assess can scan it.
 func copyFixturePar2(t *testing.T, dir string) {
 	t.Helper()
 	b, err := os.ReadFile("../../test/fixtures/par2/data.par2")
@@ -46,11 +46,13 @@ func copyFixtureSubdirPar2(t *testing.T, dir string) {
 
 // copyFixturePayload puts the protected file itself on disk beside the index.
 //
-// par2Verdict now IDENTIFIES the delivered files before verifying them,
-// and identification reads the directory — an index describing data.bin with
-// no data.bin present means the file is genuinely missing, and the honest
-// answer is to fetch the recovery volumes. Verification alone never looked at
-// the filesystem, which is why these fixtures did not need it before.
+// par2.Assess IDENTIFIES the delivered files before verifying them, and
+// identification reads the directory — an index describing data.bin with no
+// data.bin present means the file is genuinely missing, and the honest answer
+// is to fetch the recovery volumes. par2Verdict itself reads only the
+// assessment; it is the assessment that looks at the filesystem. The
+// verification this replaced never looked at all, which is why these fixtures
+// did not need a payload before.
 func copyFixturePayload(t *testing.T, dir, asName string) {
 	t.Helper()
 	b, err := os.ReadFile("../../test/fixtures/par2/data.bin")
@@ -292,13 +294,11 @@ func TestPar2Verdict(t *testing.T) {
 		copyFixturePar2(t, dir) // protects data.bin
 		copyFixturePayload(t, dir, "7xq6N6P340dCh9Lnih5hY3jsArfSN1")
 
-		// Stops at identification deliberately. Verification still matches by
-		// name, and the rename that makes those names line up is applied by
-		// recordPar2Names at the caller, not inside par2Verdict — a
-		// function named for a question does not move files. What this pins
-		// is the app-level claim against the REAL fixture: the obfuscated
-		// file is accounted for, so the branch that discards volumes is not
-		// reached.
+		// Stops at identification deliberately. What this pins is the
+		// app-level claim against the REAL fixture: an obfuscated file is
+		// accounted for by CONTENT, so the branch that discards recovery
+		// volumes is never reached for a healthy release. Whether it then
+		// verifies is the subject of the end-to-end test below.
 		sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
 		if err != nil || len(sets) == 0 {
 			t.Fatalf("FindPar2Files: %v (%d sets)", err, len(sets))
@@ -489,13 +489,16 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	//
 	// This runs through maybeReleaseRecoveryVolumes rather than calling
 	// par2Verdict directly, and that is the entire reason it exists.
-	// The two steps only compose if the second reads the names the first
-	// wrote — recordPar2Names renames the obfuscated file to data.bin and
-	// records it on the live queue, and snap is a DEEP COPY (cloneJob calls
-	// progress.clone, which slices.Clones the []FileProgress), so verifying
-	// against the captured snapshot compares the pre-rename obfuscated string
-	// to the par2 index, matches nothing, counts the file Unverified and
-	// fetches the entire recovery set for an intact job.
+	// par2Verdict takes an assessment as a parameter, so a test that builds
+	// one itself cannot see whether the caller assembled the right inputs —
+	// which is where every defect on this path has actually lived.
+	//
+	// Two properties, and the second is why this test outlived the rename it
+	// was written for: the verdict must be "clean", and NOTHING may have
+	// moved. The download path used to relocate here, and both halves of that
+	// were wrong — the rename bought the verdict nothing once identification
+	// became content-based, and it could not be recorded truthfully for a
+	// subdirectory target.
 	//
 	// Calling par2Verdict directly cannot see that: it takes progress as
 	// a parameter, so a test that passes a freshly-read one is asking a
@@ -525,14 +528,32 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		copyFixturePayload(t, dirObf, obfuscated)
 
 		if app.maybeReleaseRecoveryVolumes(t.Context(), obfJobID, q.SnapshotJob(obfJobID)) {
-			t.Fatal("an intact obfuscated download undeferred its recovery volumes; identification found the file, " +
-				"so the only way to reach that verdict is verifying against names the rename already replaced")
+			t.Fatal("an intact obfuscated download undeferred its recovery volumes; identification finds the file " +
+				"by content, so a verdict of \"needs repair\" means verification was not reading what " +
+				"identification found")
 		}
 
-		// And the rename actually happened, so the assertion above is not
-		// passing because there was nothing to do.
-		if _, err := os.Stat(filepath.Join(dirObf, "data.bin")); err != nil {
-			t.Fatalf("fixture guard: the obfuscated file was never renamed, so this proves nothing: %v", err)
+		// And NOTHING was renamed, which is the second half of the property.
+		//
+		// This path used to relocate here, so that verification — which
+		// matched par2 entries by name — would have corrected names to work
+		// with. Content identification made that pointless, and it was never
+		// free: JobProgress.Filename cannot hold a path, so a file relocated
+		// into a subdirectory could not be recorded truthfully, and the
+		// startup resume sweep then stat'ed a top-level path that does not
+		// exist. durability.Resume reads a missing file as disproof of every
+		// run it holds and re-downloads a complete file.
+		//
+		// Relocation is post-processing's job: stage_quickcheck does it from
+		// its own assessment, ahead of the repair stage that needs the files
+		// at their par2 paths.
+		if _, err := os.Stat(filepath.Join(dirObf, obfuscated)); err != nil {
+			t.Errorf("the delivered file is no longer at %q: the download path must not move files, or the "+
+				"queue's record of where they are stops being true: %v", obfuscated, err)
+		}
+		if _, err := os.Stat(filepath.Join(dirObf, "data.bin")); err == nil {
+			t.Error("the download path renamed a file to its par2 name; that belongs to post-processing, and " +
+				"doing it here cannot be recorded truthfully for a subdirectory target")
 		}
 	})
 }

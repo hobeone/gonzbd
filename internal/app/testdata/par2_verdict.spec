@@ -52,42 +52,31 @@ func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 func (id Identification) Accounted() bool { return true }
 --- end
 
-# THE ORDERING, which is what #494 is about.
+# The download path must not move files.
 #
-# Recording the names before taking the verdict restores the sequence every
-# defect came from: the renames land on disk, and the verdict is then computed
-# from an assessment describing a directory that no longer exists. Under the
-# old code this needed a re-snapshot to paper over; here it must simply be
-# impossible to write correctly, and a test has to notice.
-[the verdict is taken after the renames are applied]
+# It did, so that name-based verification would have corrected names to work
+# with. Content identification made that pointless, and it was never free:
+# JobProgress.Filename cannot hold a path, so a relocated file could not be
+# recorded truthfully and the startup resume sweep stat'ed a top-level path
+# that does not exist -- durability.Resume reads that as disproof of every run
+# it holds and re-downloads a complete file. Relocation belongs to
+# post-processing, ahead of the repair stage that needs the par2 paths.
+[the download path relocates files]
 file internal/app/app.go
 --- anchor
 			needsRecovery, reason = par2Verdict(a, app.log)
-			app.recordPar2Names(jobID, dir, a, m, prog, app.log)
+		}
 --- replace
-			app.recordPar2Names(jobID, dir, a, m, prog, app.log)
-			a2, _ := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
-			needsRecovery, reason = par2Verdict(a2, app.log)
+			needsRecovery, reason = par2Verdict(a, app.log)
+			par2.ApplyRenames(dir, a, app.log)
+		}
 --- end
 
-# Owner half one: the file moves but nothing records where it went. This is the
-# failure a test asserting only the on-disk rename cannot see, and it leaves
-# JobProgress.Filename naming a path that no longer exists.
-[the rename is not recorded on the queue]
-file internal/app/par2names.go
---- anchor
-		if err := app.queue.SetFileFilename(jobID, fi, to); err != nil &&
---- replace
-		if err := error(nil); err != nil &&
---- end
-
-# Owner half two: the resolved-name index is built from the manifest subject
-# alone, ignoring any name already recorded. That silently breaks the second
-# rename of the same file and is the plausible-looking simplification.
-[the resolved-name index ignores previously recorded names]
-file internal/app/par2names.go
---- anchor
-		idxByName[resolvedName(m, p, fi)] = fi
---- replace
-		idxByName[m.FileSubject(fi)] = fi
---- end
+# (A mutation for "an assessment failure records no detail" belonged here and
+# is deliberately absent. par2.Assess returns an error only when os.ReadDir
+# fails, and any directory state that breaks it also breaks the
+# FindPar2Files call one line earlier -- which takes the OTHER branch, so the
+# fixture cannot reach the one under test. The aErr detail in the reason
+# string is therefore an improvement this spec does not pin, rather than one
+# it pins weakly; saying so is better than a mutation that reports SURVIVED
+# or a fixture contorted until it lies.)

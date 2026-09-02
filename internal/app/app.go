@@ -1481,13 +1481,32 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
 			if aErr != nil {
 				needsRecovery = true
-				reason = "could not match downloaded files against the par2 index"
+				reason = fmt.Sprintf("could not match downloaded files against the par2 index (err: %v)", aErr)
 				app.log.Warn("on-demand par2: could not assess the download against the par2 index; fetching recovery volumes",
 					"job", jobID, "dir", dir, "err", aErr)
 				break
 			}
+			// Decide only. Nothing is renamed here, and the renames the
+			// assessment reports are deliberately dropped on this path.
+			//
+			// They were applied here once, so that verification — which
+			// matched par2 entries by NAME — would have corrected names to
+			// work with. Verification is content-based now and runs before any
+			// move, so the rename buys the verdict nothing, and it is not this
+			// path's job: post-processing's quickcheck stage relocates from its
+			// own assessment, ahead of the repair stage that needs the files at
+			// their par2 paths.
+			//
+			// Keeping it here cost more than it bought. JobProgress.Filename
+			// cannot hold a path — pipeline.go's registerFile feeds it back
+			// through fsutil.JoinSafe, and SanitizeFilename rewrites "/" to
+			// "_" — so a file relocated into a subdirectory could not be
+			// recorded truthfully. Recording its basename instead left the
+			// startup resume sweep stat-ing a top-level path that does not
+			// exist, and durability.Resume reads a missing file as disproof of
+			// every run it holds: it discards them and re-downloads a file that
+			// was already complete.
 			needsRecovery, reason = par2Verdict(a, app.log)
-			app.recordPar2Names(jobID, dir, a, m, prog, app.log)
 		}
 	}
 	if !needsRecovery {
@@ -1617,29 +1636,6 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (needsRecovery bool, reaso
 	}
 
 	return true, strings.Join(parts, "; ")
-}
-
-// assembledFiles is what only the queue can tell par2: the name each delivered
-// file currently has on disk, and the CRC32 computed for it during download.
-//
-// The CRCs come from the durability record. The assembler used to combine the
-// per-article CRCs it happened to see, which was #349 — a resumed run never
-// receives the articles an earlier run completed, so its parts do not tile the
-// file — and that writer is gone. A durable run combines the CRCs of the
-// articles that abut as they join it, across restarts, so when a file collapses
-// to one row that row's crc32 IS the whole-file CRC; Application.recordAssembledCRC
-// copies it onto the queue when the file finalizes. A file that keeps more than
-// one row reads as CRC 0, which is R23's "unavailable" rather than a CRC of
-// zero, and the verdict above treats it conservatively.
-func assembledFiles(m *queue.Manifest, p *queue.JobProgress) []par2.AssembledFile {
-	files := make([]par2.AssembledFile, m.NumFiles())
-	for fi := range m.NumFiles() {
-		files[fi] = par2.AssembledFile{
-			FileName: resolvedName(m, p, fi),
-			CRC32:    p.FileAssembledCRC32(fi),
-		}
-	}
-	return files
 }
 
 // drainCompletions processes all buffered events on internalFileComplete.

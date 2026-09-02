@@ -222,12 +222,20 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	}
 
 	if crcResult.Unverified > 0 {
+		// "could not be verified", not "not found by name". Nothing is
+		// matched by name any more — identification is by content — and
+		// Unverified now covers two causes that this aggregate cannot tell
+		// apart: a par2 entry no delivered file was shown to be, and an
+		// identified file the queue supplied no CRC for. Naming either one
+		// specifically would be false half the time, and an operator reading
+		// "not found by name" would go looking for a filename problem that
+		// does not exist.
 		logf(ctx, log, job, slog.LevelWarn,
-			"[quickcheck] %d par2-tracked file(s) not found by name",
+			"[quickcheck] %d par2-tracked file(s) could not be verified",
 			crcResult.Unverified)
 		for _, name := range crcResult.UnverifiedFiles {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[quickcheck] ⚠ %s: par2-tracked file not found by name", name))
+				fmt.Sprintf("[quickcheck] ⚠ %s: par2-tracked file could not be verified", name))
 		}
 	}
 

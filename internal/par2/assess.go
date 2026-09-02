@@ -45,10 +45,14 @@ type Assessment struct {
 	// CRC is whether the files so identified are intact.
 	CRC CRCVerifyResult
 	// Renames are the moves that would put each identified file at its par2
-	// path. NOT applied — pass them to ApplyRenames.
+	// path, and they are NOT applied. ApplyRenames performs them, and it
+	// takes the whole Assessment rather than this slice — see its doc for
+	// why that is the invariant and not an inconvenience.
 	//
-	// Only identifications where NeedsRename() is true appear here, so an
-	// ordinary flat job yields none rather than a self-move per file.
+	// This is the single statement of which moves to make: ApplyRenames
+	// iterates it, so a caller that filters it is honoured. Only
+	// identifications where NeedsRename() is true appear here, so an ordinary
+	// flat job yields none rather than a self-move per file.
 	Renames []Rename
 }
 
@@ -100,20 +104,30 @@ func AssessWithOptions(dir string, sets []Set, files []AssembledFile, log *slog.
 // verifyIdentified compares each identified file's assembled CRC32 against the
 // CRC32 par2 recorded for the entry it was identified AS.
 //
-// # The join key is the basename, and that is a decision
+// # The join: exact name first, basename second, ambiguity never
 //
 // Identification answers in terms of the file on disk; the caller's CRCs are
 // keyed by the name it knows the file by. Those are the same string in the
-// ordinary case, and differ in exactly one: a file a PREVIOUS run already
-// relocated is identified as "Screens/shot.jpg" while the caller still knows
-// it as "shot.jpg". Joining on the full path would miss it and report an
-// intact file unverified.
+// ordinary case, so an exact match settles it.
 //
-// Basename introduces no ambiguity that was not already there. The pass this
-// replaces keyed its par2 index "basename -> entry", so two par2 entries
-// sharing a basename have always been indistinguishable to verification. What
-// changes is only where that assumption lives: it is now this one line rather
-// than an index built on every call.
+// They differ in one case: a file a PREVIOUS run relocated is identified as
+// "Screens/shot.jpg" while the caller may still know it as "shot.jpg", because
+// JobProgress.Filename cannot hold a path. So a basename fallback is needed —
+// but ONLY where the basename picks out one file. Two files sharing one
+// ("CD1/track01.flac" and "CD2/track01.flac" is an ordinary music release)
+// would otherwise be evaluated against whichever CRC was inserted last, so an
+// intact release reports a mismatch and is sent to repair.
+//
+// An ambiguous basename is therefore refused rather than resolved, which is
+// the rule Identify already applies to a shared Hash16k and a shared CRC32.
+// The file falls through to Unverified, which fetches recovery volumes and
+// runs par2 — the conservative direction, and the same one a genuinely
+// unmatched entry takes.
+//
+// The pass this replaces had the same collision and could not see it: it keyed
+// its par2 index "basename -> entry" with a first-writer-wins guard, so the
+// second of two same-named entries was silently discarded. What is new is only
+// that the ambiguity is now detected instead of assumed away.
 //
 // No name is matched against the par2 MANIFEST here. That is the pass this
 // design removes: it is what could not survive obfuscation, and it is what
@@ -123,18 +137,38 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 		log = slog.Default()
 	}
 
-	crcOf := make(map[string]uint32, len(files))
-	seen := make(map[string]bool, len(files))
+	// Exact names, and the basenames that are unambiguous among them. One
+	// entry per delivered file in each, and `matched` doubles as the
+	// NotInPar2 accounting, so there is no second map to keep in step.
+	type delivered struct {
+		crc     uint32
+		matched bool
+	}
+	byName := make(map[string]*delivered, len(files))
+	byBase := make(map[string]*delivered, len(files))
+	ambiguousBase := make(map[string]bool)
 	for _, af := range files {
-		key := joinKey(af.FileName)
-		crcOf[key] = af.CRC32
-		seen[key] = false
+		d := &delivered{crc: af.CRC32}
+		byName[af.FileName] = d
+		base := joinKey(af.FileName)
+		if _, dup := byBase[base]; dup {
+			ambiguousBase[base] = true
+			continue
+		}
+		byBase[base] = d
+	}
+	for base := range ambiguousBase {
+		log.Warn("assess: delivered files share a basename; none can be matched to a CRC by it",
+			"basename", base)
+		delete(byBase, base)
 	}
 
 	var r CRCVerifyResult
 	for _, f := range id.Files {
-		key := joinKey(f.OnDisk)
-		crc, delivered := crcOf[key]
+		d, delivered := byName[f.OnDisk]
+		if !delivered {
+			d, delivered = byBase[joinKey(f.OnDisk)]
+		}
 		if !delivered {
 			// Identified against the directory, but the caller lists no
 			// delivered file under that name. par2 protects something this
@@ -147,10 +181,10 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 				"file", f.OnDisk, "par2path", f.Desc.FileName)
 			continue
 		}
-		seen[key] = true
+		d.matched = true
 
 		switch {
-		case crc == 0:
+		case d.crc == 0:
 			// R23's "unavailable", not a CRC of zero. A failed download is
 			// one cause; so is a resumed file that is perfectly intact, whose
 			// earlier articles were never re-fetched and so contribute
@@ -166,10 +200,10 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 			r.NoCRCFiles = append(r.NoCRCFiles, f.OnDisk)
 			log.Warn("assess: par2 has no CRC data for file (no IFSC slices)", "file", f.OnDisk)
 		default:
-			match := crc == f.Desc.FileCRC32
+			match := d.crc == f.Desc.FileCRC32
 			r.Files = append(r.Files, CRCResult{
 				FileName:     f.OnDisk,
-				AssembledCRC: crc,
+				AssembledCRC: d.crc,
 				Par2CRC:      f.Desc.FileCRC32,
 				Match:        match,
 				Par2FileName: f.Desc.FileName,
@@ -177,11 +211,11 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 			r.Checked++
 			if match {
 				r.Matched++
-				log.Info("assess: CRC match", "file", f.OnDisk, "crc32", fmt.Sprintf("%08x", crc))
+				log.Info("assess: CRC match", "file", f.OnDisk, "crc32", fmt.Sprintf("%08x", d.crc))
 			} else {
 				r.Mismatched++
 				log.Warn("assess: CRC MISMATCH", "file", f.OnDisk,
-					"assembled", fmt.Sprintf("%08x", crc),
+					"assembled", fmt.Sprintf("%08x", d.crc),
 					"par2", fmt.Sprintf("%08x", f.Desc.FileCRC32))
 			}
 		}
@@ -195,10 +229,11 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 		r.UnverifiedFiles = append(r.UnverifiedFiles, fd.FileName)
 	}
 
-	// Delivered files that are not part of any par2 set. Normal and benign:
-	// the .par2 files themselves, .nfo, .sfv.
-	for _, matched := range seen {
-		if !matched {
+	// Delivered files no identification claimed. Normal and benign: the .par2
+	// files themselves, .nfo, .sfv. Read off the same records the join used,
+	// so there is no second map that could disagree with it.
+	for _, d := range byName {
+		if !d.matched {
 			r.NotInPar2++
 		}
 	}
@@ -234,6 +269,12 @@ func joinKey(name string) string {
 // "relocate, then verify" — the ordering behind every defect this replaces —
 // cannot be written.
 //
+// It iterates a.Renames, NOT a.ID.Files. An earlier version re-derived the
+// moves from the identifications, which made a.Renames a second, parallel
+// statement of the same thing — so a caller that filtered it would have been
+// silently ignored, and the two could drift. a.Renames is the list; ID.Files
+// only supplies the descriptor each move needs for its length check.
+//
 // A rename that fails is logged and skipped. The file stays where it was,
 // which is consistent with the caller's own record of it, and par2 repair
 // will report anything still missing.
@@ -241,13 +282,25 @@ func ApplyRenames(dir string, a Assessment, log *slog.Logger) []Rename {
 	if log == nil {
 		log = slog.Default()
 	}
-	applied := make([]Rename, 0, len(a.Renames))
+	descOf := make(map[string]FileDesc, len(a.ID.Files))
 	for _, f := range a.ID.Files {
-		if !f.NeedsRename() {
+		descOf[f.OnDisk] = f.Desc
+	}
+
+	applied := make([]Rename, 0, len(a.Renames))
+	for _, r := range a.Renames {
+		fd, ok := descOf[r.From]
+		if !ok {
+			// The caller handed us a move for a file this assessment did not
+			// identify. Refused rather than guessed: relocateFile needs the
+			// par2 descriptor to check the length before moving, and without
+			// it there is nothing to check against.
+			log.Warn("assess: rename names a file this assessment did not identify; skipping",
+				"from", r.From, "to", r.To)
 			continue
 		}
-		if relocateFile(dir, f.OnDisk, f.Desc, log) {
-			applied = append(applied, Rename{From: f.OnDisk, To: f.Desc.FileName})
+		if relocateFile(dir, r.From, fd, log) {
+			applied = append(applied, r)
 		}
 	}
 	if len(applied) > 0 {

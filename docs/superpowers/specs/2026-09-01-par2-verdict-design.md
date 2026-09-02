@@ -299,15 +299,26 @@ So the manifest stays immutable and keeps recording what the NZB said, while
 the resolved name records what is on disk. A par2-identified rename is a change
 to the second, which is what that field means.
 
-**The owner, so this does not become a second writer.** Before this change
-`Queue.SetFileFilename` had one caller, `pipeline.go:583`, which sets the name
-at file registration from `filepath.Base(path)`. (That was stated here as a
-live citation; it is a historical count, since this design adds the second
-caller itself. There are now two call sites, `registerFile` and
-`applyPar2Names` — the live enumeration, with the command that produces it,
-lives at `applyPar2Names`' doc comment rather than here, where nothing runs
-it.) Adding a second *independent* writer
+**The owner, so this does not become a second writer.** `Queue.SetFileFilename`
+has one caller, `pipeline.go`'s `registerFile`, which sets the name at file
+registration from `filepath.Base(path)`. Adding a second *independent* writer
 would be the owner-model violation AGENTS.md requires escalating.
+
+**This design added one, and #494 removed it again.** The rename recorder it
+proposes below was built, shipped, and then deleted: relocating during download
+existed only so that name-based verification would have corrected names to work
+with, and once identification became content-based it bought the verdict
+nothing. It was never free either — `JobProgress.Filename` cannot hold a path,
+so a file relocated into a subdirectory could not be recorded truthfully, and
+the startup resume sweep then stat'ed a top-level path that does not exist.
+`durability.Resume` reads a missing file as disproof of every run it holds and
+re-downloads a complete file.
+
+So the section that follows is the reasoning as it stood, and the conclusion
+did not survive contact. Relocation belongs to post-processing, which is where
+it was before and where `stage_quickcheck` still does it, ahead of the repair
+stage that needs the files at their par2 paths. `SetFileFilename` is back to
+one caller.
 
 Avoid it by making the *rename operation* the owner: one function that performs
 the on-disk rename and updates the resolved name together, so it is impossible

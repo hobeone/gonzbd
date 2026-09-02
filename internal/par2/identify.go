@@ -194,12 +194,16 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	//
 	// scanFlatFiles reads one directory level and skips directories outright,
 	// so every later pass is blind to anything inside a subdirectory. That
-	// makes identification NOT IDEMPOTENT without this pass: QuickCheck moves
-	// "shot.jpg" to "Screens/shot.jpg" on the strength of an identification,
-	// and the very next Identify over the same directory cannot find it and
-	// reports the entry unaccounted. In internal/app the two run back to back
-	// — applyPar2Names then par2NeedsRecovery — so a healthy job with any
-	// subdirectory in its par2 set fetched every recovery volume.
+	// makes identification NOT IDEMPOTENT without this pass: ApplyRenames
+	// moves "shot.jpg" to "Screens/shot.jpg" on the strength of an
+	// identification, and the next Identify over the same directory cannot
+	// find it and reports the entry unaccounted.
+	//
+	// Both callers assess more than once. postproc's quickcheck stage is
+	// re-run on a retry, and internal/app assesses at every file completion —
+	// a job that fetches recovery volumes completes more than once. So without
+	// this, a job with any subdirectory in its par2 set fetched every recovery
+	// volume on the second look.
 	//
 	// Restricted to entries carrying a directory component because a flat
 	// entry's par2 path IS its basename, which pass 1 matches exactly; running
