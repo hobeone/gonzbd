@@ -34,7 +34,10 @@ func (lr *limitReader) Read(p []byte) (int, error) {
 		if lr.lim != nil {
 			// Wait after reading. This introduces minimal overhead
 			// because it is invoked by bufio.Reader which chunks reads.
-			// We use the connection context to unblock if the socket closes.
+			// ctx starts as the handshake's aggregate-bound context and
+			// is swapped to the connection's own long-lived context once
+			// the handshake completes (see Dial) — either way it unblocks
+			// Wait when the socket closes or that context ends.
 			if err := lr.lim.Wait(lr.ctx, n); err != nil {
 				return n, err
 			}
