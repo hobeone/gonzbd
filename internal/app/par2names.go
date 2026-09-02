@@ -3,7 +3,8 @@ package app
 import (
 	"errors"
 	"log/slog"
-	"strings"
+	"path"
+	"path/filepath"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -20,36 +21,69 @@ func resolvedName(m *queue.Manifest, p *queue.JobProgress, fi int) string {
 	return name
 }
 
-// recordableAsResolvedName reports whether a rename target can be stored in
-// JobProgress.Filename without being corrupted on the way back out.
+// resolvedNameFor reduces a rename target to the form JobProgress.Filename can
+// actually hold.
 //
-// It cannot hold a path. pipeline.go's registerFile feeds the field back
+// The field cannot hold a path. pipeline.go's registerFile feeds it back
 // through fsutil.JoinSafe on a resume or retry, and fsutil.SanitizeFilename
-// lists "/" and "\" among its illegal characters and rewrites them to "_". So
-// recording "Screens/shot.jpg" would send a later retry to write
+// lists "/" and "\" among its illegal characters and rewrites them to "_", so
+// storing "Screens/shot.jpg" would send a later retry to write
 // "Screens_shot.jpg" while the file sits at "Screens/shot.jpg".
 //
-// A subdirectory relocation is therefore performed on disk but not recorded.
-// That costs nothing the field was carrying before, and the case this whole
-// path exists for is unaffected: deobfuscation renames one flat name to
-// another.
-func recordableAsResolvedName(to string) bool {
-	return !strings.ContainsAny(to, `/\`)
+// The basename is stored instead of nothing. Skipping the record entirely was
+// worse than it looked: the field kept the OBFUSCATED name, which no longer
+// names anything on disk either, and every later reader matched against it.
+// par2.VerifyCRCs indexes the par2 manifest by basename (verifycrc.go builds
+// "basename → entry"), so "shot.jpg" matches the entry "Screens/shot.jpg"
+// exactly, while the obfuscated string matched nothing and was counted
+// Unverified — marking a healthy job damaged and forcing a par2 repair over it.
+//
+// The two resume readers both do jobFilePath(job, name) and stat the result
+// (resume_startup.go), so they look for "shot.jpg" at the top level and do not
+// find it. That is not a regression: they did not find the obfuscated name
+// either, since relocation had already moved it. Both cases fall through to a
+// re-download, which quickcheck then relocates again.
+//
+// One notion of "separator", used both to detect a path and to reduce it:
+// "/", which is what the par2 format specifies and what relocateFile splits
+// on via filepath.FromSlash. A backslash is NOT treated as one, and that is
+// deliberate rather than an oversight — on the platforms this runs on,
+// "Screens\shot.jpg" is a single legal filename, and rewriting it to a
+// separator would turn a poster-controlled string into a directory component.
+// An earlier form tested for both characters but only stripped one, so a
+// backslash name was refused a record and then not reduced either.
+func resolvedNameFor(to string) string {
+	return path.Base(filepath.ToSlash(to))
 }
 
 // applyPar2Names identifies the delivered files against the par2 index and,
 // where identification says a file is not at the path par2 records, renames it
 // and updates the resolved name that records where it is.
 //
-// # This function is the owner of "a file moved"
+// # What this function owns, and what it does not
 //
-// The on-disk rename and the JobProgress.Filename update are one operation
-// here, deliberately. Queue.SetFileFilename had exactly one caller before this
-// — pipeline.go's registerFile, at first write — and adding a second
-// independent writer of that field would be an owner-model violation: the
-// field means "where this file is", so a rename that does not update it makes
-// the field a comment rather than an invariant. Renaming through here is the
-// only way to change either, so they cannot drift.
+// It pairs the on-disk rename with the JobProgress.Filename update so that
+// neither can happen alone ON THIS PATH. That is narrower than "the owner of
+// a file moved", which an earlier draft of this comment claimed, and the
+// difference is load-bearing rather than pedantic.
+//
+// `git grep -n 'queue\.SetFileFilename(' -- '*.go' ':!*_test.go' ':!*.spec'`
+// returns 2 lines: pipeline.go's registerFile and this function. (The pattern
+// is anchored on the receiver, and escaped, so that it cannot match this
+// sentence — a citation that counts itself reads as one higher than the
+// population it describes.) So the field has two writers, not one:
+// registerFile establishes it at first write and this corrects it. They are
+// disjoint in time, not in scope.
+//
+// More importantly, this is NOT the only code that renames a par2-described
+// file on disk. postproc's stage_quickcheck calls the same
+// par2.QuickCheckWithOptions and moves files itself, with no queue handle to
+// record anything through (postproc.Job carries a *queue.Job snapshot, not a
+// *queue.Queue). It compensates in-memory instead — see the rename remap in
+// its verifyJobCRCs — rather than by writing the field. Any claim here that
+// on-disk state and the recorded name "cannot drift" would be false for that
+// path, and stating it would send the next reader looking for a guarantee
+// nothing provides.
 //
 // The manifest is NOT touched. It records what the NZB said, which is still
 // true and is what a retry re-derives from; JobProgress.Filename records what
@@ -92,11 +126,7 @@ func (app *Application) applyPar2Names(
 
 	applied := 0
 	for _, r := range renames {
-		if !recordableAsResolvedName(r.To) {
-			log.Debug("on-demand par2: relocated into a subdirectory; not recording it as the resolved name",
-				"job", jobID, "from", r.From, "to", r.To)
-			continue
-		}
+		to := resolvedNameFor(r.To)
 		fi, ok := idxByName[r.From]
 		if !ok {
 			// par2 relocated something the manifest does not describe under
@@ -107,14 +137,14 @@ func (app *Application) applyPar2Names(
 				"job", jobID, "from", r.From, "to", r.To)
 			continue
 		}
-		if err := app.queue.SetFileFilename(jobID, fi, r.To); err != nil &&
+		if err := app.queue.SetFileFilename(jobID, fi, to); err != nil &&
 			!errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 			log.Warn("on-demand par2: renamed on disk but could not record the new name",
-				"job", jobID, "from", r.From, "to", r.To, "err", err)
+				"job", jobID, "from", r.From, "to", to, "err", err)
 			continue
 		}
 		delete(idxByName, r.From)
-		idxByName[r.To] = fi
+		idxByName[to] = fi
 		applied++
 	}
 

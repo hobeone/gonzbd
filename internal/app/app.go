@@ -1461,10 +1461,26 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		// Ordered before par2NeedsRecovery rather than inside it: that
 		// function is named for a question, and a function that answers a
 		// question should not also move files.
+		prog := snap.Progress()
 		if sets, sErr := par2.FindPar2Files(dir, parseOpts); sErr == nil && len(sets) > 0 {
-			app.applyPar2Names(jobID, dir, sets, m, snap.Progress(), app.log, parseOpts)
+			if app.applyPar2Names(jobID, dir, sets, m, prog, app.log, parseOpts) > 0 {
+				// Re-read the resolved names the renames just changed.
+				//
+				// snap is a deep copy — cloneJob calls progress.clone(), which
+				// slices.Clones the []FileProgress — so the JobProgress reached
+				// through it is a SEPARATE object from the one SetFileFilename
+				// mutates. Verifying against the stale copy compares the
+				// pre-rename obfuscated names to the par2 index, matches
+				// nothing, counts every file Unverified, and fetches the whole
+				// recovery set for a download that is intact: precisely the
+				// defect this path exists to fix, reintroduced one line below
+				// the fix.
+				if fresh := app.queue.SnapshotJob(jobID); fresh != nil {
+					prog = fresh.Progress()
+				}
+			}
 		}
-		needsRecovery, reason = par2NeedsRecovery(dir, m, snap.Progress(), app.log, parseOpts)
+		needsRecovery, reason = par2NeedsRecovery(dir, m, prog, app.log, parseOpts)
 	}
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
@@ -1569,6 +1585,30 @@ func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log 
 		log.Warn("on-demand par2: could not identify files against the par2 index; fetching recovery volumes",
 			"dir", dir, "err", idErr)
 		return true, "could not match downloaded files against the par2 index"
+	case !id.Accounted() && len(id.Files) == 0:
+		// Nothing delivered matched ANY entry, by name or by content: the
+		// Layout B signature, where par2 protects the EXTRACTED contents
+		// rather than the delivered archives, so every entry names a file
+		// that will not exist until unpack has run.
+		//
+		// The volumes cannot be spent usefully, and the branch that makes
+		// that true is the STAGE ORDER, not anything about par2: buildStages
+		// registers RepairStage before UnpackStage (internal/app/stages.go)
+		// and there is no second repair pass afterwards. The one repair this
+		// pipeline runs therefore executes while the protected files still do
+		// not exist. Were a post-unpack repair ever added, this branch would
+		// become wrong and would have to fetch.
+		//
+		// Distinguishing this from a partial shortfall is safe ONLY because
+		// identification is content-based. Under the name-only matching this
+		// PR replaces, "nothing matched" was equally what a perfectly healthy
+		// obfuscated release looked like — which is exactly what made
+		// discarding on this signature the #492 defect. Hash16k is what tells
+		// the two apart, so this test may not be reintroduced anywhere that
+		// matches on names.
+		log.Info("on-demand par2: no delivered file matches any par2 entry; recovery volumes cannot repair what was never delivered",
+			"dir", dir, "entries", len(id.Unaccounted))
+		return false, ""
 	case !id.Accounted():
 		names := make([]string, 0, len(id.Unaccounted))
 		for _, fd := range id.Unaccounted {

@@ -85,14 +85,18 @@ func TestApplyPar2Names_RenamesAndRecordsTheNewName(t *testing.T) {
 	}
 }
 
-// TestApplyPar2Names_SubdirectoryRelocationIsNotRecorded drives a real
+// TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename drives a real
 // subdirectory relocation through applyPar2Names.
 //
-// The file must move, and the move must NOT be written to
-// JobProgress.Filename: that field goes back through fsutil.JoinSafe on a
-// resume, and SanitizeFilename would turn "Screens/data.bin" into
-// "Screens_data.bin", sending a retry to write a file that is not there.
-func TestApplyPar2Names_SubdirectoryRelocationIsNotRecorded(t *testing.T) {
+// The file must move, and what gets written to JobProgress.Filename must be
+// the BASENAME — neither the full path nor nothing at all. The path cannot go
+// there: the field goes back through fsutil.JoinSafe on a resume, and
+// SanitizeFilename would turn "Screens/data.bin" into "Screens_data.bin",
+// sending a retry to write a file that is not there. Recording nothing, which
+// this test previously asserted, leaves the pre-rename name standing — equally
+// absent from disk, and matched against no par2 entry by VerifyCRCs, which
+// indexes by basename.
+func TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename(t *testing.T) {
 	t.Parallel()
 
 	downloadDir := t.TempDir()
@@ -119,13 +123,7 @@ func TestApplyPar2Names_SubdirectoryRelocationIsNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A set whose only entry is "Screens/data.bin".
-	b, err := os.ReadFile("../../test/fixtures/par2/subdir.par2")
-	if err != nil {
-		t.Skipf("subdir par2 fixture unavailable: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(jobDir, "subdir.par2"), b, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	copyFixtureSubdirPar2(t, jobDir)
 	copyFixturePayload(t, jobDir, "data.bin")
 
 	app := &Application{queue: q, log: slog.New(slog.DiscardHandler), config: cfg, emitter: dummyEmitter{}}
@@ -139,39 +137,134 @@ func TestApplyPar2Names_SubdirectoryRelocationIsNotRecorded(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 0 {
-		t.Errorf("recorded %d renames; a subdirectory path cannot be stored as a resolved name", applied)
+	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 1 {
+		t.Errorf("recorded %d renames, want 1: a subdirectory relocation must still record SOMETHING, or every later "+
+			"reader keeps matching against a name that no longer exists on disk", applied)
 	}
 
 	// The relocation itself still happened.
 	if _, err := os.Stat(filepath.Join(jobDir, "Screens", "data.bin")); err != nil {
 		t.Fatalf("fixture guard: the file was not relocated, so this proves nothing: %v", err)
 	}
-	if got := q.SnapshotJob(jobID).Progress().FileFilename(0); got != "" {
-		t.Errorf("resolved filename = %q; a path here resolves to the wrong file on resume", got)
+
+	// The basename, not the path and not the stale original.
+	//
+	// The path cannot be stored: registerFile feeds this field back through
+	// fsutil.JoinSafe on a resume and SanitizeFilename rewrites "/" to "_",
+	// so "Screens/data.bin" would resolve to "Screens_data.bin".
+	//
+	// Storing nothing was the previous behaviour and was worse than it looked:
+	// the field then kept the pre-rename name, which names nothing on disk
+	// either, and par2.VerifyCRCs — which indexes the par2 manifest by
+	// basename — matched it against no entry and counted the file Unverified,
+	// marking an intact job damaged.
+	if got := q.SnapshotJob(jobID).Progress().FileFilename(0); got != "data.bin" {
+		t.Errorf("resolved filename = %q, want %q: the basename is what par2.VerifyCRCs indexes on, so it is what "+
+			"lets a relocated file still be matched to its entry", got, "data.bin")
 	}
 }
 
-// TestRecordableAsResolvedName pins what JobProgress.Filename can hold.
+// TestApplyPar2Names_IsIdempotent pins that a second pass over an
+// already-relocated directory is a no-op rather than a fresh finding.
+//
+// This is not a hypothetical tidiness property. internal/app runs
+// applyPar2Names and then par2NeedsRecovery back to back over the same
+// directory, and par2NeedsRecovery identifies again from scratch. Identify
+// reads one directory level and skips directories, so without the pass that
+// checks whether an entry's par2 path already exists on disk, the second look
+// cannot see the file the first one just moved into "Screens/" — it reports
+// the entry unaccounted, and a healthy job with any subdirectory in its par2
+// set fetches its entire recovery set.
+func TestApplyPar2Names_IsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	downloadDir := t.TempDir()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.DownloadDir = downloadDir })
+
+	const jobID = "idempotent-job"
+	qjob := newPar2Job(t, []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+		{subject: "data.vol000+01.par2", bytes: 100},
+	})
+	qjob.ID = jobID
+	qjob.Name = "idempotent-job-name"
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	jobDir := filepath.Join(downloadDir, qjob.Name)
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	copyFixtureSubdirPar2(t, jobDir)
+	copyFixturePayload(t, jobDir, "data.bin")
+
+	app := &Application{queue: q, log: slog.New(slog.DiscardHandler), config: cfg, emitter: dummyEmitter{}}
+	sets, err := par2.FindPar2Files(jobDir, par2.DefaultParseOptions())
+	if err != nil || len(sets) == 0 {
+		t.Fatalf("FindPar2Files: %v (%d sets)", err, len(sets))
+	}
+
+	run := func() int {
+		snap := q.SnapshotJob(jobID)
+		m, mErr := snap.Manifest()
+		if mErr != nil {
+			t.Fatalf("Manifest: %v", mErr)
+		}
+		return app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions())
+	}
+
+	if first := run(); first != 1 {
+		t.Fatalf("fixture guard: first pass recorded %d renames, want 1; nothing was relocated so the second pass proves nothing", first)
+	}
+	if second := run(); second != 0 {
+		t.Errorf("second pass recorded %d renames over an already-relocated directory, want 0", second)
+	}
+
+	// And the entry is accounted for on the second look, which is the
+	// property par2NeedsRecovery actually consumes.
+	id, err := par2.IdentifyWithOptions(jobDir, sets, app.log, par2.DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("Identify: %v", err)
+	}
+	if !id.Accounted() {
+		t.Errorf("%d par2 entr(y/ies) unaccounted after relocation; the file is on disk at the path par2 names, "+
+			"so reporting it missing fetches a recovery set the job does not need", len(id.Unaccounted))
+	}
+}
+
+// TestResolvedNameFor pins what JobProgress.Filename can hold, and what a
+// rename target is reduced to so that it can.
 //
 // The field is fed back through fsutil.JoinSafe on a resume, and
 // SanitizeFilename rewrites "/" and "\" to "_" — so a path recorded there
 // resolves to a different file than the one on disk. A flat rename, which is
-// the deobfuscation case this path exists for, is fine.
-func TestRecordableAsResolvedName(t *testing.T) {
+// the deobfuscation case this path exists for, passes through untouched.
+//
+// A subdirectory target is reduced to its basename rather than dropped. That
+// is what par2.VerifyCRCs indexes on (verifycrc.go keys the manifest
+// "basename → entry"), so the recorded name still matches the entry the file
+// was relocated to satisfy; dropping it left the stale obfuscated name in
+// place, which matched nothing and marked a healthy job damaged.
+func TestResolvedNameFor(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		to   string
-		want bool
+		want string
 	}{
-		{"data.bin", true},
-		{"movie.part1.rar", true},
-		{"Screens/shot.jpg", false},
-		{`Screens\shot.jpg`, false},
-		{"a/b/c.txt", false},
+		{"data.bin", "data.bin"},
+		{"movie.part1.rar", "movie.part1.rar"},
+		{"Screens/shot.jpg", "shot.jpg"},
+		{`Screens\shot.jpg`, `Screens\shot.jpg`},
+		{"a/b/c.txt", "c.txt"},
 	} {
-		if got := recordableAsResolvedName(tc.to); got != tc.want {
-			t.Errorf("recordableAsResolvedName(%q) = %v, want %v", tc.to, got, tc.want)
+		if got := resolvedNameFor(tc.to); got != tc.want {
+			t.Errorf("resolvedNameFor(%q) = %q, want %q", tc.to, got, tc.want)
 		}
 	}
 }
