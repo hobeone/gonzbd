@@ -328,6 +328,15 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		lr.ctx = ctxConn // handshake done; steady-state reads use the connection's own lifetime, not the handshake's bound
 	}
 
+	// setupHandshakeDeadline's AfterFunc can fire concurrently with
+	// handshake's own success — cleanup (stop()) and the deadline expiring
+	// both racing the same instant — stamping c.nc.SetDeadline(now) right
+	// as Dial is about to report success. SetDeadline poisons both read
+	// and write deadlines; idleTimeoutReader only ever refreshes the read
+	// side per-Read, so a poisoned write deadline would otherwise persist
+	// and fail every write on a connection Dial just handed back as ready.
+	_ = c.nc.SetDeadline(time.Time{}) //nolint:errcheck // best-effort; matches setupHandshakeDeadline's own error handling
+
 	l.Debug("handshake complete, connection ready")
 	go c.runReader()
 	return c, nil
