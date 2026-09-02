@@ -92,12 +92,33 @@ func buildDownloadFileList(job *Job) []string {
 	}
 
 	switch {
+	case heldVols > 0 && !p.Par2Recovered() && p.HasPar2Verdict():
+		// A verdict was reached (HasPar2Verdict) but the volumes were never
+		// un-deferred (!Par2Recovered) and are still held (heldVols > 0).
+		// That combination covers two situations this method cannot tell
+		// apart: outcomeUnknown (nothing on disk could be identified against
+		// the par2 index, so verification never ran) and an outcomeRepair
+		// verdict whose UndeferRecoveryVolumes call failed (verification DID
+		// find damage, but the volumes could not be fetched). Reporting
+		// either as "verified clean" would be the mislabel this case exists
+		// to remove, so both get the same non-committal headline; the
+		// release reason in the parenthetical is what carries the real
+		// explanation for whichever one actually happened.
+		reasonStr := ""
+		if p.Par2ReleaseReason() != "" {
+			reasonStr = fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
+		}
+		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
+			heldVols, reasonStr))
 	case heldVols > 0:
-		// Still withheld at finalize => never downloaded => verified clean.
-		// On the clean path these are FetchNever by now, the verdict having
-		// landed; a job finalized before the verdict leaves them
-		// FetchIfNeeded. Either way the bytes were not fetched, which is
-		// what this line reports, so heldVols counts both.
+		// Still withheld at finalize with no verdict recorded => never
+		// downloaded, never assessed => verified clean. A verdict-bearing
+		// hold is handled by the case above; this one is reached only when
+		// HasPar2Verdict() is false, i.e. on-demand par2 never ran (fetch
+		// policy off, or the job finalized before verification) or the
+		// clean-verdict path discarded the volumes without recording a
+		// reason (outcomeClean never calls SetPar2ReleaseReason). Either
+		// way the bytes were not fetched, which is what this line reports.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
 	case recoveryVols > 0 && p.Par2Recovered():

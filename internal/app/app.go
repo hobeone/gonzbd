@@ -1555,6 +1555,20 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
 			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
 				"job", jobID, "err", err)
+			// Overwrite the reason set above: that one only explains why
+			// repair was needed, and on its own reads identically to
+			// outcomeUnknown's "nothing could be identified" reason once
+			// filelist.go can no longer tell them apart (Par2Recovered()
+			// stays false either way). Verification DID run and DID find
+			// damage here — the volumes just could not be fetched — so the
+			// reason needs to say that too, even though the two outcomes
+			// remain indistinguishable to the caller without a persisted
+			// par2Outcome (deliberately not added by this change).
+			failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
+			if err := app.queue.SetPar2ReleaseReason(jobID, failReason); err != nil {
+				app.log.Warn("on-demand par2: could not record the release reason",
+					"job", jobID, "err", err)
+			}
 			return false
 		}
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",

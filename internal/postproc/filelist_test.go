@@ -296,6 +296,26 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown: verdict reached but nothing was verified", func(t *testing.T) {
+		dir := t.TempDir()
+		q, qjob := buildQueueJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+		})
+		if err := q.SetPar2ReleaseReason(qjob.ID, "no delivered file matched any par2 entry"); err != nil {
+			t.Fatalf("SetPar2ReleaseReason: %v", err)
+		}
+		qjob = q.SnapshotJob(qjob.ID)
+		job := &Job{DownloadDir: dir, Queue: qjob}
+		got := strings.Join(buildDownloadFileList(job), "\n")
+		if strings.Contains(got, "verified clean") {
+			t.Errorf("must not claim verified clean when nothing was verified; got:\n%s", got)
+		}
+		if !strings.Contains(got, "no delivered file matched any par2 entry") {
+			t.Errorf("expected the release reason in the output; got:\n%s", got)
+		}
+	})
+
 	t.Run("off/normal: no on-demand, no summary line", func(t *testing.T) {
 		dir := t.TempDir()
 		_, qjob := buildQueueJob(t, false, []fileSpec{
