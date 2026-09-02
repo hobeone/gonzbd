@@ -99,9 +99,27 @@ func TestWidenOnPass_SkipsTheWiderRunWhenTheSpecHasNoFilter(t *testing.T) {
 	t.Parallel()
 
 	// With no `run` line the command already ran the whole package, so there is
-	// nothing wider to compare against. An unusable root is what shows none was
-	// attempted: a launch there fails, and the verdict is SURVIVED regardless.
-	got := widenOnPass(filepath.Join(t.TempDir(), "absent"), &spec{pkg: "./..."}, mutation{name: "m"}, false)
+	// nothing wider to compare against.
+	//
+	// The root is a module whose package-wide run FAILS, which is what makes
+	// this discriminate. An unusable directory would not: widening there dies
+	// at the launch, and the launch-failure branch also returns SURVIVED — so
+	// the assertion held whether the run was skipped or attempted and failed.
+	// Here, a widening that happened at all reports EXCLUDED.
+	root := mustModule(t, selectedPasses+omittedFails)
+	got := widenOnPass(root, &spec{pkg: "./..."}, mutation{name: "m"}, false)
+	if got.verdict != survived {
+		t.Errorf("verdict = %s, want SURVIVED; the wider run was made despite the spec having no filter", got.verdict)
+	}
+}
+
+func TestWidenOnPass_ReportsSurvivedWhenTheWiderRunCannotStart(t *testing.T) {
+	t.Parallel()
+
+	// A launch failure is not an observation of anything, so it cannot support
+	// an exclusion. This is the branch the skip test above deliberately no
+	// longer exercises, kept as its own case so both remain covered.
+	got := widenOnPass(filepath.Join(t.TempDir(), "absent"), &spec{pkg: "./...", run: "TestSelected"}, mutation{name: "m"}, false)
 	if got.verdict != survived {
 		t.Errorf("verdict = %s, want SURVIVED", got.verdict)
 	}
@@ -123,7 +141,10 @@ func TestConfirmExclusions_DowngradesWhenThePackageIsRedUnmutated(t *testing.T) 
 	// spec never names — is red either way, and the baseline cannot have caught
 	// it, because the baseline runs only the filter.
 	root := mustModule(t, selectedPasses+omittedFails)
-	got := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, excludedResult())
+	got, err := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, excludedResult())
+	if err != nil {
+		t.Fatalf("confirmExclusions: %v", err)
+	}
 
 	if got[0].verdict != survived {
 		t.Fatalf("verdict = %s, want SURVIVED; an unrelated failure was reported as a spec defect", got[0].verdict)
@@ -133,11 +154,30 @@ func TestConfirmExclusions_DowngradesWhenThePackageIsRedUnmutated(t *testing.T) 
 	}
 }
 
+func TestConfirmExclusions_ErrorsWhenTheConfirmingRunCannotStart(t *testing.T) {
+	t.Parallel()
+
+	// A run that never starts observed nothing, so it is neither a red package
+	// nor a green one. Downgrading on it would stamp every EXCLUDED row with
+	// "the package is red unmutated too" — a sentence about a run that did not
+	// happen, which is exactly the false green the verdict set exists to refuse.
+	got, err := confirmExclusions(filepath.Join(t.TempDir(), "absent"), &spec{pkg: "./...", run: "TestSelected"}, excludedResult())
+	if err == nil {
+		t.Fatalf("confirmExclusions returned %v and no error for a run that could not launch", got)
+	}
+	if got != nil {
+		t.Errorf("results = %v alongside an error, want nil", got)
+	}
+}
+
 func TestConfirmExclusions_KeepsTheVerdictWhenTheUnmutatedPackageIsGreen(t *testing.T) {
 	t.Parallel()
 
 	root := mustModule(t, selectedPasses+omittedPasses)
-	got := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, excludedResult())
+	got, err := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, excludedResult())
+	if err != nil {
+		t.Fatalf("confirmExclusions: %v", err)
+	}
 
 	if got[0].verdict != excluded {
 		t.Errorf("verdict = %s, want EXCLUDED to stand when the package is green unmutated", got[0].verdict)

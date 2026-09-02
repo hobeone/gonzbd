@@ -49,7 +49,18 @@
 //
 // The source file is restored from a copy this command wrote, on every exit
 // path including SIGINT, and the restore is verified by comparing bytes rather
-// than trusting the write. `git stash` and `git checkout --` are both
+// than trusting the write.
+//
+// Three paths reach it, and the count is the claim: run's deferred restore for
+// a normal return, installSignalRestore's handler for a signal, and
+// fatalRestoring for an exit between the write and the verdict — os.Exit skips
+// the defer, so those exits restore for themselves. That third one is why the
+// sequence is a function: the sentence above was false for the whole life of
+// this command until a review found the `go test` launch failure exiting
+// through plain fatal, one line from a write-failure path that had carried the
+// restore inline from the start.
+//
+// `git stash` and `git checkout --` are both
 // deliberately unused: AGENTS.md forbids the stash because its stack is shared
 // with any other session in the repo, and `git checkout --` would discard
 // unrelated uncommitted edits in the same file — which, during a review-fix
@@ -190,7 +201,12 @@ func main() {
 		results = append(results, run(root, sp, m, *verbose))
 	}
 
-	os.Exit(report(confirmExclusions(root, sp, results)))
+	confirmed, err := confirmExclusions(root, sp, results)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	os.Exit(report(confirmed))
 }
 
 // run applies one mutation, runs the test, and restores the file.
@@ -222,19 +238,14 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 	mutated := strings.Replace(string(original), m.anchor, m.replace, 1)
 	if err := writeFile(path, []byte(mutated), 0o600); err != nil {
 		// WriteFile opens with O_TRUNC, so a failure here can leave the file
-		// empty or half-written. fatal calls os.Exit, which skips the defer
-		// above, so the restore has to happen before the exit rather than
-		// through it — otherwise the tree keeps a truncated source file and
-		// the only copy sits in a temp dir nobody was told about.
-		if rerr := restore(path, backup, original); rerr != nil {
-			fatal("write %s: %v\nRESTORE ALSO FAILED: %v\nRecover from %s.", m.file, err, rerr, backup)
-		}
-		fatal("write %s: %v (the file was restored)", m.file, err)
+		// empty or half-written, and the only good copy in a temp dir nobody
+		// was told about.
+		fatalRestoring(path, backup, original, "write %s: %v", m.file, err)
 	}
 
 	out, code, launchErr := goTest(root, sp)
 	if launchErr != nil {
-		fatal("could not run go test: %v", launchErr)
+		fatalRestoring(path, backup, original, "could not run go test: %v", launchErr)
 	}
 	if verbose {
 		fmt.Printf("--- %s ---\n%s\n", m.name, indent(out))
@@ -303,16 +314,25 @@ func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
 // something claimed an exclusion, so a clean spec pays nothing for it. It runs
 // after the mutation loop, when every restore has already happened and the
 // tree is its real self again.
-func confirmExclusions(root string, sp *spec, results []result) []result {
+//
+// A confirming run that never STARTS is an error rather than a verdict. It is
+// not evidence the package is red — nothing was observed at all — and the two
+// must not be conflated, for the same reason goTest separates a launch failure
+// from a non-zero exit: reporting an unobserved outcome as a verdict is the
+// false green this command exists to refuse.
+func confirmExclusions(root string, sp *spec, results []result) ([]result, error) {
 	if !needsConfirmation(results) {
-		return results
+		return results, nil
 	}
 
 	wide := *sp
 	wide.run = ""
 	out, code, launchErr := goTest(root, &wide)
-	if launchErr == nil && code == 0 && !ranNothing(out) {
-		return results
+	if launchErr != nil {
+		return nil, fmt.Errorf("could not run the confirming package-wide test: %w", launchErr)
+	}
+	if code == 0 && !ranNothing(out) {
+		return results, nil
 	}
 
 	for i := range results {
@@ -321,7 +341,7 @@ func confirmExclusions(root string, sp *spec, results []result) []result {
 			results[i].evidence = survivedEvidence + " (the package is red unmutated too)"
 		}
 	}
-	return results
+	return results, nil
 }
 
 // needsConfirmation reports whether any row claims an exclusion, and is what
@@ -347,16 +367,32 @@ var failingTestRe = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
 // therefore the term the spec is missing.
 func failingTests(out string) []string {
 	var names []string
-	seen := make(map[string]bool)
 	for _, m := range failingTestRe.FindAllStringSubmatch(out, -1) {
 		name, _, _ := strings.Cut(m[1], "/")
-		if name == "" || seen[name] {
+		if name == "" || slices.Contains(names, name) {
 			continue
 		}
-		seen[name] = true
 		names = append(names, name)
 	}
 	return names
+}
+
+// fatalRestoring puts the file back and then exits, for the exit paths that
+// run between writing the mutation and returning a verdict.
+//
+// It exists because `fatal` calls os.Exit, which skips run's deferred restore,
+// so every early exit in that window has to restore for itself — and one of
+// them did not. The write-failure path carried the sequence inline from the
+// start; the `go test` launch failure three lines below it did not, and left
+// the tree mutated with the only good copy in a temp dir nobody was told
+// about. Making the sequence an owner rather than a thing to remember is what
+// stops the next early exit added there from repeating it.
+func fatalRestoring(path, backup string, original []byte, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if rerr := restore(path, backup, original); rerr != nil {
+		fatal("%s\nRESTORE ALSO FAILED: %v\nRecover from %s.", msg, rerr, backup)
+	}
+	fatal("%s (the file was restored)", msg)
 }
 
 // resolve turns a spec's file path into an absolute one and requires it to
