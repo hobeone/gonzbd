@@ -30,7 +30,7 @@ func recordRuns(t *testing.T, application *Application, jobID string, arts ...du
 //
 // Publishing there is #387 with the stakes raised. The value is a REAL CRC
 // over the articles the record still holds, so it does not merely look wrong —
-// par2.VerifyCRCs compares it against the par2 MANIFEST and never opens the
+// par2.Assess compares it against the par2 MANIFEST and never opens the
 // file (verifycrc.go), so it MATCHES, QuickCheckClean is set, and
 // stage_repair.go returns without running par2 on a file whose bytes another
 // article overwrote.

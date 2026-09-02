@@ -57,7 +57,7 @@ const (
 	// looking for a manifest problem first:
 	//   - the par2 scan itself failed, so whether the job has par2 sets is
 	//     unknown (the one case set before the default applies);
-	//   - par2 sets were found but QuickCheckWithOptions errored before
+	//   - par2 sets were found but par2.Assess errored before
 	//     verifying any of them;
 	//   - the job's manifest was unreadable or described no files, so there
 	//     were no expected CRCs to compare against;

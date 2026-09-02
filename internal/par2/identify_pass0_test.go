@@ -17,9 +17,12 @@ import (
 // QuickCheck relocates "shot.jpg" to "Screens/shot.jpg" on the strength of the
 // first answer, and the second reports that entry unaccounted.
 //
-// internal/app runs exactly that sequence — applyPar2Names then
-// par2NeedsRecovery — so the stale answer made a healthy job with any
-// subdirectory in its par2 set fetch its entire recovery volume set.
+// Both callers depend on it. postproc's quickcheck stage relocates from one
+// assessment and is re-run on a retry; internal/app assesses at every file
+// completion, and a job that fetches recovery volumes completes more than
+// once. Without this pass the second look at an already-relocated directory
+// reports the entry unaccounted, and a healthy job with any subdirectory in
+// its par2 set fetches its entire recovery volume set.
 func TestIdentify_FindsAnEntryAlreadyAtItsPar2Path(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

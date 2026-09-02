@@ -1,35 +1,33 @@
 pkg ./internal/app/
-run TestPar2NeedsRecovery|TestMaybeReleaseRecoveryVolumes|TestApplyPar2Names
+run TestPar2Verdict|TestMaybeReleaseRecoveryVolumes|TestApplyPar2Names|TestRecordPar2Names
 
 # The behavioural claims of the identify-then-verify wiring, at the two places
-# it acts: the fetch decision, and the rename owner.
+# it acts: the fetch decision, and the rename recorder.
 
 # The reversal itself. An entry matching nothing delivered must fetch the
 # recovery volumes when something else DID match; the shipped code discarded
 # them here, and that decision is terminal because post-processing cannot fetch
-# anything (NeedRequeue has no consumer). Neutered as a switch case, which
-# leaves id and idErr used.
+# anything (NeedRequeue has no consumer).
 [an unaccounted par2 entry no longer forces a fetch]
 file internal/app/app.go
 --- anchor
-	case !id.Accounted():
+	if !id.Accounted() {
 		names := make([]string, 0, len(id.Unaccounted))
 --- replace
-	case false:
+	if false {
 		names := make([]string, 0, len(id.Unaccounted))
 --- end
 
 # The Layout B exemption, and the reason it is narrow. Widening it to every
 # unaccounted set is the shape of the ORIGINAL defect -- a healthy obfuscated
 # release also has entries that match nothing by name -- so a partially
-# accounted job must still fetch. Dropping the len(id.Files) == 0 conjunct is
-# exactly that widening.
+# accounted job must still fetch.
 [the layout B exemption swallows partially accounted jobs too]
 file internal/app/app.go
 --- anchor
-	case !id.Accounted() && len(id.Files) == 0:
+	if !id.Accounted() && len(id.Files) == 0 {
 --- replace
-	case !id.Accounted():
+	if !id.Accounted() {
 --- end
 
 # The mirror: closing the exemption entirely sends every Layout B post to fetch
@@ -38,25 +36,9 @@ file internal/app/app.go
 [the layout B exemption never fires]
 file internal/app/app.go
 --- anchor
-	case !id.Accounted() && len(id.Files) == 0:
+	if !id.Accounted() && len(id.Files) == 0 {
 --- replace
-	case false:
---- end
-
-# Verification must read the names the renames just wrote. snap is a deep copy,
-# so reusing its pre-rename progress compares obfuscated strings against the
-# par2 index, matches nothing, and fetches the whole recovery set for an intact
-# download -- the defect this path exists to fix, one line below the fix.
-[verification reads the pre-rename snapshot]
-file internal/app/app.go
---- anchor
-				if fresh := app.queue.SnapshotJob(jobID); fresh != nil {
-					prog = fresh.Progress()
-				}
---- replace
-				if fresh := app.queue.SnapshotJob(jobID); fresh != nil {
-					_ = fresh
-				}
+	if false {
 --- end
 
 # Identification must actually run. Forcing the error branch would also fetch
@@ -70,24 +52,31 @@ func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 func (id Identification) Accounted() bool { return true }
 --- end
 
-# Owner half one: the file moves but nothing records where it went. This is the
-# failure a test asserting only the on-disk rename cannot see, and it leaves
-# JobProgress.Filename naming a path that no longer exists.
-[the rename is not recorded on the queue]
-file internal/app/par2names.go
+# The download path must not move files.
+#
+# It did, so that name-based verification would have corrected names to work
+# with. Content identification made that pointless, and it was never free:
+# JobProgress.Filename cannot hold a path, so a relocated file could not be
+# recorded truthfully and the startup resume sweep stat'ed a top-level path
+# that does not exist -- durability.Resume reads that as disproof of every run
+# it holds and re-downloads a complete file. Relocation belongs to
+# post-processing, ahead of the repair stage that needs the par2 paths.
+[the download path relocates files]
+file internal/app/app.go
 --- anchor
-		if err := app.queue.SetFileFilename(jobID, fi, to); err != nil &&
+			needsRecovery, reason = par2Verdict(a, app.log)
+		}
 --- replace
-		if err := error(nil); err != nil &&
+			needsRecovery, reason = par2Verdict(a, app.log)
+			par2.ApplyRenames(dir, a, app.log)
+		}
 --- end
 
-# Owner half two: the resolved-name index is built from the manifest subject
-# alone, ignoring any name already recorded. That silently breaks the second
-# rename of the same file and is the plausible-looking simplification.
-[the resolved-name index ignores previously recorded names]
-file internal/app/par2names.go
---- anchor
-		idxByName[resolvedName(m, p, fi)] = fi
---- replace
-		idxByName[m.FileSubject(fi)] = fi
---- end
+# (A mutation for "an assessment failure records no detail" belonged here and
+# is deliberately absent. par2.Assess returns an error only when os.ReadDir
+# fails, and any directory state that breaks it also breaks the
+# FindPar2Files call one line earlier -- which takes the OTHER branch, so the
+# fixture cannot reach the one under test. The aErr detail in the reason
+# string is therefore an improvement this spec does not pin, rather than one
+# it pins weakly; saying so is better than a mutation that reports SURVIVED
+# or a fixture contorted until it lies.)

@@ -1100,7 +1100,7 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // recordAssembledCRC copies the finalized file's whole-file CRC onto the queue,
 // where the quickcheck STAGE and on-demand par2 read it.
 //
-// Both reach it through par2.VerifyCRCsWithOptions, which compares a par2 set's
+// Both reach it through par2.AssessWithOptions, which compares a par2 set's
 // recorded CRC32 against the one this download produced. Note which function
 // that is NOT: par2.QuickCheck is filename relocation and computes its own CRC
 // from a path (tryMatchCRC32File), never reading this value.

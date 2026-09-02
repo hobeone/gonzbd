@@ -49,33 +49,23 @@ func TestMatchMethod_String(t *testing.T) {
 	}
 }
 
-func TestMatchBasenameAndFlattened(t *testing.T) {
+// TestJoinKey pins the key Assess joins identification to assembled CRCs on.
+//
+// It is the basename, and the case that forces it is a file a PREVIOUS run
+// already relocated: identification answers "Screens/shot.jpg" while the
+// caller still knows the file as "shot.jpg". Joining on the full path would
+// miss it and report an intact file unverified.
+func TestJoinKey(t *testing.T) {
 	t.Parallel()
-
-	index := map[string]*par2Entry{
-		"shot.jpg":         {desc: FileDesc{FileName: "Screens/shot.jpg"}},
-		"Screens_shot.jpg": {desc: FileDesc{FileName: "Screens_shot.jpg"}},
-	}
-
-	// matchBasename keys on the assembled file's own name.
-	if entry, ok := matchBasename(AssembledFile{FileName: "shot.jpg"}, index); !ok {
-		t.Error("matchBasename missed an exact name")
-	} else if entry.desc.FileName != "Screens/shot.jpg" {
-		t.Errorf("matchBasename returned %q", entry.desc.FileName)
-	}
-	if _, ok := matchBasename(AssembledFile{FileName: "absent.jpg"}, index); ok {
-		t.Error("matchBasename matched a name that is not in the index")
-	}
-
-	// matchFlattened reduces a PATH to its basename before looking up, so an
-	// assembled file already carrying subdirectory components still resolves.
-	if entry, ok := matchFlattened(AssembledFile{FileName: "Screens/shot.jpg"}, index); !ok {
-		t.Error("matchFlattened missed a path whose basename is indexed")
-	} else if entry.desc.FileName != "Screens/shot.jpg" {
-		t.Errorf("matchFlattened returned %q", entry.desc.FileName)
-	}
-	if _, ok := matchFlattened(AssembledFile{FileName: "Other/absent.jpg"}, index); ok {
-		t.Error("matchFlattened matched a basename that is not in the index")
+	for _, tc := range []struct{ in, want string }{
+		{"shot.jpg", "shot.jpg"},
+		{"Screens/shot.jpg", "shot.jpg"},
+		{"a/b/c.txt", "c.txt"},
+		{"Screens_shot.jpg", "Screens_shot.jpg"},
+	} {
+		if got := joinKey(tc.in); got != tc.want {
+			t.Errorf("joinKey(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

@@ -1,5 +1,5 @@
 pkg ./internal/par2/
-run TestIdentify|TestQuickCheck|TestComputeHash16k|TestRelocateFile
+run TestIdentify|TestAssess|TestApplyRenames|TestVerifyIdentified|TestComputeHash16k|TestRelocateFile|TestJoinKey
 
 # Identify is a pure function over a directory and a par2 manifest, so every
 # one of its properties is expressible as a mutation. These five cover the
@@ -149,36 +149,93 @@ file internal/par2/identify.go
 	}
 --- end
 
-[QuickCheck relocates every identification]
-file internal/par2/quickcheck.go
+[relocation ignores whether a file needs renaming]
+file internal/par2/assess.go
 --- anchor
+	for _, f := range id.Files {
 		if !f.NeedsRename() {
 			continue
 		}
+		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
+	}
 --- replace
-		if false {
+	for _, f := range id.Files {
+		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
+	}
+--- end
+
+# ApplyRenames must act on Assessment.Renames, not re-derive the moves from the
+# identifications. Re-deriving made Renames a second, parallel statement of the
+# same thing, so a caller that filtered it was silently ignored and the two
+# could drift with nothing to notice -- the owner-model violation Rule 2 names.
+[relocation re-derives the moves instead of reading them]
+file internal/par2/assess.go
+--- anchor
+	applied := make([]Rename, 0, len(a.Renames))
+	for _, r := range a.Renames {
+		fd, ok := descOf[r.From]
+--- replace
+	applied := make([]Rename, 0, len(a.Renames))
+	for _, f := range a.ID.Files {
+		r := Rename{From: f.OnDisk, To: f.Desc.FileName}
+		if !f.NeedsRename() {
+			continue
+		}
+		fd, ok := descOf[r.From]
+--- end
+
+# The ambiguity refusal on the CRC join. Two delivered files sharing a basename
+# ("CD1/track01.flac", "CD2/track01.flac") would otherwise both resolve to
+# whichever CRC was inserted last, so an intact release reports a mismatch and
+# is sent to repair.
+[an ambiguous basename resolves to the last file inserted]
+file internal/par2/assess.go
+--- anchor
+		if _, dup := byBase[base]; dup {
+			ambiguousBase[base] = true
+			continue
+		}
+--- replace
+		if _, dup := byBase[base]; dup {
+			byBase[base] = d
 			continue
 		}
 --- end
 
-# Pass 0: an entry already at its par2 path. scanFlatFiles skips directories,
-# so nothing below this pass can see a relocated file, and identification is
-# not idempotent without it -- applyPar2Names moves "shot.jpg" into "Screens/"
-# and the very next Identify reports the entry unaccounted.
-[an entry already at its par2 path is not recognised]
-file internal/par2/identify.go
+# The mirror: the exact-name lookup must come first, or two files that name
+# themselves unambiguously would collide on their shared basename and both be
+# refused, turning a verifiable release into one that fetches its recovery set.
+[the join skips the exact-name lookup]
+file internal/par2/assess.go
 --- anchor
-		if !strings.Contains(slashed, "/") {
+		d, delivered := byName[f.OnDisk]
+		if !delivered {
+			d, delivered = byBase[joinKey(f.OnDisk)]
+		}
 --- replace
-		if true {
+		d, delivered := byBase[joinKey(f.OnDisk)]
 --- end
 
-# The length rule on that pass, same reason it exists on pass 2: being at the
-# right path is not evidence the file is whole.
-[pass 0 claims an entry whose length disagrees]
-file internal/par2/identify.go
+# Verification must join on the BASENAME. Joining on the full path misses a
+# file a previous run already relocated -- identification answers
+# "Screens/shot.jpg" where the caller still says "shot.jpg" -- and reports an
+# intact file unverified, which every caller reads as damage.
+[the identification/CRC join uses the full path]
+file internal/par2/assess.go
 --- anchor
-		if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+	return filepath.Base(filepath.ToSlash(name))
 --- replace
-		if false { //nolint:gosec // size is non-negative
+	return filepath.ToSlash(name)
+--- end
+
+# Assess must not move anything. The whole ordering guarantee is that a verdict
+# is computed from pre-rename state, so an Assess that relocated would describe
+# a directory that no longer exists by the time it returned.
+[assess relocates while it identifies]
+file internal/par2/assess.go
+--- anchor
+		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
+--- replace
+		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
+		relocateFile(dir, f.OnDisk, f.Desc, log)
 --- end

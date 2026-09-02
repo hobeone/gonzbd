@@ -66,7 +66,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	//
 	// This inverts which state is free. The zero value used to be the
 	// permissive one, so every early return that forgot to assign handed the
-	// repair stage consent to skip par2 — and one did: verifyJobCRCs' opening
+	// repair stage consent to skip par2 — and one did: recordVerdict's opening
 	// guard, reachable only from here, so only ever for a job that has par2
 	// sets. Now the conservative state is the one you get for free and the
 	// permissive ones require saying so, which makes the next early return
@@ -75,12 +75,23 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Found %d par2 set(s), checking for subdirectory entries", len(sets))
 
-	renames, err := par2.QuickCheckWithOptions(job.DownloadDir, sets, log, q.ParseOpts)
+	// One assessment, taken before anything moves, answering identification,
+	// verification and "what would move" together.
+	//
+	// This stage used to relocate first and verify afterwards, which meant
+	// verification matched par2 entries against names the relocation had just
+	// invalidated. The compensation was a local rename map applied to the
+	// names before comparing them — correct, but a second enforcement point
+	// for an ordering the download path enforced separately (#494). Renames
+	// now come out of the same call as the verdict, so there is no ordering
+	// left for this stage to get right.
+	a, err := q.assess(job, sets, log)
 	if err != nil {
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Error: %v", err)
 		return nil // non-fatal; the outcome set above already says why
 	}
 
+	renames := par2.ApplyRenames(job.DownloadDir, a, log)
 	if len(renames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Relocated %d file(s) into subdirectories", len(renames))
 		for _, r := range renames {
@@ -106,10 +117,41 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No files needed subdirectory relocation")
 	}
 
-	return q.verifyJobCRCs(ctx, log, job, sets, renames)
+	return q.recordVerdict(ctx, log, job, sets, a)
 }
 
-func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set, renames []par2.Rename) error {
+// assess builds the assembled-file list from the queue and hands it to
+// par2.Assess. Split out so the renames applied above and the verdict read
+// below come from ONE call rather than two — which is the invariant this whole
+// change exists for, not a tidiness preference.
+//
+// A job with no readable manifest still gets assessed, with no CRCs. That is
+// deliberate: identification and the relocations it implies do not depend on
+// the queue at all, and a job whose manifest cannot be read still wants its
+// files put where par2 expects them. recordVerdict then declines to claim
+// anything, which is what leaves QuickCheckInconclusive standing.
+func (q *QuickCheckStage) assess(job *Job, sets []par2.Set, log *slog.Logger) (par2.Assessment, error) {
+	var files []par2.AssembledFile
+	if job.Queue != nil && job.Queue.NumFiles() > 0 {
+		if m, err := job.Queue.Manifest(); err == nil {
+			p := job.Queue.Progress()
+			files = make([]par2.AssembledFile, m.NumFiles())
+			for fi := range m.NumFiles() {
+				name := m.FileSubject(fi)
+				if fn := p.FileFilename(fi); fn != "" {
+					name = fn
+				}
+				files[fi] = par2.AssembledFile{
+					FileName: name,
+					CRC32:    p.FileAssembledCRC32(fi),
+				}
+			}
+		}
+	}
+	return par2.AssessWithOptions(job.DownloadDir, sets, files, log, q.ParseOpts)
+}
+
+func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set, a par2.Assessment) error {
 	// No manifest, or one describing no files, so there are no expected CRCs
 	// to compare the par2 sets against. The caller has already established
 	// that sets is non-empty — it returns at len(sets) == 0 — so this leaves
@@ -135,51 +177,15 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 	// "could not verify" was indistinguishable from "had nothing to verify",
 	// so DirectUnpack's success would skip par2 for a job nothing had
 	// checked (#294).
-	m, mErr := job.Queue.Manifest()
-	if mErr != nil {
+	if _, mErr := job.Queue.Manifest(); mErr != nil {
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
 
-	// The renames this stage just performed, as old name → new name.
-	//
-	// Verification matches a delivered file to a par2 entry by name, and the
-	// names it reads have just been invalidated by the moves above.
-	// JobProgress.Filename still holds the pre-rename name — job.Queue is a
-	// *queue.Job SNAPSHOT with no queue handle behind it, so this stage has
-	// nowhere to write the correction even if it wanted to — and reading it
-	// straight would compare an obfuscated string against the par2 index,
-	// match nothing, count every relocated file Unverified and set
-	// QuickCheckDamaged on a job that is intact.
-	//
-	// Corrected in memory rather than persisted, deliberately. The rename is
-	// already recorded where it needs to be: internal/app's applyPar2Names
-	// writes it to the queue on the download path. This stage runs whether or
-	// not that path did — on-demand par2 can be disabled, and a release with
-	// no deferred volumes never reaches it — so it needs the mapping locally,
-	// not a second writer of a field another package owns.
-	renamedTo := make(map[string]string, len(renames))
-	for _, r := range renames {
-		renamedTo[r.From] = r.To
-	}
-
-	p := job.Queue.Progress()
-	var assembledFiles []par2.AssembledFile
-	for fi := range m.NumFiles() {
-		name := m.FileSubject(fi)
-		if fn := p.FileFilename(fi); fn != "" {
-			name = fn
-		}
-		if to, moved := renamedTo[name]; moved {
-			name = to
-		}
-		assembledFiles = append(assembledFiles, par2.AssembledFile{
-			FileName: name,
-			CRC32:    p.FileAssembledCRC32(fi),
-			FileSize: m.FileBytes(fi),
-		})
-	}
-
-	crcResult := par2.VerifyCRCsWithOptions(assembledFiles, sets, log, q.ParseOpts)
+	// Read the verdict the assessment already reached. Nothing is recomputed
+	// here, and nothing is re-matched: the CRCs were compared against the
+	// entries identification proved each file to be, before any of the moves
+	// above happened.
+	crcResult := a.CRC
 	unverifiable := crcResult.NoCRC + crcResult.Unverified + crcResult.Mismatched
 
 	if crcResult.Checked > 0 {
@@ -216,12 +222,20 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 	}
 
 	if crcResult.Unverified > 0 {
+		// "could not be verified", not "not found by name". Nothing is
+		// matched by name any more — identification is by content — and
+		// Unverified now covers two causes that this aggregate cannot tell
+		// apart: a par2 entry no delivered file was shown to be, and an
+		// identified file the queue supplied no CRC for. Naming either one
+		// specifically would be false half the time, and an operator reading
+		// "not found by name" would go looking for a filename problem that
+		// does not exist.
 		logf(ctx, log, job, slog.LevelWarn,
-			"[quickcheck] %d par2-tracked file(s) not found by name",
+			"[quickcheck] %d par2-tracked file(s) could not be verified",
 			crcResult.Unverified)
 		for _, name := range crcResult.UnverifiedFiles {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[quickcheck] ⚠ %s: par2-tracked file not found by name", name))
+				fmt.Sprintf("[quickcheck] ⚠ %s: par2-tracked file could not be verified", name))
 		}
 	}
 

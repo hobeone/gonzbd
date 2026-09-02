@@ -299,15 +299,26 @@ So the manifest stays immutable and keeps recording what the NZB said, while
 the resolved name records what is on disk. A par2-identified rename is a change
 to the second, which is what that field means.
 
-**The owner, so this does not become a second writer.** Before this change
-`Queue.SetFileFilename` had one caller, `pipeline.go:583`, which sets the name
-at file registration from `filepath.Base(path)`. (That was stated here as a
-live citation; it is a historical count, since this design adds the second
-caller itself. There are now two call sites, `registerFile` and
-`applyPar2Names` — the live enumeration, with the command that produces it,
-lives at `applyPar2Names`' doc comment rather than here, where nothing runs
-it.) Adding a second *independent* writer
+**The owner, so this does not become a second writer.** `Queue.SetFileFilename`
+has one caller, `pipeline.go`'s `registerFile`, which sets the name at file
+registration from `filepath.Base(path)`. Adding a second *independent* writer
 would be the owner-model violation AGENTS.md requires escalating.
+
+**This design added one, and #494 removed it again.** The rename recorder it
+proposes below was built, shipped, and then deleted: relocating during download
+existed only so that name-based verification would have corrected names to work
+with, and once identification became content-based it bought the verdict
+nothing. It was never free either — `JobProgress.Filename` cannot hold a path,
+so a file relocated into a subdirectory could not be recorded truthfully, and
+the startup resume sweep then stat'ed a top-level path that does not exist.
+`durability.Resume` reads a missing file as disproof of every run it holds and
+re-downloads a complete file.
+
+So the section that follows is the reasoning as it stood, and the conclusion
+did not survive contact. Relocation belongs to post-processing, which is where
+it was before and where `stage_quickcheck` still does it, ahead of the repair
+stage that needs the files at their par2 paths. `SetFileFilename` is back to
+one caller.
 
 Avoid it by making the *rename operation* the owner: one function that performs
 the on-disk rename and updates the resolved name together, so it is impossible
@@ -333,9 +344,17 @@ site and remembering to keep them in step.
 
   It cannot write the correction either: `postproc.Job` carries a
   `*queue.Job` snapshot rather than a `*queue.Queue`, so there is no writer
-  behind it. The stage therefore applies the rename mapping in memory before
-  verifying — see `verifyJobCRCs`. This is a real change to it, not a side
-  effect.
+  behind it. The stage therefore applied the rename mapping in memory before
+  verifying. This was a real change to it, not a side effect.
+
+  **That in-memory mapping is itself gone now, and the reason is worth
+  recording here rather than only in the issue it produced.** It was correct,
+  but it was a *second* enforcement point for an ordering `internal/app`
+  enforced separately — and the two together were four different patches for
+  one root cause. #494 replaced them with `par2.Assess`, which reports renames
+  without applying them and hands them out only alongside a verdict computed
+  from pre-rename state. Both callers now assess first and relocate second, so
+  there is no window in which the names are wrong and nothing to remap.
 
 **One ordering fact this depends on**, checked rather than assumed:
 `quickcheck` is the first stage, ahead of every renaming stage
@@ -392,9 +411,11 @@ data, so the free-verification half is real and not merely assumed.
 computes the CRC by assembling the payload and calling
 `crc32.ChecksumIEEE`, where production combines per-article yEnc CRCs — so it
 proves par2's recorded CRC matches the file's true CRC, not that our assembled-CRC
-pipeline reproduces it. And its `VerifyCRCs` section passes `CRC32: 0`
-throughout, modelling a resumed download; the claim that real CRCs would not
-change those counters is derived from source, not observed.
+pipeline reproduces it. And its section on the shipped verifier passed
+`CRC32: 0` throughout, modelling a resumed download; the claim that real CRCs
+would not change those counters was derived from source, not observed. (That
+section has since been deleted along with the name-matching verifier it
+measured — see the note in its place in `scripts/nzbprobe`.)
 
 ---
 

@@ -18,7 +18,7 @@ import (
 
 // buildQCJob builds a single-file *queue.Job whose file has a resolved
 // filename, byte count, and assembled CRC32 already set — the shape
-// verifyJobCRCs reads via Manifest/Progress accessors.
+// recordVerdict reads via Manifest/Progress accessors.
 func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *queue.Job {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{
@@ -114,7 +114,12 @@ func buildIFSCBody(fileID [16]byte, sliceMD5 [16]byte, sliceCRC uint32) []byte {
 }
 
 func TestQuickCheckStage_Disabled(t *testing.T) {
-	_ = (*QuickCheckStage).verifyJobCRCs
+	// A dummy reference to the CRC-verifying method stood here, under no
+	// comment, satisfying check_test_alignment without testing anything —
+	// the pattern AGENTS.md forbids by name. It is deleted rather than
+	// re-pointed at the method's replacement; recordVerdict is covered by
+	// TestQuickCheckStage_VerifiesBeforeRenaming and the manifest-absent
+	// tests, which call it and assert on what it recorded.
 
 	stage := NewQuickCheckStage()
 	stage.SetEnabled(false)
@@ -191,8 +196,22 @@ func TestQuickCheckStage_Run(t *testing.T) {
 	stage := NewQuickCheckStage()
 	stage.SetEnabled(true)
 
+	// The queue records the name the file actually has on disk.
+	//
+	// It recorded "original.txt" here — par2's basename — while the delivered
+	// file was "Subdir_original.txt". Production cannot produce that pair:
+	// JobProgress.Filename is written from the yEnc header at registration,
+	// which is the name the assembler writes the file under. The old
+	// verification tolerated it only because it matched the caller's name
+	// against par2's BASENAME index rather than against the file on disk, so
+	// any name resembling the par2 entry's basename matched whether or not it
+	// was what had been delivered.
+	//
+	// Assess joins the caller's name to the file identification found, so the
+	// two must be the same file. When they are not, the entry reads as
+	// unverified and the job goes to par2 — the conservative direction.
 	job := &Job{
-		Queue:       buildQCJob(t, "job-qc", "original.txt", int64(len(content)), crc32.ChecksumIEEE(content)),
+		Queue:       buildQCJob(t, "job-qc", flatName, int64(len(content)), crc32.ChecksumIEEE(content)),
 		DownloadDir: tmpDir,
 	}
 
@@ -379,8 +398,18 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		if !strings.Contains(linesStr, fileName) {
 			t.Errorf("expected OutputLines to name the unverified file %q, got: %s", fileName, linesStr)
 		}
-		if !strings.Contains(linesStr, "not found by name") {
+		// "could not be verified", not "not found by name".
+		//
+		// Nothing is matched by name any more, and Unverified now covers two
+		// causes this line cannot tell apart: a par2 entry no delivered file
+		// was shown to be, and an identified file the queue supplied no CRC
+		// for. An operator reading "not found by name" would go looking for a
+		// filename problem that does not exist.
+		if !strings.Contains(linesStr, "could not be verified") {
 			t.Errorf("expected OutputLines to explain why, got: %s", linesStr)
+		}
+		if strings.Contains(linesStr, "not found by name") {
+			t.Errorf("OutputLines still claim a name match was attempted: %s", linesStr)
 		}
 	})
 }

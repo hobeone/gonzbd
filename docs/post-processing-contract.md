@@ -159,21 +159,25 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    a `uint32`, so there is no way to record a CRC without the record that
    earned it.
 
-   **The consumer is `par2.VerifyCRCs`, not `par2.QuickCheck`.** The two are
-   easy to conflate because the *stage* is named quickcheck. `par2.QuickCheck`
-   is filename relocation — it moves flat downloads into the subdirectory paths
-   a par2 manifest references, and where it does compare a checksum it computes
-   one itself from disk (`tryMatchCRC32File` takes a path). It never reads
-   `AssembledCRC32`. What our recorded CRC buys is one read of each file inside
-   `par2.VerifyCRCsWithOptions`, which both `stage_quickcheck.go` and
-   `app.par2NeedsRecovery` call.
+   **The consumer is `par2.Assess`.** This was once a distinction —
+   "`par2.VerifyCRCs`, not `par2.QuickCheck`" — because relocation and CRC
+   comparison were separate functions, and the *stage* being named quickcheck
+   made them easy to conflate. They are one call now (#494): `Assess`
+   identifies each delivered file against the par2 index, verifies it against
+   the CRC recorded here, and reports the relocations that follow, all from a
+   single pre-rename read of the directory. `stage_quickcheck.go` and
+   `app.par2Verdict` both consume that one assessment.
+
+   What our recorded CRC buys is unchanged and is the part worth keeping from
+   the old wording: verification reads no payload. Identification pays 16 KB
+   per file; the comparison itself pays nothing.
 
    A file that holds more than one run — a permanently failed article leaves a
    hole, and a hole means a gap between rows — reads as `NoCRC`, which is zero's documented
    "unavailable" meaning rather than a mismatch, so `unverifiable > 0` and the
    stage lands on `Damaged`. The consequences stay conservative in both places
    that consume the verdict: `repair` is not bypassed by clause one, and
-   `app.par2NeedsRecovery` returns true, so on-demand par2 fetches the recovery
+   `app.par2Verdict` returns true, so on-demand par2 fetches the recovery
    volumes. That costs bandwidth and a par2 pass on a file with a hole; it never
    ships an unrepaired one.
 
@@ -182,7 +186,7 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    paths that actually verified something (#314). This inverts which state is
    free: the zero value used to be the permissive one, so any early `return`
    that forgot to assign handed repair consent to skip par2 — and one did, the
-   guard in `verifyJobCRCs` for a job whose manifest describes no files. With
+   guard in `recordVerdict` for a job whose manifest describes no files. With
    the default inverted, a future early return fails safe by construction
    rather than by review catching it.
 4. **`OwnedFiles` isolation (#3462)**: `processJob` snapshots `OwnedFiles` from
