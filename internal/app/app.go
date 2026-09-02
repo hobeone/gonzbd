@@ -1709,8 +1709,12 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 		// identification is content-based. Under name-only matching, "nothing
 		// matched" was equally what a perfectly healthy obfuscated release
 		// looked like — which is exactly what made discarding on this
-		// signature the #492 defect. Hash16k is what tells the two apart, so
-		// this test may not be reintroduced anywhere that matches on names.
+		// signature the #492 defect. For a healthy obfuscated post, Hash16k
+		// would tell them apart, but damage inside the first 16 KB defeats
+		// Hash16k and the whole-file CRC32 check together, making it
+		// indistinguishable from Layout B; that is why the outcome is
+		// outcomeUnknown rather than clean or repair. This test may not be
+		// reintroduced anywhere that matches on names.
 		log.Info("on-demand par2: no delivered file matches any par2 entry; identification is inconclusive",
 			"entries", len(id.Unaccounted))
 		return outcomeUnknown, fmt.Sprintf("no delivered file matched any of %d par2-protected entr(y/ies); "+
