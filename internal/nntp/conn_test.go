@@ -1008,8 +1008,9 @@ func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
 	)
 	// waitWindow must exceed the aggregate bound the fix imposes, so a
 	// passing run demonstrates that bound firing, not just our own select
-	// eventually giving up.
-	waitWindow := handshakeBudgetMultiplier*idleTimeout + 300*time.Millisecond
+	// eventually giving up. The aggregate bound is exactly idleTimeout
+	// (https://github.com/hobeone/gonzbd/issues/501), not a multiple of it.
+	waitWindow := idleTimeout + 300*time.Millisecond
 
 	ms := newMockServer(t, func(mc *mockConn) {
 		// Trickle one byte at a time, well inside the per-read idle
@@ -1064,11 +1065,11 @@ func (blockingLimiter) Wait(ctx context.Context, n int) error {
 // RateLimiter.Wait using the *connection's* long-lived context, not the
 // handshake's aggregate-bound one, so a rate limiter blocked on
 // contended tokens could keep the handshake open past
-// handshakeBudgetMultiplier*dopts.dialer.Timeout even though every
-// socket read itself completes fine.
+// dopts.dialer.Timeout even though every socket read itself completes
+// fine.
 func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
 	const idleTimeoutSeconds = 1
-	waitWindow := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+	waitWindow := time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
 
 	// Only the greeting is scripted. Dial's own goroutine isn't
 	// synchronized with this server's before the test returns, so
@@ -1134,12 +1135,13 @@ func TestDialResetsSocketDeadlineAfterSuccessfulHandshake(t *testing.T) {
 		idleTimeoutSeconds = 1
 		trickleInterval    = 400 * time.Millisecond
 	)
-	// Trickle past the aggregate deadline (handshakeBudgetMultiplier *
-	// idleTimeoutSeconds) with margin, then keep the connection open a
-	// little longer so the client's post-Dial Stat call has time to
-	// either poison-fail near-instantly (bug) or legitimately time out
-	// via idleTimeoutReader's own per-read bound (fixed).
-	trickleDuration := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+	// Trickle past the aggregate deadline (exactly idleTimeoutSeconds,
+	// per https://github.com/hobeone/gonzbd/issues/501) with margin,
+	// then keep the connection open a little longer so the client's
+	// post-Dial Stat call has time to either poison-fail near-instantly
+	// (bug) or legitimately time out via idleTimeoutReader's own
+	// per-read bound (fixed).
+	trickleDuration := time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
 
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")

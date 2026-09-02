@@ -219,24 +219,29 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 	return opts, nil
 }
 
-// handshakeBudgetMultiplier bounds the handshake's aggregate duration as
-// a multiple of the per-read idle timeout (dopts.dialer.Timeout).
-// idleTimeoutReader only bounds a single Read; a server that sends at
-// least one byte before each per-read window elapses never trips it, so
-// the aggregate bound has to come from ctx instead
-// (https://github.com/hobeone/gonzbd/issues/488). 4 covers the
-// handshake's worst-case round-trip count: greeting, AUTHINFO USER,
-// AUTHINFO PASS, and CAPABILITIES.
-const handshakeBudgetMultiplier = 4
-
 // Dial connects to the server described by cfg, performs the greeting
 // handshake, authenticates if credentials are supplied, probes
 // capabilities, and returns a ready-to-use *Conn. The context governs
 // the full handshake — cancelling it aborts the handshake promptly —
-// and the handshake is additionally bounded to handshakeBudgetMultiplier
-// times dopts.dialer.Timeout even when ctx itself carries no deadline
-// (see that constant's comment for why). Once Dial returns, cancellation
-// is per-request via Fetch's ctx.
+// and the handshake is additionally bounded to dopts.dialer.Timeout even
+// when ctx itself carries no deadline. idleTimeoutReader only bounds a
+// single Read; a server that sends at least one byte before each
+// per-read window elapses never trips it, so the aggregate bound has to
+// come from ctx instead (https://github.com/hobeone/gonzbd/issues/488).
+// The aggregate budget is exactly one dial timeout rather than a
+// multiple of it, so a misconfigured or pathologically slow-trickling
+// server can hold the handshake, and the dial-coalescing mutex held
+// across it (internal/downloader/dispatch.go's managedConn.Get), for at
+// most the same duration a single stalled request would already be
+// allowed (https://github.com/hobeone/gonzbd/issues/501). This is a
+// deliberate trade-off against #488's original worst-case reasoning: an
+// authenticated handshake genuinely makes up to 4 round trips (greeting,
+// AUTHINFO USER, AUTHINFO PASS, CAPABILITIES — see authenticate), so a
+// legitimately slow (not trickling) server with credentials configured
+// can now time out mid-handshake where the old 4x budget would have
+// allowed it to finish; #501's mutex-hold bound was judged to matter
+// more than that narrower case. Once Dial returns, cancellation is
+// per-request via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
@@ -270,7 +275,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
 
-	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeBudgetMultiplier*dopts.dialer.Timeout)
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, dopts.dialer.Timeout)
 	defer cancelHandshake()
 
 	var br io.Reader = nc
@@ -399,7 +404,7 @@ func (c *Conn) expectGreeting() error {
 // on the socket if ctx ends before the handshake does — whether ctx's own
 // deadline elapses first, or ctx ends earlier via cancellation. Since
 // https://github.com/hobeone/gonzbd/issues/488, Dial's own
-// handshakeBudgetMultiplier wrap guarantees handshake's only production
+// context.WithTimeout wrap guarantees handshake's only production
 // call site (conn.go's Dial) always passes a ctx that carries a
 // deadline — an outer caller's own context.WithTimeout, such as the
 // admin test-connection handlers', can only tighten that further — but
