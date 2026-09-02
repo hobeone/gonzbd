@@ -509,10 +509,10 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	default:
 	}
 
-	// Note: job.NeedRequeue is set by the repair stage when par2
-	// reports insufficient blocks or a corrupt main file. It is
-	// recorded for informational purposes (history/UI) but no longer
-	// aborts the pipeline — downstream stages (unpack, finalize,
+	// Note: when the repair stage finds insufficient blocks or a corrupt
+	// main par2 file, it sets job.ParError (which stage_unpack.go:128 uses
+	// to skip extraction) and logs the block/diagnosis detail itself — it
+	// does not abort the pipeline. Downstream stages (unpack, finalize,
 	// script) still run so the job completes to history.
 	return entry, false
 }

@@ -330,9 +330,6 @@ func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	if !job.ParError {
 		t.Error("ParError should be true after error")
 	}
-	if job.NeedRequeue {
-		t.Error("NeedRequeue should be false on generic error")
-	}
 	// vs should record the set as not-verified (false), not simply absent.
 	vs.MarkVerified("testset", false)
 	if vs.IsVerified("testset") {
@@ -340,8 +337,8 @@ func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	}
 }
 
-// TestHandleRepairResult_NeedMoreBlocks verifies that NeedMoreBlocks=true sets
-// NeedRequeue and populates RequeueBlocksNeeded.
+// TestHandleRepairResult_NeedMoreBlocks verifies that NeedMoreBlocks=true
+// sets ParError and returns an error naming the block shortfall.
 func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 	t.Parallel()
 	job, vs := repairJob(t)
@@ -361,20 +358,16 @@ func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 	if !job.ParError {
 		t.Error("ParError should be true")
 	}
-	if !job.NeedRequeue {
-		t.Error("NeedRequeue should be true when more blocks needed")
-	}
-	if job.RequeueBlocksNeeded != 42 {
-		t.Errorf("RequeueBlocksNeeded = %d; want 42", job.RequeueBlocksNeeded)
-	}
-	if job.RequeueReason == "" {
-		t.Error("RequeueReason should be set")
+	// Distinguishes this branch from InvalidPar2: only this branch's error
+	// names "more recovery blocks".
+	if !strings.Contains(err.Error(), "need 42 more recovery blocks") {
+		t.Errorf("err.Error() = %q; want it to mention needing more recovery blocks", err.Error())
 	}
 }
 
-// TestHandleRepairResult_InvalidPar2 verifies that a corrupt/missing par2 file
-// (Parsed.Status == StatusInvalidPar2) sets NeedRequeue with a distinct reason
-// from NeedMoreBlocks and leaves RequeueBlocksNeeded as 0.
+// TestHandleRepairResult_InvalidPar2 verifies that a corrupt/missing par2
+// file (Parsed.Status == StatusInvalidPar2) sets ParError and returns an
+// error distinct from NeedMoreBlocks.
 func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 	t.Parallel()
 	job, vs := repairJob(t)
@@ -393,20 +386,15 @@ func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 	if !job.ParError {
 		t.Error("ParError should be true")
 	}
-	if !job.NeedRequeue {
-		t.Error("NeedRequeue should be true for corrupt par2")
-	}
-	// Distinguishes this path from NeedMoreBlocks: no specific block count.
-	if job.RequeueBlocksNeeded != 0 {
-		t.Errorf("RequeueBlocksNeeded should be 0 for corrupt par2, got %d", job.RequeueBlocksNeeded)
-	}
-	if job.RequeueReason == "" {
-		t.Error("RequeueReason should be set")
+	// Distinguishes this branch from NeedMoreBlocks: only this branch's error
+	// names the main par2 file as corrupt or missing.
+	if !strings.Contains(err.Error(), "main par2 file corrupt or missing") {
+		t.Errorf("err.Error() = %q; want it to mention the main par2 file being corrupt or missing", err.Error())
 	}
 }
 
 // TestHandleRepairResult_UnsuccessfulGeneric verifies the catch-all failed
-// path: ParError=true, no requeue, non-nil error.
+// path: ParError=true and a non-nil error naming the exit code.
 func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 	t.Parallel()
 	job, vs := repairJob(t)
@@ -425,8 +413,11 @@ func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 	if !job.ParError {
 		t.Error("ParError should be true")
 	}
-	if job.NeedRequeue {
-		t.Error("NeedRequeue should be false for generic failure without NeedMoreBlocks")
+	// Distinguishes this branch from NeedMoreBlocks/InvalidPar2: only this
+	// branch's error names an exit code rather than a specific par2
+	// diagnosis.
+	if !strings.Contains(err.Error(), "unsuccessful (exit=2)") {
+		t.Errorf("err.Error() = %q; want it to name the exit code", err.Error())
 	}
 }
 
@@ -450,9 +441,6 @@ func TestHandleRepairResult_Success(t *testing.T) {
 	}
 	if job.ParError {
 		t.Error("ParError should be false on success")
-	}
-	if job.NeedRequeue {
-		t.Error("NeedRequeue should be false on success")
 	}
 	if !vs.IsVerified("testset") {
 		t.Error("set should be marked verified after success")
