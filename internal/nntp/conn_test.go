@@ -1049,3 +1049,56 @@ func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
 		t.Fatal("Dial succeeded against a server that never completed the greeting")
 	}
 }
+
+// blockingLimiter simulates a RateLimiter whose tokens are exhausted by
+// contention from other connections: Wait never returns on its own, only
+// when ctx ends.
+type blockingLimiter struct{}
+
+func (blockingLimiter) Wait(ctx context.Context, n int) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestDialAggregateHandshakeTimeoutAppliesToLimiterWait pins the gap
+// CodeRabbit found in the fix above: limitReader.Read calls
+// RateLimiter.Wait using the *connection's* long-lived context, not the
+// handshake's aggregate-bound one, so a rate limiter blocked on
+// contended tokens could keep the handshake open past
+// handshakeBudgetMultiplier*dopts.dialer.Timeout even though every
+// socket read itself completes fine.
+func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
+	const idleTimeoutSeconds = 1
+	waitWindow := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		c.expect("CAPABILITIES")
+		c.sendCaps()
+		c.expect("QUIT")
+		c.send("205 bye")
+	})
+
+	cfg := makeCfg(ms.addr)
+	cfg.Timeout = idleTimeoutSeconds
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Dial(ctx, cfg, WithLimiter(blockingLimiter{}))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dial succeeded despite a RateLimiter.Wait that never returns on its own")
+		}
+	case <-time.After(waitWindow):
+		t.Fatalf("Dial did not return within %s: a RateLimiter.Wait blocked on the"+
+			" connection's own long-lived context instead of the handshake's aggregate bound",
+			waitWindow)
+	}
+}
