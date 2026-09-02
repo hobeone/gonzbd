@@ -12,3 +12,15 @@ file internal/postproc/filelist.go
 --- replace
 	case false:
 --- end
+
+# The !p.Par2Recovered() conjunct specifically. Dropping it widens the case
+# to fire for a job whose verdict already released volumes (Par2Recovered()
+# true, one volume still held because only some indices were undeferred) —
+# the "recovered" subtest must go red.
+[the un-deferred-volumes conjunct is dropped]
+file internal/postproc/filelist.go
+--- anchor
+	case heldVols > 0 && !p.Par2Recovered() && p.HasPar2Verdict():
+--- replace
+	case heldVols > 0 && p.HasPar2Verdict():
+--- end
