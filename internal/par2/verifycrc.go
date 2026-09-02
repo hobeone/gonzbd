@@ -44,9 +44,18 @@ type CRCVerifyResult struct {
 	// NotInPar2 is the count of assembled files not tracked by par2.
 	// This is expected and benign — par2 files, .nfo files, etc.
 	NotInPar2 int
-	// Unverified is the count of par2 manifest entries that had no
-	// corresponding assembled file (name mismatch). These files exist
-	// on disk but weren't verified by CRC — par2 verify must check them.
+	// Unverified is the count of par2 manifest entries that no assembled file
+	// matched by name.
+	//
+	// It says nothing about the filesystem. This function never stats
+	// anything: it compares two in-memory lists, so an entry is Unverified
+	// when the NZB delivered no file of that name, which is equally true of a
+	// file present under a different name and of a file that does not exist.
+	//
+	// The doc here used to claim "these files exist on disk", and two callers
+	// read that differently — one treating Unverified as benign and the other
+	// as damage, which is #492. Identify is what actually answers the
+	// on-disk question, and it runs before this.
 	Unverified int
 	// Files holds per-file results for files that were actually checked.
 	Files []CRCResult
@@ -66,8 +75,14 @@ type AssembledFile struct {
 	FileName string
 	// CRC32 is the CRC computed during assembly. Zero if unavailable.
 	CRC32 uint32
-	// FileSize is the total file size in bytes from the NZB metadata.
-	// Used by the CRC+Size fallback pass to match obfuscated filenames.
+	// FileSize is the total file size in bytes from the NZB metadata — the
+	// sum of the yEnc-ENCODED segment sizes, which is 1.03x-1.08x the file's
+	// decoded length on a real release.
+	//
+	// Nothing in this file compares it against par2's FileDesc.FileSize, and
+	// nothing should: that field is the decoded length, so the two are never
+	// equal. A fallback pass that did exactly that shipped here and could
+	// never fire; see the note at the end of VerifyCRCsWithOptions.
 	FileSize int64
 }
 
@@ -88,7 +103,7 @@ type par2Entry struct {
 // logged but don't abort — individual files that can't be verified are
 // counted as Skipped.
 //
-//nolint:gocyclo // multi-strategy verification fallback logic
+//nolint:gocyclo // the name-match pass has many small early-outs
 func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger, opts ...ParseOptions) CRCVerifyResult {
 	parseOpts := DefaultParseOptions()
 	if len(opts) > 0 {
@@ -210,8 +225,28 @@ func VerifyCRCsWithOptions(files []AssembledFile, sets []Set, log *slog.Logger, 
 		}
 	}
 
-	// CRC+Size fallback pass (P7/G9 — spec §5.3).
-	matchCRCSize(files, par2Index, log, &result)
+	// There is deliberately no CRC+size fallback here any more.
+	//
+	// There was one, and it could not fire. Its key was {CRC32, FileSize}
+	// with exact size equality, but the two sides are different quantities:
+	// par2's FileDesc.FileSize is the file's decoded length, while
+	// AssembledFile.FileSize comes from the NZB — the sum of the yEnc-ENCODED
+	// segment sizes, measured on a real release at 1.0307x-1.0793x the
+	// decoded length. No production call site can make those equal. Its only
+	// test supplied FileSize from par2's own descriptor, which is why nothing
+	// caught it.
+	//
+	// Matching an obfuscated file is Identify's job, not this function's.
+	// Identify reads the directory, so its own CRC+size pass compares par2's
+	// recorded length against os.DirEntry.Info() — the same quantity on both
+	// sides — and applyPar2Names corrects the resolved names before this
+	// comparison runs. By the time VerifyCRCs is reached, a name that still
+	// does not match is a file identification genuinely could not place, and
+	// reporting it Unverified is the honest answer rather than a missed one.
+	//
+	// Restoring a fallback here would need a real on-disk size, which means
+	// this function would have to stat files. It does not touch the
+	// filesystem, and that is worth keeping.
 
 	// Count par2 entries that had no corresponding assembled file at all.
 	// These represent a name mismatch between NZB and par2 manifest.
@@ -257,68 +292,4 @@ func matchFlattened(af AssembledFile, par2Index map[string]*par2Entry) (*par2Ent
 	flat := filepath.Base(filepath.ToSlash(af.FileName))
 	entry, ok := par2Index[flat]
 	return entry, ok
-}
-
-func matchCRCSize(files []AssembledFile, par2Index map[string]*par2Entry, log *slog.Logger, result *CRCVerifyResult) {
-	var unconsumedPar2 []*par2Entry
-	for _, entry := range par2Index {
-		if !entry.consumed && entry.desc.FileCRC32 > 0 && entry.desc.FileSize > 0 {
-			unconsumedPar2 = append(unconsumedPar2, entry)
-		}
-	}
-
-	if len(unconsumedPar2) == 0 {
-		return
-	}
-
-	// Build index from unconsumed assembled files.
-	assembledByCRC := make(map[crcSizeKey]AssembledFile)
-	consumedAssembled := make(map[string]bool)
-	// Mark files already consumed by the name-based pass.
-	for _, cr := range result.Files {
-		consumedAssembled[cr.FileName] = true
-	}
-	for _, name := range result.NoCRCFiles {
-		consumedAssembled[name] = true
-	}
-	for _, af := range files {
-		if af.CRC32 == 0 || consumedAssembled[af.FileName] {
-			continue
-		}
-		//nolint:gosec // FileSize is positive, conversion is safe
-		key := crcSizeKey{crc: af.CRC32, size: uint64(af.FileSize)}
-		assembledByCRC[key] = af
-	}
-
-	log.Info("verifycrc: CRC+size fallback pass",
-		"unmatched_par2", len(unconsumedPar2),
-		"available_assembled", len(assembledByCRC))
-
-	for _, entry := range unconsumedPar2 {
-		key := crcSizeKey{
-			crc:  entry.desc.FileCRC32,
-			size: entry.desc.FileSize,
-		}
-		if af, ok := assembledByCRC[key]; ok {
-			entry.consumed = true
-			delete(assembledByCRC, key)
-
-			cr := CRCResult{
-				FileName:     af.FileName,
-				AssembledCRC: af.CRC32,
-				Par2CRC:      entry.desc.FileCRC32,
-				Match:        true,
-				Par2FileName: entry.desc.FileName,
-			}
-			result.Files = append(result.Files, cr)
-			result.Checked++
-			result.Matched++
-
-			log.Info("verifycrc: CRC+size fallback match",
-				"assembled", af.FileName,
-				"par2", entry.desc.FileName,
-				"crc32", fmt.Sprintf("%08x", af.CRC32),
-				"size", af.FileSize)
-		}
-	}
 }
