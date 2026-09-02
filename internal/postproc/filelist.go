@@ -104,10 +104,11 @@ func buildDownloadFileList(job *Job) []string {
 		// to remove, so both get the same non-committal headline; the
 		// release reason in the parenthetical is what carries the real
 		// explanation for whichever one actually happened.
-		reasonStr := ""
-		if p.Par2ReleaseReason() != "" {
-			reasonStr = fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
-		}
+		// HasPar2Verdict() is true in this arm (the switch guards on it
+		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
+		// "" (internal/queue/progress.go:633), so the reason is always
+		// non-empty here — no fallback needed.
+		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
 			heldVols, reasonStr))
 	case heldVols > 0:
