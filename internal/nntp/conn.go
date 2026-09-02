@@ -234,12 +234,9 @@ const handshakeBudgetMultiplier = 4
 // capabilities, and returns a ready-to-use *Conn. The context governs
 // the full handshake — cancelling it aborts the handshake promptly —
 // and the handshake is additionally bounded to handshakeBudgetMultiplier
-// times dopts.dialer.Timeout even when ctx itself carries no deadline,
-// as with the download path's pauseCtx (see setupHandshakeDeadline):
-// without this, idleTimeoutReader's per-read-only bound lets a server
-// that keeps trickling bytes hold the handshake open indefinitely
-// (https://github.com/hobeone/gonzbd/issues/488). Once Dial returns,
-// cancellation is per-request via Fetch's ctx.
+// times dopts.dialer.Timeout even when ctx itself carries no deadline
+// (see that constant's comment for why). Once Dial returns, cancellation
+// is per-request via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
