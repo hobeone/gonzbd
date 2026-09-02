@@ -141,13 +141,29 @@ unverifiable — identified but not verified — rather than as a match.
 | Clean, obfuscated | by `Hash16k` | CRC matches | rename, skip volumes, unpack |
 | Damaged | either | CRC mismatches | fetch all volumes, full repair |
 | Resumed, no assembled CRC | either | unavailable | fetch all volumes, full repair |
-| Layout B | nothing matches | n/a | fetch all volumes, full repair, fail honestly |
+| Layout B (0 of N match) | nothing matches | n/a | skip volumes, fail honestly |
+| Partial (some of N match) | some by name or content | n/a for the rest | fetch all volumes, full repair |
 
-The last row is the settled position: a par2 set protecting the extracted
-contents describes files the NZB never delivered, so nothing downloaded can be
-checked against it. The poster produced something unverifiable and the job
-should fail — but it should fail *after* trying, with its volumes intact and
-an accurate message, not before trying with them destroyed.
+**The last two rows were one row, and splitting them is a correction this
+design shipped wrong.** The original argued that a Layout B set should "fail
+*after* trying, with its volumes intact" — which reads well and is false. The
+volumes are never tried at all: `buildStages` registers `RepairStage` before
+`UnpackStage` (`internal/app/stages.go`) and there is no second repair pass, so
+the one repair this pipeline runs executes while the files those volumes
+protect do not yet exist. Fetching them spends the whole recovery set to reach
+the identical failure.
+
+That was a claim about *behaviour* whose truth depended on a branch nowhere
+near the sentence — the stage registration order — and naming the branch is
+what settled it (`AGENTS.md` Standing Design Rule 4). **Were a post-unpack
+repair pass ever added, the Layout B row becomes wrong and must fetch.**
+
+The distinction between the two rows is `len(id.Files) == 0`, and it is safe
+**only** because identification is content-based. Under the name-only matching
+this design replaces, a healthy obfuscated release produced exactly the same
+"nothing matched" signature, and discarding on it was the #492 defect itself.
+`Hash16k` is what tells them apart, so this test may never be reintroduced
+anywhere that matches on names.
 
 ---
 
@@ -156,9 +172,12 @@ an accurate message, not before trying with them destroyed.
 **`Par2DescribesOtherFiles` and its size tolerance.** The predicate exists to
 separate Layout B from obfuscation, and that separation is only needed to
 decide whether the discard is safe. Under this design no branch discards on an
-ambiguous signature, so nothing consumes the distinction: obfuscated files are
-identified and pass, and everything else — Layout B included — takes the same
-fetch-and-repair path. Both its commits are dropped from this branch.
+*ambiguous* signature: obfuscated files are identified and pass, so the only
+remaining "nothing matched" case is one where content matching has already
+ruled obfuscation out. The Layout B distinction survives, but it is now drawn
+by `len(id.Files) == 0` on a content-based identification rather than by a
+name-and-size heuristic, which is why the predicate is still unnecessary and
+both its commits stay dropped.
 
 The size tolerance that predicate needed was correcting a comparison that
 should not be load-bearing at all. Sizes are a weak proxy for identity;
@@ -280,12 +299,15 @@ So the manifest stays immutable and keeps recording what the NZB said, while
 the resolved name records what is on disk. A par2-identified rename is a change
 to the second, which is what that field means.
 
-**The owner, so this does not become a second writer.** Today
-`Queue.SetFileFilename` has one caller, `pipeline.go:583`, which sets the name
-at file registration from `filepath.Base(path)`
-(`git grep -n 'SetFileFilename' -- '*.go' ':!*_test.go'` returns the
-declaration plus that one site). Adding a second independent writer would be
-the owner-model violation AGENTS.md requires escalating.
+**The owner, so this does not become a second writer.** Before this change
+`Queue.SetFileFilename` had one caller, `pipeline.go:583`, which sets the name
+at file registration from `filepath.Base(path)`. (That was stated here as a
+live citation; it is a historical count, since this design adds the second
+caller itself. There are now two call sites, `registerFile` and
+`applyPar2Names` — the live enumeration, with the command that produces it,
+lives at `applyPar2Names`' doc comment rather than here, where nothing runs
+it.) Adding a second *independent* writer
+would be the owner-model violation AGENTS.md requires escalating.
 
 Avoid it by making the *rename operation* the owner: one function that performs
 the on-disk rename and updates the resolved name together, so it is impossible
@@ -300,10 +322,20 @@ site and remembering to keep them in step.
   rename performed *before* post-processing is captured by the seed rather than
   needing `markRenamed` at all. W3 remains real for quickcheck's own relocations
   of subdirectory sets, which still happen inside post-processing.
-- **`stage_quickcheck` starts working with no change to it.** It already reads
-  `p.FileFilename(fi)`, so once the resolved names are corrected upstream its
-  `VerifyCRCs` call matches by name and `Unverified` stops being reached
-  spuriously — which is #492 closing as a side effect rather than as a fix.
+- **~~`stage_quickcheck` starts working with no change to it.~~** *Wrong, and
+  corrected during implementation.* It does read `p.FileFilename(fi)`, so it
+  benefits when the resolved names are corrected upstream — but that upstream
+  correction is **conditional**, which this bullet missed. On-demand par2 can
+  be disabled, and a release carrying no deferred recovery volumes never
+  reaches `maybeReleaseRecoveryVolumes` at all. In both cases the stage
+  performs the renames *itself* and then verifies against names its own moves
+  just invalidated, marking an intact job damaged.
+
+  It cannot write the correction either: `postproc.Job` carries a
+  `*queue.Job` snapshot rather than a `*queue.Queue`, so there is no writer
+  behind it. The stage therefore applies the rename mapping in memory before
+  verifying — see `verifyJobCRCs`. This is a real change to it, not a side
+  effect.
 
 **One ordering fact this depends on**, checked rather than assumed:
 `quickcheck` is the first stage, ahead of every renaming stage
