@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 )
@@ -83,6 +84,21 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if len(renames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Relocated %d file(s) into subdirectories", len(renames))
 		for _, r := range renames {
+			// Ownership follows the file. Job.OwnedFiles is seeded once from
+			// disk before any stage runs (postproc.go), and every other stage
+			// that moves a file extends it — stage_deobfuscate,
+			// stage_par2names and stage_rarvolrecovery all call markRenamed.
+			// This stage did not, so a relocated file left its old path in the
+			// set and its new path absent, and the ownership guards in
+			// extension_cleanup and sample_cleanup then skipped it as
+			// unowned.
+			//
+			// Rename paths are relative to DownloadDir; markRenamed keys on
+			// absolute paths, which is what markOwned resolves for its own
+			// relative inputs.
+			markRenamed(job,
+				filepath.Join(job.DownloadDir, r.From),
+				filepath.Join(job.DownloadDir, filepath.FromSlash(r.To)))
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %s → %s", r.From, r.To))
 		}
