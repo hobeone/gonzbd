@@ -441,6 +441,22 @@ func probeIdentifyThenVerify(
 		if err != nil {
 			return fmt.Errorf("hash16k %s: %w", name, err)
 		}
+		// head is ONE article's payload, not the file. par2's Hash16k covers
+		// the first 16 KiB of the whole file (or all of it, when smaller), so
+		// a first article carrying fewer than 16 KiB of a larger file hashes a
+		// prefix par2 never recorded. Reporting that as "no Hash16k match"
+		// would be a probe artefact indistinguishable from the real verdict,
+		// and this tool exists to be believed about exactly that.
+		//
+		// Gated on the file having more than one segment: a single-segment
+		// file IS its first article, so a short head is the whole thing and
+		// the hash is the one par2 recorded.
+		const hash16kLen = 16 * 1024
+		if len(head) < hash16kLen && len(f.Articles) > 1 {
+			fmt.Printf("%-34s %-34s %s\n", truncate(name, 34), "-",
+				fmt.Sprintf("inconclusive: first article is %d B, under the %d B par2 hashes", len(head), hash16kLen))
+			continue
+		}
 		if d, hit := byHash[h]; hit {
 			identified[i] = d
 			idOK++
@@ -453,8 +469,20 @@ func probeIdentifyThenVerify(
 	fmt.Printf("\n  identified %d of %d delivered content file(s)\n", idOK, contentFiles)
 	fmt.Printf("  par2 index describes %d file(s); %d accounted for\n", len(descs), idOK)
 
-	allAccounted := idOK == len(descs)
-	fmt.Printf("  every par2 entry accounted for: %v\n", allAccounted)
+	// Distinct par2 ENTRIES matched, not delivered files that matched one.
+	// Two delivered files sharing their first 16 KiB both match the same
+	// FileDesc, so idOK can reach len(descs) with entries still unclaimed —
+	// and the probe would print "every par2 entry accounted for: true" where
+	// production, which asks id.Accounted() over distinct entries, fetches.
+	// A diagnostic that can disagree with the code it exists to predict is
+	// worse than none.
+	accounted := make(map[[16]byte]struct{}, len(identified))
+	for _, d := range identified {
+		accounted[d.Hash16k] = struct{}{}
+	}
+	allAccounted := len(accounted) == len(descs)
+	fmt.Printf("  every par2 entry accounted for: %v (%d distinct entr(y/ies) matched)\n",
+		allAccounted, len(accounted))
 	if !allAccounted {
 		fmt.Printf("    -> proposed design: fetch ALL recovery volumes, full par2 repair\n")
 	}
