@@ -22,7 +22,7 @@ RUN bun run build
 # resulting binary needs to target the other platform, not the compiler
 # toolchain running it. TARGETOS/TARGETARCH are buildx's implicit global
 # args; they must be re-declared with ARG inside this stage to be visible.
-FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine3.24 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS go-builder
 WORKDIR /src
 ARG TARGETOS
 ARG TARGETARCH

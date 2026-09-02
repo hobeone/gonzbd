@@ -1,6 +1,6 @@
 module github.com/hobeone/gonzbd
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/bodgit/sevenzip v1.6.5
