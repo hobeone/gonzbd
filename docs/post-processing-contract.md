@@ -177,9 +177,9 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    "unavailable" meaning rather than a mismatch, so `unverifiable > 0` and the
    stage lands on `Damaged`. The consequences stay conservative in both places
    that consume the verdict: `repair` is not bypassed by clause one, and
-   `app.par2Verdict` returns true, so on-demand par2 fetches the recovery
-   volumes. That costs bandwidth and a par2 pass on a file with a hole; it never
-   ships an unrepaired one.
+   `app.par2Verdict` returns `outcomeRepair`, so on-demand par2 fetches the
+   recovery volumes. That costs bandwidth and a par2 pass on a file with a
+   hole; it never ships an unrepaired one.
 
    `Inconclusive` is also the **default** the quickcheck stage adopts as soon
    as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on

@@ -6,8 +6,9 @@ run TestPar2Verdict|TestMaybeReleaseRecoveryVolumes|TestApplyPar2Names|TestRecor
 
 # The reversal itself. An entry matching nothing delivered must fetch the
 # recovery volumes when something else DID match; the shipped code discarded
-# them here, and that decision is terminal because post-processing cannot fetch
-# anything (NeedRequeue has no consumer).
+# them here, and that decision is terminal because this on-demand fetch is
+# the only chance to get the volumes onto disk before repair runs -- there is
+# no post-processing mechanism that can request more of them afterward.
 [an unaccounted par2 entry no longer forces a fetch]
 file internal/app/app.go
 --- anchor
@@ -64,10 +65,10 @@ func (id Identification) Accounted() bool { return true }
 [the download path relocates files]
 file internal/app/app.go
 --- anchor
-			needsRecovery, reason = par2Verdict(a, app.log)
+			outcome, reason = par2Verdict(a, app.log)
 		}
 --- replace
-			needsRecovery, reason = par2Verdict(a, app.log)
+			outcome, reason = par2Verdict(a, app.log)
 			par2.ApplyRenames(dir, a, app.log)
 		}
 --- end
