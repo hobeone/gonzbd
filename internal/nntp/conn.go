@@ -416,11 +416,10 @@ func (c *Conn) expectGreeting() error {
 // ctx's own cancellation reaches it first is authoritative, so cleanup
 // racing a concurrent cancellation can no longer stamp a stray deadline on
 // a connection that has already returned to service (#396).
-func (c *Conn) setupHandshakeDeadline(ctx context.Context) func() {
-	stop := context.AfterFunc(ctx, func() {
+func (c *Conn) setupHandshakeDeadline(ctx context.Context) func() bool {
+	return context.AfterFunc(ctx, func() {
 		_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
 	})
-	return func() { stop() }
 }
 
 // validateCredential rejects credentials that contain characters
