@@ -175,43 +175,56 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	claimedEntry := make(map[int]bool, len(manifest))
 	id := Identification{Ignored: ignored}
 
-	// Pass 1 — name, then the flattened form of the same path.
-	for ei, fd := range manifest {
-		slashed := filepath.ToSlash(fd.FileName)
-		for _, cand := range []struct {
-			name string
-			by   MatchMethod
-		}{
-			{filepath.Base(slashed), MatchName},
-			{strings.ReplaceAll(slashed, "/", "_"), MatchFlattenedName},
-		} {
-			if _, ok := flatFiles[cand.name]; !ok || claimedFile[cand.name] {
-				continue
-			}
-			claimedFile[cand.name] = true
-			claimedEntry[ei] = true
-			id.Files = append(id.Files, Identified{OnDisk: cand.name, Desc: fd, By: cand.by})
-			break
+	// Pass 1 — every basename first, and only then every flattened form.
+	//
+	// The two sweeps must not be merged into one per-entry loop that tries
+	// both candidates. A basename match is the stronger evidence, and running
+	// them together lets an earlier entry's WEAK match consume a file that a
+	// later entry matches exactly: with entries ["a/b.txt", "Sub/a_b.txt"] and
+	// "a_b.txt" on disk, the per-entry form gives the file to "a/b.txt" by its
+	// flattened name, while "Sub/a_b.txt" matches it by basename.
+	claimName := func(ei int, fd FileDesc, name string, by MatchMethod) {
+		if _, ok := flatFiles[name]; !ok || claimedFile[name] || claimedEntry[ei] {
+			return
 		}
+		claimedFile[name] = true
+		claimedEntry[ei] = true
+		id.Files = append(id.Files, Identified{OnDisk: name, Desc: fd, By: by})
+	}
+	for ei, fd := range manifest {
+		claimName(ei, fd, filepath.Base(filepath.ToSlash(fd.FileName)), MatchName)
+	}
+	for ei, fd := range manifest {
+		claimName(ei, fd, strings.ReplaceAll(filepath.ToSlash(fd.FileName), "/", "_"), MatchFlattenedName)
 	}
 
 	// Pass 2 — Hash16k over what pass 1 left. Each unclaimed file is hashed at
 	// most once; the index holds only entries still seeking a file.
+	// A set that describes two files with identical first 16 KB cannot be
+	// disambiguated this way, and silently letting one alias the other would
+	// hand par2 the wrong name. Both are dropped from the index, so neither
+	// is identified here and pass 3 gets its chance.
+	//
+	// Ambiguity is tracked in its own set rather than by poisoning the index
+	// with a sentinel. A sentinel has to be read back on the next duplicate,
+	// and the obvious choice — a negative index — panics at manifest[prev] the
+	// moment a THIRD entry shares the hash. This shape has no such read.
 	hashIndex := make(map[[16]byte]int, len(manifest))
+	ambiguous := make(map[[16]byte]bool)
 	for ei, fd := range manifest {
 		if claimedEntry[ei] {
 			continue
 		}
-		// A set that describes two files with identical first 16 KB cannot be
-		// disambiguated this way, and silently letting one alias the other
-		// would hand par2 the wrong name. Leave both unaccounted instead.
-		if prev, dup := hashIndex[fd.Hash16k]; dup {
-			log.Warn("identify: two par2 entries share a Hash16k; neither can be identified by content",
-				"first", manifest[prev].FileName, "second", fd.FileName)
-			hashIndex[fd.Hash16k] = -1
+		if _, dup := hashIndex[fd.Hash16k]; dup {
+			ambiguous[fd.Hash16k] = true
 			continue
 		}
 		hashIndex[fd.Hash16k] = ei
+	}
+	for h := range ambiguous {
+		log.Warn("identify: par2 entries share a Hash16k; none can be identified by first-16KB content",
+			"par2path", manifest[hashIndex[h]].FileName)
+		delete(hashIndex, h)
 	}
 
 	if len(hashIndex) > 0 {
@@ -225,7 +238,18 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 				continue
 			}
 			ei, ok := hashIndex[hash]
-			if !ok || ei < 0 {
+			if !ok {
+				continue
+			}
+			// The first 16 KB agreeing is not enough on its own. The matcher
+			// this replaces checked the length too, and dropping that check
+			// would let Identify report a truncated file as accounted while
+			// relocateFile — which does check — refuses to move it, so the
+			// two would disagree about the same file.
+			if info, iErr := flatFiles[name].Info(); iErr != nil ||
+				(manifest[ei].FileSize > 0 && uint64(info.Size()) != manifest[ei].FileSize) { //nolint:gosec // size is non-negative
+				log.Info("identify: Hash16k matched but the length does not",
+					"file", name, "par2path", manifest[ei].FileName)
 				continue
 			}
 			delete(hashIndex, hash)
@@ -240,12 +264,27 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	// Pass 3 — whole-file CRC32, for entries Hash16k could not settle. Gated
 	// on the entry carrying IFSC-derived data, since without it there is
 	// nothing to compare against.
+	// Same ambiguity rule as pass 2, for the same reason: two entries with
+	// identical content are indistinguishable, and overwriting the first with
+	// the second would silently name a delivered file after whichever entry
+	// happened to come last in the manifest.
 	crcIndex := make(map[crcSizeKey]int)
+	crcAmbiguous := make(map[crcSizeKey]bool)
 	for ei, fd := range manifest {
 		if claimedEntry[ei] || fd.FileCRC32 == 0 || fd.FileSize == 0 {
 			continue
 		}
-		crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = ei
+		key := crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}
+		if _, dup := crcIndex[key]; dup {
+			crcAmbiguous[key] = true
+			continue
+		}
+		crcIndex[key] = ei
+	}
+	for k := range crcAmbiguous {
+		log.Warn("identify: par2 entries share a CRC32 and length; none can be identified by content",
+			"par2path", manifest[crcIndex[k]].FileName)
+		delete(crcIndex, k)
 	}
 
 	for _, name := range candidates {

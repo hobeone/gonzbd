@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -17,6 +18,23 @@ func resolvedName(m *queue.Manifest, p *queue.JobProgress, fi int) string {
 		name = fn
 	}
 	return name
+}
+
+// recordableAsResolvedName reports whether a rename target can be stored in
+// JobProgress.Filename without being corrupted on the way back out.
+//
+// It cannot hold a path. pipeline.go's registerFile feeds the field back
+// through fsutil.JoinSafe on a resume or retry, and fsutil.SanitizeFilename
+// lists "/" and "\" among its illegal characters and rewrites them to "_". So
+// recording "Screens/shot.jpg" would send a later retry to write
+// "Screens_shot.jpg" while the file sits at "Screens/shot.jpg".
+//
+// A subdirectory relocation is therefore performed on disk but not recorded.
+// That costs nothing the field was carrying before, and the case this whole
+// path exists for is unaffected: deobfuscation renames one flat name to
+// another.
+func recordableAsResolvedName(to string) bool {
+	return !strings.ContainsAny(to, `/\`)
 }
 
 // applyPar2Names identifies the delivered files against the par2 index and,
@@ -74,6 +92,11 @@ func (app *Application) applyPar2Names(
 
 	applied := 0
 	for _, r := range renames {
+		if !recordableAsResolvedName(r.To) {
+			log.Debug("on-demand par2: relocated into a subdirectory; not recording it as the resolved name",
+				"job", jobID, "from", r.From, "to", r.To)
+			continue
+		}
 		fi, ok := idxByName[r.From]
 		if !ok {
 			// par2 relocated something the manifest does not describe under

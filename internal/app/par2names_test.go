@@ -85,6 +85,97 @@ func TestApplyPar2Names_RenamesAndRecordsTheNewName(t *testing.T) {
 	}
 }
 
+// TestApplyPar2Names_SubdirectoryRelocationIsNotRecorded drives a real
+// subdirectory relocation through applyPar2Names.
+//
+// The file must move, and the move must NOT be written to
+// JobProgress.Filename: that field goes back through fsutil.JoinSafe on a
+// resume, and SanitizeFilename would turn "Screens/data.bin" into
+// "Screens_data.bin", sending a retry to write a file that is not there.
+func TestApplyPar2Names_SubdirectoryRelocationIsNotRecorded(t *testing.T) {
+	t.Parallel()
+
+	downloadDir := t.TempDir()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.DownloadDir = downloadDir })
+
+	const jobID = "subdir-job"
+	qjob := newPar2Job(t, []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+		{subject: "data.vol000+01.par2", bytes: 100},
+	})
+	qjob.ID = jobID
+	qjob.Name = "subdir-job-name"
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	jobDir := filepath.Join(downloadDir, qjob.Name)
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// A set whose only entry is "Screens/data.bin".
+	b, err := os.ReadFile("../../test/fixtures/par2/subdir.par2")
+	if err != nil {
+		t.Skipf("subdir par2 fixture unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "subdir.par2"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	copyFixturePayload(t, jobDir, "data.bin")
+
+	app := &Application{queue: q, log: slog.New(slog.DiscardHandler), config: cfg, emitter: dummyEmitter{}}
+	sets, err := par2.FindPar2Files(jobDir, par2.DefaultParseOptions())
+	if err != nil || len(sets) == 0 {
+		t.Fatalf("FindPar2Files: %v (%d sets)", err, len(sets))
+	}
+	snap := q.SnapshotJob(jobID)
+	m, err := snap.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 0 {
+		t.Errorf("recorded %d renames; a subdirectory path cannot be stored as a resolved name", applied)
+	}
+
+	// The relocation itself still happened.
+	if _, err := os.Stat(filepath.Join(jobDir, "Screens", "data.bin")); err != nil {
+		t.Fatalf("fixture guard: the file was not relocated, so this proves nothing: %v", err)
+	}
+	if got := q.SnapshotJob(jobID).Progress().FileFilename(0); got != "" {
+		t.Errorf("resolved filename = %q; a path here resolves to the wrong file on resume", got)
+	}
+}
+
+// TestRecordableAsResolvedName pins what JobProgress.Filename can hold.
+//
+// The field is fed back through fsutil.JoinSafe on a resume, and
+// SanitizeFilename rewrites "/" and "\" to "_" — so a path recorded there
+// resolves to a different file than the one on disk. A flat rename, which is
+// the deobfuscation case this path exists for, is fine.
+func TestRecordableAsResolvedName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		to   string
+		want bool
+	}{
+		{"data.bin", true},
+		{"movie.part1.rar", true},
+		{"Screens/shot.jpg", false},
+		{`Screens\shot.jpg`, false},
+		{"a/b/c.txt", false},
+	} {
+		if got := recordableAsResolvedName(tc.to); got != tc.want {
+			t.Errorf("recordableAsResolvedName(%q) = %v, want %v", tc.to, got, tc.want)
+		}
+	}
+}
+
 // TestResolvedName pins the precedence both par2 call sites already use: the
 // recorded on-disk name wins over the NZB subject, and the subject is the
 // fallback until one is recorded.

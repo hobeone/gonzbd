@@ -39,16 +39,11 @@ file internal/par2/identify.go
 	if false {
 --- end
 
-# A set describing two files with identical first 16 KB cannot be resolved by
-# content, and guessing hands par2 the wrong name. Poisoning the index with -1
-# is what refuses; letting the second entry win is the plausible-looking bug.
-[an ambiguous hash silently picks the second entry]
-file internal/par2/identify.go
---- anchor
-			hashIndex[fd.Hash16k] = -1
---- replace
-			hashIndex[fd.Hash16k] = ei
---- end
+# (A mutation named "an ambiguous hash silently picks the second entry" lived
+# here, anchored on `hashIndex[fd.Hash16k] = -1`. That sentinel is gone -- it
+# was read back as manifest[prev] and panicked on a THIRD duplicate -- so the
+# anchor went stale with the fix. "a shared Hash16k lets the first entry win",
+# below, is its replacement against the sentinel-free code.)
 
 # par2 cannot describe its own files, and a sidecar must never be claimed in
 # place of a protected file. Without this the .nfo fixture — deliberately
@@ -72,9 +67,9 @@ var ignoredExtensions = []string{}
 [flattened-name matching never fires]
 file internal/par2/identify.go
 --- anchor
-			{strings.ReplaceAll(slashed, "/", "_"), MatchFlattenedName},
+		claimName(ei, fd, strings.ReplaceAll(filepath.ToSlash(fd.FileName), "/", "_"), MatchFlattenedName)
 --- replace
-			{filepath.Base(slashed), MatchFlattenedName},
+		claimName(ei, fd, filepath.Base(filepath.ToSlash(fd.FileName)), MatchFlattenedName)
 --- end
 
 # Pass 3 exists for entries sharing a Hash16k. Inverted rather than disabled:
@@ -91,6 +86,69 @@ file internal/par2/identify.go
 # The guard that makes extending identification to flat sets safe, checked
 # where it actually acts. Without it QuickCheck self-moves every correctly
 # named file in an ordinary job, which no unit test of Identify can see.
+# Ambiguity must be refused, not resolved by arrival order. Reintroducing the
+# "first one wins" form is the shape the original code had via a sentinel, and
+# with three entries that sentinel was read back as manifest[-1] and panicked.
+[a shared Hash16k lets the first entry win]
+file internal/par2/identify.go
+--- anchor
+		if _, dup := hashIndex[fd.Hash16k]; dup {
+			ambiguous[fd.Hash16k] = true
+			continue
+		}
+--- replace
+		if _, dup := hashIndex[fd.Hash16k]; dup {
+			continue
+		}
+--- end
+
+# Pass 3's ambiguity, same rule. This is the literal original defect: an
+# unconditional overwrite, so the LAST entry sharing a CRC and length wins.
+[a shared CRC32 and length lets the last entry win]
+file internal/par2/identify.go
+--- anchor
+		if _, dup := crcIndex[key]; dup {
+			crcAmbiguous[key] = true
+			continue
+		}
+--- replace
+		if _, dup := crcIndex[key]; dup {
+			crcIndex[key] = ei
+			continue
+		}
+--- end
+
+# Hash16k covers 16 KB, so the length has to agree too. Inverted rather than
+# removed, which keeps info used and the tree building.
+[a Hash16k match ignores the recorded length]
+file internal/par2/identify.go
+--- anchor
+			(manifest[ei].FileSize > 0 && uint64(info.Size()) != manifest[ei].FileSize) { //nolint:gosec // size is non-negative
+--- replace
+			(manifest[ei].FileSize > 0 && uint64(info.Size()) == manifest[ei].FileSize) { //nolint:gosec // size is non-negative
+--- end
+
+# Every basename must be tried before any flattened form. Swapping the sweeps
+# is the cheapest way to express the weaker ordering; merging them per-entry
+# has the same effect and was the original bug.
+[flattened names are matched before basenames]
+file internal/par2/identify.go
+--- anchor
+	for ei, fd := range manifest {
+		claimName(ei, fd, filepath.Base(filepath.ToSlash(fd.FileName)), MatchName)
+	}
+	for ei, fd := range manifest {
+		claimName(ei, fd, strings.ReplaceAll(filepath.ToSlash(fd.FileName), "/", "_"), MatchFlattenedName)
+	}
+--- replace
+	for ei, fd := range manifest {
+		claimName(ei, fd, strings.ReplaceAll(filepath.ToSlash(fd.FileName), "/", "_"), MatchFlattenedName)
+	}
+	for ei, fd := range manifest {
+		claimName(ei, fd, filepath.Base(filepath.ToSlash(fd.FileName)), MatchName)
+	}
+--- end
+
 [QuickCheck relocates every identification]
 file internal/par2/quickcheck.go
 --- anchor
