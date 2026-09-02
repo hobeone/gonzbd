@@ -22,16 +22,17 @@ type Rename struct {
 // relocates them into the correct subdirectory structure. This must run
 // before par2 repair so par2 can find files at their expected relative paths.
 //
-// It runs four matching passes for each par2 entry that contains a
-// subdirectory component:
+// Matching itself lives in Identify, which is pure; this function is the
+// part that acts on the answer. It relocates only where the identified file
+// is not already at the path par2 records, so it is a no-op for the ordinary
+// flat job rather than a self-move for every file in it.
 //
-//  1. Basename match: flat file "foo.jpg" matches par2 "Screens/foo.jpg"
-//  2. Flattened match: flat file "Screens_foo.jpg" matches par2 "Screens/foo.jpg"
-//     because SanitizeFilename replaces "/" with "_" during download
-//  3. Hash16k match: for remaining unmatched entries, compute MD5 of the first
-//     16KB of each unmatched flat file and match against the par2 Hash16k
-//  4. CRC32+Size fallback: compute the full file CRC32 and match against the
-//     par2 (FileCRC32, FileSize) tuple — handles obfuscated names (spec §5.3)
+// It no longer restricts itself to par2 entries containing a subdirectory
+// component. That restriction used to be what kept the old matchers safe —
+// they relocated as an inseparable part of matching — and its cost was that
+// an obfuscated flat release was never matched at all, so its recovery
+// volumes were discarded on the strength of a comparison that could not have
+// succeeded (#492).
 //
 // Errors during individual renames are logged but don't abort — par2 repair
 // will report any still-missing files.
@@ -49,44 +50,30 @@ func QuickCheckWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseO
 		log = slog.Default()
 	}
 
-	manifest := collectManifestsWithOptions(sets, log, opts)
-	if len(manifest) == 0 {
-		log.Info("quickcheck: no file descriptions found in any par2 set")
-		return nil, nil
-	}
-
-	log.Info("quickcheck: total par2 manifest entries", "count", len(manifest))
-	for i, fd := range manifest {
-		log.Info("quickcheck: manifest entry",
-			"idx", i,
-			"filename", fd.FileName,
-			"size", fd.FileSize,
-			"hash16k", fmt.Sprintf("%x", fd.Hash16k))
-	}
-
-	subdirEntries := filterSubdirEntries(manifest, log)
-	if len(subdirEntries) == 0 {
-		log.Info("quickcheck: no par2 entries contain subdirectory paths — all filenames are flat")
-		return nil, nil
-	}
-
-	flatFiles, err := scanFlatFiles(dir, log)
+	id, err := IdentifyWithOptions(dir, sets, log, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	renames := make([]Rename, 0, len(subdirEntries))
-	matched := make(map[string]bool)   // flat filenames already consumed
-	relocated := make(map[string]bool) // par2 entries already relocated
-
-	renames = append(renames, matchByBasename(dir, subdirEntries, flatFiles, matched, relocated, log)...)
-	renames = append(renames, matchByFlattenedName(dir, subdirEntries, flatFiles, matched, relocated, log)...)
-	renames = append(renames, matchByHash16k(dir, subdirEntries, flatFiles, matched, relocated, log)...)
-	renames = append(renames, matchByCRC32Fallback(dir, subdirEntries, flatFiles, matched, relocated, log)...)
+	renames := make([]Rename, 0, len(id.Files))
+	for _, f := range id.Files {
+		// The guard that lets identification run for FLAT sets. par2 names a
+		// correctly-placed flat file exactly what it is already called, so
+		// relocating every identification would self-move every file in an
+		// ordinary job. This used to be enforced by refusing to identify flat
+		// sets at all, which is why obfuscated releases went unmatched.
+		if !f.NeedsRename() {
+			continue
+		}
+		if relocateFile(dir, f.OnDisk, f.Desc, log) {
+			renames = append(renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
+		}
+	}
 
 	log.Info("quickcheck: complete",
-		"total_renames", len(renames),
-		"total_subdir_entries", len(subdirEntries))
+		"identified", len(id.Files),
+		"renamed", len(renames),
+		"unaccounted", len(id.Unaccounted))
 
 	return renames, nil
 }
@@ -122,30 +109,6 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 	return manifest
 }
 
-func filterSubdirEntries(manifest []FileDesc, log *slog.Logger) []FileDesc {
-	if log == nil {
-		log = slog.Default()
-	}
-	var subdirEntries []FileDesc
-	for _, fd := range manifest {
-		normalized := filepath.ToSlash(fd.FileName)
-		if strings.Contains(normalized, "/") {
-			fd.FileName = normalized
-			subdirEntries = append(subdirEntries, fd)
-		}
-	}
-	if len(subdirEntries) == 0 {
-		return nil
-	}
-	log.Info("quickcheck: par2 entries with subdirectory paths",
-		"count", len(subdirEntries))
-	for _, fd := range subdirEntries {
-		log.Info("quickcheck: needs relocation",
-			"par2path", fd.FileName, "size", fd.FileSize)
-	}
-	return subdirEntries
-}
-
 func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error) {
 	if log == nil {
 		log = slog.Default()
@@ -169,239 +132,6 @@ func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error)
 	return flatFiles, nil
 }
 
-func matchByBasename(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
-	if log == nil {
-		log = slog.Default()
-	}
-	renames := make([]Rename, 0, len(subdirEntries))
-	log.Info("quickcheck: Phase 1 — basename matching")
-	for _, fd := range subdirEntries {
-		if relocated[fd.FileName] {
-			continue
-		}
-		basename := filepath.Base(fd.FileName)
-		if _, ok := flatFiles[basename]; ok && !matched[basename] {
-			log.Info("quickcheck: phase 1 candidate",
-				"flat", basename, "par2path", fd.FileName)
-			if relocateFile(dir, basename, fd, log) {
-				renames = append(renames, Rename{From: basename, To: fd.FileName})
-				matched[basename] = true
-				relocated[fd.FileName] = true
-			}
-		} else {
-			log.Debug("quickcheck: phase 1 no match",
-				"basename", basename, "par2path", fd.FileName,
-				"exists", flatFiles[basename] != nil, "already_matched", matched[basename])
-		}
-	}
-	return renames
-}
-
-func matchByFlattenedName(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
-	if log == nil {
-		log = slog.Default()
-	}
-	renames := make([]Rename, 0, len(subdirEntries))
-	log.Info("quickcheck: Phase 2 — flattened name matching (/ → _)")
-	for _, fd := range subdirEntries {
-		if relocated[fd.FileName] {
-			continue
-		}
-		flattenedName := strings.ReplaceAll(fd.FileName, "/", "_")
-		if _, ok := flatFiles[flattenedName]; ok && !matched[flattenedName] {
-			log.Info("quickcheck: phase 2 candidate",
-				"flat", flattenedName, "par2path", fd.FileName)
-			if relocateFile(dir, flattenedName, fd, log) {
-				renames = append(renames, Rename{From: flattenedName, To: fd.FileName})
-				matched[flattenedName] = true
-				relocated[fd.FileName] = true
-			}
-		} else {
-			log.Debug("quickcheck: phase 2 no match",
-				"flattenedName", flattenedName, "par2path", fd.FileName,
-				"exists", flatFiles[flattenedName] != nil, "already_matched", matched[flattenedName])
-		}
-	}
-	return renames
-}
-
-func filterUnmatched(subdirEntries []FileDesc, relocated map[string]bool, requireCRC bool) []FileDesc {
-	var unmatched []FileDesc
-	for _, fd := range subdirEntries {
-		if relocated[fd.FileName] {
-			continue
-		}
-		if requireCRC && (fd.FileCRC32 == 0 || fd.FileSize == 0) {
-			continue
-		}
-		unmatched = append(unmatched, fd)
-	}
-	return unmatched
-}
-
-func shouldSkipFlatFile(name string, matched map[string]bool) bool {
-	if matched[name] {
-		return true
-	}
-	ext := strings.ToLower(filepath.Ext(name))
-	return ext == ".par2" || ext == ".sfv" || ext == ".nfo"
-}
-
-func tryMatchHash16kFile(dir, name string, de os.DirEntry, hashIndex map[[16]byte]FileDesc, log *slog.Logger) (Rename, bool) {
-	if log == nil {
-		log = slog.Default()
-	}
-	hash, err := ComputeHash16k(filepath.Join(dir, de.Name()))
-	if err != nil {
-		log.Debug("quickcheck: phase 3 cannot hash file",
-			"name", name, "err", err)
-		return Rename{}, false
-	}
-
-	fd, ok := hashIndex[hash]
-	if !ok {
-		return Rename{}, false
-	}
-
-	info, err := de.Info()
-	if err != nil {
-		return Rename{}, false
-	}
-	if uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
-		log.Info("quickcheck: phase 3 hash16k matched but size differs",
-			"flat", name, "par2path", fd.FileName,
-			"flatSize", info.Size(), "par2Size", fd.FileSize)
-		return Rename{}, false
-	}
-
-	log.Info("quickcheck: phase 3 hash16k match found",
-		"flat", name, "par2path", fd.FileName)
-	if relocateFile(dir, name, fd, log) {
-		delete(hashIndex, hash)
-		return Rename{From: name, To: fd.FileName}, true
-	}
-	return Rename{}, false
-}
-
-func matchByHash16k(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
-	if log == nil {
-		log = slog.Default()
-	}
-	unmatchedEntries := filterUnmatched(subdirEntries, relocated, false)
-	if len(unmatchedEntries) == 0 {
-		log.Info("quickcheck: Phase 3 — skipped, all subdir entries matched")
-		return nil
-	}
-
-	log.Info("quickcheck: Phase 3 — hash16k matching",
-		"unmatched_entries", len(unmatchedEntries))
-
-	hashIndex := make(map[[16]byte]FileDesc)
-	for _, fd := range unmatchedEntries {
-		hashIndex[fd.Hash16k] = fd
-		log.Info("quickcheck: phase 3 seeking hash16k match",
-			"par2path", fd.FileName,
-			"hash16k", fmt.Sprintf("%x", fd.Hash16k))
-	}
-
-	renames := make([]Rename, 0, len(unmatchedEntries))
-	for name, de := range flatFiles {
-		if shouldSkipFlatFile(name, matched) {
-			continue
-		}
-		if ren, ok := tryMatchHash16kFile(dir, name, de, hashIndex, log); ok {
-			renames = append(renames, ren)
-			matched[name] = true
-			relocated[ren.To] = true
-		}
-	}
-
-	for _, fd := range hashIndex {
-		log.Debug("quickcheck: phase 3 unmatched, will try CRC fallback",
-			"par2path", fd.FileName, "size", fd.FileSize)
-	}
-	return renames
-}
-
-func tryMatchCRC32File(dir, name string, de os.DirEntry, crcIndex map[crcSizeKey]FileDesc, log *slog.Logger) (Rename, bool) {
-	if log == nil {
-		log = slog.Default()
-	}
-	info, err := de.Info()
-	if err != nil {
-		return Rename{}, false
-	}
-	fileSize := uint64(info.Size()) //nolint:gosec // size is non-negative
-
-	sizeMatch := false
-	for k := range crcIndex {
-		if k.size == fileSize {
-			sizeMatch = true
-			break
-		}
-	}
-	if !sizeMatch {
-		return Rename{}, false
-	}
-
-	fileCRC, err := computeFileCRC32(filepath.Join(dir, name))
-	if err != nil {
-		log.Debug("quickcheck: phase 4 cannot compute CRC32",
-			"name", name, "err", err)
-		return Rename{}, false
-	}
-
-	key := crcSizeKey{crc: fileCRC, size: fileSize}
-	if fd, ok := crcIndex[key]; ok {
-		log.Info("quickcheck: phase 4 CRC32+size match found",
-			"flat", name, "par2path", fd.FileName,
-			"crc32", fmt.Sprintf("%08x", fileCRC), "size", fileSize)
-		if relocateFile(dir, name, fd, log) {
-			delete(crcIndex, key)
-			return Rename{From: name, To: fd.FileName}, true
-		}
-	}
-	return Rename{}, false
-}
-
-func matchByCRC32Fallback(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
-	if log == nil {
-		log = slog.Default()
-	}
-	unmatchedPhase4 := filterUnmatched(subdirEntries, relocated, true)
-	if len(unmatchedPhase4) == 0 {
-		return nil
-	}
-
-	log.Info("quickcheck: Phase 4 — CRC32+size fallback matching",
-		"unmatched_entries", len(unmatchedPhase4))
-
-	crcIndex := make(map[crcSizeKey]FileDesc)
-	for _, fd := range unmatchedPhase4 {
-		crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = fd
-	}
-
-	renames := make([]Rename, 0, len(unmatchedPhase4))
-	for name, de := range flatFiles {
-		if shouldSkipFlatFile(name, matched) || len(crcIndex) == 0 {
-			continue
-		}
-		if ren, ok := tryMatchCRC32File(dir, name, de, crcIndex, log); ok {
-			renames = append(renames, ren)
-			matched[name] = true
-			relocated[ren.To] = true
-		}
-	}
-
-	for _, fd := range crcIndex {
-		log.Warn("quickcheck: par2 entry unmatched after all phases",
-			"par2path", fd.FileName, "size", fd.FileSize)
-	}
-	return renames
-}
-
-// relocateFile moves a flat file into the par2-specified subdirectory path.
-// Returns true on success.
 func relocateFile(dir, flatName string, fd FileDesc, log *slog.Logger) bool {
 	if log == nil {
 		log = slog.Default()

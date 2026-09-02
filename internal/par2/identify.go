@@ -16,19 +16,39 @@ const (
 	// par2 calls it (comparing basenames, so a par2 entry naming a
 	// subdirectory still matches a flat file).
 	MatchName MatchMethod = iota
+	// MatchFlattenedName is a filename match against the par2 path with its
+	// separators replaced by underscores — "Screens/shot.jpg" delivered as
+	// "Screens_shot.jpg", which is how some posters flatten a tree.
+	MatchFlattenedName
 	// MatchHash16k is a content match on the MD5 of the first 16 KB, the
 	// identifier par2 records for exactly this purpose. It is what resolves an
 	// obfuscated release, where the delivered name carries no relationship to
 	// the par2 name.
 	MatchHash16k
+	// MatchCRC32 is a content match on the whole-file CRC32 and the on-disk
+	// size. It costs a full read and finds almost nothing Hash16k does not,
+	// since a file whose first 16 KB differ has either different or damaged
+	// content and fails a whole-file check too. It earns its place on one
+	// case: entries that share a Hash16k, which content cannot otherwise tell
+	// apart.
+	//
+	// Both sides here are the same quantity — par2's recorded CRC32 and
+	// length against the file's actual CRC32 and actual length from
+	// os.DirEntry.Info(). That is what verifycrc.go's matchCRCSize gets
+	// wrong; do not "unify" the two without reading both.
+	MatchCRC32
 )
 
 func (m MatchMethod) String() string {
 	switch m {
 	case MatchName:
 		return "name"
+	case MatchFlattenedName:
+		return "flattened-name"
 	case MatchHash16k:
 		return "hash16k"
+	case MatchCRC32:
+		return "crc32"
 	default:
 		return fmt.Sprintf("MatchMethod(%d)", uint8(m))
 	}
@@ -102,14 +122,19 @@ func isIgnoredForIdentification(name string) bool {
 // replaces relocated a file as an inseparable part of matching it, so there
 // was no way to consult them for a verdict.
 //
-// Matching runs in two passes, cheapest first:
+// Matching runs in three passes, cheapest first:
 //
-//  1. Name. A par2 entry claims the file whose basename equals its own.
+//  1. Name. A par2 entry claims the file whose basename equals its own, or
+//     whose name is its path with separators flattened to underscores.
 //  2. Hash16k. Each still-unclaimed file has the MD5 of its first 16 KB
-//     computed once and looked up among the still-unclaimed entries.
+//     computed once and looked up among the still-unclaimed entries. This is
+//     what resolves obfuscation, and it is where the useful work happens.
+//  3. Whole-file CRC32, for entries carrying IFSC data that pass 2 could not
+//     settle — in practice only those sharing a Hash16k with another entry.
+//     It reads whole files, so it is guarded by a size check first.
 //
 // A file is claimed by at most one entry and an entry claims at most one file,
-// so the two passes cannot both consume the same file.
+// so no two passes can consume the same file.
 func Identify(dir string, sets []Set, log *slog.Logger) (Identification, error) {
 	return IdentifyWithOptions(dir, sets, log, ParseOptions{})
 }
@@ -150,15 +175,24 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	claimedEntry := make(map[int]bool, len(manifest))
 	id := Identification{Ignored: ignored}
 
-	// Pass 1 — name.
+	// Pass 1 — name, then the flattened form of the same path.
 	for ei, fd := range manifest {
-		base := filepath.Base(filepath.ToSlash(fd.FileName))
-		if _, ok := flatFiles[base]; !ok || claimedFile[base] {
-			continue
+		slashed := filepath.ToSlash(fd.FileName)
+		for _, cand := range []struct {
+			name string
+			by   MatchMethod
+		}{
+			{filepath.Base(slashed), MatchName},
+			{strings.ReplaceAll(slashed, "/", "_"), MatchFlattenedName},
+		} {
+			if _, ok := flatFiles[cand.name]; !ok || claimedFile[cand.name] {
+				continue
+			}
+			claimedFile[cand.name] = true
+			claimedEntry[ei] = true
+			id.Files = append(id.Files, Identified{OnDisk: cand.name, Desc: fd, By: cand.by})
+			break
 		}
-		claimedFile[base] = true
-		claimedEntry[ei] = true
-		id.Files = append(id.Files, Identified{OnDisk: base, Desc: fd, By: MatchName})
 	}
 
 	// Pass 2 — Hash16k over what pass 1 left. Each unclaimed file is hashed at
@@ -203,9 +237,64 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 		}
 	}
 
+	// Pass 3 — whole-file CRC32, for entries Hash16k could not settle. Gated
+	// on the entry carrying IFSC-derived data, since without it there is
+	// nothing to compare against.
+	crcIndex := make(map[crcSizeKey]int)
+	for ei, fd := range manifest {
+		if claimedEntry[ei] || fd.FileCRC32 == 0 || fd.FileSize == 0 {
+			continue
+		}
+		crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = ei
+	}
+
+	for _, name := range candidates {
+		if len(crcIndex) == 0 {
+			break
+		}
+		if claimedFile[name] {
+			continue
+		}
+		de := flatFiles[name]
+		info, iErr := de.Info()
+		if iErr != nil {
+			continue
+		}
+		size := uint64(info.Size()) //nolint:gosec // size is non-negative
+		// Size is the cheap half of the key, so check it before paying for a
+		// full read: no entry of this length means no possible match.
+		sizeExists := false
+		for k := range crcIndex {
+			if k.size == size {
+				sizeExists = true
+				break
+			}
+		}
+		if !sizeExists {
+			continue
+		}
+		crc, cErr := computeFileCRC32(filepath.Join(dir, name))
+		if cErr != nil {
+			log.Debug("identify: cannot compute CRC32", "file", name, "err", cErr)
+			continue
+		}
+		ei, ok := crcIndex[crcSizeKey{crc: crc, size: size}]
+		if !ok {
+			continue
+		}
+		delete(crcIndex, crcSizeKey{crc: crc, size: size})
+		claimedFile[name] = true
+		claimedEntry[ei] = true
+		id.Files = append(id.Files, Identified{OnDisk: name, Desc: manifest[ei], By: MatchCRC32})
+		log.Info("identify: matched by whole-file CRC32",
+			"file", name, "par2path", manifest[ei].FileName)
+	}
+
 	for ei, fd := range manifest {
 		if !claimedEntry[ei] {
 			id.Unaccounted = append(id.Unaccounted, fd)
+			log.Warn("identify: par2 entry matched no delivered file",
+				"par2path", fd.FileName, "size", fd.FileSize)
 		}
 	}
 

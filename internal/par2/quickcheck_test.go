@@ -2,8 +2,8 @@ package par2
 
 import (
 	"crypto/md5"
-	"errors"
 	"hash/crc32"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -188,30 +188,26 @@ func TestQuickCheck_NoSubdirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Par2 entry without subdirectory — no relocation needed.
-	fd := FileDesc{
-		FileName: "movie.mkv",
-		FileSize: uint64(len(content)),
-	}
+	// A flat par2 set naming exactly what is on disk. QuickCheck now
+	// IDENTIFIES these — it used to refuse to look at a flat set at all — so
+	// the thing that keeps it from churning the filesystem is NeedsRename,
+	// not the absence of matching. Renaming here would be a self-move.
+	//
+	// This test previously asserted nothing: its only branch called t.Log,
+	// and it never invoked QuickCheck. It is the regression that matters for
+	// the gate's removal, so it now runs the real thing.
+	sets := par2SetFor(t, dir, map[string][]byte{"movie.mkv": content})
 
-	// relocateFile will succeed but the file stays in the same place
-	// (filepath.Join(dir, "movie.mkv") → filepath.Join(dir, "movie.mkv")).
-	// In practice, QuickCheck filters these out before calling relocateFile.
-
-	// Just verify that the filtering logic works: FileName has no "/".
-	if filepath.ToSlash(fd.FileName) != fd.FileName || !containsSlash(fd.FileName) {
-		// Expected: no slash, so this entry would be filtered out by QuickCheck.
-		t.Log("correctly identified as flat entry (no subdirectory)")
+	renames, err := QuickCheck(dir, sets, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("QuickCheck: %v", err)
 	}
-}
-
-func containsSlash(s string) bool {
-	for _, c := range s {
-		if c == '/' {
-			return true
-		}
+	if len(renames) != 0 {
+		t.Errorf("QuickCheck relocated %+v for a correctly-named flat file; expected none", renames)
 	}
-	return false
+	if _, err := os.Stat(filepath.Join(dir, "movie.mkv")); err != nil {
+		t.Errorf("movie.mkv is no longer where it was: %v", err)
+	}
 }
 
 func TestComputeHash16k_SmallFile(t *testing.T) {
@@ -558,267 +554,6 @@ func TestQuickCheck_EdgeCases(t *testing.T) {
 	})
 }
 
-func TestMatchByBasename_Standalone(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("basename standalone content")
-	if err := os.WriteFile(filepath.Join(dir, "photo.jpg"), content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	flatFiles, err := scanFlatFiles(dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	subdirEntries := []FileDesc{
-		{FileName: "Album/photo.jpg", FileSize: uint64(len(content))},
-		{FileName: "Album/other.jpg", FileSize: 100}, // missing flat file
-	}
-	matched := make(map[string]bool)
-	relocated := make(map[string]bool)
-
-	// Test successful match
-	renames := matchByBasename(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames) != 1 {
-		t.Fatalf("expected 1 rename, got %d", len(renames))
-	}
-	if renames[0].From != "photo.jpg" || renames[0].To != "Album/photo.jpg" {
-		t.Errorf("unexpected rename: %+v", renames[0])
-	}
-	if !matched["photo.jpg"] || !relocated["Album/photo.jpg"] {
-		t.Errorf("expected matched and relocated to be true")
-	}
-
-	// Verify file was relocated on disk
-	if _, err := os.Stat(filepath.Join(dir, "Album", "photo.jpg")); err != nil {
-		t.Fatalf("file not relocated to expected path: %v", err)
-	}
-
-	// Test already relocated entry is skipped
-	renames2 := matchByBasename(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames2) != 0 {
-		t.Errorf("expected 0 renames for already relocated/matched, got %d", len(renames2))
-	}
-
-	// Test already matched flat file is skipped when a duplicate par2 entry asks for it
-	dupEntries := []FileDesc{{FileName: "Album2/photo.jpg", FileSize: uint64(len(content))}}
-	renames3 := matchByBasename(dir, dupEntries, flatFiles, matched, relocated, nil)
-	if len(renames3) != 0 {
-		t.Errorf("expected 0 renames for already matched flat file, got %d", len(renames3))
-	}
-}
-
-func TestMatchByFlattenedName_Standalone(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("flattened standalone content")
-	if err := os.WriteFile(filepath.Join(dir, "Album_photo.jpg"), content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	flatFiles, err := scanFlatFiles(dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	subdirEntries := []FileDesc{
-		{FileName: "Album/photo.jpg", FileSize: uint64(len(content))},
-		{FileName: "Album/missing.jpg", FileSize: 100},
-	}
-	matched := make(map[string]bool)
-	relocated := make(map[string]bool)
-
-	// Test successful flattened match
-	renames := matchByFlattenedName(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames) != 1 {
-		t.Fatalf("expected 1 rename, got %d", len(renames))
-	}
-	if renames[0].From != "Album_photo.jpg" || renames[0].To != "Album/photo.jpg" {
-		t.Errorf("unexpected rename: %+v", renames[0])
-	}
-	if !matched["Album_photo.jpg"] || !relocated["Album/photo.jpg"] {
-		t.Errorf("expected matched and relocated to be true")
-	}
-
-	// Verify file was relocated on disk
-	if _, err := os.Stat(filepath.Join(dir, "Album", "photo.jpg")); err != nil {
-		t.Fatalf("file not relocated: %v", err)
-	}
-
-	// Test already relocated par2 entry is skipped
-	renames2 := matchByFlattenedName(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames2) != 0 {
-		t.Errorf("expected 0 renames, got %d", len(renames2))
-	}
-
-	// Test already matched flat file is skipped
-	dupEntries := []FileDesc{{FileName: "Album/photo.jpg", FileSize: uint64(len(content))}}
-	relocated = make(map[string]bool) // clear relocated but keep matched
-	renames3 := matchByFlattenedName(dir, dupEntries, flatFiles, matched, relocated, nil)
-	if len(renames3) != 0 {
-		t.Errorf("expected 0 renames for already matched flat file, got %d", len(renames3))
-	}
-}
-
-func TestMatchByHash16k_Standalone(t *testing.T) {
-	dir := t.TempDir()
-	content := make([]byte, 20*1024)
-	for i := range content {
-		content[i] = byte(i % 250)
-	}
-	hash16k := md5.Sum(content[:16*1024])
-
-	// Create valid file
-	if err := os.WriteFile(filepath.Join(dir, "random_name.dat"), content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Create file with same hash but ignored extension (.par2)
-	if err := os.WriteFile(filepath.Join(dir, "ignored.par2"), content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Create file with size mismatch
-	shortContent := make([]byte, 10)
-	if err := os.WriteFile(filepath.Join(dir, "short.dat"), shortContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	flatFiles, err := scanFlatFiles(dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	subdirEntries := []FileDesc{
-		{FileName: "Dir/real.dat", FileSize: uint64(len(content)), Hash16k: hash16k},
-		{FileName: "Dir/ignored.dat", FileSize: uint64(len(content)), Hash16k: md5.Sum(content[:16*1024])},
-		{FileName: "Dir/short_target.dat", FileSize: 99999, Hash16k: md5.Sum(shortContent)},
-	}
-	matched := make(map[string]bool)
-	relocated := make(map[string]bool)
-
-	// Mark ignored.dat as relocated beforehand to test early return when all are relocated
-	relocated["Dir/ignored.dat"] = true
-
-	renames := matchByHash16k(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames) != 1 {
-		t.Fatalf("expected 1 rename, got %d", len(renames))
-	}
-	if renames[0].From != "random_name.dat" || renames[0].To != "Dir/real.dat" {
-		t.Errorf("unexpected rename: %+v", renames[0])
-	}
-	if !matched["random_name.dat"] || !relocated["Dir/real.dat"] {
-		t.Errorf("expected matched and relocated to be set")
-	}
-
-	// Verify short.dat wasn't matched because size differed
-	if matched["short.dat"] {
-		t.Errorf("short.dat should not have matched due to size difference")
-	}
-	// Verify ignored.par2 wasn't matched due to extension
-	if matched["ignored.par2"] {
-		t.Errorf("ignored.par2 should not have matched")
-	}
-
-	// Test early return when all subdir entries are relocated
-	relocated["Dir/short_target.dat"] = true
-	renames2 := matchByHash16k(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames2) != 0 {
-		t.Errorf("expected 0 renames when all relocated, got %d", len(renames2))
-	}
-}
-
-func TestMatchByCRC32Fallback_Standalone(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("crc32 standalone test data")
-	actualCRC := crc32.ChecksumIEEE(content)
-
-	if err := os.WriteFile(filepath.Join(dir, "obfuscated.dat"), content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// File with 0 CRC / Size in par2 should not match in phase 4
-	if err := os.WriteFile(filepath.Join(dir, "zero.dat"), []byte("zero"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	flatFiles, err := scanFlatFiles(dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	subdirEntries := []FileDesc{
-		{FileName: "Dir/crc_target.dat", FileSize: uint64(len(content)), FileCRC32: actualCRC},
-		{FileName: "Dir/zero_target.dat", FileSize: 0, FileCRC32: 0},
-	}
-	matched := make(map[string]bool)
-	relocated := make(map[string]bool)
-
-	renames := matchByCRC32Fallback(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames) != 1 {
-		t.Fatalf("expected 1 rename, got %d", len(renames))
-	}
-	if renames[0].From != "obfuscated.dat" || renames[0].To != "Dir/crc_target.dat" {
-		t.Errorf("unexpected rename: %+v", renames[0])
-	}
-	if !matched["obfuscated.dat"] || !relocated["Dir/crc_target.dat"] {
-		t.Errorf("expected matched and relocated to be set")
-	}
-
-	// Test when all valid CRC entries are already relocated
-	renames2 := matchByCRC32Fallback(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames2) != 0 {
-		t.Errorf("expected 0 renames, got %d", len(renames2))
-	}
-
-	// Test size mismatch pre-check in tryMatchCRC32File
-	diffSizeContent := []byte("different size content for precheck")
-	if err := os.WriteFile(filepath.Join(dir, "diff_size.dat"), diffSizeContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	flatFiles, _ = scanFlatFiles(dir, nil)
-	subdirEntries = []FileDesc{
-		{FileName: "Dir/other.dat", FileSize: 999, FileCRC32: 0x12345678},
-	}
-	relocated = make(map[string]bool)
-	renames3 := matchByCRC32Fallback(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames3) != 0 {
-		t.Errorf("expected 0 renames on size mismatch precheck, got %d", len(renames3))
-	}
-}
-
-func TestShouldSkipFlatFile_Extensions(t *testing.T) {
-	matched := make(map[string]bool)
-	if !shouldSkipFlatFile("test.par2", matched) {
-		t.Error("expected .par2 to be skipped")
-	}
-	if !shouldSkipFlatFile("test.sfv", matched) {
-		t.Error("expected .sfv to be skipped")
-	}
-	if !shouldSkipFlatFile("test.nfo", matched) {
-		t.Error("expected .nfo to be skipped")
-	}
-	if shouldSkipFlatFile("test.mkv", matched) {
-		t.Error("expected .mkv not to be skipped")
-	}
-	matched["test.mkv"] = true
-	if !shouldSkipFlatFile("test.mkv", matched) {
-		t.Error("expected matched test.mkv to be skipped")
-	}
-}
-
-func TestFilterSubdirEntries_Standalone(t *testing.T) {
-	manifest := []FileDesc{
-		{FileName: "movie.mkv", FileSize: 1000},
-		{FileName: "Subdir/movie.mkv", FileSize: 2000},
-	}
-	got := filterSubdirEntries(manifest, nil)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 subdir entry, got %d", len(got))
-	}
-	if got[0].FileName != "Subdir/movie.mkv" {
-		t.Errorf("unexpected entry: %+v", got[0])
-	}
-	empty := filterSubdirEntries([]FileDesc{{FileName: "flat.txt"}}, nil)
-	if len(empty) != 0 {
-		t.Errorf("expected 0 entries for flat manifest, got %d", len(empty))
-	}
-}
-
 func TestCollectManifests_Standalone(t *testing.T) {
 	dir := t.TempDir()
 	parPath := filepath.Join(dir, "test.par2")
@@ -867,107 +602,5 @@ func TestScanFlatFiles_Standalone(t *testing.T) {
 	_, err = scanFlatFiles("/nonexistent_dir_for_test", nil)
 	if err == nil {
 		t.Error("expected error for nonexistent dir")
-	}
-}
-
-func TestMatchByHash16k_DeletedFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "deleted.dat")
-	if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	flatFiles, _ := scanFlatFiles(dir, nil)
-	os.Remove(path)
-
-	subdirEntries := []FileDesc{{FileName: "Dir/deleted.dat", FileSize: 4, Hash16k: md5.Sum([]byte("test"))}}
-	matched := make(map[string]bool)
-	relocated := make(map[string]bool)
-	renames := matchByHash16k(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames) != 0 {
-		t.Errorf("expected 0 renames when file cannot be hashed, got %d", len(renames))
-	}
-}
-
-func TestMatchByCRC32Fallback_DeletedFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "deleted.dat")
-	content := []byte("test")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	flatFiles, _ := scanFlatFiles(dir, nil)
-	os.Remove(path)
-
-	subdirEntries := []FileDesc{{FileName: "Dir/deleted.dat", FileSize: 4, FileCRC32: crc32.ChecksumIEEE(content)}}
-	matched := make(map[string]bool)
-	relocated := make(map[string]bool)
-	renames := matchByCRC32Fallback(dir, subdirEntries, flatFiles, matched, relocated, nil)
-	if len(renames) != 0 {
-		t.Errorf("expected 0 renames when file cannot be CRCed, got %d", len(renames))
-	}
-}
-
-type mockDirEntry struct {
-	name    string
-	infoErr error
-}
-
-func (m mockDirEntry) Name() string      { return m.name }
-func (m mockDirEntry) IsDir() bool       { return false }
-func (m mockDirEntry) Type() os.FileMode { return 0 }
-func (m mockDirEntry) Info() (os.FileInfo, error) {
-	if m.infoErr != nil {
-		return nil, m.infoErr
-	}
-	return os.Stat(m.name)
-}
-
-func TestTryMatch_InfoError(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("info error test")
-	path := filepath.Join(dir, "info_err.dat")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	mockEntry := mockDirEntry{name: "info_err.dat", infoErr: errors.New("simulated info error")}
-
-	hashIndex := map[[16]byte]FileDesc{
-		md5.Sum(content): {FileName: "Dir/target.dat", FileSize: uint64(len(content))},
-	}
-	if _, ok := tryMatchHash16kFile(dir, "info_err.dat", mockEntry, hashIndex, nil); ok {
-		t.Error("expected tryMatchHash16kFile to return false when Info() errors")
-	}
-
-	crcIndex := map[crcSizeKey]FileDesc{
-		{crc: crc32.ChecksumIEEE(content), size: uint64(len(content))}: {FileName: "Dir/target.dat", FileSize: uint64(len(content))},
-	}
-	if _, ok := tryMatchCRC32File(dir, "info_err.dat", mockEntry, crcIndex, nil); ok {
-		t.Error("expected tryMatchCRC32File to return false when Info() errors")
-	}
-}
-
-func TestTryMatch_RelocateFileFails(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("relocate fail test")
-	path := filepath.Join(dir, "fail.dat")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	flatFiles, _ := scanFlatFiles(dir, nil)
-	entry := flatFiles["fail.dat"]
-
-	hashIndex := map[[16]byte]FileDesc{
-		md5.Sum(content): {FileName: "../../etc/passwd", FileSize: uint64(len(content))},
-	}
-	if _, ok := tryMatchHash16kFile(dir, "fail.dat", entry, hashIndex, nil); ok {
-		t.Error("expected tryMatchHash16kFile to return false when relocateFile fails")
-	}
-
-	crcIndex := map[crcSizeKey]FileDesc{
-		{crc: crc32.ChecksumIEEE(content), size: uint64(len(content))}: {FileName: "../../etc/passwd", FileSize: uint64(len(content))},
-	}
-	if _, ok := tryMatchCRC32File(dir, "fail.dat", entry, crcIndex, nil); ok {
-		t.Error("expected tryMatchCRC32File to return false when relocateFile fails")
 	}
 }

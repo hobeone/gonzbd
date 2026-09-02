@@ -1,5 +1,5 @@
 pkg ./internal/par2/
-run TestIdentify
+run TestIdentify|TestQuickCheck
 
 # Identify is a pure function over a directory and a par2 manifest, so every
 # one of its properties is expressible as a mutation. These five cover the
@@ -64,4 +64,41 @@ file internal/par2/identify.go
 var ignoredExtensions = []string{".par2", ".sfv", ".nfo"}
 --- replace
 var ignoredExtensions = []string{}
+--- end
+
+# Flattened-name matching survived the move out of matchByFlattenedName. Made
+# a duplicate of the basename candidate rather than removed, so "strings" keeps
+# its other use in isIgnoredForIdentification and the tree still builds.
+[flattened-name matching never fires]
+file internal/par2/identify.go
+--- anchor
+			{strings.ReplaceAll(slashed, "/", "_"), MatchFlattenedName},
+--- replace
+			{filepath.Base(slashed), MatchFlattenedName},
+--- end
+
+# Pass 3 exists for entries sharing a Hash16k. Inverted rather than disabled:
+# only CRC-less entries enter the index, so it is empty for any fixture that
+# has IFSC data, while fd and ei both stay used and the tree builds.
+[whole-file CRC32 matching never fires]
+file internal/par2/identify.go
+--- anchor
+		if claimedEntry[ei] || fd.FileCRC32 == 0 || fd.FileSize == 0 {
+--- replace
+		if claimedEntry[ei] || fd.FileCRC32 != 0 || fd.FileSize == 0 {
+--- end
+
+# The guard that makes extending identification to flat sets safe, checked
+# where it actually acts. Without it QuickCheck self-moves every correctly
+# named file in an ordinary job, which no unit test of Identify can see.
+[QuickCheck relocates every identification]
+file internal/par2/quickcheck.go
+--- anchor
+		if !f.NeedsRename() {
+			continue
+		}
+--- replace
+		if false {
+			continue
+		}
 --- end
