@@ -1101,15 +1101,20 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // where the quickcheck STAGE and on-demand par2 read it.
 //
 // Both reach it through par2.AssessWithOptions, which compares a par2 set's
-// recorded CRC32 against the one this download produced. Note which function
-// that is NOT: par2.QuickCheck is filename relocation and computes its own CRC
-// from a path (tryMatchCRC32File), never reading this value.
+// recorded CRC32 against the one this download produced.
 //
-// With none recorded both read NoCRC and take the conservative branch:
-// par2NeedsRecovery fetches every recovery volume even for a bit-perfect
-// download, and the stage cannot report Clean, so stage_repair.go runs the full
-// par2 verify+repair subprocess. That is safe but it is not free, and it was
-// the state of every download.
+// This used to warn which function that was NOT — par2.QuickCheck, filename
+// relocation computing its own CRC from a path via tryMatchCRC32File. Neither
+// exists: #494 made Assess the one call that identifies, verifies and reports
+// the relocations that follow, so there is no longer a second CRC to confuse
+// this one with. Only the post-processing STAGE still carries the name.
+//
+// With none recorded both read NoCRC and take the conservative branch. On the
+// on-demand side par2Verdict returns needsRecovery, and its caller fetches
+// every recovery volume even for a bit-perfect download; on the stage side the
+// verdict cannot be Clean, so stage_repair.go runs the full par2 verify+repair
+// subprocess. That is safe but it is not free, and it was the state of every
+// download.
 //
 // # This function does not decide whether the CRC is publishable
 //

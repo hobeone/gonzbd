@@ -407,8 +407,9 @@ whose articles tile `[0,1000)` into one merged row plus a displaced article at
 start at 0, and its length does equal the maximum — and publish a CRC combined
 from the *original* articles while foreign bytes occupy 450–550. par2 would then
 match a manifest whose bytes are not what is on disk — and given the bypass
-above, the repair stage is skipped on that verdict and `par2NeedsRecovery`
-leaves the volumes unfetched, so nothing later looks.
+above, the repair stage is skipped on that verdict and `app.par2Verdict`
+returns no recovery need, so its caller leaves the volumes unfetched and
+nothing later looks.
 
 **And article coverage, not geometry**, because the row count alone does not
 reach the *exact-offset* duplicate. Two articles claiming one offset cannot both
