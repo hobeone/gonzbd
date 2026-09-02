@@ -18,7 +18,7 @@ import (
 )
 
 // copyFixturePar2 copies the shared par2 index fixture (which protects
-// data.bin with CRC32 0x1068AFA6) into dir, so par2NeedsRecovery can scan it.
+// data.bin with CRC32 0x1068AFA6) into dir, so par2Verdict can scan it.
 func copyFixturePar2(t *testing.T, dir string) {
 	t.Helper()
 	b, err := os.ReadFile("../../test/fixtures/par2/data.par2")
@@ -46,7 +46,7 @@ func copyFixtureSubdirPar2(t *testing.T, dir string) {
 
 // copyFixturePayload puts the protected file itself on disk beside the index.
 //
-// par2NeedsRecovery now IDENTIFIES the delivered files before verifying them,
+// par2Verdict now IDENTIFIES the delivered files before verifying them,
 // and identification reads the directory — an index describing data.bin with
 // no data.bin present means the file is genuinely missing, and the honest
 // answer is to fetch the recovery volumes. Verification alone never looked at
@@ -141,7 +141,30 @@ func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job)
 	return q, qjob
 }
 
-func TestPar2NeedsRecovery(t *testing.T) {
+// assessVerdict is what maybeReleaseRecoveryVolumes does, minus the acting on
+// it: assess the directory from its current state, then read the verdict.
+//
+// The two used to be one call, par2Verdict, which found the par2 sets
+// and ran identification and verification itself. Splitting them is the point
+// of #494 — the verdict is now a pure function of an observation taken before
+// anything moves — so these tests compose the two the same way production
+// does rather than reaching for a combined helper that no longer exists.
+func assessVerdict(t *testing.T, dir string, qjob *queue.Job, log *slog.Logger) (bool, string) {
+	t.Helper()
+	sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
+	if err != nil || len(sets) == 0 {
+		// The caller's own fallback: no index to verify against means fetch.
+		return true, "no usable par2 index found to verify against"
+	}
+	a, err := par2.AssessWithOptions(dir, sets,
+		assembledFiles(mustManifest(t, qjob), qjob.Progress()), log, par2.DefaultParseOptions())
+	if err != nil {
+		return true, "could not match downloaded files against the par2 index"
+	}
+	return par2Verdict(a, log)
+}
+
+func TestPar2Verdict(t *testing.T) {
 	t.Parallel()
 	log := slog.New(slog.DiscardHandler)
 	deferredVol := par2FileSpec{subject: "data.vol000+01.par2", bytes: 1}
@@ -154,7 +177,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 			deferredVol,
 		})
-		if got, _ := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); got {
+		if got, _ := assessVerdict(t, dir, qjob, log); got {
 			t.Error("clean download must NOT trigger recovery-volume download")
 		}
 	})
@@ -167,7 +190,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100},
 			deferredVol,
 		})
-		if got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
+		if got, reason := assessVerdict(t, dir, qjob, log); !got {
 			t.Error("corrupt file (CRC mismatch) must trigger recovery")
 		} else if !strings.Contains(reason, "corruption/CRC mismatch") {
 			t.Errorf("expected CRC mismatch reason, got: %q", reason)
@@ -182,7 +205,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", bytes: 100},
 			deferredVol,
 		})
-		if got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
+		if got, reason := assessVerdict(t, dir, qjob, log); !got {
 			t.Error("par2-tracked file with no CRC must trigger recovery")
 		} else if !strings.Contains(reason, "failed download") {
 			t.Errorf("expected failed download reason, got: %q", reason)
@@ -194,7 +217,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 		})
-		if got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
+		if got, reason := assessVerdict(t, dir, qjob, log); !got {
 			t.Error("no usable par2 index must fall back to fetching recovery volumes")
 		} else if !strings.Contains(reason, "no usable par2 index found") {
 			t.Errorf("expected missing index reason, got: %q", reason)
@@ -227,7 +250,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "other.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
-		got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions())
+		got, reason := assessVerdict(t, dir, qjob, log)
 		if got {
 			t.Fatalf("nothing delivered matches any par2 entry, so the recovery volumes protect files this pipeline "+
 				"never repairs; fetching them spends the whole set for the identical outcome (reason: %q)", reason)
@@ -251,7 +274,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
-		got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions())
+		got, reason := assessVerdict(t, dir, qjob, log)
 		if !got {
 			t.Fatal("one entry is accounted for and another is not, so repair is possible and the volumes must be fetched")
 		}
@@ -271,7 +294,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 
 		// Stops at identification deliberately. Verification still matches by
 		// name, and the rename that makes those names line up is applied by
-		// applyPar2Names at the caller, not inside par2NeedsRecovery — a
+		// recordPar2Names at the caller, not inside par2Verdict — a
 		// function named for a question does not move files. What this pins
 		// is the app-level claim against the REAL fixture: the obfuscated
 		// file is accounted for, so the branch that discards volumes is not
@@ -430,20 +453,51 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		}
 	})
 
+	// The branch that runs when there is no index to assess against.
+	//
+	// It is separate from "the assessment says fetch": there is no assessment
+	// at all, so no verdict was taken and none could be. Fetching is the safe
+	// fallback, and it is the behaviour that predates on-demand par2 entirely.
+	t.Run("no par2 index on disk fetches the volumes", func(t *testing.T) {
+		const noIndexJobID = "job-no-index"
+
+		noIdx := newPar2Job(t, []par2FileSpec{
+			{subject: "data.bin", bytes: 100},
+			{subject: "data.vol000+01.par2", bytes: 100},
+		})
+		noIdx.ID = noIndexJobID
+		noIdx.Name = "job-no-index-name"
+		if err := q.Add(noIdx); err != nil {
+			t.Fatal(err)
+		}
+		seedFileCRC(t, q, noIdx, 0, 0x1068AFA6)
+
+		// The job directory exists but holds no par2 files at all.
+		if err := os.MkdirAll(filepath.Join(dir, noIdx.Name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		copyFixturePayload(t, filepath.Join(dir, noIdx.Name), "data.bin")
+
+		if !app.maybeReleaseRecoveryVolumes(t.Context(), noIndexJobID, q.SnapshotJob(noIndexJobID)) {
+			t.Error("a job whose par2 index never arrived must fetch its recovery volumes; without an index " +
+				"nothing can be verified, so skipping them would ship an unchecked job")
+		}
+	})
+
 	// The whole point of the change, end to end, against the real fixture: a
 	// clean OBFUSCATED download must fetch nothing.
 	//
 	// This runs through maybeReleaseRecoveryVolumes rather than calling
-	// par2NeedsRecovery directly, and that is the entire reason it exists.
+	// par2Verdict directly, and that is the entire reason it exists.
 	// The two steps only compose if the second reads the names the first
-	// wrote — applyPar2Names renames the obfuscated file to data.bin and
+	// wrote — recordPar2Names renames the obfuscated file to data.bin and
 	// records it on the live queue, and snap is a DEEP COPY (cloneJob calls
 	// progress.clone, which slices.Clones the []FileProgress), so verifying
 	// against the captured snapshot compares the pre-rename obfuscated string
 	// to the par2 index, matches nothing, counts the file Unverified and
 	// fetches the entire recovery set for an intact job.
 	//
-	// Calling par2NeedsRecovery directly cannot see that: it takes progress as
+	// Calling par2Verdict directly cannot see that: it takes progress as
 	// a parameter, so a test that passes a freshly-read one is asking a
 	// question the defect does not live in.
 	t.Run("a clean obfuscated download fetches nothing", func(t *testing.T) {

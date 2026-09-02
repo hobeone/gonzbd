@@ -12,7 +12,7 @@ import (
 
 // resolvedName is the name a file currently has on disk, as the rest of the
 // system understands it: the manifest's subject unless a resolved filename has
-// been recorded, which is what both par2 call sites already prefer.
+// been recorded, which is what every par2 call site already prefers.
 func resolvedName(m *queue.Manifest, p *queue.JobProgress, fi int) string {
 	name := m.FileSubject(fi)
 	if fn := p.FileFilename(fi); fn != "" {
@@ -31,101 +31,79 @@ func resolvedName(m *queue.Manifest, p *queue.JobProgress, fi int) string {
 // "Screens_shot.jpg" while the file sits at "Screens/shot.jpg".
 //
 // The basename is stored instead of nothing. Skipping the record entirely was
-// worse than it looked: the field kept the OBFUSCATED name, which no longer
-// names anything on disk either, and every later reader matched against it.
-// par2.VerifyCRCs indexes the par2 manifest by basename (verifycrc.go builds
-// "basename → entry"), so "shot.jpg" matches the entry "Screens/shot.jpg"
-// exactly, while the obfuscated string matched nothing and was counted
-// Unverified — marking a healthy job damaged and forcing a par2 repair over it.
+// worse than it looked: the field kept the pre-rename name, which no longer
+// named anything on disk either, and every later reader matched against it.
 //
 // The two resume readers both do jobFilePath(job, name) and stat the result
 // (resume_startup.go), so they look for "shot.jpg" at the top level and do not
-// find it. That is not a regression: they did not find the obfuscated name
+// find it. That is not a regression: they did not find the pre-rename name
 // either, since relocation had already moved it. Both cases fall through to a
-// re-download, which quickcheck then relocates again.
+// re-download, which the next assessment relocates again.
 //
-// One notion of "separator", used both to detect a path and to reduce it:
-// "/", which is what the par2 format specifies and what relocateFile splits
-// on via filepath.FromSlash. A backslash is NOT treated as one, and that is
+// One notion of "separator", used both to detect a path and to reduce it: "/",
+// which is what the par2 format specifies and what relocateFile splits on via
+// filepath.FromSlash. A backslash is NOT treated as one, and that is
 // deliberate rather than an oversight — on the platforms this runs on,
 // "Screens\shot.jpg" is a single legal filename, and rewriting it to a
 // separator would turn a poster-controlled string into a directory component.
-// An earlier form tested for both characters but only stripped one, so a
-// backslash name was refused a record and then not reduced either.
 func resolvedNameFor(to string) string {
 	return path.Base(filepath.ToSlash(to))
 }
 
-// applyPar2Names identifies the delivered files against the par2 index and,
-// where identification says a file is not at the path par2 records, renames it
-// and updates the resolved name that records where it is.
+// recordPar2Names applies the renames an assessment reported and records where
+// each file went, so the queue's resolved names keep describing the disk.
 //
-// # What this function owns, and what it does not
+// # What this owns, and what it does not
 //
-// It pairs the on-disk rename with the JobProgress.Filename update so that
-// neither can happen alone ON THIS PATH. That is narrower than "the owner of
-// a file moved", which an earlier draft of this comment claimed, and the
-// difference is load-bearing rather than pedantic.
+// It pairs the on-disk move with the JobProgress.Filename update, so on this
+// path neither can happen alone. It does NOT own "a file moved" in general:
+// postproc's stage_quickcheck applies renames from its own assessment and has
+// no queue handle to record through (postproc.Job carries a *queue.Job
+// snapshot, not a *queue.Queue). It does not need one — nothing downstream of
+// it re-derives a verdict from these names — but a claim here that on-disk
+// state and the recorded name cannot drift would be false for that path.
 //
 // `git grep -n 'queue\.SetFileFilename(' -- '*.go' ':!*_test.go' ':!*.spec'`
 // returns 2 lines: pipeline.go's registerFile and this function. (The pattern
 // is anchored on the receiver, and escaped, so that it cannot match this
 // sentence — a citation that counts itself reads as one higher than the
-// population it describes.) So the field has two writers, not one:
-// registerFile establishes it at first write and this corrects it. They are
-// disjoint in time, not in scope.
+// population it describes.) So the field has two writers: registerFile
+// establishes it at first write and this corrects it. They are disjoint in
+// time, not in scope.
 //
-// More importantly, this is NOT the only code that renames a par2-described
-// file on disk. postproc's stage_quickcheck calls the same
-// par2.QuickCheckWithOptions and moves files itself, with no queue handle to
-// record anything through (postproc.Job carries a *queue.Job snapshot, not a
-// *queue.Queue). It compensates in-memory instead — see the rename remap in
-// its verifyJobCRCs — rather than by writing the field. Any claim here that
-// on-disk state and the recorded name "cannot drift" would be false for that
-// path, and stating it would send the next reader looking for a guarantee
-// nothing provides.
+// It takes the assessment rather than computing one. That is what keeps the
+// verdict and the moves derived from the same pre-rename observation — see
+// par2.ApplyRenames — and it is why this function no longer decides anything.
 //
 // The manifest is NOT touched. It records what the NZB said, which is still
 // true and is what a retry re-derives from; JobProgress.Filename records what
 // is on disk, which is what changed.
 //
-// Running before post-processing is what makes the rename cheap: the
-// quickcheck stage prefers JobProgress.Filename, so it sees corrected names
-// with no change to it, and snapshotOwnedFiles seeds Job.OwnedFiles from disk
-// at post-processing start, so a rename that has already happened is captured
-// by the seed rather than needing to be tracked into it.
-//
-// Failures are logged and skipped rather than returned. A rename that does not
-// happen leaves the file where it was and its resolved name describing that,
-// which is consistent; the caller's verdict is then simply less informed, and
-// the conservative branch it takes is to fetch recovery volumes.
-func (app *Application) applyPar2Names(
+// Failures are logged and skipped rather than returned. The verdict has
+// already been taken, so a rename that does not happen costs post-processing a
+// corrected name, not correctness.
+func (app *Application) recordPar2Names(
 	jobID, dir string,
-	sets []par2.Set,
+	a par2.Assessment,
 	m *queue.Manifest,
 	p *queue.JobProgress,
 	log *slog.Logger,
-	parseOpts par2.ParseOptions,
 ) int {
-	renames, err := par2.QuickCheckWithOptions(dir, sets, log, parseOpts)
-	if err != nil {
-		log.Warn("on-demand par2: could not apply par2 names", "job", jobID, "err", err)
-		return 0
-	}
-	if len(renames) == 0 {
+	applied := par2.ApplyRenames(dir, a, log)
+	if len(applied) == 0 {
 		return 0
 	}
 
-	// Built once, from the same expression every reader of a resolved name
-	// uses, so a file renamed by an earlier entry in this loop is found under
-	// its new name rather than its old one.
+	// Built from the same expression every reader of a resolved name uses, so
+	// a file renamed by an earlier entry in this loop is found under its new
+	// name rather than its old one.
 	idxByName := make(map[string]int, m.NumFiles())
 	for fi := range m.NumFiles() {
 		idxByName[resolvedName(m, p, fi)] = fi
 	}
 
-	applied := 0
-	for _, r := range renames {
+	recorded := 0
+	for _, r := range applied {
 		to := resolvedNameFor(r.To)
 		fi, ok := idxByName[r.From]
 		if !ok {
@@ -145,10 +123,10 @@ func (app *Application) applyPar2Names(
 		}
 		delete(idxByName, r.From)
 		idxByName[to] = fi
-		applied++
+		recorded++
 	}
 
 	log.Info("on-demand par2: applied par2 names",
-		"job", jobID, "renamed", len(renames), "recorded", applied)
-	return applied
+		"job", jobID, "renamed", len(applied), "recorded", recorded)
+	return recorded
 }

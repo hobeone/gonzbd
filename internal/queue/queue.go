@@ -2037,7 +2037,7 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 // one offset leave a single row at offset 0 after the merge drops one, its
 // length equals the file's size, Σ length equals it too so no overlap is
 // raised — and the CRC would be published over articles whose bytes another
-// article has overwritten. par2.VerifyCRCs compares that value against the par2
+// article has overwritten. par2.Assess compares that value against the par2
 // MANIFEST and never opens the file, so it MATCHES, QuickCheckClean is set, and
 // the repair stage returns without running par2 at all.
 //

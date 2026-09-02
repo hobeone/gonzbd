@@ -1,35 +1,33 @@
 pkg ./internal/app/
-run TestPar2NeedsRecovery|TestMaybeReleaseRecoveryVolumes|TestApplyPar2Names
+run TestPar2Verdict|TestMaybeReleaseRecoveryVolumes|TestApplyPar2Names|TestRecordPar2Names
 
 # The behavioural claims of the identify-then-verify wiring, at the two places
-# it acts: the fetch decision, and the rename owner.
+# it acts: the fetch decision, and the rename recorder.
 
 # The reversal itself. An entry matching nothing delivered must fetch the
 # recovery volumes when something else DID match; the shipped code discarded
 # them here, and that decision is terminal because post-processing cannot fetch
-# anything (NeedRequeue has no consumer). Neutered as a switch case, which
-# leaves id and idErr used.
+# anything (NeedRequeue has no consumer).
 [an unaccounted par2 entry no longer forces a fetch]
 file internal/app/app.go
 --- anchor
-	case !id.Accounted():
+	if !id.Accounted() {
 		names := make([]string, 0, len(id.Unaccounted))
 --- replace
-	case false:
+	if false {
 		names := make([]string, 0, len(id.Unaccounted))
 --- end
 
 # The Layout B exemption, and the reason it is narrow. Widening it to every
 # unaccounted set is the shape of the ORIGINAL defect -- a healthy obfuscated
 # release also has entries that match nothing by name -- so a partially
-# accounted job must still fetch. Dropping the len(id.Files) == 0 conjunct is
-# exactly that widening.
+# accounted job must still fetch.
 [the layout B exemption swallows partially accounted jobs too]
 file internal/app/app.go
 --- anchor
-	case !id.Accounted() && len(id.Files) == 0:
+	if !id.Accounted() && len(id.Files) == 0 {
 --- replace
-	case !id.Accounted():
+	if !id.Accounted() {
 --- end
 
 # The mirror: closing the exemption entirely sends every Layout B post to fetch
@@ -38,25 +36,9 @@ file internal/app/app.go
 [the layout B exemption never fires]
 file internal/app/app.go
 --- anchor
-	case !id.Accounted() && len(id.Files) == 0:
+	if !id.Accounted() && len(id.Files) == 0 {
 --- replace
-	case false:
---- end
-
-# Verification must read the names the renames just wrote. snap is a deep copy,
-# so reusing its pre-rename progress compares obfuscated strings against the
-# par2 index, matches nothing, and fetches the whole recovery set for an intact
-# download -- the defect this path exists to fix, one line below the fix.
-[verification reads the pre-rename snapshot]
-file internal/app/app.go
---- anchor
-				if fresh := app.queue.SnapshotJob(jobID); fresh != nil {
-					prog = fresh.Progress()
-				}
---- replace
-				if fresh := app.queue.SnapshotJob(jobID); fresh != nil {
-					_ = fresh
-				}
+	if false {
 --- end
 
 # Identification must actually run. Forcing the error branch would also fetch
@@ -68,6 +50,24 @@ file internal/par2/identify.go
 func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 --- replace
 func (id Identification) Accounted() bool { return true }
+--- end
+
+# THE ORDERING, which is what #494 is about.
+#
+# Recording the names before taking the verdict restores the sequence every
+# defect came from: the renames land on disk, and the verdict is then computed
+# from an assessment describing a directory that no longer exists. Under the
+# old code this needed a re-snapshot to paper over; here it must simply be
+# impossible to write correctly, and a test has to notice.
+[the verdict is taken after the renames are applied]
+file internal/app/app.go
+--- anchor
+			needsRecovery, reason = par2Verdict(a, app.log)
+			app.recordPar2Names(jobID, dir, a, m, prog, app.log)
+--- replace
+			app.recordPar2Names(jobID, dir, a, m, prog, app.log)
+			a2, _ := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
+			needsRecovery, reason = par2Verdict(a2, app.log)
 --- end
 
 # Owner half one: the file moves but nothing records where it went. This is the

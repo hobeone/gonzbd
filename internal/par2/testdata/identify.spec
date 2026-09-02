@@ -1,5 +1,5 @@
 pkg ./internal/par2/
-run TestIdentify|TestQuickCheck|TestComputeHash16k|TestRelocateFile
+run TestIdentify|TestAssess|TestApplyRenames|TestComputeHash16k|TestRelocateFile|TestJoinKey
 
 # Identify is a pure function over a directory and a par2 manifest, so every
 # one of its properties is expressible as a mutation. These five cover the
@@ -149,36 +149,40 @@ file internal/par2/identify.go
 	}
 --- end
 
-[QuickCheck relocates every identification]
-file internal/par2/quickcheck.go
+[relocation ignores whether a file needs renaming]
+file internal/par2/assess.go
 --- anchor
+	for _, f := range a.ID.Files {
 		if !f.NeedsRename() {
 			continue
 		}
 --- replace
+	for _, f := range a.ID.Files {
 		if false {
 			continue
 		}
 --- end
 
-# Pass 0: an entry already at its par2 path. scanFlatFiles skips directories,
-# so nothing below this pass can see a relocated file, and identification is
-# not idempotent without it -- applyPar2Names moves "shot.jpg" into "Screens/"
-# and the very next Identify reports the entry unaccounted.
-[an entry already at its par2 path is not recognised]
-file internal/par2/identify.go
+# Verification must join on the BASENAME. Joining on the full path misses a
+# file a previous run already relocated -- identification answers
+# "Screens/shot.jpg" where the caller still says "shot.jpg" -- and reports an
+# intact file unverified, which every caller reads as damage.
+[the identification/CRC join uses the full path]
+file internal/par2/assess.go
 --- anchor
-		if !strings.Contains(slashed, "/") {
+	return filepath.Base(filepath.ToSlash(name))
 --- replace
-		if true {
+	return filepath.ToSlash(name)
 --- end
 
-# The length rule on that pass, same reason it exists on pass 2: being at the
-# right path is not evidence the file is whole.
-[pass 0 claims an entry whose length disagrees]
-file internal/par2/identify.go
+# Assess must not move anything. The whole ordering guarantee is that a verdict
+# is computed from pre-rename state, so an Assess that relocated would describe
+# a directory that no longer exists by the time it returned.
+[assess relocates while it identifies]
+file internal/par2/assess.go
 --- anchor
-		if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
 --- replace
-		if false { //nolint:gosec // size is non-negative
+		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
+		relocateFile(dir, f.OnDisk, f.Desc, log)
 --- end

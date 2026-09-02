@@ -1,22 +1,25 @@
-// Command nzbprobe compares what gonzbd does today against the proposed
-// identify-then-verify design, using a REAL NZB and REAL news servers.
+// Command nzbprobe exercises gonzbd's identify-then-verify path against a REAL
+// NZB and REAL news servers.
 //
-// It reports four things:
+// It reports three things:
 //
 //  1. What an NZB declares as a file's byte count, against the length par2
 //     records for the same file. Every unit test supplies those two numbers
 //     from one source, so no test can tell whether they agree in the world.
-//     They do not: measured at 1.03x-1.08x.
+//     They do not: measured at 1.03x-1.08x. That gap is why nothing in this
+//     package compares the two, and why a fallback that did could never fire.
 //
-//  2. What par2.VerifyCRCs returns for a real obfuscated release — the case
-//     two production call sites disagree about (#492).
+//  2. Whether the delivered files can be IDENTIFIED against the par2 index by
+//     Hash16k, which costs 16 KB per file. For an obfuscated release this is
+//     the only step that can succeed, since no delivered name resembles a par2
+//     name (#492).
 //
-//  3. Whether the delivered files can be IDENTIFIED against the par2 index by
-//     Hash16k, which costs 16 KB per file and is the step the current matcher
-//     never reaches for a flat par2 set.
-//
-//  4. Under -full, whether the identified files then VERIFY by CRC32. This is
+//  3. Under -full, whether the identified files then VERIFY by CRC32. This is
 //     the half that needs the whole payload.
+//
+// It was written to indict the shipped behaviour and now measures the
+// replacement. The section that printed what the old name-matching verifier
+// concluded is gone with the code it probed; see the note where it stood.
 //
 // Without -full it downloads the par2 index and one article per file. With
 // -full it downloads everything, which is the point: the CRC half cannot be
@@ -39,7 +42,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -343,41 +345,18 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 		}
 	}
 
-	// --- Question 2: what VerifyCRCs actually returns ---
-	sets, err := par2.FindPar2Files(tmp)
-	if err != nil {
-		return fmt.Errorf("FindPar2Files: %w", err)
-	}
-	files := make([]par2.AssembledFile, 0, len(doc.Files))
-	for i, f := range doc.Files {
-		files = append(files, par2.AssembledFile{
-			FileName: productionName(f, yencName[i]),
-			// No payload was downloaded, so no assembled CRC exists. That is
-			// not a limitation of the probe — it is exactly the shape a
-			// resumed download presents, which is the case the predicate has
-			// to get right and which no CRC-based route can reach.
-			CRC32:    0,
-			FileSize: f.Bytes,
-		})
-	}
-	res := par2.VerifyCRCs(files, sets, slog.New(slog.DiscardHandler))
-
-	fmt.Printf("\n=== par2.VerifyCRCs over the real set\n")
-	fmt.Printf("  Checked=%d Matched=%d Mismatched=%d NoCRC=%d NotInPar2=%d Unverified=%d\n",
-		res.Checked, res.Matched, res.Mismatched, res.NoCRC, res.NotInPar2, res.Unverified)
-
-	fmt.Printf("\n=== what the two production call sites would conclude\n")
-	layoutBGuard := res.Matched == 0 && res.Mismatched == 0 && res.NoCRC == 0
-	fmt.Printf("  par2NeedsRecovery guard (Matched==0 && Mismatched==0 && NoCRC==0): %v\n", layoutBGuard)
-	if layoutBGuard {
-		fmt.Printf("    -> DISCARDS the recovery volumes\n")
-	}
-	unverifiable := res.NoCRC + res.Unverified + res.Mismatched
-	fmt.Printf("  QuickCheck unverifiable = NoCRC+Unverified+Mismatched = %d\n", unverifiable)
-	if unverifiable > 0 {
-		fmt.Printf("    -> marks the job QuickCheckDamaged and runs repair\n")
-	}
-
+	// The "what does the shipped code conclude" section that used to sit here
+	// is gone, and its absence is the point.
+	//
+	// It printed par2.VerifyCRCs' counters over the real set and then evaluated
+	// the two guards those counters fed: "Matched==0 && Mismatched==0 &&
+	// NoCRC==0", which discarded the recovery volumes, and
+	// "NoCRC+Unverified+Mismatched > 0", which marked the job damaged. Both are
+	// what this probe was written to indict (#492), and neither exists any
+	// more: verification no longer matches par2 entries by name, so there is no
+	// standalone VerifyCRCs to call and no ambiguous counter to evaluate.
+	//
+	// What follows is what the code now does, not a proposal.
 	return probeIdentifyThenVerify(ctx, conn, doc, descs, yencName, headData, tmp, full)
 }
 

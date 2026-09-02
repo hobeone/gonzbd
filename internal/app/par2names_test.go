@@ -12,12 +12,12 @@ import (
 )
 
 // TestApplyPar2Names_RenamesAndRecordsTheNewName pins the owner claim in
-// applyPar2Names' doc: the on-disk move and the resolved-name update are one
+// recordPar2Names' doc: the on-disk move and the resolved-name update are one
 // operation.
 //
 // Half of this passing is not enough. A version that renames the file but
 // never calls SetFileFilename leaves JobProgress.Filename describing a path
-// that no longer exists, and every later reader — quickcheck's VerifyCRCs
+// that no longer exists, and every later reader — quickcheck's verification
 // among them — then matches against a stale name. So both halves are asserted,
 // and the mutation spec neuters each independently.
 func TestApplyPar2Names_RenamesAndRecordsTheNewName(t *testing.T) {
@@ -64,9 +64,9 @@ func TestApplyPar2Names_RenamesAndRecordsTheNewName(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions())
+	applied := app.recordPar2Names(jobID, jobDir, mustAssess(t, jobDir, sets, app.log), m, snap.Progress(), app.log)
 	if applied != 1 {
-		t.Fatalf("applyPar2Names recorded %d renames, want 1", applied)
+		t.Fatalf("recordPar2Names recorded %d renames, want 1", applied)
 	}
 
 	// Half one: the file moved.
@@ -86,7 +86,7 @@ func TestApplyPar2Names_RenamesAndRecordsTheNewName(t *testing.T) {
 }
 
 // TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename drives a real
-// subdirectory relocation through applyPar2Names.
+// subdirectory relocation through recordPar2Names.
 //
 // The file must move, and what gets written to JobProgress.Filename must be
 // the BASENAME — neither the full path nor nothing at all. The path cannot go
@@ -94,7 +94,7 @@ func TestApplyPar2Names_RenamesAndRecordsTheNewName(t *testing.T) {
 // SanitizeFilename would turn "Screens/data.bin" into "Screens_data.bin",
 // sending a retry to write a file that is not there. Recording nothing, which
 // this test previously asserted, leaves the pre-rename name standing — equally
-// absent from disk, and matched against no par2 entry by VerifyCRCs, which
+// absent from disk, and matched against no par2 entry by verification, which
 // indexes by basename.
 func TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename(t *testing.T) {
 	t.Parallel()
@@ -137,7 +137,7 @@ func TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 1 {
+	if applied := app.recordPar2Names(jobID, jobDir, mustAssess(t, jobDir, sets, app.log), m, snap.Progress(), app.log); applied != 1 {
 		t.Errorf("recorded %d renames, want 1: a subdirectory relocation must still record SOMETHING, or every later "+
 			"reader keeps matching against a name that no longer exists on disk", applied)
 	}
@@ -155,11 +155,11 @@ func TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename(t *testing.T) {
 	//
 	// Storing nothing was the previous behaviour and was worse than it looked:
 	// the field then kept the pre-rename name, which names nothing on disk
-	// either, and par2.VerifyCRCs — which indexes the par2 manifest by
+	// either, and par2.Assess — which joins on the
 	// basename — matched it against no entry and counted the file Unverified,
 	// marking an intact job damaged.
 	if got := q.SnapshotJob(jobID).Progress().FileFilename(0); got != "data.bin" {
-		t.Errorf("resolved filename = %q, want %q: the basename is what par2.VerifyCRCs indexes on, so it is what "+
+		t.Errorf("resolved filename = %q, want %q: the basename is what par2.Assess joins on, so it is what "+
 			"lets a relocated file still be matched to its entry", got, "data.bin")
 	}
 }
@@ -168,8 +168,8 @@ func TestApplyPar2Names_SubdirectoryRelocationRecordsTheBasename(t *testing.T) {
 // already-relocated directory is a no-op rather than a fresh finding.
 //
 // This is not a hypothetical tidiness property. internal/app runs
-// applyPar2Names and then par2NeedsRecovery back to back over the same
-// directory, and par2NeedsRecovery identifies again from scratch. Identify
+// recordPar2Names and then par2Verdict back to back over the same
+// directory, and par2Verdict identifies again from scratch. Identify
 // reads one directory level and skips directories, so without the pass that
 // checks whether an entry's par2 path already exists on disk, the second look
 // cannot see the file the first one just moved into "Screens/" — it reports
@@ -216,7 +216,7 @@ func TestApplyPar2Names_IsIdempotent(t *testing.T) {
 		if mErr != nil {
 			t.Fatalf("Manifest: %v", mErr)
 		}
-		return app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions())
+		return app.recordPar2Names(jobID, jobDir, mustAssess(t, jobDir, sets, app.log), m, snap.Progress(), app.log)
 	}
 
 	if first := run(); first != 1 {
@@ -227,7 +227,7 @@ func TestApplyPar2Names_IsIdempotent(t *testing.T) {
 	}
 
 	// And the entry is accounted for on the second look, which is the
-	// property par2NeedsRecovery actually consumes.
+	// property par2Verdict actually consumes.
 	id, err := par2.IdentifyWithOptions(jobDir, sets, app.log, par2.DefaultParseOptions())
 	if err != nil {
 		t.Fatalf("Identify: %v", err)
@@ -247,7 +247,7 @@ func TestApplyPar2Names_IsIdempotent(t *testing.T) {
 // the deobfuscation case this path exists for, passes through untouched.
 //
 // A subdirectory target is reduced to its basename rather than dropped. That
-// is what par2.VerifyCRCs indexes on (verifycrc.go keys the manifest
+// is what par2.Assess joins on (verifyIdentified keys
 // "basename → entry"), so the recorded name still matches the entry the file
 // was relocated to satisfy; dropping it left the stale obfuscated name in
 // place, which matched nothing and marked a healthy job damaged.
@@ -273,7 +273,7 @@ func TestResolvedNameFor(t *testing.T) {
 // recorded on-disk name wins over the NZB subject, and the subject is the
 // fallback until one is recorded.
 //
-// The precedence is what makes applyPar2Names find a file that the assembler
+// The precedence is what makes recordPar2Names find a file that the assembler
 // wrote under its yEnc name rather than its subject, which is the ordinary
 // obfuscated case.
 func TestResolvedName(t *testing.T) {
@@ -352,8 +352,8 @@ func TestApplyPar2Names_NothingToRename(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 0 {
-		t.Errorf("applyPar2Names recorded %d renames for a correctly-named job, want 0", applied)
+	if applied := app.recordPar2Names(jobID, jobDir, mustAssess(t, jobDir, sets, app.log), m, snap.Progress(), app.log); applied != 0 {
+		t.Errorf("recordPar2Names recorded %d renames for a correctly-named job, want 0", applied)
 	}
 	if _, err := os.Stat(filepath.Join(jobDir, "data.bin")); err != nil {
 		t.Errorf("data.bin moved: %v", err)
@@ -409,7 +409,7 @@ func TestApplyPar2Names_RenameOfAFileTheManifestDoesNotName(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 0 {
+	if applied := app.recordPar2Names(jobID, jobDir, mustAssess(t, jobDir, sets, app.log), m, snap.Progress(), app.log); applied != 0 {
 		t.Errorf("recorded %d renames, want 0 — no manifest row names that file", applied)
 	}
 	// The relocation still happened; only the bookkeeping had no target.
@@ -425,7 +425,7 @@ func TestApplyPar2Names_RenameOfAFileTheManifestDoesNotName(t *testing.T) {
 // This is the ordinary production state, not an edge case. pipeline.go's
 // registerFile records the name the assembler actually wrote — for an
 // obfuscated post that is the yEnc name, which has no relation to the subject.
-// So by the time applyPar2Names runs, looking a file up by its subject alone
+// So by the time recordPar2Names runs, looking a file up by its subject alone
 // finds nothing and the rename goes unrecorded.
 //
 // The first test cannot see this: with no resolved name recorded, the subject
@@ -483,8 +483,8 @@ func TestApplyPar2Names_FindsAFileByItsRecordedName(t *testing.T) {
 		t.Fatal("fixture is wrong: the subject and the recorded name must differ")
 	}
 
-	if applied := app.applyPar2Names(jobID, jobDir, sets, m, snap.Progress(), app.log, par2.DefaultParseOptions()); applied != 1 {
-		t.Fatalf("applyPar2Names recorded %d renames, want 1", applied)
+	if applied := app.recordPar2Names(jobID, jobDir, mustAssess(t, jobDir, sets, app.log), m, snap.Progress(), app.log); applied != 1 {
+		t.Fatalf("recordPar2Names recorded %d renames, want 1", applied)
 	}
 
 	after := q.SnapshotJob(jobID)

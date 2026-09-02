@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestQuickCheck_BasenameMatch(t *testing.T) {
+func TestAssess_BasenameMatch(t *testing.T) {
 	// Setup: create a download dir with a flat file and a par2 file whose
 	// manifest references the file in a subdirectory.
 	dir := t.TempDir()
@@ -53,7 +53,7 @@ func TestQuickCheck_BasenameMatch(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_FlattenedNameMatch(t *testing.T) {
+func TestAssess_FlattenedNameMatch(t *testing.T) {
 	// When SanitizeFilename converts "Screens/foo.jpg" to "Screens_foo.jpg",
 	// the quick-check should match it back to the par2 entry.
 	dir := t.TempDir()
@@ -90,7 +90,7 @@ func TestQuickCheck_FlattenedNameMatch(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_Hash16kMatch(t *testing.T) {
+func TestAssess_Hash16kMatch(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create an obfuscated file with random-looking name.
@@ -132,7 +132,7 @@ func TestQuickCheck_Hash16kMatch(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_PathTraversal(t *testing.T) {
+func TestAssess_PathTraversal(t *testing.T) {
 	dir := t.TempDir()
 
 	content := []byte("should not escape")
@@ -156,7 +156,7 @@ func TestQuickCheck_PathTraversal(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_SizeMismatch(t *testing.T) {
+func TestAssess_SizeMismatch(t *testing.T) {
 	dir := t.TempDir()
 
 	content := []byte("short")
@@ -180,7 +180,7 @@ func TestQuickCheck_SizeMismatch(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_NoSubdirs(t *testing.T) {
+func TestAssess_NoSubdirs(t *testing.T) {
 	dir := t.TempDir()
 
 	content := []byte("flat file")
@@ -198,7 +198,7 @@ func TestQuickCheck_NoSubdirs(t *testing.T) {
 	// the gate's removal, so it now runs the real thing.
 	sets := par2SetFor(t, dir, map[string][]byte{"movie.mkv": content})
 
-	renames, err := QuickCheck(dir, sets, slog.New(slog.DiscardHandler))
+	renames, err := assessAndApply(t, dir, sets, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("QuickCheck: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestComputeFileCRC32_MissingFile(t *testing.T) {
 
 // TestQuickCheck_Phase4_CRCSizeFallback tests that Phase 4 (CRC32+Size)
 // correctly relocates an obfuscated file that didn't match in phases 1-3.
-func TestQuickCheck_Phase4_CRCSizeFallback(t *testing.T) {
+func TestAssess_Phase4_CRCSizeFallback(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create an obfuscated file with content that has a known CRC32.
@@ -362,7 +362,7 @@ func TestQuickCheck_Phase4_CRCSizeFallback(t *testing.T) {
 // relocateFile/ComputeHash16k in isolation) through Phase 3's hash16k index
 // build-and-match loop: the obfuscated flat file matches neither the par2
 // basename nor the flattened name, so only the hash16k comparison can find it.
-func TestQuickCheck_Phase3HashMatch_EndToEnd(t *testing.T) {
+func TestAssess_Phase3HashMatch_EndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	parPath := filepath.Join(dir, "test.par2")
 
@@ -392,7 +392,7 @@ func TestQuickCheck_Phase3HashMatch_EndToEnd(t *testing.T) {
 	}
 
 	sets := []Set{{Name: "test", MainFile: parPath}}
-	renames, err := QuickCheck(dir, sets, nil)
+	renames, err := assessAndApply(t, dir, sets, nil)
 	if err != nil {
 		t.Fatalf("QuickCheck: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestQuickCheck_Phase3HashMatch_EndToEnd(t *testing.T) {
 // deliberately wrong (so Phase 3 misses it) but its FileCRC32 — reconstructed
 // from a single full IFSC slice via Combine(0, crc, n) == crc — matches the
 // flat file's actual CRC32 and size, so only Phase 4 can find it.
-func TestQuickCheck_Phase4CRCMatch_EndToEnd(t *testing.T) {
+func TestAssess_Phase4CRCMatch_EndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	parPath := filepath.Join(dir, "test.par2")
 
@@ -456,7 +456,7 @@ func TestQuickCheck_Phase4CRCMatch_EndToEnd(t *testing.T) {
 	}
 
 	sets := []Set{{Name: "test", MainFile: parPath}}
-	renames, err := QuickCheck(dir, sets, nil)
+	renames, err := assessAndApply(t, dir, sets, nil)
 	if err != nil {
 		t.Fatalf("QuickCheck: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestQuickCheck_Phase4CRCMatch_EndToEnd(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_Integration(t *testing.T) {
+func TestAssess_Integration(t *testing.T) {
 	tmpDir := t.TempDir()
 	parPath := filepath.Join(tmpDir, "test.par2")
 
@@ -505,7 +505,7 @@ func TestQuickCheck_Integration(t *testing.T) {
 			MainFile: parPath,
 		},
 	}
-	renames, err := QuickCheck(tmpDir, sets, nil)
+	renames, err := assessAndApply(t, tmpDir, sets, nil)
 	if err != nil {
 		t.Fatalf("QuickCheck failed: %v", err)
 	}
@@ -524,13 +524,13 @@ func TestQuickCheck_Integration(t *testing.T) {
 	}
 }
 
-func TestQuickCheck_EdgeCases(t *testing.T) {
+func TestAssess_EdgeCases(t *testing.T) {
 	// Case 1: Empty manifests list (or no par2 main file)
 	t.Run("empty main file skips set", func(t *testing.T) {
 		sets := []Set{
 			{Name: "empty"},
 		}
-		renames, err := QuickCheck(t.TempDir(), sets, nil)
+		renames, err := assessAndApply(t, t.TempDir(), sets, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -544,7 +544,7 @@ func TestQuickCheck_EdgeCases(t *testing.T) {
 		sets := []Set{
 			{Name: "missing", MainFile: "missing.par2"},
 		}
-		renames, err := QuickCheck(t.TempDir(), sets, nil)
+		renames, err := assessAndApply(t, t.TempDir(), sets, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

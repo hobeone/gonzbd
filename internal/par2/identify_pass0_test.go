@@ -17,8 +17,8 @@ import (
 // QuickCheck relocates "shot.jpg" to "Screens/shot.jpg" on the strength of the
 // first answer, and the second reports that entry unaccounted.
 //
-// internal/app runs exactly that sequence — applyPar2Names then
-// par2NeedsRecovery — so the stale answer made a healthy job with any
+// internal/app runs exactly that sequence — recordPar2Names then
+// par2Verdict — so the stale answer made a healthy job with any
 // subdirectory in its par2 set fetch its entire recovery volume set.
 func TestIdentify_FindsAnEntryAlreadyAtItsPar2Path(t *testing.T) {
 	t.Parallel()

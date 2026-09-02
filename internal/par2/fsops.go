@@ -13,70 +13,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
-// Rename records a file relocation performed by QuickCheck.
+// Rename records a file relocation ApplyRenames performed.
 type Rename struct {
 	From string // old flat path (relative to dir)
 	To   string // new subdirectory path (relative to dir)
-}
-
-// QuickCheck matches flat-downloaded files against par2 file manifests and
-// relocates them into the correct subdirectory structure. This must run
-// before par2 repair so par2 can find files at their expected relative paths.
-//
-// Matching itself lives in Identify, which is pure; this function is the
-// part that acts on the answer. It relocates only where the identified file
-// is not already at the path par2 records, so it is a no-op for the ordinary
-// flat job rather than a self-move for every file in it.
-//
-// It no longer restricts itself to par2 entries containing a subdirectory
-// component. That restriction used to be what kept the old matchers safe —
-// they relocated as an inseparable part of matching — and its cost was that
-// an obfuscated flat release was never matched at all, so its recovery
-// volumes were discarded on the strength of a comparison that could not have
-// succeeded (#492).
-//
-// Errors during individual renames are logged but don't abort — par2 repair
-// will report any still-missing files.
-func QuickCheck(dir string, sets []Set, log *slog.Logger, opts ...ParseOptions) ([]Rename, error) {
-	parseOpts := DefaultParseOptions()
-	if len(opts) > 0 {
-		parseOpts = opts[0]
-	}
-	return QuickCheckWithOptions(dir, sets, log, parseOpts)
-}
-
-// QuickCheckWithOptions performs QuickCheck matching using caller-specified ParseOptions.
-func QuickCheckWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOptions) ([]Rename, error) {
-	if log == nil {
-		log = slog.Default()
-	}
-
-	id, err := IdentifyWithOptions(dir, sets, log, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	renames := make([]Rename, 0, len(id.Files))
-	for _, f := range id.Files {
-		// The guard that lets identification run for FLAT sets. par2 names a
-		// correctly-placed flat file exactly what it is already called, so
-		// relocating every identification would self-move every file in an
-		// ordinary job. This used to be enforced by refusing to identify flat
-		// sets at all, which is why obfuscated releases went unmatched.
-		if !f.NeedsRename() {
-			continue
-		}
-		if relocateFile(dir, f.OnDisk, f.Desc, log) {
-			renames = append(renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
-		}
-	}
-
-	log.Info("quickcheck: complete",
-		"identified", len(id.Files),
-		"renamed", len(renames),
-		"unaccounted", len(id.Unaccounted))
-
-	return renames, nil
 }
 
 func collectManifests(sets []Set, log *slog.Logger) []FileDesc {

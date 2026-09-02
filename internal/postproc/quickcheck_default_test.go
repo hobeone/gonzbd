@@ -8,7 +8,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
-// #314: verifyJobCRCs' opening guard returned without recording an outcome,
+// #314: recordVerdict's opening guard returned without recording an outcome,
 // leaving the zero value QuickCheckNotRun — "there was nothing to verify" —
 // on a job that has par2 sets nothing has verified.
 //
@@ -18,7 +18,7 @@ import (
 // verification. Note what the guard was doing: without it, control reaches the
 // CRC switch's default arm, which already records Inconclusive. The guard was
 // the only thing converting "could not verify" back into "nothing to verify".
-// The fix lives in Run, so this pins the half of the contract verifyJobCRCs
+// The fix lives in Run, so this pins the half of the contract recordVerdict
 // owns: given the Inconclusive its caller established, it must not widen that
 // back out on a path where it verified nothing. Reassigning NotRun in this
 // guard would be the exact regression, and it is the shape the code had.
@@ -34,8 +34,8 @@ func TestVerifyJobCRCs_EmptyManifestWithPar2SetsIsNotConsent(t *testing.T) {
 
 	q := &QuickCheckStage{Log: slog.New(slog.DiscardHandler)}
 	// Non-empty sets, matching the only way Run reaches this call.
-	if err := q.verifyJobCRCs(t.Context(), slog.New(slog.DiscardHandler), job, []par2.Set{{Name: "data"}}, nil); err != nil {
-		t.Fatalf("verifyJobCRCs: %v", err)
+	if err := q.recordVerdict(t.Context(), slog.New(slog.DiscardHandler), job, []par2.Set{{Name: "data"}}, par2.Assessment{}); err != nil {
+		t.Fatalf("recordVerdict: %v", err)
 	}
 
 	if job.QuickCheck != QuickCheckInconclusive {
