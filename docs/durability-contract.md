@@ -385,8 +385,13 @@ What the verdict then buys is real and worth naming rather than
 under-claiming: a `Clean` outcome makes `stage_repair.go` skip the par2
 verify+repair subprocess entirely, and `par2Verdict` returning `outcomeClean`
 leaves the deferred recovery volumes unfetched. Neither is reachable for a
-file this record supplies no CRC for — it reads `NoCRC`, and both take the
-conservative branch (`outcomeRepair`).
+file this record supplies no CRC for — it reads `NoCRC`, and that takes the
+conservative branch (`outcomeRepair`), *provided the file was identified
+against the par2 index at all*. A file `Identify` cannot match against
+anything — indistinguishable from a Layout B post whose par2 set protects
+extracted contents that do not exist yet — reads `outcomeUnknown` instead: the
+volumes are held rather than fetched or discarded, so nothing still ships
+unrepaired, but the mechanism is holding, not the `outcomeRepair` fetch path.
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.
