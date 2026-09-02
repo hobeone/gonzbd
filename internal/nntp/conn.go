@@ -270,18 +270,28 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
 
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeBudgetMultiplier*dopts.dialer.Timeout)
+	defer cancelHandshake()
+
 	var br io.Reader = nc
 	if dopts.dialer.Timeout > 0 {
 		br = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout}
 	}
+	// lr is nil unless a limiter or recorder is configured; when non-nil
+	// its ctx starts as handshakeCtx so a RateLimiter.Wait blocked on
+	// contended tokens is bounded by the handshake's aggregate deadline
+	// too, not just ctxConn's eventual (pause/shutdown/Close-only)
+	// cancellation. Swapped to ctxConn once the handshake succeeds, below.
+	var lr *limitReader
 	if dopts.limiter != nil || dopts.recorder != nil {
-		br = &limitReader{
+		lr = &limitReader{
 			r:      br,
 			lim:    dopts.limiter,
-			ctx:    ctxConn,
+			ctx:    handshakeCtx,
 			rec:    dopts.recorder,
 			server: dopts.recorderServer,
 		}
+		br = lr
 	}
 
 	c := &Conn{
@@ -304,13 +314,15 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
-	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeBudgetMultiplier*dopts.dialer.Timeout)
-	defer cancelHandshake()
 	if err := c.handshake(handshakeCtx, cfg); err != nil {
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
 		return nil, err
+	}
+
+	if lr != nil {
+		lr.ctx = ctxConn // handshake done; steady-state reads use the connection's own lifetime, not the handshake's bound
 	}
 
 	l.Debug("handshake complete, connection ready")

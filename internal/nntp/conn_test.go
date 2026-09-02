@@ -1071,30 +1071,42 @@ func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
 	const idleTimeoutSeconds = 1
 	waitWindow := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
 
+	// Only the greeting is scripted. Dial's own goroutine isn't
+	// synchronized with this server's before the test returns, so
+	// mockConn's expect/readLine (which calls t.Errorf on a read error)
+	// would race a still-running server goroutine against test
+	// completion; sending just the greeting and returning avoids that
+	// hazard while still exercising the Wait call this test targets.
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
-		c.expect("CAPABILITIES")
-		c.sendCaps()
-		c.expect("QUIT")
-		c.send("205 bye")
 	})
 
 	cfg := makeCfg(ms.addr)
 	cfg.Timeout = idleTimeoutSeconds
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
-	done := make(chan error, 1)
+	type dialResult struct {
+		conn *Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
 	go func() {
-		_, err := Dial(ctx, cfg, WithLimiter(blockingLimiter{}))
-		done <- err
+		conn, err := Dial(ctx, cfg, WithLimiter(blockingLimiter{}))
+		done <- dialResult{conn, err}
 	}()
 
+	// Whether Dial ultimately succeeds or fails depends on which
+	// handshake step the blocked Wait lands on — probeCapabilities is
+	// documented best-effort and swallows a failed read, so success here
+	// is possible and not itself informative. What this pins is that
+	// Dial returns at all within the aggregate bound: under the bug, the
+	// greeting read's Wait blocks on ctxConn, which nothing in this test
+	// ever cancels, so Dial hangs forever instead.
 	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("Dial succeeded despite a RateLimiter.Wait that never returns on its own")
+	case res := <-done:
+		if res.conn != nil {
+			t.Cleanup(func() { _ = res.conn.Close() })
 		}
 	case <-time.After(waitWindow):
 		t.Fatalf("Dial did not return within %s: a RateLimiter.Wait blocked on the"+
