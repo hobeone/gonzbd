@@ -1114,3 +1114,64 @@ func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
 			waitWindow)
 	}
 }
+
+// TestDialResetsSocketDeadlineAfterSuccessfulHandshake pins a review
+// finding on the fix above: setupHandshakeDeadline's context.AfterFunc
+// can fire c.nc.SetDeadline(now) — poisoning both read AND write
+// deadlines — at the same moment handshake is completing successfully.
+// idleTimeoutReader only ever refreshes the read side per-Read, so an
+// unresolved poisoned write deadline would fail every write on a
+// connection Dial just reported as successfully established.
+//
+// This is forced deterministically rather than raced: the mock server
+// trickles bytes during the CAPABILITIES exchange without ever
+// completing a response line, so only the aggregate handshake deadline
+// (not idleTimeoutReader's tighter per-read one) can unblock that read.
+// probeCapabilities swallows the resulting error (documented
+// best-effort), so handshake still reports success — with the deadline
+// poisoned unless Dial resets it.
+func TestDialResetsSocketDeadlineAfterSuccessfulHandshake(t *testing.T) {
+	const (
+		idleTimeoutSeconds = 1
+		trickleInterval    = 400 * time.Millisecond
+	)
+	// Trickle past the aggregate deadline (handshakeBudgetMultiplier *
+	// idleTimeoutSeconds) with margin, then keep the connection open a
+	// little longer so the client's post-Dial Stat call has time to
+	// either poison-fail near-instantly (bug) or legitimately time out
+	// via idleTimeoutReader's own per-read bound (fixed).
+	trickleDuration := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		deadline := time.Now().Add(trickleDuration)
+		for time.Now().Before(deadline) {
+			if _, err := c.c.Write([]byte("1")); err != nil {
+				return
+			}
+			time.Sleep(trickleInterval)
+		}
+	})
+
+	cfg := makeCfg(ms.addr)
+	cfg.Timeout = idleTimeoutSeconds
+
+	conn, err := Dial(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	start := time.Now()
+	err = conn.Stat(t.Context(), "probe@host")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Stat succeeded against an unscripted mock server — test assumption broken")
+	}
+	if elapsed < 500*time.Millisecond {
+		t.Fatalf("Stat failed after only %s: the connection's socket deadline was left"+
+			" poisoned by the handshake's aggregate-timeout race instead of being reset"+
+			" on success", elapsed)
+	}
+}
