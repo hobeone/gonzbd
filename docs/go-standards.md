@@ -185,6 +185,16 @@ The required order for any fix:
    **A compile error is not a red result.** The runner reports it as
    `COMPILE_ERROR` rather than `KILLED` for that reason; treat a mutation that
    breaks the build as a mutation that has not been run yet.
+
+   **The `run` line is a live citation, like the anchors.** A spec applies one
+   `-run` filter to every mutation below it, so a filter that has not grown a
+   term as tests were added beside it evaluates those mutations against tests
+   that never execute. The runner refuses a filter matching *nothing* at the
+   baseline, but a filter matching five tests and missing the sixth passes
+   that check — which is why a mutation that survives the filter is re-run
+   package-wide and reported as `EXCLUDED`, naming the test the filter left
+   out, rather than as `SURVIVED`. `EXCLUDED` is a defect in the spec, not in
+   the pin: add the missing term and re-run.
 3. **Apply the fix**, confirm the test now passes, and confirm the rest of the
    suite stays green.
 

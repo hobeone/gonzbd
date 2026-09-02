@@ -13,11 +13,13 @@
 // exactly once, which it gives only as prose. A rule re-typed from memory per
 // use has a per-use failure rate; the same rule in a runner has none.
 //
-// Four verdicts, and the distinction between two of them is the point:
+// Five verdicts, and the distinctions between them are the point:
 //
 //   - KILLED        the test failed, and the failure is quoted so the commit
 //     body can record it as AGENTS.md requires
 //   - SURVIVED      the test passed; the assertion does not discriminate
+//   - EXCLUDED      the test passed, but a package-wide run kills the mutation
+//     — so the `run` filter leaves out the test that pins it
 //   - ANCHOR        the anchor matched zero or several sites, so the mutation
 //     is refused rather than applied to a place nobody chose
 //   - COMPILE_ERROR the mutated tree does not build, which AGENTS.md warns
@@ -28,6 +30,16 @@
 // KILLED it is a false green for the pin: a mutation that breaks the build
 // tells you the compiler noticed, never that the test would have.
 //
+// EXCLUDED separates the two reasons a mutation can pass. `run` is a claim
+// about which tests bear on the mutations below it, and it is as live a
+// citation as an anchor — but a stale one fails silently where a stale anchor
+// does not. The baseline catches a filter that matches NOTHING (see
+// ranNothing). It cannot catch a filter that matches five tests and misses the
+// sixth: the baseline is green, the mutation reports SURVIVED, and that reads
+// as "the assertion is inert" when the truth is "the assertion never ran".
+// Both times this happened here, the spec was an alternation that had not
+// grown a term when a test was added beside it.
+//
 // The baseline is checked before any mutation is applied. A test that is
 // already failing produces a KILLED for every mutation, and every one of them
 // is meaningless — the whole method rests on the test passing on the fixed
@@ -37,7 +49,18 @@
 //
 // The source file is restored from a copy this command wrote, on every exit
 // path including SIGINT, and the restore is verified by comparing bytes rather
-// than trusting the write. `git stash` and `git checkout --` are both
+// than trusting the write.
+//
+// Three paths reach it, and the count is the claim: run's deferred restore for
+// a normal return, installSignalRestore's handler for a signal, and
+// fatalRestoring for an exit between the write and the verdict — os.Exit skips
+// the defer, so those exits restore for themselves. That third one is why the
+// sequence is a function: the sentence above was false for the whole life of
+// this command until a review found the `go test` launch failure exiting
+// through plain fatal, one line from a write-failure path that had carried the
+// restore inline from the start.
+//
+// `git stash` and `git checkout --` are both
 // deliberately unused: AGENTS.md forbids the stash because its stack is shared
 // with any other session in the repo, and `git checkout --` would discard
 // unrelated uncommitted edits in the same file — which, during a review-fix
@@ -55,6 +78,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,9 +91,17 @@ type verdict string
 const (
 	killed       verdict = "KILLED"
 	survived     verdict = "SURVIVED"
+	excluded     verdict = "EXCLUDED"
 	anchorFail   verdict = "ANCHOR"
 	compileError verdict = "COMPILE_ERROR"
 )
+
+// survivedEvidence is the evidence column for a genuine SURVIVED. It is a
+// constant because three paths reach that verdict — the package-wide check
+// declining to run, declining to conclude, and confirming nothing — and a
+// reader comparing two rows should not have to work out whether two different
+// sentences mean the same thing.
+const survivedEvidence = "the assertion does not discriminate"
 
 // mutation is one entry in the spec: a named, unique anchor in one file and
 // the text to put in its place.
@@ -169,7 +201,12 @@ func main() {
 		results = append(results, run(root, sp, m, *verbose))
 	}
 
-	os.Exit(report(results))
+	confirmed, err := confirmExclusions(root, sp, results)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	os.Exit(report(confirmed))
 }
 
 // run applies one mutation, runs the test, and restores the file.
@@ -201,19 +238,14 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 	mutated := strings.Replace(string(original), m.anchor, m.replace, 1)
 	if err := writeFile(path, []byte(mutated), 0o600); err != nil {
 		// WriteFile opens with O_TRUNC, so a failure here can leave the file
-		// empty or half-written. fatal calls os.Exit, which skips the defer
-		// above, so the restore has to happen before the exit rather than
-		// through it — otherwise the tree keeps a truncated source file and
-		// the only copy sits in a temp dir nobody was told about.
-		if rerr := restore(path, backup, original); rerr != nil {
-			fatal("write %s: %v\nRESTORE ALSO FAILED: %v\nRecover from %s.", m.file, err, rerr, backup)
-		}
-		fatal("write %s: %v (the file was restored)", m.file, err)
+		// empty or half-written, and the only good copy in a temp dir nobody
+		// was told about.
+		fatalRestoring(path, backup, original, "write %s: %v", m.file, err)
 	}
 
 	out, code, launchErr := goTest(root, sp)
 	if launchErr != nil {
-		fatal("could not run go test: %v", launchErr)
+		fatalRestoring(path, backup, original, "could not run go test: %v", launchErr)
 	}
 	if verbose {
 		fmt.Printf("--- %s ---\n%s\n", m.name, indent(out))
@@ -223,10 +255,144 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 	case buildFailed(out):
 		return result{mutation: m, verdict: compileError, evidence: firstBuildError(out)}
 	case code == 0:
-		return result{mutation: m, verdict: survived, evidence: "the assertion does not discriminate"}
+		// The mutation is still applied here — the restore is deferred above
+		// — which is what lets the package-wide run be a statement about this
+		// mutation rather than about the tree in general.
+		return widenOnPass(root, sp, m, verbose)
 	default:
 		return result{mutation: m, verdict: killed, evidence: firstAssertion(out)}
 	}
+}
+
+// widenOnPass asks why the mutation passed: because nothing pins the
+// behaviour, or because the spec's `run` filter excludes the test that does.
+//
+// Re-running the same mutation with no filter answers it directly. A package
+// that goes red without the filter and green with it holds a test that
+// discriminates and was not selected, which is a defect in the spec rather
+// than in the pin — and the two are indistinguishable from the SURVIVED row
+// alone. The extra run costs nothing on the path that matters: every mutation
+// reaching here has already failed the command, so this only ever lengthens a
+// run that was going to exit non-zero.
+func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
+	if sp.run == "" {
+		// The command already ran the whole package; there is no wider run to
+		// compare against and nothing was excluded.
+		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
+	}
+
+	wide := *sp
+	wide.run = ""
+	out, code, launchErr := goTest(root, &wide)
+	if verbose {
+		fmt.Printf("--- %s (package-wide) ---\n%s\n", m.name, indent(out))
+	}
+	// A launch failure or a build failure says nothing about which tests
+	// discriminate, and neither does a green package. Report what was actually
+	// observed — SURVIVED — rather than claiming an exclusion nobody saw.
+	if launchErr != nil || code == 0 || buildFailed(out) {
+		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
+	}
+
+	ev := "the package-wide run fails, so `run` excludes a test that kills this"
+	if names := failingTests(out); len(names) > 0 {
+		ev = fmt.Sprintf("`run` excludes %s, which kills this", strings.Join(names, ", "))
+	}
+	return result{mutation: m, verdict: excluded, evidence: ev}
+}
+
+// confirmExclusions checks the other half of what an EXCLUDED row claims.
+//
+// widenOnPass observes that the package is red WITH the mutation. That alone
+// does not mean the mutation caused it: a package carrying an unrelated
+// failure — a flake, a pre-existing break in a file the spec never names — is
+// red either way, and the baseline cannot have caught it, because the baseline
+// runs only the filter. So the claim is confirmed against an unmutated,
+// unfiltered run, and downgraded to SURVIVED when it does not hold.
+//
+// It runs once per invocation rather than once per mutation, and only when
+// something claimed an exclusion, so a clean spec pays nothing for it. It runs
+// after the mutation loop, when every restore has already happened and the
+// tree is its real self again.
+//
+// A confirming run that never STARTS is an error rather than a verdict. It is
+// not evidence the package is red — nothing was observed at all — and the two
+// must not be conflated, for the same reason goTest separates a launch failure
+// from a non-zero exit: reporting an unobserved outcome as a verdict is the
+// false green this command exists to refuse.
+func confirmExclusions(root string, sp *spec, results []result) ([]result, error) {
+	if !needsConfirmation(results) {
+		return results, nil
+	}
+
+	wide := *sp
+	wide.run = ""
+	out, code, launchErr := goTest(root, &wide)
+	if launchErr != nil {
+		return nil, fmt.Errorf("could not run the confirming package-wide test: %w", launchErr)
+	}
+	if code == 0 && !ranNothing(out) {
+		return results, nil
+	}
+
+	for i := range results {
+		if results[i].verdict == excluded {
+			results[i].verdict = survived
+			results[i].evidence = survivedEvidence + " (the package is red unmutated too)"
+		}
+	}
+	return results, nil
+}
+
+// needsConfirmation reports whether any row claims an exclusion, and is what
+// keeps a spec with none from paying for the confirming run.
+//
+// It is a named predicate rather than an inline condition because that is the
+// only part of the early return a test can observe: confirmExclusions returns
+// the rows unchanged whether it skipped the run or made one and found nothing
+// to downgrade, so a behavioural test of the skip passes for the wrong reason.
+func needsConfirmation(results []result) bool {
+	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
+}
+
+// failingTestRe matches the banner `go test` prints for a failing test. It
+// appears without -v, which is why the package-wide run does not need one.
+var failingTestRe = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
+
+// failingTests names the top-level tests that failed, deduplicated and in the
+// order go test reported them.
+//
+// Subtests are folded into their parent: `--- FAIL: TestX/case` is reported as
+// TestX, because a `run` line selects by the parent's name and the parent is
+// therefore the term the spec is missing.
+func failingTests(out string) []string {
+	var names []string
+	for _, m := range failingTestRe.FindAllStringSubmatch(out, -1) {
+		name, _, _ := strings.Cut(m[1], "/")
+		if name == "" || slices.Contains(names, name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// fatalRestoring puts the file back and then exits, for the exit paths that
+// run between writing the mutation and returning a verdict.
+//
+// It exists because `fatal` calls os.Exit, which skips run's deferred restore,
+// so every early exit in that window has to restore for itself — and one of
+// them did not. The write-failure path carried the sequence inline from the
+// start; the `go test` launch failure three lines below it did not, and left
+// the tree mutated with the only good copy in a temp dir nobody was told
+// about. Making the sequence an owner rather than a thing to remember is what
+// stops the next early exit added there from repeating it.
+func fatalRestoring(path, backup string, original []byte, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if rerr := restore(path, backup, original); rerr != nil {
+		fatal("%s\nRESTORE ALSO FAILED: %v\nRecover from %s.", msg, rerr, backup)
+	}
+	fatal("%s (the file was restored)", msg)
 }
 
 // resolve turns a spec's file path into an absolute one and requires it to
@@ -572,16 +738,22 @@ func report(results []result) int {
 
 // note explains a verdict whose meaning is not carried by the evidence column.
 //
-// The two it speaks to are the two that get misread. A SURVIVED result is
-// about the test, not the code: the mutated behaviour is real and unpinned. A
-// COMPILE_ERROR is a red result that is not evidence, and reading it as a
-// dead mutant is how a pin that discriminates nothing gets recorded as proven.
+// The three it speaks to are the three that get misread. A SURVIVED result is
+// about the test, not the code: the mutated behaviour is real and unpinned. An
+// EXCLUDED result is about the spec, not the test. A COMPILE_ERROR is a red
+// result that is not evidence, and reading it as a dead mutant is how a pin
+// that discriminates nothing gets recorded as proven.
 func note(r result) string {
 	switch r.verdict {
 	case survived:
 		return "the test passed with the mutation in place, so it does not pin this\n" +
 			"  behaviour. Either the assertion is reached by a different path than\n" +
 			"  intended, or the condition it needs is never created by the fixture."
+	case excluded:
+		return "the spec's `run` line, not the test, is what failed here: the package\n" +
+			"  kills this mutation and the filter does not select the test that does.\n" +
+			"  Add the missing term to `run` and re-run — until then this mutation was\n" +
+			"  evaluated against tests that never executed it."
 	case compileError:
 		return "the mutated tree does not build, so this run says nothing about the\n" +
 			"  test. Neuter the condition rather than deleting the block, then re-run."

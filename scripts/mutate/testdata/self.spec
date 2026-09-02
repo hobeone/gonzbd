@@ -145,6 +145,78 @@ file scripts/mutate/spec.go
 		if false && cur != nil && key != "file" {
 --- end
 
+[a passing mutation is never widened past the run filter]
+file scripts/mutate/main.go
+--- anchor
+	if sp.run == "" {
+--- replace
+	if true {
+--- end
+
+[the wider run is made even when the spec has no filter]
+file scripts/mutate/main.go
+--- anchor
+	if sp.run == "" {
+--- replace
+	if false {
+--- end
+
+[a confirming run that never starts is treated as a red package]
+file scripts/mutate/main.go
+--- anchor
+	if launchErr != nil {
+		return nil, fmt.Errorf("could not run the confirming package-wide test: %w", launchErr)
+	}
+--- replace
+	if launchErr != nil && false {
+		return nil, fmt.Errorf("could not run the confirming package-wide test: %w", launchErr)
+	}
+--- end
+
+[an exit between the write and the verdict leaves the tree mutated]
+file scripts/mutate/main.go
+--- anchor
+	if rerr := restore(path, backup, original); rerr != nil {
+		fatal("%s\nRESTORE ALSO FAILED: %v\nRecover from %s.", msg, rerr, backup)
+	}
+--- replace
+	if rerr := error(nil); rerr != nil {
+		fatal("%s\nRESTORE ALSO FAILED: %v\nRecover from %s.", msg, rerr, backup)
+	}
+--- end
+
+[an exclusion is claimed even when the package is green]
+file scripts/mutate/main.go
+--- anchor
+	if launchErr != nil || code == 0 || buildFailed(out) {
+--- replace
+	if launchErr != nil || (code == 0 && false) || buildFailed(out) {
+--- end
+
+[the confirmation runs whether or not anything claimed an exclusion]
+file scripts/mutate/main.go
+--- anchor
+	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
+--- replace
+	return true || slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
+--- end
+
+[an exclusion is trusted without confirming the package is green unmutated]
+file scripts/mutate/main.go
+--- anchor
+	if code == 0 && !ranNothing(out) {
+--- replace
+	if true || (code == 0 && !ranNothing(out)) {
+--- end
+
+[a failing subtest is named instead of its parent]
+file scripts/mutate/main.go
+--- anchor
+		name, _, _ := strings.Cut(m[1], "/")
+--- replace
+		name := m[1]
+--- end
+
 [the backup temp dir leaks on a failed write]
 file scripts/mutate/main.go
 --- anchor
