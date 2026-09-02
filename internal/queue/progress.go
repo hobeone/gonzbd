@@ -619,6 +619,24 @@ func (p *JobProgress) Par2ReleaseReason() string {
 	return p.par2ReleaseReason
 }
 
+// HasPar2Verdict reports whether the on-demand par2 verdict has already been
+// reached for this job, using the reason string as the marker.
+//
+// One writer sets it without a verdict: workset.go's permanent-article-failure
+// path. That is safe rather than an exception, and the branch is why — the
+// assignment sits inside `if job.undeferRecovery(...)`, and undeferRecovery
+// sets par2Recovered whenever it reports a change (job_articles.go:205). So
+// every caller that must exclude that case already tests Par2Recovered().
+//
+// ResetForRetry is the only clearer (job.go:1078), which is what makes a
+// retry re-derive the verdict rather than inherit it.
+func (p *JobProgress) HasPar2Verdict() bool {
+	if p == nil {
+		return false
+	}
+	return p.par2ReleaseReason != ""
+}
+
 // HasDeferredPar2 reports whether any file is still held pending the CRC
 // verdict. Deliberately FetchIfNeeded only: a discarded volume is not held,
 // it is decided, and reporting it as held would re-run the full CRC
