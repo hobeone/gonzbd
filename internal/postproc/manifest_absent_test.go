@@ -79,7 +79,7 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing
 	job.QuickCheck = QuickCheckInconclusive
 	q := &QuickCheckStage{}
 
-	err := q.verifyJobCRCs(context.Background(), slog.Default(), job, []par2.Set{})
+	err := q.verifyJobCRCs(context.Background(), slog.Default(), job, []par2.Set{}, nil)
 
 	if err == nil {
 		t.Fatal("verifyJobCRCs returned nil with no manifest; the stage log would record a clean pass over nothing")
