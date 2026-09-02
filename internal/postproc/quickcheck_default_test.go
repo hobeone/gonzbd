@@ -34,7 +34,7 @@ func TestVerifyJobCRCs_EmptyManifestWithPar2SetsIsNotConsent(t *testing.T) {
 
 	q := &QuickCheckStage{Log: slog.New(slog.DiscardHandler)}
 	// Non-empty sets, matching the only way Run reaches this call.
-	if err := q.verifyJobCRCs(t.Context(), slog.New(slog.DiscardHandler), job, []par2.Set{{Name: "data"}}); err != nil {
+	if err := q.verifyJobCRCs(t.Context(), slog.New(slog.DiscardHandler), job, []par2.Set{{Name: "data"}}, nil); err != nil {
 		t.Fatalf("verifyJobCRCs: %v", err)
 	}
 

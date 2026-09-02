@@ -1453,7 +1453,34 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
 			"job", jobID, "err", mErr)
 	} else {
-		needsRecovery, reason = par2NeedsRecovery(dir, m, snap.Progress(), app.log, parseOpts)
+		// Correct the resolved names before verifying against them. An
+		// obfuscated file is the file par2 describes; until it is renamed,
+		// VerifyCRCs compares a random string against a par2 path and finds
+		// nothing, which is what made the discarded-volumes defect reachable.
+		//
+		// Ordered before par2NeedsRecovery rather than inside it: that
+		// function is named for a question, and a function that answers a
+		// question should not also move files.
+		prog := snap.Progress()
+		if sets, sErr := par2.FindPar2Files(dir, parseOpts); sErr == nil && len(sets) > 0 {
+			if app.applyPar2Names(jobID, dir, sets, m, prog, app.log, parseOpts) > 0 {
+				// Re-read the resolved names the renames just changed.
+				//
+				// snap is a deep copy — cloneJob calls progress.clone(), which
+				// slices.Clones the []FileProgress — so the JobProgress reached
+				// through it is a SEPARATE object from the one SetFileFilename
+				// mutates. Verifying against the stale copy compares the
+				// pre-rename obfuscated names to the par2 index, matches
+				// nothing, counts every file Unverified, and fetches the whole
+				// recovery set for a download that is intact: precisely the
+				// defect this path exists to fix, reintroduced one line below
+				// the fix.
+				if fresh := app.queue.SnapshotJob(jobID); fresh != nil {
+					prog = fresh.Progress()
+				}
+			}
+		}
+		needsRecovery, reason = par2NeedsRecovery(dir, m, prog, app.log, parseOpts)
 	}
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
@@ -1537,17 +1564,63 @@ func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log 
 			FileSize: m.FileBytes(fi),
 		}
 	}
-	r := par2.VerifyCRCsWithOptions(assembled, sets, log, parseOpts)
-
-	// If none of our downloaded/assembled files are tracked by the PAR2 set,
-	// then the PAR2 set protects the extracted contents (Layout B)
-	// rather than the RAR files themselves. We cannot verify RARs
-	// against it, so we should skip fetching recovery volumes.
-	if r.Matched == 0 && r.Mismatched == 0 && r.NoCRC == 0 {
-		log.Info("on-demand par2: no downloaded files are tracked by the par2 index; skipping recovery volumes",
-			"dir", dir)
+	// Accounting comes before verification, and it is a separate question.
+	//
+	// Identify asks which par2 entry each delivered file IS, by content where
+	// the name does not say. An entry that matched nothing delivered means we
+	// cannot rule out repair — whether because the poster's par2 protects the
+	// extracted contents rather than the archives, because a file is missing,
+	// or because a name defeated us — and every one of those wants the
+	// recovery volumes fetched.
+	//
+	// This replaces a guard that read "Matched == 0 && Mismatched == 0 &&
+	// NoCRC == 0" as proof the par2 set described other files, and discarded
+	// the volumes on it. That condition proves nothing: with obfuscated names
+	// no delivered file matches a par2 entry by name, so all three counters
+	// are zero whether the payload is pristine or shredded — the CRC is never
+	// compared to anything. A real release reaching it was measured (#492).
+	id, idErr := par2.IdentifyWithOptions(dir, sets, log, parseOpts)
+	switch {
+	case idErr != nil:
+		log.Warn("on-demand par2: could not identify files against the par2 index; fetching recovery volumes",
+			"dir", dir, "err", idErr)
+		return true, "could not match downloaded files against the par2 index"
+	case !id.Accounted() && len(id.Files) == 0:
+		// Nothing delivered matched ANY entry, by name or by content: the
+		// Layout B signature, where par2 protects the EXTRACTED contents
+		// rather than the delivered archives, so every entry names a file
+		// that will not exist until unpack has run.
+		//
+		// The volumes cannot be spent usefully, and the branch that makes
+		// that true is the STAGE ORDER, not anything about par2: buildStages
+		// registers RepairStage before UnpackStage (internal/app/stages.go)
+		// and there is no second repair pass afterwards. The one repair this
+		// pipeline runs therefore executes while the protected files still do
+		// not exist. Were a post-unpack repair ever added, this branch would
+		// become wrong and would have to fetch.
+		//
+		// Distinguishing this from a partial shortfall is safe ONLY because
+		// identification is content-based. Under the name-only matching this
+		// PR replaces, "nothing matched" was equally what a perfectly healthy
+		// obfuscated release looked like — which is exactly what made
+		// discarding on this signature the #492 defect. Hash16k is what tells
+		// the two apart, so this test may not be reintroduced anywhere that
+		// matches on names.
+		log.Info("on-demand par2: no delivered file matches any par2 entry; recovery volumes cannot repair what was never delivered",
+			"dir", dir, "entries", len(id.Unaccounted))
 		return false, ""
+	case !id.Accounted():
+		names := make([]string, 0, len(id.Unaccounted))
+		for _, fd := range id.Unaccounted {
+			names = append(names, fd.FileName)
+		}
+		log.Info("on-demand par2: par2 entries matched no delivered file; fetching recovery volumes",
+			"dir", dir, "unaccounted", len(id.Unaccounted))
+		return true, fmt.Sprintf("%d par2-protected file(s) not found in this download (%s)",
+			len(id.Unaccounted), strings.Join(names, ", "))
 	}
+
+	r := par2.VerifyCRCsWithOptions(assembled, sets, log, parseOpts)
 
 	needsRepair := r.Mismatched+r.NoCRC+r.Unverified > 0
 	if !needsRepair {

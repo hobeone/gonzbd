@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 )
@@ -83,6 +84,21 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if len(renames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Relocated %d file(s) into subdirectories", len(renames))
 		for _, r := range renames {
+			// Ownership follows the file. Job.OwnedFiles is seeded once from
+			// disk before any stage runs (postproc.go), and every other stage
+			// that moves a file extends it — stage_deobfuscate,
+			// stage_par2names and stage_rarvolrecovery all call markRenamed.
+			// This stage did not, so a relocated file left its old path in the
+			// set and its new path absent, and the ownership guards in
+			// extension_cleanup and sample_cleanup then skipped it as
+			// unowned.
+			//
+			// Rename paths are relative to DownloadDir; markRenamed keys on
+			// absolute paths, which is what markOwned resolves for its own
+			// relative inputs.
+			markRenamed(job,
+				filepath.Join(job.DownloadDir, r.From),
+				filepath.Join(job.DownloadDir, filepath.FromSlash(r.To)))
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %s → %s", r.From, r.To))
 		}
@@ -90,10 +106,10 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No files needed subdirectory relocation")
 	}
 
-	return q.verifyJobCRCs(ctx, log, job, sets)
+	return q.verifyJobCRCs(ctx, log, job, sets, renames)
 }
 
-func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) error {
+func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set, renames []par2.Rename) error {
 	// No manifest, or one describing no files, so there are no expected CRCs
 	// to compare the par2 sets against. The caller has already established
 	// that sets is non-empty — it returns at len(sets) == 0 — so this leaves
@@ -124,12 +140,37 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
 
+	// The renames this stage just performed, as old name → new name.
+	//
+	// Verification matches a delivered file to a par2 entry by name, and the
+	// names it reads have just been invalidated by the moves above.
+	// JobProgress.Filename still holds the pre-rename name — job.Queue is a
+	// *queue.Job SNAPSHOT with no queue handle behind it, so this stage has
+	// nowhere to write the correction even if it wanted to — and reading it
+	// straight would compare an obfuscated string against the par2 index,
+	// match nothing, count every relocated file Unverified and set
+	// QuickCheckDamaged on a job that is intact.
+	//
+	// Corrected in memory rather than persisted, deliberately. The rename is
+	// already recorded where it needs to be: internal/app's applyPar2Names
+	// writes it to the queue on the download path. This stage runs whether or
+	// not that path did — on-demand par2 can be disabled, and a release with
+	// no deferred volumes never reaches it — so it needs the mapping locally,
+	// not a second writer of a field another package owns.
+	renamedTo := make(map[string]string, len(renames))
+	for _, r := range renames {
+		renamedTo[r.From] = r.To
+	}
+
 	p := job.Queue.Progress()
 	var assembledFiles []par2.AssembledFile
 	for fi := range m.NumFiles() {
 		name := m.FileSubject(fi)
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
+		}
+		if to, moved := renamedTo[name]; moved {
+			name = to
 		}
 		assembledFiles = append(assembledFiles, par2.AssembledFile{
 			FileName: name,
