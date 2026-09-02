@@ -102,12 +102,12 @@ var storeMethods = map[string]bool{
 	"Remove": true, "MoveToHistory": true, "ExistsByName": true,
 	"ExistsByMD5": true, "ShiftSortKey": true, "Prune": true,
 	"SetPaused": true, "IsPaused": true, "RestoreJobProgress": true,
-	"RestoreRetryProgress": true,
-	"DeleteJobArtifacts":   true,
-	"ArticleCountsByJob":   true,
-	"DownloadStampsByJob":  true,
-	"RecordFailedArticles": true,
-	"ClearFailedArticles":  true,
+	"RestoreRetryProgress":   true,
+	"DeleteJobArtifacts":     true,
+	"ArticleCountsByJob":     true,
+	"NonResidentFieldsByJob": true,
+	"RecordFailedArticles":   true,
+	"ClearFailedArticles":    true,
 	// The per-article reversal ClearAllEmitted uses since #426. Registered
 	// for the same reason as its wholesale sibling: it runs on the reload
 	// path, and the call is deliberately made after q.mu is released.

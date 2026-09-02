@@ -139,7 +139,7 @@ type Store interface {
 	// a non-resident job's JobProgress without reading its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
 
-	// DownloadStampsByJob returns every job's persisted download start and
+	// NonResidentFieldsByJob returns every job's persisted download start and
 	// finish, decoded, in a single grouped query. It is the sibling of
 	// ArticleCountsByJob and exists for the same reason: Get restores a
 	// stamp only on the resident branch, so Load must supply one when it
@@ -151,7 +151,7 @@ type Store interface {
 	// zero, not absent — the caller routes both through the owner either
 	// way, and an absent entry would be indistinguishable from a job the
 	// query did not see.
-	DownloadStampsByJob(ctx context.Context) (map[string]DownloadStamps, error)
+	NonResidentFieldsByJob(ctx context.Context) (map[string]NonResidentFields, error)
 
 	// RecordFailedArticles persists article indices that will never be
 	// fetched. Idempotent per (jobID, artIdx).

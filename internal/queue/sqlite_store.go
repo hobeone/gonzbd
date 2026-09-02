@@ -67,37 +67,48 @@ func decodeJobStamp(unix int64) time.Time {
 	return time.Unix(unix, 0).UTC()
 }
 
-// DownloadStamps carries one job's two persisted download timestamps, already
-// decoded. Either may be the zero time, meaning the column held the absent
-// sentinel.
-type DownloadStamps struct {
-	Started  time.Time
-	Finished time.Time
+// NonResidentFields carries the JobProgress values that live on the jobs row
+// rather than in the manifest, already decoded — the ones Get restores only on
+// its resident branch, so Load must supply them for every other job.
+//
+// Membership follows one rule: a column belongs here iff updateTx writes it
+// from JobProgress. Anything updateTx writes and Load cannot restore is not
+// merely missing from the UI — the next update encodes the zero value back
+// over the stored one and it is gone for good. Adding a column to updateTx
+// without adding it here is exactly that bug, and it has shipped once.
+//
+// Either timestamp may be the zero time, meaning the column held the absent
+// sentinel. Par2ReleaseReason is empty when no par2 verdict has been reached.
+type NonResidentFields struct {
+	Started           time.Time
+	Finished          time.Time
+	Par2ReleaseReason string
 }
 
-// DownloadStampsByJob implements Store.
-func (s *SQLiteStore) DownloadStampsByJob(ctx context.Context) (map[string]DownloadStamps, error) {
+// NonResidentFieldsByJob implements Store.
+func (s *SQLiteStore) NonResidentFieldsByJob(ctx context.Context) (map[string]NonResidentFields, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, download_started, download_finished FROM jobs")
+		"SELECT id, download_started, download_finished, par2_release_reason FROM jobs")
 	if err != nil {
-		return nil, fmt.Errorf("sqlite store download stamps query: %w", err)
+		return nil, fmt.Errorf("sqlite store non-resident fields query: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := make(map[string]DownloadStamps)
+	out := make(map[string]NonResidentFields)
 	for rows.Next() {
-		var id string
+		var id, par2Reason string
 		var startedUnix, finishedUnix int64
-		if err := rows.Scan(&id, &startedUnix, &finishedUnix); err != nil {
-			return nil, fmt.Errorf("sqlite store download stamps scan: %w", err)
+		if err := rows.Scan(&id, &startedUnix, &finishedUnix, &par2Reason); err != nil {
+			return nil, fmt.Errorf("sqlite store non-resident fields scan: %w", err)
 		}
-		out[id] = DownloadStamps{
-			Started:  decodeJobStamp(startedUnix),
-			Finished: decodeJobStamp(finishedUnix),
+		out[id] = NonResidentFields{
+			Started:           decodeJobStamp(startedUnix),
+			Finished:          decodeJobStamp(finishedUnix),
+			Par2ReleaseReason: par2Reason,
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite store download stamps rows: %w", err)
+		return nil, fmt.Errorf("sqlite store non-resident fields rows: %w", err)
 	}
 	return out, nil
 }
@@ -467,17 +478,20 @@ func (s *SQLiteStore) addTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manife
 	metaJSON, _ := json.Marshal(job.Meta)
 
 	var dlStartedUnix, dlFinishedUnix int64
+	var par2Reason string
 	if p := job.Progress(); p != nil {
 		dlStartedUnix = encodeJobStamp(p.DownloadStarted())
 		dlFinishedUnix = encodeJobStamp(p.DownloadFinished())
+		par2Reason = p.Par2ReleaseReason()
 	}
 
 	const qJobs = `
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
    time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
-   download_started, download_finished, recovery_bytes, recovery_files, nzb_backup)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   download_started, download_finished, recovery_bytes, recovery_files, nzb_backup,
+   par2_release_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
 	if job.PostProc {
@@ -494,6 +508,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		// writes the right values even for a job persisted while non-resident.
 		job.RecoveryBytes(), job.RecoveryFiles(),
 		job.NZBBackup,
+		par2Reason,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
@@ -563,20 +578,21 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
        time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
        download_started, download_finished, recovery_bytes, recovery_files,
-       COALESCE(nzb_backup, '')
+       COALESCE(nzb_backup, ''), par2_release_reason
 FROM jobs WHERE id = ?`
 
 	var job Job
 	var groupsStr, metaStr, statusStr string
 	var priorityInt, ppInt, postprocInt, recoveryFiles int
 	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix, recoveryBytes int64
+	var par2Reason string
 
 	err := s.db.QueryRowContext(ctx, qJob, id).Scan(
 		&job.ID, &job.Filename, &job.Name, &job.Password, &job.URL, &job.Category,
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
 		&dlStartedUnix, &dlFinishedUnix, &recoveryBytes, &recoveryFiles,
-		&job.NZBBackup,
+		&job.NZBBackup, &par2Reason,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -626,6 +642,10 @@ FROM jobs WHERE id = ?`
 			job.progress = newJobProgress(&manifest)
 			job.progress.restoreDownloadStamps(
 				decodeJobStamp(dlStartedUnix), decodeJobStamp(dlFinishedUnix))
+			// Through the setter rather than the field: it is the one writer
+			// the accessor's doc points at, and assigning here would make a
+			// second.
+			job.setPar2ReleaseReason(par2Reason)
 			_ = s.RestoreJobProgress(ctx, &job)
 		}
 	}
@@ -1057,7 +1077,7 @@ func (s *SQLiteStore) updateTx(ctx context.Context, execer sqlExecer, job *Job) 
 	const q = `
 UPDATE jobs SET
   name = ?, category = ?, priority = ?, status = ?, pp = ?, script = ?, warning = ?, postproc = ?,
-  download_started = ?, download_finished = ?
+  download_started = ?, download_finished = ?, par2_release_reason = ?
 WHERE id = ?`
 
 	postprocInt := 0
@@ -1065,14 +1085,22 @@ WHERE id = ?`
 		postprocInt = 1
 	}
 
+	// Every column written here is read back by whatever hydrates the job, or
+	// this statement erases it. par2_release_reason is the newest instance of
+	// that rule and the reason Queue.Load's non-resident fill carries it: a
+	// job hydrated without one arrives with an empty reason and this UPDATE
+	// makes the empty permanent. The download stamps are the worked example —
+	// see internal/queue/persistence.go.
 	var dlStartedUnix, dlFinishedUnix int64
+	var par2Reason string
 	if p := job.Progress(); p != nil {
 		dlStartedUnix = encodeJobStamp(p.DownloadStarted())
 		dlFinishedUnix = encodeJobStamp(p.DownloadFinished())
+		par2Reason = p.Par2ReleaseReason()
 	}
 
 	res, err := execer.ExecContext(ctx, q,
-		job.Name, job.Category, int(job.Priority), string(job.Status), job.PP, job.Script, job.Warning, postprocInt, dlStartedUnix, dlFinishedUnix, job.ID,
+		job.Name, job.Category, int(job.Priority), string(job.Status), job.PP, job.Script, job.Warning, postprocInt, dlStartedUnix, dlFinishedUnix, par2Reason, job.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store update job %s: %w", job.ID, err)

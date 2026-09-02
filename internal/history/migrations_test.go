@@ -252,9 +252,10 @@ func TestMigrations_SchemaShape(t *testing.T) {
 
 	t.Run("no stray migration files", func(t *testing.T) {
 		// This guarded a single 001_initial.sql until 002_durable_runs.sql
-		// added the replacement record and 003_drop_legacy_durability.sql
-		// dropped what it replaced. It still exists to catch an accidental
-		// extra file, just against a longer list.
+		// added the replacement record, 003_drop_legacy_durability.sql
+		// dropped what it replaced, and 004_par2_release_reason.sql made the
+		// par2 verdict's reason durable. It still exists to catch an
+		// accidental extra file, just against a longer list.
 		entries, err := os.ReadDir("migrations")
 		if err != nil {
 			t.Fatal(err)
@@ -265,7 +266,10 @@ func TestMigrations_SchemaShape(t *testing.T) {
 				sqls = append(sqls, e.Name())
 			}
 		}
-		want := []string{"001_initial.sql", "002_durable_runs.sql", "003_drop_legacy_durability.sql"}
+		want := []string{
+			"001_initial.sql", "002_durable_runs.sql",
+			"003_drop_legacy_durability.sql", "004_par2_release_reason.sql",
+		}
 		if !slices.Equal(sqls, want) {
 			t.Errorf("migrations = %v, want exactly %v", sqls, want)
 		}
