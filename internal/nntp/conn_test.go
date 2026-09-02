@@ -103,6 +103,15 @@ func (m *mockConn) sendCaps() {
 	m.send(".")
 }
 
+// withDialerTimeout overrides the per-dial idle/aggregate timeout
+// directly, bypassing ServerConfig.Timeout's whole-second granularity —
+// test-only, so timing-sensitive tests don't need multi-second waits.
+func withDialerTimeout(d time.Duration) DialOption {
+	return func(o *dialOptions) {
+		o.dialer.Timeout = d
+	}
+}
+
 func makeCfg(addr string) config.ServerConfig {
 	host, portStr, _ := net.SplitHostPort(addr)
 	var port int
@@ -991,14 +1000,16 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 // idleTimeoutReader only resets a per-read deadline and never bounds the
 // handshake's aggregate duration.
 func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
+	t.Parallel()
+
 	const (
-		idleTimeoutSeconds = 1
-		trickleInterval    = 400 * time.Millisecond
+		idleTimeout     = 25 * time.Millisecond
+		trickleInterval = 5 * time.Millisecond
 	)
 	// waitWindow must exceed the aggregate bound the fix imposes, so a
 	// passing run demonstrates that bound firing, not just our own select
 	// eventually giving up.
-	waitWindow := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+	waitWindow := handshakeBudgetMultiplier*idleTimeout + 300*time.Millisecond
 
 	ms := newMockServer(t, func(mc *mockConn) {
 		// Trickle one byte at a time, well inside the per-read idle
@@ -1014,39 +1025,27 @@ func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
 	})
 
 	cfg := makeCfg(ms.addr)
-	cfg.Timeout = idleTimeoutSeconds
 
 	// No deadline, matching internal/downloader's pauseCtx — the
 	// production shape this test reproduces.
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Dial(ctx, cfg)
+		_, err := Dial(ctx, cfg, withDialerTimeout(idleTimeout))
 		done <- err
 	}()
 
-	var dialErr error
-	timedOut := false
 	select {
-	case dialErr = <-done:
-	case <-time.After(waitWindow):
-		timedOut = true
-	}
-	cancel()
-
-	if timedOut {
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Log("Dial goroutine still running after cancel; possible leak")
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dial succeeded against a server that never completed the greeting")
 		}
+	case <-time.After(waitWindow):
 		t.Fatalf("Dial did not return within %s: a server trickling one byte every %s"+
-			" (under the %ds per-read idle timeout) kept the handshake alive with no aggregate bound",
-			waitWindow, trickleInterval, idleTimeoutSeconds)
-	}
-	if dialErr == nil {
-		t.Fatal("Dial succeeded against a server that never completed the greeting")
+			" (under the %s per-read idle timeout) kept the handshake alive with no aggregate bound",
+			waitWindow, trickleInterval, idleTimeout)
 	}
 }
 
