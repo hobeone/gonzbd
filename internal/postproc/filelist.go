@@ -129,15 +129,25 @@ func buildDownloadFileList(job *Job) []string {
 		// (c) reports "verified clean" for a job a verdict already found
 		// damage in, which is the same class of mislabel the case above
 		// exists to remove — reordering the switch to fix it is deliberately
-		// NOT done here (tracked as its own issue; four tests depend on the
-		// current order). It is not reached today: the only production
-		// caller of UndeferRecoveryVolumes (app.go's maybeReleaseRecoveryVolumes)
-		// passes DeferredRecoveryIndices() — every deferred index at once —
-		// so a real job's held volumes go from "all deferred" to "none
-		// deferred" in one step and heldVols is 0 by the time Par2Recovered()
-		// is true. (c) only becomes reachable once a caller un-defers a
-		// strict subset — e.g. a future block-exact selection seam on
-		// UndeferRecoveryVolumes' fileIdxs parameter.
+		// NOT done here (tracked as issue #505; moving the `recoveryVols > 0
+		// && p.Par2Recovered()` case above this one and re-running `go test
+		// ./...` broke nothing in this suite, so no test currently pins the
+		// order — the fix is deferred on scope, not on test coupling). It is
+		// not reached today: undeferRecovery is the only site that sets
+		// par2Recovered to true (internal/queue/job_articles.go:205; the
+		// other assignment, job.go:1077, sets it back to false on retry, and
+		// the rest are the field declaration and plain reads/copies — see a
+		// grep for par2Recovered outside tests), and undeferRecovery has two
+		// production callers: Queue.UndeferRecoveryVolumes
+		// (internal/queue/queue.go:1878, reached from app.go's
+		// maybeReleaseRecoveryVolumes) and workset.go's AckPermanentFailure
+		// (internal/queue/workset.go:159). Both pass
+		// job.progress.DeferredRecoveryIndices() — every deferred index at
+		// once — so a real job's held volumes go from "all deferred" to
+		// "none deferred" in one step and heldVols is 0 by the time
+		// Par2Recovered() is true. (c) only becomes reachable once a caller
+		// un-defers a strict subset — e.g. a future block-exact selection
+		// seam on UndeferRecoveryVolumes' fileIdxs parameter.
 		//
 		// (a) and (b) both leave the bytes never fetched, which is what
 		// this line reports; (c) is the latent exception.

@@ -76,12 +76,12 @@ func TestMaybeReleaseRecoveryVolumes_NoIndexFindError(t *testing.T) {
 }
 
 // TestMaybeReleaseRecoveryVolumes_CleanDiscardFails covers the
-// DiscardDeferredPar2 failure branch inside case outcomeClean. That call can
-// only fail with ErrNotFound (queue.go's SetPar2ReleaseReason/
-// DiscardDeferredPar2/UndeferRecoveryVolumes all key on q.byID), so the job
-// is removed from the queue after the snapshot maybeReleaseRecoveryVolumes
-// receives was taken — the snapshot is a clone and stays usable, but the
-// queue calls the function makes against jobID now see no such job.
+// DiscardDeferredPar2 failure branch inside case outcomeClean. DiscardDeferredPar2
+// (queue.go) does nothing but the q.byID lookup before its one mutation, so
+// it can only fail with ErrNotFound; the job is removed from the queue after
+// the snapshot maybeReleaseRecoveryVolumes receives was taken — the snapshot
+// is a clone and stays usable, but the queue calls the function makes against
+// jobID now see no such job.
 func TestMaybeReleaseRecoveryVolumes_CleanDiscardFails(t *testing.T) {
 	t.Parallel()
 	downloadDir := t.TempDir()
@@ -282,7 +282,13 @@ func TestMaybeReleaseRecoveryVolumes_Unknown_ReleaseReasonFails(t *testing.T) {
 // UndeferRecoveryVolumes itself also fails. Removing the job after the
 // snapshot makes every one of the three queue calls this branch performs
 // (SetPar2ReleaseReason, UndeferRecoveryVolumes, SetPar2ReleaseReason again)
-// fail with ErrNotFound, which is the only way any of them can fail.
+// fail with ErrNotFound — the job lookup in queue.go's SetPar2ReleaseReason
+// and UndeferRecoveryVolumes both key on q.byID and return ErrNotFound first.
+// UndeferRecoveryVolumes can also fail after that lookup succeeds: it calls
+// job.checkFileIdxs (internal/queue/job_articles.go), which returns
+// ErrJobNotResident for a job whose manifest was evicted, or a plain
+// "fileIdx %d out of range" error for an out-of-range index — neither of
+// which this test's removed-job setup reaches.
 func TestMaybeReleaseRecoveryVolumes_RepairReleaseReasonFails(t *testing.T) {
 	t.Parallel()
 	downloadDir := t.TempDir()

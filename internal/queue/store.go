@@ -139,18 +139,21 @@ type Store interface {
 	// a non-resident job's JobProgress without reading its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
 
-	// NonResidentFieldsByJob returns every job's persisted download start and
-	// finish, decoded, in a single grouped query. It is the sibling of
-	// ArticleCountsByJob and exists for the same reason: Get restores a
-	// stamp only on the resident branch, so Load must supply one when it
-	// builds a non-resident job's JobProgress. Without it a paused job's
-	// stamps are dropped on load and then overwritten with zeros by the
-	// next update.
+	// NonResidentFieldsByJob returns every job's persisted download start,
+	// download finish, and par2 release reason, decoded, in a single grouped
+	// query. It is the sibling of ArticleCountsByJob and exists for the same
+	// reason: Get restores these fields only on the resident branch, so Load
+	// must supply them when it builds a non-resident job's JobProgress.
+	// Without it a paused job's fields are dropped on load and then
+	// overwritten with zeros by the next update.
 	//
-	// A job with neither stamp set is present in the map with both fields
-	// zero, not absent — the caller routes both through the owner either
-	// way, and an absent entry would be indistinguishable from a job the
-	// query did not see.
+	// Membership follows one rule, the same one NonResidentFields itself
+	// states: a column belongs here iff updateTx writes it from JobProgress.
+	//
+	// A job with none of these fields set is present in the map with all of
+	// them zero, not absent — the caller routes them through the owner
+	// either way, and an absent entry would be indistinguishable from a job
+	// the query did not see.
 	NonResidentFieldsByJob(ctx context.Context) (map[string]NonResidentFields, error)
 
 	// RecordFailedArticles persists article indices that will never be
