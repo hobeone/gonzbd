@@ -220,7 +220,8 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 // a multiple of the per-read idle timeout (dopts.dialer.Timeout).
 // idleTimeoutReader only bounds a single Read; a server that sends at
 // least one byte before each per-read window elapses never trips it, so
-// the aggregate bound has to come from ctx instead (#488). 4 covers the
+// the aggregate bound has to come from ctx instead
+// (https://github.com/hobeone/gonzbd/issues/488). 4 covers the
 // handshake's worst-case round-trip count: greeting, AUTHINFO USER,
 // AUTHINFO PASS, and CAPABILITIES.
 const handshakeBudgetMultiplier = 4
@@ -230,11 +231,12 @@ const handshakeBudgetMultiplier = 4
 // capabilities, and returns a ready-to-use *Conn. The context governs
 // the full handshake — cancelling it aborts the handshake promptly —
 // and the handshake is additionally bounded to handshakeBudgetMultiplier
-// times cfg.Timeout even when ctx itself carries no deadline, as with
-// the download path's pauseCtx (see setupHandshakeDeadline): without
-// this, idleTimeoutReader's per-read-only bound lets a server that keeps
-// trickling bytes hold the handshake open indefinitely (#488). Once Dial
-// returns, cancellation is per-request via Fetch's ctx.
+// times dopts.dialer.Timeout even when ctx itself carries no deadline,
+// as with the download path's pauseCtx (see setupHandshakeDeadline):
+// without this, idleTimeoutReader's per-read-only bound lets a server
+// that keeps trickling bytes hold the handshake open indefinitely
+// (https://github.com/hobeone/gonzbd/issues/488). Once Dial returns,
+// cancellation is per-request via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
@@ -375,13 +377,14 @@ func (c *Conn) expectGreeting() error {
 // setupHandshakeDeadline arranges to force-unblock any pending read/write
 // on the socket if ctx ends before the handshake does — whether ctx's own
 // deadline elapses first, or ctx ends earlier via cancellation. Since
-// #488, Dial always calls handshake with a ctx that carries a deadline
-// (Dial's own handshakeBudgetMultiplier wrap — handshake's only call
-// site, conn.go's Dial — or an outer caller's, such as the admin
-// test-connection handlers' context.WithTimeout) — but the download path
-// can still cancel earlier than that deadline, when an app pause or
-// shutdown cancels the underlying pauseCtx Dial's wrap derives from.
-// Returns a cleanup function to be deferred by the caller.
+// https://github.com/hobeone/gonzbd/issues/488, Dial always calls
+// handshake with a ctx that carries a deadline (Dial's own
+// handshakeBudgetMultiplier wrap — handshake's only call site, conn.go's
+// Dial — or an outer caller's, such as the admin test-connection
+// handlers' context.WithTimeout) — but the download path can still
+// cancel earlier than that deadline, when an app pause or shutdown
+// cancels the underlying pauseCtx Dial's wrap derives from. Returns a
+// cleanup function to be deferred by the caller.
 //
 // context.AfterFunc's stop() is race-free against the scheduled func by
 // construction (gated by an internal sync.Once): whichever of stop() or

@@ -984,9 +984,10 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 	}
 }
 
-// TestDialAggregateHandshakeTimeoutAgainstSlowTrickle pins #488: a server
-// that keeps sending at least one byte before each per-read idle timeout
-// elapses can otherwise hold the handshake open indefinitely, since
+// TestDialAggregateHandshakeTimeoutAgainstSlowTrickle pins
+// https://github.com/hobeone/gonzbd/issues/488: a server that keeps
+// sending at least one byte before each per-read idle timeout elapses
+// can otherwise hold the handshake open indefinitely, since
 // idleTimeoutReader only resets a per-read deadline and never bounds the
 // handshake's aggregate duration.
 func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
