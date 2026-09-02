@@ -216,11 +216,25 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 	return opts, nil
 }
 
+// handshakeBudgetMultiplier bounds the handshake's aggregate duration as
+// a multiple of the per-read idle timeout (dopts.dialer.Timeout).
+// idleTimeoutReader only bounds a single Read; a server that sends at
+// least one byte before each per-read window elapses never trips it, so
+// the aggregate bound has to come from ctx instead (#488). 4 covers the
+// handshake's worst-case round-trip count: greeting, AUTHINFO USER,
+// AUTHINFO PASS, and CAPABILITIES.
+const handshakeBudgetMultiplier = 4
+
 // Dial connects to the server described by cfg, performs the greeting
 // handshake, authenticates if credentials are supplied, probes
 // capabilities, and returns a ready-to-use *Conn. The context governs
-// the full handshake; once Dial returns, cancellation is per-request
-// via Fetch's ctx.
+// the full handshake — cancelling it aborts the handshake promptly —
+// and the handshake is additionally bounded to handshakeBudgetMultiplier
+// times cfg.Timeout even when ctx itself carries no deadline, as with
+// the download path's pauseCtx (see setupHandshakeDeadline): without
+// this, idleTimeoutReader's per-read-only bound lets a server that keeps
+// trickling bytes hold the handshake open indefinitely (#488). Once Dial
+// returns, cancellation is per-request via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
@@ -288,7 +302,9 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
-	if err := c.handshake(ctx, cfg); err != nil {
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeBudgetMultiplier*dopts.dialer.Timeout)
+	defer cancelHandshake()
+	if err := c.handshake(handshakeCtx, cfg); err != nil {
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
@@ -357,10 +373,14 @@ func (c *Conn) expectGreeting() error {
 }
 
 // setupHandshakeDeadline arranges to force-unblock any pending read/write
-// on the socket if ctx ends before the handshake does — whether ctx
-// carries its own deadline (as the admin test-connection handlers'
-// context.WithTimeout callers do) or ends only via cancellation (as the
-// download path's pauseCtx, which never carries a deadline, does).
+// on the socket if ctx ends before the handshake does — whether ctx's own
+// deadline elapses first, or ctx ends earlier via cancellation. Since
+// #488, Dial always calls handshake with a ctx that carries a deadline
+// (Dial's own handshakeBudgetMultiplier wrap — handshake's only call
+// site, conn.go's Dial — or an outer caller's, such as the admin
+// test-connection handlers' context.WithTimeout) — but the download path
+// can still cancel earlier than that deadline, when an app pause or
+// shutdown cancels the underlying pauseCtx Dial's wrap derives from.
 // Returns a cleanup function to be deferred by the caller.
 //
 // context.AfterFunc's stop() is race-free against the scheduled func by

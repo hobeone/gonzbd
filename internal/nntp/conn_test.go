@@ -996,9 +996,8 @@ func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
 	)
 	// waitWindow must exceed the aggregate bound the fix imposes, so a
 	// passing run demonstrates that bound firing, not just our own select
-	// eventually giving up. 4 is a placeholder for handshakeBudgetMultiplier,
-	// which does not exist yet on this commit (#488's fix defines it next).
-	waitWindow := 4*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+	// eventually giving up.
+	waitWindow := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
 
 	ms := newMockServer(t, func(mc *mockConn) {
 		// Trickle one byte at a time, well inside the per-read idle
