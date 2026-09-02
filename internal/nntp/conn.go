@@ -34,7 +34,10 @@ func (lr *limitReader) Read(p []byte) (int, error) {
 		if lr.lim != nil {
 			// Wait after reading. This introduces minimal overhead
 			// because it is invoked by bufio.Reader which chunks reads.
-			// We use the connection context to unblock if the socket closes.
+			// ctx starts as the handshake's aggregate-bound context and
+			// is swapped to the connection's own long-lived context once
+			// the handshake completes (see Dial) — either way it unblocks
+			// Wait when the socket closes or that context ends.
 			if err := lr.lim.Wait(lr.ctx, n); err != nil {
 				return n, err
 			}
@@ -216,11 +219,24 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 	return opts, nil
 }
 
+// handshakeBudgetMultiplier bounds the handshake's aggregate duration as
+// a multiple of the per-read idle timeout (dopts.dialer.Timeout).
+// idleTimeoutReader only bounds a single Read; a server that sends at
+// least one byte before each per-read window elapses never trips it, so
+// the aggregate bound has to come from ctx instead
+// (https://github.com/hobeone/gonzbd/issues/488). 4 covers the
+// handshake's worst-case round-trip count: greeting, AUTHINFO USER,
+// AUTHINFO PASS, and CAPABILITIES.
+const handshakeBudgetMultiplier = 4
+
 // Dial connects to the server described by cfg, performs the greeting
 // handshake, authenticates if credentials are supplied, probes
 // capabilities, and returns a ready-to-use *Conn. The context governs
-// the full handshake; once Dial returns, cancellation is per-request
-// via Fetch's ctx.
+// the full handshake — cancelling it aborts the handshake promptly —
+// and the handshake is additionally bounded to handshakeBudgetMultiplier
+// times dopts.dialer.Timeout even when ctx itself carries no deadline
+// (see that constant's comment for why). Once Dial returns, cancellation
+// is per-request via Fetch's ctx.
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
@@ -254,18 +270,28 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
 
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeBudgetMultiplier*dopts.dialer.Timeout)
+	defer cancelHandshake()
+
 	var br io.Reader = nc
 	if dopts.dialer.Timeout > 0 {
 		br = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout}
 	}
+	// lr is nil unless a limiter or recorder is configured; when non-nil
+	// its ctx starts as handshakeCtx so a RateLimiter.Wait blocked on
+	// contended tokens is bounded by the handshake's aggregate deadline
+	// too, not just ctxConn's eventual (pause/shutdown/Close-only)
+	// cancellation. Swapped to ctxConn once the handshake succeeds, below.
+	var lr *limitReader
 	if dopts.limiter != nil || dopts.recorder != nil {
-		br = &limitReader{
+		lr = &limitReader{
 			r:      br,
 			lim:    dopts.limiter,
-			ctx:    ctxConn,
+			ctx:    handshakeCtx,
 			rec:    dopts.recorder,
 			server: dopts.recorderServer,
 		}
+		br = lr
 	}
 
 	c := &Conn{
@@ -288,12 +314,25 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
-	if err := c.handshake(ctx, cfg); err != nil {
+	if err := c.handshake(handshakeCtx, cfg); err != nil {
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
 		return nil, err
 	}
+
+	if lr != nil {
+		lr.ctx = ctxConn // handshake done; steady-state reads use the connection's own lifetime, not the handshake's bound
+	}
+
+	// setupHandshakeDeadline's AfterFunc can fire concurrently with
+	// handshake's own success — cleanup (stop()) and the deadline expiring
+	// both racing the same instant — stamping c.nc.SetDeadline(now) right
+	// as Dial is about to report success. SetDeadline poisons both read
+	// and write deadlines; idleTimeoutReader only ever refreshes the read
+	// side per-Read, so a poisoned write deadline would otherwise persist
+	// and fail every write on a connection Dial just handed back as ready.
+	_ = c.nc.SetDeadline(time.Time{}) //nolint:errcheck // best-effort; matches setupHandshakeDeadline's own error handling
 
 	l.Debug("handshake complete, connection ready")
 	go c.runReader()
@@ -357,22 +396,27 @@ func (c *Conn) expectGreeting() error {
 }
 
 // setupHandshakeDeadline arranges to force-unblock any pending read/write
-// on the socket if ctx ends before the handshake does — whether ctx
-// carries its own deadline (as the admin test-connection handlers'
-// context.WithTimeout callers do) or ends only via cancellation (as the
-// download path's pauseCtx, which never carries a deadline, does).
-// Returns a cleanup function to be deferred by the caller.
+// on the socket if ctx ends before the handshake does — whether ctx's own
+// deadline elapses first, or ctx ends earlier via cancellation. Since
+// https://github.com/hobeone/gonzbd/issues/488, Dial's own
+// handshakeBudgetMultiplier wrap guarantees handshake's only production
+// call site (conn.go's Dial) always passes a ctx that carries a
+// deadline — an outer caller's own context.WithTimeout, such as the
+// admin test-connection handlers', can only tighten that further — but
+// the download path can still cancel earlier than either deadline, when
+// an app pause or shutdown cancels the underlying pauseCtx Dial's wrap
+// derives from. Returns a
+// cleanup function to be deferred by the caller.
 //
 // context.AfterFunc's stop() is race-free against the scheduled func by
 // construction (gated by an internal sync.Once): whichever of stop() or
 // ctx's own cancellation reaches it first is authoritative, so cleanup
 // racing a concurrent cancellation can no longer stamp a stray deadline on
 // a connection that has already returned to service (#396).
-func (c *Conn) setupHandshakeDeadline(ctx context.Context) func() {
-	stop := context.AfterFunc(ctx, func() {
+func (c *Conn) setupHandshakeDeadline(ctx context.Context) func() bool {
+	return context.AfterFunc(ctx, func() {
 		_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
 	})
-	return func() { stop() }
 }
 
 // validateCredential rejects credentials that contain characters

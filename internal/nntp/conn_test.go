@@ -103,6 +103,15 @@ func (m *mockConn) sendCaps() {
 	m.send(".")
 }
 
+// withDialerTimeout overrides the per-dial idle/aggregate timeout
+// directly, bypassing ServerConfig.Timeout's whole-second granularity —
+// test-only, so timing-sensitive tests don't need multi-second waits.
+func withDialerTimeout(d time.Duration) DialOption {
+	return func(o *dialOptions) {
+		o.dialer.Timeout = d
+	}
+}
+
 func makeCfg(addr string) config.ServerConfig {
 	host, portStr, _ := net.SplitHostPort(addr)
 	var port int
@@ -981,5 +990,187 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 	// else entirely. At least one must fail *of the desync*.
 	if desynced == 0 {
 		t.Errorf("both Stats failed, but neither of the desync: %v", got)
+	}
+}
+
+// TestDialAggregateHandshakeTimeoutAgainstSlowTrickle pins
+// https://github.com/hobeone/gonzbd/issues/488: a server that keeps
+// sending at least one byte before each per-read idle timeout elapses
+// can otherwise hold the handshake open indefinitely, since
+// idleTimeoutReader only resets a per-read deadline and never bounds the
+// handshake's aggregate duration.
+func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
+	t.Parallel()
+
+	const (
+		idleTimeout     = 25 * time.Millisecond
+		trickleInterval = 5 * time.Millisecond
+	)
+	// waitWindow must exceed the aggregate bound the fix imposes, so a
+	// passing run demonstrates that bound firing, not just our own select
+	// eventually giving up.
+	waitWindow := handshakeBudgetMultiplier*idleTimeout + 300*time.Millisecond
+
+	ms := newMockServer(t, func(mc *mockConn) {
+		// Trickle one byte at a time, well inside the per-read idle
+		// timeout, and never send a full CRLF-terminated greeting line —
+		// idleTimeoutReader resets its deadline on every partial read, so
+		// this alone never trips the per-read bound.
+		for {
+			if _, err := mc.c.Write([]byte("2")); err != nil {
+				return
+			}
+			time.Sleep(trickleInterval)
+		}
+	})
+
+	cfg := makeCfg(ms.addr)
+
+	// No deadline, matching internal/downloader's pauseCtx — the
+	// production shape this test reproduces.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Dial(ctx, cfg, withDialerTimeout(idleTimeout))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dial succeeded against a server that never completed the greeting")
+		}
+	case <-time.After(waitWindow):
+		t.Fatalf("Dial did not return within %s: a server trickling one byte every %s"+
+			" (under the %s per-read idle timeout) kept the handshake alive with no aggregate bound",
+			waitWindow, trickleInterval, idleTimeout)
+	}
+}
+
+// blockingLimiter simulates a RateLimiter whose tokens are exhausted by
+// contention from other connections: Wait never returns on its own, only
+// when ctx ends.
+type blockingLimiter struct{}
+
+func (blockingLimiter) Wait(ctx context.Context, n int) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestDialAggregateHandshakeTimeoutAppliesToLimiterWait pins the gap
+// CodeRabbit found in the fix above: limitReader.Read calls
+// RateLimiter.Wait using the *connection's* long-lived context, not the
+// handshake's aggregate-bound one, so a rate limiter blocked on
+// contended tokens could keep the handshake open past
+// handshakeBudgetMultiplier*dopts.dialer.Timeout even though every
+// socket read itself completes fine.
+func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
+	const idleTimeoutSeconds = 1
+	waitWindow := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+
+	// Only the greeting is scripted. Dial's own goroutine isn't
+	// synchronized with this server's before the test returns, so
+	// mockConn's expect/readLine (which calls t.Errorf on a read error)
+	// would race a still-running server goroutine against test
+	// completion; sending just the greeting and returning avoids that
+	// hazard while still exercising the Wait call this test targets.
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+	})
+
+	cfg := makeCfg(ms.addr)
+	cfg.Timeout = idleTimeoutSeconds
+
+	ctx := t.Context()
+
+	type dialResult struct {
+		conn *Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		conn, err := Dial(ctx, cfg, WithLimiter(blockingLimiter{}))
+		done <- dialResult{conn, err}
+	}()
+
+	// Whether Dial ultimately succeeds or fails depends on which
+	// handshake step the blocked Wait lands on — probeCapabilities is
+	// documented best-effort and swallows a failed read, so success here
+	// is possible and not itself informative. What this pins is that
+	// Dial returns at all within the aggregate bound: under the bug, the
+	// greeting read's Wait blocks on ctxConn, which nothing in this test
+	// ever cancels, so Dial hangs forever instead.
+	select {
+	case res := <-done:
+		if res.conn != nil {
+			t.Cleanup(func() { _ = res.conn.Close() })
+		}
+	case <-time.After(waitWindow):
+		t.Fatalf("Dial did not return within %s: a RateLimiter.Wait blocked on the"+
+			" connection's own long-lived context instead of the handshake's aggregate bound",
+			waitWindow)
+	}
+}
+
+// TestDialResetsSocketDeadlineAfterSuccessfulHandshake pins a review
+// finding on the fix above: setupHandshakeDeadline's context.AfterFunc
+// can fire c.nc.SetDeadline(now) — poisoning both read AND write
+// deadlines — at the same moment handshake is completing successfully.
+// idleTimeoutReader only ever refreshes the read side per-Read, so an
+// unresolved poisoned write deadline would fail every write on a
+// connection Dial just reported as successfully established.
+//
+// This is forced deterministically rather than raced: the mock server
+// trickles bytes during the CAPABILITIES exchange without ever
+// completing a response line, so only the aggregate handshake deadline
+// (not idleTimeoutReader's tighter per-read one) can unblock that read.
+// probeCapabilities swallows the resulting error (documented
+// best-effort), so handshake still reports success — with the deadline
+// poisoned unless Dial resets it.
+func TestDialResetsSocketDeadlineAfterSuccessfulHandshake(t *testing.T) {
+	const (
+		idleTimeoutSeconds = 1
+		trickleInterval    = 400 * time.Millisecond
+	)
+	// Trickle past the aggregate deadline (handshakeBudgetMultiplier *
+	// idleTimeoutSeconds) with margin, then keep the connection open a
+	// little longer so the client's post-Dial Stat call has time to
+	// either poison-fail near-instantly (bug) or legitimately time out
+	// via idleTimeoutReader's own per-read bound (fixed).
+	trickleDuration := handshakeBudgetMultiplier*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		deadline := time.Now().Add(trickleDuration)
+		for time.Now().Before(deadline) {
+			if _, err := c.c.Write([]byte("1")); err != nil {
+				return
+			}
+			time.Sleep(trickleInterval)
+		}
+	})
+
+	cfg := makeCfg(ms.addr)
+	cfg.Timeout = idleTimeoutSeconds
+
+	conn, err := Dial(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	start := time.Now()
+	err = conn.Stat(t.Context(), "probe@host")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Stat succeeded against an unscripted mock server — test assumption broken")
+	}
+	if elapsed < 500*time.Millisecond {
+		t.Fatalf("Stat failed after only %s: the connection's socket deadline was left"+
+			" poisoned by the handshake's aggregate-timeout race instead of being reset"+
+			" on success", elapsed)
 	}
 }
