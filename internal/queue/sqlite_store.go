@@ -1105,7 +1105,10 @@ WHERE id = ?`
 	if err != nil {
 		return fmt.Errorf("sqlite store update job %s: %w", job.ID, err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite store update job %s rows affected: %w", job.ID, err)
+	}
 	if n == 0 {
 		return ErrNotFound
 	}
