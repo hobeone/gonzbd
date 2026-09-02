@@ -613,7 +613,7 @@ func TestPPQueueOrdering(t *testing.T) {
 	defer cancel()
 
 	for _, want := range names {
-		job, ok := q.Pop(ctx)
+		job, ok := q.Pop(ctx, nil)
 		if !ok {
 			t.Fatalf("Pop returned false, want job %q", want)
 		}
@@ -632,7 +632,7 @@ func TestPPQueueCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	job, ok := q.Pop(ctx)
+	job, ok := q.Pop(ctx, nil)
 	if !ok || job.Queue.ID != "b" {
 		t.Errorf("expected 'b', got ok=%v job=%v", ok, job)
 	}
@@ -647,7 +647,7 @@ func TestPPQueuePopCancelledCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // already done
 
-	_, ok := q.Pop(ctx)
+	_, ok := q.Pop(ctx, nil)
 	if ok {
 		t.Error("Pop with cancelled ctx returned ok=true")
 	}
