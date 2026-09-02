@@ -377,13 +377,14 @@ func (c *Conn) expectGreeting() error {
 // setupHandshakeDeadline arranges to force-unblock any pending read/write
 // on the socket if ctx ends before the handshake does — whether ctx's own
 // deadline elapses first, or ctx ends earlier via cancellation. Since
-// https://github.com/hobeone/gonzbd/issues/488, Dial always calls
-// handshake with a ctx that carries a deadline (Dial's own
-// handshakeBudgetMultiplier wrap — handshake's only call site, conn.go's
-// Dial — or an outer caller's, such as the admin test-connection
-// handlers' context.WithTimeout) — but the download path can still
-// cancel earlier than that deadline, when an app pause or shutdown
-// cancels the underlying pauseCtx Dial's wrap derives from. Returns a
+// https://github.com/hobeone/gonzbd/issues/488, Dial's own
+// handshakeBudgetMultiplier wrap guarantees handshake's only production
+// call site (conn.go's Dial) always passes a ctx that carries a
+// deadline — an outer caller's own context.WithTimeout, such as the
+// admin test-connection handlers', can only tighten that further — but
+// the download path can still cancel earlier than either deadline, when
+// an app pause or shutdown cancels the underlying pauseCtx Dial's wrap
+// derives from. Returns a
 // cleanup function to be deferred by the caller.
 //
 // context.AfterFunc's stop() is race-free against the scheduled func by
