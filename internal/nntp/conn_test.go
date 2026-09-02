@@ -1010,7 +1010,15 @@ func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
 	// passing run demonstrates that bound firing, not just our own select
 	// eventually giving up. The aggregate bound is exactly idleTimeout
 	// (https://github.com/hobeone/gonzbd/issues/501), not a multiple of it.
-	waitWindow := idleTimeout + 300*time.Millisecond
+	// The margin over idleTimeout is a generous hang guard, not a tight
+	// correctness bound (docs/TESTING.md §8's "No Absolute Wall-Clock
+	// Thresholds" rule): the deadline fires exactly on schedule, but
+	// propagating that back up through idleTimeoutReader, bufio.Reader,
+	// and a channel send to this select is a real chain of goroutine
+	// hops, and a 300ms margin proved too tight to survive scheduling
+	// delay under go test -race ./...'s package parallelism
+	// (https://github.com/hobeone/gonzbd/issues/506).
+	waitWindow := idleTimeout + 5*time.Second
 
 	ms := newMockServer(t, func(mc *mockConn) {
 		// Trickle one byte at a time, well inside the per-read idle
