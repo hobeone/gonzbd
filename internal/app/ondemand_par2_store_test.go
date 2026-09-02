@@ -76,6 +76,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	copyFixturePar2(t, jobDir)
+	copyFixturePayload(t, jobDir, "data.bin")
 
 	app := &Application{
 		queue:   q,
@@ -143,6 +144,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
 		t.Fatal(err)
 	}
 	copyFixturePar2(t, jobDir)
+	copyFixturePayload(t, jobDir, "data.bin")
 
 	app := &Application{
 		queue:   q,

@@ -30,6 +30,24 @@ func copyFixturePar2(t *testing.T, dir string) {
 	}
 }
 
+// copyFixturePayload puts the protected file itself on disk beside the index.
+//
+// par2NeedsRecovery now IDENTIFIES the delivered files before verifying them,
+// and identification reads the directory — an index describing data.bin with
+// no data.bin present means the file is genuinely missing, and the honest
+// answer is to fetch the recovery volumes. Verification alone never looked at
+// the filesystem, which is why these fixtures did not need it before.
+func copyFixturePayload(t *testing.T, dir, asName string) {
+	t.Helper()
+	b, err := os.ReadFile("../../test/fixtures/par2/data.bin")
+	if err != nil {
+		t.Skipf("par2 payload fixture unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, asName), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // seedFileCRC gives one of a job's files an assembled CRC32.
 //
 // It goes through Queue.SetFileCRC32FromRuns rather than writing the field,
@@ -117,6 +135,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("clean data verifies and skips recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 			deferredVol,
@@ -129,6 +148,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("CRC mismatch triggers recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100},
 			deferredVol,
@@ -143,6 +163,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("failed download (no assembled CRC) triggers recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", bytes: 100},
 			deferredVol,
@@ -166,15 +187,75 @@ func TestPar2NeedsRecovery(t *testing.T) {
 		}
 	})
 
-	t.Run("non-matching par2 set protects different files (Layout B) skips recovery", func(t *testing.T) {
+	// This subtest used to assert the opposite, and the reversal is the point
+	// of the change rather than a side effect of it.
+	//
+	// A par2 set describing a file this download does not contain is
+	// indistinguishable, from here, between three causes: the poster's par2
+	// protects the extracted contents rather than the archives, the file
+	// failed to download, or a name defeated identification. The old code
+	// read this state as proof of the first and DISCARDED the recovery
+	// volumes — a terminal decision, since nothing downstream can fetch them
+	// (post-processing's NeedRequeue has no consumer).
+	//
+	// Fetching costs bandwidth on a job that may not need it. Discarding
+	// costs an unrepairable job that did. At a decision that cannot be
+	// revisited, the recoverable branch is the correct one.
+	t.Run("a par2 entry matching nothing delivered fetches recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir) // protects data.bin
+		// Genuinely different content, not the fixture payload under another
+		// name: identification is by CONTENT, so copying data.bin to
+		// other.bin would be correctly identified AS data.bin and this
+		// subtest would assert the opposite of what it means to.
+		if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte(strings.Repeat("not-the-protected-file", 400)), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "other.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
-		if got, _ := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); got {
-			t.Error("par2 protecting different files must NOT trigger recovery-volume download")
+		got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions())
+		if !got {
+			t.Fatal("a par2 set describing a file we do not have must fetch the recovery volumes, not discard them")
+		}
+		if !strings.Contains(reason, "not found in this download") {
+			t.Errorf("expected an unaccounted-file reason, got: %q", reason)
+		}
+	})
+
+	// The counterpart, and what stops the branch above from being a blanket
+	// "always fetch": an obfuscated file is still the file par2 describes, and
+	// content identification finds it. This is the case measured on a real
+	// release (#492), where the shipped code discarded the volumes.
+	t.Run("an obfuscated file is identified by content, not fetched blindly", func(t *testing.T) {
+		dir := t.TempDir()
+		copyFixturePar2(t, dir) // protects data.bin
+		copyFixturePayload(t, dir, "7xq6N6P340dCh9Lnih5hY3jsArfSN1")
+
+		// Stops at identification deliberately. Verification still matches by
+		// name, and the rename that makes those names line up is applied by
+		// applyPar2Names at the caller, not inside par2NeedsRecovery — a
+		// function named for a question does not move files. What this pins
+		// is the app-level claim against the REAL fixture: the obfuscated
+		// file is accounted for, so the branch that discards volumes is not
+		// reached.
+		sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
+		if err != nil || len(sets) == 0 {
+			t.Fatalf("FindPar2Files: %v (%d sets)", err, len(sets))
+		}
+		id, err := par2.Identify(dir, sets, log)
+		if err != nil {
+			t.Fatalf("Identify: %v", err)
+		}
+		if !id.Accounted() {
+			t.Fatalf("obfuscated file left unaccounted: %+v", id.Unaccounted)
+		}
+		if len(id.Files) != 1 || id.Files[0].Desc.FileName != "data.bin" {
+			t.Fatalf("identified %+v, want the one entry data.bin", id.Files)
+		}
+		if !id.Files[0].NeedsRename() {
+			t.Error("NeedsRename() = false for an obfuscated file")
 		}
 	})
 }
@@ -228,6 +309,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 			t.Fatal(err)
 		}
 		copyFixturePar2(t, dirClean)
+		copyFixturePayload(t, dirClean, "data.bin")
 
 		snap := q.SnapshotJob(jobID)
 		if app.maybeReleaseRecoveryVolumes(t.Context(), jobID, snap) {
