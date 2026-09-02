@@ -220,10 +220,12 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 
 	// One article per file, to learn the yEnc-declared name and size.
 	//
-	// This is what production actually matches on. par2NeedsRecovery and
-	// QuickCheck both prefer FileProgress.Filename over Manifest.FileSubject
-	// when it is set, and Filename comes from the yEnc header — so probing
-	// Subject alone would compare a name the real code never uses. For this
+	// This is what production actually matches on. Both par2 consumers — the
+	// on-demand fetch decision and the quickcheck stage — build their
+	// par2.AssembledFile list from a name that prefers FileProgress.Filename
+	// over Manifest.FileSubject when it is set (app.resolvedName), and
+	// Filename comes from the yEnc header — so probing Subject alone would
+	// compare a name the real code never uses. For this
 	// NZB the difference is total: Subject for the payload is the whole
 	// sanitized subject line, because ExtractFilenameFromSubject refuses its
 	// purely-hex name.

@@ -53,6 +53,22 @@ set of cases.
 
 ### 1.2 The verification decision has two implementations
 
+> **AMENDED 2026-09-02 — half of this landed, and the half that did not is
+> worse than stated.** #494 and #495 gave both consumers one shared
+> computation, `par2.Assess`: `par2NeedsRecovery` is now the pure
+> `app.par2Verdict` taking a `par2.Assessment`, `QuickCheckStage.verifyJobCRCs`
+> is gone, and `par2.VerifyCRCs` no longer exists. The doc comment quoted below
+> was rewritten with it and no longer says this.
+>
+> **What remains is the interpretation, and #491 measured it as a
+> disagreement rather than a duplication.** Both consumers read one assessment
+> and reach opposite verdicts on Layout B: `app.go` carries a guard for "no
+> delivered file matches any par2 entry", `internal/postproc` has no
+> equivalent and sums `NoCRC + Unverified + Mismatched` into damage
+> (`stage_quickcheck.go:189`). The paragraph below is therefore still owed —
+> as one total `Verdict`, not merely as one function — and so is everything in
+> the `NeedRequeue` paragraph, which is untouched.
+
 `Application.par2NeedsRecovery` decides, at download completion, whether a job's
 deferred par2 recovery volumes must be fetched. Its doc comment states the
 duplication outright:
