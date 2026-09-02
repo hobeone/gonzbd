@@ -983,3 +983,69 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 		t.Errorf("both Stats failed, but neither of the desync: %v", got)
 	}
 }
+
+// TestDialAggregateHandshakeTimeoutAgainstSlowTrickle pins #488: a server
+// that keeps sending at least one byte before each per-read idle timeout
+// elapses can otherwise hold the handshake open indefinitely, since
+// idleTimeoutReader only resets a per-read deadline and never bounds the
+// handshake's aggregate duration.
+func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
+	const (
+		idleTimeoutSeconds = 1
+		trickleInterval    = 400 * time.Millisecond
+	)
+	// waitWindow must exceed the aggregate bound the fix imposes, so a
+	// passing run demonstrates that bound firing, not just our own select
+	// eventually giving up. 4 is a placeholder for handshakeBudgetMultiplier,
+	// which does not exist yet on this commit (#488's fix defines it next).
+	waitWindow := 4*time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
+
+	ms := newMockServer(t, func(mc *mockConn) {
+		// Trickle one byte at a time, well inside the per-read idle
+		// timeout, and never send a full CRLF-terminated greeting line —
+		// idleTimeoutReader resets its deadline on every partial read, so
+		// this alone never trips the per-read bound.
+		for {
+			if _, err := mc.c.Write([]byte("2")); err != nil {
+				return
+			}
+			time.Sleep(trickleInterval)
+		}
+	})
+
+	cfg := makeCfg(ms.addr)
+	cfg.Timeout = idleTimeoutSeconds
+
+	// No deadline, matching internal/downloader's pauseCtx — the
+	// production shape this test reproduces.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Dial(ctx, cfg)
+		done <- err
+	}()
+
+	var dialErr error
+	timedOut := false
+	select {
+	case dialErr = <-done:
+	case <-time.After(waitWindow):
+		timedOut = true
+	}
+	cancel()
+
+	if timedOut {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Log("Dial goroutine still running after cancel; possible leak")
+		}
+		t.Fatalf("Dial did not return within %s: a server trickling one byte every %s"+
+			" (under the %ds per-read idle timeout) kept the handshake alive with no aggregate bound",
+			waitWindow, trickleInterval, idleTimeoutSeconds)
+	}
+	if dialErr == nil {
+		t.Fatal("Dial succeeded against a server that never completed the greeting")
+	}
+}
