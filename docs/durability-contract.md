@@ -368,21 +368,25 @@ articles join it, across restarts — nothing reads the file.
 `Application.recordAssembledCRC` threads the value to `Queue.SetFileCRC32FromRuns` when
 the file finalizes.
 
-**Its consumer is `par2.VerifyCRCs`, not `par2.QuickCheck`.** The two are easy
-to conflate because the post-processing *stage* is named quickcheck.
-`par2.QuickCheck` the **function** is filename relocation — it moves flat
-downloads into the subdirectory paths a par2 manifest references — and where it
-compares a checksum it computes one itself from disk (`tryMatchCRC32File` takes
-a path). It never reads `AssembledCRC32`. What our value feeds is
-`par2.VerifyCRCsWithOptions`, called from `stage_quickcheck.go` and from
-`app.par2NeedsRecovery`, where it saves one read of each file.
+**Its consumer is `par2.Assess`.** This used to be stated as a distinction —
+"`par2.VerifyCRCs`, not `par2.QuickCheck`" — because the two were separate
+functions and the post-processing *stage* is named quickcheck. They are now one
+call (#494): `Assess` identifies each delivered file against the par2 index,
+compares this record's CRC against the entry it proved the file to be, and
+reports the relocations that would follow, all from one pre-rename read of the
+directory.
 
-What that verdict then buys is real and worth naming rather than
+The half of that distinction worth keeping is which reads are avoided.
+Identification costs 16 KB per file and a `Hash16k`; **verification costs
+nothing**, because the value compared is this record's, not one computed from
+disk. `AssembledCRC32` is what buys that, exactly as before.
+
+What the verdict then buys is real and worth naming rather than
 under-claiming: a `Clean` outcome makes `stage_repair.go` skip the par2
-verify+repair subprocess entirely, and `par2NeedsRecovery` returning false
-leaves the deferred recovery volumes unfetched. Neither is reachable for a file
-this record supplies no CRC for — it reads `NoCRC`, and both take the
-conservative branch.
+verify+repair subprocess entirely, and `par2Verdict` returning false leaves the
+deferred recovery volumes unfetched. Neither is reachable for a file this
+record supplies no CRC for — it reads `NoCRC`, and both take the conservative
+branch.
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.
@@ -1638,8 +1642,8 @@ recorded here so the next reader does not mistake them for design.
    the file (§4). A permanently failed article leaves a hole and is accounted
    for by no run, so both conditions fail and no whole-file value exists to
    record — `FileProgress.AssembledCRC32` stays zero, which is the documented
-   "unavailable" value (#349), so `par2.VerifyCRCs` reads `NoCRC` and
-   `par2NeedsRecovery` conservatively returns true for that file. This is the
+   "unavailable" value (#349), so `par2.Assess` reads `NoCRC` and
+   `par2Verdict` conservatively returns true for that file. This is the
    correct answer rather than a gap: a partial CRC recorded as the file's
    would report corruption for a file that is merely incomplete.
 

@@ -333,9 +333,17 @@ site and remembering to keep them in step.
 
   It cannot write the correction either: `postproc.Job` carries a
   `*queue.Job` snapshot rather than a `*queue.Queue`, so there is no writer
-  behind it. The stage therefore applies the rename mapping in memory before
-  verifying — see `verifyJobCRCs`. This is a real change to it, not a side
-  effect.
+  behind it. The stage therefore applied the rename mapping in memory before
+  verifying. This was a real change to it, not a side effect.
+
+  **That in-memory mapping is itself gone now, and the reason is worth
+  recording here rather than only in the issue it produced.** It was correct,
+  but it was a *second* enforcement point for an ordering `internal/app`
+  enforced separately — and the two together were four different patches for
+  one root cause. #494 replaced them with `par2.Assess`, which reports renames
+  without applying them and hands them out only alongside a verdict computed
+  from pre-rename state. Both callers now assess first and relocate second, so
+  there is no window in which the names are wrong and nothing to remap.
 
 **One ordering fact this depends on**, checked rather than assumed:
 `quickcheck` is the first stage, ahead of every renaming stage
@@ -392,9 +400,11 @@ data, so the free-verification half is real and not merely assumed.
 computes the CRC by assembling the payload and calling
 `crc32.ChecksumIEEE`, where production combines per-article yEnc CRCs — so it
 proves par2's recorded CRC matches the file's true CRC, not that our assembled-CRC
-pipeline reproduces it. And its `VerifyCRCs` section passes `CRC32: 0`
-throughout, modelling a resumed download; the claim that real CRCs would not
-change those counters is derived from source, not observed.
+pipeline reproduces it. And its section on the shipped verifier passed
+`CRC32: 0` throughout, modelling a resumed download; the claim that real CRCs
+would not change those counters was derived from source, not observed. (That
+section has since been deleted along with the name-matching verifier it
+measured — see the note in its place in `scripts/nzbprobe`.)
 
 ---
 
