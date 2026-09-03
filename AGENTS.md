@@ -313,7 +313,7 @@ go test -tags=crash -timeout=20m ./test/crash/              # Crash consistency 
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
-./scripts/run_gremlins.sh ./internal/queue                  # Mutation testing on a package (periodic, see below — not a per-commit gate)
+./scripts/run_gremlins.sh ./internal/job                    # Mutation testing on a package (periodic, see below — not a per-commit gate)
 ```
 
 > **WARNING:** Never run `gremlins` on the entire repository or call
@@ -372,11 +372,11 @@ go run ./scripts/mutate path/to/the.spec     # exits non-zero unless every mutat
 ```
 
 ```text
-pkg ./internal/queue/
+pkg ./internal/job/
 run TestTheNewPin
 
 [the guard neutered]
-file internal/queue/progress.go
+file internal/job/progress.go
 --- anchor
 	if !isJobStamp(t) || !p.downloadFinished.IsZero() {
 --- replace
@@ -390,7 +390,7 @@ but every reader who runs it gets `ANCHOR — anchor matched no site` and has to
 work out whether the tool or the example is broken. This example used to name
 `internal/queue/queue.go`'s `if job.progress.downloadFinished.IsZero() {`,
 which is exactly what happened to it: #464 deleted that line when it gave the
-download timestamps a single owner. `internal/queue/testdata/postproc_stamp.spec`
+download timestamps a single owner. `internal/job/testdata/postproc_stamp.spec`
 is the same mutation against the line that replaced it, kept as a committed
 spec — so the mutation above is one this repository actually runs. Its `run`
 line is still a placeholder: `TestTheNewPin` names no test, and the committed
