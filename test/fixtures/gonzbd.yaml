@@ -44,6 +44,7 @@ downloads:
   max_art_tries: 3
   max_art_opt: 1
   max_active_jobs: 4
+  max_compute_slots: 2
   checkpoint_interval: 30
   checkpoint_bytes: 64M
   top_only: false

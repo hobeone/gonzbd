@@ -677,6 +677,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |
+| `max_compute_slots` | int | `2` | Maximum number of concurrent compute/post-processing jobs |
 | `top_only` | bool | false | Only use top-priority server |
 | `no_penalties` | bool | false | Use minimal penalty times |
 | `pre_check` | bool | false | Pre-check article availability via STAT |

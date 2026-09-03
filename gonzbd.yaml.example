@@ -197,6 +197,11 @@ downloads:
   # Defaults to 4.
   max_active_jobs: 4
 
+  # Maximum number of jobs concurrently performing compute- or disk-heavy
+  # post-processing stages (Assessing, Repairing, Extracting, Finalizing).
+  # Defaults to 2.
+  max_compute_slots: 2
+
   # When true, only dispatch articles to the highest-priority server.
   # Disables fallback to backup servers entirely.
   top_only: false

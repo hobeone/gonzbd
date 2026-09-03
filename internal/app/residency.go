@@ -65,7 +65,7 @@ func (r *appResidency) Evict(id string) {
 	j.Evict()
 }
 
-func (r *appResidency) readManifest(ctx context.Context, id string) (*job.Manifest, error) {
+func (r *appResidency) readManifest(_ context.Context, id string) (*job.Manifest, error) {
 	path := filepath.Join(r.dir, id+".json.gz")
 	f, err := os.Open(path) //nolint:gosec // path is dir + a validated job ID
 	if err != nil {

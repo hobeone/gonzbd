@@ -21,9 +21,12 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -123,6 +126,10 @@ type Application struct {
 	meter    *bpsmeter.Meter
 
 	queue           *queue.Queue
+	dispatcher      *dispatch.Dispatcher
+	residency       *appResidency
+	runner          *appRunner
+	checkpointer    *checkpoint.Checkpointer
 	historyRepo     *history.Repository
 	downloader      Downloader
 	downloaderStats DownloaderStats
@@ -281,6 +288,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	writeCacheBytes := int64(dl.WriteCacheSize)
 	minFreeBytes := int64(dl.MinFreeSpace)
 	maxActiveJobs := dl.MaxActiveJobs
+	maxComputeSlots := dl.MaxComputeSlots
 	sanitize := dl.SanitizeOptions()
 	serversConfig := snap.Servers
 
@@ -353,6 +361,39 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		return nil, fmt.Errorf("app: load queue: %w", err)
 	}
 	app.queue = q
+
+	// Both models are constructed here for exactly the span of this branch.
+	// internal/queue still runs the daemon; the dispatcher runs nothing until
+	// Tasks 7-11 repoint consumers onto it, and Task 13 deletes the loser.
+	var dispatchStore dispatch.Store = nopDispatchStore{}
+	var checkpointStore checkpoint.Store = &appCheckpointStore{}
+	if repo != nil && repo.DB() != nil {
+		dispatchStore = dispatchstore.New(repo.DB())
+		checkpointStore = &appCheckpointStore{db: repo.DB()}
+	}
+	leaseCap := maxActiveJobs
+	if leaseCap <= 0 {
+		leaseCap = 4
+	}
+	slotCap := maxComputeSlots
+	if slotCap <= 0 {
+		slotCap = 2
+	}
+	manifestDir := filepath.Join(queueStateDir, "manifests")
+	app.checkpointer = checkpoint.New(checkpointStore, 5*time.Second, log)
+	app.residency = newAppResidency(app.lookupJob, manifestDir, log)
+	app.runner = newAppRunner(app)
+	app.dispatcher = dispatch.New(
+		leaseCap,
+		slotCap,
+		time.Second,
+		time.Now,
+		&appWorkers{app: app},
+		app.residency,
+		dispatchStore,
+		app.runner,
+	)
+	app.runner.report = app.dispatcher
 
 	// Probe sparse file support on the download directory. Pre-allocation
 	// uses fallocate/ftruncate which benefits from sparse-capable filesystems.
@@ -985,6 +1026,9 @@ func (app *Application) Start(ctx context.Context) error {
 		// runCheckpoint and runMetricsPush. Without this cancel they would run
 		// forever, and nothing would join them either, since app.wg.Wait lives
 		// only in Shutdown.
+		if app.dispatcher != nil {
+			_ = app.dispatcher.Stop()
+		}
 		if app.cancel != nil {
 			app.cancel()
 		}
@@ -995,6 +1039,11 @@ func (app *Application) Start(ctx context.Context) error {
 	// so gosec cannot see the calls. It is invoked by Shutdown on the success
 	// path and by the failure defer above on every error return.
 	app.ctx, app.cancel = context.WithCancel(ctx)
+	if app.dispatcher != nil {
+		if err := app.dispatcher.Start(app.ctx); err != nil {
+			return fmt.Errorf("app: start dispatcher: %w", err)
+		}
+	}
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
 	}
@@ -1236,6 +1285,12 @@ func (app *Application) Shutdown() error {
 
 	if err := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log); err != nil {
 		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
+	}
+
+	if app.dispatcher != nil {
+		if err := app.dispatcher.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("dispatcher stop: %w", err))
+		}
 	}
 
 	adminDir := app.config.GetGeneral().AdminDir
@@ -1976,7 +2031,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// never blocks waiting for disk unpacking to finish.
 	du := app.duOrch.collect(job.ID)
 
-	dispatch := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
+	enqueuePostProc := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		app.postProcessor.Process(&postproc.Job{
 			Queue:                job,
 			DownloadDir:          downloadDir,
@@ -2020,11 +2075,11 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 				app.log.Info("directunpack: passing skipped sets to postproc",
 					"job", job.ID, "skipped_sets", len(duSkipped))
 			}
-			dispatch(duResults, duFailures, duSkipped)
+			enqueuePostProc(duResults, duFailures, duSkipped)
 		})
 		return
 	}
-	dispatch(nil, nil, nil)
+	enqueuePostProc(nil, nil, nil)
 }
 
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime

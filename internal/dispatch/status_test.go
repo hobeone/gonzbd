@@ -13,7 +13,9 @@ import (
 func TestRowStatus_MatchesToSABnzbd(t *testing.T) {
 	for _, st := range job.AllStates() {
 		t.Run(st.String(), func(t *testing.T) {
-			v := job.RenderView{StateView: job.StateView{State: st}, Running: true}
+			var v job.RenderView
+			v.Running = true
+			v.State = st
 			r := Row{ID: "a", View: v}
 			if got, want := r.Status(), job.ToSABnzbd(v); got != want {
 				t.Fatalf("Row.Status() = %q, ToSABnzbd = %q; they must not diverge", got, want)
