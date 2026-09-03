@@ -371,3 +371,69 @@ func TestDispatcher_SetWarning(t *testing.T) {
 		t.Fatalf("Header.Warning = %q, want 'disk low'", row.Header.Warning)
 	}
 }
+
+func TestDispatcher_Mutators(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1", Filename: "file1.nzb"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Unknown job errors
+	for _, fn := range []func() error{
+		func() error { return d.SetPriority("unknown", 1) },
+		func() error { return d.SetName("unknown", "n") },
+		func() error { return d.SetCategory("unknown", "c") },
+		func() error { return d.SetPP("unknown", 2) },
+		func() error { return d.SetScript("unknown", "s") },
+	} {
+		if err := fn(); err == nil {
+			t.Fatal("expected error on unknown job")
+		}
+	}
+
+	// Priority
+	if err := d.SetPriority("j1", 2); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+	// Name
+	if err := d.SetName("j1", "New Name"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	// Category
+	if err := d.SetCategory("j1", "tv"); err != nil {
+		t.Fatalf("SetCategory: %v", err)
+	}
+	// PP
+	if err := d.SetPP("j1", 3); err != nil {
+		t.Fatalf("SetPP: %v", err)
+	}
+	// Script
+	if err := d.SetScript("j1", "notify.sh"); err != nil {
+		t.Fatalf("SetScript: %v", err)
+	}
+
+	row, ok := d.Row("j1")
+	if !ok {
+		t.Fatal("Row(j1) not found")
+	}
+	if row.Header.Priority != 2 {
+		t.Errorf("Priority = %d, want 2", row.Header.Priority)
+	}
+	if row.Header.Name != "New Name" || j.Name() != "New Name" {
+		t.Errorf("Name = %q / %q, want 'New Name'", row.Header.Name, j.Name())
+	}
+	if row.Header.Category != "tv" {
+		t.Errorf("Category = %q, want 'tv'", row.Header.Category)
+	}
+	if row.Header.PP != 3 || !j.Policy().Delete {
+		t.Errorf("PP = %d, Policy = %+v, want PP 3 / Delete: true", row.Header.PP, j.Policy())
+	}
+	if row.Header.Script != "notify.sh" {
+		t.Errorf("Script = %q, want 'notify.sh'", row.Header.Script)
+	}
+
+	if got := d.Len(); got != 1 {
+		t.Errorf("Len() = %d, want 1", got)
+	}
+}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -63,7 +64,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 		name    string
 		files   []repairHealthFile
 		failIdx []int
-		want    queue.RepairState
+		want    job.RepairState
 	}{
 		{
 			// The shape this whole line of work exists to spare: index
@@ -76,7 +77,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.par2", bytes: 50},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairIntact,
+			want:    job.RepairIntact,
 		},
 		{
 			// A plainly-named par2 file: the PAR2 specification recommends
@@ -88,7 +89,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.par2", bytes: 50},
 			},
 			failIdx: []int{0},
-			want:    queue.RepairUnknown,
+			want:    job.RepairUnknown,
 		},
 		{
 			name: "no par2 at all leaves the verdict standing",
@@ -97,7 +98,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.part02.rar", bytes: 50},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairNoCapacity,
+			want:    job.RepairNoCapacity,
 		},
 		{
 			name: "content damage within recognized capacity",
@@ -107,7 +108,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.vol01+02.par2", bytes: 300},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairPossible,
+			want:    job.RepairPossible,
 		},
 		{
 			name: "content damage beyond recognized capacity",
@@ -117,22 +118,22 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.vol01+02.par2", bytes: 300},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairBeyondCapacity,
+			want:    job.RepairBeyondCapacity,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			job := buildRepairHealthJob(t, tc.files, tc.failIdx...)
-			slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+			qJob := buildRepairHealthJob(t, tc.files, tc.failIdx...)
+			slot := buildSlot(qJob, false, 0, 0, nil, app.JobCheckpointState{})
 
 			if slot.RepairState != tc.want {
 				t.Errorf("RepairState = %q, want %q", slot.RepairState, tc.want)
 			}
 			// The listing must agree with the job it describes, or the row
 			// contradicts the gate that is acting on the same job.
-			if got := job.RepairState(); slot.RepairState != got {
+			if got := qJob.RepairState(); slot.RepairState != job.RepairState(got) {
 				t.Errorf("buildSlot sent %q but Job.RepairState() is %q — the listing "+
 					"re-derived the verdict instead of asking for it", slot.RepairState, got)
 			}
@@ -146,18 +147,18 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 func TestBuildSlot_FailedBytesStaysTheTotal(t *testing.T) {
 	t.Parallel()
 
-	job := buildRepairHealthJob(t, []repairHealthFile{
+	qJob := buildRepairHealthJob(t, []repairHealthFile{
 		{subject: "movie.part01.rar", bytes: 1000},
 		{subject: "movie.par2", bytes: 50},
 	}, 1)
 
-	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(qJob, false, 0, 0, nil, app.JobCheckpointState{})
 	if slot.FailedBytes != 50 {
 		t.Errorf("FailedBytes = %d, want 50 — the par2 index's failure is still a failure to report",
 			slot.FailedBytes)
 	}
-	if slot.RepairState != queue.RepairIntact {
+	if slot.RepairState != job.RepairIntact {
 		t.Errorf("RepairState = %q, want %q — the same failure is not content damage",
-			slot.RepairState, queue.RepairIntact)
+			slot.RepairState, job.RepairIntact)
 	}
 }

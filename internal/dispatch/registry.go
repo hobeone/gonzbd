@@ -23,10 +23,14 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // scheduling decision — nothing reads Header.Name to decide anything.
 type Header struct {
 	Name     string
+	Filename string
 	Category string
 	Priority int
 	Bytes    int64
 	Warning  string
+	Script   string
+	Password string
+	PP       int
 }
 
 // Row is one line of a queue listing: the scheduling view sched computes,
@@ -232,6 +236,13 @@ func (d *Dispatcher) remove(id string) {
 	}
 }
 
+// Len returns the count of jobs currently registered in the queue.
+func (d *Dispatcher) Len() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.order)
+}
+
 // List composes the queue listing. It takes Queue.mu exactly once, through
 // RenderAll, so every row is from one instant.
 func (d *Dispatcher) List() []Row {
@@ -363,5 +374,68 @@ func (d *Dispatcher) SetWarning(id, warning string) error {
 		return fmt.Errorf("dispatch: set warning %s: %w", id, ErrNotFound)
 	}
 	e.h.Warning = warning
+	return nil
+}
+
+// SetPriority sets the priority for a registered job and kicks the scheduler.
+func (d *Dispatcher) SetPriority(id string, priority int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set priority %s: %w", id, ErrNotFound)
+	}
+	e.h.Priority = priority
+	d.kick()
+	return nil
+}
+
+// SetName sets the display name for a registered job.
+func (d *Dispatcher) SetName(id, name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
+	}
+	e.h.Name = name
+	e.j.SetName(name)
+	return nil
+}
+
+// SetCategory sets the category for a registered job.
+func (d *Dispatcher) SetCategory(id, category string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set category %s: %w", id, ErrNotFound)
+	}
+	e.h.Category = category
+	return nil
+}
+
+// SetPP sets the post-processing level for a registered job.
+func (d *Dispatcher) SetPP(id string, pp int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set pp %s: %w", id, ErrNotFound)
+	}
+	e.h.PP = pp
+	e.j.SetPolicy(job.PolicyFromPP(pp))
+	return nil
+}
+
+// SetScript sets the post-processing script for a registered job.
+func (d *Dispatcher) SetScript(id, script string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set script %s: %w", id, ErrNotFound)
+	}
+	e.h.Script = script
 	return nil
 }

@@ -493,6 +493,7 @@ func buildAPIServer(cfg *config.Config, configPath string, application *app.Appl
 		Version:      Version,
 		Commit:       Commit,
 		Date:         Date,
+		Dispatcher:   application.Dispatcher(),
 		Queue:        application.Queue(),
 		History:      histRepo,
 		Config:       cfg,

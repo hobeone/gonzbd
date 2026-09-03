@@ -819,10 +819,14 @@ func (app *Application) AddJob(ctx context.Context, qJob *queue.Job, rawNZB []by
 		}
 		hdr := dispatch.Header{
 			Name:     qJob.Name,
+			Filename: qJob.Filename,
 			Category: qJob.Category,
 			Priority: int(qJob.Priority),
 			Bytes:    qJob.TotalBytes(),
 			Warning:  qJob.Warning,
+			Script:   qJob.Script,
+			Password: qJob.Password,
+			PP:       qJob.PP,
 		}
 		if err := app.dispatcher.Add(j, hdr); err != nil {
 			return fmt.Errorf("app: add to dispatcher: %w", err)
@@ -2648,10 +2652,14 @@ func (app *Application) bridgeOneJob(snap *queue.Job, explicitManifest ...*queue
 		}
 		hdr := dispatch.Header{
 			Name:     snap.Name,
+			Filename: snap.Filename,
 			Category: snap.Category,
 			Priority: int(snap.Priority),
 			Bytes:    snap.TotalBytes(),
 			Warning:  snap.Warning,
+			Script:   snap.Script,
+			Password: snap.Password,
+			PP:       snap.PP,
 		}
 		if err := app.dispatcher.Add(j, hdr); err != nil {
 			app.log.Warn("failed to bridge queue job to dispatcher", "job", snap.ID, "err", err)

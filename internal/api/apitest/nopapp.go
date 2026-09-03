@@ -9,6 +9,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -19,6 +20,7 @@ import (
 // It is intended for use in tests (unit, integration, and UI) to eliminate
 // duplicate mock definitions of the 20+-method interface.
 type NopApp struct {
+	Dispatcher         *dispatch.Dispatcher
 	Queue              *queue.Queue
 	History            *history.Repository
 	SpeedVal           float64
@@ -100,6 +102,9 @@ func (n NopApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force
 
 // RemoveJob forwards the job removal to the wired queue if present.
 func (n NopApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
+	if n.Dispatcher != nil {
+		_ = n.Dispatcher.Remove(ctx, id)
+	}
 	if n.Queue != nil {
 		return n.Queue.Remove(id)
 	}

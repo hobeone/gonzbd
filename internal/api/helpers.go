@@ -212,7 +212,7 @@ func isStateChangingRequest(r *http.Request) bool {
 // requireDependencies checks that all requested dependencies are wired on the server.
 // If any requested dependency is nil, it writes a 500 internal server error and returns false.
 func (s *Server) requireDependencies(w http.ResponseWriter, queue, app, config, history, grabber bool) bool {
-	if queue && s.queue == nil {
+	if queue && s.dispatcher == nil && s.queue == nil {
 		s.respondError(w, http.StatusInternalServerError, "queue not wired")
 		return false
 	}

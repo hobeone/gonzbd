@@ -221,10 +221,32 @@ func New(id, name string, p Policy) *Job {
 func (j *Job) ID() string { return j.id }
 
 // Name returns the job's display name.
-func (j *Job) Name() string { return j.name }
+func (j *Job) Name() string {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.name
+}
+
+// SetName updates the job's display name.
+func (j *Job) SetName(name string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.name = name
+}
 
 // Policy returns the job's retry/repair policy.
-func (j *Job) Policy() Policy { return j.policy }
+func (j *Job) Policy() Policy {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.policy
+}
+
+// SetPolicy updates the job's retry/repair policy.
+func (j *Job) SetPolicy(p Policy) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.policy = p
+}
 
 // Added returns the job's creation timestamp.
 func (j *Job) Added() time.Time { return j.created }

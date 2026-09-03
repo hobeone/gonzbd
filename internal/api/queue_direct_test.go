@@ -316,7 +316,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 		// silently-ignored not-found branch without failing the request.
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+",nonexistent", nil)
 		rr := httptest.NewRecorder()
-		s.queueSetPaused(rr, req, s.queue.Pause, "paused")
+		s.queueSetPaused(rr, req, "paused")
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
@@ -335,7 +335,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 		s, _ := testQueueServer(t)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
-		s.queueSetPaused(rr, req, s.queue.Pause, "paused")
+		s.queueSetPaused(rr, req, "paused")
 
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("status = %d; want 400", rr.Code)
