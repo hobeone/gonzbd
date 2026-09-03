@@ -17,15 +17,22 @@ import (
 // wrapping its own ad hoc "no job %q" string.
 var ErrNotFound = errors.New("dispatch: job not found")
 
-// Header is the display metadata a listing needs. job.Job holds id, name and
-// policy only; category, priority and the total byte figure live in
-// internal/queue until B2.4 migrates them, so the caller supplies them at Add.
+// Header is the display metadata a listing needs, plus one scheduling input.
+// job.Job holds id, name and policy only; category, priority and the total
+// byte figure live in internal/queue until §15 -- "the swap" -- repoints
+// their remaining consumers onto internal/dispatch, so the caller supplies
+// them at Add.
 //
 // Name is the one field job.Job DOES carry, and it is duplicated here on
 // purpose: it lets a listing be composed from Header alone, without the
 // registry handing out *job.Job pointers to do it. The duplication is a
 // second copy of a display string, not a second source of truth for any
 // scheduling decision — nothing reads Header.Name to decide anything.
+//
+// Added is the one exception to that last sentence: internal/downloader's
+// propagation-delay gate reads Header.Added to decide whether a job's
+// articles are offered yet (forEachUnfinishedArticle, dispatch.go). See its
+// own doc comment below for why it lives here rather than on job.Job.
 type Header struct {
 	Name     string
 	Category string

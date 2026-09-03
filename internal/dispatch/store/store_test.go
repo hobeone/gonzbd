@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/dispatch/store"
@@ -64,6 +65,40 @@ func TestStore_RoundTripsEveryAxis(t *testing.T) {
 	}
 	if got[0] != want {
 		t.Fatalf("round trip lost data:\n got %+v\nwant %+v", got[0], want)
+	}
+}
+
+// TestStore_RoundTripsHeaderAdded pins the added column at a non-zero value.
+// TestStore_RoundTripsEveryAxis already covers the zero case (its Header
+// literal leaves Added unset), but nothing before this test saved a non-zero
+// Added and read it back -- encodeAdded/decodeAdded (store.go) had no
+// observed proof either direction of that round trip actually holds.
+func TestStore_RoundTripsHeaderAdded(t *testing.T) {
+	s := newTestStore(t)
+	// Truncated to whole seconds: the added column is INTEGER-unix-seconds
+	// (encodeAdded/decodeAdded), so a monotonic reading or a sub-second
+	// component would make the equality below fail for a reason this test
+	// is not about. time.Unix(...).UTC() is exactly what decodeAdded
+	// produces, so building `want` the same way is what makes `got[0] ==
+	// want` a real assertion rather than one that happens to need a
+	// wall-clock-vs-monotonic footnote.
+	added := time.Unix(1_700_000_000, 0).UTC()
+	want := dispatch.Persisted{
+		ID:     "j-added",
+		Header: dispatch.Header{Name: "n", Added: added},
+	}
+	if err := s.Save(t.Context(), want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := s.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Load returned %d rows, want 1", len(got))
+	}
+	if !got[0].Header.Added.Equal(want.Header.Added) {
+		t.Fatalf("Header.Added round trip: got %v, want %v", got[0].Header.Added, want.Header.Added)
 	}
 }
 

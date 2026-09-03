@@ -1,7 +1,10 @@
 -- Persists when a job was added to the queue, on dispatch_jobs rather than
 -- jobs: internal/dispatch.Header is the header-tier row this column belongs
 -- to, and jobs.time_added is internal/queue's column, on its way out with the
--- rest of that package (see 001_initial.sql's dispatch_jobs comment block).
+-- rest of that package once §15 -- "the swap" -- repoints the remaining
+-- consumers onto internal/dispatch (see 001_initial.sql's dispatch_jobs
+-- comment block, and internal/dispatch/doc.go's "What this package does not
+-- have yet" section for how far that repoint has gotten).
 --
 -- Added by task-9's fix round: internal/downloader's propagation-delay gate
 -- (skip a freshly-posted file until it has had time to reach every server)
@@ -11,13 +14,13 @@
 -- Header.Name/Category/Priority/Bytes already are.
 --
 -- Encoded as an INTEGER unix timestamp, matching jobs.time_added and
--- job_progress.download_started/download_finished (001_initial.sql) and the
--- isJobStamp() convention in internal/job/progress.go: 0 reads as "absent",
--- so a pre-existing row with no Added value decodes to time.Time{} rather
--- than to an ambiguous epoch instant. Standing Design Rule 1 applies --
--- rows an earlier build wrote may be assumed to satisfy this column's
--- invariants -- so a restored row with Added=0 is simply a job whose
--- propagation-delay clock reads as zero, not a migration hazard.
+-- jobs.download_started/download_finished (001_initial.sql, lines 96-105)
+-- and the isJobStamp() convention in internal/job/progress.go: 0 reads as
+-- "absent", so a pre-existing row with no Added value decodes to
+-- time.Time{} rather than to an ambiguous epoch instant. Standing Design
+-- Rule 1 applies -- rows an earlier build wrote may be assumed to satisfy
+-- this column's invariants -- so a restored row with Added=0 is simply a
+-- job whose propagation-delay clock reads as zero, not a migration hazard.
 --
 -- +goose Up
 -- +goose StatementBegin

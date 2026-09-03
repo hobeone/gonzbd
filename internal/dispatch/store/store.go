@@ -116,6 +116,22 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 // isJobStamp/restoreDownloadStamps convention: 0 is "absent", not the Unix
 // epoch instant, so a zero time.Time (a caller that never set Added) and a
 // stored 0 mean the same thing in both directions.
+//
+// A genuine, non-zero Added at or before the Unix epoch encodes to a
+// non-positive value and decodeAdded's `v <= 0` guard reads it back as
+// time.Time{}, the same as if it had never been set. This is the
+// isJobStamp() convention exactly (internal/job/progress.go: "no job
+// timestamp is at or before the Unix epoch... a value failing this test is a
+// programming error, not data") applied to a value this package does not
+// mint itself, so it is named here rather than assumed: nothing in
+// dispatch.Add validates Added against that bound before it reaches this
+// encoding, and a caller that ever did construct one from, say, an NZB's own
+// (attacker-controlled, arbitrary) posting date rather than time.Now() could
+// hit it. Harmless for what Added is actually used for -- a pre-epoch
+// "added" reads as "not recently added", which is the correct propagation-
+// delay answer for a date that old regardless of how it got encoded -- but a
+// future caller reading a *different* meaning into Added should not assume
+// the full range of time.Time survives this column.
 func encodeAdded(t time.Time) int64 {
 	if t.IsZero() {
 		return 0

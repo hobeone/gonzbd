@@ -153,14 +153,26 @@ func (d *Downloader) forEachUnfinishedArticle(fn func(unfinishedArticle) bool) {
 // hasDownloadableJobs reports whether any registered, resident, non-paused,
 // non-hopeless job still has pending articles. Replaces
 // queue.Queue.HasDownloadableJobs for applyDispatchPlan's idle-disconnect
-// check.
+// check, with a narrower population than the name suggests -- see the
+// "Chosen semantics" note on dispatchPlan.downloadable, which this function
+// deliberately does NOT match.
 //
-// Only called when buildDispatchPlan early-exited on allServersFull without
-// ever reaching forEachUnfinishedArticle (dispatchPlan.serversWereFull) --
-// every other pass already answers this question for free while it walks,
-// via dispatchPlan.downloadable, so calling this too would clone every
-// Fetching job's progress record a second time in the steady state
-// (plan.dispatched == 0, servers not full) for no new information.
+// Unlike downloadable, this does not apply the propagation-delay or
+// per-file (Complete / FetchPolicy) exclusions forEachUnfinishedArticle
+// applies -- it answers "does this job have unresolved work at all", not
+// "would this pass have offered a server something". That makes it the
+// coarser, more permissive of the two: it can report true in a case
+// downloadable would call false (all pending articles held back by
+// propagation delay or a deferred file). That asymmetry is intentional and
+// harmless where this is actually called: only on the allServersFull early
+// exit (dispatchPlan.serversWereFull), where the servers were just observed
+// full a moment ago -- unambiguously not idle -- so an over-permissive
+// "downloadable" here only ever suppresses a disconnect that would have
+// been safe anyway, never triggers a disconnect while there is genuinely
+// dispatchable work being held back by capacity. It is never called in the
+// steady state (plan.dispatched == 0, servers not full), where
+// dispatchPlan.downloadable already answers the real question for free,
+// without a second Checkpoint() clone per Fetching job.
 func (d *Downloader) hasDownloadableJobs() bool {
 	for _, row := range d.jobs.List() {
 		j, ok := d.jobs.Job(row.ID)
@@ -225,12 +237,35 @@ type dispatchPlan struct {
 	exhausted    []*articleRequest   // articles with no eligible server this pass
 
 	// downloadable is true if forEachUnfinishedArticle yielded at least one
-	// article whose job is IntentRun and not Hopeless -- i.e. what
-	// hasDownloadableJobs would have found, computed for free during the
-	// walk buildDispatchPlan already performs, rather than by a second walk
-	// and a second Checkpoint() clone per job in applyDispatchPlan. Only
-	// meaningful when serversWereFull is false; see hasDownloadableJobs'
-	// doc comment.
+	// article that survived EVERY buildDispatchPlan skip -- IntentRun, not
+	// Hopeless, and past its propagation delay -- i.e. an article this pass
+	// would actually have tried to hand to a server had one had spare
+	// capacity. Computed for free during the walk buildDispatchPlan already
+	// performs, rather than by a second walk and a second Checkpoint()
+	// clone per job in applyDispatchPlan. Only meaningful when
+	// serversWereFull is false; see hasDownloadableJobs' doc comment for
+	// the fallback and why it does NOT compute the same thing.
+	//
+	// Chosen semantics (N2, task-9 fix round 2): this is deliberately
+	// NARROWER than the old queue.Queue.HasDownloadableJobs, which counted
+	// a job as downloadable whenever it had any PendingArticles at all --
+	// including one held back entirely by propagation delay, or one whose
+	// only pending articles sit behind FileComplete or a deferred
+	// FetchPolicy (on-demand par2). Under the old semantics, applyDispatchPlan
+	// kept connections open through a propagation-delay window even though
+	// nothing was going to be sent on them until the delay elapsed.
+	//
+	// downloadable=false during that window, so applyDispatchPlan's idle
+	// disconnect fires and closes those connections -- deliberately, not as
+	// an accepted side effect. A held-back article was never going to use
+	// them regardless of whether they stayed open, and DisconnectAll's own
+	// contract (downloader.go) is exactly "there's no point keeping sockets
+	// open while nothing can be sent" -- the same rule Pause already applies.
+	// They reconnect lazily once the delay elapses and the article is
+	// offered for real. See TestApplyDispatchPlan_IdleDisconnect's
+	// propagation-window case and testdata/downloadable_semantics.spec,
+	// which pins this deliberately rather than leaving it an emergent
+	// property of the skip order.
 	downloadable bool
 	// serversWereFull is true when buildDispatchPlan returned before ever
 	// calling forEachUnfinishedArticle (the allServersFull early exit), in
@@ -300,9 +335,12 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			return true
 		}
 
-		// This article's job is IntentRun and not Hopeless -- exactly what
-		// hasDownloadableJobs looks for -- so record it here rather than
-		// re-deriving the same answer with a second walk in applyDispatchPlan.
+		// This article reached tryDispatch: it is IntentRun, not Hopeless,
+		// and past its propagation delay -- see dispatchPlan.downloadable's
+		// "Chosen semantics" note for why that is the population this field
+		// deliberately tracks, and why it is narrower than
+		// hasDownloadableJobs. Recorded here rather than re-derived with a
+		// second walk in applyDispatchPlan.
 		plan.downloadable = true
 
 		handled, exReq := d.tryDispatch(ctx, a, opts)
@@ -391,16 +429,21 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		}
 	}
 
-	// Idle disconnect: if nothing was dispatched and no downloadable
-	// work remains, close all NNTP connections. This catches the
-	// scenario where in-flight articles for a hopeless/completed job
-	// finish after DisconnectAll was already called (those workers
-	// missed the earlier signal because they were busy).
+	// Idle disconnect: if nothing was dispatched and this pass would not
+	// have offered a server anything even with spare capacity, close all
+	// NNTP connections. This catches the scenario where in-flight articles
+	// for a hopeless/completed job finish after DisconnectAll was already
+	// called (those workers missed the earlier signal because they were
+	// busy) -- and, by dispatchPlan.downloadable's chosen semantics (see
+	// its own doc comment), a job wholly held back by propagation delay or
+	// deferred par2 files too: there is nothing for these connections to do
+	// either way, so there is no reason to keep them open.
 	//
 	// plan.downloadable is what buildDispatchPlan already learned while
 	// walking, at no extra cost; hasDownloadableJobs is called only when
-	// that walk never ran (serversWereFull), which is the one case
-	// downloadable was never computed for -- see both doc comments.
+	// that walk never ran (serversWereFull), and answers a DELIBERATELY
+	// coarser question in that fallback -- see both doc comments; they are
+	// not equivalent and are not meant to be.
 	downloadable := plan.downloadable
 	if plan.serversWereFull {
 		downloadable = d.hasDownloadableJobs()
@@ -831,7 +874,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			// because the old comment claimed the opposite: this article has
 			// no Emitted bit set. All three markArticleEmitted call sites run
 			// at RESULT-emission time (`grep -n 'd\.markArticleEmitted(' internal/downloader/dispatch.go`
-			// finds lines 368, 940, 958), after the fetch — what keeps the
+			// finds lines 368, 941, 959), after the fetch — what keeps the
 			// dispatcher off an article mid-fetch is the
 			// in-flight tracker (tryDispatch's InFlightLocked guard), and
 			// handleRequest's deferred clearInFlight releases it.

@@ -799,6 +799,47 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 	}
 }
 
+// TestApplyDispatchPlan_DisconnectsDuringPropagationWindow pins the N2
+// semantics decision (task-9 fix round 2): a job whose only pending article
+// is held back by propagation delay counts as NOT downloadable, so an idle
+// disconnect fires during that window rather than keeping connections open
+// for an article that will not be offered until the delay elapses. Runs
+// through the real dispatchPass -> buildDispatchPlan -> applyDispatchPlan
+// path (not a hand-built dispatchPlan) so it exercises the actual skip
+// order, not an assumption about it. See dispatchPlan.downloadable's
+// "Chosen semantics" doc comment for the full reasoning, and
+// testdata/downloadable_semantics.spec for the mutation that proves this is
+// pinned rather than an accident of the skip order.
+func TestApplyDispatchPlan_DisconnectsDuringPropagationWindow(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	q := newFakeJobSource()
+	d.jobs = q
+	d.SetDispatchOptions(0, 0, false, time.Hour)
+
+	d.connActivityMu.Lock()
+	d.connActivity["s1#0"] = &ConnActivity{ServerName: "s1", ConnIndex: 0, Connected: true}
+	d.connActivityMu.Unlock()
+	ch := d.disconnectSnapshot()
+
+	tj := makeJobWithArticles(t, []string{"held@h"})
+	q.addWithHeader(tj, dispatch.Header{Added: time.Now()}) // added just now; propagation delay holds it back
+
+	d.dispatchPass(context.Background())
+
+	select {
+	case <-ch:
+		// correct: the only pending article is held back by propagation
+		// delay, so this pass offers nothing dispatchable and the idle
+		// connection is freed.
+	default:
+		t.Fatal("disconnect channel was NOT closed while the only pending job " +
+			"is held back entirely by propagation delay")
+	}
+}
+
 func TestTryDispatch_TopOnlySkipsBackupWhenPrimaryFull(t *testing.T) {
 	t.Parallel()
 
