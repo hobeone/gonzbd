@@ -339,7 +339,7 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 			// whereas a silent drop would leave a job quietly short of
 			// articles with nothing to explain it.
 			if !nzb.MessageIDIsFetchable(a.ID) {
-				return fmt.Errorf("queue: manifest file %d article %d: unusable message-id %q",
+				return fmt.Errorf("job: manifest file %d article %d: unusable message-id %q",
 					fi, ai, a.ID)
 			}
 			// Convertible because the two shapes are field-for-field

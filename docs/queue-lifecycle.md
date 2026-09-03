@@ -4,7 +4,7 @@ This document was the contract for `internal/queue`: what state a job is
 guaranteed to have, which operations may fail, and which must not. Following
 Plan 2 ("The Swap", RFC #456 §15), `internal/queue` is retired and its tier
 invariants (Header, Progress, Leased Manifest) are compiler-enforced across
-`internal/job`, `internal/sched`, and `internal/dispatch`.
+`internal/job`, `internal/sched`, `internal/dispatch`, and `internal/checkpoint`.
 
 `docs/ARCHITECTURE.md` describes the architecture. This describes its
 obligations.
@@ -177,7 +177,7 @@ passing by unit coincidence.
 The article-level work set is a separate question. At startup
 `Application.resumeAllJobs` stats each of a downloading job's files, has
 `durability.Resumer` **delete** the runs of any file shorter than they claim,
-and installs what survives through `Queue.ReplaceFromRuns` — which clears a bit
+and installs what survives through `Job.ReplaceFromRuns` — which clears a bit
 no surviving run covers as well as setting the ones that are covered. The
 restored state is what the runs said before the stat; the sweep's finding
 supersedes it (#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —

@@ -50,7 +50,7 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 // The write did not happen, so the articles must be fetched again — but their
 // Emitted bits are still set from dispatch, and ForEachUnfinishedArticle skips
 // a set Emitted bit. Nothing else clears them on this path: no Drain reports
-// them, no AckPermanentFailure names them, and eviction keeps job.progress, so
+// them, no Job.MarkArticleFailed names them, and eviction keeps job.progress, so
 // pause and resume do not clear them either. Left alone they are stranded for
 // the life of the process, at any residency, and only a restart's
 // ClearAllEmitted recovers them.
@@ -97,7 +97,7 @@ func (app *Application) handleArticlesUnwritten(jobID string, _ int, artIdxs []i
 //     so the NFS silly-rename that call exists to prevent is not prevented
 //     either. maybeFinalize then also does a queue.Save and enqueues
 //     post-processing, both on the worker.
-//   - Retryable → Application.Stall → Queue.Pause → PromoteNext, which reads a
+//   - Retryable → Application.Stall → Dispatcher.PauseJob, which updates intent
 //     manifest from disk and calls into SQLite. On the worker, that is the
 //     single goroutine every write for every job passes through.
 //
@@ -189,7 +189,7 @@ func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason st
 // property of what the server sent: the offset comes from the article's own
 // yEnc header, so a re-fetch of the same article yields the same rejection.
 // Ack is what charges its bytes against the job's par2 recovery budget and
-// releases on-demand recovery volumes, and Queue.AckPermanentFailure clears
+// releases on-demand recovery volumes, and Job.MarkArticleFailed clears
 // the Emitted bit as part of resolving the article — without it the job waits
 // forever on something nothing will re-dispatch.
 //
@@ -602,7 +602,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		//
 		// One residual, and it is covered elsewhere rather than here: a file
 		// finalized by an EARLIER checkpoint whose ack failed with
-		// ErrJobNotResident can reach this exit with unacked articles.
+		// job.ErrNotResident can reach this exit with unacked articles.
 		// noteNeedsSeed put that job on the stall list for replay when that
 		// happened, which is the mechanism that resolves it.
 		//
@@ -642,7 +642,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		// last_barrier that did not move.
 		//
 		// A failed ack is the one failure that DOES claim something. Run
-		// commits the runs and then acks, so ErrJobNotResident means the
+		// commits the runs and then acks, so job.ErrNotResident means the
 		// articles are on stable record while the live work set still calls
 		// them Outstanding — and nothing replayed them, because this
 		// failure never went through routeFault and so never put the job on
@@ -1036,7 +1036,7 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 		// can be hydrated, including a paused one, while MarkFileComplete
 		// needs the LIVE job resident. So nil means the job has left the
 		// queue or its manifest cannot be read, and MarkFileComplete answers
-		// ErrNotFound or ErrJobNotResident to both. Nothing downstream acts on
+		// dispatch.ErrNotFound or job.ErrNotResident to both. Nothing downstream acts on
 		// the file.
 		//
 		// It is NOT safe on a retry, where the completion is queued behind

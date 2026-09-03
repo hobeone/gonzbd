@@ -15,7 +15,7 @@ import (
 // A dispatched article carries a set Emitted bit. When its write fails the
 // bytes are not on disk and the article has to be fetched again, but
 // ForEachUnfinishedArticle skips a set Emitted bit and nothing else on this
-// path clears it: no Drain reports the article, no AckPermanentFailure names
+// path clears it: no Drain reports the article, no Job.MarkArticleFailed names
 // it, and eviction keeps job.progress, so pausing and resuming does not clear
 // it either. Without this the article is stranded for the life of the process
 // while the job reports it as work in flight.

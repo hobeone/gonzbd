@@ -33,7 +33,7 @@ import (
 func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 	j, ok := d.lookup(id)
 	if !ok {
-		return fmt.Errorf("dispatch: Finished: no job %q", id)
+		return fmt.Errorf("dispatch: Finished: no job %q: %w", id, ErrNotFound)
 	}
 	// One clearLaunched call, on every path: the rejection below and a failed
 	// Settle both still have to release the claim, and a second call site
@@ -84,7 +84,7 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 func (d *Dispatcher) Yielded(id string) error {
 	j, ok := d.lookup(id)
 	if !ok {
-		return fmt.Errorf("dispatch: Yielded: no job %q", id)
+		return fmt.Errorf("dispatch: Yielded: no job %q: %w", id, ErrNotFound)
 	}
 	err := d.q.Park(j)
 	// After Park, before kick — see Finished above for why the ordering is

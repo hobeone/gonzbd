@@ -36,7 +36,10 @@ The project follows a standard Go project layout:
     - `nzb/`: NZB (XML) parsing and model definitions with input size limits.
     - `par2/`: PAR2 parity verification and repair tool wrapper with structured status parsing.
     - `postproc/`: Post-processing pipeline: quickcheck, repair, unpack, deobfuscate, finalize, script, and supporting stages.
-    - `queue/`: The active download queue and job state management, with transient field recomputation on load.
+    - `checkpoint/`: Single persistence writer for SQLite queue checkpoints, coalescing updates from job snapshots.
+    - `dispatch/`: The active job registry, execution engine, and scheduling orchestrator.
+    - `job/`: Active job models, immutable manifests, thread-safe progress bookkeeping, and attempt lifecycle states.
+    - `sched/`: Pure scheduling decisions (leases, compute slots, state machine transitions) with zero I/O.
     - `rarheader/`: RAR archive header parsing with filename sanitization.
     - `storagefault/`: Classification of storage errors into retryable (stall the job) and permanent (fail the job), carrying the operation and path for a reason a user can act on.
     - `telemetry/`: Runtime metrics collection and export.
@@ -87,7 +90,7 @@ Unlike the original Python implementation's single-threaded selector loop, GoNZB
 - **Manifest/Progress Separation**: A `Job` holds an immutable `Manifest` (parsed-once article/file structure — subjects, byte counts, flat article arrays) and a mutable `JobProgress` (per-article done/failed/emitted state, per-file assembly bookkeeping, job-level counters).
 - **Compiler-Enforced Residency**: Manifest residency is strictly bounded by `Lease` ownership. A non-resident job holds no manifest in RAM. Accessing `Job.Manifest()` returns non-nil only while holding a leased manifest.
 - **Single Persistence Writer**: `Checkpointer` (`internal/checkpoint`) is the sole writer for `job_files` and `failed_articles` in SQLite, batching and coalescing updates from job snapshots.
-- **Article Addressing**: Articles are addressed by global index into the manifest's flat arrays, never by Message-ID. Durability proofs (`AckDurable`) and permanent failures (`AckPermanentFailure`) resolve articles in batches.
+- **Article Addressing**: Articles are addressed by global index into the manifest's flat arrays, never by Message-ID. Durability proofs (`AckDurable`) and permanent failures (`Job.MarkArticleFailed`) resolve articles in batches.
 
 ### On-Demand PAR2 (`internal/job`, `internal/app`, `internal/par2`)
 
@@ -104,7 +107,7 @@ To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded
 - **Re-activation is download→download, not postproc→download**: on damage, `UndeferRecoveryVolumes(jobID, fileIdxs)` promotes those files from `FetchIfNeeded` to `FetchAlways`, recomputes counters, sets `Par2Recovered` (guards re-firing), and wakes the dispatcher. The job becomes incomplete again and the *normal* download path fetches the volumes — no back-edge from post-processing.
 - **Clean verdict**: `DiscardDeferredPar2` moves every still-`FetchIfNeeded` volume to `FetchNever`, and only `outcomeClean` reaches it. That state is terminal within a run — `Job.undeferRecovery` skips anything that is not `FetchIfNeeded`, so nothing promotes it back. Only `ResetForRetry` leaves it, downgrading to `FetchIfNeeded` rather than to `FetchAlways`, so a retry re-derives the verdict by re-verifying instead of re-downloading volumes the oracle already ruled out.
 - **Unidentifiable verdict is held, not discarded**: `outcomeUnknown` calls `SetPar2ReleaseReason` but neither `DiscardDeferredPar2` nor `UndeferRecoveryVolumes` — the volumes stay `FetchIfNeeded` ("held" in the UI, `internal/api/queue.go`'s `fileState`) rather than `FetchNever` ("skipped"), because a verdict that could not identify anything has not earned the "skipped" label. Holding does not rescue anything: nothing promotes a held volume after the job finalizes, and `ResetForRetry` downgrades `FetchNever` to `FetchIfNeeded` anyway, so a retry behaves the same under either policy. What it buys is that the on-disk state does not assert a verdict that was never taken.
-- **Early un-defer**: a permanent data-article failure during download releases the volumes immediately (`AckPermanentFailure`), shrinking the window in which the volumes themselves could age off the server.
+- **Early un-defer**: a permanent data-article failure during download releases the volumes immediately (`Job.MarkArticleFailed`), shrinking the window in which the volumes themselves could age off the server.
 - **Phasing**: Phase 1 fetches *all* recovery volumes on damage (the `fileIdxs` selection arg is the seam for Phase 2's block-exact subset selection).
 
 ### NNTP & Downloader (`internal/nntp`, `internal/downloader`)

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -57,7 +58,11 @@ func (w *appWorkers) Abort(jobID string) {
 		// an ErrNotFound which is benign and logged at debug level.
 		go func() {
 			if err := disp.Yielded(jobID); err != nil && log != nil {
-				log.Debug("abort: worker yield completed with notice", "job", jobID, "err", err)
+				if errors.Is(err, dispatch.ErrNotFound) {
+					log.Debug("abort: worker yield completed with notice (job not found)", "job", jobID, "err", err)
+				} else {
+					log.Warn("abort: worker yield failed", "job", jobID, "err", err)
+				}
 			}
 		}()
 	}

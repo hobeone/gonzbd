@@ -11,8 +11,8 @@ import (
 //
 // Phase 2 resumed unconditionally, and a stall record exists for reasons that
 // involve no pause of ours at all. The reachable one is ordinary: a user pauses
-// a job, Queue.Pause evicts it, the next checkpoint's AckDurable fails with
-// ErrJobNotResident, and checkpointJob calls noteNeedsSeed — which creates a
+// a job, Dispatcher.PauseJob evicts it, the next checkpoint's AckDurable fails with
+// job.ErrNotResident, and checkpointJob calls noteNeedsSeed — which creates a
 // record. On the next tick nothing is blocked, so phase 2 flipped Paused →
 // Queued and cleared the warning, with no log saying so.
 //

@@ -409,7 +409,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 // TestFatalErrCountsTowardCompletion is trimmed from its original shape: it
 // used to also assert MarkArticlesFailed received the fatal article's
 // Message-ID, but the assembler no longer has any ack authority (X2) — a
-// permanent failure is the queue's to record via AckPermanentFailure, not
+// permanent failure is the queue's to record via Job.MarkArticleFailed, not
 // this package's. What is still live, and still worth pinning, is
 // handleFatalArticle's local bookkeeping: a FatalErr article counts toward
 // TotalParts exactly like a written one, so the file still completes.

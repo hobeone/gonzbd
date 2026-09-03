@@ -246,7 +246,7 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // them — this list is the reason why.
 //
 // Keeping them in step is no longer left to whoever remembers to look:
-// queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse parses the queue
+// job.TestDoneBitWriters_MatchTheEnumerationStatedInProse parses the job
 // package and fails when the set of functions reaching markDone, or setting
 // the bit directly, stops matching what these three sites say. It exists
 // because this enumeration was found short TWICE — the second time here,

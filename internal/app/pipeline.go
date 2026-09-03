@@ -37,7 +37,7 @@ import (
 //   - Dial errors / connection resets / I/O timeouts
 //
 // Terminal errors (other decode failures, ErrAuthRejected, etc.) return false.
-// The caller records those with Queue.AckPermanentFailure and then still hands
+// The caller records those with Job.MarkArticleFailed and then still hands
 // the article to the assembler with FatalErr set, so the file's part count
 // reaches its total and the file can complete with a hole in it. The failure
 // accounting is the pipeline's; the assembler only counts parts.

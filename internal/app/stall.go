@@ -66,7 +66,7 @@ type stallRecord struct {
 	//
 	// Phase 2 of a re-evaluation resumes unconditionally, and a stall record
 	// exists for reasons that do not involve a pause at all: a user pause
-	// evicts the job, the next checkpoint's ack fails with ErrJobNotResident,
+	// evicts the job, the next checkpoint's ack fails with job.ErrNotResident,
 	// and noteNeedsSeed creates one. The user's pause was then undone within
 	// one interval, with no log saying so — and recreated as fast as it was
 	// cleared, because handles stay open through a pause (CloseJobHandles runs
@@ -394,7 +394,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// mount came back wanted it paused, and resuming it because the storage
 	// cleared would undo their action silently. The other way round is
 	// worse: a job the user paused has no open files, so the checkpoint
-	// returns ErrJobNotResident and creates a stall record; resuming here
+	// returns job.ErrNotResident and creates a stall record; resuming here
 	// would unpause a user-paused job every thirty seconds, and recreate the
 	// record as fast as it was cleared, because handles stay open through a
 	// pause (CloseJobHandles runs only from maybeFinalize).

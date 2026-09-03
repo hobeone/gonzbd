@@ -779,25 +779,17 @@ func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.In
 }
 
 func restoreJobMetadata(j *job.Job, p Persisted) {
-	if p.Header.Added > 0 {
-		j.SetAdded(time.Unix(p.Header.Added, 0).UTC())
+	j.SetAdded(time.Unix(p.Header.Added, 0).UTC())
+	var started, finished time.Time
+	if p.DownloadStarted > 0 {
+		started = time.Unix(p.DownloadStarted, 0).UTC()
 	}
-	if p.DownloadStarted > 0 || p.DownloadFinished > 0 {
-		var started, finished time.Time
-		if p.DownloadStarted > 0 {
-			started = time.Unix(p.DownloadStarted, 0).UTC()
-		}
-		if p.DownloadFinished > 0 {
-			finished = time.Unix(p.DownloadFinished, 0).UTC()
-		}
-		_ = j.RestoreDownloadStamps(started, finished)
+	if p.DownloadFinished > 0 {
+		finished = time.Unix(p.DownloadFinished, 0).UTC()
 	}
-	if p.Par2ReleaseReason != "" {
-		j.SetPar2ReleaseReason(p.Par2ReleaseReason)
-	}
-	if p.RecoveryBytes > 0 {
-		j.SetRecoveryBytes(p.RecoveryBytes)
-	}
+	_ = j.RestoreDownloadStamps(started, finished)
+	j.SetPar2ReleaseReason(p.Par2ReleaseReason)
+	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 
 // lastWritten and markWritten are persistIfChanged's two touches of d.written,

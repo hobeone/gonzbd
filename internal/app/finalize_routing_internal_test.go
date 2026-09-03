@@ -84,7 +84,7 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 // TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob pins the second
 // non-storage error to reach this path.
 //
-// AckDurable answers queue.ErrJobNotResident when the job was evicted between
+// AckDurable answers job.ErrNotResident when the job was evicted between
 // the barrier's file listing and the ack. retryFinalize already treats that as
 // landed and documents why — the runs are committed, so the bits are replayed
 // from the record after the resume — but the FIRST-attempt path classified it as

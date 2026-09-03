@@ -114,9 +114,8 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 
 // Job owns its state. Every field is unexported. The lifecycle field —
 // attempts — is guarded by mu, and there is no path to it that does not go
-// through a method here. id, name and policy are not guarded: they are set
-// once in New and never written again, so ID, Name and Policy read them
-// without taking the lock.
+// through a method here. id and name are set once in New and never written again
+// (except name via SetName which locks mu). policy and created are guarded by mu.
 //
 // What is established now: a Job method never calls any other repository
 // package's method, because this package imports nothing from the rest of
@@ -251,10 +250,18 @@ func (j *Job) SetPolicy(p Policy) {
 }
 
 // Added returns the job's creation timestamp.
-func (j *Job) Added() time.Time { return j.created }
+func (j *Job) Added() time.Time {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.created
+}
 
-// SetAdded updates the job's creation timestamp (used for testing propagation delay).
-func (j *Job) SetAdded(t time.Time) { j.created = t }
+// SetAdded sets the job's creation timestamp (used during restoration and ingestion).
+func (j *Job) SetAdded(t time.Time) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.created = t
+}
 
 // State returns the current attempt's view, or a StateUnset view for a job that
 // has never run. A job with no attempt is not AT a state — the old model

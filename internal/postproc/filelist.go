@@ -141,7 +141,7 @@ func buildDownloadFileList(j *Job) []string {
 		// grep for par2Recovered outside tests), and undeferRecovery has two
 		// production callers: Job.UndeferRecoveryVolumes
 		// (internal/job/content.go:296, reached from app.go's
-		// maybeReleaseRecoveryVolumes) and content.go's AckPermanentFailure
+		// maybeReleaseRecoveryVolumes) and content.go's MarkArticleFailed
 		// (internal/job/content.go:142). Both pass
 		// job.progress.DeferredRecoveryIndices() — every deferred index at
 		// once — so a real job's held volumes go from "all deferred" to

@@ -14,9 +14,7 @@ import (
 // ErrNotFound is returned when an operation names a job ID that is not registered.
 var ErrNotFound = errors.New("dispatch: job not found")
 
-// Header is the display metadata a listing needs. job.Job holds id, name and
-// policy only; category, priority and the total byte figure live in
-// internal/queue until B2.4 migrates them, so the caller supplies them at Add.
+// Header is the display metadata a listing needs.
 //
 // Name is the one field job.Job DOES carry, and it is duplicated here on
 // purpose: it lets a listing be composed from Header alone, without the
@@ -424,7 +422,9 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 	return nil
 }
 
-// SetName sets the display name for a registered job.
+// SetName updates the job's display and filesystem name across both the Header
+// (used for listings without job pointer dereference) and the Job instance (used for
+// downstream filesystem paths and finalization) atomically under d.mu.
 func (d *Dispatcher) SetName(id, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

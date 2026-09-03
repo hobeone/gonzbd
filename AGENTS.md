@@ -200,7 +200,7 @@ Three things make this specific rather than an exhortation to be careful:
 - **Where the population is enumerable by a machine, write the test instead.**
   A count of call sites, a set of writers of one field, the members of a
   package-private door — these fail loudly when they move, where a comment
-  fails silently. `job.TestOutcomeWriters_MatchTheEnumerationStatedInProse`
+  fails silently. `job.TestOutcomeWrites_MatchTheEnumerationStatedInProse`
   (in `internal/job/outcome_writer_enumeration_test.go`) is the worked
   example: the same enumeration had gone stale twice in two unlinked files,
   and a grep from either one could not reach the other.

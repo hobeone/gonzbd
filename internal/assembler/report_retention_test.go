@@ -31,7 +31,7 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 // Sync discarded the report the moment the fsync returned, but the barrier's
 // order is drain-all, sync-all, build, then Commit and AckDurable. Every
 // failure AFTER the fsync — a Stat timeout, a failed RunStore.Commit, an
-// AckDurable answering ErrJobNotResident — therefore lost the report exactly as
+// AckDurable answering job.ErrNotResident — therefore lost the report exactly as
 // it did before the retention existed. The reported field's own doc claimed
 // coverage of "the sync, the run commit, the truncate"; only the first was
 // real.

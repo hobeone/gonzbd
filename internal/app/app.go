@@ -537,7 +537,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// and handleArticleRejected does the acking. The refusal has no other
 	// witness — a bad yEnc offset is caught here and nowhere else — so without
 	// this the article is silently dropped and its job never finishes. Ordinary
-	// permanent failures still go to Queue.AckPermanentFailure from the
+	// permanent failures still go to Job.MarkArticleFailed from the
 	// pipeline.
 	//
 	// Options carries no durability store either, and nothing here records
@@ -1312,7 +1312,7 @@ func (app *Application) watchCompletions(ctx context.Context) {
 //
 // A job that was removed, or whose manifest was evicted, between the
 // assembler producing this event and the queue receiving it is ordinary — the
-// queue methods report it as ErrNotFound/ErrJobNotResident precisely so a
+// queue methods report it as dispatch.ErrNotFound/job.ErrNotResident precisely so a
 // caller can recognise it rather than having it arrive as a silent nil (#261).
 // Those get Debug. Anything else is a write that should have landed and did
 // not, and gets Warn.
@@ -1396,7 +1396,7 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	//
 	//   - the ordinary path reached it, since finalizeCompletedFile returns
 	//     nil and its caller comes straight here;
-	//   - stall recovery did not. retryFinalize swallows ErrJobNotResident —
+	//   - stall recovery did not. retryFinalize swallows job.ErrNotResident —
 	//     the ack cannot mark a paused job — and returns before the CRC, then
 	//     Phase 4 arrives here having marked the file finalizeDone, and
 	//     nothing retried it;

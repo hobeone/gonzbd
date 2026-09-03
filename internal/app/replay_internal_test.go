@@ -11,7 +11,7 @@ import (
 // runs, acked every one of the file's articles and released the handle, and
 // the assembler's completed tombstone guarantees OnFileComplete will never
 // fire again for that file. MarkFileComplete needs the LIVE job resident and
-// answers ErrJobNotResident if the job was paused in the interval — and the
+// answers job.ErrNotResident if the job was paused in the interval — and the
 // caller logged that at Debug and returned.
 //
 // Nothing then retried it. Every article is Done so nothing is dispatched,
