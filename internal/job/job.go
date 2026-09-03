@@ -160,12 +160,17 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // above is now enforced separately by
 // internal/sched.TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse.
 //
-// Job does no I/O. It exposes State() and the attempt accessors. The later
-// plan's design intent is a Checkpointer that reads those and writes the
-// database; no such type exists in this repository today
-// (`git grep -n 'type[ ]Checkpointer'`, run from the repository root,
-// returns nothing — the bracketed space is so this citation, quoted
-// verbatim, does not match its own quoted text).
+// Job does no I/O. It exposes State() and the attempt accessors, plus
+// Checkpoint() (checkpoint.go), which hands out the four-axis-plus-progress
+// snapshot as a value. internal/checkpoint.Checkpointer is the type that
+// reads those snapshots and batches the writes.
+// `git grep -n 'type[ ]Checkpointer' -- '*.go'`, run from the repository
+// root and scoped to Go sources, returns exactly one line, its declaration
+// at internal/checkpoint/checkpointer.go:28 (the bracketed space is so this
+// citation, quoted verbatim, does not match its own quoted text). The
+// pathspec matters: unscoped, the same command also matches
+// docs/superpowers/plans/2026-09-03-job-lifecycle-swap-plan.md's embedded
+// code block, which is prose, not source.
 type Job struct {
 	// mu guards the lifecycle tier — attempts, intent, lease.
 	//
