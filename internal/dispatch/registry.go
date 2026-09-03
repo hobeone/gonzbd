@@ -1,12 +1,20 @@
 package dispatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
+
+// ErrNotFound is returned by a per-job door -- PauseJob, ResumeJob, Remove --
+// when id names no registered job. It did not exist before Task 4: a grep for
+// ErrNotFound under internal/dispatch/ returned nothing before this
+// declaration, so it is the one sentinel these doors share rather than each
+// wrapping its own ad hoc "no job %q" string.
+var ErrNotFound = errors.New("dispatch: job not found")
 
 // Header is the display metadata a listing needs. job.Job holds id, name and
 // policy only; category, priority and the total byte figure live in
@@ -227,6 +235,26 @@ func (d *Dispatcher) remove(id string) {
 	}
 }
 
+// Row composes one job's listing entry: the header tier plus its rendered
+// state, without loading or reading a manifest.
+//
+// It exists because List renders EVERY job through RenderAll, so using List
+// for a single-job lookup trades one manifest read for an O(n) walk. That is
+// #436: header-tier callers paying manifest-tier cost because the only safe
+// single-job door was the expensive one.
+func (d *Dispatcher) Row(id string) (Row, bool) {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok {
+		d.mu.Unlock()
+		return Row{}, false
+	}
+	j, h := e.j, e.h
+	d.mu.Unlock()
+
+	return Row{ID: id, Header: h, View: d.q.Render(j)}, true
+}
+
 // List composes the queue listing. It takes Queue.mu exactly once, through
 // RenderAll, so every row is from one instant.
 func (d *Dispatcher) List() []Row {
@@ -248,4 +276,87 @@ func (d *Dispatcher) List() []Row {
 		out = append(out, Row{ID: id, Header: hs[i], View: views[i]})
 	}
 	return out
+}
+
+// Job returns the live *job.Job for id.
+//
+// It is the content-tier door, and Row (above) is the header-tier one. A
+// caller that needs progress counters or the manifest takes this; a caller
+// that needs a name, a status or a byte total takes Row and must not reach
+// for a job pointer to get them -- that is #436 reappearing one level down.
+func (d *Dispatcher) Job(id string) (*job.Job, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return nil, false
+	}
+	return e.j, true
+}
+
+// PauseJob asks one job to stop at its next gate.
+//
+// Distinct from Pause, which sets the QUEUE-wide flag. The two are different
+// subjects and must stay observably different: ToSABnzbd routes through
+// WaitReason.IsPause() precisely because a queue-wide pause leaves every job
+// carrying IntentRun, and a PauseJob that also set the queue flag would make
+// that unobservable.
+func (d *Dispatcher) PauseJob(id string) error {
+	j, ok := d.Job(id)
+	if !ok {
+		return fmt.Errorf("dispatch: pause %s: %w", id, ErrNotFound)
+	}
+	if err := j.SetIntent(job.IntentPause); err != nil {
+		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// ResumeJob clears a pause request by restoring the default intent.
+//
+// It cannot un-cancel: SetIntent latches IntentCancel (job/intent.go,
+// IsLatched), so this returns that error rather than silently doing nothing.
+// Silently succeeding would tell the API a cancelled job had been resumed.
+func (d *Dispatcher) ResumeJob(id string) error {
+	j, ok := d.Job(id)
+	if !ok {
+		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
+	}
+	if err := j.SetIntent(job.IntentRun); err != nil {
+		return fmt.Errorf("dispatch: resume %s: %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// Remove cancels a job, deletes its persisted row and deregisters it.
+//
+// The order is deliberate, but not for the reason it might look like: Cancel
+// takes the *job.Job pointer directly rather than looking it up through the
+// registry, so reordering d.remove(id) ahead of it does NOT change whether
+// sched reclaims the lease or slot on the SUCCESS path -- that was checked
+// empirically (TestDispatcherRemove_IsIdempotentAndReturnsResources, and
+// internal/dispatch/testdata/control_surface.spec's second mutation, which
+// SURVIVED a version of that test asserting exactly this). What the order
+// protects is the FAILURE path: deregistering only after Cancel and
+// store.Delete both succeed means a failing Remove leaves the job registered
+// for inspection or retry, instead of silently dropping it from
+// Job/Row/List while its persisted row and any unreclaimed resources are
+// left behind with nothing to revisit them.
+func (d *Dispatcher) Remove(ctx context.Context, id string) error {
+	j, ok := d.Job(id)
+	if !ok {
+		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
+	}
+	if err := d.q.Cancel(j); err != nil {
+		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
+	}
+	if err := d.store.Delete(ctx, id); err != nil {
+		return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
+	}
+	d.res.Evict(id)
+	d.remove(id)
+	d.kick()
+	return nil
 }

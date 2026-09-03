@@ -248,3 +248,16 @@ func withStore(s Store) func(*testOpts) { return func(o *testOpts) { o.store = s
 func withRunner(r Runner) func(*testOpts) { return func(o *testOpts) { o.runner = r } }
 
 func withWorkers(w sched.Workers) func(*testOpts) { return func(o *testOpts) { o.workers = w } }
+
+// addTestJob registers a job with id and name against d, failing the test on
+// any error from Add. It exists because Row and the control-surface tests
+// (Tasks 3b and 4) only need a registered job to exist, not any particular
+// policy — job.Policy{} is fine for all of them.
+func addTestJob(t *testing.T, d *Dispatcher, id, name string) *job.Job {
+	t.Helper()
+	j := job.New(id, name, job.Policy{})
+	if err := d.Add(j, Header{Name: name}); err != nil {
+		t.Fatalf("Add(%s): %v", id, err)
+	}
+	return j
+}
