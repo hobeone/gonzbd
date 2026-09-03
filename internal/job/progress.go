@@ -696,6 +696,18 @@ func (p *JobProgress) Par2ReleaseReason() string {
 	return p.par2ReleaseReason
 }
 
+func (p *JobProgress) setPar2ReleaseReason(reason string) {
+	p.par2ReleaseReason = reason
+}
+
+func (p *JobProgress) clearPar2ReleaseReason() {
+	p.par2ReleaseReason = ""
+}
+
+func (p *JobProgress) restorePar2ReleaseReason(reason string) {
+	p.par2ReleaseReason = reason
+}
+
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been
 // reached for this job, using the reason string as the marker.
 //
@@ -1150,7 +1162,7 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	p.serverStats = pj.ServerStats
 	p.restoreDownloadStamps(pj.DownloadStarted, pj.DownloadFinished)
 	p.par2Recovered = pj.Par2Recovered
-	p.par2ReleaseReason = pj.Par2ReleaseReason
+	p.restorePar2ReleaseReason(pj.Par2ReleaseReason)
 	return nil
 }
 

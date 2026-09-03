@@ -33,7 +33,7 @@ import (
 func (app *Application) AckDurable(p durability.DurableProof) error {
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(p.JobID()); ok {
-			if _, _, err := j.AckDurable(p.Articles()); err != nil {
+			if _, _, err := j.AckDurable(p); err != nil {
 				return err
 			}
 			if app.checkpointer != nil {

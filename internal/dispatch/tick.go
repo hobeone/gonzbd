@@ -104,6 +104,7 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 		}
 		p.Par2ReleaseReason = pr.Par2ReleaseReason()
 	}
+	p.RecoveryBytes = j.RecoveryBytes()
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return
 	}

@@ -99,6 +99,7 @@ func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
 		DownloadStarted:   1700000010,
 		DownloadFinished:  1700000100,
 		Par2ReleaseReason: "repair needed",
+		RecoveryBytes:     1048576,
 	}
 
 	if err := s.Save(t.Context(), want); err != nil {

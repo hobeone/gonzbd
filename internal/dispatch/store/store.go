@@ -27,7 +27,8 @@ const columns = `id, sort_key, name, category, priority, bytes,
 	verify, repair, unpack, delete_ok,
 	state, next, activity, outcome, assessed, intent,
 	filename, warning, script, password, pp, nzb_backup, url, md5,
-	added, download_started, download_finished, par2_release_reason`
+	added, download_started, download_finished, par2_release_reason,
+	recovery_bytes`
 
 // Load returns every stored job in queue order.
 //
@@ -66,6 +67,7 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 			&p.Header.Filename, &p.Header.Warning, &p.Header.Script, &p.Header.Password,
 			&p.Header.PP, &p.Header.NZBBackup, &p.Header.URL, &p.Header.MD5,
 			&p.Header.Added, &p.DownloadStarted, &p.DownloadFinished, &p.Par2ReleaseReason,
+			&p.RecoveryBytes,
 		); err != nil {
 			return nil, fmt.Errorf("dispatch/store: load: scan: %w", err)
 		}
@@ -87,7 +89,7 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO dispatch_jobs (`+columns+`)
-		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?)
+		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   sort_key=excluded.sort_key, name=excluded.name,
 		   category=excluded.category, priority=excluded.priority,
@@ -103,7 +105,8 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		   url=excluded.url, md5=excluded.md5,
 		   added=excluded.added, download_started=excluded.download_started,
 		   download_finished=excluded.download_finished,
-		   par2_release_reason=excluded.par2_release_reason`,
+		   par2_release_reason=excluded.par2_release_reason,
+		   recovery_bytes=excluded.recovery_bytes`,
 		p.ID, p.SortKey, p.Header.Name, p.Header.Category, p.Header.Priority, p.Header.Bytes,
 		p.Policy.Verify, p.Policy.Repair, p.Policy.Unpack, p.Policy.Delete,
 		p.State.State, p.State.Next, p.State.Activity, p.State.Outcome,
@@ -111,6 +114,7 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		p.Header.Filename, p.Header.Warning, p.Header.Script, p.Header.Password,
 		p.Header.PP, p.Header.NZBBackup, p.Header.URL, p.Header.MD5,
 		p.Header.Added, p.DownloadStarted, p.DownloadFinished, p.Par2ReleaseReason,
+		p.RecoveryBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("dispatch/store: save %s: %w", p.ID, err)

@@ -140,7 +140,7 @@ func (j *Job) MarkArticleFailed(artIdx int) error {
 	if j.progress.markFailed(j.manifest, artIdx) {
 		if !j.progress.par2Recovered && j.manifest.RecoveryFiles() > 0 {
 			if j.undeferRecovery(j.progress.DeferredRecoveryIndices()) {
-				j.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
+				j.progress.setPar2ReleaseReason("permanent article download failure detected on active queue")
 			}
 		}
 	}
@@ -243,6 +243,13 @@ func (j *Job) RecoveryBytes() int64 {
 	return j.recoveryBytes
 }
 
+// SetRecoveryBytes records the summed size of the job's par2 recovery volumes.
+func (j *Job) SetRecoveryBytes(n int64) {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	j.recoveryBytes = n
+}
+
 // RecoveryFiles returns the job's par2 recovery volume count, preserved across eviction.
 func (j *Job) RecoveryFiles() int {
 	j.contentMu.RLock()
@@ -256,7 +263,7 @@ func (j *Job) RepairState() RepairState {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
 	if j.progress == nil {
-		return RepairIntact
+		return RepairUnknown
 	}
 	return RepairStateFrom(j.progress.ContentFailedBytes(), j.recoveryBytes, j.progress.HasPar2Files())
 }
@@ -366,13 +373,17 @@ func (j *Job) SetPar2ReleaseReason(reason string) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress != nil {
-		j.progress.par2ReleaseReason = reason
+		j.progress.setPar2ReleaseReason(reason)
 	}
 }
 
 // AckDurable applies a durability proof's articles, returning how many named
 // an article this job does not have, and how many it does have.
-func (j *Job) AckDurable(arts []int32) (invalid, nArt int, err error) {
+func (j *Job) AckDurable(proof durability.DurableProof) (invalid, nArt int, err error) {
+	arts := proof.Articles()
+	if len(arts) == 0 {
+		return 0, 0, nil
+	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.manifest == nil || j.progress == nil {
@@ -603,7 +614,7 @@ func (j *Job) ResetForRetry() {
 	}
 	j.progress.earlyAborted = false
 	j.progress.par2Recovered = false
-	j.progress.par2ReleaseReason = ""
+	j.progress.clearPar2ReleaseReason()
 	j.progress.clearDownloadStamps()
 
 	m := j.manifest

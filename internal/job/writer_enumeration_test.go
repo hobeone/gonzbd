@@ -41,11 +41,12 @@ import (
 // "a seventh" while the count above already said seven, so the two disagreed
 // about whether the next one was the seventh or the eighth.
 var fieldOwner = map[string]string{
-	"outcome":  "Attempt",
-	"next":     "Attempt",
-	"attempts": "Job",
-	"intent":   "Job",
-	"lease":    "Job",
+	"outcome":           "Attempt",
+	"next":              "Attempt",
+	"attempts":          "Job",
+	"intent":            "Job",
+	"lease":             "Job",
+	"par2ReleaseReason": "JobProgress",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -298,6 +299,20 @@ func TestLeaseWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 			"the lease field's doc comment (job.go) claims Grant and surrenderLocked are "+
 			"its only writers. If a different writer is correct, say so at that comment "+
 			"AND update this list together.",
+			writers, want)
+	}
+}
+
+// TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse asserts that
+// the only writers of p.par2ReleaseReason are its dedicated owner methods:
+// clearPar2ReleaseReason, restorePar2ReleaseReason, and setPar2ReleaseReason.
+func TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "par2ReleaseReason")
+	want := []string{"clearPar2ReleaseReason", "restorePar2ReleaseReason", "setPar2ReleaseReason"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning par2ReleaseReason = %v, want %v\n\n"+
+			"the par2ReleaseReason field is owned by JobProgress and may only be written "+
+			"via clearPar2ReleaseReason, restorePar2ReleaseReason, and setPar2ReleaseReason.",
 			writers, want)
 	}
 }

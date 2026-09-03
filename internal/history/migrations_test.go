@@ -269,7 +269,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		want := []string{
 			"001_initial.sql", "002_durable_runs.sql",
 			"003_drop_legacy_durability.sql", "004_par2_release_reason.sql",
-			"005_dispatch_metadata.sql",
+			"005_dispatch_metadata.sql", "006_recovery_bytes_and_retire_jobs.sql",
 		}
 		if !slices.Equal(sqls, want) {
 			t.Errorf("migrations = %v, want exactly %v", sqls, want)

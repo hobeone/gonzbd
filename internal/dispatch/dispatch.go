@@ -795,6 +795,9 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	if p.Par2ReleaseReason != "" {
 		j.SetPar2ReleaseReason(p.Par2ReleaseReason)
 	}
+	if p.RecoveryBytes > 0 {
+		j.SetRecoveryBytes(p.RecoveryBytes)
+	}
 }
 
 // lastWritten and markWritten are persistIfChanged's two touches of d.written,

@@ -122,7 +122,8 @@ func TestJob_ContentMethods(t *testing.T) {
 	}
 
 	// AckDurable
-	inv, nArt, err := j.AckDurable([]int32{0, 99})
+	proof := durability.NewTestDurableProof(j.ID(), []int32{0, 99})
+	inv, nArt, err := j.AckDurable(proof)
 	if err != nil || inv != 1 || nArt != 3 {
 		t.Fatalf("AckDurable = inv:%d, nArt:%d, err:%v; want inv:1, nArt:3, nil", inv, nArt, err)
 	}
@@ -219,8 +220,8 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	if j.TotalBytes() != 0 || j.RecoveryBytes() != 0 || j.RecoveryFiles() != 0 {
 		t.Error("expected 0 for unattached byte figures")
 	}
-	if j.RepairState() != RepairIntact {
-		t.Errorf("RepairState() = %v, want RepairIntact", j.RepairState())
+	if j.RepairState() != RepairUnknown {
+		t.Errorf("RepairState() = %v, want RepairUnknown", j.RepairState())
 	}
 	if j.HasDeferredPar2() || j.UsesOnDemandPar2() {
 		t.Error("expected false for unattached par2 checks")
