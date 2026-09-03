@@ -916,7 +916,7 @@ func (p *JobProgress) recompute(m *Manifest) {
 	// same mismatch, which already panics loudly via the p.files[fi] index
 	// below when m has more files than p was sized for.
 	if p.done.Len() != m.NumArticles() {
-		panic(fmt.Sprintf("queue: JobProgress/Manifest article count mismatch: progress sized for %d articles, manifest has %d — they were loaded or constructed independently and never reconciled", p.done.Len(), m.NumArticles()))
+		panic(fmt.Sprintf("job: JobProgress/Manifest article count mismatch: progress sized for %d articles, manifest has %d — they were loaded or constructed independently and never reconciled", p.done.Len(), m.NumArticles()))
 	}
 	total := 0
 	var resolved, failed int

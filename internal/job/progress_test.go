@@ -16,7 +16,7 @@ func TestJobProgressArticleAccessorsOutOfRange(t *testing.T) {
 		t.Error("nil *JobProgress accessors must return false")
 	}
 
-	m := newManifest([]JobFile{{Articles: []JobArticle{{ID: "a1", Bytes: 100}}}})
+	m := NewManifest([]JobFile{{Articles: []JobArticle{{ID: "a1", Bytes: 100}}}})
 	p := newJobProgress(m)
 
 	for _, i := range []int{-1, m.NumArticles(), m.NumArticles() + 10} {
@@ -44,14 +44,14 @@ func TestJobProgressArticleAccessorsOutOfRange(t *testing.T) {
 // the file dimension of this same mismatch already panics via the
 // p.files[fi] index below.
 func TestRecomputePanicsOnArticleCountMismatch(t *testing.T) {
-	m := newManifest([]JobFile{{Articles: []JobArticle{
+	m := NewManifest([]JobFile{{Articles: []JobArticle{
 		{ID: "a1", Bytes: 100},
 		{ID: "a2", Bytes: 100},
 		{ID: "a3", Bytes: 100},
 	}}})
 	// Undersized relative to m: as if the JobProgress side of an independent
 	// pair of documents was sized for fewer articles than the Manifest.
-	p := newJobProgress(newManifest([]JobFile{{Articles: []JobArticle{{ID: "a1", Bytes: 100}}}}))
+	p := newJobProgress(NewManifest([]JobFile{{Articles: []JobArticle{{ID: "a1", Bytes: 100}}}}))
 
 	defer func() {
 		r := recover()

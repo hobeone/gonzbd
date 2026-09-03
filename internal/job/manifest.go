@@ -14,7 +14,7 @@ import (
 // from the NZB (or loaded once from disk) and never mutated afterward.
 // Safe to share by reference across Job and every Snapshot/SnapshotJob
 // clone of it — there is no aliasing hazard, because the only writes to a
-// Manifest's fields happen during construction, and newManifest is the sole
+// Manifest's fields happen during construction, and NewManifest is the sole
 // place that construction occurs (UnmarshalJSON reaches it too, replacing
 // the whole value rather than editing fields).
 //
@@ -38,8 +38,9 @@ type Manifest struct {
 	recoveryFiles int
 }
 
-// JobFile is the intermediate, NZB-parsed shape NewJob builds before
-// converting into a Manifest/JobProgress pair. It is not part of Job's
+// JobFile is the intermediate, NZB-parsed shape a caller builds from a parsed
+// NZB and hands to NewManifest, which converts it into a Manifest (and, via
+// AttachContent, the JobProgress derived from it). It is not part of Job's
 // runtime state — construction scaffolding only.
 type JobFile struct {
 	Subject        string
@@ -54,7 +55,7 @@ type JobFile struct {
 }
 
 // JobArticle is the intermediate, NZB-parsed shape of a single article,
-// consumed by newManifest during construction.
+// consumed by NewManifest during construction.
 type JobArticle struct {
 	ID     string
 	Bytes  int
@@ -68,19 +69,38 @@ type manifestFile struct {
 	isPar2Recovery bool
 }
 
-// newManifest builds a Manifest from files, flattening each file's nested
+// NewManifest builds a Manifest from files, flattening each file's nested
 // articles into the parallel global arrays and computing the
 // fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
 //
-// NewJob and UnmarshalJSON are the only callers, which is the point: every
-// Manifest in the process, however it arrived, has its derived state computed
-// here and nowhere else. DiscardDeferredPar2 used to call it too, to rebuild
-// against a reduced file set, and that rebuild is why the recovery
-// figures were once stored rather than derived — the discard deliberately
-// left them describing the larger, pre-discard job. Since #331 the discard
-// only marks a FetchPolicy and changes no file set, so nothing can make
-// these figures disagree with the file list they are computed from.
-func newManifest(files []JobFile) *Manifest {
+// It is the SOLE constructor: every Manifest in the process, however it
+// arrived, has its derived state computed here. UnmarshalJSON reaches it too,
+// replacing the whole value rather than filling fields itself. `git grep -n
+// '&Manifest[{]' -- 'internal/job/*.go' ':!internal/job/*_test.go'` returns
+// one line, the composite literal inside this function. The bracket keeps the
+// citation from matching its own text.
+//
+// # Why exporting this is not the second constructor that was declined
+//
+// internal/dispatch/dispatch.go carries a note recording that a second
+// constructor was escalated and declined. That decision was about adding a
+// SECOND door alongside job.New — two independently-maintained paths
+// populating one type, with NewManifest/UnmarshalJSON cited as the worked
+// example that had already diverged over totalBytes. Exporting the one
+// existing owner is the opposite move: it makes the single computation
+// reachable from the NZB-parsing caller that used to live in internal/queue,
+// instead of pushing that caller onto a JSON round-trip through
+// UnmarshalJSON — which is what would actually create a second path in
+// practice. The population of constructors is unchanged at one; only its
+// visibility moved.
+//
+// DiscardDeferredPar2 used to call it too, to rebuild against a reduced file
+// set, and that rebuild is why the recovery figures were once stored rather
+// than derived — the discard deliberately left them describing the larger,
+// pre-discard job. Since #331 the discard only marks a FetchPolicy and changes
+// no file set, so nothing can make these figures disagree with the file list
+// they are computed from.
+func NewManifest(files []JobFile) *Manifest {
 	m := &Manifest{
 		files:              make([]manifestFile, len(files)),
 		fileArticleOffsets: make([]int, len(files)+1),
@@ -106,7 +126,7 @@ func newManifest(files []JobFile) *Manifest {
 }
 
 // recoveryFigures sums the par2 recovery volumes in files, returning their
-// total size and count. Both construction paths — newManifest and
+// total size and count. Both construction paths — NewManifest and
 // UnmarshalJSON — call it, so the two cannot disagree about what a job's
 // repair capacity is.
 //
@@ -135,10 +155,14 @@ func recoveryFigures(files []manifestFile) (bytes int64, count int) {
 }
 
 // isPar2File reports whether subject names a par2 file (index or recovery
-// volume). NewJob is the only caller: it pairs this with isRecoveryVolume to
-// decide JobFile.IsPar2Recovery, which is the classification everything else
-// keys on. Manifest's own figures no longer use it — see recoveryFigures for
-// why a name-based test is the wrong predicate for repair capacity.
+// volume). `git grep -n '[i]sPar2File(' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns two lines — the bracket keeps the
+// citation from matching its own text — this declaration and the one call
+// site, fileMetaFromManifest in progress.go, which uses it to set
+// FileProgress.IsPar2. The narrower JobFile.IsPar2Recovery flag is decided by
+// the NZB-parsing caller outside this package and arrives already set.
+// Manifest's own figures do not use this predicate — see recoveryFigures for
+// why a name-based test is the wrong one for repair capacity.
 func isPar2File(subject string) bool {
 	return strings.Contains(strings.ToLower(subject), ".par2")
 }
@@ -260,7 +284,7 @@ type manifestJSON struct {
 
 	// TotalBytes is still written, so a manifest this build produces stays
 	// readable by tooling that expects the key, but it is NOT read back:
-	// UnmarshalJSON derives the total from Files via newManifest. A derived
+	// UnmarshalJSON derives the total from Files via NewManifest. A derived
 	// value that is also persisted is a second source of truth, and the
 	// stored copy is the one that can drift.
 	TotalBytes int64 `json:"total_bytes"`
@@ -295,12 +319,12 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements json.Unmarshaler.
 //
-// It decodes to the same []JobFile shape NewJob passes and delegates to
-// newManifest, rather than populating the fields itself. newManifest is the
+// It decodes to the same []JobFile shape the NZB-parsing caller passes and delegates to
+// NewManifest, rather than populating the fields itself. NewManifest is the
 // sole owner of a Manifest's derived state; a second constructor filling the
 // same eight fields by its own code path is one edit away from disagreeing
 // with the first, and the two had already diverged over totalBytes — this
-// path trusted the persisted total while newManifest derived it from the
+// path trusted the persisted total while NewManifest derived it from the
 // files. Deriving on load means the stored total cannot drift from the file
 // list it claims to summarise, so manifestJSON.TotalBytes is now written for
 // compatibility with nothing and read by no one.
@@ -330,7 +354,7 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 			// whereas a silent drop would leave a job quietly short of
 			// articles with nothing to explain it.
 			if !nzb.MessageIDIsFetchable(a.ID) {
-				return fmt.Errorf("queue: manifest file %d article %d: unusable message-id %q",
+				return fmt.Errorf("job: manifest file %d article %d: unusable message-id %q",
 					fi, ai, a.ID)
 			}
 			// Convertible because the two shapes are field-for-field
@@ -346,6 +370,6 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 			Articles:       articles,
 		}
 	}
-	*m = *newManifest(files)
+	*m = *NewManifest(files)
 	return nil
 }

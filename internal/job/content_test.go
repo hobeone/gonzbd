@@ -9,7 +9,7 @@ import (
 // for the content tier: nothing may produce a (Manifest, JobProgress) pair
 // except AttachContent, so the two can never describe different jobs.
 //
-// newManifest and Manifest.UnmarshalJSON populating the same fields by two
+// NewManifest and Manifest.UnmarshalJSON populating the same fields by two
 // paths is the defect this shape exists to prevent — they had already
 // diverged over totalBytes (see AGENTS.md Rule 2, "Two constructors for one
 // type").
@@ -25,7 +25,7 @@ func TestAttachContent_IsTheSoleConstructorOfThePair(t *testing.T) {
 		t.Fatalf("Manifest() error = %v, want ErrNotResident", err)
 	}
 
-	m := newManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
+	m := NewManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestAttachContent_IsTheSoleConstructorOfThePair(t *testing.T) {
 // abort checks unanswerable for any job that is not currently running.
 func TestEvict_KeepsProgressAndTheScalars(t *testing.T) {
 	j := New("abc", "test", PolicyFromPP(3))
-	m := newManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
+	m := NewManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestArticleDoors_RefuseANonResidentJob(t *testing.T) {
 // index is a reported refusal rather than a silent no-op.
 func TestArticleDoors_AccountForBytesAndFiles(t *testing.T) {
 	j := New("abc", "test", PolicyFromPP(3))
-	m := newManifest([]JobFile{{
+	m := NewManifest([]JobFile{{
 		Subject:  "a.rar",
 		Bytes:    300,
 		Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 200}},
@@ -168,8 +168,8 @@ func TestArticleDoors_AccountForBytesAndFiles(t *testing.T) {
 // job before the pair can be observed.
 func TestRestoreContent_RefusesAMismatchedPair(t *testing.T) {
 	j := New("abc", "test", PolicyFromPP(3))
-	m := newManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
-	other := newManifest([]JobFile{
+	m := NewManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
+	other := NewManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
 		{Subject: "b.rar", Bytes: 100, Articles: []JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
