@@ -4,32 +4,37 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters is the regression
 // guard for the B.2 deadlock.
 //
-// Before the fix, tryDispatch emitted ErrNoServersLeft inline while
-// holding both tryMu and the queue RLock taken by
-// Queue.ForEachUnfinishedArticle. If the completions channel was full,
-// the dispatcher blocked forever — and so did any goroutine trying to
-// take the queue write lock (e.g. the pipeline consumer wanting to mark
-// an article failed), because the RLock was still held.
+// Before the fix, tryDispatch emitted ErrNoServersLeft inline while holding
+// both tryMu and the queue RLock taken by Queue.ForEachUnfinishedArticle. If
+// the completions channel was full, the dispatcher blocked forever — and so
+// did any goroutine trying to take the queue write lock (e.g. the pipeline
+// consumer wanting to mark an article failed), because the RLock was still
+// held.
+//
+// forEachUnfinishedArticle (dispatch.go) no longer holds one lock across the
+// whole walk -- job.Job.Manifest()/Progress() each take and release
+// contentMu per call -- so the specific lock this test names no longer
+// exists to hold. The test is kept because the general property (blocking on
+// a full completions channel must not starve an unrelated job mutation) is
+// still worth pinning, now exercised through JobSource.PauseJob rather than
+// Queue.Pause.
 //
 // The test pins the buffer at 1, lets exhausted emits fill it with no
-// consumer draining, then asserts a queue write-lock-requiring call
-// (Queue.Pause) still completes promptly. A pre-B.2 build hangs here.
+// consumer draining, then asserts a job-mutating call (PauseJob) still
+// completes promptly.
 func TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters(t *testing.T) {
 	ms := newMockNNTP(t)
 	// No articles added — every BODY request gets 430.
 
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	q := newFakeJobSource()
+	tj := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h"})
+	q.add(tj)
 
 	srv := testServer(t, "only", ms.addr)
 	d := New(q, []*Server{srv}, nil, Options{CompletionsBuffer: 1}, nil)
@@ -55,26 +60,23 @@ func TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters(t *testing.T) {
 	// cannot cause a false failure — only a narrower reproduction window.
 	time.Sleep(200 * time.Millisecond)
 
-	// A queue writer must make progress even while the dispatcher is
-	// blocked on a full completions channel. Pre-B.2 this Pause call
-	// deadlocks because the dispatcher holds the queue RLock.
+	// A job mutation must make progress even while the dispatcher is
+	// blocked on a full completions channel. Pre-B.2 this call deadlocked
+	// because the dispatcher held the queue RLock.
 	done := make(chan error, 1)
-	go func() { done <- q.Pause(job.ID) }()
+	go func() { done <- q.PauseJob(tj.ID()) }()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			// Expected behaviour is successful pause; Pause may return
-			// "already paused" on racy passes — both are non-failure.
-			t.Logf("Pause returned: %v", err)
+			t.Logf("PauseJob returned: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("queue.Pause starved by dispatcher holding RLock — B.2 regression")
+		t.Fatalf("PauseJob starved by the dispatcher — B.2 regression")
 	}
 
-	// Sanity: job is now paused (or at least Pause observed a consistent
-	// state). Read after the goroutine returns.
-	if snap := q.SnapshotJob(job.ID); snap != nil && snap.Status != constants.StatusPaused {
-		t.Logf("job status after Pause: %v", snap.Status)
+	// Sanity: job is now paused. Read after the goroutine returns.
+	if tj.Intent() != job.IntentPause {
+		t.Logf("job intent after PauseJob: %v", tj.Intent())
 	}
 }

@@ -10,8 +10,33 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 )
+
+// JobSource is what Downloader needs from the job registry: enumerate
+// registered jobs, resolve one by ID, and pause/query one individually.
+//
+// Declared here rather than depending on *dispatch.Dispatcher concretely so a
+// test can supply a lightweight fake instead of standing up a full Dispatcher
+// (which requires Residency/Store/Runner/Workers to construct -- see
+// dispatch.New). *dispatch.Dispatcher satisfies this structurally; New's
+// production callers pass one directly.
+type JobSource interface {
+	// List enumerates every registered job's header-tier row. Only Row.ID is
+	// read here -- per-job Intent and RepairState are read through Job(id)
+	// instead (job.Job.Intent/RepairState), which needs no sched.Queue.Render
+	// call.
+	List() []dispatch.Row
+	// Job resolves id to its live content-tier handle, or false if id is not
+	// registered.
+	Job(id string) (*job.Job, bool)
+	// PauseJob asks one job to stop at its next gate. Distinct from Paused
+	// below, which is the QUEUE-wide flag.
+	PauseJob(id string) error
+	// Paused reports the queue-wide pause flag.
+	Paused() bool
+}
 
 // ErrAlreadyStarted is returned by Start when called twice without an
 // intervening Stop. Callers that want idempotent start/stop should
@@ -148,7 +173,7 @@ type Options struct {
 // Downloader orchestrates article dispatch across a set of NNTP
 // servers. A Downloader owns:
 //
-//   - a reference to the Queue, whose Notify channel it selects on
+//   - a JobSource, which it polls for resident jobs' unfinished articles
 //   - one or more *Server state records (each drives its own pool of
 //     connection-worker goroutines)
 //   - a main-loop goroutine that runs the dispatch pass
@@ -219,7 +244,7 @@ type ServerSnapshot struct {
 // Downloader orchestrates article dispatch across a set of NNTP servers.
 type Downloader struct {
 	log     *slog.Logger
-	queue   *queue.Queue
+	jobs    JobSource
 	servers []*Server
 	meter   *bpsmeter.Meter
 	opts    Options
@@ -237,8 +262,12 @@ type Downloader struct {
 	completions chan *ArticleResult
 
 	// dispatchReady is a cap-1 signal: workers poke it after each
-	// result so the main loop knows to scan for more work. Coalesces
-	// like queue.Notify.
+	// result so the main loop knows to scan for more work. There is no
+	// dispatcher-side wake this package can select on -- JobSource exposes
+	// no Notify equivalent (dispatch.Dispatcher's own wake channel is
+	// unexported) -- so new work registered while nothing else is running is
+	// discovered by run's periodic ticker rather than immediately. See run's
+	// doc comment.
 	dispatchReady chan struct{}
 
 	limiter *bpsmeter.Limiter
@@ -254,7 +283,7 @@ type Downloader struct {
 	propagationDelay time.Duration
 
 	// paused short-circuits the dispatch pass without tearing down
-	// worker goroutines. Independent of queue.IsPaused (either flag
+	// worker goroutines. Independent of JobSource.Paused (either flag
 	// suppresses dispatch).
 	paused atomic.Bool
 
@@ -288,16 +317,16 @@ type Downloader struct {
 	stopped atomic.Bool
 }
 
-// New constructs a Downloader bound to q and the given servers. The
+// New constructs a Downloader bound to jobs and the given servers. The
 // returned Downloader is inert until Start; no goroutines run, no
 // sockets open. Servers are iterated in slice order as the fallback
 // preference — callers should sort by priority before passing.
 //
 // An empty server slice is allowed — the downloader will start but
 // dispatch nothing until servers are added via ReloadDownloader.
-func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options, log *slog.Logger) *Downloader {
-	if q == nil {
-		panic("downloader: queue is nil")
+func New(jobs JobSource, servers []*Server, meter *bpsmeter.Meter, opts Options, log *slog.Logger) *Downloader {
+	if jobs == nil {
+		panic("downloader: jobs is nil")
 	}
 	if opts.CompletionsBuffer <= 0 {
 		opts.CompletionsBuffer = 256
@@ -307,7 +336,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 	}
 	d := &Downloader{
 		log:              log.With("component", "downloader"),
-		queue:            q,
+		jobs:             jobs,
 		servers:          servers,
 		meter:            meter,
 		opts:             opts,
@@ -515,7 +544,7 @@ func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool
 }
 
 // IsPaused reports the downloader's own pause flag. Orthogonal to
-// queue.IsPaused; either being true suppresses dispatch.
+// JobSource.Paused; either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }
 
 // DisconnectAll signals all connWorker goroutines to close their idle
@@ -793,12 +822,20 @@ func (d *Downloader) checkExpiredPenalties() {
 	}
 }
 
-// run is the main dispatcher loop. One goroutine. Selects on three
-// sources:
+// run is the main dispatcher loop. One goroutine. Selects on two sources:
 //
 //   - ctx.Done       — begin shutdown
-//   - queue.Notify   — new work was added / resumed / reordered
 //   - dispatchReady  — a worker freed up
+//
+// There used to be a third case, a queue.Notify channel woken whenever a job
+// was added, resumed or reordered. JobSource has no equivalent: it wraps
+// *dispatch.Dispatcher, whose own wake channel (`wake chan struct{}`,
+// internal/dispatch/dispatch.go) is unexported, so this package cannot
+// select on it. The periodic ticker below is what discovers such changes
+// instead — it already existed to notice expired server penalties with no
+// active workers, and now also covers "a job was registered or resumed
+// while nothing else woke the loop", at the cost of up to one ticker
+// interval of added latency versus an immediate wake.
 //
 // The loop must stay tight: all heavy lifting (per-article iteration,
 // send to workCh) happens inside dispatchPass, which itself must not
@@ -806,8 +843,9 @@ func (d *Downloader) checkExpiredPenalties() {
 // shutdown.
 func (d *Downloader) run(ctx context.Context) {
 	// Periodic ticker ensures the dispatcher wakes up to discover
-	// expired server penalties even when no workers are active (all
-	// servers penalized → no dispatchReady signals arriving).
+	// expired server penalties, and newly-registered or resumed jobs,
+	// even when no workers are active (all servers penalized → no
+	// dispatchReady signals arriving).
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -815,9 +853,6 @@ func (d *Downloader) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-d.queue.Notify():
-			d.checkExpiredPenalties()
-			d.dispatchPass(ctx)
 		case <-d.dispatchReady:
 			d.checkExpiredPenalties()
 			d.dispatchPass(ctx)
