@@ -734,6 +734,29 @@ func (j *Job) IsEarlyAbort() bool {
 	return j.progress.isEarlyAbort()
 }
 
+// JobFile is the intermediate, NZB-parsed shape NewJob builds before
+// converting into a Manifest/JobProgress pair. It is not part of Job's
+// runtime state — construction scaffolding only.
+type JobFile struct {
+	Subject        string
+	Date           time.Time
+	Articles       []JobArticle
+	Bytes          int64
+	IsPar2Recovery bool
+	// Deferred marks a file whose articles are intentionally held back from
+	// dispatch (on-demand par2: recovery volumes not downloaded until repair
+	// is shown to be needed).
+	Deferred bool
+}
+
+// JobArticle is the intermediate, NZB-parsed shape of a single article,
+// consumed by newManifest during construction.
+type JobArticle struct {
+	ID     string
+	Bytes  int
+	Number int
+}
+
 // AddOptions carries the call-site arguments for NewJob. Zero values
 // are valid and produce sensible defaults.
 type AddOptions struct {
