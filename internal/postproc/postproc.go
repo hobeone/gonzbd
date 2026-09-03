@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -30,10 +29,6 @@ type Options struct {
 	// job, with the full StageLog populated.  May be nil.
 	OnJobDone func(*Job)
 
-	// StatusUpdater is called to update the persistent status of the job in
-	// the active queue. Usually maps to queue.SetStatus.
-	StatusUpdater func(string, constants.Status)
-
 	// OnOutput is called when a subprocess emits a line of output during
 	// post-processing. Parameters: jobID, tool name, output line.
 	OnOutput func(jobID, tool, line string)
@@ -49,12 +44,11 @@ type Options struct {
 // Use New to construct; Start to launch the worker; Stop to shut it down
 // gracefully.  All public methods are safe for concurrent use.
 type PostProcessor struct {
-	stages        []Stage
-	onEmpty       func()
-	onJobDone     func(*Job)
-	statusUpdater func(string, constants.Status)
-	onOutput      func(jobID, tool, line string)
-	log           *slog.Logger
+	stages    []Stage
+	onEmpty   func()
+	onJobDone func(*Job)
+	onOutput  func(jobID, tool, line string)
+	log       *slog.Logger
 
 	q *ppQueue
 
@@ -93,13 +87,12 @@ func New(opts Options) *PostProcessor {
 	}
 	log := lg.With("component", "postproc")
 	return &PostProcessor{
-		stages:        opts.Stages,
-		onEmpty:       opts.OnEmpty,
-		onJobDone:     opts.OnJobDone,
-		statusUpdater: opts.StatusUpdater,
-		onOutput:      opts.OnOutput,
-		log:           log,
-		q:             newPPQueue(),
+		stages:    opts.Stages,
+		onEmpty:   opts.OnEmpty,
+		onJobDone: opts.OnJobDone,
+		onOutput:  opts.OnOutput,
+		log:       log,
+		q:         newPPQueue(),
 	}
 }
 
@@ -474,21 +467,6 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 			Started: time.Now(),
 			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.PP)},
 		}, false
-	}
-
-	if p.statusUpdater != nil {
-		var status constants.Status
-		switch stage.Name() {
-		case "repair":
-			status = constants.StatusVerifying
-		case "unpack":
-			status = constants.StatusExtracting
-		case "finalize":
-			status = constants.StatusMoving
-		default:
-			status = constants.StatusRunning
-		}
-		p.statusUpdater(job.JobID(), status)
 	}
 
 	entry := StageLogEntry{

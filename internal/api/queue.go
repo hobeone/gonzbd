@@ -408,6 +408,8 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 	}
 
 	totalBytes := r.Header.Bytes
+	// Fallback to Header.Bytes when the active job is not yet loaded into
+	// memory (e.g. during promotion or slot build race windows).
 	remainingBytes := r.Header.Bytes
 	if p != nil {
 		totalBytes = p.ExpectedBytes()
@@ -777,7 +779,6 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 				_ = s.dispatcher.PauseJob(id)
 			} else {
 				_ = s.dispatcher.ResumeJob(id)
-				s.dispatcher.Tick(r.Context())
 				s.dispatcher.Tick(r.Context())
 			}
 			if row, ok := s.dispatcher.Row(id); ok {

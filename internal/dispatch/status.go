@@ -14,8 +14,10 @@ import (
 // Status() on Job would need a back-pointer that inverts the dependency into a
 // cycle. Row already carries the view.
 //
-// This is a door onto ToSABnzbd, NOT a second translation: §12 makes that
-// function the one place constants.Status may appear, and it is write-only.
+// This is a door onto ToSABnzbd, NOT a second translation: within package
+// dispatch, this method is the only place package constants' Status appears in
+// non-test sources — `git grep -n 'constants\.Status\b' -- 'internal/dispatch/*.go' ':!*_test.go'` finds
+// exactly one line — and it is write-only.
 // Use this to RENDER a status. Do not branch on the result -- branching is
 // what the State/Outcome/Intent axes are for, and reading status back into the
 // machine is what the swap exists to end.

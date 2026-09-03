@@ -12,12 +12,11 @@ import (
 // falsified by a file this one never opens.
 //
 // This makes the enumeration a fact the compiler's own package boundary can
-// check, rather than a sentence kept true by memory. It follows the pattern
-// in internal/queue/donebit_enumeration_test.go
-// (TestDoneBitWriters_MatchTheEnumerationStatedInProse, cited in AGENTS.md).
-// The scan itself — scanWriters, in writer_enumeration_test.go — is shared
-// with five other fields now; only the field name and the wanted set are
-// specific to this test.
+// check, rather than a sentence kept true by memory. It is cited in
+// AGENTS.md ("Where the population is enumerable by a machine, write the
+// test instead"). The scan itself — scanWriters, in
+// writer_enumeration_test.go — is shared with five other fields now; only the
+// field name and the wanted set are specific to this test.
 //
 // The test asserts the enumeration (the function names), not a bare count. A
 // count alone would go green against a write that moved from finish to some

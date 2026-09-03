@@ -50,7 +50,8 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		c.General.DownloadDir = downloadDir
 		c.General.CompleteDir = completeDir
 		c.General.AdminDir = adminDir
-		c.Downloads.NoPenalties = true
+		// Keep penalty escalation active: this test verifies recovery under sustained server failure.
+		c.Downloads.NoPenalties = false
 		c.Servers = []config.ServerConfig{
 			{
 				Name:        "chaos",

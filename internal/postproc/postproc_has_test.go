@@ -5,8 +5,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // ---------- Has ----------
@@ -79,48 +77,6 @@ func TestPPQueue_Has(t *testing.T) {
 	}
 	if q.Has("y") {
 		t.Error("Has('y') = true for absent job")
-	}
-}
-
-// ---------- StatusUpdater ----------
-
-func TestStatusUpdater_CalledPerStage(t *testing.T) {
-	var mu sync.Mutex
-	statuses := make(map[constants.Status]bool)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	p := startProcessor(t, Options{
-		Stages: []Stage{
-			newRecordStage("repair"),
-			newRecordStage("unpack"),
-			newRecordStage("finalize"),
-			newRecordStage("custom"),
-		},
-		StatusUpdater: func(_ string, s constants.Status) {
-			mu.Lock()
-			statuses[s] = true
-			mu.Unlock()
-		},
-		OnJobDone: func(_ *Job) { wg.Done() },
-	})
-
-	p.Process(makeJob(t, "status-job"))
-	wg.Wait()
-
-	mu.Lock()
-	defer mu.Unlock()
-	// Should have seen StatusVerifying, StatusExtracting, StatusMoving, StatusRunning
-	for _, want := range []constants.Status{
-		constants.StatusVerifying,
-		constants.StatusExtracting,
-		constants.StatusMoving,
-		constants.StatusRunning,
-	} {
-		if !statuses[want] {
-			t.Errorf("missing status %v", want)
-		}
 	}
 }
 

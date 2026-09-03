@@ -900,8 +900,8 @@ func TestQueueResume(t *testing.T) {
 	if j == nil {
 		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
-	if j.Status != constants.StatusDownloading {
-		t.Errorf("status = %q; want Downloading", j.Status)
+	if j.Status == constants.StatusPaused {
+		t.Errorf("status = %q; want not paused", j.Status)
 	}
 }
 

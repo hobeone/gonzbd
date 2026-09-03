@@ -120,8 +120,3 @@ func RepairStateFrom(contentFailedBytes, recoveryBytes int64, hasPar2Files bool)
 // one caller runs over a queue listing, which includes jobs whose manifests
 // have been evicted, and a figure that changed with residency would condemn or
 // spare the same job according to whether it happened to be promoted.
-// (j *Job) RepairState moves to internal/job/content.go in Task 2 once Job gains Progress() and RecoveryBytes().
-// func (j *Job) RepairState() RepairState {
-// 	p := j.Progress()
-// 	return RepairStateFrom(p.ContentFailedBytes(), j.RecoveryBytes(), p.HasPar2Files())
-// }

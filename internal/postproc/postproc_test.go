@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -1286,15 +1285,8 @@ func TestPostProc_HelperMethods(t *testing.T) {
 	})
 
 	t.Run("runStage", func(t *testing.T) {
-		var updatedID string
-		var updatedStatus constants.Status
-
 		p := &PostProcessor{
 			log: slog.Default(),
-			statusUpdater: func(id string, status constants.Status) {
-				updatedID = id
-				updatedStatus = status
-			},
 		}
 
 		job := &Job{
@@ -1333,9 +1325,6 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 		if !stageRan {
 			t.Error("expected stage.Run to be executed")
-		}
-		if updatedID != "job1" || updatedStatus != constants.StatusVerifying {
-			t.Errorf("expected status update to Verifying, got id=%s status=%s", updatedID, updatedStatus)
 		}
 		if entry.Err != nil {
 			t.Errorf("expected no error, got %v", entry.Err)
