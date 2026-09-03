@@ -183,3 +183,22 @@ func TestSetBusyWithJob_ObservableThroughHasAndEmpty(t *testing.T) {
 		t.Error("Empty() = false after setBusyWithJob cleared busy and the queue is empty")
 	}
 }
+
+// TestEmpty_QueueNonEmptyReturnsFalseWithoutBusy pins Empty's early-return
+// branch: a job sitting in the queue makes Empty false on its own, with
+// busy left at its New(Options{}) zero value (false). Every other Empty
+// test in this package drives the busy path (queue empty, busy
+// true/false); none pushes a job, so this branch (len(jobs) != 0 ->
+// empty = false, return, before busyMu is ever touched) was previously
+// unreferenced -- check_test_alignment's coverage gate flagged it as
+// pre-existing debt in a file this branch merely touched.
+func TestEmpty_QueueNonEmptyReturnsFalseWithoutBusy(t *testing.T) {
+	t.Parallel()
+
+	p := New(Options{})
+	p.q.Push(&Job{Queue: newQueueJob(t, "queued", 0)})
+
+	if p.Empty() {
+		t.Error("Empty() = true with a job queued and busy=false, want false")
+	}
+}
