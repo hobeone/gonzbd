@@ -1,12 +1,16 @@
 package dispatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
+
+// ErrNotFound is returned when an operation names a job ID that is not registered.
+var ErrNotFound = errors.New("dispatch: job not found")
 
 // Header is the display metadata a listing needs. job.Job holds id, name and
 // policy only; category, priority and the total byte figure live in
@@ -268,4 +272,83 @@ func (d *Dispatcher) Row(id string) (Row, bool) {
 	d.mu.Unlock()
 
 	return Row{ID: id, Header: h, View: d.q.Render(j)}, true
+}
+
+// Job returns the live *job.Job for id.
+//
+// It is the content-tier door, and Row (above) is the header-tier one. A
+// caller that needs progress counters or the manifest takes this; a caller
+// that needs a name, a status or a byte total takes Row and must not reach
+// for a job pointer to get them -- that is #436 reappearing one level down.
+func (d *Dispatcher) Job(id string) (*job.Job, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return nil, false
+	}
+	return e.j, true
+}
+
+// PauseJob asks one job to stop at its next gate.
+//
+// Distinct from Pause, which sets the QUEUE-wide flag. The two are different
+// subjects and must stay observably different: ToSABnzbd routes through
+// WaitReason.IsPause() precisely because a queue-wide pause leaves every job
+// carrying IntentRun, and a PauseJob that also set the queue flag would make
+// that unobservable.
+func (d *Dispatcher) PauseJob(id string) error {
+	j, ok := d.Job(id)
+	if !ok {
+		return fmt.Errorf("dispatch: pause %s: %w", id, ErrNotFound)
+	}
+	if err := j.SetIntent(job.IntentPause); err != nil {
+		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// ResumeJob clears a pause request by restoring the default intent.
+//
+// It cannot un-cancel: SetIntent latches IntentCancel (job/intent.go,
+// IsLatched), so this returns that error rather than silently doing nothing.
+// Silently succeeding would tell the API a cancelled job had been resumed.
+func (d *Dispatcher) ResumeJob(id string) error {
+	j, ok := d.Job(id)
+	if !ok {
+		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
+	}
+	if err := j.SetIntent(job.IntentRun); err != nil {
+		return fmt.Errorf("dispatch: resume %s: %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// Remove cancels a job, deletes its persisted row and deregisters it.
+//
+// The order is deliberate: Cancel first so sched reclaims the lease and the
+// compute slot while the job is still registered. Deregistering first would
+// strand both -- the tick only walks registered jobs, so nothing would ever
+// return them.
+func (d *Dispatcher) Remove(ctx context.Context, id string) error {
+	if _, ok := d.Job(id); !ok {
+		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
+	}
+	if err := d.Cancel(id); err != nil {
+		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
+	}
+	if err := d.Yielded(id); err != nil {
+		return fmt.Errorf("dispatch: remove %s: park: %w", id, err)
+	}
+	if d.store != nil {
+		if err := d.store.Delete(ctx, id); err != nil {
+			return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
+		}
+	}
+	d.res.Evict(id)
+	d.remove(id)
+	d.kick()
+	return nil
 }
