@@ -120,7 +120,29 @@ func RepairStateFrom(contentFailedBytes, recoveryBytes int64, hasPar2Files bool)
 // one caller runs over a queue listing, which includes jobs whose manifests
 // have been evicted, and a figure that changed with residency would condemn or
 // spare the same job according to whether it happened to be promoted.
+//
+// Takes contentMu directly and reads j.progress/j.recoveryBytes rather than
+// going through Progress()/RecoveryBytes(), and holds it across all three
+// reads. Those doors each take and release contentMu.RLock for their own
+// single field, so calling them from inside an already-held RLock here would
+// be a second, nested acquisition of the same sync.RWMutex on one goroutine —
+// safe only until a writer's Lock() call is queued between the two RLocks,
+// at which point the second RLock blocks behind the writer and the writer
+// blocks behind the still-open first RLock: a self-deadlock. Reading the
+// fields directly avoids the nesting rather than relying on it never
+// happening to be queued that way.
+//
+// This is also what makes the three reads ATOMIC as one snapshot: this
+// package's connWorker-equivalent callers (a downloader's dispatch pass)
+// call MarkArticleFailed concurrently for the same job, and that mutates
+// p.failedBytes/p.files[i].FailedBytes under this same contentMu. A caller
+// that took the lock three times separately (once each for
+// ContentFailedBytes, HasPar2Files and RecoveryBytes) could interleave with
+// a markFailed between them and combine three figures that were never true
+// at the same instant. Holding contentMu across all three is what makes
+// RepairStateFrom's inputs describe one moment rather than three.
 func (j *Job) RepairState() RepairState {
-	p := j.Progress()
-	return RepairStateFrom(p.ContentFailedBytes(), j.RecoveryBytes(), p.HasPar2Files())
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return RepairStateFrom(j.progress.ContentFailedBytes(), j.recoveryBytes, j.progress.HasPar2Files())
 }

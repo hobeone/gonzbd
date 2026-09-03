@@ -26,25 +26,39 @@ import (
 // fakeJobSource is a minimal JobSource: register/deregister *job.Job values
 // directly, no persistence, no scheduling.
 type fakeJobSource struct {
-	mu     sync.Mutex
-	jobs   map[string]*job.Job
-	paused bool
+	mu      sync.Mutex
+	jobs    map[string]*job.Job
+	headers map[string]dispatch.Header
+	paused  bool
 }
 
 func newFakeJobSource() *fakeJobSource {
-	return &fakeJobSource{jobs: make(map[string]*job.Job)}
+	return &fakeJobSource{
+		jobs:    make(map[string]*job.Job),
+		headers: make(map[string]dispatch.Header),
+	}
 }
 
+// add registers j with a zero Header (Added is the zero time.Time, which
+// forEachUnfinishedArticle's propagation-delay check reads as "not recently
+// added" -- see dispatch.Header's doc comment). Use addWithHeader for a test
+// that needs to control Header.Added.
 func (f *fakeJobSource) add(j *job.Job) {
+	f.addWithHeader(j, dispatch.Header{})
+}
+
+func (f *fakeJobSource) addWithHeader(j *job.Job, h dispatch.Header) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jobs[j.ID()] = j
+	f.headers[j.ID()] = h
 }
 
-// List returns one Row per registered job, ID only. Downloader never reads
-// Row.Header or Row.View -- see forEachUnfinishedArticle/hasDownloadableJobs,
-// which resolve everything they need through Job(id) instead -- so those
-// fields are left zero.
+// List returns one Row per registered job: ID and Header (the header-tier
+// fields a real Dispatcher.List would supply without a manifest read).
+// Row.View is left zero -- downloader reads job.Job.Intent()/State()/
+// RepairState() directly through Job(id) instead of a rendered view, so
+// nothing in this package consumes it.
 func (f *fakeJobSource) List() []dispatch.Row {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -55,7 +69,7 @@ func (f *fakeJobSource) List() []dispatch.Row {
 	sort.Strings(ids) // deterministic iteration order for tests
 	out := make([]dispatch.Row, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, dispatch.Row{ID: id})
+		out = append(out, dispatch.Row{ID: id, Header: f.headers[id]})
 	}
 	return out
 }

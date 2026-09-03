@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 )
@@ -23,7 +24,7 @@ func New(db *sql.DB) *Store { return &Store{db: db} }
 // two cannot drift into disagreeing about order. A mismatch between them would
 // not fail to compile — every value is an integer or a string — it would
 // silently transpose fields.
-const columns = `id, sort_key, name, category, priority, bytes,
+const columns = `id, sort_key, name, category, priority, bytes, added,
 	verify, repair, unpack, delete_ok,
 	state, next, activity, outcome, assessed, intent`
 
@@ -55,15 +56,22 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 		// range-checked them itself, which allocated per row and duplicated
 		// what the standard library already guarantees.
 		var p dispatch.Persisted
+		// added is scanned into an int64 rather than straight into
+		// p.Header.Added: database/sql has no INTEGER-unix-seconds ->
+		// time.Time conversion, so decodeAdded below does what
+		// isJobStamp/restoreDownloadStamps do in internal/job/progress.go --
+		// 0 decodes to the zero time.Time, not to the Unix epoch instant.
+		var added int64
 		if err := rows.Scan(
 			&p.ID, &p.SortKey,
-			&p.Header.Name, &p.Header.Category, &p.Header.Priority, &p.Header.Bytes,
+			&p.Header.Name, &p.Header.Category, &p.Header.Priority, &p.Header.Bytes, &added,
 			&p.Policy.Verify, &p.Policy.Repair, &p.Policy.Unpack, &p.Policy.Delete,
 			&p.State.State, &p.State.Next, &p.State.Activity, &p.State.Outcome,
 			&p.State.Assessed, &p.Intent,
 		); err != nil {
 			return nil, fmt.Errorf("dispatch/store: load: scan: %w", err)
 		}
+		p.Header.Added = decodeAdded(added)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -82,17 +90,17 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO dispatch_jobs (`+columns+`)
-		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?)
+		 VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   sort_key=excluded.sort_key, name=excluded.name,
 		   category=excluded.category, priority=excluded.priority,
-		   bytes=excluded.bytes,
+		   bytes=excluded.bytes, added=excluded.added,
 		   verify=excluded.verify, repair=excluded.repair,
 		   unpack=excluded.unpack, delete_ok=excluded.delete_ok,
 		   state=excluded.state, next=excluded.next,
 		   activity=excluded.activity, outcome=excluded.outcome,
 		   assessed=excluded.assessed, intent=excluded.intent`,
-		p.ID, p.SortKey, p.Header.Name, p.Header.Category, p.Header.Priority, p.Header.Bytes,
+		p.ID, p.SortKey, p.Header.Name, p.Header.Category, p.Header.Priority, p.Header.Bytes, encodeAdded(p.Header.Added),
 		p.Policy.Verify, p.Policy.Repair, p.Policy.Unpack, p.Policy.Delete,
 		p.State.State, p.State.Next, p.State.Activity, p.State.Outcome,
 		p.State.Assessed, p.Intent,
@@ -101,6 +109,25 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		return fmt.Errorf("dispatch/store: save %s: %w", p.ID, err)
 	}
 	return nil
+}
+
+// encodeAdded/decodeAdded round-trip Header.Added through the added column's
+// INTEGER-unix-seconds encoding, matching internal/job/progress.go's
+// isJobStamp/restoreDownloadStamps convention: 0 is "absent", not the Unix
+// epoch instant, so a zero time.Time (a caller that never set Added) and a
+// stored 0 mean the same thing in both directions.
+func encodeAdded(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func decodeAdded(v int64) time.Time {
+	if v <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(v, 0)
 }
 
 // Delete removes a job's row.

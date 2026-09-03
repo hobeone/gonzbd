@@ -22,16 +22,22 @@
 //
 // # What this package does not have yet
 //
-// No application code imports it. The one importer is internal/dispatch/store,
-// which exists only to satisfy this package's own Store interface and is itself
-// unwired: `git grep -l 'gonzbd/internal/dispatc[h]"' -- '*.go' ':!*_test.go'`
-// returns 1 file. The bracket around the last letter is deliberate — it makes
-// the pattern match a real import line while NOT matching this sentence, and a
+// A Dispatcher is not yet constructed anywhere in production (internal/app
+// still runs on internal/queue), but it is no longer import-only scaffolding:
+// internal/downloader, the first package Plan 2 (§15, below) repointed, is a
+// real importer of its exported surface (JobSource, satisfied structurally by
+// *Dispatcher). internal/dispatch/store is the other:
+// `git grep -l 'gonzbd/internal/dispatc[h]"' -- '*.go' ':!*_test.go'` returns 2
+// files. The bracket around the last letter is deliberate — it makes the
+// pattern match a real import line while NOT matching this sentence, and a
 // citation that counts its own prose is worse than none.
 // Plan 2 of docs/superpowers/specs/2026-08-25-job-lifecycle-design.md §15 —
-// "the swap" — repoints production onto it. That plan moves Manifest and
-// JobProgress into internal/job rather than deleting internal/queue outright;
-// what remains of internal/queue after the move is what the swap deletes.
+// "the swap" — repoints production onto it, package by package.
+// internal/downloader is repointed; internal/app, internal/api and cmd/gonzbd
+// are not yet, so no process constructs a live Dispatcher until they are. That
+// plan moves Manifest and JobProgress into internal/job rather than deleting
+// internal/queue outright; what remains of internal/queue after the move is
+// what the swap deletes.
 // (An earlier decomposition called this step B2.4 and had it delete
 // internal/queue wholesale. It was withdrawn in favour of §15, which it
 // contradicted without citing.)

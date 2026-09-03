@@ -41,13 +41,14 @@ type unfinishedArticle struct {
 	// queue.RepairStateFrom helper; job.Job.RepairState() is now that same
 	// door, owned by internal/job.
 	repairState job.RepairState
-	// fileDate is the owning file's NZB-declared posting date
-	// (Manifest.FileDate), read once per file. Replaces the old a.JobAdded
-	// (when the job was added to OUR queue) as the propagation-delay clock:
-	// job.Job carries no "added to queue" timestamp, and the NZB's own
-	// posting date is, if anything, the more direct signal for "how long
-	// since this was posted" than a queue-ingestion time ever was.
-	fileDate time.Time
+	// jobAdded is dispatch.Row.Header.Added, read once per job. Same
+	// quantity the old a.JobAdded carried (when the job was added to the
+	// queue) -- internal/config/downloads.go documents propagation delay as
+	// measured from that moment, not from an NZB's own posting date, so this
+	// reads Header.Added rather than Manifest.FileDate. See dispatch.Header's
+	// doc comment (internal/dispatch/registry.go) for why job.Job itself
+	// carries no such timestamp.
+	jobAdded time.Time
 
 	messageID  string
 	fileIdx    int
@@ -95,14 +96,29 @@ type unfinishedArticle struct {
 func (d *Downloader) forEachUnfinishedArticle(fn func(unfinishedArticle) bool) {
 	for _, row := range d.jobs.List() {
 		j, ok := d.jobs.Job(row.ID)
-		if !ok || !j.Resident() || j.State().State != job.Fetching {
+		if !ok {
 			continue
 		}
 		m, err := j.Manifest()
 		if err != nil {
+			// Manifest() returns ErrNotResident exactly when Resident() is
+			// false (content.go) -- one enforcement point for one predicate
+			// rather than a separate !j.Resident() check ahead of this.
 			continue
 		}
-		p := j.Checkpoint().Progress
+		if j.State().State != job.Fetching {
+			continue
+		}
+		cp := j.Checkpoint()
+		p := cp.Progress
+		if p.PendingArticles() == 0 {
+			// Early-out before the per-file walk below, and before
+			// RepairState()'s own contentMu acquisition: a job with nothing
+			// pending has nothing this walk could offer regardless of intent
+			// or repair state, the same short-circuit the old queue's walk
+			// took (see hasDownloadableJobs' matching early-out).
+			continue
+		}
 		intent := j.Intent()
 		repairState := j.RepairState()
 		for fi := range m.NumFiles() {
@@ -110,7 +126,6 @@ func (d *Downloader) forEachUnfinishedArticle(fn func(unfinishedArticle) bool) {
 				continue
 			}
 			lo, hi := m.FileRange(fi)
-			fileDate := m.FileDate(fi)
 			subject := m.FileSubject(fi)
 			for artIdx := lo; artIdx < hi; artIdx++ {
 				if p.ArticleDone(artIdx) || p.ArticleEmitted(artIdx) {
@@ -120,7 +135,7 @@ func (d *Downloader) forEachUnfinishedArticle(fn func(unfinishedArticle) bool) {
 					jobID:       row.ID,
 					jobIntent:   intent,
 					repairState: repairState,
-					fileDate:    fileDate,
+					jobAdded:    row.Header.Added,
 					messageID:   m.ArticleID(artIdx),
 					fileIdx:     fi,
 					artIdx:      int32(artIdx), //nolint:gosec // G115: article counts are far below int32
@@ -139,13 +154,23 @@ func (d *Downloader) forEachUnfinishedArticle(fn func(unfinishedArticle) bool) {
 // non-hopeless job still has pending articles. Replaces
 // queue.Queue.HasDownloadableJobs for applyDispatchPlan's idle-disconnect
 // check.
+//
+// Only called when buildDispatchPlan early-exited on allServersFull without
+// ever reaching forEachUnfinishedArticle (dispatchPlan.serversWereFull) --
+// every other pass already answers this question for free while it walks,
+// via dispatchPlan.downloadable, so calling this too would clone every
+// Fetching job's progress record a second time in the steady state
+// (plan.dispatched == 0, servers not full) for no new information.
 func (d *Downloader) hasDownloadableJobs() bool {
 	for _, row := range d.jobs.List() {
 		j, ok := d.jobs.Job(row.ID)
 		if !ok || !j.Resident() || j.State().State != job.Fetching {
 			continue
 		}
-		if j.Intent() == job.IntentPause {
+		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
+		// must not count as downloadable either -- see forEachUnfinishedArticle's
+		// matching check for why.
+		if j.Intent() != job.IntentRun {
 			continue
 		}
 		if j.RepairState().Hopeless() {
@@ -196,9 +221,22 @@ func (d *Downloader) clearArticleEmitted(jobID, msgID string, artIdx int32) {
 // without needing to drive goroutines or NNTP connections.
 type dispatchPlan struct {
 	dispatched   int                 // number of articles handed to a server
-	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
 	hopelessJobs map[string]struct{} // jobs whose job.RepairState is Hopeless()
 	exhausted    []*articleRequest   // articles with no eligible server this pass
+
+	// downloadable is true if forEachUnfinishedArticle yielded at least one
+	// article whose job is IntentRun and not Hopeless -- i.e. what
+	// hasDownloadableJobs would have found, computed for free during the
+	// walk buildDispatchPlan already performs, rather than by a second walk
+	// and a second Checkpoint() clone per job in applyDispatchPlan. Only
+	// meaningful when serversWereFull is false; see hasDownloadableJobs'
+	// doc comment.
+	downloadable bool
+	// serversWereFull is true when buildDispatchPlan returned before ever
+	// calling forEachUnfinishedArticle (the allServersFull early exit), in
+	// which case downloadable was never computed and applyDispatchPlan must
+	// fall back to calling hasDownloadableJobs directly.
+	serversWereFull bool
 }
 
 // dispatchOpts bundles the per-pass constants shared by buildDispatchPlan and
@@ -221,23 +259,31 @@ type dispatchOpts struct {
 // call.
 func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) dispatchPlan {
 	plan := dispatchPlan{
-		activeJobs:   make(map[string]struct{}),
 		hopelessJobs: make(map[string]struct{}),
 	}
 
 	if d.allServersFull(opts.serverCfgs) {
+		plan.serversWereFull = true
 		return plan
 	}
 
 	d.forEachUnfinishedArticle(func(a unfinishedArticle) bool {
-		if a.jobIntent == job.IntentPause {
-			return true // skip paused jobs, keep iterating
+		// != IntentRun, not == IntentPause: a cancelled job must stop being
+		// offered too. sched latches IntentCancel and settles the job, but it
+		// stays Fetching and unsettled until it yields
+		// (internal/sched/cancel.go; internal/sched/doc.go documents the
+		// transient "Fetching, no lease, IntentCancel" shape), so a cancelled
+		// job would otherwise keep being dispatched -- burning bandwidth and
+		// provider allowance on a download the user already cancelled -- until
+		// that yield lands. Also future-proofs a fourth Intent.
+		if a.jobIntent != job.IntentRun {
+			return true // skip paused/cancelled jobs, keep iterating
 		}
 
-		// Propagation delay: skip files that haven't aged enough.
+		// Propagation delay: skip jobs that haven't aged enough.
 		// Posts need time to propagate to all NNTP servers; dispatching
 		// too early causes 430 (article not found) errors on backups.
-		if opts.propagationDelay > 0 && opts.now.Before(a.fileDate.Add(opts.propagationDelay)) {
+		if opts.propagationDelay > 0 && opts.now.Before(a.jobAdded.Add(opts.propagationDelay)) {
 			return true // too young, skip for now
 		}
 
@@ -254,10 +300,14 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			return true
 		}
 
+		// This article's job is IntentRun and not Hopeless -- exactly what
+		// hasDownloadableJobs looks for -- so record it here rather than
+		// re-deriving the same answer with a second walk in applyDispatchPlan.
+		plan.downloadable = true
+
 		handled, exReq := d.tryDispatch(ctx, a, opts)
 		if handled {
 			plan.dispatched++
-			plan.activeJobs[a.jobID] = struct{}{}
 		}
 		if exReq != nil {
 			plan.exhausted = append(plan.exhausted, exReq)
@@ -327,7 +377,17 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		if opts.onJobHopeless != nil {
 			opts.onJobHopeless(jobID)
 		} else {
-			_ = d.jobs.PauseJob(jobID) // Fallback if no callback
+			// No PauseJob fallback: job.Intent is "what a PERSON has asked of
+			// this job" (internal/job/intent.go), and a hopeless verdict is a
+			// machine judgement, not a person's request. Writing IntentPause
+			// here would show the job as user-paused in the UI and let a
+			// Resume re-arm a download already declared beyond repair --
+			// recording a machine verdict on the user-intent axis. This path
+			// is cold in production (onJobHopeless is always wired by the
+			// real caller); an honest log is what's left to do without it.
+			d.log.Warn("job hopeless but no onJobHopeless callback wired; "+
+				"job will continue to be walked and re-evaluated every pass",
+				"job", jobID)
 		}
 	}
 
@@ -336,7 +396,16 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 	// scenario where in-flight articles for a hopeless/completed job
 	// finish after DisconnectAll was already called (those workers
 	// missed the earlier signal because they were busy).
-	if plan.dispatched == 0 && !d.hasDownloadableJobs() && d.hasActiveConnections() {
+	//
+	// plan.downloadable is what buildDispatchPlan already learned while
+	// walking, at no extra cost; hasDownloadableJobs is called only when
+	// that walk never ran (serversWereFull), which is the one case
+	// downloadable was never computed for -- see both doc comments.
+	downloadable := plan.downloadable
+	if plan.serversWereFull {
+		downloadable = d.hasDownloadableJobs()
+	}
+	if plan.dispatched == 0 && !downloadable && d.hasActiveConnections() {
 		d.DisconnectAll()
 	}
 }
@@ -724,11 +793,13 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	name := srv.Cfg().Name
 
 	// Per-job pause check: the article was queued into workCh before
-	// the user clicked pause on this specific job. Check now before
-	// starting any network I/O. j.Intent(), not a constants.Status: per-job
-	// pause is job.IntentPause (PauseJob), and constants.Status is
-	// write-only.
-	if j, ok := d.jobs.Job(req.jobID); ok && j.Intent() == job.IntentPause {
+	// the user clicked pause (or cancel) on this specific job. Check now
+	// before starting any network I/O. j.Intent(), not a constants.Status:
+	// per-job pause/cancel is job.Intent (PauseJob/sched's cancel latch), and
+	// constants.Status is write-only. != IntentRun rather than ==
+	// IntentPause for the same reason as forEachUnfinishedArticle's check:
+	// a cancelled job must drop its in-flight article too.
+	if j, ok := d.jobs.Job(req.jobID); ok && j.Intent() != job.IntentRun {
 		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
 		d.clearArticleEmitted(req.jobID, req.messageID, req.artIdx)
 		return nil, false
@@ -758,9 +829,10 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			//
 			// Nothing needs clearing here, and the reason is worth stating
 			// because the old comment claimed the opposite: this article has
-			// no Emitted bit set. All three MarkArticleEmittedByIdx sites run
-			// at RESULT-emission time (:145, :697, :720), after the fetch —
-			// what keeps the dispatcher off an article mid-fetch is the
+			// no Emitted bit set. All three markArticleEmitted call sites run
+			// at RESULT-emission time (`grep -n 'd\.markArticleEmitted(' internal/downloader/dispatch.go`
+			// finds lines 368, 940, 958), after the fetch — what keeps the
+			// dispatcher off an article mid-fetch is the
 			// in-flight tracker (tryDispatch's InFlightLocked guard), and
 			// handleRequest's deferred clearInFlight releases it.
 			//

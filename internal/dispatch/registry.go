@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -30,6 +31,17 @@ type Header struct {
 	Category string
 	Priority int
 	Bytes    int64
+	// Added is when the job was added to the queue, supplied by the caller
+	// at Add like the other Header fields. It exists for
+	// internal/downloader's propagation-delay gate (skip a freshly-posted
+	// file until it has had time to reach every server), which used to key
+	// on queue.UnfinishedArticle.JobAdded before the swap; job.Job itself
+	// carries no such timestamp. The zero value is a legal "unknown" (a
+	// caller that has not been updated to supply it yet), and reads as "not
+	// recently added" -- propagation delay does not hold back a job whose
+	// Added is zero, matching Persisted's on-disk default of 0
+	// (internal/dispatch/store, migration 005_dispatch_added.sql).
+	Added time.Time
 }
 
 // Row is one line of a queue listing: the scheduling view sched computes,

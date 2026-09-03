@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/telemetry"
@@ -71,7 +73,7 @@ func fakeArticle(msgID string) unfinishedArticle {
 	return unfinishedArticle{
 		jobID:     "j1",
 		jobIntent: job.IntentRun,
-		fileDate:  time.Now().Add(-time.Hour),
+		jobAdded:  time.Now().Add(-time.Hour),
 		messageID: msgID,
 		fileIdx:   0,
 		artIdx:    0,
@@ -411,20 +413,47 @@ func TestBuildDispatchPlan_SkipsPausedJobs(t *testing.T) {
 	}
 }
 
-// Propagation delay holds back a freshly-posted file.
-func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
+// A cancelled job must stop being dispatched too, not just a paused one.
+// sched latches IntentCancel and settles the job, but it stays Fetching and
+// unsettled until it yields (internal/sched/cancel.go,
+// internal/sched/doc.go's transient "Fetching, no lease, IntentCancel"
+// shape) -- until then a `== IntentPause` check (rather than `!=
+// IntentRun`) would keep offering its articles, burning bandwidth and
+// provider allowance on a download the user already cancelled.
+func TestBuildDispatchPlan_SkipsCancelledJobs(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.jobs = newFakeJobSource()
-	tj := newTestJob(t, "fresh-post-job", []testFile{{
+	cancelledJob := makeJobWithArticles(t, []string{"c@h"})
+	if err := cancelledJob.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	d.jobs.(*fakeJobSource).add(cancelledJob)
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 for cancelled job", plan.dispatched)
+	}
+}
+
+// Propagation delay holds back a job added to the queue just now.
+func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	q := newFakeJobSource()
+	d.jobs = q
+	tj := newTestJob(t, "fresh-added-job", []testFile{{
 		Subject:  "test.bin",
-		Date:     time.Now(), // posted just now; this holds it back
 		Bytes:    100,
 		Articles: []testArticle{{ID: "new@h", Bytes: 100, Number: 1}},
 	}})
-	d.jobs.(*fakeJobSource).add(tj)
+	q.addWithHeader(tj, dispatch.Header{Added: time.Now()}) // added just now; this holds it back
 	opts := defaultOpts(d.servers)
 	opts.propagationDelay = 1 * time.Hour
 
@@ -432,6 +461,34 @@ func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
 
 	if plan.dispatched != 0 {
 		t.Errorf("dispatched = %d, want 0 (prop delay not yet elapsed)", plan.dispatched)
+	}
+}
+
+// A zero Header.Added (a job registered before propagation delay carried
+// this field, or a caller that has not been updated to supply it) must not
+// be read as "just added" -- that would hold every such job back forever,
+// which is exactly backwards from what the setting is for. See
+// dispatch.Header's doc comment on the zero-value contract.
+func TestBuildDispatchPlan_PropagationDelayZeroAddedDoesNotHoldBack(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	q := newFakeJobSource()
+	d.jobs = q
+	tj := newTestJob(t, "zero-added-job", []testFile{{
+		Subject:  "test.bin",
+		Bytes:    100,
+		Articles: []testArticle{{ID: "new@h", Bytes: 100, Number: 1}},
+	}})
+	q.add(tj) // zero Header, so Header.Added is the zero time.Time
+	opts := defaultOpts(d.servers)
+	opts.propagationDelay = 1 * time.Hour
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if plan.dispatched != 1 {
+		t.Errorf("dispatched = %d, want 1 (a zero Added must not be read as \"just added\")", plan.dispatched)
 	}
 }
 
@@ -522,7 +579,7 @@ func TestBuildDispatchPlan_UnrecognizedPar2KeepsDispatching(t *testing.T) {
 	}
 }
 
-// Normal job gets dispatched and appears in activeJobs.
+// Normal job gets dispatched and marks the plan downloadable.
 func TestBuildDispatchPlan_NormalJobDispatched(t *testing.T) {
 	t.Parallel()
 
@@ -538,8 +595,76 @@ func TestBuildDispatchPlan_NormalJobDispatched(t *testing.T) {
 	if plan.dispatched != 1 {
 		t.Errorf("dispatched = %d, want 1", plan.dispatched)
 	}
-	if _, ok := plan.activeJobs[job.ID()]; !ok {
-		t.Error("activeJobs does not contain the job ID")
+	if !plan.downloadable {
+		t.Error("plan.downloadable = false, want true for a job with an IntentRun article offered")
+	}
+}
+
+// A resident job that has moved past Fetching (Assessing here) must not be
+// offered: its articles are not what this package's own state is tracking
+// downloadable work by. newTestJob/makeJobWithArticles always land at
+// Fetching (BeginAttempt opens there), so without this test the
+// `j.State().State != job.Fetching` guard in forEachUnfinishedArticle is
+// never exercised on its false arm -- see testdata/fetching_gate.spec, which
+// mutates it to `false` (never true, i.e. never skip) and requires this test
+// to catch the resulting over-offer.
+func TestBuildDispatchPlan_SkipsNonFetchingJob(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	q := newFakeJobSource()
+	d.jobs = q
+	tj := makeJobWithArticles(t, []string{"a@h"})
+	if err := tj.Transition(job.Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	q.add(tj)
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 for a job at Assessing, not Fetching", plan.dispatched)
+	}
+}
+
+// hasDownloadableJobs carries the same Fetching gate, at its own call site
+// (applyDispatchPlan's serversWereFull fallback) -- pinned separately since
+// it is a distinct condition in the source, not a shared helper.
+func TestHasDownloadableJobs_SkipsNonFetchingJob(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader(nil)
+	q := newFakeJobSource()
+	d.jobs = q
+	tj := makeJobWithArticles(t, []string{"a@h"})
+	if err := tj.Transition(job.Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	q.add(tj)
+
+	if d.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs = true, want false for a job at Assessing, not Fetching")
+	}
+}
+
+// hasDownloadableJobs must not count a cancelled job as downloadable either
+// -- same reasoning as TestBuildDispatchPlan_SkipsCancelledJobs.
+func TestHasDownloadableJobs_SkipsCancelledJobs(t *testing.T) {
+	t.Parallel()
+
+	d := newDispatchDownloader(nil)
+	q := newFakeJobSource()
+	d.jobs = q
+	tj := makeJobWithArticles(t, []string{"a@h"})
+	if err := tj.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	q.add(tj)
+
+	if d.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs = true, want false for a cancelled job")
 	}
 }
 
@@ -548,16 +673,16 @@ func TestBuildDispatchPlan_PropagationDelayZeroDoesNotHoldBackFutureJob(t *testi
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.jobs = newFakeJobSource()
-	// The file's NZB posting date is in the future relative to opts.now.
+	q := newFakeJobSource()
+	d.jobs = q
+	// Added is in the future relative to opts.now.
 	now := time.Now()
-	tj := newTestJob(t, "future-post-job", []testFile{{
+	tj := newTestJob(t, "future-added-job", []testFile{{
 		Subject:  "test.bin",
-		Date:     now.Add(5 * time.Minute),
 		Bytes:    100,
 		Articles: []testArticle{{ID: "new@h", Bytes: 100, Number: 1}},
 	}})
-	d.jobs.(*fakeJobSource).add(tj)
+	q.addWithHeader(tj, dispatch.Header{Added: now.Add(5 * time.Minute)})
 	opts := defaultOpts(d.servers)
 	opts.now = now
 	opts.propagationDelay = 0 // disabled
@@ -638,11 +763,18 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 		// correct
 	}
 
-	// Case 2: plan.dispatched == 0, but queue has downloadable jobs. Should NOT disconnect.
+	// Case 2: plan.dispatched == 0, but the registry has downloadable jobs.
+	// Should NOT disconnect. plan.serversWereFull forces applyDispatchPlan
+	// down the hasDownloadableJobs fallback path -- a hand-built dispatchPlan
+	// never ran buildDispatchPlan's walk, so plan.downloadable was never
+	// computed and defaults to false; serversWereFull is what tells
+	// applyDispatchPlan not to trust that default and re-derive the answer
+	// from the live registry instead.
 	job := makeJobWithArticles(t, []string{"msg1@h"})
 	d.jobs.(*fakeJobSource).add(job)
 	plan = dispatchPlan{
-		dispatched: 0,
+		dispatched:      0,
+		serversWereFull: true,
 	}
 	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
 	select {
@@ -814,15 +946,26 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 		t.Errorf("expected hopeless callback to fire for %s, got %s", tj.ID(), callbackJob)
 	}
 
-	// 3. Test plan.hopelessJobs fallback (without callback -> should pause the job)
+	// 3. Test plan.hopelessJobs fallback (without callback -> logs a warning,
+	// does NOT touch Intent). Recording a machine verdict on the user-intent
+	// axis would show the job as user-paused and let a Resume re-arm a
+	// download already declared beyond repair -- see the ruling recorded in
+	// applyDispatchPlan's comment at the hopeless-fallback branch.
+	var logged bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	beforeIntent := tj.Intent()
 	plan = dispatchPlan{
 		hopelessJobs: map[string]struct{}{
 			tj.ID(): {},
 		},
 	}
 	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{}) // no callback
-	if tj.Intent() != job.IntentPause {
-		t.Errorf("expected job intent to be IntentPause, got %v", tj.Intent())
+	if tj.Intent() != beforeIntent {
+		t.Errorf("hopeless fallback changed job Intent from %v to %v; the user-intent axis "+
+			"must not record a machine verdict", beforeIntent, tj.Intent())
+	}
+	if !strings.Contains(logged.String(), "no onJobHopeless callback wired") {
+		t.Errorf("expected a warning naming the missing onJobHopeless callback; log was %q", logged.String())
 	}
 }
 
@@ -1070,6 +1213,42 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Error("expected fetchArticle to return nil, false on paused job")
+	}
+
+	// 3. Job cancelled status check coverage -- same door as pause
+	// (`!= IntentRun`, not `== IntentPause`), so an article already in
+	// flight when a job is cancelled must be dropped the same way.
+	tj2 := newTestJob(t, "cancelled-job", []testFile{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []testArticle{
+			{ID: "msg2", Bytes: 100, Number: 1},
+		}},
+	})
+	if err := tj2.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	q.add(tj2)
+	// Mark the article Emitted first so the assertion below can tell the
+	// cancel-check branch apart from the (also nil,false) dial-failure
+	// path this fixture's fake server config would otherwise fall through
+	// to: only the cancel/pause check clears Emitted; a dial failure does
+	// not touch it. Without this, the mutation spec's cancel mutation
+	// SURVIVES -- confirmed by running it: reverting the check to `==
+	// IntentPause` still returned (nil, false), just via the dial failure,
+	// and this assertion alone did not notice the difference.
+	if err := tj2.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+
+	req.jobID = tj2.ID()
+	req.messageID = "msg2"
+	req.artIdx = 0
+	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
+	if ok || body != nil {
+		t.Error("expected fetchArticle to return nil, false on cancelled job")
+	}
+	if tj2.Progress().ArticleEmitted(0) {
+		t.Error("expected the cancel check to clear the Emitted bit; it is still set, " +
+			"meaning fetchArticle took the dial-failure path instead of the cancel path")
 	}
 }
 

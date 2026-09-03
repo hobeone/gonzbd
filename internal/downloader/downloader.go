@@ -517,6 +517,20 @@ func (d *Downloader) Resume() {
 	d.signalDispatch()
 }
 
+// Nudge pokes the main loop to re-scan for dispatchable work immediately,
+// rather than waiting for the next worker completion or the periodic
+// ticker (run's doc comment).
+//
+// This is the entry point a caller uses after changing something this
+// package cannot observe on its own: JobSource has no Notify equivalent
+// (dispatch.Dispatcher's own wake channel is unexported), so a job
+// registered, resumed, or per-job-paused/-resumed through JobSource is
+// invisible to this package until Nudge is called or the ticker fires.
+// Same shape as the three existing internal callers of signalDispatch —
+// Start, Resume, UnblockServer — just exported so a caller outside this
+// package can reach it too.
+func (d *Downloader) Nudge() { d.signalDispatch() }
+
 // SetSpeedLimit sets the aggregate byte-rate cap in bytes per second.
 // Zero or negative disables throttling. The value takes effect on
 // the next article fetch across all workers. The meter is flushed so
@@ -831,11 +845,13 @@ func (d *Downloader) checkExpiredPenalties() {
 // was added, resumed or reordered. JobSource has no equivalent: it wraps
 // *dispatch.Dispatcher, whose own wake channel (`wake chan struct{}`,
 // internal/dispatch/dispatch.go) is unexported, so this package cannot
-// select on it. The periodic ticker below is what discovers such changes
-// instead — it already existed to notice expired server penalties with no
-// active workers, and now also covers "a job was registered or resumed
-// while nothing else woke the loop", at the cost of up to one ticker
-// interval of added latency versus an immediate wake.
+// select on it. Nudge (exported below) is the replacement entry point — a
+// caller that adds, resumes, or per-job pauses/resumes a job through
+// JobSource calls Nudge afterward to trigger an immediate re-scan, the same
+// way it already had to call Resume to wake a globally-paused downloader.
+// Absent a Nudge call, the periodic ticker below still discovers such
+// changes eventually, at the cost of up to one ticker interval of added
+// latency versus an immediate wake.
 //
 // The loop must stay tight: all heavy lifting (per-article iteration,
 // send to workCh) happens inside dispatchPass, which itself must not
