@@ -17,27 +17,38 @@ type LeaseID uint64
 // refuses it.
 const LeaseUnset LeaseID = 0
 
-// Lease is the admission token for the correctness loop. Prior spec §6:
-// pool-A capacity, the resident Manifest and the StorageBarrier have exactly
-// one lifetime between them — from a job beginning to fetch until it crosses
-// the irreversible boundary — and "three things with one lifetime are one
-// object".
+// Lease is the admission token for the correctness loop.
 //
 // Holding one is what makes a job RUNNABLE in Fetching, Assessing and
 // Repairing; it is surrendered at the crossing, and Extracting and Finalizing
 // hold only a compute slot. That is why running-ness is a question about what
 // a job HOLDS rather than about pool occupancy — see the design's §3.4.
 //
-// The manifest and barrier fields arrive in Half B2. The pool that ISSUES
-// these arrives earlier, in B1, which is why the id below lands now and the
-// payload later. They are named here rather than left out because §6's
-// argument is that the three share a lifetime and are therefore one object;
-// an opaque placeholder now would be a second representation of the same
-// thing, which is the ownership violation §6 exists to retire.
+// A lease is admission to the correctness loop, and its id is the whole of it.
+//
+// This type reserved `manifest *Manifest` and `barrier *StorageBarrier` fields
+// for "Half B2", on prior spec §6's argument that the three share a lifetime.
+// Neither arrived, and neither should:
+//
+//   - The BARRIER is process-level, not per-lease. §10.1's banner in
+//     2026-08-25-job-lifecycle-design.md records the refutation: one Barrier is
+//     built in app.New with a cross-job overlapKey map, and reconciling
+//     per-lease would destroy durable records for jobs in post-processing.
+//
+//   - The MANIFEST is keyed on holding what a position requires, not on
+//     holding a lease. grantFor runs under Queue.mu and Hydrate does disk I/O,
+//     so there is no manifest to install at grant time
+//     (internal/dispatch/tick.go, reconcileResidency). And post-processing
+//     reads the manifest at Extracting/Finalizing, where needsLease is false
+//     (internal/sched/requirements.go) — four sites, `grep -n 'Manifest()'
+//     internal/postproc/*.go | grep -v _test` — so a lease-gated manifest
+//     would be unreadable exactly where the stage that verifies CRCs needs it.
+//
+// Residency lives on job.Job — see content.go's AttachContent/Evict pair — and
+// is driven by dispatch.Residency against RenderView.Holds. Do not reintroduce
+// either field here.
 type Lease struct {
 	id LeaseID
-	// manifest *Manifest        // Half B2
-	// barrier  *StorageBarrier  // Half B2
 }
 
 // NewLease mints a lease with the given id. The caller — the Queue's pool — is

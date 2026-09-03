@@ -712,18 +712,6 @@ func (p JobPhase) String() string {
 	}
 }
 
-const (
-	// earlyAbortSample is the number of articles that must resolve
-	// before the early-abort heuristic fires. Too small → false
-	// positives on slow starts; too large → wasted bandwidth.
-	earlyAbortSample = 10
-
-	// earlyAbortThreshold is the failure rate (0.0–1.0) above which
-	// the job is considered DMCA'd or expired. 80% matches SABnzbd's
-	// heuristic for fully-removed NZBs.
-	earlyAbortThreshold = 0.80
-)
-
 // IsEarlyAbort returns true if the job should be aborted based on the
 // first-article failure rate. It checks after earlyAbortSample articles
 // have resolved: if 80%+ failed, the download is likely DMCA'd or
@@ -732,29 +720,6 @@ const (
 // Must be called under the queue's write lock.
 func (j *Job) IsEarlyAbort() bool {
 	return j.progress.isEarlyAbort()
-}
-
-// JobFile is the intermediate, NZB-parsed shape NewJob builds before
-// converting into a Manifest/JobProgress pair. It is not part of Job's
-// runtime state — construction scaffolding only.
-type JobFile struct {
-	Subject        string
-	Date           time.Time
-	Articles       []JobArticle
-	Bytes          int64
-	IsPar2Recovery bool
-	// Deferred marks a file whose articles are intentionally held back from
-	// dispatch (on-demand par2: recovery volumes not downloaded until repair
-	// is shown to be needed).
-	Deferred bool
-}
-
-// JobArticle is the intermediate, NZB-parsed shape of a single article,
-// consumed by newManifest during construction.
-type JobArticle struct {
-	ID     string
-	Bytes  int
-	Number int
 }
 
 // AddOptions carries the call-site arguments for NewJob. Zero values

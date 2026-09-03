@@ -1,4 +1,4 @@
-package queue
+package job
 
 // RepairState is the verdict on whether a job's damaged content can be
 // rebuilt from its par2 recovery capacity.

@@ -1,4 +1,4 @@
-package queue
+package job
 
 import (
 	"encoding/json"
@@ -145,6 +145,77 @@ type FileProgress struct {
 	AssembledCRC32 uint32
 }
 
+// FileMeta is the per-file shape Load needs to size a non-resident job's
+// progress without a manifest. It carries Bytes, Complete, and Fetch
+// alongside the article count for the bitsets.
+type FileMeta struct {
+	ArticleCount int
+	Bytes        int64
+	Complete     bool
+	// Fetch is the file's download intent, restored from
+	// job_files.fetch_policy. See FetchPolicy.
+	Fetch FetchPolicy
+	// IsPar2 marks the file as par2 — index or recovery volume — rather than
+	// content. Classified from job_files.subject rather than read from a
+	// column: is_par2_recovery flags only volumes, and the index is exactly
+	// the case that matters here. See FileProgress.IsPar2.
+	IsPar2 bool
+	// BytesDownloaded and FailedBytes are what let a NON-RESIDENT job report
+	// the same byte figures a resident one does. A resident job derives both
+	// from its manifest and article bitmaps in JobProgress.recompute; a job
+	// whose manifest has been evicted has neither, so without these it reports
+	// zero failed bytes and an inflated remaining figure — the residency
+	// parity TestRemainingBytes_IdenticalResidentAndNonResident exists to
+	// forbid.
+	//
+	// Both come from job_files, each caching a sum over the same article
+	// resolution and written by the same statement, so neither can be
+	// persisted out of step with the rest of its row. FailedBytes has no other
+	// home available: failed_articles records WHICH articles failed and never
+	// how many bytes they were, and a permanently failed article never decodes
+	// so no durable run covers it either.
+	//
+	// BytesDownloaded could be derived from the durability record and once was
+	// read from it. That was the wrong QUANTITY rather than an unavailable
+	// one. This field is compared against Bytes, the encoded NZB per-file
+	// total, so it must count ENCODED bytes; a run's Length is the DECODED
+	// payload an fsync proved. Seeding one from the other overstated a
+	// non-resident job's remaining bytes by the encoding overhead.
+	//
+	// Both are caches and neither is authoritative: hydration runs
+	// JobProgress.recompute, which ASSIGNS these figures from the manifest and
+	// the bitmaps and so supersedes whatever was seeded here (S4).
+	BytesDownloaded int64
+	FailedBytes     int64
+	// Done and Failed are the file's per-article resolved state, DERIVED from
+	// durable_runs and failed_articles — the same resolution the byte figures
+	// above sum over.
+	//
+	// They exist for the same reason those do, one level down. Without them a
+	// non-resident job's JobProgress had every article Pending, so a restart
+	// showed a half-downloaded Queued or Paused job with EVERY article
+	// remaining until it was promoted — and after the byte figures were
+	// cached, the two disagreed in kind: bytes right, article count wrong.
+	//
+	// Indexed FILE-LOCALLY, length ArticleCount, while a run and a
+	// failed-article row both name articles GLOBALLY — SQLiteStore.fillResolution
+	// converts between the two using the running sum of the article counts
+	// above, which is how it manages without a manifest. Nil means the job had
+	// nothing recorded, which reads as "nothing resolved": the safe direction
+	// under S3.
+	//
+	// failed implies done, and this is where that matters most.
+	// newJobProgressSized reads Failed[i] only inside the Done[i] branch, so a
+	// failed article with Done clear would come back Pending and be re-fetched
+	// on every restart, forever.
+	//
+	// Caches, not authorities, on the same terms as the byte figures:
+	// hydration runs JobProgress.recompute, which re-derives everything from
+	// the manifest and the live bitmaps (S4).
+	Done   []bool
+	Failed []bool
+}
+
 // fileMetaFromManifest projects m into the same per-file shape
 // Store.ArticleCountsByJob returns, so newJobProgress and
 // newJobProgressSized are one code path rather than two that must be kept
@@ -182,6 +253,111 @@ func fileMetaFromManifest(m *Manifest) []FileMeta {
 // verified against.
 func newJobProgress(m *Manifest) *JobProgress {
 	return newJobProgressSized(fileMetaFromManifest(m))
+}
+
+// newJobProgressSized builds a JobProgress sized to files (one element per
+// file) without requiring a resident Manifest — see Store.ArticleCountsByJob.
+// Used by Load to give a non-resident job (StatusQueued/StatusPaused at
+// restart) a real JobProgress instead of leaving it nil.
+//
+// The done and failed bits ARE restored, DERIVED from durable_runs and
+// failed_articles by Store.ArticleCountsByJob and delivered here as
+// FileMeta.Done/Failed. Without them every article read as still to fetch, and
+// a restart showed a half-downloaded Queued or Paused job with EVERY article
+// remaining until it was promoted. Once the byte figures were cached the two
+// even disagreed in kind: bytes right, article count wrong.
+//
+// The Done branch below is where that derivation has to be read carefully:
+// f.Failed[i] is applied only INSIDE it, so a resolution that left Done clear
+// for a failed article would make it Pending here and re-fetch it on every
+// restart. resolveArticles sets both, which is why failed implies done there.
+//
+// EMITTED genuinely does start clear, and must: it is transient per-process
+// state about what a downloader has in flight, and nothing that survived a
+// restart is in flight.
+//
+// Per-file Bytes/Complete/Fetch are carried so RemainingBytes (see
+// derivedRemainingBytes) has the file sizes it needs at any residency,
+// including a job that restarted non-resident. They replace the pre-summed
+// figure this used to take from Store.RemainingBytesByJob.
+//
+// BytesDownloaded and FailedBytes are seeded from FileMeta, and that is what
+// makes a non-resident job report the same figures a resident one does. Both
+// arrive from job_files — bytes_downloaded and failed_bytes, each caching a
+// sum over the same article resolution — which FileMeta's own doc explains,
+// including why the first is not derived from the durability record's own
+// lengths.
+//
+// Seeding them here does NOT recreate the two-writer defect that removed the
+// old columns (#306, #337). Nothing maintains these fields in parallel with
+// the facts: promotion calls Store.RestoreJobProgress, which ends in
+// JobProgress.recompute, and recompute ASSIGNS BytesDownloaded, FailedBytes and
+// the job-level failedBytes from the manifest and the article bitmaps rather
+// than adding to them. So the seed is superseded wholesale the moment real
+// per-article state exists, which is S4 — the recomputation is correct by
+// definition — rather than a second copy kept in step by hand. That assignment
+// is also what keeps TestFailedBytes_NotDoubledByHydration true: a seed and a
+// replay cannot stack.
+//
+// The byte figures still have to be seeded even now that the bits are
+// restored, and the reason is worth being exact about: a bit says WHICH
+// articles resolved, not how many bytes they were. Per-article sizes live in
+// the manifest, which is precisely what a non-resident job does not have, so
+// no derivation over these bitmaps can produce a byte figure here.
+func newJobProgressSized(files []FileMeta) *JobProgress {
+	total := 0
+	for _, f := range files {
+		total += f.ArticleCount
+	}
+	p := &JobProgress{
+		done:            newBitset(total),
+		failed:          newBitset(total),
+		emitted:         newBitset(total),
+		files:           make([]FileProgress, len(files)),
+		pendingArticles: total,
+	}
+	var failedTotal int64
+	// base is the file's first GLOBAL article index. The manifest derives the
+	// same number by accumulating each file's article count in order
+	// (fileArticleOffsets), and files arrive here ordered by file_index — so
+	// the running sum reproduces it without a manifest to ask.
+	base := 0
+	for fi, f := range files {
+		p.files[fi].Pending = f.ArticleCount
+		p.files[fi].Complete = f.Complete
+		p.files[fi].Fetch = f.Fetch
+		p.files[fi].IsPar2 = f.IsPar2
+		p.files[fi].Bytes = f.Bytes
+		p.files[fi].BytesDownloaded = f.BytesDownloaded
+		p.files[fi].FailedBytes = f.FailedBytes
+		// The per-article state, so a non-resident job does not report every
+		// article as still to fetch. Set as BITS rather than through markDone
+		// and markFailed: those need a manifest for the byte arithmetic, and
+		// the byte figures are already seeded from their own columns above —
+		// running them here would double-count failedBytes.
+		for i := range f.ArticleCount {
+			if i >= len(f.Done) || !f.Done[i] {
+				continue
+			}
+			p.done.Set(base + i)
+			p.files[fi].Pending--
+			p.pendingArticles--
+			p.articlesResolved++
+			if i < len(f.Failed) && f.Failed[i] {
+				p.failed.Set(base + i)
+				p.articlesFailed++
+			}
+		}
+		base += f.ArticleCount
+		// Summed over every file including deferred ones, matching what
+		// recompute does, so the job-level figure agrees with the per-file
+		// ones at both residencies. ExpectedBytes' identity
+		// (downloaded = expected - failed - remaining) depends on the two
+		// sides using the same exclusion set.
+		failedTotal += f.FailedBytes
+	}
+	p.failedBytes = failedTotal
+	return p
 }
 
 // ArticleDone reports whether global article index i has resolved (success or failure).
@@ -1055,6 +1231,18 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	p.par2ReleaseReason = pj.Par2ReleaseReason
 	return nil
 }
+
+const (
+	// earlyAbortSample is the number of articles that must resolve
+	// before the early-abort heuristic fires. Too small → false
+	// positives on slow starts; too large → wasted bandwidth.
+	earlyAbortSample = 10
+
+	// earlyAbortThreshold is the failure rate (0.0–1.0) above which
+	// the job is considered DMCA'd or expired. 80% matches SABnzbd's
+	// heuristic for fully-removed NZBs.
+	earlyAbortThreshold = 0.80
+)
 
 // isEarlyAbort returns true if the job should be aborted based on the
 // first-article failure rate. See Job.IsEarlyAbort for the heuristic.

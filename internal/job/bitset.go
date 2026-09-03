@@ -1,4 +1,4 @@
-package queue
+package job
 
 // bitset is a compact fixed-size bit vector for per-article flags.
 //

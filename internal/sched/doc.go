@@ -1,7 +1,11 @@
 // Package sched holds the scheduling decisions for the job lifecycle: which
 // jobs may run, what they are waiting for, and what moves them.
 //
-// It depends on internal/job and nothing else. Every decision is a function of
+// It depends on internal/job and nothing else. internal/job's own dependency
+// set widened when the manifest and progress tiers moved into it — it now
+// reaches internal/nzb for one pure Message-ID predicate, alongside
+// internal/constants — which changes what this package transitively pulls in
+// but not what it may name. Every decision is a function of
 // a job.Snapshot — a value, taken under one lock — so no decision can acquire a
 // resource as a side effect of being asked. Acquisition happens in exactly one
 // place, grantFor.

@@ -118,13 +118,14 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // once in New and never written again, so ID, Name and Policy read them
 // without taking the lock.
 //
-// What is established now: a Job method never calls any other repository
-// package's method, because this package imports nothing from the rest of
-// the daemon except internal/constants, imported only by sabnzbd.go among
-// this package's non-test sources — see doc.go and
+// What is established now: a Job method never calls into the daemon's
+// coordinating layers, because this package imports nothing from the rest of
+// the repository except internal/constants (sabnzbd.go alone, among this
+// package's non-test sources — see doc.go and
 // TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go), which is what
 // checks that; `go list -deps` cannot, since it does not see test files, and
-// sabnzbd_test.go itself imports internal/constants. In particular Job
+// sabnzbd_test.go itself imports internal/constants) and internal/nzb
+// (manifest.go alone, for one pure Message-ID predicate). In particular Job
 // cannot call Queue, because Job cannot see Queue.
 //
 // The ordering half of this is now enforced, not merely intent: internal/sched
@@ -166,6 +167,17 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // returns nothing — the bracketed space is so this citation, quoted
 // verbatim, does not match its own quoted text).
 type Job struct {
+	// mu guards the lifecycle tier — attempts, intent, lease.
+	//
+	// LOCK ORDER: mu before contentMu, never the reverse. No method in this
+	// package takes both today: every door that takes mu (withOpenAttempt,
+	// Grant, Surrender, SetIntent, Snapshot, State, HasRun, Attempts,
+	// AttemptAt) touches only the three fields above, and every door that
+	// takes contentMu (content.go) touches only the pair and the scalars.
+	// The order is stated so that a future reader — a checkpointer wanting
+	// both a StateView and a progress figure — takes them in this sequence
+	// rather than inventing the reverse one; taking snapshots SEQUENTIALLY,
+	// each under its own lock, is preferred to nesting at all.
 	mu sync.RWMutex
 
 	id     string
@@ -198,6 +210,31 @@ type Job struct {
 	// exported Surrender — see surrenderLocked's comment for why the
 	// exported form would deadlock from either door.
 	lease *Lease
+
+	// contentMu guards the manifest/progress POINTER PAIR, not their contents.
+	// Eviction and hydration swap both pointers together; a reader holding a
+	// *Job but not this lock would race the swap (the defect #263 records
+	// against internal/queue's residencyMu, which this replaces).
+	//
+	// It is a value, not a pointer, so every construction path gets a usable
+	// mutex with no initializer to forget.
+	//
+	// LOCK ORDER: mu before contentMu, never the reverse — see mu's comment
+	// for the enumeration behind that and for why sequential snapshots are
+	// preferred to nesting the two at all.
+	contentMu sync.RWMutex
+	manifest  *Manifest
+	progress  *JobProgress
+
+	// Manifest-derived scalars, guarded by contentMu alongside the pair they
+	// summarize. They are set by AttachContent/RestoreContent — the same two
+	// writers as the pair — so a reporting path can read a job's totals at any
+	// residency, including after Evict drops the manifest.
+	totalBytes    int64
+	numFiles      int
+	numArticles   int
+	recoveryBytes int64
+	recoveryFiles int
 }
 
 // New builds a job that has never run. It has no attempt record, because
