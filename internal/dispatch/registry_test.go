@@ -312,3 +312,38 @@ func TestAdd_RefusedWhileRestoring(t *testing.T) {
 		}
 	}
 }
+
+// TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest is #436: a header-tier
+// caller must not pay manifest-tier cost. It asserts the cheap path exists and
+// agrees with List, so the two cannot drift.
+func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Add(job.New("a", "Job A", job.Policy{}), Header{Name: "Job A"}); err != nil {
+		t.Fatalf("Add(a): %v", err)
+	}
+	if err := d.Add(job.New("b", "Job B", job.Policy{}), Header{Name: "Job B"}); err != nil {
+		t.Fatalf("Add(b): %v", err)
+	}
+
+	row, ok := d.Row("b")
+	if !ok {
+		t.Fatal("Row(b) must find the job")
+	}
+	if row.ID != "b" || row.Header.Name != "Job B" {
+		t.Fatalf("Row(b) = %+v, want ID b / Name Job B", row)
+	}
+
+	var want Row
+	for _, r := range d.List() {
+		if r.ID == "b" {
+			want = r
+		}
+	}
+	if row.View != want.View {
+		t.Fatalf("Row and List disagree for b:\n Row = %+v\nList = %+v", row.View, want.View)
+	}
+
+	if _, ok := d.Row("nope"); ok {
+		t.Fatal("Row of an unknown id must report not-found")
+	}
+}
