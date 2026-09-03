@@ -33,7 +33,15 @@ type Options struct {
 	OnJobDone func(*Job)
 
 	// StatusUpdater is called to update the persistent status of the job in
-	// the active queue. Usually maps to queue.SetStatus.
+	// the active queue, for external consumption (e.g. the UI). It renders a
+	// constants.Status from stage.Name() below — it does not read one off a
+	// job — so it stays legal under the write-only rule for that type. Used
+	// to map to internal/queue.Queue.SetStatus, which is on
+	// docs/superpowers/plans/2026-09-03-job-lifecycle-swap-plan.md's §15
+	// Deletes list; nothing in internal/dispatch replaces it as of this
+	// branch (`grep -rn 'func.*SetStatus' internal/dispatch/` returns
+	// nothing), so this field's caller (internal/app) still needs to supply
+	// its own wiring.
 	StatusUpdater func(string, constants.Status)
 
 	// OnOutput is called when a subprocess emits a line of output during
@@ -463,24 +471,23 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
 	// Other stages (deobfuscate, sort, finalize, script) always run.
 	//
-	// Gated on job.Job.Policy() rather than job.Meta.PP: Policy is bound to
-	// job.Job once, at construction (job.New's third argument), and read-only
-	// thereafter, so it cannot drift from what job.Job itself was built with.
-	// job.Meta.PP is a plain caller-set field carrying the same information a
-	// second time — kept only for what needs the raw upstream integer rather
-	// than the derived booleans (SAB_PP_STATUS's PPFlags, and the log line
-	// below), never for a decision. See job.PolicyFromPP for the mapping this
-	// mirrors: Verify/Repair at pp>=1, Unpack at pp>=2.
+	// Gated on job.Job.Policy() rather than a stored PP int: Policy is bound
+	// to job.Job once, at construction (job.New's third argument), and
+	// read-only thereafter, so it cannot drift from what job.Job itself was
+	// built with. ppFromPolicy derives the raw integer for the log line
+	// below from that same Policy — see shouldSkipForPP's own doc comment
+	// for why this gate is still here at all.
 	if shouldSkipForPP(stage.Name(), job.Job.Policy()) {
+		pp := ppFromPolicy(job.Job.Policy())
 		p.log.Info("postproc: skipping stage (PP level)",
 			"stage", stage.Name(),
 			"job", job.Job.ID(),
-			"pp", job.Meta.PP,
+			"pp", pp,
 		)
 		return StageLogEntry{
 			Stage:   stage.Name(),
 			Started: time.Now(),
-			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Meta.PP)},
+			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", pp)},
 		}, false
 	}
 
@@ -683,6 +690,19 @@ func (p *PostProcessor) addHistory(job *Job) {
 // Stages always run: quickcheck (just logging), deobfuscate, sample, sort,
 // finalize, script. Stages gated by policy: repair (needs Repair), unpack
 // (needs Unpack).
+//
+// This function is on docs/superpowers/plans/2026-09-03-job-lifecycle-swap-plan.md's
+// §15 Deletes list (Task 13), whose verification step expects a `git grep`
+// for it to return no output. It is being KEPT here deliberately, past this
+// task: deleting it now would remove PP gating from postproc entirely, with
+// nothing yet in place to replace it. The plan's intended replacement is
+// internal/sched's own policy gating — job/policy.go's Policy.Verify already
+// documents the shape ("At Verify: false the Assessor returns Complete
+// without doing work") — but that gate is not wired into internal/sched as
+// of this branch. Task 13 must not delete this function until that gate
+// exists and actually enforces PP; until then, this is the only thing
+// stopping every job from running repair/unpack regardless of its
+// configured PP level.
 func shouldSkipForPP(stageName string, policy lifecyclejob.Policy) bool {
 	switch stageName {
 	case "quickcheck", "repair":

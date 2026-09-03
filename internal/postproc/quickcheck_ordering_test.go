@@ -20,8 +20,9 @@ import (
 //
 // It used to run the other way: relocate, then verify by matching names
 // against the par2 index. That invalidated exactly the names verification
-// needed, and since postproc.Job carries a *queue.Job snapshot with no writer
-// behind it, this stage had nowhere to record the correction. It compensated
+// needed, and since postproc.Job carries a *job.Job whose JobProgress.Filename
+// has no exported setter this package can reach, this stage had nowhere to
+// record the correction. It compensated
 // with a local rename map — correct, but a second enforcement point for an
 // ordering internal/app enforced separately, which is #494. There is no longer
 // a map to forget to apply, because there is no longer a window in which the

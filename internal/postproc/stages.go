@@ -12,6 +12,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // QuickCheckOutcome is what the quickcheck stage was able to determine about
@@ -127,11 +128,17 @@ type Stage interface {
 // doc comment: "id, name and policy are not guarded"); internal/dispatch's
 // Header adds category/priority/bytes/added for a queue listing
 // (internal/dispatch/registry.go). Neither has room for the NZB-derived and
-// config fields this package still needs to render a script's environment
-// and gate stages: the archive password, the origin URL, the configured
-// script name, the original NZB filename, and the PP level as the exact
-// upstream integer (SAB_PP_STATUS's PPFlags must carry the number a user
-// configured, not just the derived Policy booleans job.Job exposes).
+// config fields this package still needs to render a script's environment:
+// the archive password, the origin URL, the configured script name, and the
+// original NZB filename.
+//
+// Deliberately NOT here: the PP level. It used to be carried as a raw int
+// alongside job.Job's own Policy, which is exactly the two-writer smell
+// Standing Design Rule 2 names — nothing bound the two together, and a
+// caller that built job.Job with one PP level and populated this struct with
+// another would go undetected. ppFromPolicy derives the integer SAB_PP_STATUS
+// needs from job.Job.Policy() instead, so there is one PP fact per job, not
+// two that can drift.
 //
 // The caller (internal/app) populates this before calling Process, the same
 // way it already populates DownloadDir/FinalDir/Sanitize below — this is not
@@ -151,12 +158,32 @@ type JobMeta struct {
 	// URL is the origin URL for URL-grabbed NZBs; empty for uploaded or
 	// watched-dir NZBs.
 	URL string
-	// PP is the post-proc level 0-3 (download / +unpack / +repair / +delete),
-	// the raw upstream integer. runStage's shouldSkipForPP gate uses
-	// job.Job.Policy() instead (Verify/Repair/Unpack booleans derived from
-	// this same number by job.PolicyFromPP) — PP itself survives only for
-	// SAB_PP_STATUS, which scripts expect as the original integer.
-	PP int
+}
+
+// ppFromPolicy derives the raw upstream PP integer from a Policy — the
+// inverse of job.PolicyFromPP. It exists so that everywhere this package
+// needs the exact configured level (SAB_PP_STATUS's PPFlags, and the
+// "Skipped: PP=%d" log line) reads it from job.Job.Policy() — the one fact
+// job.Job was actually built with — rather than from a second,
+// independently settable field. See JobMeta's doc comment for the smell
+// this replaces.
+//
+// job.PolicyFromPP is cumulative and saturating (pp<0 -> Policy{}, pp>3 ->
+// every field true), so recovering the ladder position from the booleans
+// alone is exact for every Policy PolicyFromPP can actually produce: Delete
+// implies pp>=3, Unpack implies pp>=2, Repair (PolicyFromPP always sets it
+// equal to Verify, at pp>=1) implies pp>=1, else pp==0.
+func ppFromPolicy(p job.Policy) int {
+	switch {
+	case p.Delete:
+		return types.PPDelete
+	case p.Unpack:
+		return types.PPUnpack
+	case p.Repair:
+		return types.PPVerify
+	default:
+		return 0
+	}
 }
 
 // Job is the post-processing unit of work.  It wraps the lifecycle Job with

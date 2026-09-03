@@ -1291,8 +1291,9 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		// (job.New's third argument) and cannot be mutated in place, unlike
 		// the old queue.Job.PP field this test used to flip directly -- so a
 		// higher PP level needs a freshly-built job rather than a mutation.
+		// ppFromPolicy derives PP=3 for the "Skipped" line from this same
+		// Policy, so there is nothing else to set here.
 		job.Job = newQueueJob(t, "job1", 3) // PP=3 runs repair
-		job.Meta.PP = 3                     // display only; see shouldSkipForPP's doc comment
 		var stageRan bool
 		mockStage.runFunc = func(ctx context.Context, job *Job) error {
 			stageRan = true

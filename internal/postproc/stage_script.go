@@ -141,7 +141,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		JobName:     job.Job.Name(),
 		Category:    job.Meta.Category,
 		Status:      status,
-		PPFlags:     job.Meta.PP,
+		PPFlags:     ppFromPolicy(job.Job.Policy()),
 		ScriptName:  name,
 		NZOID:       job.Job.ID(),
 		URL:         job.Meta.URL,
