@@ -630,3 +630,33 @@ func TestRun_ShutdownBeatsAPrimedWake(t *testing.T) {
 		}
 	}
 }
+
+// TestStop_ParkErrorRecordsFirstError pins that Stop returns park errors and
+// keeps the first error when multiple jobs fail to park.
+func TestStop_ParkErrorRecordsFirstError(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1 := job.New("j1", "Job 1", job.Policy{})
+	_ = j1.BeginAttempt(testClock())
+	j1.Grant(job.NewLease(9991))
+	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+
+	j2 := job.New("j2", "Job 2", job.Policy{})
+	_ = j2.BeginAttempt(testClock())
+	j2.Grant(job.NewLease(9992))
+	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+
+	err := d.Stop()
+	if err == nil {
+		t.Fatal("Stop() = nil, want park error on foreign lease")
+	}
+	if !strings.Contains(err.Error(), "park j1") {
+		t.Errorf("Stop() error = %v, want to contain first error (park j1)", err)
+	}
+	if strings.Contains(err.Error(), "park j2") {
+		t.Errorf("Stop() error = %v, should keep first error, not be overwritten by park j2", err)
+	}
+}

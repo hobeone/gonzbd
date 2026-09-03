@@ -56,7 +56,8 @@ func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 // pool capacity for the life of the process, and nothing later reclaims it --
 // the tick only walks registered jobs.
 func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
-	d := newTestDispatcher(t, withCaps(1, 1))
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withCaps(1, 1), withStore(st))
 	jA := job.New("a", "Job A", job.PolicyFromPP(3))
 	if err := d.Add(jA, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add(a): %v", err)
@@ -78,6 +79,9 @@ func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 
 	if err := d.Remove(context.Background(), "a"); err != nil {
 		t.Fatalf("Remove: %v", err)
+	}
+	if !st.deleted("a") {
+		t.Fatal("Remove must delete the job from the store")
 	}
 	if _, ok := d.Job("a"); ok {
 		t.Fatal("Remove must deregister the job")
