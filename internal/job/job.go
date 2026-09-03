@@ -196,8 +196,18 @@ type Job struct {
 	// surrenderLocked writing nil. Cross and Finish both settle a job's need
 	// for its lease and both yield it by calling surrenderLocked, not the
 	// exported Surrender — see surrenderLocked's comment for why the
-	// exported form would deadlock from either door.
 	lease *Lease
+
+	// contentMu guards the manifest/progress POINTER PAIR, not their contents.
+	// Eviction and hydration swap both pointers together; a reader holding a
+	// *Job but not this lock would race the swap (the defect #263 records
+	// against internal/queue's residencyMu, which this replaces).
+	//
+	// It is a value, not a pointer, so every construction path gets a usable
+	// mutex with no initializer to forget.
+	contentMu sync.RWMutex
+	manifest  *Manifest
+	progress  *JobProgress
 }
 
 // New builds a job that has never run. It has no attempt record, because
