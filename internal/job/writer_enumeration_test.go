@@ -16,27 +16,28 @@ import (
 // package's writer-enumeration tests scans for. scanWriters uses it to tell
 // a keyed `field: x` composite-literal element that legitimately sets the
 // field apart from an unrelated struct that happens to reuse the same field
-// name — outcome and next are Attempt's; attempts, intent and lease are
-// Job's. (crossed was a sixth until change 03 deleted the field; it is a
-// method now, and a method has no writers to enumerate.) The claim that no
-// OTHER struct here declares any of these five names is established by
-// reading the declarations, not by grepping the names: `git grep -n '^typ[e]
-// [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// now returns 22 types — Attempt, bitset, Checkpoint, Job, Snapshot, Lease,
-// Manifest, JobFile, JobArticle, manifestFile, manifestJSONArticle,
-// manifestJSONFile, manifestJSON, Policy, JobProgress, FileProgress,
-// FileMeta, fileProgressJSON, jobProgressJSON, RenderView, edge, and
-// StateView — and only Attempt and Job declare any of these five fields.
-// The jump from eight (Half B1 task 3) to 22 is the content-tier move (task
-// 2): manifest.go, progress.go and bitset.go landed in this package and
-// brought Manifest, JobFile, JobArticle, manifestFile, the three
-// manifestJSON* wire types, JobProgress, FileProgress, FileMeta and the two
-// *JSON progress wire types with them — thirteen new structs, none of which
-// declare outcome, next, attempts, intent or lease.
+// name — outcome and next are Attempt's; attempts, intent, lease, manifest
+// and progress are Job's. (crossed was a sixth until change 03 deleted the
+// field; it is a method now, and a method has no writers to enumerate.) The
+// claim that no OTHER struct here declares any of these seven names is
+// established by reading the declarations, not by grepping the names:
+// `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` now returns 22 types — Attempt, bitset,
+// Checkpoint, Job, Snapshot, Lease, Manifest, JobFile, JobArticle,
+// manifestFile, manifestJSONArticle, manifestJSONFile, manifestJSON, Policy,
+// JobProgress, FileProgress, FileMeta, fileProgressJSON, jobProgressJSON,
+// RenderView, edge, and StateView — and only Attempt and Job declare any of
+// these seven fields. The jump from eight (Half B1 task 3) to 22 is the
+// content-tier move (task 2): manifest.go, progress.go and bitset.go landed
+// in this package and brought Manifest, JobFile, JobArticle, manifestFile,
+// the three manifestJSON* wire types, JobProgress, FileProgress, FileMeta,
+// the two *JSON progress wire types, and bitset with them — thirteen new
+// structs, none of which declare outcome, next, attempts, intent, lease,
+// manifest or progress.
 // TestFieldOwners_AreTheOnlyDeclarers is what actually enforces that, so
 // this sentence is orientation rather than the guarantee.
-// A grep for the five field names themselves (`git grep -n -E
-// 'outcome|next|attempts|intent|lease' -- 'internal/job/*.go'
+// A grep for the field names themselves (`git grep -n -E
+// 'outcome|next|attempts|intent|lease|manifest|progress' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'`) returns well over a hundred lines of comments
 // and error strings that no reader can filter into an answer, which is why it
 // is not the citation. This count is not a bound that survives every future
@@ -44,15 +45,17 @@ import (
 // additions this comment did not anticipate either time — so treat the
 // number as a snapshot to re-run check_citations against, not a ceiling.
 // What does not move is the claim scanWriters actually depends on: no
-// non-Attempt, non-Job struct in this package declares any of the five
-// tracked names, and that half is machine-checked on every run regardless of
-// how many structs exist.
+// non-Attempt, non-Job struct in this package declares any of the tracked
+// names, and that half is machine-checked on every run regardless of how
+// many structs exist.
 var fieldOwner = map[string]string{
 	"outcome":  "Attempt",
 	"next":     "Attempt",
 	"attempts": "Job",
 	"intent":   "Job",
 	"lease":    "Job",
+	"manifest": "Job",
+	"progress": "Job",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -305,6 +308,48 @@ func TestLeaseWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 			"the lease field's doc comment (job.go) claims Grant and surrenderLocked are "+
 			"its only writers. If a different writer is correct, say so at that comment "+
 			"AND update this list together.",
+			writers, want)
+	}
+}
+
+// TestManifestWrites_MatchTheEnumerationStatedInProse asserts AttachContent,
+// Evict and RestoreContent are the only writers of j.manifest — AttachContent
+// and RestoreContent install it, Evict is the only place that clears it back
+// to nil. content.go's doc comments call AttachContent the sole constructor
+// of the (manifest, progress) pair and RestoreContent its only other writer,
+// but neither sentence mentions Evict, which writes manifest alone (it
+// leaves progress resident by design — see Evict's own comment). This test
+// is what makes "only Attach/RestoreContent write the pair" a checked claim
+// about manifest specifically rather than an unstated assumption.
+func TestManifestWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "manifest")
+	want := []string{"AttachContent", "Evict", "RestoreContent"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning manifest = %v, want %v\n\n"+
+			"content.go's doc comments claim AttachContent and RestoreContent write "+
+			"the (manifest, progress) pair, and Evict clears manifest alone. If a "+
+			"different writer is correct, say so at those comments AND update this "+
+			"list together.",
+			writers, want)
+	}
+}
+
+// TestProgressWrites_MatchTheEnumerationStatedInProse asserts AttachContent
+// and RestoreContent are the only writers of j.progress — the same two
+// content.go names as manifest, since AttachContent derives progress from
+// the manifest it installs and RestoreContent installs both halves of the
+// pair together. Evict does NOT appear here: it drops the manifest and
+// deliberately keeps progress resident (docs/queue-lifecycle.md's three
+// tiers), which is why this list is shorter than manifest's.
+func TestProgressWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "progress")
+	want := []string{"AttachContent", "RestoreContent"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning progress = %v, want %v\n\n"+
+			"content.go's doc comments claim AttachContent is the sole constructor of "+
+			"the (manifest, progress) pair and RestoreContent is its only other writer. "+
+			"If a different writer is correct, say so at those comments AND update this "+
+			"list together.",
 			writers, want)
 	}
 }

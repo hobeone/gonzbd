@@ -162,23 +162,6 @@ func (j *Job) RecoveryFiles() int {
 	return j.recoveryFiles
 }
 
-// withProgress runs fn under the write lock with the progress record, and is
-// the ONLY way the mutators below reach it. Every article-accounting mutation
-// in this package goes through here, which is what replaces the direct
-// reach-ins internal/queue had into JobProgress's unexported surface.
-//
-// fn must not call back into any *Job method: contentMu is not reentrant, and
-// no *JobProgress method takes a lock of its own. It must also not take j.mu —
-// see mu's LOCK ORDER note.
-func (j *Job) withProgress(fn func(*JobProgress) error) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	return fn(j.progress)
-}
-
 // withResidentContent runs fn under the write lock with both halves of the
 // pair, for the mutators that need the manifest as well — the byte arithmetic
 // markDone and markFailed perform is per-article, and article sizes live only

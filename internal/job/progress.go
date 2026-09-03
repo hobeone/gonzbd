@@ -870,8 +870,13 @@ func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	return p.done.Len() == m.NumArticles() && len(p.files) == m.NumFiles()
 }
 
-// clone returns a deep copy, used by cloneJob.
+// clone returns a deep copy, or nil if p is nil — used by Job.Checkpoint
+// (checkpoint.go) to hand the Checkpointer a value it can read outside any
+// lock, rather than the live record contentMu still guards.
 func (p *JobProgress) clone() *JobProgress {
+	if p == nil {
+		return nil
+	}
 	cp := *p
 
 	cp.done = p.done.Clone()

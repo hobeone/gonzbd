@@ -54,20 +54,44 @@ func (c *Checkpointer) Mark(j *job.Job) {
 // Flush writes every marked job now and clears the set. It is synchronous
 // because ReplaceFromRuns needs the row on disk before re-hydration can read
 // it — the one read-after-write window the swap does not delete.
+//
+// A failed SaveBatch does not lose the jobs it was carrying: Flush takes the
+// dirty set out from under the lock (swapping in a fresh map, not clear-ing
+// the existing one) so marks that arrive DURING the write land in the new
+// map rather than being wiped by a clear after the fact, then on error
+// re-merges the jobs the failed write was carrying back in — but only the
+// ones no mark has already re-added, so a job re-marked while the write was
+// in flight is not clobbered back to whatever state it held when the batch
+// was taken. Without this, a job that settles right as a Flush fails would
+// never be retried: the next tick sees an empty set and no-ops (see the
+// early return above), and that job's next transition — if there is one —
+// might be far in the future or never.
 func (c *Checkpointer) Flush(ctx context.Context) error {
 	c.mu.Lock()
 	if len(c.dirty) == 0 {
 		c.mu.Unlock()
 		return nil
 	}
-	cps := make([]job.Checkpoint, 0, len(c.dirty))
-	for _, j := range c.dirty {
-		cps = append(cps, j.Checkpoint())
-	}
-	clear(c.dirty)
+	batch := c.dirty
+	c.dirty = map[string]*job.Job{}
 	c.mu.Unlock()
 
-	return c.store.SaveBatch(ctx, cps)
+	cps := make([]job.Checkpoint, 0, len(batch))
+	for _, j := range batch {
+		cps = append(cps, j.Checkpoint())
+	}
+
+	if err := c.store.SaveBatch(ctx, cps); err != nil {
+		c.mu.Lock()
+		for id, j := range batch {
+			if _, remarked := c.dirty[id]; !remarked {
+				c.dirty[id] = j
+			}
+		}
+		c.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Run drives the periodic batch until ctx is cancelled, then flushes once more.

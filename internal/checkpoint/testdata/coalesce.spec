@@ -9,10 +9,11 @@ file internal/checkpoint/checkpointer.go
 	c.dirty[j.ID()+string(rune(len(c.dirty)))] = j
 --- end
 
-[Flush writes without clearing, so the next Flush rewrites the same rows]
+[Flush writes without swapping the dirty map, so the next Flush rewrites the same rows]
 file internal/checkpoint/checkpointer.go
 --- anchor
-	clear(c.dirty)
+	batch := c.dirty
+	c.dirty = map[string]*job.Job{}
 --- replace
-
+	batch := c.dirty
 --- end
