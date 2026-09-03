@@ -1,6 +1,9 @@
 package job
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // ---------- markEmitted / clearEmitted ----------
 
@@ -384,5 +387,148 @@ func TestJobProgress_TotalArticles(t *testing.T) {
 	})
 	if got := p.TotalArticles(); got != 8 {
 		t.Errorf("p.TotalArticles() = %d, want 8", got)
+	}
+}
+
+// ---------- download timestamp ownership and bounds ----------
+
+func TestIsJobStamp_MatchesTheWireForm(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   time.Time
+		want bool
+	}{
+		{"zero value", time.Time{}, false},
+		{"Unix epoch exactly", time.Unix(0, 0), false},
+		{"Unix epoch + 500ms (sub-second)", time.Unix(0, 500000000), false},
+		{"Unix epoch + 999ms", time.Unix(0, 999999999), false},
+		{"Unix epoch + 1s", time.Unix(1, 0), true},
+		{"modern timestamp", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), true},
+		{"pre-epoch", time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isJobStamp(tc.in); got != tc.want {
+				t.Errorf("isJobStamp(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSetDownloadStampOnce_FirstWinsAndRefusesNonStamps(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name    string
+		set     func(*JobProgress, time.Time) bool
+		get     func(*JobProgress) time.Time
+		sibling func(*JobProgress) time.Time
+	}{
+		{"started", (*JobProgress).setDownloadStartedOnce,
+			(*JobProgress).DownloadStarted, (*JobProgress).DownloadFinished},
+		{"finished", (*JobProgress).setDownloadFinishedOnce,
+			(*JobProgress).DownloadFinished, (*JobProgress).DownloadStarted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := &JobProgress{}
+			if !tc.set(p, real) {
+				t.Fatal("first real stamp was refused")
+			}
+			if !tc.get(p).Equal(real) {
+				t.Fatalf("stamp = %v, want %v", tc.get(p), real)
+			}
+			if !tc.sibling(p).IsZero() {
+				t.Errorf("the sibling field was also written: %v", tc.sibling(p))
+			}
+			if tc.set(p, real.Add(time.Hour)) {
+				t.Error("second stamp took; first-wins was not enforced")
+			}
+			if !tc.get(p).Equal(real) {
+				t.Errorf("stamp moved to %v", tc.get(p))
+			}
+
+			// A refusal must not consume the slot.
+			q := &JobProgress{}
+			if tc.set(q, time.Unix(0, 0)) {
+				t.Error("epoch zero was accepted")
+			}
+			if !tc.get(q).IsZero() {
+				t.Errorf("epoch zero was stored: %v", tc.get(q))
+			}
+			if !tc.set(q, real) {
+				t.Error("the refusal consumed the first-wins slot")
+			}
+		})
+	}
+}
+
+func TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish(t *testing.T) {
+	t.Parallel()
+
+	finished := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	p := &JobProgress{}
+	if !p.setDownloadFinishedOnce(finished) {
+		t.Fatal("seeding the finish failed; the assertion below would be vacuous")
+	}
+	if p.setDownloadStartedOnce(finished.Add(time.Second)) {
+		t.Error("a start after the finish was accepted; the reported duration goes negative")
+	}
+	if got := p.DownloadStarted(); !got.IsZero() {
+		t.Errorf("downloadStarted = %v after a refused out-of-order mark, want the zero time", got)
+	}
+
+	q := &JobProgress{}
+	if !q.setDownloadFinishedOnce(finished) {
+		t.Fatal("seeding the finish failed")
+	}
+	if q.setDownloadStartedOnce(finished.Add(-time.Hour)) {
+		t.Error("a start was accepted after the finish was already recorded")
+	}
+}
+
+func TestClearDownloadStamps_ClearsBothFields(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	p := &JobProgress{downloadStarted: real, downloadFinished: real.Add(time.Hour)}
+	p.clearDownloadStamps()
+	if !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
+		t.Errorf("after clear: started=%v finished=%v, want both zero",
+			p.downloadStarted, p.downloadFinished)
+	}
+}
+
+func TestRestoreDownloadStamps_FiltersEachFieldIndependently(t *testing.T) {
+	t.Parallel()
+
+	real := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name                      string
+		inStarted, inFinished     time.Time
+		wantStarted, wantFinished time.Time
+	}{
+		{"both real", real, real, real, real},
+		{"started fails the rule", time.Unix(0, 0), real, time.Time{}, real},
+		{"finished fails the rule", real, time.Unix(0, 0), real, time.Time{}},
+		{"both fail", time.Unix(0, 0), time.Time{}, time.Time{}, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := &JobProgress{}
+			p.restoreDownloadStamps(tc.inStarted, tc.inFinished)
+			if !p.downloadStarted.Equal(tc.wantStarted) {
+				t.Errorf("started = %v, want %v", p.downloadStarted, tc.wantStarted)
+			}
+			if !p.downloadFinished.Equal(tc.wantFinished) {
+				t.Errorf("finished = %v, want %v", p.downloadFinished, tc.wantFinished)
+			}
+		})
 	}
 }

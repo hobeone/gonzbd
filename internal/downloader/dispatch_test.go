@@ -2343,3 +2343,35 @@ func TestHasDownloadableJobs_SkipsCancelledJobs(t *testing.T) {
 		t.Error("hasDownloadableJobs() = true for cancelled job, want false")
 	}
 }
+
+func TestBuildDispatchPlan_SkipsNonFetchingJob(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	if err := j.Transition(job.Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 for non-Fetching job", plan.dispatched)
+	}
+}
+
+func TestHasDownloadableJobs_SkipsNonFetchingJob(t *testing.T) {
+	t.Parallel()
+	d := newDispatchDownloader(nil)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	if err := j.Transition(job.Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	if d.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs() = true for Assessing job, want false")
+	}
+}

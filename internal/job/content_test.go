@@ -465,3 +465,81 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 		t.Error("RestoreDownloadStamps on non-resident job should error")
 	}
 }
+
+// TestResetForRetry_ClearsDownloadStamps pins that ResetForRetry clears both
+// downloadStarted and downloadFinished stamps so that a retry can re-stamp them.
+func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{
+		{
+			Subject: "test.rar",
+			Bytes:   100,
+			Articles: []JobArticle{
+				{ID: "<a1@x>", Bytes: 100, Number: 1},
+			},
+		},
+	})
+	j := New("retry-job", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+
+	start := time.Unix(1700000000, 0).UTC()
+	finish := time.Unix(1700000100, 0).UTC()
+	if err := j.RestoreDownloadStamps(start, finish); err != nil {
+		t.Fatalf("RestoreDownloadStamps: %v", err)
+	}
+	if got := j.Progress().DownloadStarted(); !got.Equal(start) {
+		t.Fatalf("DownloadStarted = %v, want %v", got, start)
+	}
+	if got := j.Progress().DownloadFinished(); !got.Equal(finish) {
+		t.Fatalf("DownloadFinished = %v, want %v", got, finish)
+	}
+
+	j.ResetForRetry()
+
+	if got := j.Progress().DownloadStarted(); !got.IsZero() {
+		t.Errorf("DownloadStarted = %v after ResetForRetry, want zero", got)
+	}
+	if got := j.Progress().DownloadFinished(); !got.IsZero() {
+		t.Errorf("DownloadFinished = %v after ResetForRetry, want zero", got)
+	}
+}
+
+// TestMarkDownloadFinished_FirstWins pins the first-wins guard on
+// MarkDownloadFinished / setDownloadFinishedOnce.
+func TestMarkDownloadFinished_FirstWins(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{
+		{
+			Subject: "test.rar",
+			Bytes:   100,
+			Articles: []JobArticle{
+				{ID: "<a1@x>", Bytes: 100, Number: 1},
+			},
+		},
+	})
+	j := New("finish-job", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+
+	first := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	second := time.Date(2026, 9, 1, 13, 0, 0, 0, time.UTC)
+
+	if err := j.MarkDownloadFinished(first); err != nil {
+		t.Fatalf("MarkDownloadFinished(first): %v", err)
+	}
+	if got := j.Progress().DownloadFinished(); !got.Equal(first) {
+		t.Fatalf("DownloadFinished = %v, want %v", got, first)
+	}
+
+	if err := j.MarkDownloadFinished(second); err != nil {
+		t.Fatalf("MarkDownloadFinished(second): %v", err)
+	}
+	if got := j.Progress().DownloadFinished(); !got.Equal(first) {
+		t.Errorf("DownloadFinished moved to %v on second call, want %v (first wins)", got, first)
+	}
+}

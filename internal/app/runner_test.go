@@ -13,15 +13,26 @@ import (
 )
 
 type reportRecorder struct {
-	mu    sync.Mutex
-	total int
+	mu       sync.Mutex
+	total    int
+	outcomes map[string]job.Outcome
 }
 
-func (r *reportRecorder) Finished(_ string, _ job.Outcome) error {
+func (r *reportRecorder) Finished(id string, o job.Outcome) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.total++
+	if r.outcomes == nil {
+		r.outcomes = make(map[string]job.Outcome)
+	}
+	r.outcomes[id] = o
 	return nil
+}
+
+func (r *reportRecorder) outcome(id string) job.Outcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outcomes[id]
 }
 
 func (r *reportRecorder) Yielded(_ string) error {
@@ -155,6 +166,9 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 		{subject: "movie.rar", bytes: 100},
 	}, 0)
 	r.runAssess(context.Background(), jHopeless.ID())
+	if got := rec.outcome(jHopeless.ID()); got != job.OutcomeFailed {
+		t.Errorf("reported outcome for hopeless job = %v, want OutcomeFailed", got)
+	}
 
 	// 2. Repairable job
 	jRepair := buildRunnerJob(t, app, []failMsgFile{

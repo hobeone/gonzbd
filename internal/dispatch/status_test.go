@@ -3,6 +3,7 @@ package dispatch
 import (
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -11,13 +12,55 @@ import (
 // place constants.Status may appear; a Row.Status that computed anything
 // itself would be a second enforcement point for that rule (Rule 2).
 func TestRowStatus_MatchesToSABnzbd(t *testing.T) {
-	for _, st := range job.AllStates() {
-		t.Run(st.String(), func(t *testing.T) {
-			var v job.RenderView
-			v.Running = true
-			v.State = st
-			r := Row{ID: "a", View: v}
-			if got, want := r.Status(), job.ToSABnzbd(v); got != want {
+	tests := []struct {
+		name string
+		view job.RenderView
+		want constants.Status
+	}{
+		{
+			name: "Running + Fetching => StatusDownloading",
+			view: job.RenderView{Running: true, State: job.Fetching},
+			want: constants.StatusDownloading,
+		},
+		{
+			name: "Running + Assessing => StatusVerifying",
+			view: job.RenderView{Running: true, State: job.Assessing},
+			want: constants.StatusVerifying,
+		},
+		{
+			name: "Running + Repairing => StatusRepairing",
+			view: job.RenderView{Running: true, State: job.Repairing},
+			want: constants.StatusRepairing,
+		},
+		{
+			name: "Running + Extracting => StatusExtracting",
+			view: job.RenderView{Running: true, State: job.Extracting},
+			want: constants.StatusExtracting,
+		},
+		{
+			name: "Running + Finishing => StatusMoving",
+			view: job.RenderView{Running: true, State: job.Finalizing},
+			want: constants.StatusMoving,
+		},
+		{
+			name: "Not Running + Reason NoLease => StatusQueued",
+			view: job.RenderView{Running: false, Reason: job.NoLease},
+			want: constants.StatusQueued,
+		},
+		{
+			name: "Not Running + Reason JobPaused => StatusPaused",
+			view: job.RenderView{Running: false, Reason: job.UserPaused},
+			want: constants.StatusPaused,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Row{ID: "a", View: tc.view}
+			if got := r.Status(); got != tc.want {
+				t.Errorf("Row.Status() = %q, want %q", got, tc.want)
+			}
+			if got, want := r.Status(), job.ToSABnzbd(tc.view); got != want {
 				t.Fatalf("Row.Status() = %q, ToSABnzbd = %q; they must not diverge", got, want)
 			}
 		})

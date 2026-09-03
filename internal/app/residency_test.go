@@ -135,13 +135,35 @@ func TestAppResidency_RestoreResolution(t *testing.T) {
 		t.Fatalf("insert failed_articles: %v", err)
 	}
 
-	// First call: failed art_idx 1 causes ApplyResolution error
+	// First call: durable run on j1 marks article 0 done
 	r.restoreResolution(context.Background(), j)
+	if !j.Progress().ArticleDone(0) {
+		t.Errorf("ArticleDone(0) = false, want true after restoreResolution with durable run")
+	}
 
-	// Second call: art_idx 0 is valid, ApplyResolution succeeds with nil error
-	_, _ = db.Exec(`DELETE FROM failed_articles WHERE job_id = ?`, "j1")
-	_, _ = db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, ?)`, "j1", 0)
-	r.restoreResolution(context.Background(), j)
+	// Create job jFailed to test failed_articles resolution
+	jFailed := job.New("j_failed", "name", job.PolicyFromPP(3))
+	writeTestManifest(t, filepath.Join(dir, "j_failed.json.gz"), jFailed)
+	rFailed := newAppResidency(func(id string) (*job.Job, bool) {
+		if id == "j_failed" {
+			return jFailed, true
+		}
+		return nil, false
+	}, dir, db, nil)
+	if err := rFailed.Hydrate(context.Background(), "j_failed"); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, ?)`, "j_failed", 0)
+	if err != nil {
+		t.Fatalf("insert failed_articles: %v", err)
+	}
+	rFailed.restoreResolution(context.Background(), jFailed)
+	if !jFailed.Progress().ArticleDone(0) {
+		t.Errorf("jFailed ArticleDone(0) = false, want true after restoreResolution")
+	}
+	if !jFailed.Progress().ArticleFailed(0) {
+		t.Errorf("jFailed ArticleFailed(0) = false, want true after restoreResolution with failed article")
+	}
 
 	// Third call: failed_articles table dropped causes QueryContext error
 	_, _ = db.Exec(`DROP TABLE failed_articles`)
