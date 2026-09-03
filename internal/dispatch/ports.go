@@ -6,10 +6,12 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// Residency is how the dispatcher makes a job's manifest available and takes it
-// away again. It names no manifest type on purpose: Manifest lives in
-// internal/queue until B2.4, and the dispatcher never reads its contents. It
-// decides WHEN a job should be resident (D-B8) and delegates WHAT to load.
+// Residency is how the dispatcher makes a job's manifest available and takes
+// it away again. It names no manifest type on purpose. That used to be an
+// import consequence — dispatch could not name queue.Manifest because it may
+// not import internal/queue — and since the content tier moved into
+// internal/job (which dispatch DOES import) it is a discipline instead,
+// enforced by TestDispatchNamesNoManifestType in this package.
 //
 // Hydrate may block on disk I/O. The dispatcher calls it with no lock held.
 type Residency interface {

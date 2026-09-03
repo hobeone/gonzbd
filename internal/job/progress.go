@@ -1,4 +1,4 @@
-package queue
+package job
 
 import (
 	"encoding/json"
@@ -143,6 +143,67 @@ type FileProgress struct {
 	// it, see it return 0, and conclude the bug is back.
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32
+}
+
+const (
+	earlyAbortSample    = 10
+	earlyAbortThreshold = 0.80
+)
+
+// FileMeta is the per-file shape needed to size a non-resident job's
+// progress without a manifest.
+type FileMeta struct {
+	ArticleCount    int
+	Bytes           int64
+	Complete        bool
+	Fetch           FetchPolicy
+	IsPar2          bool
+	BytesDownloaded int64
+	FailedBytes     int64
+	Done            []bool
+	Failed          []bool
+}
+
+func newJobProgressSized(files []FileMeta) *JobProgress {
+	total := 0
+	for _, f := range files {
+		total += f.ArticleCount
+	}
+	p := &JobProgress{
+		done:            newBitset(total),
+		failed:          newBitset(total),
+		emitted:         newBitset(total),
+		files:           make([]FileProgress, len(files)),
+		pendingArticles: total,
+	}
+	var failedTotal int64
+	base := 0
+	for fi, f := range files {
+		p.files[fi].Pending = f.ArticleCount
+		p.files[fi].Complete = f.Complete
+		p.files[fi].Fetch = f.Fetch
+		p.files[fi].IsPar2 = f.IsPar2
+		p.files[fi].Bytes = f.Bytes
+		p.files[fi].BytesDownloaded = f.BytesDownloaded
+		p.files[fi].FailedBytes = f.FailedBytes
+		for i := range f.ArticleCount {
+			if i >= len(f.Done) || !f.Done[i] {
+				continue
+			}
+			p.done.Set(base + i)
+			p.files[fi].Pending--
+			p.pendingArticles--
+			p.articlesResolved++
+			if i < len(f.Failed) && f.Failed[i] {
+				p.failed.Set(base + i)
+				p.articlesFailed++
+			}
+		}
+		base += f.ArticleCount
+		failedTotal += f.FailedBytes
+	}
+	p.failedBytes = failedTotal
+	return p
 }
 
 // fileMetaFromManifest projects m into the same per-file shape

@@ -1,4 +1,4 @@
-package queue
+package job
 
 import (
 	"encoding/json"
@@ -57,6 +57,29 @@ type manifestFile struct {
 // left them describing the larger, pre-discard job. Since #331 the discard
 // only marks a FetchPolicy and changes no file set, so nothing can make
 // these figures disagree with the file list they are computed from.
+// JobFile is the intermediate, NZB-parsed shape NewJob builds before
+// converting into a Manifest/JobProgress pair. It is not part of Job's
+// runtime state — construction scaffolding only.
+type JobFile struct {
+	Subject        string
+	Date           time.Time
+	Articles       []JobArticle
+	Bytes          int64
+	IsPar2Recovery bool
+	// Deferred marks a file whose articles are intentionally held back from
+	// dispatch (on-demand par2: recovery volumes not downloaded until repair
+	// is shown to be needed).
+	Deferred bool
+}
+
+// JobArticle is the intermediate, NZB-parsed shape of a single article,
+// consumed by newManifest during construction.
+type JobArticle struct {
+	ID     string
+	Bytes  int
+	Number int
+}
+
 func newManifest(files []JobFile) *Manifest {
 	m := &Manifest{
 		files:              make([]manifestFile, len(files)),
