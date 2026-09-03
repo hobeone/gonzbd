@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
 	"strings"
 	"testing"
 )
@@ -53,42 +53,49 @@ func TestDispatchNamesNoManifestType(t *testing.T) {
 	const bannedMethod = "Manifest"
 
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse package: %v", err)
-	}
-	if len(pkgs) == 0 {
-		t.Fatal("parsed no packages; the walk below would pass vacuously")
+		t.Fatalf("read package dir: %v", err)
 	}
 
-	for _, pkg := range pkgs {
-		for name, f := range pkg.Files {
-			ast.Inspect(f, func(n ast.Node) bool {
-				switch node := n.(type) {
-				case *ast.SelectorExpr:
-					x, ok := node.X.(*ast.Ident)
-					if !ok || x.Name != "job" || x.Obj != nil {
-						return true
-					}
-					if strings.Contains(node.Sel.Name, bannedType) {
-						t.Errorf("%s: internal/dispatch names job.%s; the dispatcher "+
-							"must delegate WHAT to load to Residency and never read "+
-							"manifest contents", name, node.Sel.Name)
-					}
-				case *ast.CallExpr:
-					sel, ok := node.Fun.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != bannedMethod {
-						return true
-					}
-					t.Errorf("%s: internal/dispatch calls .%s(...); the dispatcher "+
-						"must delegate WHAT to load to Residency and never read a "+
-						"job's manifest contents, regardless of the receiver's name",
-						name, sel.Sel.Name)
-				}
-				return true
-			})
+	parsed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		parsed++
+
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.SelectorExpr:
+				x, ok := node.X.(*ast.Ident)
+				if !ok || x.Name != "job" || x.Obj != nil {
+					return true
+				}
+				if strings.Contains(node.Sel.Name, bannedType) {
+					t.Errorf("%s: internal/dispatch names job.%s; the dispatcher "+
+						"must delegate WHAT to load to Residency and never read "+
+						"manifest contents", name, node.Sel.Name)
+				}
+			case *ast.CallExpr:
+				sel, ok := node.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != bannedMethod {
+					return true
+				}
+				t.Errorf("%s: internal/dispatch calls .%s(...); the dispatcher "+
+					"must delegate WHAT to load to Residency and never read a "+
+					"job's manifest contents, regardless of the receiver's name",
+					name, sel.Sel.Name)
+			}
+			return true
+		})
+	}
+	if parsed == 0 {
+		t.Fatal("parsed no files; the walk above would pass vacuously")
 	}
 }
