@@ -158,7 +158,9 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	}
 
 	// Wait for completion (or timeout)
-	timeout := 90 * time.Second
+	// With penalty escalation enabled (NoPenalties = false), unexpected EOF
+	// incurs PenaltyUnknown (3 minutes), so the timeout must exceed 3m.
+	timeout := 4 * time.Minute
 	deadline := time.Now().Add(timeout)
 	completed := false
 	for time.Now().Before(deadline) {
