@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -73,9 +74,30 @@ func TestCheckpointer_FlushIsSynchronous(t *testing.T) {
 	}
 }
 
+type failingStore struct {
+	recordingStore
+	failsLeft  int
+	beforeFail func()
+}
+
+var errSaveBatchFailed = errors.New("checkpoint: simulated SaveBatch failure")
+
+func (s *failingStore) SaveBatch(ctx context.Context, cps []job.Checkpoint) error {
+	if s.failsLeft > 0 {
+		s.failsLeft--
+		if s.beforeFail != nil {
+			s.beforeFail()
+		}
+		return errSaveBatchFailed
+	}
+	return s.recordingStore.SaveBatch(ctx, cps)
+}
+
 func TestCheckpointer_DirtyCountAndRun(t *testing.T) {
 	st := &recordingStore{}
-	c := New(st, 10*time.Millisecond, nil)
+	// Use an hour interval so the ticker cannot fire and race with shutdown;
+	// the flush tested below must come strictly from ctx.Done().
+	c := New(st, time.Hour, nil)
 
 	j := job.New("a", "A", job.PolicyFromPP(3))
 	c.Mark(j)
@@ -89,13 +111,115 @@ func TestCheckpointer_DirtyCountAndRun(t *testing.T) {
 		errCh <- c.Run(ctx)
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	// Give the goroutine a moment to start and block in select, then cancel.
+	time.Sleep(10 * time.Millisecond)
 	cancel()
 
 	if err := <-errCh; err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
+	if len(st.batches) != 1 {
+		t.Fatalf("batches = %d, want 1 (flushed on ctx.Done)", len(st.batches))
+	}
 	if c.DirtyCount() != 0 {
 		t.Fatalf("DirtyCount after Run cancelled = %d, want 0", c.DirtyCount())
+	}
+}
+
+// TestCheckpointer_FailedFlushLeavesJobsMarked pins that a failed SaveBatch
+// re-merges dirty jobs back into the dirty set so that a subsequent flush
+// actually persists them.
+func TestCheckpointer_FailedFlushLeavesJobsMarked(t *testing.T) {
+	st := &failingStore{failsLeft: 1}
+	c := New(st, time.Hour, nil)
+
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	b := job.New("b", "B", job.PolicyFromPP(3))
+	c.Mark(a)
+	c.Mark(b)
+
+	if err := c.Flush(context.Background()); !errors.Is(err, errSaveBatchFailed) {
+		t.Fatalf("Flush: got %v, want errSaveBatchFailed", err)
+	}
+	if len(st.batches) != 0 {
+		t.Fatalf("a failed SaveBatch must not have recorded a batch; got %d", len(st.batches))
+	}
+	if got := c.DirtyCount(); got != 2 {
+		t.Fatalf("DirtyCount after failed Flush = %d, want 2", got)
+	}
+
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("retry Flush: %v", err)
+	}
+	if len(st.batches) != 1 {
+		t.Fatalf("retry Flush must write exactly one batch; got %d", len(st.batches))
+	}
+	if got := len(st.batches[0]); got != 2 {
+		t.Fatalf("retry batch size = %d, want 2 (a and b survived the failed Flush)", got)
+	}
+	if got := c.DirtyCount(); got != 0 {
+		t.Fatalf("DirtyCount after successful retry Flush = %d, want 0", got)
+	}
+}
+
+// TestCheckpointer_MarkDuringFailedFlushIsNotLost pins that a job marked WHILE
+// SaveBatch is in flight survives alongside the re-merged jobs from the failed batch.
+func TestCheckpointer_MarkDuringFailedFlushIsNotLost(t *testing.T) {
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	b := job.New("b", "B", job.PolicyFromPP(3))
+
+	st := &failingStore{failsLeft: 1}
+	c := New(st, time.Hour, nil)
+	st.beforeFail = func() { c.Mark(b) }
+
+	c.Mark(a)
+	if err := c.Flush(context.Background()); !errors.Is(err, errSaveBatchFailed) {
+		t.Fatalf("Flush: got %v, want errSaveBatchFailed", err)
+	}
+	if got := c.DirtyCount(); got != 2 {
+		t.Fatalf("DirtyCount = %d, want 2", got)
+	}
+
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("retry Flush: %v", err)
+	}
+	if len(st.batches) != 1 {
+		t.Fatalf("retry Flush must write exactly one batch; got %d", len(st.batches))
+	}
+	if got := len(st.batches[0]); got != 2 {
+		t.Fatalf("retry batch size = %d, want 2 (a re-merged, b marked meanwhile)", got)
+	}
+}
+
+// TestCheckpointer_RemarkDuringFailedFlushNotOverwrittenWithStale pins that a
+// job re-marked during an in-flight flush is not overwritten with its older stale
+// version during re-merge.
+func TestCheckpointer_RemarkDuringFailedFlushNotOverwrittenWithStale(t *testing.T) {
+	a1 := job.New("a", "Original", job.PolicyFromPP(3))
+	a2 := job.New("a", "Updated", job.PolicyFromPP(3))
+	if err := a2.SetIntent(job.IntentPause); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+
+	st := &failingStore{failsLeft: 1}
+	c := New(st, time.Hour, nil)
+	st.beforeFail = func() { c.Mark(a2) }
+
+	c.Mark(a1)
+	if err := c.Flush(context.Background()); !errors.Is(err, errSaveBatchFailed) {
+		t.Fatalf("Flush: got %v, want errSaveBatchFailed", err)
+	}
+
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("retry Flush: %v", err)
+	}
+	if len(st.batches) != 1 {
+		t.Fatalf("retry Flush must write exactly one batch; got %d", len(st.batches))
+	}
+	if got := len(st.batches[0]); got != 1 {
+		t.Fatalf("retry batch size = %d, want 1", got)
+	}
+	if got := st.batches[0][0].Intent; got != job.IntentPause {
+		t.Fatalf("flushed job intent = %v, want %v (a2 should not be overwritten by stale a1)", got, job.IntentPause)
 	}
 }

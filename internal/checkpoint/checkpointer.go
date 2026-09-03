@@ -61,6 +61,10 @@ func (c *Checkpointer) DirtyCount() int {
 // Flush writes every marked job now and clears the set. It is synchronous
 // because ReplaceFromRuns needs the row on disk before re-hydration can read
 // it — the one read-after-write window the swap does not delete.
+//
+// A failed SaveBatch does not lose the jobs it was carrying: Flush swaps in a
+// fresh map before writing so marks arriving during the write land in the new
+// map, then on error re-merges the un-remarked jobs back into c.dirty.
 func (c *Checkpointer) Flush(ctx context.Context) error {
 	c.mu.Lock()
 	if len(c.dirty) == 0 {
@@ -68,13 +72,24 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 		return nil
 	}
 	cps := make([]job.Checkpoint, 0, len(c.dirty))
-	for _, j := range c.dirty {
+	batch := c.dirty
+	for _, j := range batch {
 		cps = append(cps, j.Checkpoint())
 	}
-	clear(c.dirty)
+	c.dirty = make(map[string]*job.Job)
 	c.mu.Unlock()
 
-	return c.store.SaveBatch(ctx, cps)
+	if err := c.store.SaveBatch(ctx, cps); err != nil {
+		c.mu.Lock()
+		for id, j := range batch {
+			if _, remarked := c.dirty[id]; !remarked {
+				c.dirty[id] = j
+			}
+		}
+		c.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Run drives the periodic batch until ctx is cancelled, then flushes once more.

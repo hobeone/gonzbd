@@ -12,7 +12,7 @@ file internal/checkpoint/checkpointer.go
 [Flush writes without clearing, so the next Flush rewrites the same rows]
 file internal/checkpoint/checkpointer.go
 --- anchor
-	clear(c.dirty)
+	c.dirty = make(map[string]*job.Job)
 --- replace
 
 --- end

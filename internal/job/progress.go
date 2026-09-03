@@ -255,6 +255,14 @@ func (p *JobProgress) NumFiles() int {
 	return len(p.files)
 }
 
+// TotalArticles returns the total number of articles tracked by the progress record.
+func (p *JobProgress) TotalArticles() int {
+	if p == nil {
+		return 0
+	}
+	return p.done.Len()
+}
+
 // ArticleDone reports whether global article index i has resolved (success or failure).
 func (p *JobProgress) ArticleDone(i int) bool {
 	if p == nil || i < 0 || i >= p.done.Len() {
