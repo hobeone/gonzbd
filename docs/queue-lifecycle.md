@@ -1,11 +1,12 @@
 # Queue & Job Lifecycle Contract
+ 
+This document was the contract for `internal/queue`: what state a job is
+guaranteed to have, which operations may fail, and which must not. Following
+Plan 2 ("The Swap", RFC #456 §15), `internal/queue` is retired and its tier
+invariants (Header, Progress, Leased Manifest) are compiler-enforced across
+`internal/job`, `internal/sched`, and `internal/dispatch`.
 
-This document is the contract for `internal/queue`: what state a job is
-guaranteed to have, which operations may fail, and which must not. Read it
-before changing anything that touches job residency, the `ActiveSet`, the
-promotion loop, or `Manifest`/`JobProgress` access.
-
-`docs/ARCHITECTURE.md` describes the queue's shape. This describes its
+`docs/ARCHITECTURE.md` describes the architecture. This describes its
 obligations.
 
 **This states the contract in the present tense, including parts not yet

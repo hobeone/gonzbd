@@ -72,3 +72,30 @@ func TestCheckpointer_FlushIsSynchronous(t *testing.T) {
 		t.Fatalf("Flush must write synchronously; batches = %d", len(st.batches))
 	}
 }
+
+func TestCheckpointer_DirtyCountAndRun(t *testing.T) {
+	st := &recordingStore{}
+	c := New(st, 10*time.Millisecond, nil)
+
+	j := job.New("a", "A", job.PolicyFromPP(3))
+	c.Mark(j)
+	if got := c.DirtyCount(); got != 1 {
+		t.Fatalf("DirtyCount = %d, want 1", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.Run(ctx)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if c.DirtyCount() != 0 {
+		t.Fatalf("DirtyCount after Run cancelled = %d, want 0", c.DirtyCount())
+	}
+}

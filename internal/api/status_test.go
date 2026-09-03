@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
@@ -290,5 +291,17 @@ func TestModeStatus_UnblockServer(t *testing.T) {
 	rr3 := apiGet(t, s3.Handler(), "/api?mode=status&name=unblock_server&value=unknown-server&apikey="+testAPIKey)
 	if rr3.Code != http.StatusNotFound {
 		t.Errorf("status = %d; want 404 (not found); body = %s", rr3.Code, rr3.Body.String())
+	}
+}
+
+func TestModeStatus_DirectCall(t *testing.T) {
+	t.Parallel()
+	d := newTestAPIDispatcher(t)
+	s := testServerWithDispatcher(t, d)
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=status", nil)
+	rec := httptest.NewRecorder()
+	s.modeStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("modeStatus() status = %d, want 200", rec.Code)
 	}
 }

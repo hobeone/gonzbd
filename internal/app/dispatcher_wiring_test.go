@@ -10,4 +10,15 @@ func TestApplicationConstructsAWiredDispatcher(t *testing.T) {
 	if app.Dispatcher() == nil {
 		t.Fatal("app.New must construct a Dispatcher")
 	}
+	if app.Config() == nil {
+		t.Fatal("app.Config() must not be nil")
+	}
+
+	w := &appWorkers{app: app}
+	w.Abort("test-job")
+
+	appNilDisp := &Application{}
+	if _, ok := appNilDisp.lookupJob("test-job"); ok {
+		t.Fatal("lookupJob must return false when dispatcher is nil")
+	}
 }

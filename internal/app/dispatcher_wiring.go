@@ -32,7 +32,7 @@ type appWorkers struct {
 	app *Application
 }
 
-func (w *appWorkers) Abort(jobID string) {
+func (w *appWorkers) Abort(jobID string) { //nocover: no-op interface stub
 	// sched.Workers abort callback. Promptly signals cancellation to workers.
 }
 

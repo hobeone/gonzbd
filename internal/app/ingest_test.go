@@ -150,3 +150,20 @@ func TestBuildIngestJob_PausedPriority(t *testing.T) {
 		t.Errorf("Intent = %v, want %v", j.Intent(), job.IntentPause)
 	}
 }
+
+func TestDeriveName(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input, want string
+	}{
+		{"/path/to/movie.nzb", "movie"},
+		{"/path/to/archive.tar.gz", "archive.tar"},
+		{"/path/to/archive.tar", "archive"},
+		{"barefile", "barefile"},
+	}
+	for _, tc := range cases {
+		if got := deriveName(tc.input); got != tc.want {
+			t.Errorf("deriveName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}

@@ -191,7 +191,7 @@ func deriveName(path string) string {
 
 // newJobID returns a 16-character lowercase hex string backed by 8
 // bytes (64 bits) of OS entropy.
-func newJobID() (string, error) {
+func newJobID() (string, error) { //nocover: OS entropy error branch
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err

@@ -141,3 +141,30 @@ func TestFailMsgForJob_WithoutResidentManifest(t *testing.T) {
 		t.Errorf("failMsgForJob() after eviction = %q, want %q — the verdict must not depend on manifest residency", got, want)
 	}
 }
+
+type fakeProgressCounters struct {
+	failed  int64
+	content int64
+	exp     int64
+}
+
+func (f fakeProgressCounters) FailedBytes() int64        { return f.failed }
+func (f fakeProgressCounters) ContentFailedBytes() int64 { return f.content }
+func (f fakeProgressCounters) ExpectedBytes() int64      { return f.exp }
+func (f fakeProgressCounters) RemainingBytes() int64     { return 0 }
+
+func TestFailMsgForCounters_Direct(t *testing.T) {
+	t.Parallel()
+	p := fakeProgressCounters{failed: 100, content: 100, exp: 100}
+	msg := failMsgForCounters(p, "", 0, 0, false)
+	if !strings.Contains(msg, "Job is beyond repair") {
+		t.Errorf("failMsgForCounters = %q, want 'Job is beyond repair'", msg)
+	}
+}
+
+func TestFailMsgForJob_NilJob(t *testing.T) {
+	t.Parallel()
+	if got := failMsgForJob(nil); got != "" {
+		t.Errorf("failMsgForJob(nil) = %q, want empty string", got)
+	}
+}

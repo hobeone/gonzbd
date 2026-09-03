@@ -87,15 +87,25 @@ func (n NopApp) ServerStatus() []downloader.ServerSnapshot { return n.ServerSnap
 func (n NopApp) Speed() float64 { return n.SpeedVal }
 
 // AddJob forwards the job adding to the wired dispatcher if present.
-func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
+func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error { //nocover: test double stub
 	if n.Dispatcher != nil {
+		for _, row := range n.Dispatcher.List() {
+			if (hdr.Filename != "" && (row.Header.Filename == hdr.Filename || row.Header.Name == hdr.Filename)) ||
+				(hdr.Name != "" && (row.Header.Name == hdr.Name || row.Header.Filename == hdr.Name)) {
+				hdr.Warning = "Duplicate NZB"
+				if !force {
+					_ = j.SetIntent(job.IntentPause)
+				}
+				break
+			}
+		}
 		return n.Dispatcher.Add(j, hdr)
 	}
 	return nil
 }
 
 // RemoveJob forwards the job removal to the wired dispatcher if present.
-func (n NopApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
+func (n NopApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error { //nocover: test double stub
 	if n.Dispatcher != nil {
 		return n.Dispatcher.Remove(ctx, id)
 	}

@@ -1337,7 +1337,7 @@ func TestRun_DispatchesOnEveryWakeupAndStopsOnCancel(t *testing.T) {
 
 	// dispatchReady is the wakeup a finished connection worker raises. One
 	// article must land on the server's work channel because of it.
-	d.signalDispatch()
+	d.Wake()
 	select {
 	case req := <-d.workCh["s1"]:
 		if req.messageID != "r1@h" && req.messageID != "r2@h" {

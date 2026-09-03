@@ -607,3 +607,20 @@ func TestCleanupStage_LogOnFailure(t *testing.T) {
 		t.Error("expected warnings to be logged on cleanup failure")
 	}
 }
+
+func TestJob_NilDelegation(t *testing.T) {
+	t.Parallel()
+	j := &Job{}
+	if got := j.Name(); got != "" {
+		t.Fatalf("Name() = %q, want empty", got)
+	}
+	if _, err := j.Manifest(); err == nil {
+		t.Fatal("Manifest() should error when Job is nil")
+	}
+	if got := j.Progress(); got != nil {
+		t.Fatal("Progress() should be nil when Job is nil")
+	}
+	if got := j.NumFiles(); got != 0 {
+		t.Fatalf("NumFiles() = %d, want 0", got)
+	}
+}

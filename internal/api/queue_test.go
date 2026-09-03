@@ -2970,3 +2970,20 @@ func TestUnixOrZero_RendersNeverAsZero(t *testing.T) {
 		t.Errorf("unixOrZero(%v) = %d, want %d", at, got, at.Unix())
 	}
 }
+
+func TestQueueChangeName_DispatcherWiredAndUnwired(t *testing.T) {
+	s := &Server{log: slog.Default()}
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=queue&name=rename&value=job1&value2=newname", nil)
+	rr := httptest.NewRecorder()
+	s.queueChangeName(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d; want 500", rr.Code)
+	}
+
+	sWired, _ := testQueueServer(t)
+	rrNotFound := httptest.NewRecorder()
+	sWired.queueChangeName(rrNotFound, req)
+	if rrNotFound.Code != http.StatusNotFound {
+		t.Errorf("status = %d; want 404", rrNotFound.Code)
+	}
+}

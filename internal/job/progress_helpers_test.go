@@ -329,3 +329,45 @@ func TestIsEarlyAbort_Boundaries(t *testing.T) {
 		t.Error("isEarlyAbort() fired a second time after already aborting")
 	}
 }
+
+func TestNewJobProgressSized(t *testing.T) {
+	files := []FileMeta{
+		{
+			Bytes:           100,
+			ArticleCount:    2,
+			IsPar2:          false,
+			Done:            []bool{true, false},
+			Failed:          []bool{true, false},
+			Fetch:           FetchIfNeeded,
+			BytesDownloaded: 50,
+			FailedBytes:     50,
+		},
+		{Bytes: 200, ArticleCount: 4, IsPar2: false, Fetch: FetchAlways},
+	}
+	p := newJobProgressSized(files)
+	if p.PendingArticles() != 5 {
+		t.Errorf("PendingArticles() = %d, want 5", p.PendingArticles())
+	}
+	if len(p.files) != 2 {
+		t.Fatalf("len(p.files) = %d, want 2", len(p.files))
+	}
+	if !p.UsesOnDemandPar2() {
+		t.Error("UsesOnDemandPar2() should be true when FetchIfNeeded present")
+	}
+
+	var nilP *JobProgress
+	if nilP.NumFiles() != 0 {
+		t.Errorf("nilP.NumFiles() = %d, want 0", nilP.NumFiles())
+	}
+	if nilP.UsesOnDemandPar2() {
+		t.Error("nilP.UsesOnDemandPar2() should be false")
+	}
+	if p.NumFiles() != 2 {
+		t.Errorf("p.NumFiles() = %d, want 2", p.NumFiles())
+	}
+
+	allAlways := newJobProgressSized([]FileMeta{{ArticleCount: 1, Fetch: FetchAlways}})
+	if allAlways.UsesOnDemandPar2() {
+		t.Error("allAlways.UsesOnDemandPar2() should be false")
+	}
+}

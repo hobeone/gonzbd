@@ -588,20 +588,16 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.artIdx)
+
+	done := func() {}
 	if wireDone != nil {
 		var once sync.Once
-		done := func() { once.Do(wireDone) }
+		done = func() { once.Do(wireDone) }
 		defer done()
-		body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
-		done()
-		if !ok {
-			return
-		}
-		d.processFetchedArticle(ctx, srv, req, body)
-		return
 	}
 
 	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
+	done()
 	if !ok {
 		return
 	}

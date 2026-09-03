@@ -375,3 +375,71 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 		}
 	}
 }
+
+func TestHasDownloadableJobs_Branches(t *testing.T) {
+	t.Parallel()
+	app := &Application{}
+	if app.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs with nil dispatcher should be false")
+	}
+
+	appReal := newTestApplication(t)
+	if appReal.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs with empty queue should be false")
+	}
+
+	j, hdr, err := BuildIngestJob(appReal.config, multiVolumeNZB(), "test.nzb", types.FetchOptions{}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := appReal.Dispatcher().Add(j, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if !appReal.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs with active job should be true")
+	}
+
+	appReal.Dispatcher().Pause()
+	if appReal.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs with paused dispatcher should be false")
+	}
+
+	appReal.Dispatcher().Resume()
+	if err := appReal.Dispatcher().PauseJob(j.ID()); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+	if appReal.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs with paused job should be false")
+	}
+}
+
+func TestRetainedMatchesManifest_Branches(t *testing.T) {
+	t.Parallel()
+	j, _, err := BuildIngestJob(nil, multiVolumeNZB(), "test.nzb", types.FetchOptions{}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	retainedBadIdx := []retainedFile{
+		{FileIndex: 1, ArticleCount: 2},
+		{FileIndex: 1, ArticleCount: 2},
+		{FileIndex: 2, ArticleCount: 1},
+	}
+	if retainedMatchesManifest(retainedBadIdx, m) {
+		t.Error("retainedMatchesManifest with bad file index should be false")
+	}
+
+	retainedBadCount := []retainedFile{
+		{FileIndex: 0, ArticleCount: 99},
+		{FileIndex: 1, ArticleCount: 2},
+		{FileIndex: 2, ArticleCount: 1},
+	}
+	if retainedMatchesManifest(retainedBadCount, m) {
+		t.Error("retainedMatchesManifest with bad article count should be false")
+	}
+}

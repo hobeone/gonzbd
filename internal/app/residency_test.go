@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -93,4 +94,71 @@ func TestAppResidency_HydrateUnknownJobErrors(t *testing.T) {
 	if err := r.Hydrate(context.Background(), "nope"); err == nil {
 		t.Fatal("Hydrate of an unknown job must error")
 	}
+}
+
+func TestAppResidency_RestoreResolution(t *testing.T) {
+	rNilDB := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil, nil)
+	jUnattached := job.New("j_nil", "name", job.Policy{})
+	rNilDB.restoreResolution(context.Background(), jUnattached)
+
+	dir := t.TempDir()
+	hdb, err := history.Open(t.Context(), filepath.Join(dir, "h.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	defer func() { _ = hdb.Close() }()
+
+	repo := history.NewRepository(hdb)
+	db := repo.DB()
+
+	j := job.New("j1", "name", job.PolicyFromPP(3))
+	writeTestManifest(t, filepath.Join(dir, "j1.json.gz"), j)
+
+	r := newAppResidency(func(id string) (*job.Job, bool) {
+		if id == "j1" {
+			return j, true
+		}
+		return nil, false
+	}, dir, db, nil)
+
+	if err := r.Hydrate(context.Background(), "j1"); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+
+	_, err = db.Exec(`INSERT INTO durable_runs (job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"j1", 0, 0, 0, 0, 100, 12345)
+	if err != nil {
+		t.Fatalf("insert durable_runs: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, ?)`, "j1", 1)
+	if err != nil {
+		t.Fatalf("insert failed_articles: %v", err)
+	}
+
+	// First call: failed art_idx 1 causes ApplyResolution error
+	r.restoreResolution(context.Background(), j)
+
+	// Second call: art_idx 0 is valid, ApplyResolution succeeds with nil error
+	_, _ = db.Exec(`DELETE FROM failed_articles WHERE job_id = ?`, "j1")
+	_, _ = db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, ?)`, "j1", 0)
+	r.restoreResolution(context.Background(), j)
+
+	// Third call: failed_articles table dropped causes QueryContext error
+	_, _ = db.Exec(`DROP TABLE failed_articles`)
+	r.restoreResolution(context.Background(), j)
+
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.restoreResolution(ctxCancel, j)
+
+	r.Evict("missing")
+
+	readyCh := make(chan struct{})
+	r.mu.Lock()
+	r.hydrating["waiting"] = readyCh
+	r.mu.Unlock()
+	go func() {
+		close(readyCh)
+	}()
+	r.Evict("waiting")
 }

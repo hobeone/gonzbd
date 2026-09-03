@@ -146,3 +146,13 @@ func TestRarVolumeRecoveryStage_DisabledIsNoOp(t *testing.T) {
 		t.Errorf("file was renamed even though stage is disabled: %v", statErr)
 	}
 }
+
+func TestRarVolumeRecoveryStage_DefaultLogger(t *testing.T) {
+	t.Parallel()
+	stage := NewRarVolumeRecoveryStage()
+	stage.Log = nil
+	job := &Job{}
+	if log := stage.logger(job); log == nil {
+		t.Fatal("logger returned nil")
+	}
+}

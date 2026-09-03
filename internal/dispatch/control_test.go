@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -49,6 +50,15 @@ func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 	if err := d.PauseJob("nope"); err == nil {
 		t.Fatal("PauseJob of an unknown id must error")
 	}
+	if err := d.ResumeJob("nope"); err == nil {
+		t.Fatal("ResumeJob of an unknown id must error")
+	}
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	if err := d.ResumeJob("a"); err == nil {
+		t.Fatal("ResumeJob on cancelled job must error")
+	}
 }
 
 // TestDispatcherRemove_IsIdempotentAndReturnsResources pins that Remove gives
@@ -94,5 +104,15 @@ func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 	d.tick(context.Background())
 	if !jB.HoldsLease() {
 		t.Fatal("Remove failed to return lease capacity: job B did not acquire lease on next tick")
+	}
+
+	stErr := &fakeStore{delErr: errors.New("disk is angry")}
+	dErr := newTestDispatcher(t, withStore(stErr))
+	jErr := job.New("e", "Job E", job.PolicyFromPP(3))
+	if err := dErr.Add(jErr, Header{Name: "Job E"}); err != nil {
+		t.Fatalf("Add(e): %v", err)
+	}
+	if err := dErr.Remove(context.Background(), "e"); err == nil {
+		t.Fatal("Remove must error if store.Delete fails")
 	}
 }

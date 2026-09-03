@@ -2243,3 +2243,11 @@ func TestUnmarkTried_LetsTheSameServerBeRetried(t *testing.T) {
 		t.Error("server 1 was un-marked too; only the failing server may be freed")
 	}
 }
+
+func TestHasDownloadableJobs(t *testing.T) {
+	t.Parallel()
+	d := newDispatchDownloader(nil)
+	if d.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs() = true for empty downloader, want false")
+	}
+}

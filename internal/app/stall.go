@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -553,17 +552,7 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 		return fmt.Errorf("%w: job %s file %d: the job has no readable manifest, so no barrier "+
 			"can be run over it", ErrNotFinalized, jobID, fileIdx)
 	}
-	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
-	if errors.Is(err, job.ErrNotResident) {
-		app.log.Debug("retried finalize recorded its durable runs but could not ack a "+
-			"non-resident job; the articles are replayed from the record after the resume",
-			"job", jobID, "fileidx", fileIdx)
-		if cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); cerr != nil { //nolint:gosec // G115: file counts are far below int32
-			app.log.Debug("close finalized file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
-		}
-		return nil
-	}
-	return err
+	return app.finalizeCompletedFile(ctx, jobID, fileIdx)
 }
 
 // stallLost re-surfaces a stall whose file can no longer be finalized in this

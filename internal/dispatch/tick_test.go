@@ -15,6 +15,12 @@ import (
 
 func TestTick_PromotesWithoutAKick(t *testing.T) {
 	d := newTestDispatcher(t)
+	d.Wake()
+	if ch := d.Notify(); ch == nil {
+		t.Fatal("Notify returned nil")
+	}
+	d.Tick(context.Background())
+
 	j := job.New("j1", "n", job.Policy{})
 	if err := d.Add(j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
