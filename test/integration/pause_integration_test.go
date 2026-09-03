@@ -81,11 +81,11 @@ func TestIntegration_PauseCancelsInFlightFetch(t *testing.T) {
 	apiCfg.General.NZBKey = "testnzbkey"
 
 	apiSrv := api.New(api.Options{
-		Version: "integration-test",
-		Queue:   a.Queue(),
-		History: repo,
-		Config:  apiCfg,
-		App:     a,
+		Version:    "integration-test",
+		Dispatcher: a.Dispatcher(),
+		History:    repo,
+		Config:     apiCfg,
+		App:        a,
 	})
 
 	ts := httptest.NewServer(apiSrv.Handler())

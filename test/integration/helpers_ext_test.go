@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,10 +17,10 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
@@ -319,24 +320,23 @@ func waitForPostProcWithTimeout(t *testing.T, a *app.Application, timeout time.D
 
 // addNZBJobPP is like addNZBJob but sets the post-processing level.
 // PP=3 enables repair + unpack + cleanup; PP=0 is download-only.
-func addNZBJobPP(t *testing.T, a *app.Application, rawNZB []byte, name string, pp int) *queue.Job {
+func addNZBJobPP(t *testing.T, a *app.Application, rawNZB []byte, name string, pp int) *job.Job {
 	t.Helper()
 	parsed, err := nzb.Parse(bytes.NewReader(rawNZB))
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename: name + ".nzb",
-		Name:     name,
-		PP:       pp,
-	}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(a.Config(), parsed, name+".nzb", types.FetchOptions{
+		NzbName: name,
+		PP:      pp,
+	}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.AddJob(t.Context(), job, rawNZB, false); err != nil {
+	if err := a.AddJob(t.Context(), j, hdr, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
-	return job
+	return j
 }
 
 // newMockServerFromFixtures registers fixture TestFiles with a mock NNTP

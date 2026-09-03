@@ -50,13 +50,9 @@ var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 // the audit does its job across two Queues, not evidence two Queues sharing
 // a Job is a supported configuration — nothing in dispatch's own design
 // (D-B13, this Dispatcher owns its Queue outright) constructs more than one
-// Dispatcher per Job, and no PRODUCTION code constructs a Dispatcher at all:
-// `grep -rln 'dispatch\.New(' --include='*.go' internal/ cmd/ | grep -v
-// _test.go` (run from the repo root) finds 0 files. The two calls that exist
-// are both in internal/dispatch/store's lifecycle test, which runs a
-// Dispatcher against a real database — one at a time, never two over one Job.
-// This said "zero matches, in test or production code" until B2.2 added that
-// test; the production half is what the argument below actually needs. So
+// Dispatcher per Job, and production code constructs exactly one Dispatcher per
+// Application: `grep -rln 'dispatch\.New(' --include='*.go' internal/ cmd/ | grep -v _test.go`
+// (run from the repo root) finds 1 file (internal/app/app.go). So
 // today's single-pool claim survives, scoped to what runs: within a single
 // pool, which is every production configuration that exists today, identity
 // is exact — a double return or a lease this pool never issued is caught,

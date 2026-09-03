@@ -25,15 +25,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 func requireSelfPost(t *testing.T) {
@@ -43,22 +45,22 @@ func requireSelfPost(t *testing.T) {
 	}
 }
 
-// addJob parses raw NZB XML, creates a queue.Job, and adds it to the app
+// addJob parses raw NZB XML, creates a job.Job, and adds it to the app
 // via Application.AddJob.
-func addJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *queue.Job {
+func addJob(t *testing.T, a *app.Application, cfg *config.Config, rawNZB []byte, name string) *job.Job {
 	t.Helper()
 	parsed, err := nzb.Parse(bytes.NewReader(rawNZB))
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(cfg, parsed, name+".nzb", types.FetchOptions{NzbName: name}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.AddJob(t.Context(), job, rawNZB, false); err != nil {
+	if err := a.AddJob(t.Context(), j, hdr, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
-	return job
+	return j
 }
 
 // TestE2E_SelfPost_SingleFile posts a single yEnc article to the server,
@@ -80,10 +82,10 @@ func TestE2E_SelfPost_SingleFile(t *testing.T) {
 	waitForArticle(t, server, firstMID, propagationTimeout)
 
 	a, downloadDir := newE2EApp(t, cfg)
-	job := addJob(t, a, nzbXML, "e2e-single")
+	j := addJob(t, a, cfg, nzbXML, "e2e-single")
 
 	wantSHA := sha256.Sum256(payload)
-	waitAndVerify(t, a, job.ID, downloadDir, "e2e-single.bin", wantSHA[:], downloadTimeout)
+	waitAndVerify(t, a, j.ID(), downloadDir, "e2e-single.bin", wantSHA[:], downloadTimeout)
 }
 
 // TestE2E_SelfPost_MultiPart posts a file split across multiple articles,
@@ -109,10 +111,10 @@ func TestE2E_SelfPost_MultiPart(t *testing.T) {
 	waitForArticle(t, server, firstMID, propagationTimeout)
 
 	a, downloadDir := newE2EApp(t, cfg)
-	job := addJob(t, a, nzbXML, "e2e-multi")
+	j := addJob(t, a, cfg, nzbXML, "e2e-multi")
 
 	wantSHA := sha256.Sum256(payload)
-	waitAndVerify(t, a, job.ID, downloadDir, "e2e-multi.bin", wantSHA[:], downloadTimeout)
+	waitAndVerify(t, a, j.ID(), downloadDir, "e2e-multi.bin", wantSHA[:], downloadTimeout)
 }
 
 // TestE2E_SelfPost_MultiFile posts two separate files, downloads both,
@@ -136,12 +138,12 @@ func TestE2E_SelfPost_MultiFile(t *testing.T) {
 	waitForArticle(t, server, firstMID, propagationTimeout)
 
 	a, downloadDir := newE2EApp(t, cfg)
-	job := addJob(t, a, nzbXML, "e2e-multi-file")
+	j := addJob(t, a, cfg, nzbXML, "e2e-multi-file")
 
 	ctx, cancel := context.WithTimeout(t.Context(), downloadTimeout)
 	defer cancel()
 
-	if !waitForFilesComplete(t, a, job.ID, []int{0, 1}, downloadTimeout) {
+	if !waitForFilesComplete(t, a, j.ID(), []int{0, 1}, downloadTimeout) {
 		t.Fatalf("timeout waiting for file completions")
 	}
 
@@ -192,12 +194,12 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 
 	fName := filepath.Base(nzbPath)
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: fName}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(cfg, parsed, fName, types.FetchOptions{}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
+	if err := a.AddJob(t.Context(), j, hdr, rawNZB, false); err != nil {
+		t.Fatalf("a.AddJob: %v", err)
 	}
 
 	fullPath := filepath.Join(downloadDir, "provided")
@@ -290,15 +292,15 @@ func waitForFilesComplete(t *testing.T, a *app.Application, jobID string, fileId
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		snap := a.Queue().SnapshotJob(jobID)
-		if snap == nil {
+		j, ok := a.Dispatcher().Job(jobID)
+		if !ok {
 			return true
 		}
 		allComplete := true
-		p := snap.Progress()
+		p := j.Progress()
 		// Poll loop: a manifest that is not yet available means not yet
 		// complete, so retry rather than fail.
-		m, mErr := snap.Manifest()
+		m, mErr := j.Manifest()
 		if mErr != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue

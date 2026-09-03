@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -12,6 +13,11 @@ import (
 // Dispatcher returns the application's job dispatcher.
 func (app *Application) Dispatcher() *dispatch.Dispatcher {
 	return app.dispatcher
+}
+
+// Config returns the application's configuration.
+func (app *Application) Config() *config.Config {
+	return app.config
 }
 
 func (app *Application) lookupJob(id string) (*job.Job, bool) {

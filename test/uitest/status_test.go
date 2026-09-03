@@ -19,7 +19,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/web"
 	"github.com/hobeone/gonzbd/ui"
 )
@@ -44,9 +43,9 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 		t.Fatal("ui/dist/index.html not found — run 'cd ui && bun run build' first")
 	}
 
-	q := queue.New()
+	d := newTestDispatcher(t)
 	ma := apitest.NopApp{
-		Queue: q,
+		Dispatcher: d,
 		ServerSnapshotsVal: []downloader.ServerSnapshot{
 			{
 				Name:           "test-server",
@@ -85,12 +84,12 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 	}
 
 	apiSrv := api.New(api.Options{
-		Version: "test-uitest",
-		Queue:   q,
-		Config:  cfg,
-		App:     ma,
-		History: histR,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		Version:    "test-uitest",
+		Dispatcher: d,
+		Config:     cfg,
+		App:        ma,
+		History:    histR,
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	})
 
 	mux := http.NewServeMux()
@@ -120,14 +119,14 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 	}
 
 	env := &testEnv{
-		Server:  ts,
-		BaseURL: ts.URL,
-		Queue:   q,
-		APISrv:  apiSrv,
-		HistDB:  histDB,
-		HistR:   histR,
-		PW:      pw,
-		Browser: browser,
+		Server:     ts,
+		BaseURL:    ts.URL,
+		Dispatcher: d,
+		APISrv:     apiSrv,
+		HistDB:     histDB,
+		HistR:      histR,
+		PW:         pw,
+		Browser:    browser,
 	}
 
 	t.Cleanup(func() {

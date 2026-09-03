@@ -87,11 +87,15 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	job2 := addNZBJob(t, a, rawNZB, "duplicate")
 
 	// 3. Verify it is paused and has duplicate warning
-	if job2.Status != constants.StatusPaused {
-		t.Errorf("duplicate job status = %q, want Paused", job2.Status)
+	row2, ok := a.Dispatcher().Row(job2.ID())
+	if !ok {
+		t.Fatalf("duplicate job not in dispatcher")
 	}
-	if job2.Warning != "Duplicate NZB" {
-		t.Errorf("duplicate job warning = %q, want 'Duplicate NZB'", job2.Warning)
+	if row2.Status() != constants.StatusPaused {
+		t.Errorf("duplicate job status = %q, want Paused", row2.Status())
+	}
+	if row2.Header.Warning != "Duplicate NZB" {
+		t.Errorf("duplicate job warning = %q, want 'Duplicate NZB'", row2.Header.Warning)
 	}
 
 	// A duplicate now gets a backup of its own, under a suffixed name.
@@ -103,14 +107,14 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	// operator can resume it, download it, and have it fail. The original
 	// file is left intact rather than overwritten, because admin/nzb/ is
 	// browsed by hand for the name a job was submitted under.
-	if job2.NZBBackup == "" {
+	if row2.Header.NZBBackup == "" {
 		t.Error("duplicate job recorded no NZB backup, so it cannot be retried if resumed")
 	}
-	if job2.NZBBackup == "duplicate.nzb.gz" {
+	if row2.Header.NZBBackup == "duplicate.nzb.gz" {
 		t.Error("duplicate job reused the first job's backup name; the original would be overwritten")
 	}
-	if _, err := os.Stat(filepath.Join(nzbBackupDir, job2.NZBBackup)); err != nil {
-		t.Errorf("duplicate job's backup %q missing: %v", job2.NZBBackup, err)
+	if _, err := os.Stat(filepath.Join(nzbBackupDir, row2.Header.NZBBackup)); err != nil {
+		t.Errorf("duplicate job's backup %q missing: %v", row2.Header.NZBBackup, err)
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Errorf("first job's backup was clobbered by the duplicate: %v", err)
@@ -119,15 +123,19 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	// 4. Add same NZB again with DIFFERENT filename (MD5 trigger).
 	// Still detected as a duplicate, still paused.
 	job3 := addNZBJob(t, a, rawNZB, "duplicate-renamed")
-	if job3.Status != constants.StatusPaused {
-		t.Errorf("MD5 duplicate job status = %q, want Paused", job3.Status)
+	row3, ok := a.Dispatcher().Row(job3.ID())
+	if !ok {
+		t.Fatalf("MD5 duplicate job not in dispatcher")
+	}
+	if row3.Status() != constants.StatusPaused {
+		t.Errorf("MD5 duplicate job status = %q, want Paused", row3.Status())
 	}
 
 	// Same reasoning as above: paused, but resumable, so it needs a backup.
 	// This one takes its own filename with no suffix, since nothing else
 	// claims it.
-	if job3.NZBBackup != "duplicate-renamed.nzb.gz" {
-		t.Errorf("MD5 duplicate NZBBackup = %q, want %q", job3.NZBBackup, "duplicate-renamed.nzb.gz")
+	if row3.Header.NZBBackup != "duplicate-renamed.nzb.gz" {
+		t.Errorf("MD5 duplicate NZBBackup = %q, want %q", row3.Header.NZBBackup, "duplicate-renamed.nzb.gz")
 	}
 	if _, err := os.Stat(filepath.Join(nzbBackupDir, "duplicate-renamed.nzb.gz")); err != nil {
 		t.Errorf("MD5 duplicate's backup missing: %v", err)
@@ -154,7 +162,7 @@ func TestIntegration_DirectoryCollision(t *testing.T) {
 	job := addNZBJob(t, a, rawNZB, "collision")
 
 	// Verify job was renamed to collision.1
-	if job.Name != "collision.1" {
-		t.Errorf("job name = %q, want collision.1", job.Name)
+	if job.Name() != "collision.1" {
+		t.Errorf("job name = %q, want collision.1", job.Name())
 	}
 }

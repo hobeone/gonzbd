@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"log/slog"
+
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestNaming_JobDirectoryMatchesName verifies that the download directory
@@ -60,14 +62,13 @@ func TestNaming_NZBExtensionStripped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Name:     "My.Movie.2024.nzb", // explicit name WITH .nzb
-		Filename: "My.Movie.2024.nzb",
-	}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(a.Config(), parsed, "My.Movie.2024.nzb", types.FetchOptions{
+		NzbName: "My.Movie.2024.nzb",
+	}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.AddJob(t.Context(), job, rawNZB, false); err != nil {
+	if err := a.AddJob(t.Context(), j, hdr, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 
