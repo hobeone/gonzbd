@@ -138,14 +138,22 @@ func (q *ppQueue) tryPop(mark func(*Job)) *Job {
 	return job
 }
 
-// withLock runs fn while holding q.mu. It exists so PostProcessor.Has and
-// PostProcessor.Empty can read the queue and the busyMu-guarded fields
-// under one consistent q.mu -> busyMu lock order (the same order tryPop's
-// mark callback uses to publish busy state), instead of taking and
-// releasing each lock independently -- which is what let the two reads
-// tear and made Has/Empty observe the job as absent from both.
-func (q *ppQueue) withLock(fn func()) {
+// withLock runs fn while holding q.mu, passing it the live q.jobs slice. It
+// exists so PostProcessor.Has and PostProcessor.Empty can read the queue and
+// the busyMu-guarded fields under one consistent q.mu -> busyMu lock order
+// (the same order tryPop's mark callback uses to publish busy state),
+// instead of taking and releasing each lock independently -- which is what
+// let the two reads tear and made Has/Empty observe the job as absent from
+// both.
+//
+// Passing jobs as a parameter rather than letting fn reach into q.jobs
+// directly keeps the lock-held slice scoped to the callback: there is no
+// longer a second, unexported-field access path that a future caller could
+// use to read q.jobs outside q.mu without a compile error forcing the
+// question. fn must not retain or mutate jobs beyond its own call, since the
+// slice header aliases the live backing array under lock.
+func (q *ppQueue) withLock(fn func(jobs []*Job)) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	fn()
+	fn(q.jobs)
 }

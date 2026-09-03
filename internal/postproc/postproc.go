@@ -188,8 +188,8 @@ func (p *PostProcessor) Cancel(jobID string) bool {
 // popJob) cannot make both reads report false at once.
 func (p *PostProcessor) Empty() bool {
 	var empty bool
-	p.q.withLock(func() {
-		if len(p.q.jobs) != 0 {
+	p.q.withLock(func(jobs []*Job) {
+		if len(jobs) != 0 {
 			empty = false
 			return
 		}
@@ -210,8 +210,8 @@ func (p *PostProcessor) Empty() bool {
 // section (via ppQueue.withLock), for the same reason given on Empty above.
 func (p *PostProcessor) Has(jobID string) bool {
 	var found bool
-	p.q.withLock(func() {
-		if findJob(p.q.jobs, jobID) >= 0 {
+	p.q.withLock(func(jobs []*Job) {
+		if findJob(jobs, jobID) >= 0 {
 			found = true
 			return
 		}

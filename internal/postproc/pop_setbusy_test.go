@@ -33,7 +33,10 @@ func TestPopJob_EmptyQueueReturnsFalseWhenWorkerContextDone(t *testing.T) {
 	if jobCtx != nil {
 		t.Error("popJob returned a non-nil context on failure")
 	}
-	if p.busy {
+	p.busyMu.Lock()
+	busy := p.busy
+	p.busyMu.Unlock()
+	if busy {
 		t.Error("popJob must not set busy when it returns ok=false")
 	}
 }

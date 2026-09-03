@@ -67,8 +67,8 @@ file internal/postproc/postproc.go
 --- anchor
 func (p *PostProcessor) Has(jobID string) bool {
 	var found bool
-	p.q.withLock(func() {
-		if findJob(p.q.jobs, jobID) >= 0 {
+	p.q.withLock(func(jobs []*Job) {
+		if findJob(jobs, jobID) >= 0 {
 			found = true
 			return
 		}
@@ -99,8 +99,8 @@ file internal/postproc/postproc.go
 --- anchor
 func (p *PostProcessor) Empty() bool {
 	var empty bool
-	p.q.withLock(func() {
-		if len(p.q.jobs) != 0 {
+	p.q.withLock(func(jobs []*Job) {
+		if len(jobs) != 0 {
 			empty = false
 			return
 		}
