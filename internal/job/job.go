@@ -129,34 +129,34 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 //
 // The ordering half of this is now enforced, not merely intent: internal/sched
 // defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
-// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds ten
+// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds thirteen
 // sites (advance.go's Park, Retry and Advance, cancel.go's Cancel, settle.go's
-// Settle, render.go's Render and RenderAll, and queue.go's Pause, Resume and
-// Paused). Of those ten, seven reach a *job.Job method call — Cancel (via
-// SetIntent, Snapshot and, through finishCancel/settleLocked, Finish), Park
-// (via parkLocked's Surrender), Retry (Snapshot, BeginAttempt), Advance
-// (Snapshot, BeginAttempt, Cross, Transition, and grantFor's
-// HoldsLease/Grant), Settle (Snapshot), Render (Snapshot) and RenderAll
-// (Snapshot, once per job); reviewed by reading all ten bodies, not derived
-// from a test — TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse
-// (internal/sched/lock_enumeration_test.go) is what now checks it,
-// superseding the "reviewer-maintained" status this split used to carry. See
-// that test's own comment for why: adding RenderAll moved this split from
-// six-of-nine to seven-of-ten silently, with no gate catching the move,
-// which is exactly the case this rule (AGENTS.md Rule 4) exists for. Pause,
-// Resume and Paused touch only Queue's own paused field and never reach a
-// *Job.
+// Settle, render.go's Render and RenderAll, and queue.go's Pause, Resume,
+// Paused, SetCaps, LeaseCap and SlotCap). Of those thirteen, seven reach a
+// *job.Job method call — Cancel (via SetIntent, Snapshot and, through
+// finishCancel/settleLocked, Finish), Park (via parkLocked's Surrender), Retry
+// (Snapshot, BeginAttempt), Advance (Snapshot, BeginAttempt, Cross, Transition,
+// and grantFor's HoldsLease/Grant), Settle (Snapshot), Render (Snapshot) and
+// RenderAll (Snapshot, once per job); reviewed by reading all thirteen bodies,
+// not derived from a test — TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse
+// (internal/sched/lock_enumeration_test.go) is what now checks it, superseding
+// the "reviewer-maintained" status this split used to carry. See that test's
+// own comment for why: adding RenderAll moved this split from six-of-nine to
+// seven-of-ten silently, and adding SetCaps/LeaseCap/SlotCap moved it to
+// seven-of-thirteen, with no gate catching the move, which is exactly the case
+// this rule (AGENTS.md Rule 4) exists for. Pause, Resume, Paused, SetCaps,
+// LeaseCap and SlotCap touch only Queue's own fields and never reach a *Job.
 // The other half holds by construction: this package imports nothing from
 // internal/sched (its own import block has none; the only hits for that
 // string are comment mentions in doc.go and this file), so Job cannot call
 // into Queue at all, and the order is one-directional — Queue.mu before
-// Job.mu, never the reverse. The grep above proves the count of ten; it
-// cannot say whether these are the same ten NAMES named here, so a rename
+// Job.mu, never the reverse. The grep above proves the count of thirteen; it
+// cannot say whether these are the same thirteen NAMES named here, so a rename
 // this pattern still matches would leave this citation green while the prose
 // went wrong. That is what
 // internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse checks —
-// it enforces the ten locker NAMES; the seven-of-ten *job.Job call claim
-// above is now enforced separately by
+// it enforces the thirteen locker NAMES; the seven-of-thirteen *job.Job call
+// claim above is now enforced separately by
 // internal/sched.TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse.
 //
 // Job does no I/O. It exposes State() and the attempt accessors. The

@@ -666,3 +666,32 @@ func TestStop_ParkErrorRecordsFirstError(t *testing.T) {
 		t.Errorf("Stop() error = %v, should keep first error, not be overwritten by park j2", err)
 	}
 }
+
+func TestPersistIfChanged_Coverage(t *testing.T) {
+	st := &fakeStore{saveErr: errors.New("save fail")}
+	d := newTestDispatcher(t, withStore(st))
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	m := job.NewManifest([]job.JobFile{{
+		Subject:  "f1",
+		Bytes:    1000,
+		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
+	}})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	_ = j.RestoreDownloadStamps(time.Unix(100, 0), time.Unix(200, 0))
+	j.SetPar2ReleaseReason("test reason")
+
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.persistIfChanged(context.Background(), j)
+
+	// Now with succeeding store
+	st.saveErr = nil
+	d.persistIfChanged(context.Background(), j)
+	// Second call without change should return early
+	d.persistIfChanged(context.Background(), j)
+}

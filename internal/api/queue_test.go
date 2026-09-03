@@ -1445,6 +1445,20 @@ func TestQueuePriority_MissingParams(t *testing.T) {
 	}
 }
 
+// TestQueuePriority_InvalidPriority verifies that an invalid priority value returns 404.
+func TestQueuePriority_InvalidPriority(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, testAddOptions{Filename: "test.nzb"})
+
+	url := fmt.Sprintf("/api?mode=queue&name=priority&value=%s&value2=5&apikey=%s",
+		job.ID, testAPIKey)
+	rr := apiGet(t, s.Handler(), url)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
 // --- Sonarr compatibility tests ---
 // These verify the exact JSON field names and types that Sonarr's C# client
 // deserializes (SabnzbdQueueItem). Any mismatch will silently break the

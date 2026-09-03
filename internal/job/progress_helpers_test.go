@@ -371,3 +371,18 @@ func TestNewJobProgressSized(t *testing.T) {
 		t.Error("allAlways.UsesOnDemandPar2() should be false")
 	}
 }
+
+func TestJobProgress_TotalArticles(t *testing.T) {
+	var nilP *JobProgress
+	if got := nilP.TotalArticles(); got != 0 {
+		t.Errorf("nilP.TotalArticles() = %d, want 0", got)
+	}
+
+	p := newJobProgressSized([]FileMeta{
+		{ArticleCount: 5, Fetch: FetchAlways},
+		{ArticleCount: 3, Fetch: FetchIfNeeded},
+	})
+	if got := p.TotalArticles(); got != 8 {
+		t.Errorf("p.TotalArticles() = %d, want 8", got)
+	}
+}

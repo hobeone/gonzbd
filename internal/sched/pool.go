@@ -64,14 +64,15 @@ var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
 // order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and is
-// taken by ten production doors — Cancel (cancel.go), Park, Retry and
+// taken by thirteen production doors — Cancel (cancel.go), Park, Retry and
 // Advance (advance.go), Settle (settle.go), Render and RenderAll (render.go),
-// and Pause, Resume and Paused (queue.go; see queue.go's own comment on mu) —
-// so this is now a description of a lock real code takes, not a
-// forward-looking constraint. queue.go's own comment carries the backticked
-// grep for the count; internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse
-// is what checks that these ten NAMES, not merely this count, are still
-// right — a grep proves how many, never which ones.
+// Pause, Resume, Paused, SetCaps, LeaseCap, and SlotCap (queue.go; see
+// queue.go's own comment on mu) — so this is now a description of a lock real
+// code takes, not a forward-looking constraint. queue.go's own comment carries
+// the backticked grep for the count;
+// internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse is what
+// checks that these thirteen NAMES, not merely this count, are still right — a
+// grep proves how many, never which ones.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID
@@ -110,6 +111,13 @@ func (p *leasePool) reclaim(l *job.Lease) error {
 
 func (p *leasePool) outstanding() int { return len(p.issued) }
 
+func (p *leasePool) setCapacity(c int) {
+	if c < 1 {
+		c = 1
+	}
+	p.capacity = c
+}
+
 // slotPool is pool-B compute capacity, held by job ID. Slots have no object
 // because nothing travels with them — unlike a lease, which carries the
 // Manifest and StorageBarrier (spec §6).
@@ -139,3 +147,10 @@ func (p *slotPool) acquire(id string) bool {
 func (p *slotPool) release(id string)    { delete(p.held, id) }
 func (p *slotPool) holds(id string) bool { return p.held[id] }
 func (p *slotPool) outstanding() int     { return len(p.held) }
+
+func (p *slotPool) setCapacity(c int) {
+	if c < 1 {
+		c = 1
+	}
+	p.capacity = c
+}

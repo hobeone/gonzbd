@@ -69,6 +69,7 @@ type fakeStore struct {
 	gone    map[string]bool
 	order   []string
 	loadErr error
+	saveErr error
 	delErr  error
 	saves   int
 	// loadHook runs inside Load, which is how a test reaches the middle of a
@@ -128,6 +129,9 @@ func (f *fakeStore) Load(context.Context) ([]Persisted, error) {
 func (f *fakeStore) Save(_ context.Context, p Persisted) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.saveErr != nil {
+		return f.saveErr
+	}
 	if f.rows == nil {
 		f.rows = map[string]Persisted{}
 	}

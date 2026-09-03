@@ -223,3 +223,23 @@ func TestCheckpointer_RemarkDuringFailedFlushNotOverwrittenWithStale(t *testing.
 		t.Fatalf("flushed job intent = %v, want %v (a2 should not be overwritten by stale a1)", got, job.IntentPause)
 	}
 }
+
+func TestCheckpointer_RunTickerFlushError(t *testing.T) {
+	st := &failingStore{failsLeft: 1}
+	c := New(st, 5*time.Millisecond, nil)
+	j := job.New("a", "A", job.PolicyFromPP(3))
+	c.Mark(j)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.Run(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}

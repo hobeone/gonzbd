@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -435,5 +436,28 @@ func TestDispatcher_Mutators(t *testing.T) {
 
 	if got := d.Len(); got != 1 {
 		t.Errorf("Len() = %d, want 1", got)
+	}
+}
+
+func TestSetPriority_Validation(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "test-job", job.Policy{})
+	if err := d.Add(j, Header{Name: "test-job"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.SetPriority("j1", 99); err == nil {
+		t.Fatalf("SetPriority(j1, 99) = nil, want error for invalid priority")
+	}
+
+	if err := d.SetPriority("j1", int(constants.HighPriority)); err != nil {
+		t.Fatalf("SetPriority(j1, HighPriority): %v", err)
+	}
+	row, ok := d.Row("j1")
+	if !ok {
+		t.Fatalf("Row(j1) not found")
+	}
+	if row.Header.Priority != int(constants.HighPriority) {
+		t.Errorf("Priority = %d, want %d", row.Header.Priority, constants.HighPriority)
 	}
 }

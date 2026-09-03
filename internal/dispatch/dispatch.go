@@ -158,6 +158,22 @@ func (d *Dispatcher) Resume() { d.q.Resume(); d.kick() }
 // Paused reports the Queue's pause flag (D-B13).
 func (d *Dispatcher) Paused() bool { return d.q.Paused() }
 
+// SetCaps updates the scheduler's lease and slot capacities and kicks the scheduler.
+func (d *Dispatcher) SetCaps(leaseCap, slotCap int) {
+	d.q.SetCaps(leaseCap, slotCap)
+	d.kick()
+}
+
+// LeaseCap returns the current lease capacity.
+func (d *Dispatcher) LeaseCap() int {
+	return d.q.LeaseCap()
+}
+
+// SlotCap returns the current slot capacity.
+func (d *Dispatcher) SlotCap() int {
+	return d.q.SlotCap()
+}
+
 // The three log helpers exist so the tick has exactly one shape for "this job
 // failed, keep walking". A tick must never abandon the rest of the queue
 // because one job errored — that would let a single bad job stall every other,
