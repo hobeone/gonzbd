@@ -31,18 +31,18 @@ func TestReevaluateStall_FinishesTheFinalizeTheStallInterrupted(t *testing.T) {
 	application, job, release := newWedgedApp(t)
 	ctx := t.Context()
 
-	application.handleFileComplete(ctx, FileComplete{JobID: job.ID, FileIdx: 0})
+	application.handleFileComplete(ctx, FileComplete{JobID: job.ID(), FileIdx: 0})
 
 	// Ground the fixture: the stall really happened, and it really left the
 	// completion unfinished. Without this the recovery assertions below could
 	// be satisfied by a file that was never stalled in the first place.
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
-		t.Fatalf("status = %v before re-evaluation, want Paused; the fixture did not stall", snap.Status)
+	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
+		t.Fatalf("status = %v before re-evaluation, want Paused; the fixture did not stall", row.Status())
 	}
-	if application.queue.SnapshotJob(job.ID).Progress().FileComplete(0) {
+	if job.Progress().FileComplete(0) {
 		t.Fatal("the file was already marked complete before re-evaluation; there is nothing left to recover")
 	}
-	if got := application.StallReason(job.ID).Reason; got == "" {
+	if got := application.StallReason(job.ID()).Reason; got == "" {
 		t.Fatal("no stall reason was recorded, so the re-evaluation has nothing to re-evaluate (R27)")
 	}
 
@@ -50,23 +50,23 @@ func TestReevaluateStall_FinishesTheFinalizeTheStallInterrupted(t *testing.T) {
 	release()
 	application.reevaluateStalls(ctx)
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
 		t.Fatal("job left the queue")
 	}
-	if !snap.Progress().FileComplete(0) {
+	if !job.Progress().FileComplete(0) {
 		t.Error("the file is still not marked complete after the condition cleared; the " +
 			"finalize was never retried, so the job cannot proceed to DirectUnpack, job " +
 			"finalization or post-processing — the stall is not self-clearing (L2)")
 	}
-	if !snap.Progress().ArticleDone(0) {
+	if !job.Progress().ArticleDone(0) {
 		t.Error("the file's article is still Outstanding; the retried finalize never drained " +
 			"and acked it, so this run's bytes would be re-fetched after a restart")
 	}
-	if snap.Status == constants.StatusPaused {
-		t.Errorf("status = %v, want the job resumed once its file was finalized", snap.Status)
+	if row.Status() == constants.StatusPaused {
+		t.Errorf("status = %v, want the job resumed once its file was finalized", row.Status())
 	}
-	if got := application.StallReason(job.ID).Reason; got != "" {
+	if got := application.StallReason(job.ID()).Reason; got != "" {
 		t.Errorf("stall reason = %q after recovery, want it cleared — the queue would keep "+
 			"showing a condition that no longer holds", got)
 	}
@@ -83,19 +83,19 @@ func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
-	application.Stall(job.ID, &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC})
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
-		t.Fatalf("status = %v after Stall, want Paused", snap.Status)
+	application.Stall(job.ID(), &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC})
+	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
+		t.Fatalf("status = %v after Stall, want Paused", row.Status())
 	}
 
 	application.reevaluateStalls(t.Context())
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap.Status == constants.StatusPaused {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok || row.Status() == constants.StatusPaused {
 		t.Errorf("status = %v, want the job off Paused — a stall that is never re-evaluated "+
-			"has no path back to running except a restart (R19)", snap.Status)
+			"has no path back to running except a restart (R19)", row.Status())
 	}
-	if got := application.StallReason(job.ID).Reason; got != "" {
+	if got := application.StallReason(job.ID()).Reason; got != "" {
 		t.Errorf("stall reason = %q, want it cleared once the job was resumed", got)
 	}
 }
@@ -115,10 +115,10 @@ func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
 func TestRetryFinalize_RefusesAFileWhoseHandleIsGone(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	// File 1 does not exist in this fixture, so no handle is open for it.
-	err := application.retryFinalize(t.Context(), job.ID, 1)
+	err := application.retryFinalize(t.Context(), job.ID(), 1)
 	if err == nil {
 		t.Fatal("retryFinalize reported success for a file no handle is open for; the " +
 			"caller marks it complete and post-processing consumes an untrimmed file")
@@ -141,16 +141,16 @@ func TestRetryFinalize_RefusesAFileWhoseHandleIsGone(t *testing.T) {
 func TestReevaluateStall_KeepsTheActionableReasonForALostFile(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.Stall(job.ID, &storagefault.Fault{
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.Stall(job.ID(), &storagefault.Fault{
 		Op: "sync", Path: "/data/x.bin", Err: syscall.EIO,
 	})
 	// File 1 has no handle, so the retry can never finalize it.
-	application.notePendingFinalize(job.ID, 1)
+	application.notePendingFinalize(job.ID(), 1)
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	reason := application.StallReason(job.ID).Reason
+	reason := application.StallReason(job.ID()).Reason
 	if !strings.Contains(reason, "restart") {
 		t.Errorf("reason = %q, want it to name the restart that recovers the job", reason)
 	}
@@ -158,12 +158,16 @@ func TestReevaluateStall_KeepsTheActionableReasonForALostFile(t *testing.T) {
 		t.Errorf("reason = %q, was re-classified as a storage fault — the operator is told to "+
 			"wait for a condition that cannot clear", reason)
 	}
-	if snap := application.queue.SnapshotJob(job.ID); snap.Warning != reason {
-		t.Errorf("queue warning = %q, want it to match the surfaced reason %q", snap.Warning, reason)
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("job not in queue")
 	}
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+	if row.Header.Warning != reason {
+		t.Errorf("queue warning = %q, want it to match the surfaced reason %q", row.Header.Warning, reason)
+	}
+	if row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v, want the job still Paused — a file that cannot be trimmed would "+
-			"otherwise be marked complete and fed to post-processing", snap.Status)
+			"otherwise be marked complete and fed to post-processing", row.Status())
 	}
 }
 
@@ -177,20 +181,20 @@ func TestReevaluateStall_DoesNotResumeAJobWhoseFinalizeStillFails(t *testing.T) 
 	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 
-	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
-		t.Fatalf("status = %v before re-evaluation, want Paused; the fixture did not stall", snap.Status)
+	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID(), FileIdx: 0})
+	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
+		t.Fatalf("status = %v before re-evaluation, want Paused; the fixture did not stall", row.Status())
 	}
 
 	// The wedge is NOT released: the condition still holds.
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v after a re-evaluation that could not finalize the file, want "+
 			"Paused — the job dispatches articles into the device that just refused them, "+
-			"every interval, for as long as the condition lasts", snap.Status)
+			"every interval, for as long as the condition lasts", row.Status())
 	}
-	if got := application.StallReason(job.ID).Reason; got == "" {
+	if got := application.StallReason(job.ID()).Reason; got == "" {
 		t.Error("the reason was dropped while the job is still parked (R27)")
 	}
 }
@@ -210,15 +214,15 @@ func TestReevaluateStall_DoesNotResumeAJobWhoseFinalizeStillFails(t *testing.T) 
 func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.Stall(job.ID, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.Stall(job.ID(), &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
 	// Neither file has an open handle, so each retry classifies it in turn.
-	application.notePendingFinalize(job.ID, 1)
-	application.notePendingFinalize(job.ID, 2)
+	application.notePendingFinalize(job.ID(), 1)
+	application.notePendingFinalize(job.ID(), 2)
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	files := application.recoveryFiles(job.ID)
+	files := application.recoveryFiles(job.ID())
 	if got := files[1]; got != finalizeLost {
 		t.Errorf("file 1 state = %v, want finalizeLost", got)
 	}
@@ -244,11 +248,11 @@ func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) 
 func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	if err := application.queue.Remove(job.ID); err != nil {
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
 		t.Fatal(err)
 	}
-	open, err := application.assembler.OpenFiles(t.Context(), job.ID)
+	open, err := application.assembler.OpenFiles(t.Context(), job.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +261,7 @@ func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 			"and this test would assert nothing about the sync target")
 	}
 
-	if err := application.retryFinalize(t.Context(), job.ID, 0); err == nil {
+	if err := application.retryFinalize(t.Context(), job.ID(), 0); err == nil {
 		t.Fatal("retryFinalize reported success for a job whose manifest cannot be read; the " +
 			"file is recorded finalized and its completion ships an untrimmed file on a " +
 			"later cycle")
@@ -274,14 +278,14 @@ func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 func TestReevaluateStall_ForgetsADepartedJobWithWorkOutstanding(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.Stall(job.ID, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
-	application.notePendingFinalize(job.ID, 0)
-	if err := application.queue.Remove(job.ID); err != nil {
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.Stall(job.ID(), &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
+	application.notePendingFinalize(job.ID(), 0)
+	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
 		t.Fatal(err)
 	}
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
 	if got := application.stalledJobIDs(); len(got) != 0 {
 		t.Errorf("stalledJobIDs = %v, want empty — a job that has left the queue has nothing "+

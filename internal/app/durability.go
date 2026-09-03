@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -14,7 +15,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -36,10 +36,10 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 			if _, _, err := j.AckDurable(p.Articles()); err != nil {
 				return err
 			}
+			if app.checkpointer != nil {
+				app.checkpointer.Mark(j)
+			}
 		}
-	}
-	if app.queue != nil {
-		return app.queue.AckDurable(p)
 	}
 	return nil
 }
@@ -58,28 +58,19 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 // It takes a SET rather than one article, and that is the point. The assembler
 // used to carry a single index alongside the fault, so a batch failure — a
 // coalesced run, a drain, a cache displacement — reported only whichever
-// article triggered it and rolled the rest back silently.
+// article happened to be first in the batch.
 //
-// No article is marked failed here. A storage fault says nothing about whether
-// an article is available on any server (A1); this is bookkeeping about what
-// reached disk, and it is deliberately separate from the fault's route.
+// R17: returns each article to Outstanding by clearing its emitted bit. The
+// articles are not marked failed (A1) and their bytes are not charged against
+// par2; the next dispatch cycle will pick them up again.
 //
-// Runs on the assembler's worker goroutine, so it must not block on it: it
-// takes the queue lock only.
+// Thread-safe: clears the emitted bits under the job lock. It does NOT touch
+// the assembler.
 func (app *Application) handleArticlesUnwritten(jobID string, _ int, artIdxs []int32) {
 	for _, artIdx := range artIdxs {
 		if app.dispatcher != nil {
 			if j, ok := app.dispatcher.Job(jobID); ok {
 				_ = j.ClearArticleEmitted(int(artIdx))
-			}
-		}
-		if app.queue != nil {
-			if err := app.queue.ClearArticleEmittedByIdx(jobID, artIdx); err != nil {
-				// A job that has left the queue has nothing to re-dispatch, so
-				// this is ordinary rather than a defect. It is still not silent
-				// (A2).
-				app.log.Debug("clear the emitted bit after a failed write",
-					"job", jobID, "artidx", artIdx, "err", err)
 			}
 		}
 	}
@@ -189,12 +180,6 @@ func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason st
 	if app.dispatcher != nil {
 		_ = app.dispatcher.SetWarning(jobID, reason)
 	}
-	if app.queue != nil {
-		if err := app.queue.SetWarning(jobID, reason); err != nil {
-			app.log.Debug("record a post anomaly as a job warning",
-				"job", jobID, "err", err)
-		}
-	}
 }
 
 // handleArticleRejected records an article the assembler refused as
@@ -217,14 +202,9 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(jobID); ok {
 			_ = j.MarkArticleFailed(int(artIdx))
-		}
-	}
-	if app.queue != nil {
-		if err := app.queue.AckPermanentFailure(jobID, []int32{artIdx}); err != nil {
-			// A job that has left the queue has nothing left to record against,
-			// which is ordinary rather than a defect — but not silent (A2).
-			app.log.Debug("ack a rejected article as permanently failed",
-				"job", jobID, "artidx", artIdx, "err", err)
+			if app.checkpointer != nil {
+				app.checkpointer.Mark(j)
+			}
 		}
 	}
 }
@@ -285,17 +265,7 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	if app.dispatcher != nil {
 		_ = app.dispatcher.PauseJob(jobID)
 		_ = app.dispatcher.SetWarning(jobID, reason)
-	}
-	if app.queue != nil {
-		if err := app.queue.Pause(jobID); err != nil {
-			app.log.Warn("stall: could not pause the job", "job", jobID, "err", err)
-		}
-		if err := app.queue.SetWarning(jobID, reason); err != nil {
-			// Without the warning the job is paused for no visible reason, which
-			// is precisely the unactionable halt R27 forbids — so this is logged
-			// at Warn rather than swallowed.
-			app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
-		}
+		_ = app.dispatcher.Yielded(jobID)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }
@@ -318,11 +288,6 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	app.clearStall(jobID)
 	if app.dispatcher != nil {
 		_ = app.dispatcher.SetWarning(jobID, reason)
-	}
-	if app.queue != nil {
-		if err := app.queue.SetWarning(jobID, reason); err != nil {
-			app.log.Warn("fail: could not surface the reason", "job", jobID, "err", err)
-		}
 	}
 	app.maybeFinalize(jobID, reason)
 }
@@ -490,18 +455,6 @@ func (app *Application) noteJobBytes(jobID string, n int) {
 //
 //nolint:ireturn // the barrier takes this interface; there is no concrete type to return
 func (app *Application) syncTargetFor(jobID string) durability.SyncTarget {
-	if app.queue != nil {
-		snap := app.queue.SnapshotJob(jobID)
-		if snap == nil {
-			return nil
-		}
-		if _, err := snap.Manifest(); err != nil {
-			app.log.Debug("checkpoint skipped, job has no resident manifest",
-				"job", jobID, "err", err)
-			return nil
-		}
-		return app.assembler.SyncTargetFor(jobID)
-	}
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(jobID); ok {
 			if _, err := j.Manifest(); err != nil {
@@ -695,7 +648,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		// failure never went through routeFault and so never put the job on
 		// the stall list. retryFinalize treats the identical error as
 		// recoverable and documents the replay; this path did not.
-		if errors.Is(err, queue.ErrJobNotResident) || errors.Is(err, job.ErrNotResident) {
+		if errors.Is(err, job.ErrNotResident) {
 			app.log.Info("checkpoint recorded its durable runs but could not ack a non-resident job; "+
 				"recorded for replay from the durability record", "job", jobID)
 			app.noteNeedsSeed(jobID)
@@ -1211,11 +1164,9 @@ func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fi
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(jobID); ok {
 			_, _ = j.SetFileCRC32FromRuns(fileIdx, runs)
-		}
-	}
-	if app.queue != nil {
-		if err := app.queue.SetFileCRC32FromRuns(jobID, fileIdx, runs); err != nil {
-			app.log.Debug("record the assembled CRC", "job", jobID, "fileidx", fileIdx, "err", err)
+			if app.checkpointer != nil {
+				app.checkpointer.Mark(j)
+			}
 		}
 	}
 }
@@ -1285,15 +1236,6 @@ func (app *Application) saveQueueIfDirty() {
 	if app.checkpointer != nil {
 		_ = app.checkpointer.Flush(context.Background())
 	}
-	if app.queue != nil {
-		if !app.queue.IsDirty() {
-			return
-		}
-		adminDir := app.config.GetGeneral().AdminDir
-		if err := app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
-			app.log.Warn("periodic queue save failed", "err", err)
-		}
-	}
 }
 
 // shutdownCheckpoint is R6's clean-shutdown trigger.
@@ -1361,8 +1303,14 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		return false
 	}
 	app.log.Info("found completed job in history but still in queue, removing", "jobID", jobID)
-	if rmErr := app.queue.Remove(jobID); rmErr != nil {
-		app.log.Error("failed to remove duplicate job from queue", "jobID", jobID, "err", rmErr)
+	if app.dispatcher != nil {
+		if rmErr := app.dispatcher.Remove(ctx, jobID); rmErr != nil {
+			app.log.Error("failed to remove duplicate job from dispatcher", "jobID", jobID, "err", rmErr)
+		}
+	}
+	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", jobID+".json.gz")
+	if rmErr := os.Remove(manifestPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		app.log.Debug("could not unlink manifest for duplicate job", "jobID", jobID, "err", rmErr)
 	}
 	if entry != nil && entry.Status == string(constants.StatusFailed) {
 		return true
@@ -1388,6 +1336,9 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // no caller left to tell. A retry is the opposite case -- see
 // dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+		_, _ = app.historyRepo.DB().ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", jobID)
+	}
 	if err := app.dropJobDurability(ctx, jobID); err != nil {
 		app.log.Warn("delete durability rows for a departed job", "job", jobID, "err", err)
 	}
@@ -1434,15 +1385,9 @@ func (app *Application) dropJobDurability(ctx context.Context, jobID string) err
 			errs = append(errs, fmt.Errorf("durable runs: %w", err))
 		}
 	}
-	// app.queue is nil only in the degraded no-history-database mode, where
-	// there is no store to clear either. Guarded rather than assumed because
-	// this is a cleanup path: it runs on a job's way out, when the rest of
-	// the application may already be half torn down.
-	if app.queue != nil {
-		if store := app.queue.Store(); store != nil {
-			if err := store.ClearFailedArticles(ctx, jobID); err != nil {
-				errs = append(errs, fmt.Errorf("failed articles: %w", err))
-			}
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+		if _, err := app.historyRepo.DB().ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
+			errs = append(errs, fmt.Errorf("failed articles: %w", err))
 		}
 	}
 	return errors.Join(errs...)
@@ -1548,7 +1493,7 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 	// treats this as landed and says why — the runs are recorded, so the
 	// articles are replayed from the record once the job resumes — and the
 	// first attempt has no reason to answer differently.
-	if errors.Is(err, queue.ErrJobNotResident) {
+	if errors.Is(err, job.ErrNotResident) {
 		app.log.Debug("finalize recorded its durable runs but could not ack a non-resident job; "+
 			"the articles are replayed from the record after the resume",
 			"job", jobID, "fileidx", fileIdx)

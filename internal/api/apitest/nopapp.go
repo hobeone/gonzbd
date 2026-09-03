@@ -7,11 +7,11 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -88,14 +88,10 @@ func (n NopApp) ServerStatus() []downloader.ServerSnapshot { return n.ServerSnap
 // Speed returns the configured mock speed value.
 func (n NopApp) Speed() float64 { return n.SpeedVal }
 
-// AddJob forwards the job adding to the wired queue if present.
-func (n NopApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
-	if n.Queue != nil {
-		if (job.Filename != "" && n.Queue.ExistsByName(job.Filename)) || (job.Name != "" && n.Queue.ExistsByName(job.Name)) {
-			job.Status = constants.StatusPaused
-			job.Warning = "Duplicate NZB"
-		}
-		return n.Queue.Add(job)
+// AddJob forwards the job adding to the wired dispatcher if present.
+func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
+	if n.Dispatcher != nil {
+		return n.Dispatcher.Add(j, hdr)
 	}
 	return nil
 }

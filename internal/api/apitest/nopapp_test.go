@@ -9,6 +9,7 @@ import (
 
 	appkg "github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -101,7 +102,7 @@ func TestNopApp_Contract(t *testing.T) {
 	app.ReloadGeneralOptions(config.GeneralConfig{})
 
 	// 3. Nil Queue and History safety
-	if err := app.AddJob(ctx, nil, nil, false); err != nil {
+	if err := app.AddJob(ctx, nil, dispatch.Header{}, nil, false); err != nil {
 		t.Errorf("AddJob(nil queue) = %v, want nil", err)
 	}
 	if err := app.RemoveJob(ctx, "job1", false); err != nil {

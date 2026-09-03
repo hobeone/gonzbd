@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -27,10 +25,6 @@ import (
 // durability.Resumer satisfies this.
 type fileResumer interface {
 	Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error)
-}
-
-type progressFilenameReader interface {
-	FileFilename(fi int) string
 }
 
 // resumeAllJobs re-derives every DOWNLOADING job's work set from what is
@@ -192,57 +186,6 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 			}
 		}
 	}
-	if app.queue != nil {
-		for _, snap := range app.queue.Snapshot() {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: resume sweep aborted: %w", err)
-			}
-			if !sweptStatus(snap.Status) {
-				// Not a residency check — see the phase note above. A job past
-				// downloading has files the assembler no longer owns, and there
-				// is no re-fetch to prevent for it either way.
-				app.log.Debug("resume sweep skipped a job that is not downloading",
-					"job", snap.ID, "status", snap.Status, "phase", snap.Phase())
-				continue
-			}
-			// A Paused job is not resident, so its clone carries no manifest.
-			// SnapshotJob hydrates one onto a clone, which is read-only and does
-			// not change the live job's residency; the write-back below goes
-			// through Queue.ReplaceFromRuns, which hydrates the live job itself
-			// for the duration.
-			if hydrated := app.queue.SnapshotJob(snap.ID); hydrated != nil {
-				snap = hydrated
-			}
-			m, err := snap.Manifest()
-			if err != nil {
-				app.log.Debug("resume sweep skipped a non-resident job",
-					"job", snap.ID, "status", snap.Status, "err", err)
-				continue
-			}
-			swept, runs, fault, err := app.resumeJobFiles(ctx, snap, m)
-			if err != nil {
-				return err
-			}
-			replaceErr := app.queue.ReplaceFromRuns(snap.ID, swept, runs)
-			if replaceErr != nil {
-				app.log.Warn("resume sweep could not fully apply a job's recomputation; "+
-					"if this was the persist, an eviction before the next queue save "+
-					"restores the file's cleared Complete flag and assembled CRC",
-					"job", snap.ID, "err", replaceErr)
-			}
-			if app.dispatcher != nil {
-				if j, ok := app.dispatcher.Job(snap.ID); ok {
-					_ = j.ReplaceFromRuns(swept, runs)
-				}
-			}
-			if fault == nil && replaceErr == nil {
-				app.completeStrandedFiles(ctx, snap.ID, m, swept, runs)
-			}
-			if fault != nil {
-				app.Stall(snap.ID, fault)
-			}
-		}
-	}
 	return nil
 }
 
@@ -273,37 +216,10 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 // A fault returns what was gathered from the files BEFORE it, not nil. Its
 // caller seeds them and then stalls; see the note there for why discarding
 // them turned a transient fault into a permanent loss of ground.
-func (app *Application) resumeJobFiles(ctx context.Context, target, m any, rest ...any) (swept []int32, runs []durability.Run, fault *storagefault.Fault, err error) {
-	var jobID, jobName string
-	var progress progressFilenameReader
-	switch t := target.(type) {
-	case *queue.Job:
-		jobID = t.ID
-		jobName = t.Name
-		progress = t.Progress()
-	case *job.Job:
-		jobID = t.ID()
-		jobName = t.Name()
-		progress = t.Progress()
-	case string:
-		jobID = t
-		if len(rest) > 0 {
-			if name, ok := rest[0].(string); ok {
-				jobName = name
-			}
-		}
-		if len(rest) > 1 {
-			if pr, ok := rest[1].(progressFilenameReader); ok {
-				progress = pr
-			}
-		}
-	default:
-		return nil, nil, nil, fmt.Errorf("app: unsupported resume target %T", target)
-	}
-
+func (app *Application) resumeJobFiles(ctx context.Context, jobID string, m *job.Manifest, jobName string, progress *job.JobProgress) (swept []int32, runs []durability.Run, fault *storagefault.Fault, err error) {
 	numFiles := 0
-	if mr, ok := m.(interface{ NumFiles() int }); ok {
-		numFiles = mr.NumFiles()
+	if m != nil {
+		numFiles = m.NumFiles()
 	}
 	swept = make([]int32, 0, numFiles)
 	var restarted int
@@ -361,35 +277,6 @@ func (p *pipeline) jobFilePath(jobName, filename string) string {
 	return fsutil.JoinSafe(jobDir, "", filename, sanitize)
 }
 
-// sweptStatus reports whether the startup resume sweep may re-derive a job's
-// progress from its bytes.
-//
-// Downloading and Fetching are PhaseActive: the assembler is the only writer,
-// so the file on disk is exactly what the record describes and a size that
-// falls short of it really means bytes were lost.
-//
-// PAUSED is here for the same reason and was missing. A paused job is
-// mid-download — nothing else owns its files, and the assembler wrote every
-// byte in them — but it is not PhaseActive, so the sweep skipped it and #362
-// survived in that branch: its disproven Done bits were never corrected, the
-// next checkpoint re-recorded them, and the file finalized over a hole. It is
-// also the branch Application.Stall leaves jobs in, which is what made
-// stallLost's own "restart gonzbd to resume this job from its recorded runs"
-// instruction unable to work.
-//
-// Everything else is excluded, and the phase note on resumeAllJobs says why at
-// length: in PhaseProcessing something other than the assembler owns the files
-// — par2 repairs one IN PLACE, unpack reads it, the move relocates it — so a
-// recomputation over those bytes proves nothing and would clear real progress.
-func sweptStatus(s constants.Status) bool {
-	switch s {
-	case constants.StatusDownloading, constants.StatusFetching, constants.StatusPaused:
-		return true
-	default:
-		return false
-	}
-}
-
 // completeStrandedFiles finishes the finalize a crash interrupted, for every
 // file of one job that a restart would otherwise leave wedged.
 //
@@ -435,20 +322,16 @@ func sweptStatus(s constants.Status) bool {
 // one irreversible thing this whole sweep does. A file left stranded is no
 // worse off than before this pass existed; a file trimmed against a failing
 // mount is not recoverable by trying again later.
-func (app *Application) completeStrandedFiles(ctx context.Context, jobID string, m any, swept []int32, runs []durability.Run) {
-	var jobName string
-	var progress any
-	if app.queue != nil {
-		if snap := app.queue.SnapshotJob(jobID); snap != nil {
-			jobName = snap.Name
-			progress = snap.Progress()
-		}
-	} else if app.dispatcher != nil {
-		if j, ok := app.dispatcher.Job(jobID); ok {
-			jobName = j.Name()
-			progress = j.Progress()
-		}
+func (app *Application) completeStrandedFiles(ctx context.Context, jobID string, m *job.Manifest, swept []int32, runs []durability.Run) {
+	if app.dispatcher == nil {
+		return
 	}
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		return
+	}
+	jobName := j.Name()
+	progress := j.Progress()
 	if progress == nil {
 		return
 	}
@@ -457,10 +340,7 @@ func (app *Application) completeStrandedFiles(ctx context.Context, jobID string,
 		if !strandedComplete(progress, m, fi) {
 			continue
 		}
-		var filename string
-		if pr, ok := progress.(progressFilenameReader); ok {
-			filename = pr.FileFilename(fi)
-		}
+		filename := progress.FileFilename(fi)
 		if filename == "" {
 			continue
 		}
@@ -504,50 +384,24 @@ func (app *Application) completeStrandedFiles(ctx context.Context, jobID string,
 // else — the assembler's partsWritten counts a permanent failure toward
 // TotalParts — so a file whose last article will never arrive is complete,
 // short, and par2's problem.
-func strandedComplete(prog, mf any, fi int) bool {
-	var numFiles int
-	var fileRange func(int) (int, int)
-	switch m := mf.(type) {
-	case *job.Manifest:
-		numFiles = m.NumFiles()
-		fileRange = m.FileRange
-	case *queue.Manifest:
-		numFiles = m.NumFiles()
-		fileRange = m.FileRange
-	default:
+func strandedComplete(prog *job.JobProgress, m *job.Manifest, fi int) bool {
+	if m == nil || prog == nil {
+		return false
+	}
+	if fi < 0 || fi >= m.NumFiles() {
 		return false
 	}
 
-	if fi < 0 || fi >= numFiles {
+	if prog.FileFetchPolicy(fi) != job.FetchAlways || prog.FileComplete(fi) {
 		return false
 	}
 
-	var fetchAlways bool
-	var fileComplete bool
-	var articleDone func(int) bool
-	switch p := prog.(type) {
-	case *job.JobProgress:
-		fetchAlways = p.FileFetchPolicy(fi) == job.FetchAlways
-		fileComplete = p.FileComplete(fi)
-		articleDone = p.ArticleDone
-	case *queue.JobProgress:
-		fetchAlways = p.FileFetchPolicy(fi) == queue.FetchAlways
-		fileComplete = p.FileComplete(fi)
-		articleDone = p.ArticleDone
-	default:
-		return false
-	}
-
-	if !fetchAlways || fileComplete {
-		return false
-	}
-
-	lo, hi := fileRange(fi)
+	lo, hi := m.FileRange(fi)
 	if hi <= lo {
 		return false
 	}
 	for i := lo; i < hi; i++ {
-		if !articleDone(i) {
+		if !prog.ArticleDone(i) {
 			return false
 		}
 	}

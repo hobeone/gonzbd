@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
+	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
@@ -29,6 +30,11 @@ func (a *Application) ForceAssemblerStopped() error {
 // GetConfig returns the application config for testing.
 func (a *Application) GetConfig() *config.Config {
 	return a.config
+}
+
+// Checkpointer returns the application's checkpointer for testing.
+func (a *Application) Checkpointer() *checkpoint.Checkpointer {
+	return a.checkpointer
 }
 
 // TriggerMaybeDirectUnpack drives the DirectUnpack orchestrator's start path.

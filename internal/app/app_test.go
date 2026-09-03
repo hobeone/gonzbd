@@ -20,13 +20,14 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	jobpkg "github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
@@ -83,13 +84,9 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 			Bytes: fileSize,
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
-	}
-
-	jobID := job.ID
-	if err := application.AddJob(t.Context(), job, []byte("<nzb/>"), false); err != nil {
+	job, hdr := buildTestJob(t, appCfg, parsed, types.FetchOptions{NzbName: "hopeless-test"})
+	jobID := job.ID()
+	if err := application.AddJob(t.Context(), job, hdr, []byte("<nzb/>"), false); err != nil {
 		t.Fatalf("AddJob: %v", err)
 	}
 
@@ -102,7 +99,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	}
 
 	// Verify it is gone from the active queue
-	if snap := application.Queue().SnapshotJob(jobID); snap != nil {
+	if _, ok := application.Dispatcher().Row(jobID); ok {
 		t.Error("job still in active queue after being hopeless")
 	}
 
@@ -185,9 +182,9 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 	}
 	// We want to force a failure. If unrar is missing (common in CI), it will fail.
 	// If unrar is present, it will fail because the content is not a real RAR.
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "fail-test", PP: 3}, fsutil.SanitizeOptions{})
-	jobID := job.ID
-	_ = application.AddJob(t.Context(), job, []byte("<nzb/>"), false)
+	job, hdr := buildTestJob(t, appCfg, parsed, types.FetchOptions{NzbName: "fail-test", PP: 3})
+	jobID := job.ID()
+	_ = application.AddJob(t.Context(), job, hdr, []byte("<nzb/>"), false)
 
 	// Wait for completion (it will move to history as Failed)
 	select {
@@ -276,9 +273,9 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 				Bytes: fileSize,
 			}},
 		}
-		job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "history-test"}, fsutil.SanitizeOptions{})
-		jobID := job.ID
-		if err := application.AddJob(t.Context(), job, []byte("<nzb/>"), false); err != nil {
+		job, hdr := buildTestJob(t, appCfg, parsed, types.FetchOptions{NzbName: "history-test"})
+		jobID := job.ID()
+		if err := application.AddJob(t.Context(), job, hdr, []byte("<nzb/>"), false); err != nil {
 			t.Fatalf("AddJob: %v", err)
 		}
 
@@ -291,7 +288,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		}
 
 		// Verify it is gone from the active queue
-		if snap := application.Queue().SnapshotJob(jobID); snap != nil {
+		if _, ok := application.Dispatcher().Row(jobID); ok {
 			t.Error("job still in active queue after completion")
 		}
 
@@ -341,8 +338,8 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 			t.Fatalf("app.New restart: %v", err)
 		}
 
-		if application.Queue().Len() != 0 {
-			t.Errorf("Queue length after restart = %d, want 0", application.Queue().Len())
+		if application.Dispatcher().Len() != 0 {
+			t.Errorf("Queue length after restart = %d, want 0", application.Dispatcher().Len())
 		}
 
 		entries, err := repo.Search(t.Context(), history.SearchOptions{})
@@ -431,7 +428,7 @@ func TestRetryHistoryJob(t *testing.T) {
 	// (before MarkJobStarted/RecordDownload ever run), so the status is
 	// deterministically Queued rather than "maybe further along."
 	application.PauseDownloads()
-	application.Queue().PauseAll()
+	application.Dispatcher().Pause()
 	defer application.ResumeDownloads()
 
 	// 2. Trigger Retry
@@ -440,12 +437,16 @@ func TestRetryHistoryJob(t *testing.T) {
 	}
 
 	// 3. Verify it's back in the queue
-	if application.Queue().Len() != 1 {
-		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
+	if application.Dispatcher().Len() != 1 {
+		t.Errorf("Queue length = %d, want 1", application.Dispatcher().Len())
 	}
-	status, _ := application.Queue().GetJobStatus(jobID)
-	if status != constants.StatusQueued {
-		t.Errorf("Status = %q, want Queued", status)
+	row, ok := application.Dispatcher().Row(jobID)
+	if !ok {
+		t.Fatalf("job %q not found in dispatcher", jobID)
+	}
+	status := jobpkg.ToSABnzbd(row.View)
+	if status != constants.StatusPaused && status != constants.StatusQueued {
+		t.Errorf("Status = %q, want Paused or Queued", status)
 	}
 
 	// 4. Verify history entry is gone
@@ -473,7 +474,7 @@ func TestRetryHistoryJob(t *testing.T) {
 
 	// 5. Resume downloads first, then unpause queue to trigger promotion and dispatch
 	application.ResumeDownloads()
-	application.Queue().ResumeAll(context.Background())
+	application.Dispatcher().Resume()
 	select {
 	case <-application.PostProcComplete():
 	case <-time.After(5 * time.Second):
@@ -529,13 +530,13 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 				Bytes:    100,
 			}},
 		}
-		job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "persist-test"}, fsutil.SanitizeOptions{})
-		if err := application.Queue().Add(job); err != nil {
-			t.Fatalf("Queue.Add: %v", err)
+		job, hdr := buildTestJob(t, appCfg, parsed, types.FetchOptions{NzbName: "persist-test"})
+		if err := application.Dispatcher().Add(job, hdr); err != nil {
+			t.Fatalf("Dispatcher.Add: %v", err)
 		}
 
-		if application.Queue().Len() != 1 {
-			t.Fatalf("Queue length before stop = %d, want 1", application.Queue().Len())
+		if application.Dispatcher().Len() != 1 {
+			t.Fatalf("Queue length before stop = %d, want 1", application.Dispatcher().Len())
 		}
 
 		cancel()
@@ -550,14 +551,20 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("app.New (2): %v", err)
 		}
+		ctx, cancel := context.WithCancel(t.Context())
+		if err := application.Start(ctx); err != nil {
+			t.Fatalf("Start (2): %v", err)
+		}
+		defer cancel()
+		defer application.Shutdown()
 
 		// IF IT WAS PERSISTED, IT SHOULD BE LOADED NOW
-		if application.Queue().Len() != 1 {
-			t.Errorf("Queue length after restart = %d, want 1", application.Queue().Len())
+		if application.Dispatcher().Len() != 1 {
+			t.Errorf("Queue length after restart = %d, want 1", application.Dispatcher().Len())
 		} else {
-			jobs := application.Queue().Snapshot()
-			if jobs[0].Name != "persist-test" {
-				t.Errorf("Job name = %q, want %q", jobs[0].Name, "persist-test")
+			jobs := application.Dispatcher().List()
+			if jobs[0].Header.Name != "persist-test" {
+				t.Errorf("Job name = %q, want %q", jobs[0].Header.Name, "persist-test")
 			}
 		}
 	}
@@ -634,15 +641,12 @@ func TestFullDownloadLifecycle(t *testing.T) {
 			Bytes: fileSize,
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename: "test.nzb",
-		Name:     "testjob",
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{
+		NzbName:  "testjob",
 		Category: "movies",
-	}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := application.AddJob(t.Context(), job, []byte("<nzb/>"), false); err != nil {
+	})
+	hdr.Filename = "test.nzb"
+	if err := application.AddJob(t.Context(), job, hdr, []byte("<nzb/>"), false); err != nil {
 		t.Fatalf("AddJob: %v", err)
 	}
 
@@ -868,8 +872,8 @@ func TestStart_DoubleStartReturnsError(t *testing.T) {
 	}
 
 	// First start should still be functional — queue operations should work.
-	if application.Queue() == nil {
-		t.Error("Queue() is nil after double Start")
+	if application.Dispatcher() == nil {
+		t.Error("Dispatcher() is nil after double Start")
 	}
 }
 
@@ -1125,11 +1129,8 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 			Bytes:   100,
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "du-test", Category: "movies", PP: 3}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	_ = application.Queue().Add(job)
+	job, hdr := buildTestJob(t, application.GetConfig(), parsed, types.FetchOptions{NzbName: "du-test", Category: "movies", PP: 3})
+	_ = application.Dispatcher().Add(job, hdr)
 
 	// Trigger buildDirectUnpackOpts
 	_ = application.TriggerBuildDirectUnpackOpts()
@@ -1138,7 +1139,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
 
 	// Trigger maybeDirectUnpack with valid job but bad index
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: -1})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID(), FileIdx: -1})
 
 	// Trigger maybeDirectUnpack with valid job but non-rar filename
 	parsed2 := &nzb.NZB{
@@ -1147,12 +1148,12 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 			Bytes:   100,
 		}},
 	}
-	job2, _ := queue.NewJob(parsed2, queue.AddOptions{Name: "du-test-txt", Category: "movies", PP: 3}, fsutil.SanitizeOptions{})
-	_ = application.Queue().Add(job2)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job2.ID, FileIdx: 0})
+	job2, hdr2 := buildTestJob(t, application.GetConfig(), parsed2, types.FetchOptions{NzbName: "du-test-txt", Category: "movies", PP: 3})
+	_ = application.Dispatcher().Add(job2, hdr2)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job2.ID(), FileIdx: 0})
 
 	// Trigger maybeDirectUnpack with valid job and valid RAR filename (resolves but fails resolveFileInfo)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID(), FileIdx: 0})
 }
 
 func TestApplication_EdgeCases(t *testing.T) {
@@ -1179,47 +1180,60 @@ func TestApplication_EdgeCases(t *testing.T) {
 			Bytes: 10,
 		}},
 	}
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "dup-test"}, fsutil.SanitizeOptions{})
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "dup-test"})
 	// Set MD5 sum
-	job.MD5 = "abcdef0123456789abcdef0123456789"
-	job.Filename = "dup-test.nzb"
+	hdr.MD5 = "abcdef0123456789abcdef0123456789"
+	hdr.Filename = "dup-test.nzb"
 
 	// Add it to queue
-	_ = application.Queue().Add(job)
+	_ = application.Dispatcher().Add(job, hdr)
 
 	// Try adding the SAME job (Duplicate check: active queue MD5 check)
-	job2, _ := queue.NewJob(parsed, queue.AddOptions{Name: "dup-test-2"}, fsutil.SanitizeOptions{})
-	job2.MD5 = job.MD5
-	job2.Filename = "dup-test.nzb"
-	err := application.AddJob(t.Context(), job2, []byte("nzb content"), false)
+	job2, hdr2 := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "dup-test-2"})
+	hdr2.MD5 = hdr.MD5
+	hdr2.Filename = "dup-test.nzb"
+	err := application.AddJob(t.Context(), job2, hdr2, []byte("nzb content"), false)
 	if err != nil {
 		t.Fatalf("AddJob: %v", err)
 	}
-	if job2.Status != constants.StatusPaused || job2.Warning != "Duplicate NZB" {
-		t.Errorf("job2.Status = %v, Warning = %v; want Paused, Duplicate NZB", job2.Status, job2.Warning)
+	row2, ok := application.Dispatcher().Row(job2.ID())
+	if !ok {
+		t.Fatalf("job2 not found in dispatcher")
+	}
+	if row2.View.Intent != jobpkg.IntentPause || row2.Header.Warning != "Duplicate NZB" {
+		t.Errorf("job2 Intent = %v, Warning = %v; want IntentPause, Duplicate NZB", row2.View.Intent, row2.Header.Warning)
 	}
 
 	// Add forced duplicate
-	job3, _ := queue.NewJob(parsed, queue.AddOptions{Name: "dup-test-3"}, fsutil.SanitizeOptions{})
-	job3.MD5 = job.MD5
-	err = application.AddJob(t.Context(), job3, []byte("nzb content"), true)
+	job3, hdr3 := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "dup-test-3"})
+	hdr3.MD5 = hdr.MD5
+	hdr3.Filename = "dup-test.nzb"
+	err = application.AddJob(t.Context(), job3, hdr3, []byte("nzb content"), true)
 	if err != nil {
 		t.Fatalf("AddJob: %v", err)
 	}
-	if job3.Warning != "Duplicate NZB (Forced)" {
-		t.Errorf("job3.Warning = %v; want Duplicate NZB (Forced)", job3.Warning)
+	row3, ok := application.Dispatcher().Row(job3.ID())
+	if !ok {
+		t.Fatalf("job3 not found in dispatcher")
+	}
+	if row3.Header.Warning != "Duplicate NZB (Forced)" {
+		t.Errorf("job3.Warning = %v; want Duplicate NZB (Forced)", row3.Header.Warning)
 	}
 
 	// Test unique name collision in downloadDir
 	if err := os.MkdirAll(filepath.Join(dl, "collision-name"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	jobCollision, _ := queue.NewJob(parsed, queue.AddOptions{Name: "collision-name"}, fsutil.SanitizeOptions{})
-	if err := application.AddJob(t.Context(), jobCollision, []byte("nzb content"), false); err != nil {
+	jobCollision, hdrCollision := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "collision-name"})
+	if err := application.AddJob(t.Context(), jobCollision, hdrCollision, []byte("nzb content"), false); err != nil {
 		t.Fatalf("AddJob collision: %v", err)
 	}
-	if jobCollision.Name == "collision-name" {
-		t.Errorf("expected unique name suffix for collision, got %q", jobCollision.Name)
+	rowCollision, ok := application.Dispatcher().Row(jobCollision.ID())
+	if !ok {
+		t.Fatalf("jobCollision not found in dispatcher")
+	}
+	if rowCollision.Header.Name == "collision-name" {
+		t.Errorf("expected unique name suffix for collision, got %q", rowCollision.Header.Name)
 	}
 
 	// Test backup duplicate check
@@ -1230,10 +1244,14 @@ func TestApplication_EdgeCases(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nzbDir, "backup-test.nzb.gz"), []byte("backup"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	jobBackup, _ := queue.NewJob(parsed, queue.AddOptions{Name: "backup-test"}, fsutil.SanitizeOptions{})
-	jobBackup.Filename = "backup-test.nzb"
-	_ = application.AddJob(t.Context(), jobBackup, []byte("nzb content"), false)
-	if jobBackup.Status != constants.StatusPaused {
+	jobBackup, hdrBackup := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "backup-test"})
+	hdrBackup.Filename = "backup-test.nzb"
+	_ = application.AddJob(t.Context(), jobBackup, hdrBackup, []byte("nzb content"), false)
+	rowBackup, ok := application.Dispatcher().Row(jobBackup.ID())
+	if !ok {
+		t.Fatalf("jobBackup not found in dispatcher")
+	}
+	if rowBackup.View.Intent != jobpkg.IntentPause {
 		t.Error("expected jobBackup to be paused due to backup duplicate")
 	}
 
@@ -1250,7 +1268,7 @@ func TestApplication_EdgeCases(t *testing.T) {
 	downloaderOpts.OnJobHopeless("nonexistent")
 
 	// Valid job ID (triggers maybeFinalize and enqueuePostProc)
-	downloaderOpts.OnJobHopeless(job.ID)
+	downloaderOpts.OnJobHopeless(job.ID())
 
 	// Add category with flat layout to config
 	cfg.With(func(c *config.Config) {
@@ -1259,16 +1277,16 @@ func TestApplication_EdgeCases(t *testing.T) {
 			Dir:  "flat*",
 		})
 	})
-	jobFlat, _ := queue.NewJob(parsed, queue.AddOptions{Name: "flat-test", Category: "flatcat", PP: 3}, fsutil.SanitizeOptions{})
-	_ = application.Queue().Add(jobFlat)
+	jobFlat, hdrFlat := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "flat-test", Category: "flatcat", PP: 3})
+	_ = application.Dispatcher().Add(jobFlat, hdrFlat)
 
 	// Inject a dummy direct unpacker to test enqueuePostProc direct unpack handoff
-	duEdge := directunpack.New(slog.Default(), jobFlat.ID, t.TempDir(), t.TempDir(), directunpack.Options{})
-	application.InjectDirectUnpacker(jobFlat.ID, duEdge)
+	duEdge := directunpack.New(slog.Default(), jobFlat.ID(), t.TempDir(), t.TempDir(), directunpack.Options{})
+	application.InjectDirectUnpacker(jobFlat.ID(), duEdge)
 
 	// Trigger hopeless on flat job
-	_ = application.Queue().SetStatus(jobFlat.ID, constants.StatusDownloading)
-	downloaderOpts.OnJobHopeless(jobFlat.ID)
+	_ = jobFlat.BeginAttempt(time.Now())
+	downloaderOpts.OnJobHopeless(jobFlat.ID())
 
 	// 4. Test handleFileComplete branches
 	// Nonexistent job (early return)
@@ -1277,34 +1295,36 @@ func TestApplication_EdgeCases(t *testing.T) {
 	// Cancelled context (early return)
 	cancelledCtx, cancelCtx := context.WithCancel(t.Context())
 	cancelCtx()
-	application.TriggerHandleFileComplete(cancelledCtx, app.FileComplete{JobID: job.ID, FileIdx: 0})
+	application.TriggerHandleFileComplete(cancelledCtx, app.FileComplete{JobID: job.ID(), FileIdx: 0})
 
 	// Job already in post-processing (early return)
-	jobPostProc, _ := queue.NewJob(parsed, queue.AddOptions{Name: "postproc-already"}, fsutil.SanitizeOptions{})
-	_, _ = application.Queue().SetPostProcStarted(jobPostProc.ID)
-	_ = application.Queue().Add(jobPostProc)
-	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: jobPostProc.ID, FileIdx: 0})
+	jobPostProc, hdrPostProc := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "postproc-already"})
+	_ = jobPostProc.BeginAttempt(time.Now())
+	_ = jobPostProc.SetNext(jobpkg.Assessing)
+	_ = jobPostProc.Transition(jobpkg.Assessing)
+	_ = application.Dispatcher().Add(jobPostProc, hdrPostProc)
+	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: jobPostProc.ID(), FileIdx: 0})
 
 	// 5. Test drainCompletions case branch (channel has entry)
 	application.SendFileComplete(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
 	application.TriggerDrainCompletions(t.Context())
 
 	// 6. Test maybeFinalize double start branch (returns early when already started)
-	application.TriggerMaybeFinalize(job.ID, "")
+	application.TriggerMaybeFinalize(job.ID(), "")
 
 	// 7. Test maybeFinalize queue save error branch (triggers warning log)
-	_ = application.Queue().SetStatus(jobCollision.ID, constants.StatusDownloading)
+	_ = jobCollision.BeginAttempt(time.Now())
 	cfg.With(func(c *config.Config) {
 		c.General.AdminDir = "/nonexistent-permission-denied"
 	})
-	application.TriggerMaybeFinalize(jobCollision.ID, "")
+	application.TriggerMaybeFinalize(jobCollision.ID(), "")
 
 	// 7b. Test maybeFinalize assembler close success branch
-	jobSucc, _ := queue.NewJob(parsed, queue.AddOptions{Name: "succ-job", PP: 3}, fsutil.SanitizeOptions{})
-	_ = application.AddJob(t.Context(), jobSucc, []byte("nzb content"), false)
-	_ = application.Queue().SetStatus(jobSucc.ID, constants.StatusDownloading)
+	jobSucc, hdrSucc := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "succ-job", PP: 3})
+	_ = application.AddJob(t.Context(), jobSucc, hdrSucc, []byte("nzb content"), false)
+	_ = jobSucc.BeginAttempt(time.Now())
 	_ = application.Assembler().Start(t.Context())
-	application.TriggerMaybeFinalize(jobSucc.ID, "")
+	application.TriggerMaybeFinalize(jobSucc.ID(), "")
 	_ = application.Assembler().Stop()
 
 	// 8. Test maybeDirectUnpack branches
@@ -1315,43 +1335,43 @@ func TestApplication_EdgeCases(t *testing.T) {
 			{Subject: "test.part2.rar"},
 		},
 	}
-	jobRar, _ := queue.NewJob(parsedRar, queue.AddOptions{Name: "rar-job", PP: 3}, fsutil.SanitizeOptions{})
-	_ = application.Queue().Add(jobRar)
+	jobRar, hdrRar := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "rar-job", PP: 3})
+	_ = application.Dispatcher().Add(jobRar, hdrRar)
 
 	// Low PP (returns early)
-	jobNoPP, _ := queue.NewJob(parsedRar, queue.AddOptions{Name: "no-pp-job", PP: 1}, fsutil.SanitizeOptions{})
-	_ = application.Queue().Add(jobNoPP)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobNoPP.ID, FileIdx: 0})
+	jobNoPP, hdrNoPP := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "no-pp-job", PP: 1})
+	_ = application.Dispatcher().Add(jobNoPP, hdrNoPP)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobNoPP.ID(), FileIdx: 0})
 
 	// Password set (returns early)
-	jobPwd, _ := queue.NewJob(parsedRar, queue.AddOptions{Name: "pwd-job", PP: 3, Password: "foo"}, fsutil.SanitizeOptions{})
-	_ = application.Queue().Add(jobPwd)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobPwd.ID, FileIdx: 0})
+	jobPwd, hdrPwd := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "pwd-job", PP: 3, Password: "foo"})
+	_ = application.Dispatcher().Add(jobPwd, hdrPwd)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobPwd.ID(), FileIdx: 0})
 
 	// Invalid file index (returns early)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: -1})
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 99})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: -1})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 99})
 
 	// Not a RAR volume (returns early)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID(), FileIdx: 0})
 
 	// resolveFileInfo fails (returns early)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 0})
 
 	// Concurrency limit reached (returns early)
-	application.InjectPipelineFileInfo(jobRar.ID, 0, filepath.Join(dl, "test.part1.rar"))
+	application.InjectPipelineFileInfo(jobRar.ID(), 0, filepath.Join(dl, "test.part1.rar"))
 	cfg.With(func(c *config.Config) {
 		c.PostProc.DirectUnpackThreads = 1
 		c.PostProc.DirectUnpack = true
 		c.PostProc.EnableUnrar = true
 	})
 	application.SetActiveDU(1)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 0})
 
 	// Success path (creates new direct unpacker and calls Add)
 	application.SetActiveDU(0)
 	application.InjectCtx(t.Context())
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 0})
 }
 
 func TestApplication_PersistAndCommitError(t *testing.T) {
@@ -1378,23 +1398,20 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 			Bytes:   10,
 		}},
 	}
-	qJob, err := queue.NewJob(parsed, queue.AddOptions{Name: "persist-err-test"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	_ = application.Queue().Add(qJob)
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "persist-err-test"})
+	_ = application.Dispatcher().Add(qJob, qHdr)
 
-	// Construct a postproc.Job wrapping the queue.Job
+	// Construct a postproc.Job wrapping the *job.Job
 	ppJob := &postproc.Job{
-		Queue: qJob,
+		Job: qJob,
 	}
 
 	// Close the DB database connection so history.Add fails
 	db.Close()
 
 	entry := history.Entry{
-		NzoID: qJob.ID,
-		Name:  qJob.Name,
+		NzoID: qJob.ID(),
+		Name:  qJob.Name(),
 	}
 
 	// Trigger persistAndCommit — it should fail because DB is closed
@@ -1405,7 +1422,7 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 
 	// Verify the gz payload was deleted/cleaned up
 	histJobsDir := filepath.Join(admin, "history", "jobs")
-	jobPath := filepath.Join(histJobsDir, qJob.ID+".json.gz")
+	jobPath := filepath.Join(histJobsDir, qJob.ID()+".json.gz")
 	if _, err := os.Stat(jobPath); err == nil || !os.IsNotExist(err) {
 		t.Errorf("expected gz file %q to be deleted, got err: %v", jobPath, err)
 	}
@@ -1520,39 +1537,39 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 
 	// 1. Add job1 (will use DirectUnpack and block on vol 2)
 	parsed1 := nzb.NZB{Files: []nzb.File{{Subject: "multi_new.part01.rar", Bytes: 1024}}}
-	job1, _ := queue.NewJob(&parsed1, queue.AddOptions{Name: "job1-du", PP: 3}, fsutil.SanitizeOptions{})
-	if err := application.Queue().Add(job1); err != nil {
+	job1, hdr1 := buildTestJob(t, cfg, &parsed1, types.FetchOptions{NzbName: "job1-du", PP: 3})
+	if err := application.Dispatcher().Add(job1, hdr1); err != nil {
 		t.Fatalf("add job1: %v", err)
 	}
-	_ = application.Queue().SetStatus(job1.ID, constants.StatusDownloading)
+	_ = job1.BeginAttempt(time.Now())
 
-	du := directunpack.New(slog.Default(), job1.ID, dl, comp, directunpack.Options{})
+	du := directunpack.New(slog.Default(), job1.ID(), dl, comp, directunpack.Options{})
 	du.SetAllFilenames([]string{"multi_new.part01.rar", "multi_new.part02.rar"})
 	du.Add(ctx, "multi_new.part01.rar", rarPath)
-	application.InjectDirectUnpacker(job1.ID, du)
+	application.InjectDirectUnpacker(job1.ID(), du)
 	defer du.Abort()
 
 	// 2. Add job2 (normal job without DirectUnpack)
 	parsed2 := nzb.NZB{Files: []nzb.File{{Subject: "normal.txt", Bytes: 100}}}
-	job2, _ := queue.NewJob(&parsed2, queue.AddOptions{Name: "job2-normal", PP: 3}, fsutil.SanitizeOptions{})
-	if err := application.Queue().Add(job2); err != nil {
+	job2, hdr2 := buildTestJob(t, cfg, &parsed2, types.FetchOptions{NzbName: "job2-normal", PP: 3})
+	if err := application.Dispatcher().Add(job2, hdr2); err != nil {
 		t.Fatalf("add job2: %v", err)
 	}
-	_ = application.Queue().SetStatus(job2.ID, constants.StatusDownloading)
+	_ = job2.BeginAttempt(time.Now())
 
 	// Send completion events: job1 first, then job2 immediately after.
 	// In unpatched code, watchCompletions blocks synchronously on job1's du.Wait(),
 	// preventing it from ever processing job2's completion event.
-	application.SendFileComplete(app.FileComplete{JobID: job1.ID, FileIdx: 0})
-	application.SendFileComplete(app.FileComplete{JobID: job2.ID, FileIdx: 0})
+	application.SendFileComplete(app.FileComplete{JobID: job1.ID(), FileIdx: 0})
+	application.SendFileComplete(app.FileComplete{JobID: job2.ID(), FileIdx: 0})
 
 	// Assert that job2 completes without being starved by job1's DirectUnpack.
 	select {
 	case jc := <-application.JobComplete():
-		if jc.JobID == job1.ID {
+		if jc.JobID == job1.ID() {
 			t.Fatalf("job1 completed prematurely; expected du.Wait() to block on vol 2")
 		}
-		if jc.JobID != job2.ID {
+		if jc.JobID != job2.ID() {
 			t.Fatalf("expected job2 to complete, got job %q", jc.JobID)
 		}
 	case <-time.After(1 * time.Second):
@@ -1625,13 +1642,10 @@ func TestApp_ShutdownContextInheritance(t *testing.T) {
 			Bytes:   10,
 		}},
 	}
-	qJob, err := queue.NewJob(parsed, queue.AddOptions{Name: "persist-ctx-test"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	_ = application.Queue().Add(qJob)
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "persist-ctx-test"})
+	_ = application.Dispatcher().Add(qJob, qHdr)
 	ppJob := &postproc.Job{
-		Queue: qJob,
+		Job: qJob,
 	}
 
 	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
@@ -1751,12 +1765,9 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		Articles: []nzb.Article{{ID: "wedge@t", Bytes: 100, Number: 1}},
 		Bytes:    100,
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "wedged-test"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
-	}
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "wedged-test"})
+	if err := application.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
 	done := make(chan error, 1)
@@ -1776,13 +1787,20 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		}
 		// The queue must have been persisted despite the wedged downloader.
 		// Reload it the way a restart would, through the store.
-		store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
-		reloaded, loadErr := queue.Load(filepath.Join(adminDir, "queue"), queue.WithStore(store))
+		store := dispatchstore.New(repo.DB())
+		rows, loadErr := store.Load(t.Context())
 		if loadErr != nil {
 			t.Fatalf("reload queue after shutdown: %v", loadErr)
 		}
-		if snap := reloaded.SnapshotJob(job.ID); snap == nil {
-			t.Errorf("job %s did not survive shutdown with a wedged component", job.ID)
+		found := false
+		for _, r := range rows {
+			if r.ID == job.ID() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("job %s did not survive shutdown with a wedged component", job.ID())
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown hung indefinitely on wedged downloader")

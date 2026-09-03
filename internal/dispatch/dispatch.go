@@ -191,6 +191,11 @@ func (d *Dispatcher) kick() {
 	}
 }
 
+// Wake pokes the ticker loop to walk the registry immediately without blocking.
+func (d *Dispatcher) Wake() {
+	d.kick()
+}
+
 // Notify returns a receive-only channel poked whenever the queue state changes
 // (jobs added, paused, resumed, cancelled, or retried).
 func (d *Dispatcher) Notify() <-chan struct{} { return d.notify }
@@ -480,6 +485,7 @@ func (d *Dispatcher) Stop() error {
 			if err := d.q.Park(j); err != nil && d.stopErr == nil {
 				d.stopErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
 			}
+			d.persistIfChanged(context.Background(), j)
 			d.res.Evict(j.ID())
 			d.markNotResident(j.ID())
 			d.clearLaunched(j.ID())

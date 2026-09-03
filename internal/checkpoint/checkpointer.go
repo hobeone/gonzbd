@@ -51,6 +51,13 @@ func (c *Checkpointer) Mark(j *job.Job) {
 	c.mu.Unlock()
 }
 
+// DirtyCount returns the number of jobs currently marked dirty awaiting flush.
+func (c *Checkpointer) DirtyCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.dirty)
+}
+
 // Flush writes every marked job now and clears the set. It is synchronous
 // because ReplaceFromRuns needs the row on disk before re-hydration can read
 // it — the one read-after-write window the swap does not delete.

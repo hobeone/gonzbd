@@ -78,8 +78,7 @@ func convertQueueManifestToJobManifest(qm *queue.Manifest) *job.Manifest {
 func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices) (*Server, *queue.Queue) {
 	t.Helper()
 	disp := newTestAPIDispatcher(t)
-	var q *queue.Queue
-	q = queue.New(queue.WithHooks(queue.Hooks{
+	q := queue.New(queue.WithHooks(queue.Hooks{
 		OnAdd: func(qj *queue.Job, m *queue.Manifest) {
 			j := job.New(qj.ID, qj.Name, job.Policy{})
 			jm := convertQueueManifestToJobManifest(m)
@@ -929,7 +928,7 @@ func TestQueuePurge(t *testing.T) {
 
 func TestAddFile_Multipart(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
+	s, _ := testQueueServer(t)
 
 	nzbData := makeTestNZB(t)
 	var buf bytes.Buffer
@@ -964,16 +963,16 @@ func TestAddFile_Multipart(t *testing.T) {
 	if len(resp.NzoIDs) != 1 {
 		t.Fatalf("nzo_ids len = %d; want 1", len(resp.NzoIDs))
 	}
-	if q.Len() != 1 {
-		t.Errorf("queue len = %d; want 1 after addfile", q.Len())
+	if s.Dispatcher().Len() != 1 {
+		t.Errorf("queue len = %d; want 1 after addfile", s.Dispatcher().Len())
 	}
 	// Verify the job ID matches.
-	job := q.SnapshotJob(resp.NzoIDs[0])
-	if job == nil {
-		t.Fatalf("SnapshotJob(%q)", resp.NzoIDs[0])
+	row, ok := s.Dispatcher().Row(resp.NzoIDs[0])
+	if !ok {
+		t.Fatalf("Row(%q)", resp.NzoIDs[0])
 	}
-	if job.Filename != "test.nzb" {
-		t.Errorf("filename = %q; want test.nzb", job.Filename)
+	if row.Header.Filename != "test.nzb" {
+		t.Errorf("filename = %q; want test.nzb", row.Header.Filename)
 	}
 }
 
@@ -991,13 +990,13 @@ func TestAddFile_MissingFile(t *testing.T) {
 	s.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want 400", rr.Code)
+		t.Errorf("status = %d; want 400 for missing file", rr.Code)
 	}
 }
 
 func TestAddFile_NameField(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
+	s, _ := testQueueServer(t)
 
 	nzbData := makeTestNZB(t)
 	var buf bytes.Buffer
@@ -1030,8 +1029,8 @@ func TestAddFile_NameField(t *testing.T) {
 	if !resp.Status {
 		t.Error("status should be true")
 	}
-	if q.Len() != 1 {
-		t.Errorf("queue len = %d; want 1 after addfile", q.Len())
+	if s.Dispatcher().Len() != 1 {
+		t.Errorf("queue len = %d; want 1 after addfile", s.Dispatcher().Len())
 	}
 }
 
@@ -1040,7 +1039,7 @@ func TestAddFile_NameField(t *testing.T) {
 func TestAddLocalFile_HappyPath(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	s, q := testQueueServerWithRoot(t, dir)
+	s, _ := testQueueServerWithRoot(t, dir)
 
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
@@ -1051,8 +1050,8 @@ func TestAddLocalFile_HappyPath(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	if q.Len() != 1 {
-		t.Errorf("queue len = %d; want 1", q.Len())
+	if s.Dispatcher().Len() != 1 {
+		t.Errorf("queue len = %d; want 1", s.Dispatcher().Len())
 	}
 }
 
@@ -1974,7 +1973,7 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
 	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
 		return mockApp{
-			NopApp:   apitest.NopApp{Dispatcher: disp, Queue: q},
+			Dispatcher: disp, Queue: q,
 			statuses: statuses,
 		}
 	})
@@ -2089,7 +2088,7 @@ func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
 	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
 		return callCountingDUApp{
-			NopApp:           apitest.NopApp{Dispatcher: disp, Queue: q},
+			Dispatcher: disp, Queue: q,
 			statuses:         statuses,
 			statusesCallsPtr: &calls,
 		}
@@ -2184,7 +2183,7 @@ func TestQueueChangeScript_Sanitization(t *testing.T) {
 func TestQueueAddLocalFile_Sanitization(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	s, q := testQueueServerWithRoot(t, dir)
+	s, _ := testQueueServerWithRoot(t, dir)
 
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
@@ -2197,12 +2196,12 @@ func TestQueueAddLocalFile_Sanitization(t *testing.T) {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
 
-	if q.Len() != 1 {
-		t.Fatalf("queue len = %d; want 1", q.Len())
+	if s.Dispatcher().Len() != 1 {
+		t.Fatalf("queue len = %d; want 1", s.Dispatcher().Len())
 	}
-	jobs := q.Snapshot()
-	if jobs[0].Script != "passwd" {
-		t.Errorf("Script = %q; want passwd", jobs[0].Script)
+	rows := s.Dispatcher().List()
+	if rows[0].Header.Script != "passwd" {
+		t.Errorf("Script = %q; want passwd", rows[0].Header.Script)
 	}
 }
 
@@ -2220,7 +2219,7 @@ type errorAddJobApp struct {
 	err error
 }
 
-func (e errorAddJobApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
+func (e errorAddJobApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
 	return e.err
 }
 
@@ -2893,7 +2892,7 @@ func TestQueueList_Direct_PaginationAndPausedFlag(t *testing.T) {
 func TestModeAddLocalFile_Direct(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	s, q := testQueueServerWithRoot(t, dir)
+	s, _ := testQueueServerWithRoot(t, dir)
 
 	t.Run("happy path enqueues job", func(t *testing.T) {
 		nzbPath := filepath.Join(dir, "direct.nzb")
@@ -2906,8 +2905,8 @@ func TestModeAddLocalFile_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		if q.Len() != 1 {
-			t.Errorf("queue len = %d; want 1", q.Len())
+		if s.Dispatcher().Len() != 1 {
+			t.Errorf("queue len = %d; want 1", s.Dispatcher().Len())
 		}
 	})
 

@@ -93,7 +93,7 @@ type fileSpec struct {
 // per-article done/failed state.
 func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 	t.Helper()
-	var files []job.JobFile
+	files := make([]job.JobFile, 0, len(specs))
 	for fi, f := range specs {
 		isPar2 := job.IsPar2File(f.subject)
 		isRecovery := isPar2 && job.IsRecoveryVolume(f.subject)

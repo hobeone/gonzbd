@@ -33,13 +33,13 @@ import (
 func TestCheckpointJob_ReportsUnsafeWhenTheContextIsAlreadySpent(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if application.checkpointJob(ctx, job.ID) {
+	if application.checkpointJob(ctx, job.ID()) {
 		t.Error("a checkpoint whose context was already spent reported the job safe to " +
 			"clear. Its written articles are unacked, so ClearAllEmitted would offer " +
 			"them for re-fetch against the server set the user just changed")
@@ -51,10 +51,10 @@ func TestCheckpointJob_ReportsUnsafeWhenTheContextIsAlreadySpent(t *testing.T) {
 func TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 
-	if !application.checkpointJob(t.Context(), job.ID) {
+	if !application.checkpointJob(t.Context(), job.ID()) {
 		t.Error("a successful checkpoint reported the job unsafe to clear, which would " +
 			"hold its Emitted bits until a later barrier for no reason")
 	}
@@ -68,17 +68,17 @@ func TestCheckpointJob_ReportsSafeAfterASuccessfulBarrier(t *testing.T) {
 func TestCheckpointJob_ReportsUnsafeWhenNoBarrierRan(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 
-	if err := application.queue.Remove(job.ID); err != nil {
+	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
 		t.Fatal(err)
 	}
-	if application.syncTargetFor(job.ID) != nil {
+	if application.syncTargetFor(job.ID()) != nil {
 		t.Fatal("the fixture still has a sync target, so this asserts nothing reachable")
 	}
 
-	if application.checkpointJob(t.Context(), job.ID) {
+	if application.checkpointJob(t.Context(), job.ID()) {
 		t.Error("a checkpoint that ran no barrier at all reported the job safe to clear")
 	}
 }
@@ -94,14 +94,14 @@ func TestCheckpointJob_ReportsUnsafeWhenNoBarrierRan(t *testing.T) {
 func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if !application.checkpointJob(t.Context(), job.ID) {
+	if !application.checkpointJob(t.Context(), job.ID()) {
 		t.Error("a stopped assembler reported the job unsafe to clear. That is the " +
 			"ordinary end of every process, and treating it as unknown strands the " +
 			"job's Emitted bits until a restart")
@@ -118,11 +118,11 @@ func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
 func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 	application.barrier = nil
 
-	if !application.checkpointJob(t.Context(), job.ID) {
+	if !application.checkpointJob(t.Context(), job.ID()) {
 		t.Error("a barrier-less application reported a job unsafe to clear; with no " +
 			"barrier nothing ever acks, so its articles would never be re-dispatched")
 	}
@@ -141,11 +141,11 @@ func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
 func TestCheckpointAllShare_ReportsTheJobsItCouldNotProtect(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 
 	unsafe := application.checkpointAllShare(t.Context(), time.Nanosecond)
-	if _, ok := unsafe[job.ID]; !ok {
+	if _, ok := unsafe[job.ID()]; !ok {
 		t.Errorf("a job the sweep could not ack is absent from the unsafe set %v; the "+
 			"reload would clear its emitted bits and re-fetch bytes already on disk", unsafe)
 	}
@@ -167,17 +167,17 @@ func TestCheckpointAllShare_ReportsTheJobsItCouldNotProtect(t *testing.T) {
 func TestCheckpointJob_ReportsSafeWhenNothingWasWrittenSinceTheLastBarrier(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 	// Deliberately NO noteJobBytes: nothing is at risk.
 
-	if got := application.pendingBytesFor(job.ID); got != 0 {
+	if got := application.pendingBytesFor(job.ID()); got != 0 {
 		t.Fatalf("fixture: %d bytes at risk, want 0 — this test is about the empty case", got)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if !application.checkpointJob(ctx, job.ID) {
+	if !application.checkpointJob(ctx, job.ID()) {
 		t.Error("a job with nothing written since its last successful barrier was " +
 			"reported unsafe to clear. Withholding it strands articles that were " +
 			"emitted and cancelled but never written, and those are never acked, " +
@@ -202,7 +202,7 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 			"written anything since its last barrier, so none needs withholding", got)
 	}
 
-	application.noteJobBytes(job.ID, 4096)
+	application.noteJobBytes(job.ID(), 4096)
 	// Inserted directly, not via noteJobBytes, which early-returns on n <= 0 and
 	// would leave no entry at all — an assertion against an absent key passes
 	// whether or not jobsAtRisk filters on n > 0.
@@ -211,9 +211,9 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 	application.barrierMu.Unlock()
 
 	got := application.jobsAtRisk()
-	if _, ok := got[job.ID]; !ok {
+	if _, ok := got[job.ID()]; !ok {
 		t.Errorf("jobsAtRisk() = %v, want it to name %s, which holds unacked written bytes",
-			got, job.ID)
+			got, job.ID())
 	}
 	if _, ok := got["idle-job"]; ok {
 		t.Errorf("jobsAtRisk() = %v names a job with a zero entry; withholding it strands "+
@@ -222,7 +222,7 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 
 	// A successful barrier settles the accumulator, so the job stops being at
 	// risk without anything having to remember that it was.
-	application.settleJobBytes(job.ID, 4096)
+	application.settleJobBytes(job.ID(), 4096)
 	// Empty rather than nil: the zero "idle-job" entry above is still present,
 	// so the map is allocated and then filtered down to nothing. Either shape
 	// means the same thing to ClearAllEmitted, which only does lookups.
@@ -261,11 +261,11 @@ func (s blockingCommitStore) Commit(ctx context.Context, jobID string, arts []du
 func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	// Grounding: with no open file the run returns before it ever reaches
 	// Commit, and this test would pass without observing anything.
-	if len(application.syncTargetFor(job.ID).Files()) == 0 {
+	if len(application.syncTargetFor(job.ID()).Files()) == 0 {
 		t.Fatal("the fixture has no open file, so the barrier never reaches Commit")
 	}
 
@@ -275,24 +275,24 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 		release:  make(chan struct{}),
 	}
 	application.barrier = durability.NewBarrier(
-		blocked, application.queue, application, slog.New(slog.DiscardHandler),
+		blocked, application, application, slog.New(slog.DiscardHandler),
 	)
 
-	application.noteJobBytes(job.ID, 4096)
+	application.noteJobBytes(job.ID(), 4096)
 
 	done := make(chan bool, 1)
-	go func() { done <- application.checkpointJob(t.Context(), job.ID) }()
+	go func() { done <- application.checkpointJob(t.Context(), job.ID()) }()
 
 	<-blocked.entered
 	// The barrier is parked mid-run. Its bytes are on disk but not durable, and
 	// this is precisely when a concurrent reload would consult jobsAtRisk.
-	if _, ok := application.jobsAtRisk()[job.ID]; !ok {
+	if _, ok := application.jobsAtRisk()[job.ID()]; !ok {
 		t.Error("a job whose barrier is in flight is absent from jobsAtRisk. A reload " +
 			"whose OpenJobIDs failed here would clear its emitted bits, and if the " +
 			"barrier then fails, bytes already on disk are re-fetched against a " +
 			"changed server set — #417")
 	}
-	if application.nothingAtRisk(job.ID) {
+	if application.nothingAtRisk(job.ID()) {
 		t.Error("a job whose barrier is in flight reported nothing at risk")
 	}
 	close(blocked.release)
@@ -302,7 +302,7 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 	}
 	// And the success really does retire it, or every reload after a healthy
 	// checkpoint would stall the articles it is supposed to re-dispatch.
-	if _, ok := application.jobsAtRisk()[job.ID]; ok {
+	if _, ok := application.jobsAtRisk()[job.ID()]; ok {
 		t.Error("a job whose barrier succeeded is still named at risk")
 	}
 }
@@ -324,27 +324,27 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 func TestJobsAtRisk_NamesAJobWhoseBarrierIsStillInFlight(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	application.noteJobBytes(job.ID, 4096)
+	application.noteJobBytes(job.ID(), 4096)
 
 	// The barrier reads its window and starts running. Nothing is durable yet.
-	pending := application.pendingBytesFor(job.ID)
+	pending := application.pendingBytesFor(job.ID())
 	if pending != 4096 {
 		t.Fatalf("fixture: barrier read %d bytes, want 4096", pending)
 	}
 
-	if _, ok := application.jobsAtRisk()[job.ID]; !ok {
+	if _, ok := application.jobsAtRisk()[job.ID()]; !ok {
 		t.Error("a job whose barrier is still in flight is absent from jobsAtRisk. A " +
 			"reload whose OpenJobIDs failed would clear its emitted bits, and if that " +
 			"barrier then fails its written bytes are re-fetched against a changed " +
 			"server set — #417")
 	}
-	if application.nothingAtRisk(job.ID) {
+	if application.nothingAtRisk(job.ID()) {
 		t.Error("a job whose barrier is still in flight reported nothing at risk")
 	}
 
 	// Only the run that earns it retires the window.
-	application.settleJobBytes(job.ID, pending)
-	if _, ok := application.jobsAtRisk()[job.ID]; ok {
+	application.settleJobBytes(job.ID(), pending)
+	if _, ok := application.jobsAtRisk()[job.ID()]; ok {
 		t.Error("a job whose barrier succeeded is still named at risk, so every reload " +
 			"after a healthy checkpoint would stall the articles it must re-dispatch")
 	}
@@ -359,16 +359,16 @@ func TestJobsAtRisk_NamesAJobWhoseBarrierIsStillInFlight(t *testing.T) {
 func TestJobsAtRisk_KeepsAFailedBarriersBytesAtRisk(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	application.noteJobBytes(job.ID, 4096)
+	application.noteJobBytes(job.ID(), 4096)
 
 	// A barrier reads its window and fails. settleJobBytes is not called.
-	_ = application.pendingBytesFor(job.ID)
+	_ = application.pendingBytesFor(job.ID())
 
-	if _, ok := application.jobsAtRisk()[job.ID]; !ok {
+	if _, ok := application.jobsAtRisk()[job.ID()]; !ok {
 		t.Error("a job whose barrier failed is absent from jobsAtRisk; its written bytes " +
 			"are unacked and a clear would offer them for re-fetch")
 	}
-	if got := application.pendingBytesFor(job.ID); got != 4096 {
+	if got := application.pendingBytesFor(job.ID()); got != 4096 {
 		t.Errorf("pending = %d after a failed barrier, want 4096 — the figure is read as "+
 			"reassurance and must not drop beside a last_barrier that did not move", got)
 	}
@@ -380,12 +380,12 @@ func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
-	if !application.nothingAtRisk(job.ID) {
+	if !application.nothingAtRisk(job.ID()) {
 		t.Error("a job that has written nothing was reported as having bytes at risk")
 	}
 
-	application.noteJobBytes(job.ID, 4096)
-	if application.nothingAtRisk(job.ID) {
+	application.noteJobBytes(job.ID(), 4096)
+	if application.nothingAtRisk(job.ID()) {
 		t.Error("a job holding unacked written bytes was reported as having nothing at " +
 			"risk, which would let a reload clear its emitted bits and re-fetch them")
 	}
@@ -394,15 +394,15 @@ func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
 	// move this predicate — the run has not earned anything yet. That is what
 	// keeps a barrier in flight, and a barrier that FAILED, from looking like
 	// one that succeeded.
-	pending := application.pendingBytesFor(job.ID)
-	if application.nothingAtRisk(job.ID) {
+	pending := application.pendingBytesFor(job.ID())
+	if application.nothingAtRisk(job.ID()) {
 		t.Error("reading the window cleared the at-risk verdict, so a barrier still in " +
 			"flight — or one that failed — reads as a success")
 	}
 
 	// Only settling does, and only a successful barrier settles.
-	application.settleJobBytes(job.ID, pending)
-	if !application.nothingAtRisk(job.ID) {
+	application.settleJobBytes(job.ID(), pending)
+	if !application.nothingAtRisk(job.ID()) {
 		t.Error("a settled window still reports bytes at risk, which would stall the " +
 			"articles a reload must re-dispatch")
 	}
@@ -414,8 +414,8 @@ func TestNothingAtRisk_TracksTheAccumulator(t *testing.T) {
 func TestCheckpointAllShare_ReportsNothingWhenEveryJobIsAcked(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096) // bytes at risk: the precondition for the hazard
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096) // bytes at risk: the precondition for the hazard
 
 	unsafe := application.checkpointAllShare(t.Context(), reloadCheckpointTimeout)
 	if len(unsafe) != 0 {

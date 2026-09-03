@@ -213,7 +213,7 @@ type Job struct {
 	recoveryBytes int64
 	recoveryFiles int
 
-	created   time.Time
+	created time.Time
 }
 
 // New builds a job that has never run. It has no attempt record, because

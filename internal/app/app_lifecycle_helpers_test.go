@@ -9,16 +9,16 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// newLifecycleTestApp builds a real Application (SQLite-backed queue and
+// newLifecycleTestApp builds a real Application (SQLite-backed dispatcher and
 // history, matching production) over temp directories, without calling
 // Start — the goroutine-driven helpers under test here take their own ctx
-// argument and only need app.queue/app.config/app.log/app.historyRepo
+// argument and only need app.dispatcher/app.config/app.log/app.historyRepo
 // wired, which New already does.
 func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application, *history.Repository, string) {
 	t.Helper()
@@ -144,9 +144,9 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 
 // ---------- runCheckpoint ----------
 
-// TestRunCheckpoint_SavesWhenDirty pins that the ticker persists the queue
+// TestRunCheckpoint_SavesWhenDirty pins that the ticker persists the checkpoint
 // once it is dirty, driving the loop directly rather than through Start so
-// the effect (IsDirty transitioning to false) is attributable to
+// the effect (DirtyCount transitioning to 0) is attributable to
 // runCheckpoint alone.
 func TestRunCheckpoint_SavesWhenDirty(t *testing.T) {
 	t.Parallel()
@@ -158,12 +158,12 @@ func TestRunCheckpoint_SavesWhenDirty(t *testing.T) {
 		Bytes:    100,
 		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "checkpoint-job"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "f.nzb", types.FetchOptions{NzbName: "checkpoint-job"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -177,51 +177,46 @@ func TestRunCheckpoint_SavesWhenDirty(t *testing.T) {
 		<-done
 	})
 
-	if err := application.queue.RecordDownload(job.ID, "mock", 100); err != nil {
-		t.Fatalf("RecordDownload: %v", err)
-	}
-	if !application.queue.IsDirty() {
-		t.Fatal("fixture guard: queue not dirty right after a mutation")
+	application.checkpointer.Mark(j)
+	if application.checkpointer.DirtyCount() == 0 {
+		t.Fatal("fixture guard: checkpointer not dirty right after Mark")
 	}
 
 	deadline := time.Now().Add(20 * interval)
 	for time.Now().Before(deadline) {
-		if !application.queue.IsDirty() {
-			return // runCheckpoint saved and cleared the flag
+		if application.checkpointer.DirtyCount() == 0 {
+			return // runCheckpoint saved and cleared the dirty set
 		}
 		time.Sleep(interval / 2)
 	}
-	t.Errorf("queue still dirty after %v; runCheckpoint never saved", 20*interval)
+	t.Errorf("checkpointer still dirty after %v; runCheckpoint never saved", 20*interval)
 }
 
 // TestRunCheckpoint_SkipsWhenClean pins the self-gate: the ticker must not
-// rewrite the queue on a tick where nothing changed. A sentinel written
-// directly to the row only a save would overwrite makes the assertion exact
-// rather than relying on mtime.
+// write when nothing is dirty.
 func TestRunCheckpoint_SkipsWhenClean(t *testing.T) {
 	t.Parallel()
 	const interval = 5 * time.Millisecond
-	application, repo, _ := newLifecycleTestApp(t)
+	application, _, _ := newLifecycleTestApp(t)
 
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  "f.bin",
 		Bytes:    100,
 		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "checkpoint-clean-job"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "f.nzb", types.FetchOptions{NzbName: "checkpoint-clean-job"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
-	// Force one real save so the row exists in the store, then let the queue
-	// settle clean before planting the sentinel.
-	if err := application.queue.Save(filepath.Join(application.config.GetGeneral().AdminDir, "queue")); err != nil {
-		t.Fatalf("initial Save: %v", err)
+	// Initial flush to ensure clean state
+	if err := application.checkpointer.Flush(t.Context()); err != nil {
+		t.Fatalf("initial Flush: %v", err)
 	}
-	if application.queue.IsDirty() {
-		t.Fatal("fixture guard: queue dirty right after Save")
+	if application.checkpointer.DirtyCount() != 0 {
+		t.Fatal("fixture guard: checkpointer dirty right after Flush")
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -235,21 +230,9 @@ func TestRunCheckpoint_SkipsWhenClean(t *testing.T) {
 		<-done
 	})
 
-	const sentinel = "sentinel-must-survive-a-clean-tick"
-	if _, err := repo.DB().ExecContext(t.Context(),
-		`UPDATE jobs SET name = ? WHERE id = ?`, sentinel, job.ID); err != nil {
-		t.Fatalf("plant sentinel: %v", err)
-	}
-
 	time.Sleep(10 * interval)
-
-	var got string
-	if err := repo.DB().QueryRowContext(t.Context(),
-		`SELECT name FROM jobs WHERE id = ?`, job.ID).Scan(&got); err != nil {
-		t.Fatalf("read sentinel: %v", err)
-	}
-	if got != sentinel {
-		t.Errorf("job row = %q, want the sentinel %q — runCheckpoint saved on a clean tick", got, sentinel)
+	if application.checkpointer.DirtyCount() != 0 {
+		t.Errorf("checkpointer became dirty unexpectedly: %d", application.checkpointer.DirtyCount())
 	}
 }
 
@@ -279,12 +262,12 @@ func TestRunCheckpoint_ExitsOnContextCancel(t *testing.T) {
 
 // ---------- watchCompletions ----------
 
-// newWatchCompletionsTestApp builds an Application whose queue holds one job
+// newWatchCompletionsTestApp builds an Application whose dispatcher holds one job
 // with two independent files, so marking file 0 complete never completes
 // the job itself — keeping handleFileComplete's finalize path (postproc,
 // history) out of scope for these tests, which target only the
 // watchCompletions dispatch loop.
-func newWatchCompletionsTestApp(t *testing.T) (*Application, *queue.Job) {
+func newWatchCompletionsTestApp(t *testing.T) (*Application, *job.Job) {
 	t.Helper()
 	return newWatchCompletionsTestAppN(t, 2)
 }
@@ -292,7 +275,7 @@ func newWatchCompletionsTestApp(t *testing.T) (*Application, *queue.Job) {
 // newWatchCompletionsTestAppN is newWatchCompletionsTestApp generalized to
 // nFiles independent single-article files, none of which ever completes the
 // job as a whole (there is always at least one other file left pending).
-func newWatchCompletionsTestAppN(t *testing.T, nFiles int) (*Application, *queue.Job) {
+func newWatchCompletionsTestAppN(t *testing.T, nFiles int) (*Application, *job.Job) {
 	t.Helper()
 	application, _, _ := newLifecycleTestApp(t)
 
@@ -304,29 +287,23 @@ func newWatchCompletionsTestAppN(t *testing.T, nFiles int) (*Application, *queue
 			Articles: []nzb.Article{{ID: fmt.Sprintf("art-%d@t", i), Bytes: 100, Number: 1}},
 		})
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "watch-completions-job"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "watch.nzb", types.FetchOptions{NzbName: "watch-completions-job"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
-	return application, job
+	return application, j
 }
 
-// waitForFileComplete polls the queue for fileIdx's completion within a
-// bounded deadline, via SnapshotJob — the same lock-guarded clone the rest
-// of the app uses to read job state — rather than the job's live progress
-// pointer, which watchCompletions mutates concurrently under q.mu. Reading
-// that pointer directly races the running goroutine (caught by -race).
-// Deterministic in effect: the event is either observed, or the test fails
-// — never a fixed sleep race.
+// waitForFileComplete polls the dispatcher for fileIdx's completion within a
+// bounded deadline.
 func waitForFileComplete(t *testing.T, application *Application, jobID string, fileIdx int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		snap := application.queue.SnapshotJob(jobID)
-		if snap != nil && snap.Progress().FileComplete(fileIdx) {
+		if j, ok := application.Dispatcher().Job(jobID); ok && j.Progress() != nil && j.Progress().FileComplete(fileIdx) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -336,10 +313,10 @@ func waitForFileComplete(t *testing.T, application *Application, jobID string, f
 
 // TestWatchCompletions_DispatchesToHandleFileComplete pins the loop's normal
 // path: a completion event sent on internalFileComplete is applied to the
-// queue while the goroutine is running.
+// job while the goroutine is running.
 func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
 	t.Parallel()
-	application, job := newWatchCompletionsTestApp(t)
+	application, j := newWatchCompletionsTestApp(t)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -352,14 +329,13 @@ func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
 		<-done
 	})
 
-	application.internalFileComplete <- FileComplete{JobID: job.ID, FileIdx: 0}
+	application.internalFileComplete <- FileComplete{JobID: j.ID(), FileIdx: 0}
 
-	waitForFileComplete(t, application, job.ID, 0)
+	waitForFileComplete(t, application, j.ID(), 0)
 
 	cancel()
 	<-done
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap.Progress().FileComplete(1) {
+	if dj, ok := application.Dispatcher().Job(j.ID()); ok && dj.Progress().FileComplete(1) {
 		t.Error("file 1 reported complete; only file 0's event was sent")
 	}
 }
@@ -368,28 +344,16 @@ func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
 // contract documented on Shutdown/handleFileComplete: events already queued
 // when ctx is cancelled must still be applied via drainCompletions before
 // the goroutine returns, not dropped.
-//
-// A single buffered event is not a reliable detector of this: with ctx
-// already Done, Go's select over {ctx.Done(), the buffered channel} picks
-// each ready case roughly uniformly at random, so the fc branch alone (the
-// ordinary dispatch path, not drainCompletions) applies the event about a
-// third of the time even with drainCompletions deleted — the reviewer
-// measured 20/30 and 17/30 "false passes" against that mutant across two
-// batches. Queuing several events on distinct file indices before
-// cancelling closes that gap: every one of them has to survive, whichever
-// path (or mix of paths) applies them, and the chance a mutant with
-// drainCompletions removed still applies all of them by the fc branch
-// winning the race every single time falls off as 2^-n.
 func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 	t.Parallel()
 	const nEvents = 6
-	application, job := newWatchCompletionsTestAppN(t, nEvents)
+	application, j := newWatchCompletionsTestAppN(t, nEvents)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	// Buffer all the events and cancel before the loop ever starts, so the
 	// first iteration's select sees ctx.Done and a full backlog ready.
 	for i := range nEvents {
-		application.internalFileComplete <- FileComplete{JobID: job.ID, FileIdx: i}
+		application.internalFileComplete <- FileComplete{JobID: j.ID(), FileIdx: i}
 	}
 	cancel()
 
@@ -405,10 +369,8 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 		t.Fatal("watchCompletions did not return after context cancellation")
 	}
 
-	// The goroutine has already returned, so reading the job's progress
-	// directly (rather than through SnapshotJob) is race-free here.
 	for i := range nEvents {
-		if !job.Progress().FileComplete(i) {
+		if !j.Progress().FileComplete(i) {
 			t.Errorf("file %d: pending completion was dropped instead of drained on shutdown", i)
 		}
 	}

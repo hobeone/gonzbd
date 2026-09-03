@@ -38,17 +38,17 @@ func TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier(t *testing.T) {
 			"window between step 2 and step 4 — which is the whole of this test")
 	}
 
-	application.Stall(job.ID, storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
+	application.Stall(job.ID(), storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("row is missing")
 	}
-	if snap.Status == constants.StatusPaused {
+	if row.Status() == constants.StatusPaused {
 		t.Errorf("the job was parked by the clean-shutdown barrier: warning=%q. "+
-			"Shutdown's final queue.Save persists that pause, the stall list dies with "+
+			"Shutdown's final checkpoint persists that pause, the stall list dies with "+
 			"the process, and the startup sweep skips a non-active job — so it comes "+
-			"back Paused forever after a slow but perfectly normal stop", snap.Warning)
+			"back Paused forever after a slow but perfectly normal stop", row.Header.Warning)
 	}
 }
 
@@ -62,13 +62,13 @@ func TestStall_StillParksWhenTheProcessIsNotStopping(t *testing.T) {
 		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
 	}
 
-	application.Stall(job.ID, storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
+	application.Stall(job.ID(), storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("row is missing")
 	}
-	if snap.Status != constants.StatusPaused {
+	if row.Status() != constants.StatusPaused {
 		t.Fatal("a wedged mount left the job running; it sits at N% with no reason the " +
 			"operator can act on (A2)")
 	}
@@ -159,7 +159,7 @@ func TestShutdown_MarksTheProcessStoppingBeforeItsBarrier(t *testing.T) {
 func TestCheckpointAllWithBudget_ImposesThePolicysDeadline(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	var got []time.Duration
 	var askedFor int

@@ -18,7 +18,7 @@ type repairHealthFile struct {
 // articles at failIdx.
 func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int) (*job.Job, dispatch.Row) {
 	t.Helper()
-	var jFiles []job.JobFile
+	jFiles := make([]job.JobFile, 0, len(files))
 	var totalBytes int64
 	for i, f := range files {
 		totalBytes += f.bytes

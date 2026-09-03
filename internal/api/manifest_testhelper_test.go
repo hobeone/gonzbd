@@ -18,7 +18,7 @@ func mustManifest(t *testing.T, j *job.Job) *job.Manifest {
 
 func makeJobManifest(t *testing.T, subjects []string, fileBytes []int64, artBytes [][]int64, artIDs [][]string) *job.Manifest {
 	t.Helper()
-	var jfiles []job.JobFile
+	jfiles := make([]job.JobFile, 0, len(subjects))
 	for fi, subj := range subjects {
 		var arts []job.JobArticle
 		for ai, b := range artBytes[fi] {

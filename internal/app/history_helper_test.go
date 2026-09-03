@@ -3,22 +3,21 @@ package app
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// buildHistoryTestJob builds a real *queue.Job with nArticles articles of
-// 100 bytes each (TotalBytes = nArticles*100), adds it to a fresh queue, and
-// overrides the plain header fields (ID/Name/Filename/Category/Added) —
-// still exported, unaffected by the Manifest/Progress split.
-func buildHistoryTestJob(t *testing.T, id, name string, added time.Time, nArticles int) (*queue.Queue, *queue.Job) {
+// buildHistoryTestJob builds a real *job.Job with nArticles articles of
+// 100 bytes each (TotalBytes = nArticles*100), adds it to a fresh dispatcher, and
+// overrides the plain header fields (ID/Name/Filename/Category/Added).
+func buildHistoryTestJob(t *testing.T, id, name string, added time.Time, nArticles int) (*dispatch.Dispatcher, *job.Job) {
 	t.Helper()
 	parsed := &nzb.NZB{}
 	for i := range nArticles {
@@ -28,17 +27,16 @@ func buildHistoryTestJob(t *testing.T, id, name string, added time.Time, nArticl
 			Articles: []nzb.Article{{ID: fmt.Sprintf("a%d@t", i), Bytes: 100, Number: 1}},
 		})
 	}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
+	app := newTestApplication(t)
+	j, hdr, err := BuildIngestJob(app.config, parsed, name+".nzb", types.FetchOptions{NzbName: name, JobID: id}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	qjob.ID = id
-	qjob.Added = added
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
+	j.SetAdded(added)
+	if err := app.Dispatcher().Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	return q, qjob
+	return app.Dispatcher(), j
 }
 
 func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
@@ -48,30 +46,30 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	// 1. Success case, no repair needed, download time > 0.
 	// 10 articles x 100 bytes = 1000 total. Fail 1 (100 bytes), complete 8
 	// (800 bytes), leave 1 pending — RemainingBytes ends at 100.
-	q1, job1q := buildHistoryTestJob(t, "jobid1", "test-job-1", now.Add(-2*time.Hour), 10)
-	job1q.Category = "movies"
-	if err := q1.MarkJobStarted(job1q.ID, now.Add(-10*time.Second)); err != nil {
+	disp1, job1q := buildHistoryTestJob(t, "jobid1", "test-job-1", now.Add(-2*time.Hour), 10)
+	if err := job1q.MarkJobStarted(now.Add(-10 * time.Second)); err != nil {
 		t.Fatalf("MarkJobStarted: %v", err)
 	}
-	ackFailed(t, q1, job1q.ID, "a0@t")
+	ackFailed(t, disp1, job1q.ID(), "a0@t")
 	doneIDs := make([]string, 8)
 	for i := range doneIDs {
 		doneIDs[i] = fmt.Sprintf("a%d@t", i+1)
 	}
-	ackDone(t, q1, job1q.ID, doneIDs...)
-	if err := q1.RecordDownload(job1q.ID, "serverA", 1024*1024*5); err != nil { // 5 MB
+	ackDone(t, disp1, job1q.ID(), doneIDs...)
+	if err := job1q.RecordDownload("serverA", 1024*1024*5); err != nil { // 5 MB
 		t.Fatalf("RecordDownload: %v", err)
 	}
-	if err := q1.RecordDownload(job1q.ID, "serverB", 1024*1024*15); err != nil { // 15 MB
+	if err := job1q.RecordDownload("serverB", 1024*1024*15); err != nil { // 15 MB
 		t.Fatalf("RecordDownload: %v", err)
 	}
 	// 8 seconds after start.
-	if err := q1.MarkDownloadFinished(job1q.ID, now.Add(-2*time.Second)); err != nil {
+	if err := job1q.MarkDownloadFinished(now.Add(-2 * time.Second)); err != nil {
 		t.Fatalf("MarkDownloadFinished: %v", err)
 	}
 
 	job1 := &postproc.Job{
-		Queue:       job1q,
+		Job:         job1q,
+		Category:    "movies",
 		FinalDir:    "/downloads/complete/test-job-1",
 		DownloadDir: "/downloads/incomplete/test-job-1",
 		StageLog: []postproc.StageLogEntry{
@@ -109,7 +107,7 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 
 	// 2. Download duration = 0 case -> defaults to 1
 	_, job2q := buildHistoryTestJob(t, "jobid2", "test-job-2", now, 1)
-	job2 := &postproc.Job{Queue: job2q}
+	job2 := &postproc.Job{Job: job2q}
 	entry2 := buildHistoryEntry(job2)
 	if entry2.DownloadTime != 1 {
 		t.Errorf("Expected download time 1, got %d", entry2.DownloadTime)
@@ -118,7 +116,7 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	// 3. Failed job, repair stage present, repair success with lines
 	_, job3q := buildHistoryTestJob(t, "jobid3", "test-job-3", now, 1)
 	job3 := &postproc.Job{
-		Queue:    job3q,
+		Job:      job3q,
 		FailMsg:  "some failure message",
 		ParError: true,
 		StageLog: []postproc.StageLogEntry{
@@ -142,7 +140,7 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	// 4. Repair stage failed with error
 	_, job4q := buildHistoryTestJob(t, "jobid4", "test-job-4", now, 1)
 	job4 := &postproc.Job{
-		Queue: job4q,
+		Job: job4q,
 		StageLog: []postproc.StageLogEntry{
 			{
 				Stage: "repair",
@@ -158,7 +156,7 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	// 5. Repair stage succeeded, but no lines
 	_, job5q := buildHistoryTestJob(t, "jobid5", "test-job-5", now, 1)
 	job5 := &postproc.Job{
-		Queue: job5q,
+		Job: job5q,
 		StageLog: []postproc.StageLogEntry{
 			{
 				Stage: "repair",
@@ -182,30 +180,16 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 	t.Parallel()
 	_, qjob := buildHistoryTestJob(t, "hist-evict", "evicted", time.Now(), 4)
-	pj := &postproc.Job{Queue: qjob}
+	pj := &postproc.Job{Job: qjob}
 
 	resident := buildHistoryEntry(pj)
 	if resident.Bytes != 400 {
 		t.Fatalf("fixture guard: Bytes = %d while resident, want 400", resident.Bytes)
 	}
 
-	// A store is required for the queue to evict on pause.
-	dir := t.TempDir()
-	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-	q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)), queue.WithStateDir(dir))
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := q.Pause(qjob.ID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if _, err := qjob.Manifest(); !errors.Is(err, queue.ErrJobNotResident) {
-		t.Fatalf("fixture guard: want ErrJobNotResident after Pause, got %v — nothing is being tested", err)
+	qjob.Evict()
+	if _, err := qjob.Manifest(); !errors.Is(err, job.ErrNotResident) {
+		t.Fatalf("fixture guard: want ErrNotResident after Evict, got %v", err)
 	}
 
 	evicted := buildHistoryEntry(pj)
@@ -221,12 +205,6 @@ func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 // Bytes and Downloaded as only the content actually fetched, not the
 // deferred volume's bytes too — the two fields have to describe the same
 // file set, since the UI derives a "failed" figure as Bytes-Downloaded.
-//
-// Not built through buildHistoryTestJob: that helper's queue.AddOptions has
-// no OnDemandPar2, and OnDemandPar2 is what makes NewJob mark a recovery
-// volume Deferred in the first place (see Job.NewJob's Deferred: isRecovery
-// && opts.OnDemandPar2). The fixture is constructed directly here instead of
-// widening the shared helper for one test.
 func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
 	t.Parallel()
 	parsed := &nzb.NZB{
@@ -237,45 +215,35 @@ func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
 				Articles: []nzb.Article{{ID: "c1@t", Bytes: 400, Number: 1}},
 			},
 			{
-				// Recovery-volume subject: isRecoveryVolume's
-				// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it
-				// IsPar2Recovery and, with OnDemandPar2 below, Deferred.
 				Subject:  "content.vol000+01.par2",
 				Bytes:    1000,
 				Articles: []nzb.Article{{ID: "v1@t", Bytes: 1000, Number: 1}},
 			},
 		},
 	}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename:     "deferred.nzb",
-		Name:         "deferred",
-		OnDemandPar2: true,
-	}, fsutil.SanitizeOptions{})
+	app := newTestApplication(t)
+	app.config.With(func(c *config.Config) {
+		c.Downloads.OnDemandPar2 = true
+	})
+	qjob, hdr, err := BuildIngestJob(app.config, parsed, "deferred.nzb", types.FetchOptions{
+		NzbName: "deferred",
+		JobID:   "hist-deferred-par2",
+	}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	qjob.ID = "hist-deferred-par2"
 
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
+	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if !qjob.HasDeferredPar2() {
-		t.Fatal("fixture guard: recovery volume not deferred — NewJob's OnDemandPar2 wiring didn't take, nothing is being tested")
+		t.Fatal("fixture guard: recovery volume not deferred — OnDemandPar2 wiring didn't take, nothing is being tested")
 	}
-	ackDone(t, q, qjob.ID, "c1@t")
+	ackDone(t, app.Dispatcher(), qjob.ID(), "c1@t")
 
-	job := &postproc.Job{Queue: qjob}
-	entry := buildHistoryEntry(job)
+	ppJob := &postproc.Job{Job: qjob}
+	entry := buildHistoryEntry(ppJob)
 
-	// Only the content file's 400 bytes were ever fetched; the deferred
-	// 1000-byte recovery volume was never dispatched. Under the old
-	// pairing (Bytes = job.Queue.TotalBytes(), the whole-manifest total of
-	// 1400, while Downloaded already moved to the expectation) this would
-	// have reported Bytes = 1400, Downloaded = 400 — and
-	// HistoryRow.svelte's "X of Y received (Y-X failed)" line would have
-	// rendered "400 of 1400 (1000 failed)" for a job in which nothing
-	// failed. Bytes must describe the same file set as Downloaded.
 	if got, want := entry.Bytes, int64(400); got != want {
 		t.Errorf("Bytes = %d, want %d (deferred recovery volume must not count toward the advertised size)", got, want)
 	}

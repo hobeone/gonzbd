@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -22,7 +24,7 @@ import (
 // retains for failed jobs only.
 //
 // It holds *Application only for read-only, construction-immutable dependencies
-// (config, historyRepo, queue, postProcComplete, ctx, log, emit,
+// (config, historyRepo, dispatcher, postProcComplete, ctx, log, emit,
 // notifyDispatcher); it introduces no lock of its own.
 type jobFinalizer struct {
 	app *Application
@@ -57,78 +59,69 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 	defer pruneCancel()
 	if _, err := app.PruneHistory(pruneCtx); err != nil {
 		app.log.Warn("history retention sweep failed after finalize",
-			"job", job.Queue.ID, "err", err)
+			"job", job.Job.ID(), "err", err)
 	}
 }
 
 // persistAndCommit writes the history entry to the database, removes the job
-// from the queue, and broadcasts the finalization events. Returns a non-nil error if persistence failed and the job was kept in
-// the queue for recovery (the error is already logged; callers can simply return).
+// from the dispatcher, and broadcasts the finalization events. Returns a non-nil error if persistence failed and the job was kept for recovery (the error is already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error { //nocover: orchestrates queue-to-history transition and error fallbacks
 	app := f.app
-	if store := app.queue.Store(); store != nil {
-		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		defer dbCancel()
-		if err := store.MoveToHistory(dbCtx, job.Queue, entry); err != nil {
-			log.Error("failed to add history entry; keeping job in queue for recovery",
-				"job", job.Queue.ID, "err", err)
-			app.emit(Event{Type: "queue_updated"})
-			return err
-		}
-	} else if app.historyRepo != nil { //nocover: legacy non-SQLite store fallback
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-			log.Error("failed to add history entry; keeping job in queue for recovery",
-				"job", job.Queue.ID, "err", err)
+			log.Error("failed to add history entry; keeping job for recovery",
+				"job", job.Job.ID(), "err", err)
 			app.emit(Event{Type: "queue_updated"})
 			return err
 		}
+		if entry.Status == string(constants.StatusFailed) && job != nil && job.Job != nil {
+			p := job.Job.Progress()
+			m, _ := job.Job.Manifest()
+			if p != nil && m != nil {
+				for fi := range m.NumFiles() {
+					lo, hi := m.FileRange(fi)
+					artCount := hi - lo
+					filename := p.FileFilename(fi)
+					complete := 0
+					if p.FileComplete(fi) {
+						complete = 1
+					}
+					crc := p.FileAssembledCRC32(fi)
+					fetch := int(p.FileFetchPolicy(fi))
+					_, _ = app.historyRepo.DB().ExecContext(dbCtx, `
+INSERT OR REPLACE INTO history_job_files
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+						job.Job.ID(), fi, complete, fetch, filename, crc, artCount)
+				}
+			}
+		}
 	}
-	if err := app.queue.Remove(job.Queue.ID); err != nil {
-		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
+	if app.dispatcher != nil {
+		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
+		defer dbCancel()
+		if err := app.dispatcher.Remove(dbCtx, job.Job.ID()); err != nil {
+			log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
+		}
 	}
-	// The download is over and filed, so its durable runs and failed-article
-	// rows describe a queue entry that no longer exists. They are keyed by job
-	// ID with no foreign key to the queue, so without a deliberate removal
-	// they accumulate one set per job ever downloaded. SQLiteStore.Prune is
-	// the backstop for a crash between the Remove above and this call; it is
-	// not a reason to skip this one.
-	//
-	// Deliberately here rather than in enqueuePostProc: post-processing can
-	// send a job back for more downloading, and a job that returns to the
-	// queue without its runs re-fetches every byte it already has.
-	//
-	// A FAILED job keeps them, in step with MoveToHistory, which retains that
-	// job's job_files row — filename, complete, assembled_crc32 — for the same
-	// reason. Retrying reuses the job ID, resolves the same filename over the
-	// same partial file, and re-fetches only the articles that failed, so the
-	// retained runs are what bound FinalizeFile's truncate to the whole file
-	// rather than to this run's few articles. Without them the bound is the
-	// end offset of the re-fetched articles alone and the rest of the partial
-	// is destroyed, silently.
-	//
-	// This is the replacement for the max_written column migration 011 carried
-	// into history_job_files for exactly this case. That column and the
-	// assembler's maxWritten seed are gone, and taking the bound over the
-	// retained runs keeps one record the single authority (S5) instead of
-	// reintroducing a summary that can drift from it.
-	//
-	// The retention is bounded the same way the job_files one is: these rows
-	// are removed with the history entry itself, in history.Delete.
+	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
+	_ = os.Remove(manifestPath)
+
 	if entry.Status != string(constants.StatusFailed) {
 		delCtx, delCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		app.deleteJobDurability(delCtx, job.Queue.ID)
+		app.deleteJobDurability(delCtx, job.Job.ID())
 		delCancel()
 	}
-	app.forgetJobBarrierState(job.Queue.ID)
+	app.forgetJobBarrierState(job.Job.ID())
 	select {
-	case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
+	case app.postProcComplete <- PostProcComplete{JobID: job.Job.ID()}:
 	default:
 	}
 	// job_finalized signals a queue→history transition so both stores
 	// refresh from a single trigger and reach the new state together.
-	app.emit(Event{Type: "job_finalized", NzoID: job.Queue.ID})
+	app.emit(Event{Type: "job_finalized", NzoID: job.Job.ID()})
 	return nil
 }
 

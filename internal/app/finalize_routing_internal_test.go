@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // TestStall_DoesNotParkAJobWhileTheProcessIsStopping pins the one pause that
@@ -27,22 +27,22 @@ import (
 // the flag, which is the half that covers Shutdown's own barrier.
 func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 	t.Parallel()
-	application, job := newDurabilityTestApp(t, 1, 2)
+	application, j := newDurabilityTestApp(t, 1, 2)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	application.ctx = ctx
 	cancel() // the process is stopping
 
-	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", context.DeadlineExceeded)
+	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", context.DeadlineExceeded)
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("row is not found")
 	}
-	if snap.Status == constants.StatusPaused {
+	if row.Status() == constants.StatusPaused {
 		t.Errorf("the job was paused because the process was stopping; that pause is "+
 			"persisted by the final queue save and nothing ever undoes it: warning=%q",
-			snap.Warning)
+			row.Header.Warning)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 // swallowed both.
 func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 	t.Parallel()
-	application, job := newDurabilityTestApp(t, 1, 2)
+	application, j := newDurabilityTestApp(t, 1, 2)
 
 	// Grounding: the application must NOT be stopping, or this test passes for
 	// the same reason the one above does.
@@ -66,17 +66,17 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
 	}
 
-	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", context.DeadlineExceeded)
+	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", context.DeadlineExceeded)
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("row is not found")
 	}
-	if snap.Status != constants.StatusPaused {
+	if row.Status() != constants.StatusPaused {
 		t.Fatal("a barrierOpTimeout against a wedged mount left the job running; it " +
 			"sits at N% with no reason the operator can act on")
 	}
-	if snap.Warning == "" {
+	if row.Header.Warning == "" {
 		t.Error("the job was parked with no reason attached (R27)")
 	}
 }
@@ -91,17 +91,17 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 // storage and stalled the job over a queue-residency condition.
 func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
 	t.Parallel()
-	application, job := newDurabilityTestApp(t, 1, 2)
+	application, j := newDurabilityTestApp(t, 1, 2)
 
-	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", queue.ErrJobNotResident)
+	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", job.ErrNotResident)
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("row is not found")
 	}
-	if snap.Status == constants.StatusPaused {
+	if row.Status() == constants.StatusPaused {
 		t.Errorf("the job was stalled over a queue-residency condition, not a storage "+
-			"one; retryFinalize treats the same error as landed: warning=%q", snap.Warning)
+			"one; retryFinalize treats the same error as landed: warning=%q", row.Header.Warning)
 	}
 }
 
@@ -111,19 +111,19 @@ func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
 // reason an operator can act on.
 func TestRouteFinalizeFailure_StillStallsOnARealStorageError(t *testing.T) {
 	t.Parallel()
-	application, job := newDurabilityTestApp(t, 1, 2)
+	application, j := newDurabilityTestApp(t, 1, 2)
 
-	application.routeFinalizeFailure(job.ID, 0, "/downloads/a.bin", errRealDiskFailure)
+	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", errRealDiskFailure)
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("row is not found")
 	}
-	if snap.Status != constants.StatusPaused {
+	if row.Status() != constants.StatusPaused {
 		t.Fatal("a real storage error did not stall the job; the file's bytes are not " +
 			"known to be correct and it must not ship")
 	}
-	if snap.Warning == "" {
+	if row.Header.Warning == "" {
 		t.Error("the job was stalled with no reason attached (R27)")
 	}
 }

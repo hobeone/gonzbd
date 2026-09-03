@@ -19,6 +19,7 @@ const (
 // FetchOptions holds optional parameters for NZB ingest operations
 // (via URL grabber, watched folder, or manual upload).
 type FetchOptions struct {
+	JobID    string // Explicit job ID override (e.g. for retrying history jobs)
 	Category string
 	Password string
 	NzbName  string             // Display name override (Python: nzbname)

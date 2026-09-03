@@ -522,15 +522,27 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 	// connWorker from eagerly draining the entire workCh. We size
 	// the limit to pipelineDepth*2 to allow decode overlap: up to
 	// pipelineDepth requests can be on the wire (bounded by
-	// nntp.Conn.sem), while another pipelineDepth can be decoding.
+	// wireSem), while another pipelineDepth can be decoding.
 	maxOutstanding := pipelineDepth * 2
 	sem := make(chan struct{}, maxOutstanding)
+	wireSem := make(chan struct{}, pipelineDepth)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case sem <- struct{}{}:
+			// Bound wire concurrency to pipelineDepth before pulling work.
+			// This prevents a connection worker with an in-flight wire request
+			// (e.g. stalled or slow) from greedily pulling subsequent requests off
+			// workCh that it cannot put on the wire, starving other idle workers.
+			select {
+			case <-ctx.Done():
+				<-sem
+				return
+			case wireSem <- struct{}{}:
+			}
+
 			// We have capacity — now wait for work or disconnect signal.
 			//
 			// sem holds this iteration's slot plus one per still-running
@@ -539,11 +551,14 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 			req, decision := selectWork(ctx, d.disconnectChanFor(mc, len(sem) > 1), workCh)
 			switch decision {
 			case workCancelled:
+				<-wireSem
+				<-sem
 				return
 			case workDisconnect:
 				// DisconnectAll was called — close idle connection.
 				// Release our semaphore slot and wait for any in-flight
 				// handleRequest goroutines to finish before closing.
+				<-wireSem
 				<-sem
 				workerWg.Wait()
 				d.log.Debug("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
@@ -554,7 +569,9 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 				go func(req *articleRequest) {
 					defer workerWg.Done()
 					defer func() { <-sem }()
-					d.handleRequest(ctx, srv, serverIdx, mc, req, workerID)
+					d.handleRequest(ctx, srv, serverIdx, mc, req, workerID, func() {
+						<-wireSem
+					})
 				}(req)
 			}
 		}
@@ -566,11 +583,23 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) {
+func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string, wireDone func()) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.artIdx)
+	if wireDone != nil {
+		var once sync.Once
+		done := func() { once.Do(wireDone) }
+		defer done()
+		body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
+		done()
+		if !ok {
+			return
+		}
+		d.processFetchedArticle(ctx, srv, req, body)
+		return
+	}
 
 	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
 	if !ok {

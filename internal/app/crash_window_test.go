@@ -8,11 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 const (
@@ -32,7 +31,7 @@ const (
 // leaves behind.
 type crashWindowFixture struct {
 	app  *Application
-	job  *queue.Job
+	job  *job.Job
 	path string
 }
 
@@ -59,25 +58,23 @@ func newCrashWindowFixture(t *testing.T, recordArts ...int32) *crashWindowFixtur
 	}
 	parsed.Files = append(parsed.Files, file)
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "crash-window"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "crash-window.nzb", types.FetchOptions{NzbName: "crash-window"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
+	if err := application.dispatcher.Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := application.queue.SetStatus(job.ID, constants.StatusDownloading); err != nil {
-		t.Fatalf("SetStatus: %v", err)
-	}
-	if err := application.queue.SetFileFilename(job.ID, 0, "A.bin"); err != nil {
+	application.dispatcher.Tick(t.Context())
+	if err := j.SetFileFilename(0, "A.bin"); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
 
-	dir := filepath.Join(application.pipeline.downloadDir, job.Name)
+	dir := filepath.Join(application.pipeline.downloadDir, j.Name())
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	f := &crashWindowFixture{app: application, job: job, path: filepath.Join(dir, "A.bin")}
+	f := &crashWindowFixture{app: application, job: j, path: filepath.Join(dir, "A.bin")}
 
 	// Both articles' bytes really are on disk, followed by pre-allocation's
 	// untrimmed tail. The size gate is a comparison, so a file SHORTER than
@@ -100,7 +97,7 @@ func newCrashWindowFixture(t *testing.T, recordArts ...int32) *crashWindowFixtur
 			CRC32:   crc32.ChecksumIEEE(onDisk[int(a)*crashArtLen : (int(a)+1)*crashArtLen]),
 		})
 	}
-	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), job.ID, arts); err != nil {
+	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), j.ID(), arts); err != nil {
 		t.Fatalf("RunStore.Commit: %v", err)
 	}
 	return f
@@ -129,7 +126,7 @@ func TestResumeSweep_FinishesAFinalizeACrashInterrupted(t *testing.T) {
 
 	// Fixture guards. Without these the assertions below pass for a job that
 	// was already complete, or against a file that needed no trim.
-	before := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	before := f.job.Progress()
 	if before.FileComplete(0) {
 		t.Fatal("the fixture starts with the file already Complete; the repair has nothing to do")
 	}
@@ -150,7 +147,7 @@ func TestResumeSweep_FinishesAFinalizeACrashInterrupted(t *testing.T) {
 			"truncate was not finished, so pre-allocation's tail goes to post-processing "+
 			"and QuickCheck reads it as a missing file", fi.Size(), crashDecoded)
 	}
-	progress := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	progress := f.job.Progress()
 	if !progress.FileComplete(0) {
 		t.Error("the file is still not Complete after the sweep; every article is resolved " +
 			"so none will be dispatched, nothing moves partsWritten, and the job stays " +
@@ -187,7 +184,7 @@ func TestResumeSweep_LeavesAnUnfinishedFileAlone(t *testing.T) {
 		t.Fatalf("resumeAllJobs: %v", err)
 	}
 
-	progress := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	progress := f.job.Progress()
 	if progress.FileComplete(0) {
 		t.Error("a file with an outstanding article was marked Complete by the sweep")
 	}
@@ -216,17 +213,16 @@ func TestResumeSweep_LeavesAnUnfinishedFileAlone(t *testing.T) {
 func TestStrandedComplete_Predicate(t *testing.T) {
 	t.Parallel()
 	f := newCrashWindowFixture(t, 0, 1)
-	if err := f.app.queue.SeedFromRuns(f.job.ID, []durability.Run{
+	if err := f.job.SeedFromRuns([]durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: crashDecoded},
 	}); err != nil {
 		t.Fatalf("SeedFromRuns: %v", err)
 	}
-	snap := f.app.queue.SnapshotJob(f.job.ID)
-	m, err := snap.Manifest()
+	m, err := f.job.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
-	p := snap.Progress()
+	p := f.job.Progress()
 
 	if !strandedComplete(p, m, 0) {
 		t.Fatal("fixture guard: the file is not reported stranded, so every negative " +
@@ -242,10 +238,10 @@ func TestStrandedComplete_Predicate(t *testing.T) {
 
 	// Already Complete: the repair must be idempotent across restarts, or the
 	// second start trims and re-completes a file the first one finished.
-	if err := f.app.queue.MarkFileComplete(f.job.ID, 0); err != nil {
+	if err := f.job.MarkFileComplete(0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
-	done := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	done := f.job.Progress()
 	if strandedComplete(done, m, 0) {
 		t.Error("a file that is already Complete was reported stranded; the repair would " +
 			"run again on every start")
@@ -288,8 +284,7 @@ func TestRunsForFile_SelectsOneFilesRows(t *testing.T) {
 func TestCompleteStrandedFiles_ToleratesWhatItCannotRepair(t *testing.T) {
 	t.Parallel()
 	f := newCrashWindowFixture(t, 0, 1)
-	snap := f.app.queue.SnapshotJob(f.job.ID)
-	m, err := snap.Manifest()
+	m, err := f.job.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
@@ -301,7 +296,7 @@ func TestCompleteStrandedFiles_ToleratesWhatItCannotRepair(t *testing.T) {
 	})
 
 	t.Run("the file is gone from disk", func(t *testing.T) {
-		if err := f.app.queue.SeedFromRuns(f.job.ID, []durability.Run{
+		if err := f.job.SeedFromRuns([]durability.Run{
 			{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: crashDecoded},
 		}); err != nil {
 			t.Fatalf("SeedFromRuns: %v", err)
@@ -310,11 +305,11 @@ func TestCompleteStrandedFiles_ToleratesWhatItCannotRepair(t *testing.T) {
 			t.Fatalf("remove: %v", err)
 		}
 
-		f.app.completeStrandedFiles(t.Context(), f.job.ID, m, []int32{0}, []durability.Run{
+		f.app.completeStrandedFiles(t.Context(), f.job.ID(), m, []int32{0}, []durability.Run{
 			{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: crashDecoded},
 		})
 
-		if f.app.queue.SnapshotJob(f.job.ID).Progress().FileComplete(0) {
+		if f.job.Progress().FileComplete(0) {
 			t.Error("a file that could not be trimmed was marked Complete anyway; the " +
 				"trim is what EARNS the flag, so a failure to trim must withhold it")
 		}
@@ -338,15 +333,15 @@ func TestResumeSweep_CompletesAFileWhoseTailArticleFailedPermanently(t *testing.
 	t.Parallel()
 	f := newCrashWindowFixture(t, 0)
 
-	if err := f.app.queue.AckPermanentFailure(f.job.ID, []int32{1}); err != nil {
-		t.Fatalf("AckPermanentFailure: %v", err)
+	if err := f.job.MarkArticleFailed(1); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 
 	if err := f.app.resumeAllJobs(t.Context()); err != nil {
 		t.Fatalf("resumeAllJobs: %v", err)
 	}
 
-	progress := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	progress := f.job.Progress()
 	if !progress.ArticleFailed(1) || !progress.ArticleDone(1) {
 		t.Fatalf("fixture guard: article 1 is done=%v failed=%v after the sweep, want both "+
 			"true — the sweep must not un-mark a permanently failed article",

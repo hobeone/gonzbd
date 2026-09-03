@@ -424,6 +424,29 @@ func (j *Job) SetFileFilename(fileIdx int, filename string) error {
 	return nil
 }
 
+// RestoreFileMeta restores a file's persisted metadata from storage.
+func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc uint32, fetch FetchPolicy) error {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.progress == nil {
+		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	if fileIdx < 0 || fileIdx >= len(j.progress.files) {
+		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
+	}
+	if filename != "" {
+		j.progress.files[fileIdx].Filename = filename
+	}
+	if complete {
+		j.progress.files[fileIdx].Complete = true
+	}
+	if crc != 0 {
+		j.progress.files[fileIdx].AssembledCRC32 = crc
+	}
+	j.progress.files[fileIdx].Fetch = fetch
+	return nil
+}
+
 // SetFileCRC32FromRuns stores the assembled CRC32 on a file if runs prove it.
 func (j *Job) SetFileCRC32FromRuns(fileIdx int, runs []durability.Run) (bool, error) {
 	j.contentMu.Lock()
@@ -514,6 +537,40 @@ func (j *Job) ReplaceFromRuns(files []int32, runs []durability.Run) error {
 	return nil
 }
 
+// RunRange describes a contiguous span of articles covered by a durable run.
+type RunRange struct {
+	First int32
+	Last  int32
+}
+
+// ApplyResolution derives and installs the per-article done and failed state
+// from durable runs and failed_articles rows on hydration, then recomputes progress.
+func (j *Job) ApplyResolution(runs []RunRange, failed []int32) error {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.manifest == nil || j.progress == nil {
+		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	m := j.manifest
+	numArts := m.NumArticles()
+	for _, idx := range failed {
+		i := int(idx)
+		if i >= 0 && i < numArts {
+			_ = j.progress.markFailed(m, i)
+		}
+	}
+	for _, r := range runs {
+		lo, hi := max(int(r.First), 0), min(int(r.Last), numArts-1)
+		for i := lo; i <= hi; i++ {
+			if !j.progress.failed.Get(i) {
+				j.progress.markDone(m, i)
+			}
+		}
+	}
+	j.progress.recompute(m)
+	return nil
+}
+
 // ClearEmittedForReload resets Emitted and Failed flags for reload/restart.
 func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32) {
 	j.contentMu.Lock()
@@ -536,6 +593,41 @@ func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32
 	return cleared, retained
 }
 
+// ResetForRetry returns a failed job to a downloadable state, preserving
+// what it already fetched.
+func (j *Job) ResetForRetry() {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.manifest == nil || j.progress == nil {
+		return
+	}
+	j.progress.earlyAborted = false
+	j.progress.par2Recovered = false
+	j.progress.par2ReleaseReason = ""
+	j.progress.clearDownloadStamps()
+
+	m := j.manifest
+	for fi := range m.NumFiles() {
+		anyReset := false
+		lo, hi := m.FileRange(fi)
+		for i := lo; i < hi; i++ {
+			if !j.progress.failed.Get(i) {
+				continue
+			}
+			j.progress.done.Clear(i)
+			j.progress.failed.Clear(i)
+			anyReset = true
+		}
+		if anyReset {
+			j.progress.files[fi].Complete = false
+		}
+		if j.progress.files[fi].Fetch == FetchNever {
+			j.progress.files[fi].Fetch = FetchIfNeeded
+		}
+	}
+	j.progress.recompute(j.manifest)
+}
+
 // IsComplete reports whether all required files (FetchAlways) are complete.
 func (j *Job) IsComplete() bool {
 	j.contentMu.RLock()
@@ -552,6 +644,16 @@ func (j *Job) IsComplete() bool {
 		}
 	}
 	return true
+}
+
+// CheckEarlyAbort evaluates the early-abort heuristic and sets earlyAborted if triggered.
+func (j *Job) CheckEarlyAbort() bool {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.progress == nil {
+		return false
+	}
+	return j.progress.isEarlyAbort()
 }
 
 // MarkJobStarted records the start timestamp for the job's download.

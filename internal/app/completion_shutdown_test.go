@@ -4,22 +4,22 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 type blockingEmitter struct {
-	block chan struct{}
+	block   chan struct{}
+	enabled atomic.Bool
 }
 
 func (b *blockingEmitter) Broadcast(e Event) {
-	if e.Type == "queue_updated" && b.block != nil {
+	if b.enabled.Load() && e.Type == "queue_updated" && b.block != nil {
 		<-b.block
 	}
 }
@@ -41,7 +41,8 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 
 	fd := newFakeDownloader()
 	blockCh := make(chan struct{})
-	application, err := New(cfg, repo, WithDownloader(fd), WithEventEmitter(&blockingEmitter{block: blockCh}))
+	emitter := &blockingEmitter{block: blockCh}
+	application, err := New(cfg, repo, WithDownloader(fd), WithEventEmitter(emitter))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -60,16 +61,14 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 		})
 	}
 	parsed := &nzb.NZB{Files: files}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "test-sat-job"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "test-sat-job.nzb", types.FetchOptions{NzbName: "test-sat-job"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
-	if err := application.Queue().SetStatus(job.ID, constants.StatusDownloading); err != nil {
-		t.Fatalf("SetStatus: %v", err)
-	}
+	emitter.enabled.Store(true)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -81,7 +80,7 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	// Events 1-128 fill internalFileComplete (capacity 128).
 	// Events 129-149 take the fallback goroutine path.
 	for i := range numFiles {
-		application.TriggerOnFileComplete(job.ID, i)
+		application.TriggerOnFileComplete(j.ID(), i)
 	}
 
 	// When app.cancel() runs during Shutdown, unblock emitter so watchCompletions
@@ -98,19 +97,20 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	}
 
 	// Verify all 150 files were marked complete.
-	qJob := application.Queue().SnapshotJob(job.ID)
-	if qJob == nil {
-		t.Fatalf("job %s not found in queue", job.ID)
+	dj, ok := application.Dispatcher().Job(j.ID())
+	if !ok || dj == nil {
+		t.Fatalf("job %s not found in dispatcher", j.ID())
 	}
-	m, p := mustManifest(t, qJob), qJob.Progress()
-	if m != nil && p != nil {
-		for fi := range m.NumFiles() {
-			if !p.FileComplete(fi) {
-				t.Errorf("file %d (%s) Complete = false, want true", fi, m.FileSubject(fi))
-			}
+	p := dj.Progress()
+	if p == nil {
+		t.Fatal("job progress is nil")
+	}
+	for fi := range numFiles {
+		if !p.FileComplete(fi) {
+			t.Errorf("file %d Complete = false, want true", fi)
 		}
 	}
-	if !qJob.IsComplete() {
+	if !dj.IsComplete() {
 		t.Error("job.IsComplete() = false, want true")
 	}
 }

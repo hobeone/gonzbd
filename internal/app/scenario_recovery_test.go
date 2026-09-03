@@ -2,71 +2,136 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
-func newSeedQueue(t *testing.T, repo *history.Repository, adminDir string) *queue.Queue {
-	t.Helper()
-	dir := filepath.Join(adminDir, "queue")
-	store := queue.NewSQLiteStore(repo.DB(), dir, repo)
-	return queue.New(queue.WithStore(store), queue.WithStateDir(dir))
-}
-
-func loadTestQueue(t *testing.T, repo *history.Repository, adminDir string) *queue.Queue {
-	t.Helper()
-	store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
-	q, err := queue.Load(filepath.Join(adminDir, "queue"), queue.WithStore(store))
-	if err != nil {
-		t.Fatalf("loadTestQueue: %v", err)
-	}
-	return q
-}
-
-// seedCompletedJob builds a real *queue.Job (one file, one article, 100
-// bytes, fully downloaded and marked complete) via queue.NewJob and adds it
-// to seed — the only way to reach that state, rather than a parallel
-// struct-literal construction path.
-func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc bool) {
+// seedCompletedJob builds a real *job.Job (one file, one article, 100
+// bytes, fully downloaded and marked complete) and adds it to dispatch_jobs
+// and writes its manifest.
+func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name string, state job.State) *job.Job {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "recovery.bin", Bytes: 100, Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}}},
 	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb"}, fsutil.SanitizeOptions{})
+	cfg := &config.Config{}
+	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: name, JobID: id})
+	_ = j.SetFileFilename(0, "recovery.bin")
+	_ = j.BeginAttempt(time.Now())
+	_ = j.MarkArticleDone(0, 100, "mock")
+	_ = j.MarkFileComplete(0)
+
+	if state != job.StateUnset && state != job.Fetching {
+		switch state {
+		case job.Assessing:
+			if err := j.SetNext(job.Assessing); err != nil {
+				t.Fatalf("SetNext Assessing: %v", err)
+			}
+			if err := j.Transition(job.Assessing); err != nil {
+				t.Fatalf("Transition Assessing: %v", err)
+			}
+		case job.Repairing:
+			if err := j.SetNext(job.Assessing); err != nil {
+				t.Fatalf("SetNext Assessing: %v", err)
+			}
+			if err := j.Transition(job.Assessing); err != nil {
+				t.Fatalf("Transition Assessing: %v", err)
+			}
+			if err := j.SetNext(job.Repairing); err != nil {
+				t.Fatalf("SetNext Repairing: %v", err)
+			}
+			if err := j.Transition(job.Repairing); err != nil {
+				t.Fatalf("Transition Repairing: %v", err)
+			}
+		case job.Extracting:
+			if err := j.SetNext(job.Assessing); err != nil {
+				t.Fatalf("SetNext Assessing: %v", err)
+			}
+			if err := j.Transition(job.Assessing); err != nil {
+				t.Fatalf("Transition Assessing: %v", err)
+			}
+			if err := j.SetNext(job.Extracting); err != nil {
+				t.Fatalf("SetNext Extracting: %v", err)
+			}
+			if _, err := j.Cross(job.Extracting); err != nil {
+				t.Fatalf("Cross Extracting: %v", err)
+			}
+		case job.Finalizing:
+			if err := j.SetNext(job.Assessing); err != nil {
+				t.Fatalf("SetNext Assessing: %v", err)
+			}
+			if err := j.Transition(job.Assessing); err != nil {
+				t.Fatalf("Transition Assessing: %v", err)
+			}
+			if err := j.SetNext(job.Extracting); err != nil {
+				t.Fatalf("SetNext Extracting: %v", err)
+			}
+			if _, err := j.Cross(job.Extracting); err != nil {
+				t.Fatalf("Cross Extracting: %v", err)
+			}
+			if err := j.SetNext(job.Finalizing); err != nil {
+				t.Fatalf("SetNext Finalizing: %v", err)
+			}
+			if err := j.Transition(job.Finalizing); err != nil {
+				t.Fatalf("Transition Finalizing: %v", err)
+			}
+		}
+	}
+
+	manifestDir := filepath.Join(adminDir, "queue", "manifests")
+	if err := os.MkdirAll(manifestDir, 0o750); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	m, err := j.Manifest()
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("manifest: %v", err)
 	}
-	job.ID = id
-	job.Name = name
-	job.Status = constants.StatusQueued
-	if err := seed.Add(job); err != nil {
-		t.Fatalf("seed.Add: %v", err)
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
 	}
-	startTime := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
-	finishTime := time.Now().Truncate(time.Second)
-	_ = seed.MarkJobStarted(job.ID, startTime)
-	ackDone(t, seed, job.ID, "a@t")
-	if err := seed.MarkFileComplete(job.ID, 0); err != nil {
-		t.Fatalf("MarkFileComplete: %v", err)
+	if err := fsutil.WriteGzAtomicBytes(filepath.Join(manifestDir, j.ID()+".json.gz"), data); err != nil {
+		t.Fatalf("write manifest: %v", err)
 	}
-	_ = seed.MarkDownloadFinished(job.ID, finishTime)
-	// Set PostProc directly (still a plain exported field), leaving Status
-	// at Queued — this reproduces the exact crash-simulated inconsistency
-	// under test: PostProc=true while Status never transitioned through
-	// SetPostProcStarted (a real crash can strand this exact combination).
-	job.PostProc = postProc
-	seed.ResumeAll(context.Background())
+
+	store := dispatchstore.New(repo.DB())
+	cp := j.Checkpoint()
+	p := dispatch.Persisted{
+		ID:      j.ID(),
+		SortKey: 1,
+		Header:  hdr,
+		Policy:  j.Policy(),
+		State:   cp.State,
+		Intent:  j.Intent(),
+	}
+	if err := store.Save(t.Context(), p); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+	_, err = repo.DB().ExecContext(t.Context(),
+		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete, assembled_crc32, fetch_policy, filename)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID(), 0, "recovery.bin", 0, 100, 1, 0, int(job.FetchAlways), "recovery.bin",
+	)
+	if err != nil {
+		t.Fatalf("insert job_files: %v", err)
+	}
+	return j
 }
 
 // setupTestDirsAndRepo creates the admin, download and complete directories a
@@ -101,23 +166,6 @@ func startAppAndDrain(t *testing.T, a *app.Application) (context.Context, contex
 // performance assertion: these tests assert that a job reaches history, never
 // that it gets there quickly, so the only job of this number is to fail
 // instead of hanging when something is genuinely stuck.
-//
-// That makes over-provisioning free and under-provisioning expensive, and the
-// old values were under-provisioned. TestCheckpoint_SurvivesCrashMidDownload
-// failed on CI at 10.23s against a 10s bound, having passed 23 consecutive
-// local runs including the whole package pinned to two cores and fifteen
-// iterations pinned to one. The runner is simply slower than anything
-// reproducible here — its internal/app run took 108s against 69s for the
-// two-core pinned run — and a scenario that restarts the entire application
-// twice and re-downloads an article had no headroom for that.
-//
-// A passing run pays nothing for the larger number, because waitUntil returns
-// as soon as the condition holds.
-//
-// Other scenario waits in this package still use ad-hoc 2s/5s/10s literals.
-// They are the same kind of bound and could adopt this constant; they are left
-// alone here rather than swept, so that a future CI failure attributes to the
-// wait it actually exceeded.
 const recoveryLiveness = 30 * time.Second
 
 func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *app.Application, jobID string) {
@@ -126,39 +174,34 @@ func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *ap
 		_, err := repo.Get(t.Context(), jobID)
 		return err == nil
 	}) {
-		t.Fatalf("timeout waiting for job %s to reach history after recovery", jobID)
+		row, _ := a.Dispatcher().Row(jobID)
+		var pStr string
+		if j, ok := a.Dispatcher().Job(jobID); ok {
+			p := j.Progress()
+			pStr = fmt.Sprintf("resident=%v done=[%v,%v,%v] files=[%v,%v,%v]",
+				j.Resident(),
+				p.ArticleDone(0), p.ArticleDone(1), p.ArticleDone(2),
+				p.FileComplete(0), p.FileComplete(1), p.FileComplete(2))
+		}
+		t.Fatalf("timeout waiting for job %s to reach history after recovery: row=%+v %s", jobID, row, pStr)
 	}
 	if !waitUntil(recoveryLiveness, func() bool {
-		return a.Queue().SnapshotJob(jobID) == nil
+		_, ok := a.Dispatcher().Row(jobID)
+		return !ok
 	}) {
-		snap := a.Queue().SnapshotJob(jobID)
-		t.Fatalf("job %s still in active queue after recovery (status=%q)", jobID, snap.Status)
+		row, _ := a.Dispatcher().Row(jobID)
+		t.Fatalf("job %s still in active queue after recovery (status=%q)", jobID, row.Status())
 	}
 }
 
 // TestRecovery_PostProcTrueOnRestart verifies that Application.Start
-// finalises a job whose PostProc flag survived a crash.
-//
-// The crash is simulated by seeding the on-disk queue state directly:
-// a fully-downloaded, all-complete job with PostProc=true. In a real
-// crash this is the state left on disk when a process died after the
-// completion path flipped the flag but before OnJobDone's history.Add
-// + queue.Remove ran. Startup rescan must pick the job up and drive
-// it through post-processing to history.
-//
-// Pre-B.1 this failed because the rescan routed through
-// sendToPostProcessor → SetPostProcStarted, saw PostProc already true,
-// and silently dropped the handoff — stranding the job forever.
+// finalises a job whose post-processing state survived a crash.
 func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000001"
 
-	seed := newSeedQueue(t, repo, adminDir)
-	seedCompletedJob(t, seed, jobID, "recovery", true)
-	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("seed.Save: %v", err)
-	}
+	seedCompletedJob(t, repo, adminDir, jobID, "recovery", job.Repairing)
 
 	cfg := testConfig(
 		downloadDir,
@@ -224,11 +267,7 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000002"
 
-	seed := newSeedQueue(t, repo, adminDir)
-	seedCompletedJob(t, seed, jobID, "recovery-dup", false)
-	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("seed.Save: %v", err)
-	}
+	seedCompletedJob(t, repo, adminDir, jobID, "recovery-dup", job.StateUnset)
 
 	entry := history.Entry{
 		NzoID:     jobID,
@@ -260,49 +299,18 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 		}
 	})
 
-	if a.Queue().SnapshotJob(jobID) != nil {
+	if _, ok := a.Dispatcher().Row(jobID); ok {
 		t.Errorf("job %s was not removed from queue on startup despite being in history", jobID)
 	}
 }
 
-// TestRecovery_CrashBetweenMultiStoreWrites verifies that a stale job
-// document left in queue/jobs/ by the removed whole-queue JSON engine is
-// pruned on startup, and that a job caught mid-transition to history
-// re-completes without duplicating its entry.
-//
-// It used to cover a second crash window as well: persistAndCommit wrote
-// history/jobs/<id>.json.gz before historyRepo.Add, so a crash between the
-// two left an orphaned payload. #298 removed that write — MoveToHistory is
-// now the first mutation persistAndCommit makes, and it is a single
-// transaction — so the window is closed by construction and there is nothing
-// left to simulate.
 func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
-	const (
-		crashedJobID    = "recover0-00000003" // Orphaned in queue/jobs by the removed JSON engine
-		transitionJobID = "recover0-00000004" // Caught mid-transition to history
-	)
+	const transitionJobID = "recover0-00000004" // Caught mid-transition to history
 
-	seed := newSeedQueue(t, repo, adminDir)
-	// Seed transitionJobID as a completed job with PostProc=true.
-	seedCompletedJob(t, seed, transitionJobID, "recovery-transition", true)
-	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("seed.Save: %v", err)
-	}
-
-	// Leave a job document in queue/jobs/ that no live job claims. Pruning
-	// is by filename against the active job set, so the contents are
-	// irrelevant — which is just as well, since nothing writes this format
-	// any more.
-	orphanPath := filepath.Join(adminDir, "queue", "jobs", crashedJobID+".json.gz")
-	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o750); err != nil {
-		t.Fatalf("MkdirAll queue/jobs: %v", err)
-	}
-	if err := os.WriteFile(orphanPath, []byte("stale job document"), 0o600); err != nil {
-		t.Fatalf("write orphan: %v", err)
-	}
+	seedCompletedJob(t, repo, adminDir, transitionJobID, "recovery-transition", job.Repairing)
 
 	cfg := testConfig(
 		downloadDir,
@@ -314,14 +322,6 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 	a, err := app.New(cfg, repo, app.WithPostProcStages([]postproc.Stage{noOpStage{}}))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
-	}
-
-	// Verify Part 1 immediately after app.New (which ran queue.Load and Prune):
-	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
-		t.Errorf("orphaned job file %q should have been pruned by Load, stat err = %v", orphanPath, err)
-	}
-	if snap := a.Queue().SnapshotJob(crashedJobID); snap != nil {
-		t.Errorf("orphaned job %s should not exist in loaded queue", crashedJobID)
 	}
 
 	_, cancel := startAppAndDrain(t, a)

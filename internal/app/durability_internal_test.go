@@ -18,17 +18,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // newDurabilityTestApp builds an Application over a real SQLite-backed queue
 // and history, with one job of nFiles files each holding nArts articles, and
 // the assembler started.
-func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *queue.Job) {
+func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *job.Job) {
 	t.Helper()
 	application, _, _ := newLifecycleTestApp(t)
 	if err := application.assembler.Start(t.Context()); err != nil {
@@ -46,14 +46,14 @@ func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *queue
 		}
 		parsed.Files = append(parsed.Files, file)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "durability-unit"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "durability-unit.nzb", types.FetchOptions{NzbName: "durability-unit"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
+	if err := application.Dispatcher().Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	return application, job
+	return application, j
 }
 
 func fileFixtureName(f int) string { return string(rune('A'+f)) + ".bin" }
@@ -100,34 +100,34 @@ func TestStall_PausesTheJobAndSurfacesTheReason(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.Stall(job.ID, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
+	application.Stall(job.ID(), storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job left the queue")
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("job left the dispatcher")
 	}
-	if snap.Status != constants.StatusPaused {
+	if row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v after a retryable fault, want Paused — the job keeps "+
-			"dispatching articles into a device that cannot take them", snap.Status)
+			"dispatching articles into a device that cannot take them", row.Status())
 	}
-	if snap.Warning == "" {
+	if row.Header.Warning == "" {
 		t.Fatal("no warning was surfaced; the job is paused for no visible reason (R27)")
 	}
 	for _, want := range []string{"/mnt/full/A.bin", "sync"} {
-		if !strings.Contains(snap.Warning, want) {
-			t.Errorf("warning %q does not mention %q; the user cannot act on it", snap.Warning, want)
+		if !strings.Contains(row.Header.Warning, want) {
+			t.Errorf("warning %q does not mention %q; the user cannot act on it", row.Header.Warning, want)
 		}
 	}
 	for i := range 2 {
-		if snap.Progress().ArticleFailed(i) {
+		if job.Progress().ArticleFailed(i) {
 			t.Errorf("article %d was marked failed by a storage fault (A1, R21)", i)
 		}
-		if snap.Progress().ArticleDone(i) {
+		if job.Progress().ArticleDone(i) {
 			t.Errorf("article %d was marked done by a storage fault", i)
 		}
 	}
-	if snap.Progress().FailedBytes() != 0 {
-		t.Errorf("failed bytes = %d after a storage fault, want 0 (R21)", snap.Progress().FailedBytes())
+	if job.Progress().FailedBytes() != 0 {
+		t.Errorf("failed bytes = %d after a storage fault, want 0 (R21)", job.Progress().FailedBytes())
 	}
 }
 
@@ -139,25 +139,25 @@ func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.Fail(job.ID, storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
+	application.Fail(job.ID(), storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
 		// maybeFinalize can carry the job straight out of the queue, which is
 		// the intended terminal path; the article assertions below need a
 		// snapshot, so the reason is checked against history instead.
-		t.Skip("job left the queue for history; see TestFail on a resident job")
+		t.Skip("job left the dispatcher for history; see TestFail on a resident job")
 	}
-	if !strings.Contains(snap.Warning, "/mnt/ro/A.bin") {
-		t.Errorf("warning %q does not name the file (R27)", snap.Warning)
+	if !strings.Contains(row.Header.Warning, "/mnt/ro/A.bin") {
+		t.Errorf("warning %q does not name the file (R27)", row.Header.Warning)
 	}
 	for i := range 2 {
-		if snap.Progress().ArticleFailed(i) {
+		if job.Progress().ArticleFailed(i) {
 			t.Errorf("article %d was marked failed by a permanent storage fault (A1, R20)", i)
 		}
 	}
-	if snap.Progress().FailedBytes() != 0 {
-		t.Errorf("failed bytes = %d, want 0 (R21)", snap.Progress().FailedBytes())
+	if job.Progress().FailedBytes() != 0 {
+		t.Errorf("failed bytes = %d, want 0 (R21)", job.Progress().FailedBytes())
 	}
 }
 
@@ -360,7 +360,7 @@ func TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe(t *testing.T) {
 	if got := application.syncTargetFor("no-such-job"); got != nil {
 		t.Error("built a sync target for a job that is not in the queue")
 	}
-	tgt := application.syncTargetFor(job.ID)
+	tgt := application.syncTargetFor(job.ID())
 	if tgt == nil {
 		t.Fatal("no sync target for a resident job; nothing would ever be checkpointed")
 	}
@@ -382,23 +382,22 @@ func TestCheckpointAll_CoversEveryJobWithAnOpenFile(t *testing.T) {
 
 	// Only file 0 is written, so only it is open. A barrier must still reach
 	// the job, and must not fail over the file that was never opened.
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	application.checkpointAll(ctx, shutdownCheckpointTimeout)
 	if got := application.BarrierRuns(); got != 1 {
 		t.Fatalf("%d barriers ran, want 1 for the one job holding an open file", got)
 	}
-	snap := application.queue.SnapshotJob(job.ID)
-	if !snap.Progress().ArticleDone(0) {
+	if !job.Progress().ArticleDone(0) {
 		t.Error("the checkpoint did not ack the article it fsynced")
 	}
-	if snap.Progress().ArticleDone(1) {
+	if job.Progress().ArticleDone(1) {
 		t.Error("an article that was never written was acked")
 	}
 
 	// With nothing open, the sweep must find no job rather than barrier every
 	// job in the queue.
-	if err := application.assembler.CloseJobHandles(ctx, job.ID); err != nil {
+	if err := application.assembler.CloseJobHandles(ctx, job.ID()); err != nil {
 		t.Fatalf("CloseJobHandles: %v", err)
 	}
 	before := application.BarrierRuns()
@@ -414,10 +413,10 @@ func TestCheckpointAll_CoversEveryJobWithAnOpenFile(t *testing.T) {
 func TestCheckpointJob_IsInertWithoutABarrier(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 	application.barrier = nil
 
-	application.checkpointJob(t.Context(), job.ID)
+	application.checkpointJob(t.Context(), job.ID())
 	if got := application.BarrierRuns(); got != 0 {
 		t.Errorf("%d barriers ran with none wired", got)
 	}
@@ -430,7 +429,7 @@ func TestCheckpointJob_IsInertWithoutABarrier(t *testing.T) {
 func TestRunCheckpoint_SavesTheQueueAfterEachCheckpoint(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -442,7 +441,7 @@ func TestRunCheckpoint_SavesTheQueueAfterEachCheckpoint(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	saved := false
 	for time.Now().Before(deadline) && !saved {
-		if application.BarrierRuns() > 0 && !application.queue.IsDirty() {
+		if application.BarrierRuns() > 0 && application.checkpointer.DirtyCount() == 0 {
 			saved = true
 			break
 		}
@@ -452,7 +451,7 @@ func TestRunCheckpoint_SavesTheQueueAfterEachCheckpoint(t *testing.T) {
 	<-done
 
 	if !saved {
-		t.Fatalf("after %d barriers the queue was still dirty; the ack never reached disk",
+		t.Fatalf("after %d barriers the checkpointer was still dirty; the ack never reached disk",
 			application.BarrierRuns())
 	}
 }
@@ -462,19 +461,13 @@ func TestRunCheckpoint_SavesTheQueueAfterEachCheckpoint(t *testing.T) {
 // a file write per checkpoint for a job that is idle.
 func TestSaveQueueIfDirty_SkipsACleanQueue(t *testing.T) {
 	t.Parallel()
-	application, _, adminDir := newLifecycleTestApp(t)
-	statePath := filepath.Join(adminDir, "queue")
+	application, _, _ := newLifecycleTestApp(t)
 
 	application.saveQueueIfDirty()
-	if application.queue.IsDirty() {
+	if application.checkpointer.DirtyCount() != 0 {
 		// Nothing has made it dirty in this fixture; if that changes the
 		// assertion below stops meaning anything.
-		t.Fatal("the fixture's queue is dirty; this test cannot show the skip")
-	}
-	if _, err := os.Stat(statePath); err == nil {
-		t.Error("a clean queue was written to disk")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stat queue state: %v", err)
+		t.Fatal("the fixture's checkpointer is dirty; this test cannot show the skip")
 	}
 }
 
@@ -497,15 +490,15 @@ func TestShutdownCheckpoint_IsInertWithoutABarrier(t *testing.T) {
 func TestShutdownCheckpoint_CheckpointsAndSaves(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	application.shutdownCheckpoint()
 
 	if got := application.BarrierRuns(); got != 1 {
 		t.Fatalf("%d barriers ran on shutdown, want 1", got)
 	}
-	if application.queue.IsDirty() {
-		t.Error("the shutdown checkpoint acked an article and left the queue unsaved; " +
+	if application.checkpointer.DirtyCount() != 0 {
+		t.Error("the shutdown checkpoint acked an article and left the checkpointer unsaved; " +
 			"the ack does not survive the process")
 	}
 }
@@ -523,26 +516,26 @@ func TestShutdownCheckpoint_CheckpointsAndSaves(t *testing.T) {
 func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatalf("assembler.Stop: %v", err)
 	}
 
-	if err := application.finalizeCompletedFile(t.Context(), job.ID, 0); err != nil {
+	if err := application.finalizeCompletedFile(t.Context(), job.ID(), 0); err != nil {
 		t.Fatalf("finalizing after an ordinary assembler stop = %v, want nil — every "+
 			"completion drained during shutdown would stall its job", err)
 	}
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job left the queue")
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("job left the dispatcher")
 	}
-	if snap.Status == constants.StatusPaused {
+	if row.Status() == constants.StatusPaused {
 		t.Error("finalizing a file the assembler no longer holds paused the job; " +
 			"every completion drained during shutdown would stall its job")
 	}
-	if snap.Warning != "" {
-		t.Errorf("a stall reason %q was surfaced for an ordinary shutdown", snap.Warning)
+	if row.Header.Warning != "" {
+		t.Errorf("a stall reason %q was surfaced for an ordinary shutdown", row.Header.Warning)
 	}
 }
 
@@ -553,14 +546,14 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	// No durability record is seeded. The barrier's own drain reports the
 	// article this fixture wrote, and the truncate bound is taken over the
 	// stored runs PLUS that drain — which is what lets a file be trimmed on
 	// the very first finalize, before anything has been recorded for it.
 
-	info, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	info, err := application.pipeline.resolveFileInfo(job.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +571,7 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := application.finalizeCompletedFile(ctx, job.ID, 0); err != nil {
+	if err := application.finalizeCompletedFile(ctx, job.ID(), 0); err != nil {
 		t.Fatalf("finalizeCompletedFile: %v", err)
 	}
 
@@ -591,12 +584,12 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 			"trailing zeros survive and par2 reports a healthy download as damaged",
 			st.Size())
 	}
-	if !application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+	if !job.Progress().ArticleDone(0) {
 		t.Error("finalizing the file acked nothing; its last articles stay Outstanding forever")
 	}
 	// The handle is back with the assembler, so post-processing's unlink does
 	// not silly-rename on NFS.
-	if got := application.syncTargetFor(job.ID).Files(); len(got) != 0 {
+	if got := application.syncTargetFor(job.ID()).Files(); len(got) != 0 {
 		t.Errorf("files still open after finalizing: %v", got)
 	}
 }
@@ -617,21 +610,20 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
 
-	store := application.queue.Store()
-	for _, id := range []string{job.ID, "other-job"} {
+	for _, id := range []string{job.ID(), "other-job"} {
 		if _, err := application.runs.Commit(ctx, id, []durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.RecordFailedArticles(ctx, id, []int32{1}); err != nil {
+		if _, err := application.historyRepo.DB().ExecContext(ctx, "INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)", id); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	application.deleteJobDurability(ctx, job.ID)
+	application.deleteJobDurability(ctx, job.ID())
 
-	if nr, nf := durabilityRowCounts(t, application, job.ID); nr != 0 || nf != 0 {
+	if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 0 || nf != 0 {
 		t.Errorf("%d runs and %d failed rows survive the job's departure", nr, nf)
 	}
 	// Scoped to the departing job: deleting every job's rows would throw away
@@ -765,22 +757,16 @@ func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
 	// Remove the manifest file the queue would hydrate from, then evict the
 	// job so the next Manifest() has to read it.
 	adminDir := application.config.GetGeneral().AdminDir
-	manifestPath := filepath.Join(adminDir, "queue", "manifests", job.ID+".json.gz")
+	manifestPath := filepath.Join(adminDir, "queue", "manifests", job.ID()+".json.gz")
 	if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remove manifest: %v", err)
 	}
-	if err := application.queue.Pause(job.ID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
+	job.Evict()
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Skip("the job left the queue entirely; the manifest-read branch is unreachable here")
-	}
-	if _, err := snap.Manifest(); err == nil {
+	if _, err := job.Manifest(); err == nil {
 		t.Skip("the manifest is still resident; this fixture cannot reach the read failure")
 	}
-	if got := application.syncTargetFor(job.ID); got != nil {
+	if got := application.syncTargetFor(job.ID()); got != nil {
 		t.Error("built a sync target for a job whose manifest cannot be read; the " +
 			"barrier would refuse every file of an ordinarily non-resident job")
 	}
@@ -849,10 +835,10 @@ func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
 		t.Fatalf("emit delivered %+v, want one queue_updated for \"direct\"", rec.events)
 	}
 
-	application.Stall(job.ID, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
+	application.Stall(job.ID(), storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
 	var sawStallUpdate bool
 	for _, e := range rec.events[1:] {
-		if e.Type == "queue_updated" && e.NzoID == job.ID {
+		if e.Type == "queue_updated" && e.NzoID == job.ID() {
 			sawStallUpdate = true
 		}
 	}
@@ -964,7 +950,7 @@ func (w *wedgeOnFile) resolve(jobID string, fileIdx int) (assembler.FileInfo, er
 // resolver has to be substituted before the worker ever runs and Application
 // exposes no hook for it — deliberately, since production has no reason to
 // swap one.
-func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
+func newWedgedApp(t *testing.T) (*Application, *job.Job, func()) {
 	t.Helper()
 	application, job := newDurabilityTestApp(t, 2, 1)
 	ctx := t.Context()
@@ -998,15 +984,15 @@ func newWedgedApp(t *testing.T) (*Application, *queue.Job, func()) {
 	t.Cleanup(release)
 
 	// File 0 opens normally and stays open.
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 	// File 1's open parks the worker, so no control message can be answered.
-	if err := application.pipeline.registerFile(job.ID, 1); err != nil {
+	if err := application.pipeline.registerFile(job.ID(), 1); err != nil {
 		t.Fatalf("registerFile 1: %v", err)
 	}
 	// File 1 explicitly: sending this to file 0 would never reach the wedge.
 	// It is not routed through writeFixtureArticle because that waits for the
 	// file to open, and the whole point here is that the open never returns.
-	ref, req := assemblerWrite(job.ID, 1, 1, 0)
+	ref, req := assemblerWrite(job.ID(), 1, 1, 0)
 	if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
 		t.Fatalf("WriteArticle 1: %v", err)
 	}
@@ -1038,7 +1024,7 @@ func TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize(t *testing.T
 	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 
-	err := application.finalizeCompletedFile(t.Context(), job.ID, 0)
+	err := application.finalizeCompletedFile(t.Context(), job.ID(), 0)
 	if err == nil {
 		t.Fatal("finalizing against a wedged worker returned nil; the caller proceeds to " +
 			"MarkFileComplete, DirectUnpack and post-processing with a file that was " +
@@ -1090,25 +1076,25 @@ func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing
 	t.Parallel()
 	application, job, _ := newWedgedApp(t)
 
-	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
+	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID(), FileIdx: 0})
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job left the queue")
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("job left the dispatcher")
 	}
-	if snap.Progress().FileComplete(0) {
+	if job.Progress().FileComplete(0) {
 		t.Error("the file was marked complete although it was never finalized; " +
 			"DirectUnpack, job finalization and post-processing all act on that bit, " +
 			"and a file still carrying pre-allocation's zeros reads as par2 damage")
 	}
-	if snap.Status != constants.StatusPaused {
+	if row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v, want Paused — the job carries on and completes with an "+
-			"untrimmed file", snap.Status)
+			"untrimmed file", row.Status())
 	}
-	if snap.Warning == "" {
+	if row.Header.Warning == "" {
 		t.Error("no reason was surfaced; the job halts and the user is told nothing (R27)")
 	}
-	if snap.Progress().ArticleFailed(0) || snap.Progress().FailedBytes() != 0 {
+	if job.Progress().ArticleFailed(0) || job.Progress().FailedBytes() != 0 {
 		t.Error("a storage condition was recorded as article damage (A1, R21)")
 	}
 }
@@ -1120,16 +1106,16 @@ func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing
 func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
-	want, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	want, err := application.pipeline.resolveFileInfo(job.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want.Path == "" {
 		t.Fatal("the fixture resolved an empty path; the assertion below cannot distinguish it from the failure case")
 	}
-	if got := application.filePathFor(job.ID, 0); got != want.Path {
+	if got := application.filePathFor(job.ID(), 0); got != want.Path {
 		t.Errorf("filePathFor = %q, want %q", got, want.Path)
 	}
 	// A file the pipeline never registered must not be answered with ANOTHER
@@ -1139,7 +1125,7 @@ func TestFilePathFor_NamesTheFileOrSaysNothing(t *testing.T) {
 	// FileInfo on miss, so ignoring its error yields "" either way. An
 	// implementation that ignored fileIdx and returned the job's first known
 	// path would have passed it, and fails this.
-	if got := application.filePathFor(job.ID, 7); got == want.Path {
+	if got := application.filePathFor(job.ID(), 7); got == want.Path {
 		t.Errorf("filePathFor for unregistered file 7 = %q, which is file 0's path — "+
 			"the stall reason would name the wrong file", got)
 	}
@@ -1199,34 +1185,34 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		if !fault.Permanent {
 			t.Fatal("EROFS is not classified permanent; this subtest is about the other branch")
 		}
-		application.Fail(job.ID, fault)
+		application.Fail(job.ID(), fault)
 
-		before := application.queue.SnapshotJob(job.ID)
-		if before == nil {
-			t.Skip("the permanent failure carried the job straight out of the queue")
+		before, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Skip("the permanent failure carried the job straight out of the dispatcher")
 		}
-		if !strings.Contains(before.Warning, "Failed:") {
-			t.Fatalf("Fail set warning %q; the fixture is not in the state this test is about", before.Warning)
+		if !strings.Contains(before.Header.Warning, "Failed:") {
+			t.Fatalf("Fail set warning %q; the fixture is not in the state this test is about", before.Header.Warning)
 		}
 
 		// ...and then returns the fault as its error, MARKED as routed and
 		// wrapped on the way out. The marker is what the caller reads: a bare
 		// fault means unrouted, and one of those now genuinely reaches here
 		// from the SyncTarget boundary.
-		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0,
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID(), 0,
 			fmt.Errorf("%w: %w", durability.ErrFaultRouted, fault))
-		application.routeFinalizeFailure(job.ID, 0, path, err)
+		application.routeFinalizeFailure(job.ID(), 0, path, err)
 
-		after := application.queue.SnapshotJob(job.ID)
-		if after == nil {
-			t.Fatal("the job left the queue between the two reads")
+		after, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("the job left the dispatcher between the two reads")
 		}
-		if strings.Contains(after.Warning, "Stalled:") {
+		if strings.Contains(after.Header.Warning, "Stalled:") {
 			t.Errorf("warning = %q — a permanent fault was re-routed as a stall, so the "+
-				"operator is told to wait out a read-only filesystem", after.Warning)
+				"operator is told to wait out a read-only filesystem", after.Header.Warning)
 		}
-		if !strings.Contains(after.Warning, "Failed:") {
-			t.Errorf("warning = %q, want the permanent reason Fail set to survive", after.Warning)
+		if !strings.Contains(after.Header.Warning, "Failed:") {
+			t.Errorf("warning = %q, want the permanent reason Fail set to survive", after.Header.Warning)
 		}
 		// Two further assertions were tried here and removed, because neither
 		// could fire. "the warning still names the path" holds under the bug
@@ -1254,36 +1240,36 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		if fault.Permanent {
 			t.Fatal("ENOSPC is classified permanent; this subtest is about the other branch")
 		}
-		application.Stall(job.ID, fault)
+		application.Stall(job.ID(), fault)
 
-		before := application.queue.SnapshotJob(job.ID)
-		if before == nil {
-			t.Fatal("job left the queue")
+		before, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("job left the dispatcher")
 		}
-		if !strings.Contains(before.Warning, "on sync") {
+		if !strings.Contains(before.Header.Warning, "on sync") {
 			t.Fatalf("the barrier's own reason is %q; this subtest reads the operation "+
-				"name to tell a re-route from an untouched reason, so it needs one", before.Warning)
+				"name to tell a re-route from an untouched reason, so it needs one", before.Header.Warning)
 		}
 
-		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0,
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID(), 0,
 			fmt.Errorf("%w: %w", durability.ErrFaultRouted, fault))
-		application.routeFinalizeFailure(job.ID, 0, path, err)
+		application.routeFinalizeFailure(job.ID(), 0, path, err)
 
-		after := application.queue.SnapshotJob(job.ID)
-		if after == nil {
-			t.Fatal("job left the queue")
+		after, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("job left the dispatcher")
 		}
-		if after.Warning != before.Warning {
+		if after.Header.Warning != before.Header.Warning {
 			t.Errorf("the reason changed from %q to %q — the fault the barrier had "+
 				"already routed was routed a second time, rewrapping the operator's "+
 				"reason in a layer that describes this code path rather than the fault",
-				before.Warning, after.Warning)
+				before.Header.Warning, after.Header.Warning)
 		}
-		if strings.Contains(after.Warning, "on finalize") {
+		if strings.Contains(after.Header.Warning, "on finalize") {
 			t.Errorf("warning = %q names this code path rather than the failing syscall; "+
-				"the barrier reported %q and it must survive intact", after.Warning, before.Warning)
+				"the barrier reported %q and it must survive intact", after.Header.Warning, before.Header.Warning)
 		}
-		if after.Progress().ArticleFailed(0) || after.Progress().FailedBytes() != 0 {
+		if job.Progress().ArticleFailed(0) || job.Progress().FailedBytes() != 0 {
 			t.Error("a storage condition was recorded as article damage (A1, R21)")
 		}
 	})
@@ -1295,20 +1281,20 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		// reach Barrier.routeFault, so nothing has surfaced a reason and this
 		// path must supply one — otherwise the job halts silently.
 		err := fmt.Errorf("%w: job %s file %d: cannot tell whether it is still open: %w",
-			ErrNotFinalized, job.ID, 0, context.DeadlineExceeded)
-		application.routeFinalizeFailure(job.ID, 0, path, err)
+			ErrNotFinalized, job.ID(), 0, context.DeadlineExceeded)
+		application.routeFinalizeFailure(job.ID(), 0, path, err)
 
-		snap := application.queue.SnapshotJob(job.ID)
-		if snap == nil {
-			t.Fatal("job left the queue")
+		snap, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("job left the dispatcher")
 		}
-		if snap.Status != constants.StatusPaused {
+		if snap.Status() != constants.StatusPaused {
 			t.Errorf("status = %v, want Paused — an unrouted failure left the job running "+
-				"and it completes with an untrimmed file", snap.Status)
+				"and it completes with an untrimmed file", snap.Status())
 		}
-		if !strings.Contains(snap.Warning, path) {
+		if !strings.Contains(snap.Header.Warning, path) {
 			t.Errorf("warning = %q does not name the file; the job halts with no reason "+
-				"the user can act on (R27)", snap.Warning)
+				"the user can act on (R27)", snap.Header.Warning)
 		}
 	})
 
@@ -1325,24 +1311,24 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 
 		fault := storagefault.Classify("list", "", errors.New("the assembler worker did not answer"))
 		err := fmt.Errorf("%w: job %s file %d: cannot tell whether it is still open: %w",
-			ErrNotFinalized, job.ID, 0, fault)
-		application.routeFinalizeFailure(job.ID, 0, path, err)
+			ErrNotFinalized, job.ID(), 0, fault)
+		application.routeFinalizeFailure(job.ID(), 0, path, err)
 
-		snap := application.queue.SnapshotJob(job.ID)
-		if snap == nil {
-			t.Fatal("job left the queue")
+		snap, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("job left the dispatcher")
 		}
-		if snap.Status != constants.StatusPaused {
+		if snap.Status() != constants.StatusPaused {
 			t.Errorf("status = %v, want Paused — a fault nothing had routed was read as "+
 				"already handled, so the job carried on with a file that was never trimmed",
-				snap.Status)
+				snap.Status())
 		}
 		// The fault carried no path of its own, because resolving one means
 		// calling back into the component that just failed to answer. The
 		// caller has it and fills it in; without that the operator is told a
 		// download halted and not which file.
-		if !strings.Contains(snap.Warning, path) {
-			t.Errorf("warning = %q does not name the file (R27)", snap.Warning)
+		if !strings.Contains(snap.Header.Warning, path) {
+			t.Errorf("warning = %q does not name the file (R27)", snap.Header.Warning)
 		}
 	})
 
@@ -1353,21 +1339,21 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 	t.Run("not a storage condition", func(t *testing.T) {
 		application, job := newDurabilityTestApp(t, 1, 1)
 
-		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID, 0,
+		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID(), 0,
 			fmt.Errorf("%w: %w", durability.ErrTargetUnavailable, context.Canceled))
-		application.routeFinalizeFailure(job.ID, 0, path, err)
+		application.routeFinalizeFailure(job.ID(), 0, path, err)
 
-		snap := application.queue.SnapshotJob(job.ID)
-		if snap == nil {
-			t.Fatal("job left the queue")
+		snap, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("job left the dispatcher")
 		}
-		if snap.Status == constants.StatusPaused {
+		if snap.Status() == constants.StatusPaused {
 			t.Errorf("the job was parked for a condition that is not about storage: warning=%q",
-				snap.Warning)
+				snap.Header.Warning)
 		}
 		// Still owed, so the next re-evaluation retries it rather than the
 		// file being silently left untrimmed.
-		if !application.hasPendingFinalize(job.ID, 0) {
+		if !application.hasPendingFinalize(job.ID(), 0) {
 			t.Error("the finalize was neither performed nor recorded for retry")
 		}
 	})
@@ -1392,7 +1378,7 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 	application, job, _ := newWedgedApp(t)
 	application.assembler.SetBarrierOpTimeout(100 * time.Millisecond)
 
-	want, err := application.pipeline.resolveFileInfo(job.ID, 0)
+	want, err := application.pipeline.resolveFileInfo(job.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1403,13 +1389,13 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0})
+		application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID(), FileIdx: 0})
 	}()
 
 	// Well inside the finalize's 100ms bound, and well after it has begun.
 	time.Sleep(15 * time.Millisecond)
-	application.pipeline.forgetJob(job.ID)
-	if got := application.filePathFor(job.ID, 0); got != "" {
+	application.pipeline.forgetJob(job.ID())
+	if got := application.filePathFor(job.ID(), 0); got != "" {
 		t.Fatalf("filePathFor still returns %q after the cache was dropped; the fixture "+
 			"does not reproduce the condition it is about", got)
 	}
@@ -1420,15 +1406,15 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 		t.Fatal("handleFileComplete never returned")
 	}
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job left the queue")
+	snap, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("job left the dispatcher")
 	}
-	if !strings.Contains(snap.Warning, want.Path) {
+	if !strings.Contains(snap.Header.Warning, want.Path) {
 		t.Errorf("warning = %q does not name %q — the path was resolved after the "+
 			"finalize, by which point the job's FileInfo was gone, so the operator is "+
 			"told a download halted without being told which file or which mount",
-			snap.Warning, want.Path)
+			snap.Header.Warning, want.Path)
 	}
 }
 
@@ -1453,13 +1439,13 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteJobBytes(job.ID, 4096)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 4096)
 
-	if err := application.queue.Remove(job.ID); err != nil {
+	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
 		t.Fatal(err)
 	}
-	if application.syncTargetFor(job.ID) != nil {
+	if application.syncTargetFor(job.ID()) != nil {
 		t.Fatal("the fixture still has a sync target; the assertions below would pass against " +
 			"a barrier that really ran")
 	}
@@ -1468,14 +1454,14 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(jobs, job.ID) {
+	if !slices.Contains(jobs, job.ID()) {
 		t.Fatal("the assembler no longer holds the job's file, so checkpointJob would never " +
 			"be called for it and this test asserts nothing reachable")
 	}
 
-	application.checkpointJob(t.Context(), job.ID)
+	application.checkpointJob(t.Context(), job.ID())
 
-	got := application.JobDurability(job.ID)
+	got := application.JobDurability(job.ID())
 	if !got.LastBarrier.IsZero() {
 		t.Errorf("LastBarrier = %v after a checkpoint that ran no barrier, want the zero time — "+
 			"the figure exists to tell a job that is checkpointing from one whose barriers "+
@@ -1517,23 +1503,23 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			application, job := newDurabilityTestApp(t, 1, 2)
 
-			seedDurability(t, application, job.ID)
-			if nr, nf := durabilityRowCounts(t, application, job.ID); nr != 1 || nf != 1 {
+			seedDurability(t, application, job.ID())
+			if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 1 || nf != 1 {
 				t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
 					"the test would pass vacuously", nr, nf)
 			}
 
 			if err := application.historyRepo.Add(t.Context(), history.Entry{
-				NzoID: job.ID, Name: "reconciled", Status: string(tc.status),
+				NzoID: job.ID(), Name: "reconciled", Status: string(tc.status),
 			}); err != nil {
 				t.Fatal(err)
 			}
 
-			if !application.dropJobAlreadyInHistory(t.Context(), job.ID) {
+			if !application.dropJobAlreadyInHistory(t.Context(), job.ID()) {
 				t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
 			}
 
-			nr, nf := durabilityRowCounts(t, application, job.ID)
+			nr, nf := durabilityRowCounts(t, application, job.ID())
 			if kept := nr > 0 || nf > 0; kept != tc.wantKept {
 				if tc.wantKept {
 					t.Error("a FAILED job's durability rows were dropped; its retry re-fetches " +

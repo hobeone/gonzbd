@@ -6,8 +6,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // The role interfaces below split the former monolithic ApplicationReloader
@@ -19,7 +20,7 @@ import (
 
 // JobManager covers queue and history job lifecycle operations.
 type JobManager interface {
-	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error
+	AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error
 	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 	RetryHistoryJob(ctx context.Context, jobID string) error

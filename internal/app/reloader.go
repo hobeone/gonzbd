@@ -97,10 +97,6 @@ func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
 	app.SetMaxArtOpt(d.MaxArtOpt)
 	app.SetTopOnly(d.TopOnly)
 	app.SetPropagationDelay(d.PropagationDelay)
-	if app.queue != nil {
-		app.queue.SetSanitizeOptions(d.SanitizeOptions())
-		app.queue.SetMaxActiveJobs(d.MaxActiveJobs)
-	}
 }
 
 // ReloadGeneralOptions applies all hot-applicable general settings from g
@@ -258,9 +254,6 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 				j.ClearEmittedForReload(skip)
 			}
 		}
-	}
-	if app.queue != nil {
-		app.queue.ClearAllEmitted(unprotected)
 	}
 
 	servers := make([]*downloader.Server, len(scs))

@@ -308,7 +308,6 @@ func stageFromStatus(status constants.Status) string {
 	return strings.ToLower(string(status))
 }
 
-
 // firstIncompleteFile returns the subject of the first file that has not been
 // completely downloaded, skipping files with non-FetchAlways policy.
 func firstIncompleteFile(j *job.Job) string {
@@ -1163,17 +1162,17 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
 	}
-	qJob, err := app.BuildIngestJob(s.config, parsed, filename, opts, s.log)
+	j, hdr, err := app.BuildIngestJob(s.config, parsed, filename, opts, s.log)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.jobs.AddJob(r.Context(), qJob, data, false); err != nil {
+	if err := s.jobs.AddJob(r.Context(), j, hdr, data, false); err != nil {
 		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
-		"nzo_ids": []string{qJob.ID},
+		"nzo_ids": []string{j.ID()},
 	})
 }

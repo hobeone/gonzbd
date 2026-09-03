@@ -22,15 +22,18 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // second copy of a display string, not a second source of truth for any
 // scheduling decision — nothing reads Header.Name to decide anything.
 type Header struct {
-	Name     string
-	Filename string
-	Category string
-	Priority int
-	Bytes    int64
-	Warning  string
-	Script   string
-	Password string
-	PP       int
+	Name      string
+	Filename  string
+	Category  string
+	Priority  int
+	Bytes     int64
+	Warning   string
+	Script    string
+	Password  string
+	PP        int
+	NZBBackup string
+	URL       string
+	MD5       string
 }
 
 // Row is one line of a queue listing: the scheduling view sched computes,

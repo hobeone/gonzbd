@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestPipeline_MultiFile_ArtIdx_EndToEnd tests multi-file article completion
@@ -50,31 +49,31 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 		},
 	}
 
-	q := queue.New()
-	q.PauseAll()
+	app := newTestApplication(t)
+	disp := app.Dispatcher()
+	disp.Pause()
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "multifile-test.nzb"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(app.config, parsed, "multifile-test.nzb", types.FetchOptions{NzbName: "multifile-test"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob failed: %v", err)
+		t.Fatalf("BuildIngestJob failed: %v", err)
 	}
-	if err := q.Add(job); err != nil {
-		t.Fatalf("q.Add failed: %v", err)
-	}
-
-	gotJob := q.SnapshotJob(job.ID)
-	if gotJob == nil {
-		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
+	if err := disp.Add(j, hdr); err != nil {
+		t.Fatalf("disp.Add failed: %v", err)
 	}
 
-	m := mustManifest(t, gotJob)
+	m := mustManifest(t, j)
 	if m.NumArticles() != 9 {
 		t.Fatalf("Expected 9 total articles, got %d", m.NumArticles())
 	}
 
 	// Verify ForEachUnfinishedArticle yields correct ArtIdx and MessageID pairs
-	var yielded []queue.UnfinishedArticle
-	q.ForEachUnfinishedArticle(func(ua queue.UnfinishedArticle) bool {
-		yielded = append(yielded, ua)
+	type unfinishedItem struct {
+		artIdx    int32
+		messageID string
+	}
+	var yielded []unfinishedItem
+	_ = j.ForEachUnfinishedArticle(func(fileIdx int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		yielded = append(yielded, unfinishedItem{artIdx: artIdx, messageID: id})
 		return true
 	})
 
@@ -84,19 +83,18 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 
 	for i, ua := range yielded {
 		expectedID := fmt.Sprintf("art%d@test", i)
-		if int(ua.ArtIdx) != i {
-			t.Errorf("Article %d yielded wrong ArtIdx: got %d, want %d", i, ua.ArtIdx, i)
+		if int(ua.artIdx) != i {
+			t.Errorf("Article %d yielded wrong ArtIdx: got %d, want %d", i, ua.artIdx, i)
 		}
-		if ua.MessageID != expectedID {
-			t.Errorf("Article %d yielded wrong MessageID: got %s, want %s", i, ua.MessageID, expectedID)
+		if ua.messageID != expectedID {
+			t.Errorf("Article %d yielded wrong MessageID: got %s, want %s", i, ua.messageID, expectedID)
 		}
 	}
 
 	// Mark article 3 (first article of File 1) done by ArtIdx
-	ackDoneIdx(t, q, job.ID, 3)
+	ackDoneIdx(t, disp, j.ID(), 3)
 
-	snap := q.SnapshotJob(job.ID)
-	p := snap.Progress()
+	p := j.Progress()
 	if p.FilePending(0) != 3 {
 		t.Errorf("File 0 pending should be 3, got %d", p.FilePending(0))
 	}
@@ -112,10 +110,9 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	for i := range 9 {
 		allIdxs = append(allIdxs, int32(i))
 	}
-	ackDoneIdx(t, q, job.ID, allIdxs...)
+	ackDoneIdx(t, disp, j.ID(), allIdxs...)
 
-	snap = q.SnapshotJob(job.ID)
-	p = snap.Progress()
+	p = j.Progress()
 	if p.PendingArticles() != 0 {
 		t.Errorf("Expected 0 pending articles after marking all done, got %d", p.PendingArticles())
 	}

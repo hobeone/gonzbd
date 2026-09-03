@@ -65,7 +65,7 @@ func TestRebuildJobFromNZB_Success(t *testing.T) {
 	a, adminDir := rebuildTestApp(t)
 	writeBackup(t, adminDir, "show.nzb.gz", []byte(rebuildNZBBody))
 
-	job, err := a.rebuildJobFromNZB(&history.Entry{
+	job, hdr, err := a.rebuildJobFromNZB(history.Entry{
 		NzoID:     "rebuildok0000001",
 		Name:      "show",
 		NzbName:   "show.nzb",
@@ -78,18 +78,22 @@ func TestRebuildJobFromNZB_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuildJobFromNZB: %v", err)
 	}
-	if job.ID != "rebuildok0000001" {
-		t.Errorf("ID = %q, want the entry's nzo_id", job.ID)
+	if job.ID() != "rebuildok0000001" {
+		t.Errorf("ID = %q, want the entry's nzo_id", job.ID())
 	}
-	if job.NZBBackup != "show.nzb.gz" {
-		t.Errorf("NZBBackup = %q, want it carried onto the rebuilt job", job.NZBBackup)
+	if hdr.NZBBackup != "show.nzb.gz" {
+		t.Errorf("NZBBackup = %q, want it carried onto the rebuilt job", hdr.NZBBackup)
 	}
-	if job.Category != "tv" || job.Script != "post.sh" || job.Password != "pw" || job.PP != 3 {
+	if hdr.Category != "tv" || hdr.Script != "post.sh" || hdr.Password != "pw" || hdr.PP != 3 {
 		t.Errorf("options lost: category=%q script=%q password=%q pp=%d",
-			job.Category, job.Script, job.Password, job.PP)
+			hdr.Category, hdr.Script, hdr.Password, hdr.PP)
 	}
-	if job.NumArticles() != 2 {
-		t.Errorf("NumArticles = %d, want 2 — the NZB was not parsed", job.NumArticles())
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("job.Manifest: %v", err)
+	}
+	if m.NumArticles() != 2 {
+		t.Errorf("NumArticles = %d, want 2 — the NZB was not parsed", m.NumArticles())
 	}
 }
 
@@ -101,7 +105,7 @@ func TestRebuildJobFromNZB_UnparseablePP(t *testing.T) {
 	a, adminDir := rebuildTestApp(t)
 	writeBackup(t, adminDir, "show.nzb.gz", []byte(rebuildNZBBody))
 
-	job, err := a.rebuildJobFromNZB(&history.Entry{
+	job, _, err := a.rebuildJobFromNZB(history.Entry{
 		NzoID:     "rebuildpp0000001",
 		Name:      "show",
 		NZBBackup: "show.nzb.gz",
@@ -169,7 +173,7 @@ func TestRebuildJobFromNZB_Failures(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, adminDir)
 			}
-			_, err := a.rebuildJobFromNZB(&history.Entry{
+			_, _, err := a.rebuildJobFromNZB(history.Entry{
 				NzoID:     "rebuildfail00001",
 				Name:      "x",
 				NZBBackup: tt.backup,
@@ -193,7 +197,7 @@ func TestRebuildJobFromNZB_IgnoresPathSeparators(t *testing.T) {
 	a, adminDir := rebuildTestApp(t)
 	writeBackup(t, adminDir, "show.nzb.gz", []byte(rebuildNZBBody))
 
-	job, err := a.rebuildJobFromNZB(&history.Entry{
+	job, _, err := a.rebuildJobFromNZB(history.Entry{
 		NzoID:     "rebuildbase00001",
 		Name:      "show",
 		NZBBackup: "../../../show.nzb.gz",
@@ -201,7 +205,11 @@ func TestRebuildJobFromNZB_IgnoresPathSeparators(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuildJobFromNZB: %v", err)
 	}
-	if job.NumArticles() != 2 {
-		t.Errorf("NumArticles = %d, want 2", job.NumArticles())
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("job.Manifest: %v", err)
+	}
+	if m.NumArticles() != 2 {
+		t.Errorf("NumArticles = %d, want 2", m.NumArticles())
 	}
 }

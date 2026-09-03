@@ -708,7 +708,7 @@ func TestQueueJobDetail_Direct(t *testing.T) {
 
 func TestModeAddFile_Direct(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
+	s, _ := testQueueServer(t)
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -729,8 +729,8 @@ func TestModeAddFile_Direct(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	if q.Len() != 1 {
-		t.Errorf("queue len = %d; want 1", q.Len())
+	if s.Dispatcher().Len() != 1 {
+		t.Errorf("queue len = %d; want 1", s.Dispatcher().Len())
 	}
 }
 
@@ -773,7 +773,7 @@ func TestEnqueueNZBData_Direct(t *testing.T) {
 
 	t.Run("valid NZB is parsed and enqueued", func(t *testing.T) {
 		t.Parallel()
-		s, q := testQueueServer(t)
+		s, _ := testQueueServer(t)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
 		s.enqueueNZBData(rr, req, makeTestNZB(t), "direct.nzb")
@@ -781,14 +781,14 @@ func TestEnqueueNZBData_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		if q.Len() != 1 {
-			t.Errorf("queue len = %d; want 1", q.Len())
+		if s.Dispatcher().Len() != 1 {
+			t.Errorf("queue len = %d; want 1", s.Dispatcher().Len())
 		}
 	})
 
 	t.Run("unparsable NZB is a 400 and nothing is enqueued", func(t *testing.T) {
 		t.Parallel()
-		s, q := testQueueServer(t)
+		s, _ := testQueueServer(t)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
 		s.enqueueNZBData(rr, req, []byte("not an nzb"), "bad.nzb")
@@ -796,8 +796,8 @@ func TestEnqueueNZBData_Direct(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("status = %d; want 400", rr.Code)
 		}
-		if q.Len() != 0 {
-			t.Errorf("queue len = %d; want 0", q.Len())
+		if s.Dispatcher().Len() != 0 {
+			t.Errorf("queue len = %d; want 0", s.Dispatcher().Len())
 		}
 	})
 }

@@ -40,7 +40,7 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 			return j, true
 		}
 		return nil, false
-	}, dir, nil)
+	}, dir, nil, nil)
 
 	if j.Resident() {
 		t.Fatal("precondition: job must start non-resident")
@@ -89,7 +89,7 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 // (logResidencyError, dispatch.go:171) and a silent success would strand a job
 // at Fetching with nothing to fetch from.
 func TestAppResidency_HydrateUnknownJobErrors(t *testing.T) {
-	r := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil)
+	r := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil, nil)
 	if err := r.Hydrate(context.Background(), "nope"); err == nil {
 		t.Fatal("Hydrate of an unknown job must error")
 	}

@@ -3,11 +3,13 @@ package app
 import (
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -19,16 +21,25 @@ import (
 // which is what keeps "which jobs exist" a single owner (Rule 2) rather than
 // two maps that can disagree.
 type appResidency struct {
-	lookup func(string) (*job.Job, bool)
-	dir    string
-	log    *slog.Logger
+	lookup    func(string) (*job.Job, bool)
+	dir       string
+	db        *sql.DB
+	log       *slog.Logger
+	mu        sync.Mutex
+	hydrating map[string]chan struct{}
 }
 
-func newAppResidency(lookup func(string) (*job.Job, bool), dir string, log *slog.Logger) *appResidency {
+func newAppResidency(lookup func(string) (*job.Job, bool), dir string, db *sql.DB, log *slog.Logger) *appResidency {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &appResidency{lookup: lookup, dir: dir, log: log}
+	return &appResidency{
+		lookup:    lookup,
+		dir:       dir,
+		db:        db,
+		log:       log,
+		hydrating: make(map[string]chan struct{}),
+	}
 }
 
 // Hydrate loads the manifest and attaches it. It may block on disk I/O; the
@@ -38,9 +49,37 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("residency: hydrate %s: no such job", id)
 	}
-	if j.Resident() {
+
+	r.mu.Lock()
+	if r.hydrating == nil {
+		r.hydrating = make(map[string]chan struct{})
+	}
+	if ready, ok := r.hydrating[id]; ok {
+		r.mu.Unlock()
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if !j.Resident() {
+			return fmt.Errorf("residency: hydrate %s: concurrent hydration failed", id)
+		}
 		return nil
 	}
+	if j.Resident() {
+		r.mu.Unlock()
+		return nil
+	}
+	ready := make(chan struct{})
+	r.hydrating[id] = ready
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		delete(r.hydrating, id)
+		close(ready)
+		r.mu.Unlock()
+	}()
 
 	m, err := r.readManifest(ctx, id)
 	if err != nil {
@@ -51,13 +90,99 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	// JobProgress would zero its counters, which is the defect the
 	// RestoreContent/AttachContent split exists to prevent.
 	if p := j.Progress(); p != nil {
-		return j.RestoreContent(m, p)
+		if err := j.RestoreContent(m, p); err != nil {
+			return err
+		}
+	} else if err := j.AttachContent(m); err != nil {
+		return err
 	}
-	return j.AttachContent(m)
+	r.restoreJobFiles(ctx, j)
+	r.restoreResolution(ctx, j)
+	return nil
+}
+
+func (r *appResidency) restoreJobFiles(ctx context.Context, j *job.Job) {
+	if r.db == nil {
+		return
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT file_index, filename, complete, assembled_crc32, fetch_policy FROM job_files WHERE job_id = ?`, j.ID())
+	if err != nil {
+		r.log.Warn("residency: load job_files", "job", j.ID(), "err", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	p := j.Progress()
+	if p == nil {
+		return
+	}
+	for rows.Next() {
+		var fi int
+		var filename string
+		var complete int
+		var crc uint32
+		var fetch int
+		if err := rows.Scan(&fi, &filename, &complete, &crc, &fetch); err != nil {
+			continue
+		}
+		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+	}
+}
+
+func (r *appResidency) restoreResolution(ctx context.Context, j *job.Job) {
+	if r.db == nil {
+		return
+	}
+	runsRows, err := r.db.QueryContext(ctx,
+		`SELECT first_art_idx, last_art_idx FROM durable_runs WHERE job_id = ?`, j.ID())
+	if err != nil {
+		r.log.Warn("residency: query durable_runs", "job", j.ID(), "err", err)
+		return
+	}
+	defer func() { _ = runsRows.Close() }()
+
+	var runs []job.RunRange
+	for runsRows.Next() {
+		var rr job.RunRange
+		if err := runsRows.Scan(&rr.First, &rr.Last); err != nil {
+			r.log.Warn("residency: scan durable_runs", "job", j.ID(), "err", err)
+			return
+		}
+		runs = append(runs, rr)
+	}
+
+	failedRows, err := r.db.QueryContext(ctx,
+		`SELECT art_idx FROM failed_articles WHERE job_id = ?`, j.ID())
+	if err != nil {
+		r.log.Warn("residency: query failed_articles", "job", j.ID(), "err", err)
+		return
+	}
+	defer func() { _ = failedRows.Close() }()
+
+	var failed []int32
+	for failedRows.Next() {
+		var idx int32
+		if err := failedRows.Scan(&idx); err != nil {
+			r.log.Warn("residency: scan failed_articles", "job", j.ID(), "err", err)
+			return
+		}
+		failed = append(failed, idx)
+	}
+
+	if err := j.ApplyResolution(runs, failed); err != nil {
+		r.log.Warn("residency: apply resolution", "job", j.ID(), "err", err)
+	}
 }
 
 // Evict drops the manifest. Progress stays resident by design.
 func (r *appResidency) Evict(id string) {
+	r.mu.Lock()
+	if ready, ok := r.hydrating[id]; ok {
+		r.mu.Unlock()
+		<-ready
+		r.mu.Lock()
+	}
+	defer r.mu.Unlock()
 	j, ok := r.lookup(id)
 	if !ok {
 		return

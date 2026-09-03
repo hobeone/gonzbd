@@ -8,21 +8,18 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/history"
-
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestIsRetryableDownloaderError verifies error classification uses the
@@ -58,11 +55,8 @@ func TestIsRetryableDownloaderError(t *testing.T) {
 		{"wrapped ErrNoArticle", errors.Join(errors.New("outer"), nntp.ErrNoArticle), true},
 		{"wrapped net.OpError", errors.Join(errors.New("outer"),
 			&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), true},
-		// Discriminating cases for the d48db10 fix: network/timeout errors whose
-		// message contains NONE of the legacy string markers ("dial:",
-		// "connection", "i/o timeout"). They are retryable only via the
-		// type-based checks; the old string-matching code missed them, so these
-		// cases fail if the fix is reverted.
+		// Discriminating cases: network/timeout errors whose message contains NONE
+		// of the legacy string markers.
 		{"net.OpError opaque message", &net.OpError{Op: "read", Net: "tcp",
 			Err: errors.New("socket failure")}, true},
 		{"timeout error opaque message", &opaqueTimeoutError{}, true},
@@ -89,21 +83,15 @@ func (e *testTimeoutError) Error() string   { return "i/o timeout" }
 func (e *testTimeoutError) Timeout() bool   { return true }
 func (e *testTimeoutError) Temporary() bool { return true }
 
-// opaqueTimeoutError implements the Timeout() bool interface but its message
-// does NOT contain "i/o timeout" — so only the type-based check (not the legacy
-// string-matching) can classify it as retryable.
+// opaqueTimeoutError implements the Timeout() bool interface.
 type opaqueTimeoutError struct{}
 
 func (e *opaqueTimeoutError) Error() string { return "operation deadline reached" }
 func (e *opaqueTimeoutError) Timeout() bool { return true }
 
 func TestPipeline_HandleFailureResult(t *testing.T) {
-	q := queue.New()
-	// a1@x is the article under test (left pending); 9 filler articles are
-	// marked failed and 1 filler article is marked done below to reach
-	// ArticlesResolved=10/ArticlesFailed=9 via real mutations, driving the
-	// same early-abort precondition the test previously set by direct
-	// field assignment.
+	app := newTestApplication(t)
+
 	articles := make([]nzb.Article, 0, 11)
 	articles = append(articles, nzb.Article{ID: "a1@x", Bytes: 100, Number: 1})
 	for i := range 9 {
@@ -113,17 +101,16 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "movie.mkv", Bytes: 1100, Articles: articles},
 	}}
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	_ = q.Add(job)
+	j, hdr, _ := BuildIngestJob(app.config, parsed, "m.nzb", types.FetchOptions{NzbName: "m.nzb"}, nil)
+	_ = app.Dispatcher().Add(j, hdr)
 
 	failIDs := make([]string, 0, 9)
 	for i := range 9 {
 		failIDs = append(failIDs, fmt.Sprintf("fail%d@x", i))
 	}
-	ackFailed(t, q, job.ID, failIDs...)
-	ackDone(t, q, job.ID, "filldone@x")
+	ackFailed(t, app.Dispatcher(), j.ID(), failIDs...)
+	ackDone(t, app.Dispatcher(), j.ID(), "filldone@x")
 
-	// Create an assembler (not started, so WriteArticle fails with ErrNotStarted)
 	a := assembler.New(assembler.Options{
 		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
 			return assembler.FileInfo{}, nil
@@ -131,22 +118,22 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}, nil)
 
 	p := &pipeline{
-		log:       slog.Default(),
-		queue:     q,
-		assembler: a,
-		fileInfo:  make(map[fileKey]assembler.FileInfo),
+		log:        slog.Default(),
+		dispatcher: app.Dispatcher(),
+		assembler:  a,
+		fileInfo:   make(map[fileKey]assembler.FileInfo),
 	}
 
 	// 1. Test handleFailureResult with a non-retryable error (triggering early abort)
 	hopelessFired := false
 	p.onJobHopeless = func(jobID string) {
-		if jobID == job.ID {
+		if jobID == j.ID() {
 			hopelessFired = true
 		}
 	}
 
 	resTerminal := &downloader.ArticleResult{
-		JobID:     job.ID,
+		JobID:     j.ID(),
 		FileIdx:   0,
 		MessageID: "a1@x",
 		Err:       downloader.ErrNoServersLeft,
@@ -158,25 +145,22 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 
 	// 2. Test handleFailureResult with a retryable error
-	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, "a1@x")); err != nil {
-		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	if err := j.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
 	retriesBefore := telemetry.ArticlesRetried.Value()
 
 	resRetryable := &downloader.ArticleResult{
-		JobID:     job.ID,
+		JobID:     j.ID(),
 		FileIdx:   0,
 		MessageID: "a1@x",
 		Err:       nntp.ErrTransient,
 	}
 	p.handleFailureResult(t.Context(), resRetryable)
 
-	// The nil case is a failure, not a reason to skip the check: folding it
-	// into the condition with && means a job dropped from the queue by a bug
-	// in handleFailureResult reads as "Emitted was cleared".
-	gotJob := q.SnapshotJob(job.ID)
-	if gotJob == nil {
-		t.Fatalf("job %s vanished from the queue after a retryable failure", job.ID)
+	gotJob, ok := app.Dispatcher().Job(j.ID())
+	if !ok || gotJob == nil {
+		t.Fatalf("job %s vanished from the dispatcher after a retryable failure", j.ID())
 	}
 	if gotJob.Progress().ArticleEmitted(0) {
 		t.Error("expected Emitted to be cleared after retryable failure")
@@ -187,14 +171,14 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 }
 
 func TestPipeline_HandleSuccessResult(t *testing.T) {
-	q := queue.New()
+	app := newTestApplication(t)
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
 			{ID: "a1@x", Bytes: 100, Number: 1},
 		}},
 	}}
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	_ = q.Add(job)
+	j, hdr, _ := BuildIngestJob(app.config, parsed, "m.nzb", types.FetchOptions{NzbName: "m.nzb"}, nil)
+	_ = app.Dispatcher().Add(j, hdr)
 
 	a := assembler.New(assembler.Options{
 		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
@@ -203,20 +187,19 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	}, nil)
 
 	p := &pipeline{
-		log:       slog.Default(),
-		queue:     q,
-		assembler: a,
-		fileInfo:  make(map[fileKey]assembler.FileInfo),
+		log:        slog.Default(),
+		dispatcher: app.Dispatcher(),
+		assembler:  a,
+		fileInfo:   make(map[fileKey]assembler.FileInfo),
 	}
 
-	// Test handleSuccessResult
-	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, "a1@x")); err != nil {
-		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	if err := j.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
 	writtenBefore := telemetry.ArticlesWritten.Value()
 
 	resSuccess := &downloader.ArticleResult{
-		JobID:      job.ID,
+		JobID:      j.ID(),
 		FileIdx:    0,
 		MessageID:  "a1@x",
 		Data:       []byte("some data"),
@@ -224,14 +207,14 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	}
 	p.handleSuccessResult(t.Context(), resSuccess)
 
-	gotJob := q.SnapshotJob(job.ID)
-	if gotJob == nil {
-		t.Fatal("SnapshotJob returned nil")
+	gotJob, ok := app.Dispatcher().Job(j.ID())
+	if !ok || gotJob == nil {
+		t.Fatal("Job returned nil")
 	}
 	if stats := gotJob.Progress().ServerStats()["news.server.com"]; stats != 9 {
 		t.Errorf("ServerStats[news.server.com] = %d, want 9", stats)
 	}
-	if _, ok := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]; !ok {
+	if _, ok := p.fileInfo[fileKey{jobID: j.ID(), fileIdx: 0}]; !ok {
 		t.Error("expected fileInfo map to be populated by registerFile")
 	}
 	if gotJob.Progress().ArticleEmitted(0) {
@@ -242,27 +225,22 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	}
 }
 
-// registerFile resolves a job's file into the assembler's FileInfo map, and
-// every way that can fail returns an error the caller acts on. None of those
-// branches had coverage; the manifest one is new, and it is the reason the
-// others are worth pinning at the same time — a nil manifest used to reach
-// here as a bare pointer and the check that caught it was a nil comparison
-// nothing forced anyone to write.
 func TestRegisterFile_ErrorPaths(t *testing.T) {
 	t.Parallel()
 
-	newPipeline := func(q *queue.Queue) *pipeline {
+	newPipeline := func(d *dispatch.Dispatcher) *pipeline {
 		return &pipeline{
 			log:         slog.Default(),
-			queue:       q,
+			dispatcher:  d,
 			downloadDir: t.TempDir(),
 			fileInfo:    make(map[fileKey]assembler.FileInfo),
 		}
 	}
 
-	t.Run("job not in the queue", func(t *testing.T) {
+	t.Run("job not in the dispatcher", func(t *testing.T) {
 		t.Parallel()
-		p := newPipeline(queue.New())
+		app := newTestApplication(t)
+		p := newPipeline(app.Dispatcher())
 		err := p.registerFile("no-such-job", 0)
 		if err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Errorf("registerFile = %v, want a not-found error", err)
@@ -271,51 +249,35 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 
 	t.Run("manifest unavailable", func(t *testing.T) {
 		t.Parallel()
-		// A store-backed queue so pausing evicts the manifest for real, then
-		// delete it from disk so the snapshot's hydration attempt fails too.
-		dir := t.TempDir()
-		db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
-		if err != nil {
-			t.Fatalf("history.Open: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		repo := history.NewRepository(db)
-		q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)),
-			queue.WithStateDir(dir))
-
-		job := newBareQueueJob(t, "reg-nomanifest", "md5-reg-nomanifest")
-		if err := q.Add(job); err != nil {
+		app := newTestApplication(t)
+		j, hdr := newBareJob(t, app, "reg-nomanifest", "md5-reg-nomanifest")
+		if err := app.Dispatcher().Add(j, hdr); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		if err := q.Pause(job.ID); err != nil {
-			t.Fatalf("Pause: %v", err)
-		}
-		if err := os.RemoveAll(filepath.Join(dir, "manifests")); err != nil {
-			t.Fatalf("remove manifests: %v", err)
-		}
+		j.Evict()
 
-		p := newPipeline(q)
-		err = p.registerFile(job.ID, 0)
+		p := newPipeline(app.Dispatcher())
+		err := p.registerFile(j.ID(), 0)
 		if err == nil {
-			t.Fatal("registerFile returned nil with no manifest; the assembler would be handed a zero-valued FileInfo")
+			t.Fatal("registerFile returned nil with no manifest")
 		}
-		if !strings.Contains(err.Error(), "manifest") {
-			t.Errorf("registerFile = %v, want the error to name the manifest as the cause", err)
+		if !strings.Contains(err.Error(), "manifest") && !strings.Contains(err.Error(), "resident") {
+			t.Errorf("registerFile = %v, want manifest/resident error", err)
 		}
 	})
 
 	t.Run("file index out of range", func(t *testing.T) {
 		t.Parallel()
-		q := queue.New()
-		job := newBareQueueJob(t, "reg-range", "md5-reg-range")
-		if err := q.Add(job); err != nil {
+		app := newTestApplication(t)
+		j, hdr := newBareJob(t, app, "reg-range", "md5-reg-range")
+		if err := app.Dispatcher().Add(j, hdr); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		m := mustManifest(t, job)
+		m := mustManifest(t, j)
 
 		for _, idx := range []int{-1, m.NumFiles()} {
-			p := newPipeline(q)
-			err := p.registerFile(job.ID, idx)
+			p := newPipeline(app.Dispatcher())
+			err := p.registerFile(j.ID(), idx)
 			if err == nil || !strings.Contains(err.Error(), "out of range") {
 				t.Errorf("registerFile(%d) = %v, want an out-of-range error", idx, err)
 			}
@@ -323,52 +285,41 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 	})
 }
 
-// TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone pins the three
-// early exits, each of which means the same thing: the job left the queue
-// between the fetch and this call.
-//
-// All three must return the article to the dispatch pool rather than dropping
-// it, and none may hand it to the assembler — writing into a file whose job no
-// longer exists creates bytes nothing will ever clean up.
 func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 	t.Parallel()
+	app := newTestApplication(t)
 
-	// A panicking assembler: reaching it on any of these paths is the defect,
-	// so it fails loudly rather than being asserted about afterwards.
 	forbidden := assembler.New(assembler.Options{
 		FileInfo: func(string, int) (assembler.FileInfo, error) {
-			t.Error("registerFile ran for a job that is not in the queue")
+			t.Error("registerFile ran for a job that is not in the dispatcher")
 			return assembler.FileInfo{}, errors.New("no such job")
 		},
 	}, slog.New(slog.DiscardHandler))
 
 	p := &pipeline{
-		log:       slog.New(slog.DiscardHandler),
-		queue:     queue.New(),
-		assembler: forbidden,
-		fileInfo:  make(map[fileKey]assembler.FileInfo),
+		log:        slog.New(slog.DiscardHandler),
+		dispatcher: app.Dispatcher(),
+		assembler:  forbidden,
+		fileInfo:   make(map[fileKey]assembler.FileInfo),
 	}
 
-	// MarkJobStarted is the first thing that fails for an absent job.
 	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
 		JobID: "gone", FileIdx: 0, ArtIdx: 0, MessageID: "a@x",
 		Data: []byte("payload"), ServerName: "s1",
 	})
 }
 
-// TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered pins
-// the third early exit specifically, because it is the one that can happen to
-// a job that IS still present: a file index the manifest does not have.
 func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *testing.T) {
 	t.Parallel()
+	app := newTestApplication(t)
 
-	q, job := helperJob(t, "regfail", 1, 1)
-	if err := q.MarkArticleEmittedByIdx(job.ID, 0); err != nil {
-		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	disp, j := helperJob(t, app, "regfail", 1, 1)
+	if err := j.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
 	p := &pipeline{
-		log:   slog.New(slog.DiscardHandler),
-		queue: q,
+		log:        slog.New(slog.DiscardHandler),
+		dispatcher: disp,
 		assembler: assembler.New(assembler.Options{
 			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler)),
@@ -377,51 +328,32 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 
 	// File 9 does not exist in a one-file job, so registerFile fails.
 	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
-		JobID: job.ID, FileIdx: 9, ArtIdx: 0, MessageID: "regfail-f0-a0@x",
+		JobID: j.ID(), FileIdx: 9, ArtIdx: 0, MessageID: "regfail-f0-a0@x",
 		Data: []byte("payload"), ServerName: "s1",
 	})
 
-	snap := q.SnapshotJob(job.ID)
-	if snap.Progress().ArticleEmitted(0) {
-		t.Error("the article was left marked Emitted after a registration failure, so " +
-			"the dispatcher never offers it again and the job stalls at 99%")
+	gotJob, ok := disp.Job(j.ID())
+	if !ok {
+		t.Fatal("job not found in dispatcher")
+	}
+	if gotJob.Progress().ArticleEmitted(0) {
+		t.Error("the article was left marked Emitted after a registration failure")
 	}
 }
 
-// TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes pins what
-// this function does and, as importantly, what it no longer does.
-//
-// It used to append a Class A fact here — the article's decoded offset, length
-// and CRC — BEFORE handing the bytes to the assembler, with no ordering
-// against the write and no way to take it back. That is #389 and #421: an
-// article the assembler then rejected held a record with no bytes behind it,
-// and a bogus yEnc offset was recorded permanently because the append was
-// INSERT OR IGNORE and re-fetching was the exact case it ignored. The pipeline
-// now records nothing at all; the barrier records after the fsync.
-//
-// The byte count the checkpoint cadence's volume bound is measured in stays,
-// and it is in DECODED bytes — the payload's length, not the NZB's encoded
-// figure — because it is compared against a budget describing bytes on disk.
-//
-// The article's offset and CRC are not lost with the fact: they travel on to
-// the assembler, which reports them in its drain, and the barrier records them
-// there. That hand-off is pinned in internal/assembler
-// (TestSyncTargetFor_RoundTripsThroughTheWorker and the durable-ack suite);
-// what is pinned here is that this site claims nothing.
 func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	q, job := helperJob(t, "happy", 1, 2)
+	app := newTestApplication(t)
+	disp, j := helperJob(t, app, "happy", 1, 2)
 	var notedJob string
 	var notedBytes int
 	p := &pipeline{
 		log:         slog.New(slog.DiscardHandler),
-		queue:       q,
+		dispatcher:  disp,
 		downloadDir: dir,
 		assembler: assembler.New(assembler.Options{
-			// TotalParts 2 against one written article, so the file does not
-			// complete and the assembler keeps it open for the drain below.
 			FileInfo: func(string, int) (assembler.FileInfo, error) {
 				return assembler.FileInfo{TotalParts: 2}, nil
 			},
@@ -438,24 +370,20 @@ func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.
 
 	payload := []byte("decoded article bytes")
 	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
-		JobID: job.ID, FileIdx: 0, ArtIdx: 0, MessageID: "happy-f0-a0@x",
+		JobID: j.ID(), FileIdx: 0, ArtIdx: 0, MessageID: "happy-f0-a0@x",
 		Offset: 4096, Data: payload, CRC: 0xC0FFEE, ServerName: "s1",
 	})
 
-	if notedJob != job.ID || notedBytes != len(payload) {
-		t.Errorf("reported (%q, %d) to the checkpoint cadence, want (%q, %d) — the "+
-			"volume bound never fires and a fast link carries a whole interval unacked",
-			notedJob, notedBytes, job.ID, len(payload))
+	if notedJob != j.ID() || notedBytes != len(payload) {
+		t.Errorf("reported (%q, %d) to the checkpoint cadence, want (%q, %d)",
+			notedJob, notedBytes, j.ID(), len(payload))
 	}
 
-	// Nothing was RESOLVED, and that is the half the test's name is about. The
-	// article's identity, offset and CRC travel on with it to the assembler,
-	// which reports them back in its drain; only the barrier turns that report
-	// into a record, and only after the fsync. A pipeline that resolved
-	// anything here would be claiming durability nothing has established —
-	// which is what appending a Class A fact before the write amounted to.
-	if snap := q.SnapshotJob(job.ID); snap.Progress().ArticleDone(0) {
-		t.Error("the article is Done straight off the pipeline; nothing has fsynced it, " +
-			"so a crash here loses bytes the queue has already stopped asking for")
+	gotJob, ok := disp.Job(j.ID())
+	if !ok {
+		t.Fatal("job not found in dispatcher")
+	}
+	if gotJob.Progress().ArticleDone(0) {
+		t.Error("the article is Done straight off the pipeline")
 	}
 }

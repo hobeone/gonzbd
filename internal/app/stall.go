@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -343,9 +342,6 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	if app.dispatcher != nil {
 		_, exists = app.dispatcher.Job(jobID)
 	}
-	if !exists && app.queue != nil {
-		exists = (app.queue.SnapshotJob(jobID) != nil)
-	}
 	if !exists {
 		app.log.Info("stall re-evaluation: the job has left the queue; forgetting its parked state",
 			"job", jobID)
@@ -388,20 +384,24 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 			blocked++
 		}
 	}
+
 	if blocked > 0 {
-		app.log.Info("stall re-evaluation: the job stays parked",
-			"job", jobID, "files_blocked", blocked, "files_to_recover", len(files))
 		return
 	}
 
-	// Phase 2 — resume, which is what re-promotes the job and makes it
-	// resident again.
+	// Phase 2 — unpause, if we paused it.
 	//
-	// Only a job THIS application parked. A stall record exists for reasons
-	// that involve no pause of ours: a USER pause evicts the job, the next
-	// checkpoint's ack fails with ErrJobNotResident, and noteNeedsSeed creates
-	// a record. Resuming on that undid the user's pause within one interval,
-	// with no log saying so — and the record was recreated as fast as it was
+	// A user pause is respected: a user who paused a stalled job before the
+	// mount came back wanted it paused, and resuming it because the storage
+	// cleared would undo their action silently. The other way round is
+	// worse: a job the user paused has no open files, so the checkpoint
+	// returns ErrJobNotResident and creates a stall record; resuming here
+	// would unpause a user-paused job every thirty seconds, and recreate the
+	// record as fast as it was cleared, because handles stay open through a
+	// pause (CloseJobHandles runs only from maybeFinalize).
+	//
+	// Phase 2 used to do that: it resumed unconditionally. The user's pause
+	// was then undone within one interval, and recreated as fast as it was
 	// cleared, because handles stay open through a pause, so the next
 	// checkpoint failed the same way.
 	if app.weParked(jobID) {
@@ -409,17 +409,6 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 		if app.dispatcher != nil {
 			if err := app.dispatcher.ResumeJob(jobID); err != nil {
 				app.log.Warn("stall re-evaluation: the job could not be resumed in dispatcher", "job", jobID, "err", err)
-			} else {
-				resumed = true
-			}
-		}
-		if app.queue != nil {
-			if err := app.queue.Resume(jobID); err != nil {
-				app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
-				if !resumed {
-					app.clearStall(jobID)
-					return
-				}
 			} else {
 				resumed = true
 			}
@@ -499,12 +488,6 @@ func (app *Application) seedFromCommittedRuns(ctx context.Context, jobID string)
 			}
 		}
 	}
-	if app.queue != nil {
-		if err := app.queue.SeedFromRuns(jobID, runs); err != nil {
-			app.log.Warn("stall re-evaluation: could not seed the work set; the job will re-fetch",
-				"job", jobID, "err", err)
-		}
-	}
 }
 
 // recoveryFiles copies one job's recovery set so the walk above holds no lock
@@ -571,7 +554,7 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 			"can be run over it", ErrNotFinalized, jobID, fileIdx)
 	}
 	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
-	if errors.Is(err, queue.ErrJobNotResident) || errors.Is(err, job.ErrNotResident) {
+	if errors.Is(err, job.ErrNotResident) {
 		app.log.Debug("retried finalize recorded its durable runs but could not ack a "+
 			"non-resident job; the articles are replayed from the record after the resume",
 			"job", jobID, "fileidx", fileIdx)
@@ -623,10 +606,5 @@ func (app *Application) stallLost(jobID string, fileIdx int) {
 	app.noteStallReason(jobID, reason)
 	if app.dispatcher != nil {
 		_ = app.dispatcher.SetWarning(jobID, reason)
-	}
-	if app.queue != nil {
-		if err := app.queue.SetWarning(jobID, reason); err != nil {
-			app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
-		}
 	}
 }

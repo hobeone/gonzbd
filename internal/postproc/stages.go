@@ -12,7 +12,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // QuickCheckOutcome is what the quickcheck stage was able to determine about
@@ -126,10 +125,6 @@ type Stage interface {
 // with post-proc-specific state.
 // stages accumulate their results into the fields below.
 type Job struct {
-	// Queue is the legacy download job record, preserved for internal/app
-	// callers until Task 11 migration; deleted in Task 11.
-	Queue *queue.Job
-
 	// Job is the rehomed job record from internal/job.
 	Job *job.Job
 

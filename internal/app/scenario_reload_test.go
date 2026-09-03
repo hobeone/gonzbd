@@ -6,10 +6,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestReload_NoArticleLossInFlight verifies that ReloadDownloader does not
@@ -50,12 +49,9 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	h.InjectFailure(msgIDs[0], nntptest.FailureStall)
 
 	parsed := &nzb.NZB{Files: files}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "reload-test"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := h.app.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	job, hdr := buildTestJob(t, h.cfg, parsed, types.FetchOptions{NzbName: "reload-test"})
+	if err := h.app.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
 	// Wait until the stall has fired on the server.
@@ -72,10 +68,11 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	}
 
 	// Wait for the job to complete.
-	if !h.WaitForPostProc(job.ID, 30*time.Second) {
-		snap := h.app.Queue().SnapshotJob(job.ID)
-		if snap != nil {
-			m, p := mustManifest(t, snap), snap.Progress()
+	if !h.WaitForPostProc(job.ID(), 30*time.Second) {
+		j, ok := h.app.Dispatcher().Job(job.ID())
+		if ok {
+			m, _ := j.Manifest()
+			p := j.Progress()
 			if m != nil && p != nil {
 				for fi := range m.NumFiles() {
 					lo, hi := m.FileRange(fi)
@@ -91,10 +88,10 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	}
 
 	// Assert invariants.
-	if h.QueueContains(job.ID) {
+	if h.QueueContains(job.ID()) {
 		t.Errorf("job still in queue after completion")
 	}
-	hist, err := h.repo.Get(h.ctx, job.ID)
+	hist, err := h.repo.Get(h.ctx, job.ID())
 	if err != nil {
 		t.Fatalf("history missing job: %v", err)
 	}

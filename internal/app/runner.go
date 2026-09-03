@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -59,18 +60,30 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 }
 
 func (r *appRunner) runFetch(_ context.Context, id string) {
-	if r.app != nil {
-		r.app.mu.Lock()
-		dl := r.app.downloader
-		r.app.mu.Unlock()
-		if dl != nil {
-			if w, ok := dl.(interface{ Wake() }); ok {
-				w.Wake()
-			}
+	if r.app == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
 		}
+		return
 	}
-	if r.report != nil {
-		_ = r.report.Yielded(id)
+	var j *job.Job
+	if r.app.dispatcher != nil {
+		j, _ = r.app.dispatcher.Job(id)
+	}
+	if j == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	r.app.mu.Lock()
+	dl := r.app.downloader
+	r.app.mu.Unlock()
+	if dl != nil {
+		if w, ok := dl.(interface{ Wake() }); ok {
+			w.Wake()
+		}
 	}
 }
 
@@ -125,7 +138,29 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 }
 
 func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
-	if r.report != nil {
-		_ = r.report.Yielded(id)
+	if r.app == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+	var j *job.Job
+	var hdr dispatch.Header
+	if r.app.dispatcher != nil {
+		if row, ok := r.app.dispatcher.Row(id); ok {
+			hdr = row.Header
+		}
+		j, _ = r.app.dispatcher.Job(id)
+	}
+	if j == nil || r.app.postProcessor == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	if !r.app.postProcessor.Has(id) {
+		failMsg := failMsgForJob(j)
+		r.app.enqueuePostProc(j, hdr, failMsg)
 	}
 }

@@ -25,7 +25,10 @@ func (j *Job) Checkpoint() Checkpoint {
 	j.mu.RUnlock()
 
 	j.contentMu.RLock()
-	p := j.progress
+	var p *JobProgress
+	if j.progress != nil {
+		p = j.progress.clone()
+	}
 	j.contentMu.RUnlock()
 
 	return Checkpoint{ID: j.id, State: st, Intent: in, Progress: p}

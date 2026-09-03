@@ -30,14 +30,14 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
 	log := h.logger
-	job, err := app.BuildIngestJob(h.config, parsed, filename, opts, log)
+	job, hdr, err := app.BuildIngestJob(h.config, parsed, filename, opts, log)
 	if err != nil {
 		return "", err
 	}
 
-	if err := h.app.AddJob(ctx, job, data, false); err != nil {
+	if err := h.app.AddJob(ctx, job, hdr, data, false); err != nil {
 		return "", fmt.Errorf("add job %q: %w", filename, err)
 	}
-	log.Info("ingested nzb", "filename", filename, "files", job.NumFiles(), "bytes", job.TotalBytes(), "id", job.ID)
-	return job.ID, nil
+	log.Info("ingested nzb", "filename", filename, "files", job.NumFiles(), "bytes", job.TotalBytes(), "id", job.ID())
+	return job.ID(), nil
 }

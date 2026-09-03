@@ -10,10 +10,10 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 func testFault(op string) *storagefault.Fault {
@@ -147,22 +147,23 @@ func TestNoteBarrierRun_StampsOnlyASuccessfulBarrier(t *testing.T) {
 func TestReevaluateStall_LeavesAJobWhoseFileCanNoLongerBeFinalized(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
-	application.noteStall(job.ID, testFault("finalize"))
-	if err := application.queue.Pause(job.ID); err != nil {
+	application.noteStall(job.ID(), testFault("finalize"))
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatal(err)
 	}
-	application.notePendingFinalize(job.ID, 0)
-	application.setFinalizeState(job.ID, 0, finalizeLost)
+	application.notePendingFinalize(job.ID(), 0)
+	application.setFinalizeState(job.ID(), 0, finalizeLost)
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok || row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v, want the job still Paused — a file that cannot be trimmed "+
-			"would otherwise be marked complete and fed to post-processing", snap.Status)
+			"would otherwise be marked complete and fed to post-processing", row.Status())
 	}
-	if got := application.StallReason(job.ID).Reason; got == "" {
+	if got := application.StallReason(job.ID()).Reason; got == "" {
 		t.Error("the reason was dropped; the job is parked with nothing the user can act on")
 	}
 }
@@ -274,23 +275,23 @@ func TestNotePendingFinalize_RecordsAFileForAJobNotYetOnTheStalledList(t *testin
 func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteStall(job.ID, testFault("sync"))
-	application.notePendingFinalize(job.ID, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteStall(job.ID(), testFault("sync"))
+	application.notePendingFinalize(job.ID(), 0)
 
-	application.stallLost(job.ID, 0)
+	application.stallLost(job.ID(), 0)
 
-	if st := application.recoveryFiles(job.ID)[0]; st != finalizeLost {
+	if st := application.recoveryFiles(job.ID())[0]; st != finalizeLost {
 		t.Errorf("file state = %v after stallLost, want finalizeLost — the file is retried "+
 			"every interval against a handle that no longer exists", st)
 	}
-	got := application.StallReason(job.ID).Reason
+	got := application.StallReason(job.ID()).Reason
 	if !strings.Contains(got, "restart") {
 		t.Errorf("reason = %q, want it to name the restart that recovers the job — the "+
 			"previous reason points at a mount the user has already fixed", got)
 	}
-	if snap := application.queue.SnapshotJob(job.ID); !strings.Contains(snap.Warning, "restart") {
-		t.Errorf("queue warning = %q, want the same reason; the listing is where the user looks", snap.Warning)
+	if row, ok := application.dispatcher.Row(job.ID()); !ok || !strings.Contains(row.Header.Warning, "restart") {
+		t.Errorf("dispatcher warning = %q, want the same reason; the listing is where the user looks", row.Header.Warning)
 	}
 }
 
@@ -302,18 +303,18 @@ func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
 func TestRetryFinalize_ReportsRatherThanAssumesWhenItCannotAsk(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
-	application.noteStall(job.ID, testFault("sync"))
-	application.notePendingFinalize(job.ID, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteStall(job.ID(), testFault("sync"))
+	application.notePendingFinalize(job.ID(), 0)
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatal(err)
 	}
 
-	err := application.retryFinalize(t.Context(), job.ID, 0)
+	err := application.retryFinalize(t.Context(), job.ID(), 0)
 	if err == nil {
 		t.Fatal("retryFinalize reported success against a stopped assembler")
 	}
-	got, ok := application.recoveryFiles(job.ID)[0]
+	got, ok := application.recoveryFiles(job.ID())[0]
 	if !ok {
 		t.Fatal("the file left the recovery set; the assertion below cannot distinguish that " +
 			"from the state it means to check")
@@ -332,10 +333,10 @@ func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.barrier = nil
-	application.noteStall(job.ID, testFault("sync"))
-	application.notePendingFinalize(job.ID, 0)
+	application.noteStall(job.ID(), testFault("sync"))
+	application.notePendingFinalize(job.ID(), 0)
 
-	err := application.retryFinalize(t.Context(), job.ID, 0)
+	err := application.retryFinalize(t.Context(), job.ID(), 0)
 	if err == nil {
 		t.Fatal("retryFinalize reported success with no barrier in the process")
 	}
@@ -352,18 +353,18 @@ func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
 func TestReevaluateStall_KeepsAFileWhoseCompletionTheQueueRefused(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	application.noteStall(job.ID, testFault("sync"))
-	if err := application.queue.Pause(job.ID); err != nil {
+	application.noteStall(job.ID(), testFault("sync"))
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatal(err)
 	}
 	// File 99 does not exist, so MarkFileComplete refuses it — standing in for
 	// any queue-side refusal without needing a full active set.
-	application.notePendingFinalize(job.ID, 99)
-	application.setFinalizeState(job.ID, 99, finalizeDone)
+	application.notePendingFinalize(job.ID(), 99)
+	application.setFinalizeState(job.ID(), 99, finalizeDone)
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	if _, ok := application.recoveryFiles(job.ID)[99]; !ok {
+	if _, ok := application.recoveryFiles(job.ID())[99]; !ok {
 		t.Error("the entry was dropped although the queue refused the completion; the file " +
 			"is never marked complete and the job never finishes")
 	}
@@ -377,15 +378,15 @@ func TestCompleteFinalizedFile_MarksTheFileAndReportsARefusal(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
-	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: job.ID, FileIdx: 0}); err != nil {
+	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: job.ID(), FileIdx: 0}); err != nil {
 		t.Fatalf("completeFinalizedFile: %v", err)
 	}
-	if !application.queue.SnapshotJob(job.ID).Progress().FileComplete(0) {
+	if !job.Progress().FileComplete(0) {
 		t.Error("the file was not marked complete, so DirectUnpack, job finalization and " +
 			"post-processing never see it")
 	}
 
-	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: job.ID, FileIdx: 99}); err == nil {
+	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: job.ID(), FileIdx: 99}); err == nil {
 		t.Error("a completion the queue refused was reported as success; the retry drops the " +
 			"entry and the file is never marked complete")
 	}
@@ -405,16 +406,16 @@ func TestRunCheckpoint_ReevaluatesStallsOnItsTicker(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(10*time.Millisecond))
 	job := addStallTestJob(t, application, "ticker-job")
-	application.Stall(job.ID, testFault("write"))
-	if snap := application.queue.SnapshotJob(job.ID); snap.Status != constants.StatusPaused {
-		t.Fatalf("status = %v after Stall, want Paused; the fixture is not parked", snap.Status)
+	application.Stall(job.ID(), testFault("write"))
+	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
+		t.Fatalf("status = %v after Stall, want Paused; the fixture is not parked", row.Status())
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go application.runCheckpoint(ctx, time.Hour) // checkpoint bound long: only the stall ticker may fire
 
-	waitForResumed(t, application, job.ID,
+	waitForResumed(t, application, job.ID(),
 		"the checkpoint loop's stall ticker never reached reevaluateStalls; R19's interval "+
 			"half is wired to nothing and a parked job waits for a restart")
 }
@@ -428,7 +429,7 @@ func TestRunCheckpoint_ReevaluatesStallsOnAKick(t *testing.T) {
 	// resumed job.
 	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(time.Hour))
 	job := addStallTestJob(t, application, "kick-job")
-	application.Stall(job.ID, testFault("write"))
+	application.Stall(job.ID(), testFault("write"))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -436,27 +437,27 @@ func TestRunCheckpoint_ReevaluatesStallsOnAKick(t *testing.T) {
 
 	application.ReevaluateStalls()
 
-	waitForResumed(t, application, job.ID,
+	waitForResumed(t, application, job.ID(),
 		"ReevaluateStalls did not reach the checkpoint loop; resuming a job from the API "+
 			"leaves it parked until the interval or a restart")
 }
 
 // addStallTestJob adds a one-file job to the application's queue.
-func addStallTestJob(t *testing.T, application *Application, name string) *queue.Job {
+func addStallTestJob(t *testing.T, application *Application, name string) *job.Job {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  name + ".bin",
 		Bytes:    100,
 		Articles: []nzb.Article{{ID: name + "0@t", Bytes: 100, Number: 1}},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, name+".nzb", types.FetchOptions{NzbName: name}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
+	if err := application.Dispatcher().Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	return job
+	return j
 }
 
 // waitForResumed blocks until the job is off Paused, or fails with why.
@@ -464,8 +465,8 @@ func waitForResumed(t *testing.T, application *Application, jobID, why string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		snap := application.queue.SnapshotJob(jobID)
-		if snap != nil && snap.Status != constants.StatusPaused {
+		row, ok := application.dispatcher.Row(jobID)
+		if ok && row.Status() != constants.StatusPaused {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -518,20 +519,20 @@ func TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	ctx := t.Context()
-	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+	if job.Progress().ArticleDone(0) {
 		t.Fatal("the fixture already reports article 0 done; the assertion below cannot " +
 			"distinguish a replay from the starting state")
 	}
 
-	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
+	if _, err := application.runs.Commit(ctx, job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	application.seedFromCommittedRuns(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID())
 
-	p := application.queue.SnapshotJob(job.ID).Progress()
+	p := job.Progress()
 	if !p.ArticleDone(0) {
 		t.Error("article 0 is still Outstanding although a recorded run covers it; the " +
 			"retry's work is thrown away and the article can never be resolved, because the " +
@@ -551,9 +552,9 @@ func TestSeedFromCommittedRuns_IsInertWithoutARunStore(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.runs = nil
 
-	application.seedFromCommittedRuns(t.Context(), job.ID)
+	application.seedFromCommittedRuns(t.Context(), job.ID())
 
-	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+	if job.Progress().ArticleDone(0) {
 		t.Error("an article was marked durable with no run store to prove it")
 	}
 }
@@ -566,22 +567,16 @@ func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
-	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
+	if _, err := application.runs.Commit(ctx, job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	// Pause evicts the manifest, and SeedFromRuns needs a resident one.
-	if err := application.queue.Pause(job.ID); err != nil {
-		t.Fatal(err)
-	}
+	job.Evict()
 
-	application.seedFromCommittedRuns(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID())
 
-	// liveProgress rather than SnapshotJob: hydration re-derives the article
-	// state from the same record this replay reads, so a hydrated clone would
-	// report the bit set whether or not the seed landed.
-	if liveProgress(t, application, job.ID).ArticleDone(0) {
+	if job.Progress().ArticleDone(0) {
 		t.Error("a non-resident job was seeded anyway; SeedFromRuns installs bits into the " +
 			"LIVE job, and a job with no resident manifest has nowhere to install them")
 	}
@@ -594,7 +589,7 @@ func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
 func TestSeedFromCommittedRuns_ReportsAFailedLoad(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	if _, err := application.runs.Commit(t.Context(), job.ID, []durability.DurableArticle{
+	if _, err := application.runs.Commit(t.Context(), job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -602,9 +597,9 @@ func TestSeedFromCommittedRuns_ReportsAFailedLoad(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	application.seedFromCommittedRuns(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID())
 
-	if application.queue.SnapshotJob(job.ID).Progress().ArticleDone(0) {
+	if job.Progress().ArticleDone(0) {
 		t.Error("an article was marked durable from a load that failed; a read error is not " +
 			"evidence about what is on disk")
 	}
@@ -660,8 +655,8 @@ func TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade(t *testing.T) {
 
 	// Article 1 was acked by a barrier in THIS process, after the commit
 	// below was stamped. Article 0 is the one that commit covers.
-	ackDoneIdx(t, application.queue, job.ID, 1)
-	pre := application.queue.SnapshotJob(job.ID).Progress()
+	ackDoneIdx(t, application.dispatcher, job.ID(), 1)
+	pre := job.Progress()
 	if !pre.ArticleDone(1) {
 		t.Fatal("the fixture's ack did not land, so there is no live bit for the replay " +
 			"to destroy and the assertion below would hold vacuously")
@@ -670,15 +665,15 @@ func TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade(t *testing.T) {
 		t.Fatal("article 0 is already done, so the replay cannot be shown to have run at all")
 	}
 
-	if _, err := application.runs.Commit(ctx, job.ID, []durability.DurableArticle{
+	if _, err := application.runs.Commit(ctx, job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	application.seedFromCommittedRuns(ctx, job.ID)
+	application.seedFromCommittedRuns(ctx, job.ID())
 
-	p := application.queue.SnapshotJob(job.ID).Progress()
+	p := job.Progress()
 	if !p.ArticleDone(1) {
 		t.Error("article 1 lost its Done bit to a replay of a record that predates it — " +
 			"phase 3 has stat'ed nothing and proved nothing, so it may not contradict an " +

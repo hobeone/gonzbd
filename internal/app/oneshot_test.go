@@ -19,7 +19,7 @@ func TestScenario_OneShotDuplicateNeverPaused(t *testing.T) {
 
 	// 1. Add the job the first time.
 	job1 := h.AddOneShotJob("oneshot-job", payload, true)
-	if !h.WaitForHistory(job1.ID, 5*time.Second) {
+	if !h.WaitForHistory(job1.ID(), 5*time.Second) {
 		t.Fatalf("first download failed to reach history")
 	}
 
@@ -28,10 +28,11 @@ func TestScenario_OneShotDuplicateNeverPaused(t *testing.T) {
 	// We expect this to be Queued, not Paused.
 	job2 := h.AddOneShotJob("oneshot-job", payload, true)
 
-	status, err := h.app.Queue().GetJobStatus(job2.ID)
-	if err != nil {
-		t.Fatalf("failed to get job status: %v", err)
+	row, ok := h.app.Dispatcher().Row(job2.ID())
+	if !ok {
+		t.Fatalf("failed to find job in dispatcher")
 	}
+	status := row.Status()
 
 	// The real invariant: the duplicate must NOT be paused. It should be
 	// Queued, but under -race the downloader goroutine may pick it up

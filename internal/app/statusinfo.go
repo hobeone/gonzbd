@@ -86,54 +86,29 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	if !app.started.Load() || app.stopped.Load() {
 		return false
 	}
-	if app.dispatcher != nil {
-		if app.dispatcher.Paused() || (app.queue != nil && app.queue.IsPaused()) {
-			app.RecordHeartbeat()
-			return true
-		}
-		rows := app.dispatcher.List()
-		hasPostProc := false
-		hasDownloading := false
-		for _, r := range rows {
-			switch r.View.State {
-			case job.Repairing, job.Extracting, job.Finalizing:
-				hasPostProc = true
-			case job.Fetching:
-				hasDownloading = true
-			}
-		}
-		if app.queue != nil {
-			if app.queue.HasPostProcJobs() {
-				hasPostProc = true
-			}
-			if app.queue.HasDownloadingJobs() {
-				hasDownloading = true
-			}
-		}
-		if hasPostProc {
-			app.RecordHeartbeat()
-			return true
-		}
-		if hasDownloading {
-			last := app.lastHeartbeat.Load()
-			if last > 0 && time.Since(time.Unix(last, 0)) > 2*time.Minute {
-				return false
-			}
-		} else {
-			app.RecordHeartbeat()
-		}
+	if app.dispatcher == nil {
 		return true
 	}
-	if app.queue == nil {
-		return true
-	}
-	// Paused queue or active post-processing is considered healthy/active.
-	if app.queue.IsPaused() || app.queue.HasPostProcJobs() {
+	if app.dispatcher.Paused() {
 		app.RecordHeartbeat()
 		return true
 	}
-	// Staleness check applies only when unpaused jobs are actively downloading.
-	if app.queue.HasDownloadingJobs() {
+	rows := app.dispatcher.List()
+	hasPostProc := false
+	hasDownloading := false
+	for _, r := range rows {
+		switch r.View.State {
+		case job.Repairing, job.Extracting, job.Finalizing:
+			hasPostProc = true
+		case job.Fetching:
+			hasDownloading = true
+		}
+	}
+	if hasPostProc {
+		app.RecordHeartbeat()
+		return true
+	}
+	if hasDownloading {
 		last := app.lastHeartbeat.Load()
 		if last > 0 && time.Since(time.Unix(last, 0)) > 2*time.Minute {
 			return false // download pipeline stalled
@@ -284,12 +259,6 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // added last.
 func (app *Application) JobDurability(jobID string) JobDurability {
 	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
-	if app.queue != nil {
-		if snap := app.queue.SnapshotJob(jobID); snap != nil {
-			out.DurableBytes = DurableBytesOf(snap.Progress())
-			return out
-		}
-	}
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(jobID); ok {
 			out.DurableBytes = DurableBytesOf(j.Progress())

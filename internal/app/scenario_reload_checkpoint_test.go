@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestReload_DoesNotReFetchAWrittenButUnackedArticle pins the window #390 is
@@ -71,12 +70,9 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 			{ID: stalledID, Bytes: len(held), Number: 2},
 		},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "reload-unacked"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := h.app.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	job, hdr := buildTestJob(t, h.cfg, parsed, types.FetchOptions{NzbName: "reload-unacked"})
+	if err := h.app.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
 	// Wait until article 0's bytes are ON DISK.
@@ -92,15 +88,15 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 	// caching it pins the subject-derived placeholder and then watches a path
 	// nothing will ever write to.
 	diskPath := func() string {
-		snap := h.app.Queue().SnapshotJob(job.ID)
-		if snap == nil {
+		j, ok := h.app.Dispatcher().Job(job.ID())
+		if !ok {
 			return ""
 		}
-		name := snap.Progress().FileFilename(0)
+		name := j.Progress().FileFilename(0)
 		if name == "" {
 			return ""
 		}
-		return filepath.Join(h.downloadDir, job.Name, name)
+		return filepath.Join(h.downloadDir, job.Name(), name)
 	}
 	if !h.WaitUntil(10*time.Second, func() bool {
 		p := diskPath()
@@ -110,7 +106,7 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 		onDisk, err := os.ReadFile(p) //nolint:gosec // test-controlled path
 		return err == nil && len(onDisk) >= len(raw) && bytes.Equal(onDisk[:len(raw)], raw)
 	}) {
-		jobDir := filepath.Join(h.downloadDir, job.Name)
+		jobDir := filepath.Join(h.downloadDir, job.Name())
 		ents, rerr := os.ReadDir(jobDir)
 		var names []string
 		for _, e := range ents {

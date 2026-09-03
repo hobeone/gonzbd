@@ -8,11 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // The queue's per-file writers report a removed or evicted job as
-// ErrNotFound/ErrJobNotResident specifically so a caller can tell that case
+// ErrNotFound/ErrNotResident specifically so a caller can tell that case
 // from a genuine write failure (#261). That distinction is only worth
 // anything if callers act on it: routine mid-flight eviction must not read as
 // a warning, and a real failure must not be demoted to Debug because the
@@ -23,9 +24,9 @@ func TestLogQueueWriteFailure_LevelsBySeverity(t *testing.T) {
 		err       error
 		wantLevel string
 	}{
-		{"not found", fmt.Errorf("%w: j1", queue.ErrNotFound), "DEBUG"},
-		{"not resident", fmt.Errorf("%w: j1", queue.ErrJobNotResident), "DEBUG"},
-		{"wrapped not resident", fmt.Errorf("set crc: %w", fmt.Errorf("%w: j1", queue.ErrJobNotResident)), "DEBUG"},
+		{"not found", fmt.Errorf("%w: j1", dispatch.ErrNotFound), "DEBUG"},
+		{"not resident", fmt.Errorf("%w: j1", job.ErrNotResident), "DEBUG"},
+		{"wrapped not resident", fmt.Errorf("set crc: %w", fmt.Errorf("%w: j1", job.ErrNotResident)), "DEBUG"},
 		{"index out of range", errors.New("queue: fileIdx 9 out of range for job j1"), "WARN"},
 		{"store failure", errors.New("sqlite: disk I/O error"), "WARN"},
 	} {

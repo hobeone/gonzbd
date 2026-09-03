@@ -866,7 +866,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		status = constants.StatusPaused
 	}
 
-	job := &Job{
+	qj := &Job{
 		ID:       id,
 		Filename: opts.Filename,
 		Name:     name,
@@ -916,15 +916,15 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	}
 	sortJobFiles(files)
 
-	job.manifest = newManifest(files)
-	job.progress = newJobProgress(job.manifest)
-	job.setScalarsFromManifest(job.manifest)
+	qj.manifest = newManifest(files)
+	qj.progress = newJobProgress(qj.manifest)
+	qj.setScalarsFromManifest(qj.manifest)
 	for fi, jf := range files {
 		if jf.Deferred {
-			job.progress.files[fi].Fetch = FetchIfNeeded
+			qj.progress.files[fi].Fetch = FetchIfNeeded
 		}
 	}
-	return job, nil
+	return qj, nil
 }
 
 // IsComplete returns true if all files in the job are marked complete.

@@ -8,11 +8,10 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestFinalize_KeepsJobInQueueWhenHistoryWriteFails pins the recovery
@@ -50,26 +49,25 @@ func TestFinalize_KeepsJobInQueueWhenHistoryWriteFails(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Shutdown() })
 	application.PauseDownloads()
-	application.Queue().PauseAll()
+	application.Dispatcher().Pause()
 
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  "file.bin",
 		Bytes:    1024,
 		Articles: []nzb.Article{{ID: "fin1@t", Bytes: 1024, Number: 1}},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "finalize.nzb"}, fsutil.SanitizeOptions{})
+	job, hdr, err := BuildIngestJob(application.config, parsed, "finalize.nzb", types.FetchOptions{JobID: "finalizeconflict"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	job.ID = "finalizeconflict"
-	if err := application.Queue().Add(job); err != nil {
+	if err := application.Dispatcher().Add(job, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
 	// Occupy the nzo_id so the history insert inside MoveToHistory violates
 	// its unique index.
 	if err := repo.Add(ctx, history.Entry{
-		NzoID:     job.ID,
+		NzoID:     job.ID(),
 		Name:      "already-there",
 		Status:    string(constants.StatusCompleted),
 		Completed: time.Now(),
@@ -78,15 +76,15 @@ func TestFinalize_KeepsJobInQueueWhenHistoryWriteFails(t *testing.T) {
 	}
 
 	newJobFinalizer(application).finalize(&postproc.Job{
-		Queue:       application.Queue().SnapshotJob(job.ID),
+		Job:         job,
 		FinalDir:    t.TempDir(),
 		DownloadDir: t.TempDir(),
 	})
 
-	if application.Queue().SnapshotJob(job.ID) == nil {
+	if _, ok := application.Dispatcher().Job(job.ID()); !ok {
 		t.Error("job was removed from the queue although its history write failed")
 	}
-	entry, err := repo.Get(ctx, job.ID)
+	entry, err := repo.Get(ctx, job.ID())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

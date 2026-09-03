@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/storagefault"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 var _ = (*Application).enqueuePostProc
@@ -127,7 +129,7 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	}
 	defer app.Shutdown()
 
-	// Idle app with empty queue should report healthy
+	// Idle app with empty dispatcher should report healthy
 	if !app.IsPipelineHealthy(ctx) {
 		t.Error("expected IsPipelineHealthy=true for started idle app")
 	}
@@ -144,10 +146,22 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	}
 
 	// Test download pipeline stall detection
-	j := newBareQueueJob(t, "job1", "")
-	j.Status = constants.StatusDownloading
-	if err := app.queue.Add(j); err != nil {
-		t.Fatalf("queue Add: %v", err)
+	j, hdr, _ := BuildIngestJob(app.config, &nzb.NZB{Files: []nzb.File{{
+		Subject:  "job1.bin",
+		Bytes:    100,
+		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
+	}}}, "job1.nzb", types.FetchOptions{NzbName: "job1"}, nil)
+	if err := app.Dispatcher().Add(j, hdr); err != nil {
+		t.Fatalf("dispatcher Add: %v", err)
+	}
+
+	// Wait for dispatcher tick to transition to Fetching
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if row, ok := app.Dispatcher().Row(j.ID()); ok && row.View.State == job.Fetching {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	// Set heartbeat to 3 minutes ago
@@ -162,18 +176,18 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 		t.Error("expected IsPipelineHealthy=true after fresh heartbeat")
 	}
 
-	// Paused queue is considered healthy
-	app.queue.Pause("")
+	// Paused dispatcher is considered healthy
+	app.Dispatcher().Pause()
 	if !app.IsPipelineHealthy(ctx) {
-		t.Error("expected IsPipelineHealthy=true when queue is paused")
+		t.Error("expected IsPipelineHealthy=true when dispatcher is paused")
 	}
-	app.queue.Resume("")
+	app.Dispatcher().Resume()
 
-	// App with nil queue is considered healthy when started
-	appNoQueue := &Application{}
-	appNoQueue.started.Store(true)
-	if !appNoQueue.IsPipelineHealthy(ctx) {
-		t.Error("expected IsPipelineHealthy=true for started app with nil queue")
+	// App with nil dispatcher is considered healthy when started
+	appNoDispatcher := &Application{}
+	appNoDispatcher.started.Store(true)
+	if !appNoDispatcher.IsPipelineHealthy(ctx) {
+		t.Error("expected IsPipelineHealthy=true for started app with nil dispatcher")
 	}
 
 	// PingDB with real repository
@@ -229,47 +243,24 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 // TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
 // listing's bytes_durable rests on: a downloaded byte IS a durable byte, so a
 // second counter would be a second representation of one fact, free to drift.
-//
-// That is not "only the barrier marks an article Done" — queue.markFailed,
-// queue.applyResolution and queue.newJobProgressSized all set the bit as well.
-// What holds is narrower and is what the identity needs: every path that marks
-// an article Done either stands on a barrier's fsync (the ack, and the replays
-// of the runs a barrier recorded) or marks an article that contributes no
-// downloaded bytes at all (markFailed). Application.JobDurability enumerates
-// them; keep the two in step.
-//
-// This comment is the third statement of that enumeration and the one most
-// likely to be missed, since it sits in a test file that a sweep of the
-// production sources never opens.
-// queue.TestDoneBitWriters_MatchTheEnumerationStatedInProse is what now
-// catches a divergence: it derives the list from the queue package's own
-// syntax, so the three prose copies are checked against the code rather than
-// against each other.
-//
-// The fixture makes articles durable through Queue.SeedFromRuns — the same
-// replay a resume performs — because that is the only route to a NON-ZERO
-// figure that a test can drive. An earlier version asserted only that the
-// number was 0 before any barrier, which the fixture guarantees on its own:
-// `DurableBytesOf` could `return 0` unconditionally and every assertion in this
-// file still passed.
 func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
 	t.Parallel()
-	application, job := newDurabilityTestApp(t, 1, 3)
-	if got := DurableBytesOf(application.queue.SnapshotJob(job.ID).Progress()); got != 0 {
+	application, j := newDurabilityTestApp(t, 1, 3)
+	if got := DurableBytesOf(j.Progress()); got != 0 {
 		t.Fatalf("fixture already reports %d durable bytes; the assertion below cannot tell "+
 			"a real figure from a leaked one", got)
 	}
-	application.noteJobBytes(job.ID, 999)
+	application.noteJobBytes(j.ID(), 999)
 
 	// Two of the file's three 100-byte articles are on stable storage, as one
 	// merged run.
-	if err := application.queue.SeedFromRuns(job.ID, []durability.Run{
+	if err := j.SeedFromRuns([]durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 200},
 	}); err != nil {
 		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
-	got := application.JobDurability(job.ID)
+	got := application.JobDurability(j.ID())
 
 	if got.DurableBytes != 200 {
 		t.Errorf("DurableBytes = %d, want 200 — two 100-byte articles are covered by a "+

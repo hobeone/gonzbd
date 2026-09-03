@@ -247,6 +247,14 @@ func newJobProgress(m *Manifest) *JobProgress {
 	return newJobProgressSized(fileMetaFromManifest(m))
 }
 
+// NumFiles returns the number of files tracked by the progress record.
+func (p *JobProgress) NumFiles() int {
+	if p == nil {
+		return 0
+	}
+	return len(p.files)
+}
+
 // ArticleDone reports whether global article index i has resolved (success or failure).
 func (p *JobProgress) ArticleDone(i int) bool {
 	if p == nil || i < 0 || i >= p.done.Len() {

@@ -71,4 +71,3 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing
 		t.Errorf("QuickCheck = %s, want inconclusive: downstream cannot tell a verification that could not run from one that had nothing to run on", job.QuickCheck)
 	}
 }
-
