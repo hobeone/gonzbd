@@ -22,12 +22,15 @@ import (
 // claim that no OTHER struct here declares any of these seven names is
 // established by reading the declarations, not by grepping the names:
 // `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go'
-// ':!internal/job/*_test.go'` now returns 22 types — Attempt, bitset,
+// ':!internal/job/*_test.go'` now returns 23 types — Attempt, bitset,
 // Checkpoint, Job, Snapshot, Lease, Manifest, JobFile, JobArticle,
 // manifestFile, manifestJSONArticle, manifestJSONFile, manifestJSON, Policy,
 // JobProgress, FileProgress, FileMeta, fileProgressJSON, jobProgressJSON,
-// RenderView, edge, and StateView — and only Attempt and Job declare any of
-// these seven fields. The jump from eight (Half B1 task 3) to 22 is the
+// RenderView, edge, StateView and FailureAck — and only Attempt and Job
+// declare any of these seven fields. FailureAck is the newest, arriving with
+// the durability integration (workset.go); it carries what
+// AckPermanentFailure observed, and declares none of the seven.
+// The jump from eight (Half B1 task 3) to 22 was the
 // content-tier move (task 2): manifest.go, progress.go and bitset.go landed
 // in this package and brought Manifest, JobFile, JobArticle, manifestFile,
 // the three manifestJSON* wire types, JobProgress, FileProgress, FileMeta,

@@ -160,16 +160,24 @@
 // see Job's own comment for the order and why the two are never held
 // together today).
 //
-// The import set is two packages, not one. internal/constants appears in
+// The import set is three packages, not one. internal/constants appears in
 // sabnzbd.go alone, for the one-way translation to the legacy API
 // vocabulary. internal/nzb appears in manifest.go alone, for the single call
 // to nzb.MessageIDIsFetchable that re-checks a persisted Message-ID before it
 // can reach an NNTP command line; it arrived when the manifest and progress
 // tiers moved in from internal/queue. It is a pure, stdlib-only predicate and
 // internal/nzb imports only internal/fsutil, so there is no cycle.
-// `go list -deps ./internal/job/ | grep hobeone` names four lines —
-// internal/constants, internal/fsutil, internal/nzb and internal/job itself,
-// fsutil being pulled in transitively by nzb rather than imported here. That
+// internal/durability appears in workset.go alone, for DurableProof and Run —
+// two pure value types — and it arrived with the durability integration
+// (AckDurable, AckPermanentFailure, SeedFromRuns, ReplaceFromRuns) that moved
+// in from internal/queue. It creates no cycle either: internal/durability
+// imports only internal/crc32util and internal/storagefault, neither of which
+// reaches back here.
+// `go list -deps ./internal/job/ | grep hobeone` names seven lines —
+// internal/constants, internal/crc32util, internal/storagefault,
+// internal/durability, internal/fsutil, internal/nzb and internal/job itself;
+// fsutil is pulled in transitively by nzb, and crc32util and storagefault by
+// durability, rather than imported here. That
 // check is blind to
 // test files by construction — sabnzbd_test.go is package job and also
 // imports internal/constants, which `go list -deps` cannot see either way.

@@ -144,19 +144,23 @@ func buildDownloadFileList(job *Job) []string {
 		// ./...` broke nothing in this suite, so no test currently pins the
 		// order — the fix is deferred on scope, not on test coupling).
 		//
-		// Whether (c) is reachable on THIS branch cannot currently be
-		// enumerated: undeferRecovery and its two production callers
-		// (Queue.UndeferRecoveryVolumes, workset.go's AckPermanentFailure)
-		// still live only in internal/queue, which the job-lifecycle swap is
-		// deleting — `grep -rn 'func.*undeferRecovery\|func.*UndeferRecoveryVolumes'
-		// internal/job/ internal/dispatch/ internal/sched/` returns nothing on
-		// this branch. The reasoning below describes internal/queue's now-dying
-		// behavior (both callers pass every deferred index at once, so a real
-		// job goes from "all deferred" to "none deferred" in one step and
-		// heldVols is 0 by the time Par2Recovered() is true), and needs
-		// re-verification once on-demand par2's un-defer path is ported onto
-		// internal/job. (c) would become reachable once a caller un-defers a
-		// strict subset — e.g. a future block-exact selection seam.
+		// Whether (c) is reachable on THIS branch is half-settled.
+		// undeferRecovery has been ported onto internal/job and one of its two
+		// production callers with it — `grep -rn
+		// 'func.*undeferRecovery\|func.*UndeferRecoveryVolumes' internal/job/
+		// internal/dispatch/ internal/sched/` returns 1 line, undeferRecovery's
+		// declaration in internal/job/workset.go, whose sole caller there is
+		// Job.AckPermanentFailure and which passes every held index at once
+		// (DeferredRecoveryIndices). The operator-facing
+		// Queue.UndeferRecoveryVolumes has NOT moved and still lives only in
+		// internal/queue, which the job-lifecycle swap is deleting; it is the
+		// caller that takes named indices, so it is the one that could ever
+		// pass a strict subset. Until it lands, no ported caller can produce
+		// (c): a real job still goes from "all held" to "none held" in one
+		// step, and heldVols is 0 by the time Par2Recovered() is true. This
+		// needs re-verification when that door is ported. (c) would become
+		// reachable once a caller un-defers a strict subset — e.g. a future
+		// block-exact selection seam.
 		//
 		// (a) and (b) both leave the bytes never fetched, which is what
 		// this line reports; (c) is the latent exception.

@@ -798,14 +798,19 @@ func (p *JobProgress) Par2ReleaseReason() string {
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been
 // reached for this job, using the reason string as the marker.
 //
-// One writer sets it without a verdict: workset.go's permanent-article-failure
-// path. That is safe rather than an exception, and the branch is why — the
-// assignment sits inside `if job.undeferRecovery(...)`, and undeferRecovery
-// sets par2Recovered whenever it reports a change (job_articles.go:205). So
-// every caller that must exclude that case already tests Par2Recovered().
+// One writer sets it without a verdict: Job.AckPermanentFailure's
+// on-demand-par2 release (workset.go). That is safe rather than an exception,
+// and the branch is why — the assignment sits inside `if
+// p.undeferRecovery(...)`, and undeferRecovery sets par2Recovered whenever it
+// reports a change. So every caller that must exclude that case already tests
+// Par2Recovered().
 //
-// ResetForRetry is the only clearer (job.go:1078), which is what makes a
-// retry re-derive the verdict rather than inherit it.
+// `git grep -n 'par2[R]eleaseReason =' -- 'internal/job/*.go'
+// ':!internal/job/*_test.go'` returns two lines — the bracket keeps the
+// citation from matching its own text — that release, and
+// UnmarshalJSON restoring a persisted value. The retry path that used to clear
+// it lives in internal/queue and has not moved here yet — when it does, it
+// becomes the third and this count moves.
 func (p *JobProgress) HasPar2Verdict() bool {
 	if p == nil {
 		return false
@@ -1012,10 +1017,13 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 }
 
 // markNotDone returns article i to Outstanding. It is the inverse of markDone,
-// and it exists for exactly one caller: Queue.ReplaceFromRuns, which has
-// stat'ed the file and is entitled to contradict a bit derived from a run the
-// resume then discarded (#362). Nothing on the download path may call it — an
-// ack is a one-way transition (R9).
+// and it exists for exactly one caller: Job.ReplaceFromRuns (workset.go),
+// whose caller has stat'ed the file and is entitled to contradict a bit
+// derived from a run the resume then discarded (#362). `git grep -n
+// 'mark[N]otDone(' -- 'internal/job/*.go' ':!internal/job/*_test.go'` returns
+// two lines — this declaration and that call — with the bracket keeping the
+// citation from matching its own text. Nothing on the download path may call
+// it — an ack is a one-way transition (R9).
 //
 // It clears the bit and nothing else. The figures markDone maintains are
 // deliberately NOT unwound here article by article: JobProgress.recompute
@@ -1155,21 +1163,19 @@ type fileProgressJSON struct {
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
 // marks an article as resolved, and nothing sets it from dispatch: markDone is
-// reached from ackDurable, whose only caller Queue.AckDurable needs a
-// DurableProof a completed fsync minted; from seedFromRuns and
-// ReplaceFromRuns, which replay runs that same fsync recorded; and from
-// applyResolution, which replays the resolution derived from those same
-// records on re-hydration. The first two became unexported *Job methods in
-// B2.4a — the doors and their evidence are unchanged, only the receiver moved.
-// markFailed sets it too, for an
-// article whose bytes will
+// reached from Job.AckDurable, which needs a DurableProof a completed fsync
+// minted; from Job.SeedFromRuns and Job.ReplaceFromRuns, which replay runs
+// that same fsync recorded; and from Job.MarkArticleDone, the bounded
+// per-article door. markFailed sets it too, for an article whose bytes will
 // never arrive. So a persisted done bit always stands on a completed fsync or
 // a permanent failure — never on a write that was merely attempted (#355) —
 // and the pair is consistent.
 //
-// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above,
-// and the wider one in app.JobDurability that adds the direct writer this
-// paragraph does not mention. Add a door onto the bit and it fails by name.
+// TestDoneBitWriters_MatchTheEnumerationStatedInProse
+// (donebit_enumeration_test.go) enforces that list by parsing this package,
+// alongside the direct writers of the bit that do not go through markDone at
+// all — markFailed and newJobProgressSized, which that test names and this
+// paragraph does not. Add a door onto the bit and it fails by name.
 type jobProgressJSON struct {
 	Done   []bool             `json:"done"`
 	Failed []bool             `json:"failed"`

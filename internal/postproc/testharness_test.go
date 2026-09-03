@@ -206,11 +206,13 @@ func ackFailed(t *testing.T, j *job.Job, msgIDs ...string) {
 // the WHOLE JobProgress record, and it does so incompletely by design —
 // pendingArticles/articlesResolved/articlesFailed and every per-file
 // Bytes/BytesDownloaded/FailedBytes/Pending/IsPar2 figure are left at their
-// zero value, restorable only by recompute (progress.go:906), which has no
-// exported caller anywhere in this tree — `git grep -n 'p\.recompute(\|\.recompute('
-// -- 'internal/job/*.go'` returns exactly one hit, and it is
-// internal/job/progress_test.go calling the unexported method directly from
-// within its own package. So a JSON
+// zero value, restorable only by recompute, which has no exported caller
+// anywhere in this tree — `git grep -n 'p\.recompute(\|\.recompute('
+// -- 'internal/job/*.go'` returns three hits: internal/job/progress_test.go
+// calling the unexported method directly from within its own package, and
+// two inside internal/job/workset.go, where ReplaceFromRuns and
+// undeferRecovery re-derive the figures after a bulk change. All three are
+// inside internal/job, so nothing outside it can drive a recompute. So a JSON
 // round-trip is safe only for a job with no per-article byte/pending state
 // worth preserving — and unusable for filelist.go's byte-accounting
 // fixtures (buildQueueJob's jobs, which drive MarkArticleDone/MarkArticleFailed

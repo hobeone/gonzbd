@@ -282,11 +282,14 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // longer this function alone. B2.4a moved the manifest-tier bodies onto *Job,
 // and each one now opens with Job.resident; the *Queue wrappers that call
 // them look their job up in q.byID directly. AckPermanentFailure and
-// ReplaceFromRuns still start here, because they need the manifest in the
-// wrapper itself rather than only inside the moved body.
+// ReplaceFromRuns used to start here too, because they needed the manifest in
+// the wrapper itself rather than only inside the moved body; both left this
+// package with workset.go when the durability integration moved onto
+// *job.Job.
 //
-// CheckEarlyAbort is the third caller, and the one exception to the rule
-// below: `git grep -n 'q\.residentJob(' -- '*.go' ':!*_test.go'` returns 3.
+// CheckEarlyAbort is now the only caller: `git grep -n 'q\.residentJob('
+// -- '*.go' ':!*_test.go'` returns 1. It is also the one exception to the
+// rule below.
 // It needs no manifest, so by the rule it should not be here — but residency
 // coincides exactly with the condition under which its answer can be acted
 // on, and #461 was filed and closed proving that. See its own doc comment for
