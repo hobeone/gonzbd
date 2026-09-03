@@ -332,10 +332,18 @@ func (d *Dispatcher) ResumeJob(id string) error {
 
 // Remove cancels a job, deletes its persisted row and deregisters it.
 //
-// The order is deliberate: Cancel first so sched reclaims the lease and the
-// compute slot while the job is still registered. Deregistering first would
-// strand both -- the tick only walks registered jobs, so nothing would ever
-// return them.
+// The order is deliberate, but not for the reason it might look like: Cancel
+// takes the *job.Job pointer directly rather than looking it up through the
+// registry, so reordering d.remove(id) ahead of it does NOT change whether
+// sched reclaims the lease or slot on the SUCCESS path -- that was checked
+// empirically (TestDispatcherRemove_IsIdempotentAndReturnsResources, and
+// internal/dispatch/testdata/control_surface.spec's second mutation, which
+// SURVIVED a version of that test asserting exactly this). What the order
+// protects is the FAILURE path: deregistering only after Cancel and
+// store.Delete both succeed means a failing Remove leaves the job registered
+// for inspection or retry, instead of silently dropping it from
+// Job/Row/List while its persisted row and any unreclaimed resources are
+// left behind with nothing to revisit them.
 func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	j, ok := d.Job(id)
 	if !ok {
