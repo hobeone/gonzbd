@@ -14,7 +14,7 @@ import (
 func TestRowStatus_MatchesToSABnzbd(t *testing.T) {
 	for _, st := range job.AllStates() {
 		t.Run(st.String(), func(t *testing.T) {
-			v := job.RenderView{StateView: job.StateView{State: st}, Running: true}
+			v := job.RenderView{State: st, Running: true}
 			r := Row{ID: "a", View: v}
 			if got, want := r.Status(), job.ToSABnzbd(v); got != want {
 				t.Fatalf("Row.Status() = %q, ToSABnzbd = %q; they must not diverge", got, want)
@@ -34,7 +34,7 @@ func TestRowStatus_MatchesToSABnzbd(t *testing.T) {
 // false (so Reason is the zero WaitReason, NoLease, which is not a pause
 // reason) must therefore render StatusQueued.
 func TestRowStatus_FetchingNotRunningIsQueuedNotDownloading(t *testing.T) {
-	v := job.RenderView{StateView: job.StateView{State: job.Fetching}}
+	v := job.RenderView{State: job.Fetching}
 	r := Row{ID: "a", View: v}
 	if got := r.Status(); got != constants.StatusQueued {
 		t.Fatalf("Row.Status() = %q, want %q (Running=false must not read as StatusDownloading)", got, constants.StatusQueued)
