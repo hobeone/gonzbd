@@ -1357,3 +1357,28 @@ func TestRun_DispatchesOnEveryWakeupAndStopsOnCancel(t *testing.T) {
 		t.Fatal("run did not return on context cancellation; Stop would hang on it")
 	}
 }
+
+func TestDownloader_CancelJob(t *testing.T) {
+	t.Parallel()
+
+	d := &Downloader{
+		tracker: newDispatchTracker(),
+	}
+
+	key := articleKey{jobID: "j1", artIdx: 0}
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked(key)
+	d.tracker.Unlock()
+
+	_, inFlightLen := d.tracker.Len()
+	if inFlightLen != 1 {
+		t.Fatalf("in-flight = %d, want 1", inFlightLen)
+	}
+
+	d.CancelJob("j1")
+
+	_, inFlightLen = d.tracker.Len()
+	if inFlightLen != 0 {
+		t.Errorf("after CancelJob, in-flight = %d, want 0", inFlightLen)
+	}
+}

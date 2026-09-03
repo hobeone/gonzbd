@@ -115,4 +115,7 @@ func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 	if err := dErr.Remove(context.Background(), "e"); err == nil {
 		t.Fatal("Remove must error if store.Delete fails")
 	}
+	if _, ok := dErr.Job("e"); !ok {
+		t.Fatal("a Remove that failed must leave the job registered")
+	}
 }

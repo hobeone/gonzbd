@@ -73,8 +73,10 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 	}
 
 	for _, row := range d.dispatcher.List() {
-		if row.View.Intent == job.IntentPause {
-			continue // skip paused jobs, keep iterating
+		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
+		// must not be dispatched either.
+		if row.View.Intent != job.IntentRun {
+			continue // skip paused or cancelled jobs, keep iterating
 		}
 		if !row.View.Running || row.View.State != job.Fetching {
 			continue // only active fetching jobs download articles
@@ -202,7 +204,9 @@ func (d *Downloader) hasDownloadableJobs() bool {
 		return false
 	}
 	for _, row := range d.dispatcher.List() {
-		if row.View.Intent == job.IntentPause || row.View.Outcome.IsSettled() {
+		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
+		// must not count as downloadable either.
+		if row.View.Intent != job.IntentRun || row.View.Outcome.IsSettled() {
 			continue
 		}
 		if row.View.State == job.Fetching || (row.View.State == job.StateUnset && row.View.Next == job.Fetching) {
@@ -615,12 +619,15 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 
 	name := srv.Cfg().Name
 
-	// Per-job pause check: the article was queued into workCh before
-	// the user clicked pause on this specific job. Check now before
-	// starting any network I/O.
-	if j, ok := d.dispatcher.Job(req.jobID); ok && j.Intent() == job.IntentPause {
+	// Per-job pause/cancel check: the article was queued into workCh before
+	// the user clicked pause or cancel on this specific job. Check now before
+	// starting any network I/O. != IntentRun rather than == IntentPause:
+	// a cancelled job must drop its in-flight article too.
+	if j, ok := d.dispatcher.Job(req.jobID); !ok || j.Intent() != job.IntentRun {
 		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		_ = j.ClearArticleEmitted(int(req.artIdx))
+		if ok {
+			_ = j.ClearArticleEmitted(int(req.artIdx))
+		}
 		return nil, false
 	}
 

@@ -32,8 +32,35 @@ type appWorkers struct {
 	app *Application
 }
 
-func (w *appWorkers) Abort(jobID string) { //nocover: no-op interface stub
-	// sched.Workers abort callback. Promptly signals cancellation to workers.
+func (w *appWorkers) Abort(jobID string) {
+	if w.app == nil {
+		return
+	}
+	w.app.mu.Lock()
+	dl := w.app.downloader
+	disp := w.app.dispatcher
+	log := w.app.log
+	w.app.mu.Unlock()
+
+	if dl != nil {
+		if c, ok := dl.(interface{ CancelJob(string) }); ok {
+			c.CancelJob(jobID)
+		}
+		if wk, ok := dl.(interface{ Wake() }); ok {
+			wk.Wake()
+		}
+	}
+	if disp != nil {
+		// Yield asynchronously: Abort is invoked inside sched.Queue.mu's lock span
+		// during Cancel. Calling disp.Yielded directly would deadlock on Queue.mu.
+		// If the job was already removed via Dispatcher.Remove, disp.Yielded returns
+		// an ErrNotFound which is benign and logged at debug level.
+		go func() {
+			if err := disp.Yielded(jobID); err != nil && log != nil {
+				log.Debug("abort: worker yield completed with notice", "job", jobID, "err", err)
+			}
+		}()
+	}
 }
 
 type nopDispatchStore struct{}

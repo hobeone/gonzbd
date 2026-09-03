@@ -1,10 +1,14 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -27,6 +31,74 @@ func TestApplicationConstructsAWiredDispatcher(t *testing.T) {
 	appNilDisp := &Application{}
 	if _, ok := appNilDisp.lookupJob("test-job"); ok {
 		t.Fatal("lookupJob must return false when dispatcher is nil")
+	}
+}
+
+type mockCancelWakeDownloader struct {
+	mu        sync.Mutex
+	cancelled []string
+	woken     int
+}
+
+func (m *mockCancelWakeDownloader) Start(context.Context) error                      { return nil }
+func (m *mockCancelWakeDownloader) Stop() error                                      { return nil }
+func (m *mockCancelWakeDownloader) Completions() <-chan *downloader.ArticleResult    { return nil }
+func (m *mockCancelWakeDownloader) SetSpeedLimit(int64)                              {}
+func (m *mockCancelWakeDownloader) SetDispatchOptions(int, int, bool, time.Duration) {}
+func (m *mockCancelWakeDownloader) UnblockServer(string) bool                        { return true }
+func (m *mockCancelWakeDownloader) Pause()                                           {}
+func (m *mockCancelWakeDownloader) Resume()                                          {}
+func (m *mockCancelWakeDownloader) DisconnectAll()                                   {}
+func (m *mockCancelWakeDownloader) CancelJob(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancelled = append(m.cancelled, id)
+}
+func (m *mockCancelWakeDownloader) Wake() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.woken++
+}
+
+func TestAppWorkers_Abort(t *testing.T) {
+	// 1. Nil app should safely return without panic.
+	wNil := &appWorkers{app: nil}
+	wNil.Abort("job-nil")
+
+	// 2. App with nil downloader and nil dispatcher should safely return.
+	wEmpty := &appWorkers{app: &Application{}}
+	wEmpty.Abort("job-empty")
+
+	// 3. App with wired mock downloader and real dispatcher.
+	app := newTestApplication(t)
+	w := &appWorkers{app: app}
+
+	j := job.New("job-abort", "Test Job", job.PolicyFromPP(3))
+	if err := app.dispatcher.Add(j, dispatch.Header{Name: "Test Job"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	mockDL := &mockCancelWakeDownloader{}
+	app.mu.Lock()
+	app.downloader = mockDL
+	app.mu.Unlock()
+
+	w.Abort("job-abort")
+
+	mockDL.mu.Lock()
+	cancelledLen := len(mockDL.cancelled)
+	var cancelledID string
+	if cancelledLen > 0 {
+		cancelledID = mockDL.cancelled[0]
+	}
+	wokenCount := mockDL.woken
+	mockDL.mu.Unlock()
+
+	if cancelledLen != 1 || cancelledID != "job-abort" {
+		t.Errorf("CancelJob called with %v, want [job-abort]", mockDL.cancelled)
+	}
+	if wokenCount != 1 {
+		t.Errorf("Wake called %d times, want 1", wokenCount)
 	}
 }
 

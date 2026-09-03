@@ -771,6 +771,12 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 // Returns 0 when unlimited.
 func (d *Downloader) SpeedLimit() int64 { return int64(d.limiter.Rate()) }
 
+// CancelJob stops tracking for the specified job and clears its try-list
+// and in-flight state.
+func (d *Downloader) CancelJob(jobID string) {
+	d.tracker.ClearJob(jobID)
+}
+
 // Wake non-blocking-pokes the main loop to run a dispatch pass.
 func (d *Downloader) Wake() { d.signalDispatch() }
 

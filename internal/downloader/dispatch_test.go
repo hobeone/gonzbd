@@ -401,6 +401,29 @@ func TestBuildDispatchPlan_SkipsPausedJobs(t *testing.T) {
 	}
 }
 
+// Cancelled jobs are skipped.
+func TestBuildDispatchPlan_SkipsCancelledJobs(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	j, m := makeJobWithArticles(t, []string{"c@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if len(plan.activeJobs) != 0 {
+		t.Errorf("activeJobs = %v, want empty for cancelled job", plan.activeJobs)
+	}
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 for cancelled job", plan.dispatched)
+	}
+}
+
 // Propagation delay holds back a freshly-added job.
 func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
 	t.Parallel()
@@ -1011,8 +1034,11 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	cfg := config.ServerConfig{Name: "test-server"}
 	srv := NewServer(cfg)
 
+	j, m := makeJobWithArticles(t, []string{"msg1"})
+	addTestJob(t, disp, j, m)
+
 	req := &articleRequest{
-		jobID:     "job1",
+		jobID:     j.ID(),
 		fileIdx:   0,
 		messageID: "msg1",
 	}
@@ -1026,14 +1052,37 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 
 	// 2. Job paused status check coverage (job paused)
 	d.paused.Store(false)
-	j, m := makeJobWithArticles(t, []string{"msg1"})
-	addTestJob(t, disp, j, m)
 	_ = disp.PauseJob(j.ID())
 
 	req.jobID = j.ID()
 	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Error("expected fetchArticle to return nil, false on paused job")
+	}
+
+	// 3. Cancelled job check coverage (job cancelled)
+	j3 := job.New("j3", "test.nzb", job.Policy{})
+	_, m3 := makeJobWithArticles(t, []string{"msg-cancel"})
+	addTestJob(t, disp, j3, m3)
+	if err := j3.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	if err := j3.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+
+	req3 := &articleRequest{
+		jobID:     j3.ID(),
+		fileIdx:   0,
+		artIdx:    0,
+		messageID: "msg-cancel",
+	}
+	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req3, "worker1")
+	if ok || body != nil {
+		t.Errorf("fetchArticle = (%v, %v), want (nil, false) on cancelled job", body, ok)
+	}
+	if j3.Progress().ArticleEmitted(0) {
+		t.Error("expected emitted bit to be cleared for cancelled job")
 	}
 }
 
@@ -1134,7 +1183,10 @@ func TestFetchArticle_NoPenaltiesClampsPenaltyDuration(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "msg1"}
+	j, m := makeJobWithArticles(t, []string{"msg1"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "msg1"}
 	before := time.Now()
 	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
@@ -1284,7 +1336,10 @@ func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "missing@h"}
+	j, m := makeJobWithArticles(t, []string{"missing@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1") // avoid leaving the conn open for the mock's idle-timeout to close (slows the test)
 	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
@@ -1334,7 +1389,10 @@ func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "missing@h"}
+	j, m := makeJobWithArticles(t, []string{"missing@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1367,7 +1425,10 @@ func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "missing@h"}
+	j, m := makeJobWithArticles(t, []string{"missing@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1407,7 +1468,10 @@ func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "msg1"}
+	j, m := makeJobWithArticles(t, []string{"msg1"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "msg1"}
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1"); ok || body != nil {
 		t.Fatalf("expected fetchArticle to fail against a closed listener")
 	}
@@ -1440,7 +1504,10 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	j, m := makeJobWithArticles(t, []string{"hangup@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "hangup@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	before := time.Now()
@@ -1487,7 +1554,10 @@ func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	j, m := makeJobWithArticles(t, []string{"hangup@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "hangup@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1532,7 +1602,10 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // simulate shutdown/pause via the caller-supplied ctx
 
-	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	j, m := makeJobWithArticles(t, []string{"hangup@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req := &articleRequest{jobID: j.ID(), messageID: "hangup@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(cancelledCtx, srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1576,19 +1649,22 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
+	j, m := makeJobWithArticles(t, []string{"dummy@h", "hangup1@h", "hangup2@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
 	// Mark both articles as tried so we can verify unmarkTried on error.
 	var initialMask serverMask
 	initialMask.set(0)
 	tracker.Lock()
-	tracker.SetTriedLocked(articleKey{jobID: "job1", artIdx: 1}, initialMask)
-	tracker.SetTriedLocked(articleKey{jobID: "job1", artIdx: 2}, initialMask)
+	tracker.SetTriedLocked(articleKey{jobID: j.ID(), artIdx: 1}, initialMask)
+	tracker.SetTriedLocked(articleKey{jobID: j.ID(), artIdx: 2}, initialMask)
 	tracker.Unlock()
 
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 
-	req1 := &articleRequest{jobID: "job1", artIdx: 1, messageID: "hangup1@h"}
-	req2 := &articleRequest{jobID: "job1", artIdx: 2, messageID: "hangup2@h"}
+	req1 := &articleRequest{jobID: j.ID(), artIdx: 1, messageID: "hangup1@h"}
+	req2 := &articleRequest{jobID: j.ID(), artIdx: 2, messageID: "hangup2@h"}
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -1629,8 +1705,8 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	}
 
 	tracker.Lock()
-	m1, _ := tracker.TryListLocked(articleKey{jobID: "job1", artIdx: 1})
-	m2, _ := tracker.TryListLocked(articleKey{jobID: "job1", artIdx: 2})
+	m1, _ := tracker.TryListLocked(articleKey{jobID: j.ID(), artIdx: 1})
+	m2, _ := tracker.TryListLocked(articleKey{jobID: j.ID(), artIdx: 2})
 	tracker.Unlock()
 
 	if m1.has(0) {
@@ -1669,11 +1745,14 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
+	j2, m2Manifest := makeJobWithArticles(t, []string{"dummy@h", "hangup1@h", "hangup2@h"})
+	addTestJob(t, d.dispatcher, j2, m2Manifest)
+
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 
-	req1 := &articleRequest{jobID: "job1", artIdx: 1, messageID: "hangup1@h"}
-	req2 := &articleRequest{jobID: "job1", artIdx: 2, messageID: "hangup2@h"}
+	req1 := &articleRequest{jobID: j2.ID(), artIdx: 1, messageID: "hangup1@h"}
+	req2 := &articleRequest{jobID: j2.ID(), artIdx: 2, messageID: "hangup2@h"}
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -2249,5 +2328,18 @@ func TestHasDownloadableJobs(t *testing.T) {
 	d := newDispatchDownloader(nil)
 	if d.hasDownloadableJobs() {
 		t.Error("hasDownloadableJobs() = true for empty downloader, want false")
+	}
+}
+
+func TestHasDownloadableJobs_SkipsCancelledJobs(t *testing.T) {
+	t.Parallel()
+	d := newDispatchDownloader(nil)
+	j, m := makeJobWithArticles(t, []string{"c@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	if d.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs() = true for cancelled job, want false")
 	}
 }

@@ -136,6 +136,48 @@ func TestTracker_Len(t *testing.T) {
 	}
 }
 
+func TestTracker_ClearJob(t *testing.T) {
+	tr := newDispatchTracker()
+
+	kOther := articleKey{jobID: "j2", artIdx: 1}
+
+	tr.Lock()
+	tr.IncrementInFlightLocked(k1)
+	tr.IncrementInFlightLocked(kOther)
+	mask := serverMask{}
+	mask.set(0)
+	tr.SetTriedLocked(k2, mask)
+	tr.SetTriedLocked(kOther, mask)
+	tr.Unlock()
+
+	tryLen, inFlightLen := tr.Len()
+	if tryLen != 2 || inFlightLen != 2 {
+		t.Fatalf("expected 2, 2, got %d, %d", tryLen, inFlightLen)
+	}
+
+	tr.ClearJob("j1")
+
+	tryLen, inFlightLen = tr.Len()
+	if tryLen != 1 || inFlightLen != 1 {
+		t.Errorf("after ClearJob(j1), expected 1, 1, got %d, %d", tryLen, inFlightLen)
+	}
+
+	tr.Lock()
+	if got := tr.InFlightLocked(k1); got != 0 {
+		t.Errorf("k1 in-flight = %d, want 0", got)
+	}
+	if got := tr.InFlightLocked(kOther); got != 1 {
+		t.Errorf("kOther in-flight = %d, want 1", got)
+	}
+	if _, ok := tr.TryListLocked(k2); ok {
+		t.Error("k2 tryList entry still exists")
+	}
+	if _, ok := tr.TryListLocked(kOther); !ok {
+		t.Error("kOther tryList entry missing")
+	}
+	tr.Unlock()
+}
+
 func TestTracker_Concurrency(t *testing.T) {
 	tr := newDispatchTracker()
 	const workers = 10
