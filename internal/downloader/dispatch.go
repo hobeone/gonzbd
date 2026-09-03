@@ -872,9 +872,9 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			//
 			// Nothing needs clearing here, and the reason is worth stating
 			// because the old comment claimed the opposite: this article has
-			// no Emitted bit set. All three markArticleEmitted call sites run
-			// at RESULT-emission time (`grep -n 'd\.markArticleEmitted(' internal/downloader/dispatch.go`
-			// finds lines 368, 941, 959), after the fetch — what keeps the
+			// no Emitted bit set. All three `d.markArticleEmitted(` call sites
+			// run at RESULT-emission time (`grep -c 'd\.markArticleEmitted(' internal/downloader/dispatch.go`
+			// → 3), after the fetch — what keeps the
 			// dispatcher off an article mid-fetch is the
 			// in-flight tracker (tryDispatch's InFlightLocked guard), and
 			// handleRequest's deferred clearInFlight releases it.
