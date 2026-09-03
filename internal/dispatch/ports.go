@@ -58,6 +58,10 @@ type Persisted struct {
 	Policy job.Policy
 	State  job.StateView
 	Intent job.Intent
+
+	DownloadStarted   int64
+	DownloadFinished  int64
+	Par2ReleaseReason string
 }
 
 // Runner starts the work for one job at one state. It must return promptly —

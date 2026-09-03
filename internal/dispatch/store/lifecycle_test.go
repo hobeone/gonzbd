@@ -96,10 +96,11 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 	}
 
 	pol := job.Policy{Verify: true, Repair: true, Unpack: true, Delete: true}
+	now := time.Now().UTC().Unix()
 	want := []wantJob{
-		{"first", dispatch.Header{Name: "first", Category: "tv", Priority: 1, Bytes: 100}, pol},
-		{"second", dispatch.Header{Name: "second", Category: "movies", Priority: 2, Bytes: 200}, job.Policy{}},
-		{"third", dispatch.Header{Name: "third", Bytes: 300}, job.Policy{Verify: true}},
+		{"first", dispatch.Header{Name: "first", Category: "tv", Priority: 1, Bytes: 100, Added: now}, pol},
+		{"second", dispatch.Header{Name: "second", Category: "movies", Priority: 2, Bytes: 200, Added: now}, job.Policy{}},
+		{"third", dispatch.Header{Name: "third", Bytes: 300, Added: now}, job.Policy{Verify: true}},
 	}
 
 	d1 := newDispatcher()

@@ -67,6 +67,55 @@ func TestStore_RoundTripsEveryAxis(t *testing.T) {
 	}
 }
 
+// TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip asserts all 8 Header fields,
+// 3 timestamps, and Par2ReleaseReason survive a save/load round trip.
+func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	want := dispatch.Persisted{
+		ID:      "j-all-fields",
+		SortKey: 42,
+		Header: dispatch.Header{
+			Name:      "ubuntu.iso",
+			Filename:  "ubuntu.iso.nzb",
+			Category:  "linux",
+			Priority:  1,
+			Bytes:     2048576,
+			Warning:   "warning text",
+			Script:    "notify.sh",
+			Password:  "secret123",
+			PP:        3,
+			NZBBackup: "/backup/ubuntu.iso.nzb.gz",
+			URL:       "https://index.example.com/nzb/123",
+			MD5:       "0123456789abcdef0123456789abcdef",
+			Added:     1700000001,
+		},
+		Policy: job.Policy{Verify: true, Repair: true, Unpack: true, Delete: false},
+		State: job.StateView{
+			State:    job.Extracting,
+			Activity: job.ActUnpack,
+			Assessed: true,
+		},
+		Intent:            job.IntentRun,
+		DownloadStarted:   1700000010,
+		DownloadFinished:  1700000100,
+		Par2ReleaseReason: "repair needed",
+	}
+
+	if err := s.Save(t.Context(), want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := s.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Load returned %d rows, want 1", len(got))
+	}
+	if got[0] != want {
+		t.Fatalf("round trip lost data:\n got %+v\nwant %+v", got[0], want)
+	}
+}
+
 // TestStore_RoundTripsEveryPolicyCombination is what makes a swapped boolean
 // column detectable: with all sixteen combinations, no single mapping error
 // can survive.

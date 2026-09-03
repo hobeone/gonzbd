@@ -367,7 +367,7 @@ func TestPersistIfChanged_WritesHeaderFromTheRegistry(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	h := Header{Name: "n", Category: "movies", Priority: 1, Bytes: 42}
+	h := Header{Name: "n", Category: "movies", Priority: 1, Bytes: 42, Added: 1700000000}
 	if err := d.Add(j, h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 // key.
 func TestEntryFor_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
-	h := Header{Name: "n", Category: "tv"}
+	h := Header{Name: "n", Category: "tv", Added: 1700000000}
 	if err := d.Add(job.New("j1", "n", job.Policy{}), h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

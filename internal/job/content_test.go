@@ -447,4 +447,21 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	if err := jResident.ReplaceFromRuns([]int32{0}, []durability.Run{validRun}); err != nil {
 		t.Errorf("ReplaceFromRuns: %v", err)
 	}
+
+	start := time.Unix(1700000000, 0).UTC()
+	finish := time.Unix(1700000100, 0).UTC()
+	if err := jResident.RestoreDownloadStamps(start, finish); err != nil {
+		t.Errorf("RestoreDownloadStamps: %v", err)
+	}
+	if got := jResident.Progress().DownloadStarted(); !got.Equal(start) {
+		t.Errorf("DownloadStarted = %v, want %v", got, start)
+	}
+	if got := jResident.Progress().DownloadFinished(); !got.Equal(finish) {
+		t.Errorf("DownloadFinished = %v, want %v", got, finish)
+	}
+
+	jEmpty := New("empty", "empty", Policy{})
+	if err := jEmpty.RestoreDownloadStamps(start, finish); err == nil {
+		t.Error("RestoreDownloadStamps on non-resident job should error")
+	}
 }

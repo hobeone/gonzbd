@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -34,6 +35,7 @@ type Header struct {
 	NZBBackup string
 	URL       string
 	MD5       string
+	Added     int64
 }
 
 // Row is one line of a queue listing: the scheduling view sched computes,
@@ -98,6 +100,11 @@ func (d *Dispatcher) Add(j *job.Job, h Header) error {
 		return errors.New("dispatch: Add: this Dispatcher is restoring; retry once Start returns")
 	}
 	d.mu.Unlock()
+
+	if h.Added == 0 {
+		h.Added = time.Now().UTC().Unix()
+	}
+	j.SetAdded(time.Unix(h.Added, 0).UTC())
 
 	return d.register(j, h, seqNext)
 }

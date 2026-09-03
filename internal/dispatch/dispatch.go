@@ -568,6 +568,7 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)
 		}
+		restoreJobMetadata(j, p)
 		// register, not Add: Add would assign a FRESH sequence while
 		// markWritten below records the stored one, and the first
 		// persistIfChanged would then see a difference that is not there and
@@ -759,6 +760,25 @@ func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.In
 		return nil, fmt.Errorf("job %s: SetIntent(%s): %w", id, intent, err)
 	}
 	return j, nil
+}
+
+func restoreJobMetadata(j *job.Job, p Persisted) {
+	if p.Header.Added > 0 {
+		j.SetAdded(time.Unix(p.Header.Added, 0).UTC())
+	}
+	if p.DownloadStarted > 0 || p.DownloadFinished > 0 {
+		var started, finished time.Time
+		if p.DownloadStarted > 0 {
+			started = time.Unix(p.DownloadStarted, 0).UTC()
+		}
+		if p.DownloadFinished > 0 {
+			finished = time.Unix(p.DownloadFinished, 0).UTC()
+		}
+		_ = j.RestoreDownloadStamps(started, finished)
+	}
+	if p.Par2ReleaseReason != "" {
+		j.SetPar2ReleaseReason(p.Par2ReleaseReason)
+	}
 }
 
 // lastWritten and markWritten are persistIfChanged's two touches of d.written,

@@ -692,6 +692,17 @@ func (j *Job) MarkDownloadFinished(t time.Time) error {
 	return nil
 }
 
+// RestoreDownloadStamps restores download start and finish timestamps on resident progress.
+func (j *Job) RestoreDownloadStamps(started, finished time.Time) error {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.progress == nil {
+		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	j.progress.restoreDownloadStamps(started, finished)
+	return nil
+}
+
 func runsCoverage(m *Manifest, r durability.Run) (first, last int, err error) {
 	fi := int(r.FileIdx)
 	nFiles := m.NumFiles()

@@ -42,7 +42,7 @@ func TestList_PreservesInsertionOrder(t *testing.T) {
 func TestList_CarriesTheHeaderAndTheView(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	h := Header{Name: "movie", Category: "tv", Priority: 2, Bytes: 4096}
+	h := Header{Name: "movie", Category: "tv", Priority: 2, Bytes: 4096, Added: 1700000000}
 	if err := d.Add(j, h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

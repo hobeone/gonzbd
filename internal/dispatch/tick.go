@@ -95,6 +95,15 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 		State:   s.State,
 		Intent:  s.Intent,
 	}
+	if pr := j.Progress(); pr != nil {
+		if ds := pr.DownloadStarted(); !ds.IsZero() {
+			p.DownloadStarted = ds.Unix()
+		}
+		if df := pr.DownloadFinished(); !df.IsZero() {
+			p.DownloadFinished = df.Unix()
+		}
+		p.Par2ReleaseReason = pr.Par2ReleaseReason()
+	}
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return
 	}
