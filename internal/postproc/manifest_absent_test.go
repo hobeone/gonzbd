@@ -3,48 +3,41 @@ package postproc
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-// evictedJob returns a postproc Job whose queue job has no resident
-// manifest, the state a job reaches when its manifest file cannot be read.
+// evictedJob returns a postproc Job whose lifecycle job has no resident
+// manifest, the state a job reaches when its content tier has been evicted
+// (a paused, non-active job on the real path; here, directly via Evict()).
+//
+// It attaches a manifest with a real file before evicting: NumFiles() reads
+// the scalar AttachContent set, which survives Evict() (see
+// internal/job/content.go's Evict doc comment -- only the manifest pointer is
+// dropped). recordVerdict's own guard short-circuits at NumFiles()==0 before
+// ever reaching the Manifest() call this fixture exists to exercise, so a
+// job built from an empty manifest (like newQueueJob's) would make that
+// guard fire first and leave the manifest-unreadable path untested.
 func evictedJob(t *testing.T) *Job {
 	t.Helper()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.part01.rar", Bytes: 100, Articles: []nzb.Article{{ID: "a0@t", Bytes: 100, Number: 1}}},
-	}}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	j := job.New("evicted", "evicted", job.Policy{})
+	m := buildManifest(t, []testFile{
+		{Subject: "movie.part01.rar", Bytes: 100, Articles: []testArticle{{ID: "a0@t", Bytes: 100, Number: 1}}},
+	})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("evictedJob: AttachContent: %v", err)
 	}
-	// A store is required for the queue to evict on pause; without one every
-	// manifest stays resident and there is nothing to test.
-	dir := t.TempDir()
-	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-	q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)), queue.WithStateDir(dir))
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := q.Pause(qjob.ID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if _, mErr := qjob.Manifest(); mErr == nil {
+	j.Evict()
+	if _, mErr := j.Manifest(); mErr == nil {
 		t.Fatal("fixture guard: manifest still resident, nothing is being tested")
 	}
-	return &Job{Queue: qjob}
+	if j.NumFiles() == 0 {
+		t.Fatal("fixture guard: NumFiles must survive eviction, or recordVerdict's earlier guard would short-circuit this fixture")
+	}
+	return &Job{Job: j}
 }
 
 // The file listing is reporting, so it degrades — but it says why, in the

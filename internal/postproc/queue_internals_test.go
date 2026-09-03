@@ -56,9 +56,9 @@ func TestFindJob(t *testing.T) {
 	}
 
 	jobs := []*Job{
-		{Queue: newQueueJob(t, "a", 0)},
-		{Queue: newQueueJob(t, "b", 0)},
-		{Queue: newQueueJob(t, "c", 0)},
+		{Job: newQueueJob(t, "a", 0)},
+		{Job: newQueueJob(t, "b", 0)},
+		{Job: newQueueJob(t, "c", 0)},
 	}
 
 	if idx := findJob(jobs, "b"); idx != 1 {
@@ -80,8 +80,8 @@ func TestTryPop(t *testing.T) {
 		t.Fatalf("tryPop on an empty queue = %v, want nil", job)
 	}
 
-	jobA := &Job{Queue: newQueueJob(t, "a", 0)}
-	jobB := &Job{Queue: newQueueJob(t, "b", 0)}
+	jobA := &Job{Job: newQueueJob(t, "a", 0)}
+	jobB := &Job{Job: newQueueJob(t, "b", 0)}
 	q.Push(jobA)
 	q.Push(jobB)
 
@@ -114,7 +114,7 @@ func TestTryPop(t *testing.T) {
 // asserting the values fn saw.
 func TestWithLock(t *testing.T) {
 	q := newPPQueue()
-	q.Push(&Job{Queue: newQueueJob(t, "a", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "a", 0)})
 
 	var gotJobs []*Job
 	entered := make(chan struct{})
@@ -155,7 +155,7 @@ func TestWithLock(t *testing.T) {
 		t.Fatal("Len() never returned after withLock released q.mu")
 	}
 
-	if len(gotJobs) != 1 || gotJobs[0].Queue.ID != "a" {
+	if len(gotJobs) != 1 || gotJobs[0].Job.ID() != "a" {
 		t.Fatalf("withLock passed jobs = %v, want the single pushed job with ID \"a\"", gotJobs)
 	}
 }

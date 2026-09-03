@@ -128,13 +128,13 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 
 func (s *SampleCleanupStage) logger(job *Job) *slog.Logger {
 	if s.Log != nil {
-		if job.Queue != nil {
-			return s.Log.With("job", job.Queue.ID, "stage", s.Name())
+		if job.Job != nil {
+			return s.Log.With("job", job.Job.ID(), "stage", s.Name())
 		}
 		return s.Log.With("stage", s.Name())
 	}
-	if job.Queue != nil {
-		return slog.Default().With("job", job.Queue.ID, "stage", s.Name())
+	if job.Job != nil {
+		return slog.Default().With("job", job.Job.ID(), "stage", s.Name())
 	}
 	return slog.Default().With("stage", s.Name())
 }

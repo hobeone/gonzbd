@@ -40,10 +40,9 @@ func TestFinalizeStage_PartialMovePreservesSourceDir(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	qjob := newQueueJob(t, "partial-move-test", 0)
-	qjob.Name = "partial-move"
+	qjob := newNamedJob(t, "partial-move-test", "partial-move", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -84,10 +83,9 @@ func TestFinalizeStage_AllFilesMovedCleansSource(t *testing.T) {
 	// Write a dummy file so os.Rename gets ENOTEMPTY.
 	os.WriteFile(filepath.Join(finalDir, "existing.txt"), []byte("x"), 0o644)
 
-	qjob := newQueueJob(t, "full-move-test", 0)
-	qjob.Name = "full-move"
+	qjob := newNamedJob(t, "full-move-test", "full-move", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -128,7 +126,7 @@ func TestFinalizeStage_PartialMoveErrorContainsAllFailures(t *testing.T) {
 
 	qjob := newQueueJob(t, "multi-fail", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}

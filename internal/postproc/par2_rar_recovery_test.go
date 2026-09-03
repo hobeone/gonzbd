@@ -68,7 +68,7 @@ func TestRepairStage_RecoversObfuscatedRARVolumesViaPar2(t *testing.T) {
 	stage.Apply(RepairConfig{UseGoPar2: true}) // matches config default
 	stage.Log = slog.New(slog.DiscardHandler)
 
-	job := &Job{DownloadDir: dir, Queue: newQueueJob(t, "test", 0)}
+	job := &Job{DownloadDir: dir, Job: newQueueJob(t, "test", 0)}
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("RepairStage.Run: %v", err)
 	}

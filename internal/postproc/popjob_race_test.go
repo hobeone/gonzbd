@@ -52,7 +52,7 @@ func TestPopJob_HasAndEmptyBlockDuringTransition(t *testing.T) {
 	p.workerCtx = ctx
 
 	const jobID = "torn-check"
-	p.q.Push(&Job{Queue: newQueueJob(t, jobID, 0)})
+	p.q.Push(&Job{Job: newQueueJob(t, jobID, 0)})
 
 	// Block setBusyWithJob's busyMu.Lock() so the transition halts
 	// mid-flight, under our control.
@@ -110,8 +110,8 @@ func TestPopJob_HasAndEmptyBlockDuringTransition(t *testing.T) {
 	if !res.ok {
 		t.Fatal("popJob returned ok=false for a queue with one job pushed")
 	}
-	if res.job.Queue.ID != jobID {
-		t.Fatalf("popJob returned job %q, want %q", res.job.Queue.ID, jobID)
+	if res.job.Job.ID() != jobID {
+		t.Fatalf("popJob returned job %q, want %q", res.job.Job.ID(), jobID)
 	}
 
 	select {
@@ -151,7 +151,7 @@ func TestPPQueueTryPop_MarkRunsWhileQueueLockHeld(t *testing.T) {
 	t.Parallel()
 
 	q := newPPQueue()
-	q.Push(&Job{Queue: newQueueJob(t, "x", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "x", 0)})
 
 	entered := make(chan struct{})
 	proceed := make(chan struct{})

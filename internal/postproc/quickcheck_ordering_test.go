@@ -62,7 +62,7 @@ func TestQuickCheckStage_VerifiesBeforeRenaming(t *testing.T) {
 	// The queue records the file under its delivered obfuscated name, which is
 	// the ordinary state: nothing has corrected it, and this stage cannot.
 	job := &Job{
-		Queue:       buildQCJob(t, "remap-job", obfuscated, int64(size), crc),
+		Job:         buildQCJob(t, "remap-job", obfuscated, int64(size), crc),
 		DownloadDir: dir,
 	}
 

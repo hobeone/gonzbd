@@ -27,7 +27,7 @@ func (c *CleanupStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "cleanup", "job", job.Queue.ID)
+	log = log.With("component", "cleanup", "job", job.Job.ID())
 
 	// On failure, preserve admin data for debugging/retry.
 	if job.ParError || job.UnpackError || job.FailMsg != "" {

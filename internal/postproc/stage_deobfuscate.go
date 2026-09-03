@@ -35,11 +35,11 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "deobfuscate", "job", job.Queue.ID)
+	log = log.With("component", "deobfuscate", "job", job.Job.ID())
 
-	logf(ctx, log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Queue.Name)
+	logf(ctx, log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Job.Name())
 
-	renames, err := deobfuscate.Deobfuscate(ctx, log, job.DownloadDir, job.Queue.Name, job.Sanitize)
+	renames, err := deobfuscate.Deobfuscate(ctx, log, job.DownloadDir, job.Job.Name(), job.Sanitize)
 	if len(renames) == 0 {
 		logf(ctx, log, job, slog.LevelInfo, "No files needed deobfuscation")
 	} else {

@@ -35,7 +35,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "quickcheck", "job", job.Queue.ID)
+	log = log.With("component", "quickcheck", "job", job.Job.ID())
 
 	if !q.enabled() {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Disabled — par2 repair will run the full verify/repair step")
@@ -132,9 +132,9 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 // anything, which is what leaves QuickCheckInconclusive standing.
 func (q *QuickCheckStage) assess(job *Job, sets []par2.Set, log *slog.Logger) (par2.Assessment, error) {
 	var files []par2.AssembledFile
-	if job.Queue != nil && job.Queue.NumFiles() > 0 {
-		if m, err := job.Queue.Manifest(); err == nil {
-			p := job.Queue.Progress()
+	if job.Job != nil && job.Job.NumFiles() > 0 {
+		if m, err := job.Job.Manifest(); err == nil {
+			p := job.Job.Progress()
 			files = make([]par2.AssembledFile, m.NumFiles())
 			for fi := range m.NumFiles() {
 				name := m.FileSubject(fi)
@@ -158,7 +158,7 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	// QuickCheckInconclusive, set there. It used to leave the zero value,
 	// which told the repair stage this job had nothing worth verifying while
 	// its par2 sets went unchecked (#314).
-	if job.Queue == nil || job.Queue.NumFiles() == 0 {
+	if job.Job == nil || job.Job.NumFiles() == 0 {
 		logf(ctx, log, job, slog.LevelWarn,
 			"[quickcheck] No manifest files to verify against, though %d par2 set(s) are present — par2 repair will run", len(sets))
 		return nil
@@ -177,7 +177,19 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	// "could not verify" was indistinguishable from "had nothing to verify",
 	// so DirectUnpack's success would skip par2 for a job nothing had
 	// checked (#294).
-	if _, mErr := job.Queue.Manifest(); mErr != nil {
+	//
+	// job.Job.Manifest() wraps job.ErrNotResident with %w rather than
+	// returning a bare error, which is what keeps this distinguishable from
+	// any other manifest failure a caller further up might want to test for
+	// with errors.Is — the same distinction #294 needed, carried onto the new
+	// door. Unlike internal/queue's Manifest() (which could also fail from a
+	// disk read, since a queue.Job's manifest tier could be evicted-then-
+	// reloaded on demand), job.Job.Manifest() has exactly one failure mode:
+	// ErrNotResident (internal/job/content.go). There is no second "manifest
+	// exists but is unreadable" case left to conflate with eviction at this
+	// layer — a manifest that fails to parse or load never reaches a resident
+	// job.Job in the first place.
+	if _, mErr := job.Job.Manifest(); mErr != nil {
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
 

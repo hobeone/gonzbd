@@ -47,10 +47,9 @@ func TestIsSample(t *testing.T) {
 func makeTestJob(t *testing.T, name string) *Job {
 	t.Helper()
 	dir := t.TempDir()
-	qjob := newQueueJob(t, "job-"+name, 0)
-	qjob.Name = name
+	qjob := newNamedJob(t, "job-"+name, name, 0)
 	return &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: dir,
 	}
 }

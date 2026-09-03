@@ -26,16 +26,15 @@ func writeScript(t *testing.T, path string, content []byte) {
 }
 
 // stageJob builds a *Job with a fresh tmp DownloadDir and a minimal
-// queue.Job. Tests that need files in the DownloadDir can add them via
-// the returned path.
+// lifecycle job.Job. Tests that need files in the DownloadDir can add them
+// via the returned path.
 func stageJob(t *testing.T) (*Job, string) {
 	t.Helper()
 	dir := t.TempDir()
-	qjob := newQueueJob(t, "test-job-id", 0)
-	qjob.Name = "test.job"
-	qjob.Filename = "test.nzb"
+	qjob := newNamedJob(t, "test-job-id", "test.job", 0)
 	return &Job{
-		Queue:       qjob,
+		Job:         qjob,
+		Meta:        JobMeta{Filename: "test.nzb"},
 		DownloadDir: dir,
 	}, dir
 }
@@ -260,7 +259,7 @@ func TestScriptStage_ScriptCanFail(t *testing.T) {
 	}
 	t.Parallel()
 	job, _ := stageJob(t)
-	job.Queue.Script = "fail.sh"
+	job.Meta.Script = "fail.sh"
 
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
@@ -285,10 +284,9 @@ func TestRepairStage_NoCleanupInRepair(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.par2"), []byte("par2 main"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.vol000+01.par2"), []byte("par2 vol"), 0o644)
 
-	qjob := newQueueJob(t, "test-par-cleanup", 0)
-	qjob.Name = "movie"
+	qjob := newNamedJob(t, "test-par-cleanup", "movie", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: dir,
 	}
 
@@ -384,7 +382,7 @@ func TestScriptStage_EmptyScriptSkipped(t *testing.T) {
 		t.Run(script, func(t *testing.T) {
 			t.Parallel()
 			job, _ := stageJob(t)
-			job.Queue.Script = script
+			job.Meta.Script = script
 			stage := NewScriptStage("/nonexistent", "/tmp/complete", "test", "", "")
 			if err := stage.Run(t.Context(), job); err != nil {
 				t.Errorf("Run with script=%q returned %v; want nil", script, err)
@@ -399,7 +397,7 @@ func TestScriptStage_SuccessfulScript(t *testing.T) {
 	}
 	t.Parallel()
 	job, _ := stageJob(t)
-	job.Queue.Script = "ok.sh"
+	job.Meta.Script = "ok.sh"
 
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "ok.sh")
@@ -417,7 +415,7 @@ func TestScriptStage_FailingScript(t *testing.T) {
 	}
 	t.Parallel()
 	job, _ := stageJob(t)
-	job.Queue.Script = "fail.sh"
+	job.Meta.Script = "fail.sh"
 
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
@@ -446,7 +444,7 @@ func TestScriptStage_StatusFlagsFromJob(t *testing.T) {
 	writeScript(t, scriptPath, []byte(script))
 
 	job, _ := stageJob(t)
-	job.Queue.Script = "capture.sh"
+	job.Meta.Script = "capture.sh"
 	job.ParError = true // should push status to 1
 
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
@@ -473,7 +471,7 @@ func TestScriptStage_AbsolutePathOverridesScriptDir(t *testing.T) {
 	// Script field is an absolute path; must be rejected for security.
 	scriptPath := filepath.Join(t.TempDir(), "abs.sh")
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 0\n"))
-	job.Queue.Script = scriptPath
+	job.Meta.Script = scriptPath
 
 	stage := NewScriptStage("/nonexistent-dir", "/tmp/complete", "test", "", "")
 	if err := stage.Run(t.Context(), job); err == nil {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator pins #326:
@@ -28,7 +30,7 @@ func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing
 	dir := t.TempDir()
 
 	// 200 B of content in two articles, plus a 500 B recovery volume.
-	q, qjob := buildQueueJob(t, true, []fileSpec{
+	qjob := buildQueueJob(t, true, []fileSpec{
 		{subject: "release.rar", articles: []artSpec{
 			{bytes: 100, done: true},
 			{bytes: 100}, // left pending; failed below, after the discard
@@ -36,17 +38,17 @@ func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing
 		{subject: "x.vol000+01.par2", bytes: 500},
 	})
 
-	// The oracle rules the volume unnecessary.
-	if err := q.DiscardDeferredPar2(qjob.ID); err != nil {
-		t.Fatalf("DiscardDeferredPar2: %v", err)
-	}
+	// The oracle rules the volume unnecessary: FetchNever, replacing
+	// DiscardDeferredPar2 (see testharness_test.go's setFileFetchPolicy doc
+	// comment for why this is a direct poke rather than a real door call).
+	setFileFetchPolicy(t, qjob, 1, job.FetchNever)
 	m, err := qjob.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
 	// Only now does an article fail permanently. The volume is FetchNever, so
 	// it is not released and stays out of the expected set.
-	ackFailedIDs(t, q, m, qjob.ID, []string{"f0a1@t"})
+	ackFailed(t, qjob, "f0a1@t")
 
 	p := qjob.Progress()
 
@@ -62,7 +64,7 @@ func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing
 	// The figure the history record reports for this same job.
 	wantPct := float64(failed) / float64(expected) * 100
 
-	job := &Job{DownloadDir: dir, Queue: qjob}
+	job := &Job{DownloadDir: dir, Job: qjob}
 	got := strings.Join(buildDownloadFileList(job), "\n")
 
 	want := fmt.Sprintf("%.1f%%", wantPct)

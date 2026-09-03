@@ -4,8 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // attrRecorder captures the attributes a logger carries.
@@ -32,7 +30,7 @@ func (r *attrRecorder) WithAttrs(as []slog.Attr) slog.Handler {
 }
 
 // TestCleanupStageLogger_BindsJobAndStage covers all four branches of the
-// logger helper on both cleanup stages: {stage Log set, unset} x {job.Queue
+// logger helper on both cleanup stages: {stage Log set, unset} x {job.Job
 // present, nil}.
 //
 // These helpers are pre-existing untested debt, surfaced by
@@ -40,9 +38,9 @@ func (r *attrRecorder) WithAttrs(as []slog.Attr) slog.Handler {
 // files. The gate's scope is every unexported helper in a TOUCHED file, so
 // this is the real test its rules require rather than a dummy reference.
 //
-// The nil-Queue cases assert the ABSENCE of a "job" key, not merely the
+// The nil-Job cases assert the ABSENCE of a "job" key, not merely the
 // presence of "stage". Asserting only the latter would pass against a helper
-// that always bound a job ID — including an empty one read off a nil Queue —
+// that always bound a job ID — including an empty one read off a nil Job —
 // which is the branch the guard exists for.
 func TestCleanupStageLogger_BindsJobAndStage(t *testing.T) {
 	const jobID = "job-42"
@@ -63,17 +61,17 @@ func TestCleanupStageLogger_BindsJobAndStage(t *testing.T) {
 
 	for stageName, build := range stages {
 		for _, useDefault := range []bool{false, true} {
-			for _, withQueue := range []bool{true, false} {
+			for _, withJob := range []bool{true, false} {
 				name := stageName
 				if useDefault {
 					name += "/default-log"
 				} else {
 					name += "/stage-log"
 				}
-				if withQueue {
-					name += "/with-queue"
+				if withJob {
+					name += "/with-job"
 				} else {
-					name += "/nil-queue"
+					name += "/nil-job"
 				}
 
 				t.Run(name, func(t *testing.T) {
@@ -89,8 +87,8 @@ func TestCleanupStageLogger_BindsJobAndStage(t *testing.T) {
 					}
 
 					job := &Job{}
-					if withQueue {
-						job.Queue = &queue.Job{ID: jobID}
+					if withJob {
+						job.Job = newBareJob(jobID)
 					}
 					build(stageLog, job).Info("probe")
 
@@ -98,9 +96,9 @@ func TestCleanupStageLogger_BindsJobAndStage(t *testing.T) {
 						t.Errorf("stage attr = %q, want %q", got, stageName)
 					}
 					got, present := rec.attrs["job"]
-					if !withQueue {
+					if !withJob {
 						if present {
-							t.Errorf("job attr = %q, want it absent when Job.Queue is nil", got)
+							t.Errorf("job attr = %q, want it absent when Job.Job is nil", got)
 						}
 						return
 					}

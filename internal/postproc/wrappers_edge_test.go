@@ -126,10 +126,9 @@ func TestFinalizeStage_FolderRename_Success(t *testing.T) {
 	baseDir := t.TempDir()
 	finalDir := filepath.Join(baseDir, "MyRelease")
 
-	qjob := newQueueJob(t, "fr-ok", 0)
-	qjob.Name = "MyRelease"
+	qjob := newNamedJob(t, "fr-ok", "MyRelease", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -172,10 +171,9 @@ func TestFinalizeStage_FolderRename_Failed(t *testing.T) {
 	completeDir := t.TempDir()
 	finalDir := filepath.Join(completeDir, "MyRelease")
 
-	qjob := newQueueJob(t, "fr-fail", 0)
-	qjob.Name = "MyRelease"
+	qjob := newNamedJob(t, "fr-fail", "MyRelease", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 		ParError:    true,
@@ -237,10 +235,9 @@ func TestFinalizeStage_FailedFilesAccessibleForRetry(t *testing.T) {
 				os.WriteFile(filepath.Join(srcDir, "data.rar"), []byte("archive"), 0o644)
 				os.WriteFile(filepath.Join(srcDir, "data.par2"), []byte("parity"), 0o644)
 
-				qjob := newQueueJob(t, "retry-"+name, 0)
-				qjob.Name = "TestRelease"
+				qjob := newNamedJob(t, "retry-"+name, "TestRelease", 0)
 				job := &Job{
-					Queue:       qjob,
+					Job:         qjob,
 					DownloadDir: srcDir,
 					FinalDir:    filepath.Join(completeDir, "TestRelease"),
 				}
@@ -442,7 +439,7 @@ func TestCleanupStage_RemovesAdminDir(t *testing.T) {
 	os.WriteFile(filepath.Join(adminDir, "gonzbd_verified.json"), []byte(`{}`), 0o644)
 
 	job := &Job{
-		Queue:       newQueueJob(t, "test-cleanup", 0),
+		Job:         newQueueJob(t, "test-cleanup", 0),
 		DownloadDir: dir,
 	}
 	stage := NewCleanupStage()
@@ -463,7 +460,7 @@ func TestCleanupStage_PreservesOnParError(t *testing.T) {
 	os.WriteFile(filepath.Join(adminDir, "gonzbd_verified.json"), []byte(`{}`), 0o644)
 
 	job := &Job{
-		Queue:       newQueueJob(t, "test-cleanup-par", 0),
+		Job:         newQueueJob(t, "test-cleanup-par", 0),
 		DownloadDir: dir,
 		ParError:    true,
 	}
@@ -484,7 +481,7 @@ func TestCleanupStage_PreservesOnUnpackError(t *testing.T) {
 	os.MkdirAll(adminDir, 0o755)
 
 	job := &Job{
-		Queue:       newQueueJob(t, "test-cleanup-unpack", 0),
+		Job:         newQueueJob(t, "test-cleanup-unpack", 0),
 		DownloadDir: dir,
 		UnpackError: true,
 	}
@@ -503,7 +500,7 @@ func TestCleanupStage_NoAdminDir(t *testing.T) {
 	dir := t.TempDir()
 	// No __ADMIN__ dir exists — should succeed gracefully.
 	job := &Job{
-		Queue:       newQueueJob(t, "test-cleanup-none", 0),
+		Job:         newQueueJob(t, "test-cleanup-none", 0),
 		DownloadDir: dir,
 	}
 	stage := NewCleanupStage()
@@ -580,7 +577,7 @@ func TestCleanupStage_LogOnFailure(t *testing.T) {
 	}
 
 	job := &Job{
-		Queue:       newQueueJob(t, "test-cleanup-fail", 0),
+		Job:         newQueueJob(t, "test-cleanup-fail", 0),
 		DownloadDir: dir,
 	}
 

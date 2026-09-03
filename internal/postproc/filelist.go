@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/humanfmt"
-	"github.com/hobeone/gonzbd/internal/queue"
+	// Aliased: every function in this file takes a parameter named "job" (the
+	// postproc.Job wrapper), which would otherwise shadow the package name.
+	lifecyclejob "github.com/hobeone/gonzbd/internal/job"
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
@@ -19,7 +21,7 @@ import (
 //   - article completion stats from the queue
 func buildDownloadFileList(job *Job) []string {
 	var lines []string
-	p := job.Queue.Progress()
+	p := job.Job.Progress()
 
 	// The listing is a per-file report, so it needs the manifest's file
 	// table and there is no scalar substitute. Degrade rather than fail:
@@ -27,7 +29,14 @@ func buildDownloadFileList(job *Job) []string {
 	// reporting — the download itself is unaffected. Say so in the record
 	// instead of returning a silently empty listing, since an empty file
 	// list and a job that downloaded nothing look identical to a reader.
-	m, mErr := job.Queue.Manifest()
+	//
+	// job.Job.Manifest() can legitimately return job.ErrNotResident here:
+	// this runs post-boundary, where the job holds no lease, and residency
+	// is keyed on RenderView.Holds rather than on lease-holding. mErr covers
+	// that case the same way it covers a genuinely unreadable manifest —
+	// this is a reporting path, not a correctness one, so both degrade the
+	// same way.
+	m, mErr := job.Job.Manifest()
 	if mErr != nil {
 		return []string{fmt.Sprintf("File listing unavailable: %v", mErr)}
 	}
@@ -40,7 +49,7 @@ func buildDownloadFileList(job *Job) []string {
 			continue
 		}
 		recoveryVols++
-		if p.FileFetchPolicy(fi) != queue.FetchAlways {
+		if p.FileFetchPolicy(fi) != lifecyclejob.FetchAlways {
 			heldVols++
 		}
 	}
@@ -106,8 +115,8 @@ func buildDownloadFileList(job *Job) []string {
 		// explanation for whichever one actually happened.
 		// HasPar2Verdict() is true in this arm (the switch guards on it
 		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
-		// "" (internal/queue/progress.go:633), so the reason is always
-		// non-empty here — no fallback needed.
+		// "" (internal/job/progress.go's HasPar2Verdict), so the reason is
+		// always non-empty here — no fallback needed.
 		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
 			heldVols, reasonStr))
@@ -133,22 +142,21 @@ func buildDownloadFileList(job *Job) []string {
 		// NOT done here (tracked as issue #505; moving the `recoveryVols > 0
 		// && p.Par2Recovered()` case above this one and re-running `go test
 		// ./...` broke nothing in this suite, so no test currently pins the
-		// order — the fix is deferred on scope, not on test coupling). It is
-		// not reached today: undeferRecovery is the only site that sets
-		// par2Recovered to true (internal/queue/job_articles.go:205; the
-		// other assignment, job.go:1077, sets it back to false on retry, and
-		// the rest are the field declaration and plain reads/copies — see a
-		// grep for par2Recovered outside tests), and undeferRecovery has two
-		// production callers: Queue.UndeferRecoveryVolumes
-		// (internal/queue/queue.go:1878, reached from app.go's
-		// maybeReleaseRecoveryVolumes) and workset.go's AckPermanentFailure
-		// (internal/queue/workset.go:159). Both pass
-		// job.progress.DeferredRecoveryIndices() — every deferred index at
-		// once — so a real job's held volumes go from "all deferred" to
-		// "none deferred" in one step and heldVols is 0 by the time
-		// Par2Recovered() is true. (c) only becomes reachable once a caller
-		// un-defers a strict subset — e.g. a future block-exact selection
-		// seam on UndeferRecoveryVolumes' fileIdxs parameter.
+		// order — the fix is deferred on scope, not on test coupling).
+		//
+		// Whether (c) is reachable on THIS branch cannot currently be
+		// enumerated: undeferRecovery and its two production callers
+		// (Queue.UndeferRecoveryVolumes, workset.go's AckPermanentFailure)
+		// still live only in internal/queue, which the job-lifecycle swap is
+		// deleting — `grep -rn 'func.*undeferRecovery\|func.*UndeferRecoveryVolumes'
+		// internal/job/ internal/dispatch/ internal/sched/` returns nothing on
+		// this branch. The reasoning below describes internal/queue's now-dying
+		// behavior (both callers pass every deferred index at once, so a real
+		// job goes from "all deferred" to "none deferred" in one step and
+		// heldVols is 0 by the time Par2Recovered() is true), and needs
+		// re-verification once on-demand par2's un-defer path is ported onto
+		// internal/job. (c) would become reachable once a caller un-defers a
+		// strict subset — e.g. a future block-exact selection seam.
 		//
 		// (a) and (b) both leave the bytes never fetched, which is what
 		// this line reports; (c) is the latent exception.
@@ -241,11 +249,11 @@ func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 func buildFileCompletionLines(job *Job) []string {
 	// Same reasoning as buildDownloadFileList, which has already reported
 	// the cause in the record by the time this runs — no second notice.
-	m, mErr := job.Queue.Manifest()
+	m, mErr := job.Job.Manifest()
 	if mErr != nil {
 		return nil
 	}
-	p := job.Queue.Progress()
+	p := job.Job.Progress()
 	numFiles := m.NumFiles()
 	if numFiles == 0 {
 		return nil
@@ -258,7 +266,7 @@ func buildFileCompletionLines(job *Job) []string {
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
 		}
-		if p.FileFetchPolicy(fi) != queue.FetchAlways {
+		if p.FileFetchPolicy(fi) != lifecyclejob.FetchAlways {
 			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}

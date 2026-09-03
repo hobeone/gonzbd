@@ -26,8 +26,8 @@ func TestVerifyJobCRCs_EmptyManifestWithPar2SetsIsNotConsent(t *testing.T) {
 	t.Parallel()
 
 	job, _ := stageJob(t)
-	if job.Queue.NumFiles() != 0 {
-		t.Fatalf("fixture guard: expected a job with no manifest files, got %d", job.Queue.NumFiles())
+	if job.Job.NumFiles() != 0 {
+		t.Fatalf("fixture guard: expected a job with no manifest files, got %d", job.Job.NumFiles())
 	}
 	// The precondition Run establishes before it ever calls this.
 	job.QuickCheck = QuickCheckInconclusive

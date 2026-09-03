@@ -11,7 +11,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // QuickCheckOutcome is what the quickcheck stage was able to determine about
@@ -121,12 +121,57 @@ type Stage interface {
 	Run(ctx context.Context, job *Job) error
 }
 
-// Job is the post-processing unit of work.  It wraps the download-queue Job
-// with post-proc-specific state.  The queue.Job must not be mutated here;
+// JobMeta carries the caller-known job metadata that internal/job.Job does
+// not carry and that internal/dispatch.Header does not carry either.
+// internal/job.Job holds only id/name/policy plus content (job/job.go's own
+// doc comment: "id, name and policy are not guarded"); internal/dispatch's
+// Header adds category/priority/bytes/added for a queue listing
+// (internal/dispatch/registry.go). Neither has room for the NZB-derived and
+// config fields this package still needs to render a script's environment
+// and gate stages: the archive password, the origin URL, the configured
+// script name, the original NZB filename, and the PP level as the exact
+// upstream integer (SAB_PP_STATUS's PPFlags must carry the number a user
+// configured, not just the derived Policy booleans job.Job exposes).
+//
+// The caller (internal/app) populates this before calling Process, the same
+// way it already populates DownloadDir/FinalDir/Sanitize below — this is not
+// a new pattern, just three more fields of the same kind.
+type JobMeta struct {
+	// Filename is the original NZB filename, surfaced to scripts as
+	// SAB_NZBNAME / ScriptInput.NZBName.
+	Filename string
+	// Category is the configured category name, surfaced as SAB_CAT.
+	Category string
+	// Script is the name of the user post-proc script to run, resolved
+	// relative to ScriptStage.ScriptDir.
+	Script string
+	// Password is the archive password extracted from the filename or
+	// supplied by the user. Empty if the job is unencrypted.
+	Password string //nolint:gosec // G117: NZB archive password, not a credential
+	// URL is the origin URL for URL-grabbed NZBs; empty for uploaded or
+	// watched-dir NZBs.
+	URL string
+	// PP is the post-proc level 0-3 (download / +unpack / +repair / +delete),
+	// the raw upstream integer. runStage's shouldSkipForPP gate uses
+	// job.Job.Policy() instead (Verify/Repair/Unpack booleans derived from
+	// this same number by job.PolicyFromPP) — PP itself survives only for
+	// SAB_PP_STATUS, which scripts expect as the original integer.
+	PP int
+}
+
+// Job is the post-processing unit of work.  It wraps the lifecycle Job with
+// post-proc-specific state.  The wrapped *job.Job must not be mutated here;
 // stages accumulate their results into the fields below.
 type Job struct {
-	// Queue is the source job from the download queue. Read-only for stages.
-	Queue *queue.Job
+	// Job is the source job from the lifecycle machine. Read-only for
+	// stages: it is where Progress()/Manifest()/RepairState() etc. come
+	// from, but no stage may call one of its mutators.
+	Job *job.Job
+
+	// Meta is the caller-supplied metadata job.Job itself does not carry.
+	// See JobMeta's doc comment for why it exists as a separate struct
+	// rather than fields on job.Job.
+	Meta JobMeta
 
 	// DownloadDir is the absolute path where the assembler wrote the job's
 	// files — the working directory for in-place stages (par2, unpack,

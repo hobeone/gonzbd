@@ -51,7 +51,7 @@ func TestRecoverPar2NamesStage_Run(t *testing.T) {
 	// 1. Test clean run (no renames)
 	t.Run("no renames", func(t *testing.T) {
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 		if err := stage.Run(t.Context(), job); err != nil {
@@ -74,7 +74,7 @@ func TestRecoverPar2NamesStage_Run(t *testing.T) {
 		writePar2(t, jobDir, fileName, fileData)
 
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: jobDir,
 		}
 
@@ -92,7 +92,7 @@ func TestRecoverPar2NamesStage_Run(t *testing.T) {
 	// 3. Test error path
 	t.Run("error path", func(t *testing.T) {
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: "/nonexistent-path-abc-123",
 		}
 		// Should log warning but not fail Run.

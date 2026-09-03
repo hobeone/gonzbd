@@ -115,7 +115,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "unpack", "job", job.Queue.ID)
+	log = log.With("component", "unpack", "job", job.Job.ID())
 
 	if !u.enabled() {
 		logf(ctx, log, job, slog.LevelInfo, "Unpack stage disabled — skipping")
@@ -281,8 +281,8 @@ func (u *UnpackStage) prepareOptions(ctx context.Context, log *slog.Logger, job 
 	}
 	// Build the password list: per-job password comes first (highest priority),
 	// followed by any passwords from the config password_file.
-	if job.Queue != nil && job.Queue.Password != "" {
-		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
+	if job.Meta.Password != "" {
+		opts.Passwords = append([]string{job.Meta.Password}, opts.Passwords...)
 	}
 	if passwordFile != "" {
 		filePws, err := cmdutil.LoadPasswordFile(passwordFile)

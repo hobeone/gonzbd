@@ -87,7 +87,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "repair", "job", job.Queue.ID)
+	log = log.With("component", "repair", "job", job.Job.ID())
 
 	// If Direct Unpack successfully extracted the archives during download,
 	// we can skip PAR2 repair entirely — but only when QuickCheck has no

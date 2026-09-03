@@ -95,9 +95,9 @@ func (s *RarVolumeRecoveryStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	base := job.Queue.ID
-	if job.Queue.Name != "" {
-		base = job.Queue.Name
+	base := job.Job.ID()
+	if job.Job.Name() != "" {
+		base = job.Job.Name()
 	}
 	base = fsutil.SanitizeFilename(base, job.Sanitize)
 
@@ -123,5 +123,5 @@ func (s *RarVolumeRecoveryStage) logger(job *Job) *slog.Logger {
 	if log == nil {
 		log = slog.Default()
 	}
-	return log.With("component", "rar_volume_recovery", "job", job.Queue.ID)
+	return log.With("component", "rar_volume_recovery", "job", job.Job.ID())
 }

@@ -10,50 +10,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// buildQCJob builds a single-file *queue.Job whose file has a resolved
+// buildQCJob builds a single-file *job.Job whose file has a resolved
 // filename, byte count, and assembled CRC32 already set — the shape
 // recordVerdict reads via Manifest/Progress accessors.
-func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *queue.Job {
+//
+// internal/queue.Queue.SetFileFilename/SetFileCRC32FromRuns have no
+// internal/job equivalent yet (the assembler's completion-write door is
+// unported -- see testharness_test.go's pokeProgressField doc comment), so
+// both are seeded directly via seedFileFilename/seedFileCRC.
+func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job.Job {
 	t.Helper()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "subject.bin", Bytes: bytes, Articles: []nzb.Article{{ID: id + "-a@t", Bytes: int(bytes), Number: 1}}},
-	}}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: id + ".nzb", Name: id}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	qjob := job.New(id, id, job.Policy{})
+	m := buildManifest(t, []testFile{
+		{Subject: "subject.bin", Bytes: bytes, Articles: []testArticle{{ID: id + "-a@t", Bytes: int(bytes), Number: 1}}},
+	})
+	if err := qjob.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := q.SetFileFilename(qjob.ID, 0, filename); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
-	}
-	// Through the gatekeeper, presenting the record that would have earned the
-	// CRC: one run at offset 0 covering the file's whole article range. The
-	// job here has a single one-article file, so that range is [0,0].
-	m, err := qjob.Manifest()
-	if err != nil {
-		t.Fatalf("manifest for the CRC fixture: %v", err)
-	}
-	lo, hi := m.FileRange(0)
-	if err := q.SetFileCRC32FromRuns(qjob.ID, 0, []durability.Run{{
-		FileIdx:     0,
-		FirstArtIdx: int32(lo),
-		LastArtIdx:  int32(hi - 1),
-		Offset:      0,
-		Length:      bytes,
-		CRC32:       crc,
-	}}); err != nil {
-		t.Fatalf("SetFileCRC32FromRuns: %v", err)
-	}
-	return q.SnapshotJob(qjob.ID)
+	seedFileFilename(t, qjob, 0, filename)
+	seedFileCRC(t, qjob, 0, crc)
+	return qjob
 }
 
 var (
@@ -125,7 +104,7 @@ func TestQuickCheckStage_Disabled(t *testing.T) {
 	stage.SetEnabled(false)
 
 	job := &Job{
-		Queue: newQueueJob(t, "test-disabled", 0),
+		Job: newQueueJob(t, "test-disabled", 0),
 	}
 
 	err := stage.Run(t.Context(), job)
@@ -144,7 +123,7 @@ func TestQuickCheckStage_NoPar2(t *testing.T) {
 	stage.SetEnabled(true)
 
 	job := &Job{
-		Queue:       newQueueJob(t, "test-no-par2", 0),
+		Job:         newQueueJob(t, "test-no-par2", 0),
 		DownloadDir: t.TempDir(),
 	}
 
@@ -211,7 +190,7 @@ func TestQuickCheckStage_Run(t *testing.T) {
 	// two must be the same file. When they are not, the entry reads as
 	// unverified and the job goes to par2 — the conservative direction.
 	job := &Job{
-		Queue:       buildQCJob(t, "job-qc", flatName, int64(len(content)), crc32.ChecksumIEEE(content)),
+		Job:         buildQCJob(t, "job-qc", flatName, int64(len(content)), crc32.ChecksumIEEE(content)),
 		DownloadDir: tmpDir,
 	}
 
@@ -274,7 +253,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		stage.SetEnabled(true)
 
 		job := &Job{
-			Queue:       buildQCJob(t, "job-qc-err", "original.txt", int64(len(content)), crc32.ChecksumIEEE(content)+1), // Mismatch!
+			Job:         buildQCJob(t, "job-qc-err", "original.txt", int64(len(content)), crc32.ChecksumIEEE(content)+1), // Mismatch!
 			DownloadDir: tmpDir,
 		}
 
@@ -328,7 +307,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		stage.SetEnabled(true)
 
 		job := &Job{
-			Queue:       buildQCJob(t, "job-qc-nocrc", "original.txt", int64(len(content)), 0), // No CRC!
+			Job:         buildQCJob(t, "job-qc-nocrc", "original.txt", int64(len(content)), 0), // No CRC!
 			DownloadDir: tmpDir,
 		}
 
@@ -381,7 +360,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		stage.SetEnabled(true)
 
 		job := &Job{
-			Queue:       buildQCJob(t, "job-qc-unver", "unrelated.dat", 999, 0x99999999),
+			Job:         buildQCJob(t, "job-qc-unver", "unrelated.dat", 999, 0x99999999),
 			DownloadDir: tmpDir,
 		}
 

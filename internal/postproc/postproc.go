@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/types"
+	// Aliased: most functions in this file take a parameter named "job" (the
+	// postproc.Job wrapper), which would otherwise shadow the package name.
+	lifecyclejob "github.com/hobeone/gonzbd/internal/job"
 )
 
 // Options configures a PostProcessor at construction time.
@@ -156,7 +158,7 @@ func (p *PostProcessor) Stop() error {
 
 // Process enqueues job for post-processing.
 func (p *PostProcessor) Process(job *Job) {
-	p.log.Info("postproc: enqueuing job", "job", job.Queue.ID)
+	p.log.Info("postproc: enqueuing job", "job", job.Job.ID())
 	p.q.Push(job)
 }
 
@@ -269,7 +271,7 @@ func (p *PostProcessor) run() {
 		if p.workerCtx.Err() != nil {
 			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: shutdown interrupted job, preserving for recovery",
-				"job", job.Queue.ID)
+				"job", job.Job.ID())
 			return
 		}
 
@@ -281,7 +283,7 @@ func (p *PostProcessor) run() {
 		if jobCtx.Err() != nil {
 			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: job cancelled mid-processing, dropping",
-				"job", job.Queue.ID)
+				"job", job.Job.ID())
 			continue
 		}
 
@@ -318,7 +320,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
 		var jobCancel context.CancelFunc
 		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, j.Queue.ID, jobCancel)
+		p.setBusyWithJob(true, j.Job.ID(), jobCancel)
 	})
 	if !ok {
 		return nil, nil, false
@@ -337,12 +339,12 @@ func buildPreambleLog(job *Job) []StageLogEntry {
 	// in the download directory before any stages run. This gives the
 	// history UI a clear view of the starting state for debugging.
 	var dlElapsed time.Duration
-	dlStarted := job.Queue.Progress().DownloadStarted()
+	dlStarted := job.Job.Progress().DownloadStarted()
 	if dlStarted.IsZero() {
 		dlStarted = time.Now()
 	}
-	if !job.Queue.Progress().DownloadFinished().IsZero() {
-		dlElapsed = job.Queue.Progress().DownloadFinished().Sub(dlStarted)
+	if !job.Job.Progress().DownloadFinished().IsZero() {
+		dlElapsed = job.Job.Progress().DownloadFinished().Sub(dlStarted)
 	}
 	dlLines := buildDownloadFileList(job)
 	entries := []StageLogEntry{
@@ -460,16 +462,25 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	//   3 = +delete (repair + unpack + cleanup)
 	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
 	// Other stages (deobfuscate, sort, finalize, script) always run.
-	if shouldSkipForPP(stage.Name(), job.Queue.PP) {
+	//
+	// Gated on job.Job.Policy() rather than job.Meta.PP: Policy is bound to
+	// job.Job once, at construction (job.New's third argument), and read-only
+	// thereafter, so it cannot drift from what job.Job itself was built with.
+	// job.Meta.PP is a plain caller-set field carrying the same information a
+	// second time — kept only for what needs the raw upstream integer rather
+	// than the derived booleans (SAB_PP_STATUS's PPFlags, and the log line
+	// below), never for a decision. See job.PolicyFromPP for the mapping this
+	// mirrors: Verify/Repair at pp>=1, Unpack at pp>=2.
+	if shouldSkipForPP(stage.Name(), job.Job.Policy()) {
 		p.log.Info("postproc: skipping stage (PP level)",
 			"stage", stage.Name(),
-			"job", job.Queue.ID,
-			"pp", job.Queue.PP,
+			"job", job.Job.ID(),
+			"pp", job.Meta.PP,
 		)
 		return StageLogEntry{
 			Stage:   stage.Name(),
 			Started: time.Now(),
-			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Queue.PP)},
+			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Meta.PP)},
 		}, false
 	}
 
@@ -485,7 +496,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		default:
 			status = constants.StatusRunning
 		}
-		p.statusUpdater(job.Queue.ID, status)
+		p.statusUpdater(job.Job.ID(), status)
 	}
 
 	entry := StageLogEntry{
@@ -513,13 +524,13 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		// Radarr) can handle the failure.
 		p.log.Warn("postproc: stage failed, continuing pipeline",
 			"stage", stage.Name(),
-			"job", job.Queue.ID,
+			"job", job.Job.ID(),
 			"err", err,
 		)
 	} else {
 		p.log.Info("postproc: stage done",
 			"stage", stage.Name(),
-			"job", job.Queue.ID,
+			"job", job.Job.ID(),
 			"elapsed", entry.Elapsed,
 		)
 	}
@@ -531,7 +542,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	select {
 	case <-ctx.Done():
 		p.log.Info("postproc: context cancelled, aborting remaining stages",
-			"job", job.Queue.ID,
+			"job", job.Job.ID(),
 		)
 		return entry, true
 	default:
@@ -554,16 +565,16 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	job.OnOutput = func(tool, line string) {
 		if p.onOutput != nil {
-			p.onOutput(job.Queue.ID, tool, line)
+			p.onOutput(job.Job.ID(), tool, line)
 		}
 	}
-	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
+	p.log.Info("postproc: processing job", "job", job.Job.ID(), "name", job.Job.Name())
 
 	job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 
 	if job.FailMsg != "" {
 		p.log.Warn("postproc: skipping all stages — job already failed",
-			"job", job.Queue.ID,
+			"job", job.Job.ID(),
 			"reason", job.FailMsg,
 		)
 		job.StageLog = append(job.StageLog, StageLogEntry{
@@ -587,7 +598,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 			}
 			job.FailMsg = reason
 			p.log.Warn("postproc: skipping all stages — empty job",
-				"job", job.Queue.ID,
+				"job", job.Job.ID(),
 				"dir", job.DownloadDir,
 				"reason", reason,
 			)
@@ -622,7 +633,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	}
 
 	p.log.Info("postproc: job complete",
-		"job", job.Queue.ID,
+		"job", job.Job.ID(),
 		"stages", len(job.StageLog),
 		"fail_msg", job.FailMsg,
 	)
@@ -661,21 +672,23 @@ func (p *PostProcessor) addHistory(job *Job) {
 }
 
 // shouldSkipForPP returns true if the named stage should be skipped because
-// the job's PP level is too low. SABnzbd PP levels are cumulative:
+// the job's policy does not permit it. SABnzbd PP levels are cumulative and
+// job.PolicyFromPP resolves them once at ingestion:
 //
 //	0 = download only (no repair, no unpack)
-//	1 = +repair (par2 verify/repair)
-//	2 = +unpack (includes repair)
-//	3 = +delete (includes repair + unpack + archive cleanup)
+//	1 = +repair (par2 verify/repair)      -> Policy.Verify, Policy.Repair
+//	2 = +unpack (includes repair)         -> also Policy.Unpack
+//	3 = +delete (includes repair+unpack)  -> also Policy.Delete
 //
 // Stages always run: quickcheck (just logging), deobfuscate, sample, sort,
-// finalize, script. Stages gated by PP: repair (≥1), unpack (≥2).
-func shouldSkipForPP(stageName string, pp int) bool {
+// finalize, script. Stages gated by policy: repair (needs Repair), unpack
+// (needs Unpack).
+func shouldSkipForPP(stageName string, policy lifecyclejob.Policy) bool {
 	switch stageName {
 	case "quickcheck", "repair":
-		return pp < types.PPVerify
+		return !policy.Repair
 	case "unpack":
-		return pp < types.PPUnpack
+		return !policy.Unpack
 	default:
 		return false
 	}
