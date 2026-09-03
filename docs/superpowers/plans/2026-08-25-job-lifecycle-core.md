@@ -2424,9 +2424,10 @@ At the end of Task 10 the tree builds, every gate is green, and **nothing import
 > reconciliation is **refuted, not owed** (§10.1's banner); and item 5's
 > delete-list is wrong in three places — `par2NeedsRecovery` and
 > `NeedRequeue`/`RequeueBlocksNeeded` are already gone, the `quickcheck` stage
-> is **not** being deleted, and `resumeAllJobs` is the resume mechanism rather
-> than a casualty. The list is kept unedited as the record of what plan 1
-> believed it was handing off.
+> is **retained permanently** (it owns subdirectory relocation and the
+> external-par2 bypass, neither of which is a verification decision), and
+> `resumeAllJobs` is the resume mechanism rather than a casualty. The list is
+> kept unedited as the record of what plan 1 believed it was handing off.
 
 The next plan is the swap, and it is where the deletion happens. It must be written *after* this one lands, because its tasks reference the exact signatures above:
 

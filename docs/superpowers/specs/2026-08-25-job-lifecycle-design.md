@@ -99,9 +99,40 @@ set of cases.
 >    points for one invariant. Unifying them may still be worth doing; it is
 >    not owed, and plan 2 must not assume it.
 >
-> 3. **The `quickcheck` stage therefore survives**, at 267 lines
->    (`internal/postproc/stage_quickcheck.go`). See §15's Deletes column, which
->    said otherwise until this amendment.
+> 3. **The `quickcheck` stage is RETAINED — permanently, not pending.**
+>    Decided 2026-09-03 and removed from §15's Deletes column outright, rather
+>    than left as an open question. It is a post-processing stage that
+>    *consumes* an assessment, not a second implementation of one, and it owns
+>    two responsibilities nothing else does:
+>
+>    - **Subdirectory relocation.** `par2.ApplyRenames` has exactly one caller
+>      in the tree — `git grep -n 'par2\.ApplyRenames' -- '*.go'` returns 1
+>      line, `stage_quickcheck.go:94` — and the stage pairs it with
+>      `markRenamed` (`:110`) so a relocated file does not leave its old path
+>      in `OwnedFiles`, where the ownership guards in `extension_cleanup` and
+>      `sample_cleanup` would then skip it as unowned. Without this pass ahead
+>      of `repair`, a job whose par2 set names nested paths fails verification
+>      and extraction.
+>    - **The external-binary bypass.** `QuickCheckClean` is what lets `repair`
+>      skip spawning par2 entirely (`stage_repair.go:111`, logging *"Skipped:
+>      QuickCheck already verified all file CRCs"* at `:116`). Delete the stage
+>      and every clean download pays a full external par2 verify.
+>
+>    Neither is a verification decision, which is why they do not move with
+>    §1.2's consolidation. The download path deliberately does the opposite —
+>    `app.par2Verdict` performs no I/O and applies no renames
+>    (`docs/ARCHITECTURE.md`: *"The download path decides; it never
+>    renames"*) — so there is no home for these on that side even in
+>    principle.
+>
+>    **What plan 2 owes it instead of a deletion:** repoint its six `job.Queue`
+>    reads at the rehomed record — `grep -n 'job\.Queue'
+>    internal/postproc/stage_quickcheck.go` returns 6 lines across three
+>    methods (`:38` in `Run`, `:135`-`:137` in `assess`, `:161` and `:180` in
+>    `recordVerdict`). `:180` is the one to be careful with: it returns an
+>    error rather than degrading, so that an unreadable manifest cannot be
+>    reported as CRC-verified (#294). The rehomed record must keep that failure
+>    distinguishable, not merely keep returning a value.
 
 `Application.par2NeedsRecovery` decides, at download completion, whether a job's
 deferred par2 recovery volumes must be fetched. Its doc comment states the
@@ -971,8 +1002,15 @@ that plan 2's deletions have somewhere to land.
 | # | Plan | Delivers | Deletes |
 |---|---|---|---|
 | 1 | **Lifecycle core** — `internal/job` | `State`/`Activity`/`Outcome`/`Policy`/`WaitReason`, the transition machine, `Attempt`, `Job` with its own lock, `ToSABnzbd` | nothing — the package is standalone and unimported |
-| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` in `internal/par2`~~ **(landed ahead of the swap: #494, #495, #507)** — `Verdict` **was not built and is not owed**, see §1.2's second amendment; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, ~~`par2NeedsRecovery`~~ **(landed #494/#495 — now `app.par2Verdict`)**, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage **(NOT deleted — see §1.2's second amendment; still 267 lines, and its interpretation answers a different question from `app.par2Verdict`'s. Decide before planning, do not assume.)**, ~~`NeedRequeue`/`RequeueBlocksNeeded`~~ **(deleted #507)**, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
+| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` in `internal/par2`~~ **(landed ahead of the swap: #494, #495, #507)** — `Verdict` **was not built and is not owed**, see §1.2's second amendment; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, ~~`par2NeedsRecovery`~~ **(landed #494/#495 — now `app.par2Verdict`)**, `maybeReleaseRecoveryVolumes`, ~~`NeedRequeue`/`RequeueBlocksNeeded`~~ **(deleted #507)**, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
 | 3 | **Dispatch and speculation** | `job.NextArticle()`/`AddArticle()`, the Queue-owned dispatcher over `LeasedJobs`, DirectUnpack promote/discard | `dispatchPass`'s queue-walking article loop, `duOrch`'s current wiring |
+
+> **One entry was removed from plan 2's Deletes column on 2026-09-03 rather
+> than struck through: the `quickcheck` stage.** A strike-through here means
+> "already done"; this was never done and is no longer planned, so leaving it
+> in either form would misread. It is **retained permanently** — §1.2's second
+> amendment, item 3, carries the decision and the two responsibilities that
+> settle it. Plan 2's obligation to it is a repoint, not a deletion.
 
 > **Status, 2026-09-01.** Plan 1 landed (#439, #447). **Four of plan 2's
 > deliverables landed early**, against a competing B2.1–B2.4 decomposition that
@@ -1020,7 +1058,8 @@ that plan 2's deletions have somewhere to land.
 >     internal/par2/` returns nothing). §1.2's second amendment carries the
 >     detail. **Net effect on plan 2: the swap is smaller than this bullet
 >     promised by two entries rather than three, and the `quickcheck` stage is
->     an open decision it must take rather than a deletion it inherits.**
+>     retained permanently — plan 2 repoints its `job.Queue` reads instead of
+>     deleting it.**
 >
 >     `Checkpointer` stays inside
 >     plan 2: `Job` already does no I/O and the batched write at
@@ -1058,7 +1097,8 @@ that plan 2's deletions have somewhere to land.
 > | `Manifest`/`JobProgress` rehomed into `internal/job` | unchanged; carries the `nzb.MessageIDIsFetchable` edge and the `internal/dispatch` residency enumeration test |
 > | `Checkpointer` | unchanged, and larger than first sized — six single-job writers |
 > | `app`/`downloader`/`postproc` rewired | unchanged |
-> | Deletes column | minus `resumeAllJobs` (§10.1), minus `par2NeedsRecovery` and `NeedRequeue`/`RequeueBlocksNeeded` (landed), and with **the `quickcheck` stage moved from a deletion to a decision** |
+> | Deletes column | minus `resumeAllJobs` (§10.1), minus `par2NeedsRecovery` and `NeedRequeue`/`RequeueBlocksNeeded` (landed), and minus **the `quickcheck` stage, which is retained permanently** |
+| Repoint the `quickcheck` stage | **new, replacing its deletion** — six `job.Queue` reads across `Run`, `assess` and `recordVerdict`; `:180`'s error return must stay distinguishable (#294) |
 > | ~~`NeedsMore(blocks)` / "repair never fails for insufficiency"~~ | **not owed** — §5's banner; it is `docs/post-processing-contract.md`'s Block-Exact Promotion gap, not a plan 2 deliverable |
 >
 > Sequence: **~~`Assess`/`Verdict`~~ (landed: #494, #495, #507) → plan 2 →
@@ -1074,8 +1114,8 @@ It is **not** where §1.2 is retired. That sentence used to end "and where
 and #494/#495/#507 have since resolved §1.2 ahead of the swap and on different
 terms: the shared computation was extracted, the dead requeue flags deleted,
 and the residual re-classified from a duplication to two consumers asking
-different questions. Plan 2 inherits an open decision about the `quickcheck`
-stage, not a deletion.
+different questions. The `quickcheck` stage is retained permanently, and plan
+2's obligation to it is a repoint rather than a deletion.
 
 **Each plan is written only after its predecessor lands.** A plan for the swap
 written today would reference signatures that do not exist yet, and would be

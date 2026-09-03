@@ -86,6 +86,27 @@ or modify its behavior:
 | **`cleanup`** | Deletes internal sidecar directories (`__ADMIN__`) from the output path. | Skipped if `ParError`, `UnpackError`, or `FailMsg != ""` is set (preserves sidecar data for debugging/retry). | Removes `__ADMIN__` directory. |
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
+> **`quickcheck` is a permanent stage (decided 2026-09-03).**
+> `2026-08-25-job-lifecycle-design.md` §15 listed it for deletion in plan 2 of
+> the job-lifecycle rework, on the premise that it duplicated the download
+> path's par2 verification. That premise was retired when #494/#495 gave both
+> consumers one shared computation (`par2.Assess`) and #491 closed without a
+> unified `Verdict`: the two now read one assessment and answer different
+> questions — *fetch the deferred volumes?* versus *relocate, and may repair
+> skip the binary?*
+>
+> The two responsibilities in the row above are the ones that make it
+> permanent, and neither is a verification decision:
+> `par2.ApplyRenames` has exactly one caller in the tree
+> (`stage_quickcheck.go:94`), paired with `markRenamed` so relocation does not
+> strand a file's old path in `OwnedFiles`; and `QuickCheckClean` is the only
+> thing that lets `repair` skip spawning par2 (`stage_repair.go:111`). The
+> download path cannot host either — it *"decides; it never renames"*
+> (`docs/ARCHITECTURE.md`) and performs no I/O by design.
+>
+> The lifecycle rework's remaining obligation to this stage is a repoint of its
+> six `job.Queue` reads, not a deletion. See §1.2's second amendment, item 3.
+
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
