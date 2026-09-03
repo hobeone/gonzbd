@@ -65,9 +65,43 @@ set of cases.
 > and reach opposite verdicts on Layout B: `app.go` carries a guard for "no
 > delivered file matches any par2 entry", `internal/postproc` has no
 > equivalent and sums `NoCRC + Unverified + Mismatched` into damage
-> (`stage_quickcheck.go:189`). The paragraph below is therefore still owed —
-> as one total `Verdict`, not merely as one function — and so is everything in
-> the `NeedRequeue` paragraph, which is untouched.
+> (`stage_quickcheck.go:189`).
+>
+> **AMENDED AGAIN 2026-09-03 — #491 closed (#507), and it settled less than
+> the paragraph above expected.** Three corrections, because each of them
+> changes what plan 2 inherits rather than merely how this section reads:
+>
+> 1. **The `NeedRequeue` paragraph is no longer untouched — it is gone.**
+>    #507 deleted `NeedRequeue`, `RequeueBlocksNeeded` and `RequeueReason`
+>    outright: `git grep -c 'NeedRequeue\|RequeueBlocksNeeded\|RequeueReason'
+>    -- '*.go'` returns no files. They were written by the repair stage and
+>    read as a control decision nowhere, and the doc comment justifying them
+>    named a history/UI consumer that does not exist. What replaces the
+>    concept is stated where it is true: insufficient blocks set `ParError`,
+>    which suppresses unpack, and the count goes in the repair stage's log
+>    line (`docs/post-processing-contract.md` § Failure & Degradation Rules).
+>
+> 2. **One total `Verdict` in `internal/par2` was NOT built, and is now a
+>    question rather than a debt.** `git grep -n 'type Verdict' --
+>    internal/par2/` returns nothing. The interpretation landed as
+>    `app.par2Outcome` — unexported, three-valued, in `internal/app`
+>    (`app.go:1593`) — while `QuickCheckStage.recordVerdict`
+>    (`stage_quickcheck.go:154`) still reads the same `par2.Assessment` into
+>    `QuickCheckOutcome` (`stages.go:28`). Two interpreters remain.
+>
+>    That is deliberate, and `2026-09-01-par2-verdict-design.md` pre-adjudicated
+>    it under *What this deletes*: **"#491 is worth re-asking, not assuming.
+>    With the destructive branch gone, the two call sites answer genuinely
+>    different questions — one decides whether to fetch, the other whether to
+>    repair — and neither destroys state the other needs."** The Rule 2
+>    framing in the body below no longer holds: after `par2.Assess` they share
+>    the computation and differ on the *question*, which is not two enforcement
+>    points for one invariant. Unifying them may still be worth doing; it is
+>    not owed, and plan 2 must not assume it.
+>
+> 3. **The `quickcheck` stage therefore survives**, at 267 lines
+>    (`internal/postproc/stage_quickcheck.go`). See §15's Deletes column, which
+>    said otherwise until this amendment.
 
 `Application.par2NeedsRecovery` decides, at download completion, whether a job's
 deferred par2 recovery volumes must be fetched. Its doc comment states the
@@ -363,6 +397,41 @@ another `Attempt` on this one.
 ---
 
 ## 5. `Assessing` is the only decider
+
+> **AMENDED 2026-09-03 — `NeedsMore(blocks)` is declined, not owed.** The row
+> below and the "Repair never fails for insufficiency" property under it both
+> assume the deficit route: compute the exact block shortfall, re-enter
+> `Fetching`, repair once with complete information. That route was
+> **considered and rejected** in `2026-09-01-par2-verdict-design.md` § *Costs
+> accepted*, and the decision is unchanged by #507 landing:
+>
+> > *"SABnzbd takes the deficit route by default (`enable_all_par = False`),
+> > falling through to `par2cmdline_verify` to learn the shortfall — but that
+> > depends on post-processing handing work back to the downloader, which is
+> > `NeedRequeue`, which has no consumer here. Fetch-all is the only
+> > single-pass option."*
+>
+> #507 has since deleted `NeedRequeue` entirely (§1.2's second amendment), so
+> the mechanism the deficit route would have ridden on no longer exists at
+> all. **Plan 2 does not owe `NeedsMore(blocks)`, and it does not owe
+> "repair never fails for insufficiency".** What happens instead is already
+> written down as a gap rather than as a property: `docs/post-processing-contract.md`
+> § *Open Gaps* — **Block-Exact Recovery-Volume Promotion** — which names the
+> live seam (`Queue.UndeferRecoveryVolumes`'s `fileIdxs` argument, documented
+> to accept a block-covering subset) and says plainly that nothing computes
+> one today.
+>
+> That gap is where this row goes when someone picks it up. It is a change to
+> `internal/app` and `internal/postproc`, not to the state machine, and #505
+> is the tripwire on it. The four-verdict table below stays as the *machine's*
+> vocabulary, and the edge it names is genuinely built — `Assessing →
+> Fetching` is legal in `internal/job`'s `legalEdges` (`attempt.go:242`) and
+> plan 1 landed it. What is absent is any producer: nothing in plan 2 reaches
+> a `NeedsMore` verdict, so a reader must not price one in.
+>
+> This is the same shape as §10.1's banner: a section whose premise the
+> implementation ruled against, corrected here rather than left for whoever
+> implements it literally to discover.
 
 Every other state does work and returns. `Assessing` is the sole branching node
 in the machine, and its verdict is total:
@@ -902,7 +971,7 @@ that plan 2's deletions have somewhere to land.
 | # | Plan | Delivers | Deletes |
 |---|---|---|---|
 | 1 | **Lifecycle core** — `internal/job` | `State`/`Activity`/`Outcome`/`Policy`/`WaitReason`, the transition machine, `Attempt`, `Job` with its own lock, `ToSABnzbd` | nothing — the package is standalone and unimported |
-| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` + `Verdict` in `internal/par2`~~ **(moved ahead of the swap — see the status block)**; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, ~~`par2NeedsRecovery`~~, `maybeReleaseRecoveryVolumes`, ~~the `quickcheck` stage~~, ~~`NeedRequeue`/`RequeueBlocksNeeded`~~ **(these three go with `Assess`+`Verdict`, ahead of the swap)**, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
+| 2 | **The swap** | `Manifest`/`JobProgress` move into `internal/job`; `Lease`; ~~`Assess` in `internal/par2`~~ **(landed ahead of the swap: #494, #495, #507)** — `Verdict` **was not built and is not owed**, see §1.2's second amendment; the new `Queue` with two pools and lease issuance; `Checkpointer`; ~~barrier self-reconciliation~~ **(§10.1 superseded — not owed)**; `app`/`downloader`/`postproc` rewired | `queue/status.go`, `JobPhase`, `ActiveSet`, `PromoteNext`, `evictJobLocked`, `SetStatus`/`SetStatusIf`, `SetPostProcStarted`, `Queue.Retry`, ~~`par2NeedsRecovery`~~ **(landed #494/#495 — now `app.par2Verdict`)**, `maybeReleaseRecoveryVolumes`, the `quickcheck` stage **(NOT deleted — see §1.2's second amendment; still 267 lines, and its interpretation answers a different question from `app.par2Verdict`'s. Decide before planning, do not assume.)**, ~~`NeedRequeue`/`RequeueBlocksNeeded`~~ **(deleted #507)**, ~~`resumeAllJobs`~~ **(§10.1 — it is the mechanism, not a casualty)**, `shouldSkipForPP`, `Job.PostProc` |
 | 3 | **Dispatch and speculation** | `job.NextArticle()`/`AddArticle()`, the Queue-owned dispatcher over `LeasedJobs`, DirectUnpack promote/discard | `dispatchPass`'s queue-walking article loop, `duOrch`'s current wiring |
 
 > **Status, 2026-09-01.** Plan 1 landed (#439, #447). **Four of plan 2's
@@ -938,7 +1007,22 @@ that plan 2's deletions have somewhere to land.
 >     (`internal/app/app.go:1517-1577`) and the `quickcheck` stage answer one
 >     question twice, and `NeedRequeue` is written by the repair stage and read
 >     as a control decision nowhere. Landing it first *removes* three entries
->     from the Deletes column and shrinks the swap. `Checkpointer` stays inside
+>     from the Deletes column and shrinks the swap.
+>
+>     **UPDATE 2026-09-03: it landed (#494, #495, #507, closing #491) and
+>     removed TWO of the three, not three.** `par2NeedsRecovery` and
+>     `NeedRequeue`/`RequeueBlocksNeeded` are gone. The `quickcheck` stage is
+>     not, and the "answer one question twice" premise above is what was
+>     refuted: once both consumers read one `par2.Assess` result, they are
+>     asking different questions — fetch the volumes, versus run repair — and
+>     `2026-09-01-par2-verdict-design.md` re-asked #491 on exactly that ground.
+>     No `par2.Verdict` type was built (`git grep -n 'type Verdict' --
+>     internal/par2/` returns nothing). §1.2's second amendment carries the
+>     detail. **Net effect on plan 2: the swap is smaller than this bullet
+>     promised by two entries rather than three, and the `quickcheck` stage is
+>     an open decision it must take rather than a deletion it inherits.**
+>
+>     `Checkpointer` stays inside
 >     plan 2: `Job` already does no I/O and the batched write at
 >     `internal/queue/persistence.go:56` is already snapshot-shaped. But the
 >     single-job writers are **six**, not one — `git grep -n 'store\.Update(' --
@@ -966,13 +1050,32 @@ that plan 2's deletions have somewhere to land.
 > `Checkpointer`; `app`/`downloader`/`postproc` rewired; and the Deletes column
 > minus `resumeAllJobs`, which is still otherwise intact.
 >
-> Sequence: **`Assess`/`Verdict` → plan 2 → plan 3.**
+> **UPDATED 2026-09-03, after the assessor landed.** That last clause is no
+> longer true and this is the corrected list. Plan 2 owes:
+>
+> | | |
+> |---|---|
+> | `Manifest`/`JobProgress` rehomed into `internal/job` | unchanged; carries the `nzb.MessageIDIsFetchable` edge and the `internal/dispatch` residency enumeration test |
+> | `Checkpointer` | unchanged, and larger than first sized — six single-job writers |
+> | `app`/`downloader`/`postproc` rewired | unchanged |
+> | Deletes column | minus `resumeAllJobs` (§10.1), minus `par2NeedsRecovery` and `NeedRequeue`/`RequeueBlocksNeeded` (landed), and with **the `quickcheck` stage moved from a deletion to a decision** |
+> | ~~`NeedsMore(blocks)` / "repair never fails for insufficiency"~~ | **not owed** — §5's banner; it is `docs/post-processing-contract.md`'s Block-Exact Promotion gap, not a plan 2 deliverable |
+>
+> Sequence: **~~`Assess`/`Verdict`~~ (landed: #494, #495, #507) → plan 2 →
+> plan 3.** The precondition is met; plan 2 is writable.
 
 Plan 2 is large and deliberately so. It is the commit where the daemon stops
 running the old model, and splitting it would mean shipping exactly the
 adapters this decomposition exists to avoid. It is also where §1.3 is retired
-— the `Lease` makes residency an object the compiler can see — and where §1.2's
-duplicated verification decision is deleted rather than deprecated.
+— the `Lease` makes residency an object the compiler can see.
+
+It is **not** where §1.2 is retired. That sentence used to end "and where
+§1.2's duplicated verification decision is deleted rather than deprecated",
+and #494/#495/#507 have since resolved §1.2 ahead of the swap and on different
+terms: the shared computation was extracted, the dead requeue flags deleted,
+and the residual re-classified from a duplication to two consumers asking
+different questions. Plan 2 inherits an open decision about the `quickcheck`
+stage, not a deletion.
 
 **Each plan is written only after its predecessor lands.** A plan for the swap
 written today would reference signatures that do not exist yet, and would be

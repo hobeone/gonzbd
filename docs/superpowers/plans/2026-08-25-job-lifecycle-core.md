@@ -27,6 +27,15 @@
 
 **Out, and deferred to the next plan** (each named so nobody wonders whether it was forgotten):
 
+> **What these were deferred TO has since changed.** The four bullets below are
+> still an accurate statement of plan 1's exclusions, which is all they claim.
+> They are not a statement of what the next plan does: `Lease`, `Queue`, the
+> pools and lease issuance have landed; the `Assessor` landed without a
+> `Verdict` type; and two of the deletions in the last bullet are done while a
+> third is no longer planned. See the SUPERSEDED banner in "What this plan does
+> not deliver, and what comes next" at the end of this document, and
+> `2026-08-25-job-lifecycle-design.md` §15's status block for the live list.
+
 - `Lease`, `Manifest`, `JobProgress` — `Lease` grants a `Manifest`, which lives in `internal/queue` today and must move in the same change as the queue rewrite.
 - The `Assessor` and its `Verdict` — goes in `internal/par2` (D5), and needs the `Policy` type this plan produces.
 - `Queue`, the two resource pools, lease issuance, the `Checkpointer`.
@@ -2403,6 +2412,21 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ## What this plan does not deliver, and what comes next
 
 At the end of Task 10 the tree builds, every gate is green, and **nothing imports `internal/job`**. That is the intended end state: the vocabulary and machine exist and are exhaustively tested, and the old model is still running the daemon untouched.
+
+> **SUPERSEDED 2026-09-03 — do not plan from the five items below.** This
+> section is a forward-looking sketch written before plan 1 landed, and four of
+> its five items have since been re-decided. The authority is
+> `docs/superpowers/specs/2026-08-25-job-lifecycle-design.md` §15's status
+> block, which is maintained; this list is not. Specifically: item 2's
+> `Verdict` was **not** built and #491 closed without it (§1.2's second
+> amendment); item 3 landed early and as **two** packages, `internal/sched` and
+> `internal/dispatch` (#448, #452, #453, #455); item 4's barrier
+> reconciliation is **refuted, not owed** (§10.1's banner); and item 5's
+> delete-list is wrong in three places — `par2NeedsRecovery` and
+> `NeedRequeue`/`RequeueBlocksNeeded` are already gone, the `quickcheck` stage
+> is **not** being deleted, and `resumeAllJobs` is the resume mechanism rather
+> than a casualty. The list is kept unedited as the record of what plan 1
+> believed it was handing off.
 
 The next plan is the swap, and it is where the deletion happens. It must be written *after* this one lands, because its tasks reference the exact signatures above:
 
