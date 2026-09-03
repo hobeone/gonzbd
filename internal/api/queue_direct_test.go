@@ -14,7 +14,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
 
@@ -145,7 +144,7 @@ func TestBuildQueueFiles(t *testing.T) {
 func TestQueuePauseAll_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
@@ -234,7 +233,7 @@ func TestQueueDelete_Direct(t *testing.T) {
 	t.Run("removes the matching job", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID, nil)
 		rr := httptest.NewRecorder()
@@ -274,8 +273,8 @@ func TestQueueDelete_Direct(t *testing.T) {
 func TestQueuePurge_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
@@ -297,7 +296,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 	t.Run("pauses matching jobs and logs the found one", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		// A nonexistent ID is included alongside a real one to exercise the
 		// silently-ignored not-found branch without failing the request.
@@ -333,7 +332,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 func TestQueuePauseJobs_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	// A nonexistent ID is included alongside a real one, mirroring
 	// queueSetPaused's lenient bulk semantics (not-found IDs are silently
@@ -357,7 +356,7 @@ func TestQueuePauseJobs_Direct(t *testing.T) {
 func TestQueueResumeJobs_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -386,7 +385,7 @@ func TestQueuePriority_Direct(t *testing.T) {
 	t.Run("sets the job priority", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet,
 			"/?value="+job.ID+"&value2="+"1", nil)
@@ -420,7 +419,7 @@ func TestQueuePriority_Direct(t *testing.T) {
 	t.Run("missing value2 is a 400", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID, nil)
 		rr := httptest.NewRecorder()
 		s.queuePriority(rr, req)
@@ -439,7 +438,7 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 	t.Run("sets the PP level", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=3", nil)
 		rr := httptest.NewRecorder()
@@ -460,7 +459,7 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 	t.Run("out-of-range pp is a 400", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=5", nil)
 		rr := httptest.NewRecorder()
 		s.queueChangeOpts(rr, req)
@@ -487,7 +486,7 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s, q := testQueueServer(t)
-			job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+			job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 			req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2="+tc.pp, nil)
 			rr := httptest.NewRecorder()
 			s.queueChangeOpts(rr, req)
@@ -532,7 +531,7 @@ func TestQueueChangeCat_Direct(t *testing.T) {
 			{Name: "Default", PP: 3, Script: "", Priority: int(constants.NormalPriority)},
 			{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
 		})
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=movies", nil)
 		rr := httptest.NewRecorder()
@@ -571,7 +570,7 @@ func TestQueueChangeName_Direct(t *testing.T) {
 	t.Run("renames the job", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "original.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "original.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=NewName", nil)
 		rr := httptest.NewRecorder()
@@ -592,7 +591,7 @@ func TestQueueChangeName_Direct(t *testing.T) {
 	t.Run("missing value2 is a 400", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID, nil)
 		rr := httptest.NewRecorder()
 		s.queueChangeName(rr, req)
@@ -611,7 +610,7 @@ func TestQueueChangeScript_Direct(t *testing.T) {
 	t.Run("sets and sanitizes the script", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet,
 			"/?value="+job.ID+"&value2="+url.QueryEscape("../evil.sh"), nil)
@@ -651,7 +650,7 @@ func TestQueueJobDetail_Direct(t *testing.T) {
 	t.Run("known job returns one populated slot", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()

@@ -106,7 +106,7 @@ func buildDownloadFileList(j *Job) []string {
 		// explanation for whichever one actually happened.
 		// HasPar2Verdict() is true in this arm (the switch guards on it
 		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
-		// "" (internal/queue/progress.go:633), so the reason is always
+		// "" (internal/job/progress.go:708), so the reason is always
 		// non-empty here — no fallback needed.
 		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
@@ -135,14 +135,14 @@ func buildDownloadFileList(j *Job) []string {
 		// ./...` broke nothing in this suite, so no test currently pins the
 		// order — the fix is deferred on scope, not on test coupling). It is
 		// not reached today: undeferRecovery is the only site that sets
-		// par2Recovered to true (internal/queue/job_articles.go:205; the
-		// other assignment, job.go:1077, sets it back to false on retry, and
+		// par2Recovered to true (internal/job/content.go:288; the
+		// other assignment, content.go:605, sets it back to false on retry, and
 		// the rest are the field declaration and plain reads/copies — see a
 		// grep for par2Recovered outside tests), and undeferRecovery has two
-		// production callers: Queue.UndeferRecoveryVolumes
-		// (internal/queue/queue.go:1878, reached from app.go's
-		// maybeReleaseRecoveryVolumes) and workset.go's AckPermanentFailure
-		// (internal/queue/workset.go:159). Both pass
+		// production callers: Job.UndeferRecoveryVolumes
+		// (internal/job/content.go:296, reached from app.go's
+		// maybeReleaseRecoveryVolumes) and content.go's AckPermanentFailure
+		// (internal/job/content.go:142). Both pass
 		// job.progress.DeferredRecoveryIndices() — every deferred index at
 		// once — so a real job's held volumes go from "all deferred" to
 		// "none deferred" in one step and heldVols is 0 by the time

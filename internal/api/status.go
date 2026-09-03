@@ -17,9 +17,6 @@ func (s *Server) modeFullStatus(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher != nil {
 		paused = s.dispatcher.Paused()
 		noofslots = s.dispatcher.Len()
-	} else if s.queue != nil {
-		paused = s.queue.IsPaused()
-		noofslots = s.queue.Len()
 	}
 
 	// Resolve the absolute complete_dir path. Sonarr reads

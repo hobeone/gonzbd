@@ -159,12 +159,9 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // above is now enforced separately by
 // internal/sched.TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse.
 //
-// Job does no I/O. It exposes State() and the attempt accessors. The later
-// plan's design intent is a Checkpointer that reads those and writes the
-// database; no such type exists in this repository today
-// (`git grep -n 'type[ ]Checkpointer'`, run from the repository root,
-// returns nothing — the bracketed space is so this citation, quoted
-// verbatim, does not match its own quoted text).
+// Job does no I/O. It exposes State() and the attempt accessors. The
+// checkpoint package (internal/checkpoint.Checkpointer) reads those and writes
+// the database.
 type Job struct {
 	mu sync.RWMutex
 

@@ -659,11 +659,9 @@ func (p *JobProgress) clearDownloadStamps() {
 // code until the mistake.
 //
 // Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
-// returns 3 lines, one per file rather than one per site — this file, which
-// holds the declaration and the UnmarshalJSON call; sqlite_store.go, which
-// holds the Get decode for a resident job; and persistence.go, where Load
-// hydrates a non-resident one. All three read a stamp the process did not
-// mint, which is what this method is the door for.
+// returns 1 file — this file, which holds the declaration and the
+// UnmarshalJSON decode. It reads a stamp the process did not mint, which is
+// what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.clearDownloadStamps()
 	if isJobStamp(started) {
@@ -693,13 +691,13 @@ func (p *JobProgress) Par2ReleaseReason() string {
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been
 // reached for this job, using the reason string as the marker.
 //
-// One writer sets it without a verdict: workset.go's permanent-article-failure
+// One writer sets it without a verdict: content.go's permanent-article-failure
 // path. That is safe rather than an exception, and the branch is why — the
 // assignment sits inside `if job.undeferRecovery(...)`, and undeferRecovery
-// sets par2Recovered whenever it reports a change (job_articles.go:205). So
+// sets par2Recovered whenever it reports a change (content.go:288). So
 // every caller that must exclude that case already tests Par2Recovered().
 //
-// ResetForRetry is the only clearer (job.go:1078), which is what makes a
+// ResetForRetry is the only clearer (content.go:605), which is what makes a
 // retry re-derive the verdict rather than inherit it.
 func (p *JobProgress) HasPar2Verdict() bool {
 	if p == nil {

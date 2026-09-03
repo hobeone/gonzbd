@@ -14,6 +14,7 @@
 package uitest
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/job"
 
 	"github.com/mxschmitt/playwright-go"
 

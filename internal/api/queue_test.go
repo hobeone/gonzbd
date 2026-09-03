@@ -25,10 +25,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/dispatch"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
@@ -50,130 +48,166 @@ func makeTestNZB(t *testing.T) []byte {
 </nzb>`)
 }
 
-func convertQueueManifestToJobManifest(qm *queue.Manifest) *job.Manifest {
-	if qm == nil {
-		return nil
-	}
-	var jfiles []job.JobFile
-	for fi := range qm.NumFiles() {
-		lo, hi := qm.FileRange(fi)
-		var arts []job.JobArticle
-		for ai := lo; ai < hi; ai++ {
-			arts = append(arts, job.JobArticle{
-				ID:     qm.ArticleID(ai),
-				Bytes:  qm.ArticleBytes(ai),
-				Number: ai + 1,
-			})
-		}
-		jfiles = append(jfiles, job.JobFile{
-			Subject:        qm.FileSubject(fi),
-			Bytes:          qm.FileBytes(fi),
-			Articles:       arts,
-			IsPar2Recovery: qm.FileIsPar2Recovery(fi),
-		})
-	}
-	return job.NewManifest(jfiles)
+type testQueueWrapper struct {
+	disp *dispatch.Dispatcher
 }
 
-func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices) (*Server, *queue.Queue) {
+type testJob struct {
+	ID  string
+	job *job.Job
+}
+
+type testJobSnapshot struct {
+	ID       string
+	Name     string
+	Category string
+	Priority constants.Priority
+	PP       int
+	Script   string
+	Status   constants.Status
+}
+
+func (w *testQueueWrapper) IsPaused() bool {
+	return w.disp.Paused()
+}
+
+func (w *testQueueWrapper) PauseAll() {
+	w.disp.Pause()
+	for _, row := range w.disp.List() {
+		_ = w.disp.Yielded(row.ID)
+	}
+}
+
+func (w *testQueueWrapper) ResumeAll() {
+	w.disp.Resume()
+	w.disp.Tick(context.Background())
+}
+
+func (w *testQueueWrapper) Len() int {
+	return w.disp.Len()
+}
+
+func (w *testQueueWrapper) Pause(id string) error {
+	if err := w.disp.PauseJob(id); err != nil {
+		return err
+	}
+	_ = w.disp.Yielded(id)
+	return nil
+}
+
+func (w *testQueueWrapper) Resume(id string) error {
+	if err := w.disp.ResumeJob(id); err != nil {
+		return err
+	}
+	w.disp.Tick(context.Background())
+	return nil
+}
+
+func (w *testQueueWrapper) SetName(id, name string) error {
+	return w.disp.SetName(id, name)
+}
+
+func (w *testQueueWrapper) SetPP(id string, pp int) error {
+	return w.disp.SetPP(id, pp)
+}
+
+func (w *testQueueWrapper) SetStatus(id string, status constants.Status) error {
+	j, ok := w.disp.Job(id)
+	if !ok {
+		return dispatch.ErrNotFound
+	}
+	switch status {
+	case constants.StatusDownloading:
+		_ = j.BeginAttempt(time.Now().UTC())
+		w.disp.Tick(context.Background())
+	case constants.StatusVerifying:
+		_ = j.Transition(job.Assessing)
+		w.disp.Tick(context.Background())
+	case constants.StatusRepairing:
+		_ = j.Transition(job.Repairing)
+		w.disp.Tick(context.Background())
+	case constants.StatusExtracting:
+		if j.State().State != job.Extracting {
+			if j.State().State == job.Fetching {
+				_ = j.Transition(job.Assessing)
+			}
+			_ = j.SetNext(job.Extracting)
+			_, _ = j.Cross(job.Extracting)
+		}
+		w.disp.Tick(context.Background())
+	case constants.StatusPaused:
+		_ = w.disp.PauseJob(id)
+		_ = w.disp.Yielded(id)
+	case constants.StatusQueued:
+		_ = w.disp.ResumeJob(id)
+		w.disp.Tick(context.Background())
+	}
+	return nil
+}
+
+func (w *testQueueWrapper) SetStatusIf(id string, newStatus, expected constants.Status) error {
+	curr := constants.StatusQueued
+	if row, ok := w.disp.Row(id); ok {
+		curr = row.Status()
+	}
+	if curr != expected {
+		return fmt.Errorf("status mismatch: %v != %v", curr, expected)
+	}
+	return w.SetStatus(id, newStatus)
+}
+
+func (w *testQueueWrapper) SetPostProcStarted(id string) (time.Time, error) {
+	j, ok := w.disp.Job(id)
+	if !ok {
+		return time.Time{}, dispatch.ErrNotFound
+	}
+	_ = j.Transition(job.Assessing)
+	w.disp.Tick(context.Background())
+	return time.Now().UTC(), nil
+}
+
+func (w *testQueueWrapper) SnapshotJob(id string) *testJobSnapshot {
+	row, ok := w.disp.Row(id)
+	if !ok {
+		return nil
+	}
+	return &testJobSnapshot{
+		ID:       id,
+		Name:     row.Header.Name,
+		Category: row.Header.Category,
+		Priority: constants.Priority(row.Header.Priority),
+		PP:       row.Header.PP,
+		Script:   row.Header.Script,
+		Status:   row.Status(),
+	}
+}
+
+func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(disp *dispatch.Dispatcher) AppServices) (*Server, *testQueueWrapper) {
 	t.Helper()
 	disp := newTestAPIDispatcher(t)
-	q := queue.New(queue.WithHooks(queue.Hooks{
-		OnAdd: func(qj *queue.Job, m *queue.Manifest) {
-			j := job.New(qj.ID, qj.Name, job.Policy{})
-			jm := convertQueueManifestToJobManifest(m)
-			if jm != nil {
-				_ = j.AttachContent(jm)
-			}
-			_ = disp.Add(j, dispatch.Header{
-				Name:     qj.Name,
-				Filename: qj.Filename,
-				Category: qj.Category,
-				Priority: int(qj.Priority),
-				Bytes:    qj.TotalBytes(),
-				Warning:  qj.Warning,
-				Script:   qj.Script,
-				Password: qj.Password,
-				PP:       qj.PP,
-			})
-			_ = j.BeginAttempt(time.Now().UTC())
-			disp.Tick(context.Background())
-			if qj.Status == constants.StatusPaused {
-				_ = disp.PauseJob(qj.ID)
-				_ = disp.Yielded(qj.ID)
-			}
-		},
-		OnRemove: func(id string) {
-			_ = disp.Remove(context.Background(), id)
-		},
-		OnPause: func(id string) {
-			_ = disp.PauseJob(id)
-			_ = disp.Yielded(id)
-		},
-		OnResume: func(id string) {
-			_ = disp.ResumeJob(id)
-			disp.Tick(context.Background())
-		},
-		OnPauseAll: func() {
-			disp.Pause()
-			for _, row := range disp.List() {
-				_ = disp.Yielded(row.ID)
-			}
-		},
-		OnResumeAll: func() {
-			disp.Resume()
-			disp.Tick(context.Background())
-		},
-		OnStatus: func(id string, status constants.Status) {
-			j, ok := disp.Job(id)
-			if !ok {
-				return
-			}
-			switch status {
-			case constants.StatusDownloading:
-				disp.Tick(context.Background())
-			case constants.StatusVerifying:
-				_ = j.Transition(job.Assessing)
-				disp.Tick(context.Background())
-			case constants.StatusRepairing:
-				_ = j.Transition(job.Repairing)
-				disp.Tick(context.Background())
-			case constants.StatusExtracting:
-				if j.State().State != job.Extracting {
-					if j.State().State == job.Fetching {
-						_ = j.Transition(job.Assessing)
-					}
-					_ = j.SetNext(job.Extracting)
-					_, _ = j.Cross(job.Extracting)
-				}
-				disp.Tick(context.Background())
-			}
-		},
-	}))
 	var application AppServices
 	if makeApp != nil {
-		application = makeApp(disp, q)
+		application = makeApp(disp)
 	} else {
-		application = apitest.NopApp{Dispatcher: disp, Queue: q}
+		application = apitest.NopApp{Dispatcher: disp}
 	}
 	s := New(Options{
 		Config:     cfg,
 		Version:    "1.0.0-test",
 		Dispatcher: disp,
-		Queue:      q,
 		App:        application,
 	})
-	return s, q
+	return s, &testQueueWrapper{disp: disp}
 }
 
-func newTestQueueBridge(t *testing.T, cfg *config.Config, speed float64) (*Server, *queue.Queue) {
-	return newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
-		return apitest.NopApp{Dispatcher: disp, Queue: q, SpeedVal: speed}
+func newTestQueueBridge(t *testing.T, cfg *config.Config, speed float64) (*Server, *testQueueWrapper) {
+	return newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher) AppServices {
+		return apitest.NopApp{Dispatcher: disp, SpeedVal: speed}
 	})
 }
 
 // testQueueServer builds a Server wired with a fresh queue (and no history).
-func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
+func testQueueServer(t *testing.T) (*Server, *testQueueWrapper) {
 	t.Helper()
 	return newTestQueueBridge(t, &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}, 0)
 }
@@ -181,13 +215,24 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 // testQueueServerWithRoot builds a Server wired with a fresh queue and root
 // configured as DownloadDir, so that browse/addlocalfile's SEC-6 allowlist
 // check permits paths under root.
-func testQueueServerWithRoot(t *testing.T, root string) (*Server, *queue.Queue) {
+func testQueueServerWithRoot(t *testing.T, root string) (*Server, *testQueueWrapper) {
 	t.Helper()
 	return newTestQueueBridge(t, &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: root}}, 0)
 }
 
+type testAddOptions struct {
+	JobID    string
+	Filename string
+	Name     string
+	Category string
+	Priority constants.Priority
+	Password string
+	Script   string
+	PP       int
+}
+
 // addTestJob adds a job parsed from a minimal NZB to the queue and returns it.
-func addTestJob(t *testing.T, q *queue.Queue, opts queue.AddOptions) *queue.Job {
+func addTestJob(t *testing.T, q *testQueueWrapper, opts testAddOptions) *testJob {
 	t.Helper()
 	data := makeTestNZB(t)
 	parsed, err := nzb.Parse(bytes.NewReader(data))
@@ -197,14 +242,22 @@ func addTestJob(t *testing.T, q *queue.Queue, opts queue.AddOptions) *queue.Job 
 	if opts.Filename == "" {
 		opts.Filename = "test.nzb"
 	}
-	job, err := queue.NewJob(parsed, opts, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(nil, parsed, opts.Filename, types.FetchOptions{
+		JobID:    opts.JobID,
+		NzbName:  opts.Name,
+		Category: opts.Category,
+		Priority: opts.Priority,
+		Password: opts.Password,
+		Script:   opts.Script,
+		PP:       opts.PP,
+	}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
+	if err := q.disp.Add(j, hdr); err != nil {
+		t.Fatalf("disp.Add: %v", err)
 	}
-	return job
+	return &testJob{ID: j.ID(), job: j}
 }
 
 // --- Default queue listing ---
@@ -242,8 +295,8 @@ func TestQueueDefault_EmptyQueue(t *testing.T) {
 func TestQueueDefault_WithJobs(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "movie.nzb", Category: "movies"})
-	addTestJob(t, q, queue.AddOptions{Filename: "show.nzb", Category: "tv"})
+	addTestJob(t, q, testAddOptions{Filename: "movie.nzb", Category: "movies"})
+	addTestJob(t, q, testAddOptions{Filename: "show.nzb", Category: "tv"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -289,9 +342,9 @@ func TestQueueDefault_WithJobs(t *testing.T) {
 func TestQueueDefault_Filtering(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "movie.nzb", Category: "movies"})
-	addTestJob(t, q, queue.AddOptions{Filename: "show.nzb", Category: "tv"})
-	addTestJob(t, q, queue.AddOptions{Filename: "doc.nzb", Category: "tv"})
+	addTestJob(t, q, testAddOptions{Filename: "movie.nzb", Category: "movies"})
+	addTestJob(t, q, testAddOptions{Filename: "show.nzb", Category: "tv"})
+	addTestJob(t, q, testAddOptions{Filename: "doc.nzb", Category: "tv"})
 
 	// Filter by category=tv → expect 2 slots.
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&cat=tv&apikey="+testAPIKey)
@@ -325,8 +378,8 @@ func TestQueueDefault_Filtering(t *testing.T) {
 func TestQueueDefault_StatusFilter(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "movie.nzb", Category: "movies"})
-	paused := addTestJob(t, q, queue.AddOptions{Filename: "show.nzb", Category: "tv"})
+	addTestJob(t, q, testAddOptions{Filename: "movie.nzb", Category: "movies"})
+	paused := addTestJob(t, q, testAddOptions{Filename: "show.nzb", Category: "tv"})
 	if err := q.Pause(paused.ID); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
@@ -357,7 +410,7 @@ func TestQueueDefault_Pagination(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
 	for i := range 5 {
-		addTestJob(t, q, queue.AddOptions{Filename: fmt.Sprintf("job%d.nzb", i)})
+		addTestJob(t, q, testAddOptions{Filename: fmt.Sprintf("job%d.nzb", i)})
 	}
 
 	// start=2 limit=2 → 2 slots.
@@ -386,10 +439,10 @@ func TestQueueDefault_Pagination(t *testing.T) {
 func TestQueueList_GlobalPauseOverridesDownloadingToPaused(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	tj := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	// Simulate the dispatcher having marked this job as Downloading.
-	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+	if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 		t.Fatalf("SetStatusIf: %v", err)
 	}
 
@@ -427,19 +480,19 @@ func TestQueueList_GlobalPauseOverridesDownloadingToPaused(t *testing.T) {
 	}
 
 	// Verify internal state is still Downloading (not mutated).
-	j := q.SnapshotJob(job.ID)
-	if j == nil {
-		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
+	jobObj, ok := q.disp.Job(tj.ID)
+	if !ok {
+		t.Fatalf("Job(%s): job not in dispatcher", tj.ID)
 	}
-	if j.Status != constants.StatusDownloading {
-		t.Errorf("internal status = %q; want Downloading (should not be mutated)", j.Status)
+	if jobObj.State().State != job.Fetching || jobObj.Intent() != job.IntentRun {
+		t.Errorf("internal state = %v, intent = %v; want Fetching and IntentRun (should not be mutated)", jobObj.State().State, jobObj.Intent())
 	}
 }
 
 func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	// Simulate the dispatcher having marked this job as Downloading.
 	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
@@ -473,7 +526,7 @@ func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
 
 // testQueueServerWithSpeed mirrors testQueueServer but plumbs a configurable
 // download speed through mockApp so ETA computation can be exercised.
-func testQueueServerWithSpeed(t *testing.T, speed float64) (*Server, *queue.Queue) {
+func testQueueServerWithSpeed(t *testing.T, speed float64) (*Server, *testQueueWrapper) {
 	t.Helper()
 	return newTestQueueBridge(t, &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}, speed)
 }
@@ -504,20 +557,20 @@ func makeLargeTestNZB(t *testing.T, numSegs int) []byte {
 }
 
 // addLargeTestJob enqueues a job with numSegs × 1 MiB segments.
-func addLargeTestJob(t *testing.T, q *queue.Queue, numSegs int) *queue.Job {
+func addLargeTestJob(t *testing.T, q *testQueueWrapper, numSegs int) *testJob {
 	t.Helper()
 	parsed, err := nzb.Parse(bytes.NewReader(makeLargeTestNZB(t, numSegs)))
 	if err != nil {
 		t.Fatalf("parse large NZB: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "big.nzb"}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(nil, parsed, "big.nzb", types.FetchOptions{}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
+	if err := q.disp.Add(j, hdr); err != nil {
+		t.Fatalf("disp.Add: %v", err)
 	}
-	return job
+	return &testJob{ID: j.ID(), job: j}
 }
 
 func TestQueueList_InProgressFields_Downloading(t *testing.T) {
@@ -577,7 +630,7 @@ func TestQueueList_InProgressFields_PausedSuppressesETA(t *testing.T) {
 	t.Parallel()
 	const speed = 1024.0 * 1024.0
 	s, q := testQueueServerWithSpeed(t, speed)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 		t.Fatalf("SetStatusIf: %v", err)
 	}
@@ -616,7 +669,7 @@ func TestQueueList_InProgressFields_NoSpeedSuppressesETA(t *testing.T) {
 	t.Parallel()
 	// Speed below noiseFloor (1 KiB/s) — ETA should be zero, not absurd.
 	s, q := testQueueServerWithSpeed(t, 100.0)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 		t.Fatalf("SetStatusIf: %v", err)
 	}
@@ -815,7 +868,7 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 func TestQueuePause(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=pause&value="+job.ID+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -833,7 +886,7 @@ func TestQueuePause(t *testing.T) {
 func TestQueueResume(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	// Pause first.
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -857,7 +910,7 @@ func TestQueueResume(t *testing.T) {
 func TestQueueDelete_Single(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value="+job.ID+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -871,9 +924,9 @@ func TestQueueDelete_Single(t *testing.T) {
 func TestQueueDelete_Multiple(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	j1 := addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	j2 := addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "c.nzb"}) // kept
+	j1 := addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	j2 := addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "c.nzb"}) // kept
 
 	value := j1.ID + "," + j2.ID
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value="+value+"&apikey="+testAPIKey)
@@ -888,8 +941,8 @@ func TestQueueDelete_Multiple(t *testing.T) {
 func TestQueueDelete_All(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value=all&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -912,8 +965,8 @@ func TestQueueDelete_MissingValue(t *testing.T) {
 func TestQueuePurge(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=purge&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1183,7 +1236,7 @@ func TestQueueRename_MissingValue(t *testing.T) {
 func TestQueueRename_Success(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "original.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "original.nzb"})
 
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&name=rename&value="+job.ID+"&value2=NewName&apikey="+testAPIKey)
@@ -1222,7 +1275,7 @@ func TestQueueNilGuard(t *testing.T) {
 func TestQueueSlot_MBIsString(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "test.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1268,7 +1321,7 @@ func TestQueueSlot_MBIsString(t *testing.T) {
 func TestQueueSlot_TimeleftAndETA(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "test.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1300,8 +1353,8 @@ func TestQueueSlot_TimeleftAndETA(t *testing.T) {
 func TestQueueAggregates(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1343,7 +1396,7 @@ func TestQueueAggregates(t *testing.T) {
 func TestQueuePriority_Action(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "test.nzb"})
 
 	url := fmt.Sprintf("/api?mode=queue&name=priority&value=%s&value2=1&apikey=%s",
 		job.ID, testAPIKey)
@@ -1402,7 +1455,7 @@ func TestQueuePriority_MissingParams(t *testing.T) {
 func TestQueueSlot_SonarrCatField(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb", Category: "tv"})
+	addTestJob(t, q, testAddOptions{Filename: "test.nzb", Category: "tv"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1434,7 +1487,7 @@ func TestQueueSlot_SonarrCatField(t *testing.T) {
 func TestQueueSlot_SonarrPercentageIsInt(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "test.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1458,8 +1511,8 @@ func TestQueueSlot_SonarrPercentageIsInt(t *testing.T) {
 func TestQueueSlot_SonarrIndexField(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "first.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "second.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "first.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "second.nzb"})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -1534,8 +1587,8 @@ func TestQueueList_PostProcJobsVisible(t *testing.T) {
 	s, q := testQueueServer(t)
 
 	// Add two jobs: one normal, one in post-processing.
-	normalJob := addTestJob(t, q, queue.AddOptions{Filename: "normal.nzb"})
-	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "postproc.nzb"})
+	normalJob := addTestJob(t, q, testAddOptions{Filename: "normal.nzb"})
+	ppJob := addTestJob(t, q, testAddOptions{Filename: "postproc.nzb"})
 
 	// Mark ppJob as post-processing (sets PostProc=true, Status=Verifying).
 	_ = q.SetStatus(ppJob.ID, constants.StatusDownloading)
@@ -1592,7 +1645,7 @@ func TestQueueList_PostProcJobsVisible(t *testing.T) {
 func TestQueueChangeOpts_Success(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", PP: 1})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", PP: 1})
 
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=3&apikey="+testAPIKey)
@@ -1636,7 +1689,7 @@ func TestQueueChangeOpts_MissingValue(t *testing.T) {
 func TestQueueChangeOpts_MissingValue2(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&name=change_opts&value="+job.ID+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
@@ -1647,7 +1700,7 @@ func TestQueueChangeOpts_MissingValue2(t *testing.T) {
 func TestQueueChangeOpts_InvalidPP(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=5&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
@@ -1668,7 +1721,7 @@ func TestQueueChangeOpts_UnknownJob(t *testing.T) {
 // --- change_cat ---
 
 // testQueueServerWithCats builds a Server wired with the given categories.
-func testQueueServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Server, *queue.Queue) {
+func testQueueServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Server, *testQueueWrapper) {
 	t.Helper()
 	cfg := &config.Config{
 		General:    config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey},
@@ -1684,7 +1737,7 @@ func TestQueueChangeCat_Success(t *testing.T) {
 		{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
 	}
 	s, q := testQueueServerWithCats(t, cats)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
 
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&name=change_cat&value="+job.ID+"&value2=movies&apikey="+testAPIKey)
@@ -1732,7 +1785,7 @@ func TestQueueChangeCat_EmptyValue2FallsBackToDefault(t *testing.T) {
 	}
 	s, q := testQueueServerWithCats(t, cats)
 	// Start with "movies" category.
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "movies", PP: 2})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "movies", PP: 2})
 
 	// Send empty value2 → should reset to Default.
 	rr := apiGet(t, s.Handler(),
@@ -1781,7 +1834,7 @@ func TestQueueChangeCat_ListReflectsNewCategory(t *testing.T) {
 		{Name: "tv", PP: 1, Script: "", Priority: int(constants.LowPriority)},
 	}
 	s, q := testQueueServerWithCats(t, cats)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
 
 	// Change to "tv".
 	rr := apiGet(t, s.Handler(),
@@ -1853,7 +1906,7 @@ func TestQueuePause_UnknownIDDoesNotPanic(t *testing.T) {
 // regardless of whether the race exists.
 func TestQueueSetPaused_ConcurrentMutationRace(t *testing.T) {
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	const iterations = 300
 	stop := make(chan struct{})
@@ -1908,7 +1961,7 @@ func TestQueueChangeCat_ConcurrentMutationRace(t *testing.T) {
 		{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
 	}
 	s, q := testQueueServerWithCats(t, cats)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
 
 	const iterations = 300
 	stop := make(chan struct{})
@@ -1971,26 +2024,14 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 		},
 	}
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
-	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
+	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher) AppServices {
 		return mockApp{
-			Dispatcher: disp, Queue: q,
-			statuses: statuses,
+			Dispatcher: disp,
+			statuses:   statuses,
 		}
 	})
 
-	data := makeTestNZB(t)
-	parsed, err := nzb.Parse(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("parse test NZB: %v", err)
-	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	job.ID = "test-job-id"
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	_ = addTestJob(t, q, testAddOptions{JobID: "test-job-id", Filename: "movie.nzb"})
 
 	// 1. Verify queue list endpoint
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
@@ -2086,28 +2127,16 @@ func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
 
 	calls := 0
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
-	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
+	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher) AppServices {
 		return callCountingDUApp{
-			Dispatcher: disp, Queue: q,
+			Dispatcher:       disp,
 			statuses:         statuses,
 			statusesCallsPtr: &calls,
 		}
 	})
 
-	data := makeTestNZB(t)
 	for _, id := range []string{"job-1", "job-2", "job-3"} {
-		parsed, err := nzb.Parse(bytes.NewReader(data))
-		if err != nil {
-			t.Fatalf("parse test NZB: %v", err)
-		}
-		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb"}, fsutil.SanitizeOptions{})
-		if err != nil {
-			t.Fatalf("NewJob: %v", err)
-		}
-		job.ID = id
-		if err := q.Add(job); err != nil {
-			t.Fatalf("queue.Add: %v", err)
-		}
+		_ = addTestJob(t, q, testAddOptions{JobID: id, Filename: "movie.nzb"})
 	}
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
@@ -2161,7 +2190,7 @@ func TestQueueChangeScript_Sanitization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s, q := testQueueServer(t)
-			job := addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+			job := addTestJob(t, q, testAddOptions{Filename: "test.nzb"})
 
 			urlStr := "/api?mode=queue&name=change_script&value=" + job.ID + "&value2=" + url.QueryEscape(tt.input) + "&apikey=" + testAPIKey
 			rr := apiGet(t, s.Handler(), urlStr)
@@ -2286,14 +2315,17 @@ func TestQueue_CoverageGaps(t *testing.T) {
 		}
 
 		// addfile with errorApp on AddJob
-		q := queue.New()
-		errApp := errorAddJobApp{Queue: q, err: errors.New("add job failed")}
+		disp := newTestAPIDispatcher(t)
+		errApp := errorAddJobApp{
+			Dispatcher: disp,
+			err:        errors.New("add job failed"),
+		}
 		dir2 := t.TempDir()
 		sErr := New(Options{
-			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: dir2}},
-			Version: "1.0.0-test",
-			Queue:   q,
-			App:     errApp,
+			Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: dir2}},
+			Version:    "1.0.0-test",
+			Dispatcher: disp,
+			App:        errApp,
 		})
 		goodPath := filepath.Join(dir2, "good.nzb")
 		if err := os.WriteFile(goodPath, makeTestNZB(t), 0o600); err != nil {
@@ -2411,20 +2443,22 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 
 	t.Run("pause_all_and_resume_all_with_app", func(t *testing.T) {
 		t.Parallel()
-		q := queue.New()
-		spy := &queueSpyApp{Queue: q}
+		disp := newTestAPIDispatcher(t)
+		spy := &queueSpyApp{
+			Dispatcher: disp,
+		}
 		s := New(Options{
-			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
-			Version: "1.0.0-test",
-			Queue:   q,
-			App:     spy,
+			Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
+			Version:    "1.0.0-test",
+			Dispatcher: disp,
+			App:        spy,
 		})
 
 		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=pause_all&apikey="+testAPIKey)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200", rr.Code)
 		}
-		if !q.IsPaused() {
+		if !disp.Paused() {
 			t.Error("expected queue to be paused")
 		}
 		spy.mu.Lock()
@@ -2438,7 +2472,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200", rr.Code)
 		}
-		if q.IsPaused() {
+		if disp.Paused() {
 			t.Error("expected queue to be resumed")
 		}
 		spy.mu.Lock()
@@ -2451,11 +2485,11 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 
 	t.Run("pause_all_and_resume_all_nil_app", func(t *testing.T) {
 		t.Parallel()
-		q := queue.New()
+		disp := newTestAPIDispatcher(t)
 		s := New(Options{
-			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
-			Version: "1.0.0-test",
-			Queue:   q,
+			Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
+			Version:    "1.0.0-test",
+			Dispatcher: disp,
 			// App intentionally nil
 		})
 
@@ -2463,7 +2497,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200", rr.Code)
 		}
-		if !q.IsPaused() {
+		if !disp.Paused() {
 			t.Error("expected queue to be paused")
 		}
 
@@ -2471,7 +2505,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200", rr.Code)
 		}
-		if q.IsPaused() {
+		if disp.Paused() {
 			t.Error("expected queue to be resumed")
 		}
 	})
@@ -2508,7 +2542,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 	t.Run("rename_alias", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Name: "OldName"})
+		job := addTestJob(t, q, testAddOptions{Name: "OldName"})
 
 		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value="+job.ID+"&value2=NewName&apikey="+testAPIKey)
 		if rr.Code != http.StatusOK {
@@ -2590,21 +2624,21 @@ func (a removeJobErrApp) RemoveJob(ctx context.Context, id string, deleteFiles b
 
 func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
+	disp := newTestAPIDispatcher(t)
 	rec := &recordHandler{}
 	logger := slog.New(rec)
 	s := New(Options{
-		Logger:  logger,
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
+		Logger:     logger,
+		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version:    "1.0.0-test",
+		Dispatcher: disp,
 		App: removeJobErrApp{
-			NopApp:  apitest.NopApp{Queue: q},
+			NopApp:  apitest.NopApp{Dispatcher: disp},
 			errByID: map[string]error{"job_fail": errors.New("simulated queue delete failure")},
 		},
 	})
-
-	j1 := addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
+	q := &testQueueWrapper{disp: disp}
+	j1 := addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
 	value := j1.ID + ",job_fail"
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value="+value+"&apikey="+testAPIKey)
@@ -2828,9 +2862,9 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 func TestQueueList_Direct_PaginationAndPausedFlag(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	jobB := addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "c.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	jobB := addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "c.nzb"})
 	q.PauseAll()
 
 	req := httptest.NewRequest(http.MethodGet, "/api?start=1&limit=1", nil)

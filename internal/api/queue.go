@@ -74,9 +74,6 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 	if s.dispatcher != nil {
 		s.dispatcher.Pause()
 	}
-	if s.queue != nil {
-		s.queue.PauseAll()
-	}
 	if s.downloads != nil {
 		s.downloads.PauseDownloads()
 	}
@@ -84,12 +81,9 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 	respondStatus(w)
 }
 
-func (s *Server) queueResumeAll(w http.ResponseWriter, r *http.Request) {
+func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
 	if s.dispatcher != nil {
 		s.dispatcher.Resume()
-	}
-	if s.queue != nil {
-		s.queue.ResumeAll(r.Context())
 	}
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
@@ -783,21 +777,11 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 				_ = s.dispatcher.PauseJob(id)
 			} else {
 				_ = s.dispatcher.ResumeJob(id)
+				s.dispatcher.Tick(r.Context())
+				s.dispatcher.Tick(r.Context())
 			}
 			if row, ok := s.dispatcher.Row(id); ok {
 				name = row.Header.Name
-			}
-		}
-		if s.queue != nil {
-			if verb == "paused" {
-				_ = s.queue.Pause(id)
-			} else {
-				_ = s.queue.Resume(id)
-			}
-			if name == "" {
-				if qJob := s.queue.SnapshotJob(id); qJob != nil {
-					name = qJob.Name
-				}
 			}
 		}
 		if name != "" {
@@ -821,11 +805,9 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetPriority(nzoID, int(pri))
-		if s.queue != nil {
-			_ = s.queue.SetPriority(nzoID, pri)
-		}
-	} else if s.queue != nil {
-		err = s.queue.SetPriority(nzoID, pri)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
 	}
 	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
@@ -857,11 +839,9 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetPP(nzoID, pp)
-		if s.queue != nil {
-			_ = s.queue.SetPP(nzoID, pp)
-		}
-	} else if s.queue != nil {
-		err = s.queue.SetPP(nzoID, pp)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
 	}
 	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
@@ -902,9 +882,6 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		_ = s.dispatcher.SetPP(nzoID, resolvedCat.PP)
 		_ = s.dispatcher.SetScript(nzoID, resolvedCat.Script)
 		_ = s.dispatcher.SetPriority(nzoID, resolvedCat.Priority)
-		if s.queue != nil {
-			_ = s.queue.SetCategory(nzoID, formValue(r, "value2"), cats)
-		}
 		row, _ := s.dispatcher.Row(nzoID)
 		s.log.Info("job category changed", "job", nzoID,
 			"cat", row.Header.Category, "pp", row.Header.PP, "script", row.Header.Script, "priority", row.Header.Priority)
@@ -931,11 +908,9 @@ func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetName(nzoID, name)
-		if s.queue != nil {
-			_ = s.queue.SetName(nzoID, name)
-		}
-	} else if s.queue != nil {
-		err = s.queue.SetName(nzoID, name)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
 	}
 	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
@@ -977,11 +952,9 @@ func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetScript(nzoID, script)
-		if s.queue != nil {
-			_ = s.queue.SetScript(nzoID, script)
-		}
-	} else if s.queue != nil {
-		err = s.queue.SetScript(nzoID, script)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
 	}
 	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())

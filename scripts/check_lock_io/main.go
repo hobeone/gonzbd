@@ -87,32 +87,19 @@ var sqlReceivers = map[string]bool{
 // in-memory path map — so matching is restricted to a method set rather than
 // any call. The names come from the queue.Store interface
 // (internal/queue/store.go), which is backed by SQLite, plus dirscanner's
-// Save, which writes to disk.
+// storeMethods lists the method names of types performing SQLite store I/O.
 //
-// Get/Set/Delete are deliberately excluded: they are the in-memory
-// operations on dirscanner's store and too generic to attribute.
+// Delete is deliberately excluded: it is an operation on dirscanner's in-memory store
+// and too generic to attribute.
 //
 // A name here that does not match a real method disables its check
 // silently — the detector just never matches, and the gate still reports
 // success. TestStoreMethodsMatchStoreInterface pins this table against
-// queue.Store in both directions; record any new omission in that test's
+// dispatch.Store in both directions; record any new omission in that test's
 // storeMethodExclusions with a reason rather than leaving it unlisted.
 var storeMethods = map[string]bool{
-	"Add": true, "List": true, "Update": true, "UpdateBatch": true,
-	"Remove": true, "MoveToHistory": true, "ExistsByName": true,
-	"ExistsByMD5": true, "ShiftSortKey": true, "Prune": true,
-	"SetPaused": true, "IsPaused": true, "RestoreJobProgress": true,
-	"RestoreRetryProgress":   true,
-	"DeleteJobArtifacts":     true,
-	"ArticleCountsByJob":     true,
-	"NonResidentFieldsByJob": true,
-	"RecordFailedArticles":   true,
-	"ClearFailedArticles":    true,
-	// The per-article reversal ClearAllEmitted uses since #426. Registered
-	// for the same reason as its wholesale sibling: it runs on the reload
-	// path, and the call is deliberately made after q.mu is released.
-	"ClearFailedArticlesByIdx": true,
-	"Save":                     true,
+	"Load": true,
+	"Save": true,
 }
 
 // lockedSuffix is the naming convention this repo uses for "the caller must
@@ -126,7 +113,7 @@ const lockedSuffix = "Locked"
 // duration of a func-literal argument. Confirmed by exhaustive repo-wide
 // grep to be the only two such methods as of this writing:
 // config.Config.With, and
-// queue.Queue.ForEachUnfinishedArticle. Adding a new lock-wrapping closure
+// job.Job.ForEachUnfinishedArticle. Adding a new lock-wrapping closure
 // method anywhere in the repo requires updating this list (see
 // docs/go-standards.md).
 var closureLockMethods = map[string]bool{

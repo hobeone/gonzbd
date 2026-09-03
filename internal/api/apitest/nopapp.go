@@ -12,7 +12,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // NopApp is a no-op implementation of the api.AppServices aggregate (and
@@ -21,7 +20,6 @@ import (
 // duplicate mock definitions of the 20+-method interface.
 type NopApp struct {
 	Dispatcher         *dispatch.Dispatcher
-	Queue              *queue.Queue
 	History            *history.Repository
 	SpeedVal           float64
 	ServerSnapshotsVal []downloader.ServerSnapshot
@@ -96,13 +94,10 @@ func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, raw
 	return nil
 }
 
-// RemoveJob forwards the job removal to the wired queue if present.
+// RemoveJob forwards the job removal to the wired dispatcher if present.
 func (n NopApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
 	if n.Dispatcher != nil {
-		_ = n.Dispatcher.Remove(ctx, id)
-	}
-	if n.Queue != nil {
-		return n.Queue.Remove(id)
+		return n.Dispatcher.Remove(ctx, id)
 	}
 	return nil
 }
