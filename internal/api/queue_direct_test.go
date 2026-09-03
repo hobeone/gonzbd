@@ -12,8 +12,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
@@ -58,45 +58,33 @@ func TestFirstIncompleteFile(t *testing.T) {
 
 	t.Run("all files complete returns empty", func(t *testing.T) {
 		t.Parallel()
-		_, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
-		ackDone(t, q, job.ID, "test-article-id-001@example.com")
-		if err := q.MarkFileComplete(job.ID, 0); err != nil {
-			t.Fatalf("MarkFileComplete: %v", err)
-		}
-		snap := q.SnapshotJob(job.ID)
-		if got := firstIncompleteFile(snap); got != "" {
+		disp := newTestAPIDispatcher(t)
+		m := makeJobManifest(t, []string{"f1.rar"}, []int64{1024}, [][]int64{{1024}}, [][]string{{"test-article-id-001@example.com"}})
+		j := job.New("j1", "job.nzb", job.Policy{})
+		_ = j.AttachContent(m)
+		_ = disp.Add(j, dispatch.Header{Name: "job.nzb", Bytes: 1024})
+		_ = j.MarkFileComplete(0)
+		if got := firstIncompleteFile(j); got != "" {
 			t.Errorf("firstIncompleteFile = %q; want empty when every file is complete", got)
 		}
 	})
 
 	t.Run("returns the first incomplete file's subject", func(t *testing.T) {
 		t.Parallel()
-		parsed := &nzb.NZB{Files: []nzb.File{
-			{Subject: "file0.rar", Bytes: 500, Articles: []nzb.Article{{ID: "a0@t", Bytes: 500, Number: 1}}},
-			{Subject: "file1.rar", Bytes: 500, Articles: []nzb.Article{{ID: "a1@t", Bytes: 500, Number: 1}}},
-		}}
-		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
-		if err != nil {
-			t.Fatalf("NewJob: %v", err)
-		}
-		q := queue.New()
-		if err := q.Add(job); err != nil {
-			t.Fatalf("Add: %v", err)
-		}
-		ackDone(t, q, job.ID, "a0@t")
-		if err := q.MarkFileComplete(job.ID, 0); err != nil {
-			t.Fatalf("MarkFileComplete: %v", err)
-		}
-		snap := q.SnapshotJob(job.ID)
-		if got := firstIncompleteFile(snap); got != "file1.rar" {
+		disp := newTestAPIDispatcher(t)
+		m := makeJobManifest(t, []string{"file0.rar", "file1.rar"}, []int64{500, 500}, [][]int64{{500}, {500}}, [][]string{{"a0@t"}, {"a1@t"}})
+		j := job.New("j2", "f.nzb", job.Policy{})
+		_ = j.AttachContent(m)
+		_ = disp.Add(j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
+		_ = j.MarkFileComplete(0)
+		if got := firstIncompleteFile(j); got != "file1.rar" {
 			t.Errorf("firstIncompleteFile = %q; want file1.rar", got)
 		}
 	})
 
 	t.Run("non-resident job returns empty rather than erroring", func(t *testing.T) {
 		t.Parallel()
-		job := newEvictedJob(t)
+		job, _ := newEvictedJob(t)
 		if got := firstIncompleteFile(job); got != "" {
 			t.Errorf("firstIncompleteFile = %q; want empty for a non-resident job", got)
 		}
@@ -110,27 +98,26 @@ func TestBuildQueueFiles(t *testing.T) {
 
 	t.Run("returns the per-file breakdown", func(t *testing.T) {
 		t.Parallel()
-		_, q := testQueueServer(t)
-		job := addLargeTestJob(t, q, 4) // 4 segments x 1 MiB
-		jobInternal := q.SnapshotJob(job.ID)
-		if jobInternal == nil {
-			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
-		}
-		m := mustManifest(t, jobInternal)
-		doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
-		ackDone(t, q, job.ID, doneIDs...)
-		snap := q.SnapshotJob(job.ID)
+		disp := newTestAPIDispatcher(t)
+		const segSize = 1024 * 1024
+		m := makeJobManifest(t, []string{"large.bin"}, []int64{4 * segSize},
+			[][]int64{{segSize, segSize, segSize, segSize}},
+			[][]string{{"s1@t", "s2@t", "s3@t", "s4@t"}})
+		j := job.New("j_large", "large.nzb", job.Policy{})
+		_ = j.AttachContent(m)
+		_ = disp.Add(j, dispatch.Header{Name: "large.nzb", Bytes: 4 * segSize})
+		ackDone(t, disp, "j_large", "s1@t", "s2@t")
 
-		files := buildQueueFiles(snap)
+		files := buildQueueFiles(j)
 		if len(files) != 1 {
 			t.Fatalf("len(files) = %d; want 1", len(files))
 		}
 		f := files[0]
-		if f.Bytes != 4*1024*1024 {
-			t.Errorf("Bytes = %d; want %d", f.Bytes, 4*1024*1024)
+		if f.Bytes != 4*segSize {
+			t.Errorf("Bytes = %d; want %d", f.Bytes, 4*segSize)
 		}
-		if f.BytesDownloaded != 2*1024*1024 {
-			t.Errorf("BytesDownloaded = %d; want %d", f.BytesDownloaded, 2*1024*1024)
+		if f.BytesDownloaded != 2*segSize {
+			t.Errorf("BytesDownloaded = %d; want %d", f.BytesDownloaded, 2*segSize)
 		}
 		if f.State != "downloading" {
 			t.Errorf("State = %q; want downloading", f.State)
@@ -142,7 +129,7 @@ func TestBuildQueueFiles(t *testing.T) {
 
 	t.Run("non-resident job returns a non-nil empty slice", func(t *testing.T) {
 		t.Parallel()
-		job := newEvictedJob(t)
+		job, _ := newEvictedJob(t)
 		got := buildQueueFiles(job)
 		if got == nil {
 			t.Fatal("buildQueueFiles returned nil; want a non-nil empty slice so JSON encodes as []")

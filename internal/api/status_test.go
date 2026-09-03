@@ -7,23 +7,19 @@ import (
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 )
 
-// testServerWithQueue builds a Server wired with a queue.
-func testServerWithQueue(t *testing.T, q *queue.Queue) *Server {
+// testServerWithDispatcher builds a Server wired with a dispatcher.
+func testServerWithDispatcher(t *testing.T, d *dispatch.Dispatcher) *Server {
 	t.Helper()
-	return New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-	})
+	return testDispatcherServer(t, d)
 }
 
 func TestModeFullStatus_OK(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
-	s := testServerWithQueue(t, q)
+	d := newTestAPIDispatcher(t)
+	s := testServerWithDispatcher(t, d)
 
 	rr := apiGet(t, s.Handler(), "/api?mode=fullstatus&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -60,8 +56,8 @@ func TestModeFullStatus_OK(t *testing.T) {
 
 func TestModeStatus_SubActionNotImplemented(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
-	s := testServerWithQueue(t, q)
+	d := newTestAPIDispatcher(t)
+	s := testServerWithDispatcher(t, d)
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=delete_orphan&apikey="+testAPIKey)
 	if rr.Code != http.StatusNotImplemented {
@@ -76,8 +72,8 @@ func TestModeStatus_SubActionNotImplemented(t *testing.T) {
 
 func TestModeStatus_NoAction_FallsToFullStatus(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
-	s := testServerWithQueue(t, q)
+	d := newTestAPIDispatcher(t)
+	s := testServerWithDispatcher(t, d)
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -202,15 +198,15 @@ func TestModeServerStats_Default(t *testing.T) {
 // completedir field that Sonarr reads to resolve category paths.
 func TestFullStatus_SonarrCompleteDir(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
+	d := newTestAPIDispatcher(t)
 	s := New(Options{
 		Config: &config.Config{General: config.GeneralConfig{
 			APIKey:      testAPIKey,
 			NZBKey:      testNZBKey,
 			CompleteDir: "/data/complete",
 		}},
-		Version: "1.0.0-test",
-		Queue:   q,
+		Version:    "1.0.0-test",
+		Dispatcher: d,
 	})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=fullstatus&apikey="+testAPIKey)

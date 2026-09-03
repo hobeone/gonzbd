@@ -208,6 +208,11 @@ type Job struct {
 	contentMu sync.RWMutex
 	manifest  *Manifest
 	progress  *JobProgress
+
+	totalBytes    int64
+	recoveryBytes int64
+	recoveryFiles int
+
 	created   time.Time
 }
 

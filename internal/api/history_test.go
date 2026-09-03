@@ -17,9 +17,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // testHistoryServer builds a Server wired with an in-memory history repository.
@@ -651,27 +651,25 @@ func TestHistoryList_PostProcJobsNotInjected(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	repo := history.NewRepository(db)
 
-	q := queue.New()
+	d := newTestAPIDispatcher(t)
 	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		History: repo,
-		App:     apitest.NopApp{Queue: q, History: repo},
+		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version:    "1.0.0-test",
+		Dispatcher: d,
+		History:    repo,
+		App:        apitest.NopApp{Dispatcher: d, History: repo},
 	})
 
 	// Seed a completed history entry.
 	seedEntry(t, repo, "Completed.Job", "Completed", "tv", time.Now().Add(-time.Hour))
 
-	// Add a post-processing job to the queue.
-	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "postproc.nzb"})
-	ppJob.Status = constants.StatusRepairing
-	_, err = q.SetPostProcStarted(ppJob.ID)
-	if err != nil {
-		t.Fatalf("SetPostProcStarted: %v", err)
-	}
-	if err := q.SetStatus(ppJob.ID, constants.StatusRepairing); err != nil {
-		t.Fatalf("SetStatus: %v", err)
+	// Add an active post-processing job to the dispatcher.
+	ppJob := job.New("j-pp", "PostProc Job", job.Policy{})
+	if err := d.Add(ppJob, dispatch.Header{
+		Name:     "PostProc Job",
+		Filename: "postproc.nzb",
+	}); err != nil {
+		t.Fatalf("d.Add: %v", err)
 	}
 
 	rr := apiGet(t, s.Handler(), "/api?mode=history&apikey="+testAPIKey)
@@ -701,8 +699,8 @@ func TestHistoryList_PostProcJobsNotInjected(t *testing.T) {
 	if len(resp.History.Slots) != 1 {
 		t.Fatalf("got %d slots; want 1", len(resp.History.Slots))
 	}
-	if resp.History.Slots[0].NzoID == ppJob.ID {
-		t.Errorf("PP job %s leaked into history listing", ppJob.ID)
+	if resp.History.Slots[0].NzoID == ppJob.ID() {
+		t.Errorf("PP job %s leaked into history listing", ppJob.ID())
 	}
 	if resp.History.Slots[0].Status != "Completed" {
 		t.Errorf("db slot status = %s; want Completed", resp.History.Slots[0].Status)

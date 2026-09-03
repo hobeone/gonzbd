@@ -28,6 +28,9 @@ func (j *Job) AttachContent(m *Manifest) error {
 	defer j.contentMu.Unlock()
 	j.manifest = m
 	j.progress = newJobProgress(m)
+	j.totalBytes = m.TotalBytes()
+	j.recoveryBytes = m.RecoveryBytes()
+	j.recoveryFiles = m.RecoveryFiles()
 	return nil
 }
 
@@ -50,6 +53,9 @@ func (j *Job) RestoreContent(m *Manifest, p *JobProgress) error {
 	p.recompute(m)
 	j.manifest = m
 	j.progress = p
+	j.totalBytes = m.TotalBytes()
+	j.recoveryBytes = m.RecoveryBytes()
+	j.recoveryFiles = m.RecoveryFiles()
 	return nil
 }
 
@@ -222,25 +228,26 @@ func (j *Job) markFileComplete(fileIdx int) error {
 	return nil
 }
 
+// TotalBytes returns the total size of the job's files, preserved across eviction.
+func (j *Job) TotalBytes() int64 {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.totalBytes
+}
+
 // RecoveryBytes returns the summed size of the job's par2 recovery volumes,
-// or 0 if non-resident.
+// preserved across eviction.
 func (j *Job) RecoveryBytes() int64 {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
-	if j.manifest == nil {
-		return 0
-	}
-	return j.manifest.RecoveryBytes()
+	return j.recoveryBytes
 }
 
-// RecoveryFiles returns the job's par2 recovery volume count, or 0 if non-resident.
+// RecoveryFiles returns the job's par2 recovery volume count, preserved across eviction.
 func (j *Job) RecoveryFiles() int {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
-	if j.manifest == nil {
-		return 0
-	}
-	return j.manifest.RecoveryFiles()
+	return j.recoveryFiles
 }
 
 // RepairState reports whether this job's damaged content is within its par2
@@ -251,11 +258,7 @@ func (j *Job) RepairState() RepairState {
 	if j.progress == nil {
 		return RepairIntact
 	}
-	var recBytes int64
-	if j.manifest != nil {
-		recBytes = j.manifest.RecoveryBytes()
-	}
-	return RepairStateFrom(j.progress.ContentFailedBytes(), recBytes, j.progress.HasPar2Files())
+	return RepairStateFrom(j.progress.ContentFailedBytes(), j.recoveryBytes, j.progress.HasPar2Files())
 }
 
 // NumFiles returns the number of files in the job if content has been attached,
@@ -323,6 +326,18 @@ func (j *Job) HasDeferredPar2() bool {
 		return false
 	}
 	return j.progress.HasDeferredPar2()
+}
+
+// UsesOnDemandPar2 reports whether any file is being withheld from download
+// under a non-default fetch policy — either awaiting the CRC verdict
+// (FetchIfNeeded) or already ruled unnecessary (FetchNever).
+func (j *Job) UsesOnDemandPar2() bool {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return false
+	}
+	return j.progress.UsesOnDemandPar2()
 }
 
 // DiscardDeferredPar2 marks every recovery volume still awaiting the CRC

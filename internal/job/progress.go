@@ -716,6 +716,27 @@ func (p *JobProgress) HasDeferredPar2() bool {
 	return false
 }
 
+// UsesOnDemandPar2 reports whether any file is being withheld from download
+// under a non-default fetch policy — either awaiting the CRC verdict
+// (FetchIfNeeded) or already ruled unnecessary (FetchNever).
+//
+// Distinct from HasDeferredPar2, which is FetchIfNeeded only because it gates
+// re-verification. This drives the "par2 on-demand" badge, which describes
+// what the job is doing rather than what it is waiting on: reported as
+// HasDeferredPar2, the badge would disappear at the moment the feature
+// succeeds.
+func (p *JobProgress) UsesOnDemandPar2() bool {
+	if p == nil {
+		return false
+	}
+	for i := range p.files {
+		if p.files[i].Fetch != FetchAlways {
+			return true
+		}
+	}
+	return false
+}
+
 // DeferredRecoveryIndices returns the file indices of recovery volumes still
 // held pending the verdict.
 //

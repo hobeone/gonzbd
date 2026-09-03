@@ -24,7 +24,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -48,17 +50,133 @@ func makeTestNZB(t *testing.T) []byte {
 </nzb>`)
 }
 
+func convertQueueManifestToJobManifest(qm *queue.Manifest) *job.Manifest {
+	if qm == nil {
+		return nil
+	}
+	var jfiles []job.JobFile
+	for fi := range qm.NumFiles() {
+		lo, hi := qm.FileRange(fi)
+		var arts []job.JobArticle
+		for ai := lo; ai < hi; ai++ {
+			arts = append(arts, job.JobArticle{
+				ID:     qm.ArticleID(ai),
+				Bytes:  qm.ArticleBytes(ai),
+				Number: ai + 1,
+			})
+		}
+		jfiles = append(jfiles, job.JobFile{
+			Subject:        qm.FileSubject(fi),
+			Bytes:          qm.FileBytes(fi),
+			Articles:       arts,
+			IsPar2Recovery: qm.FileIsPar2Recovery(fi),
+		})
+	}
+	return job.NewManifest(jfiles)
+}
+
+func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices) (*Server, *queue.Queue) {
+	t.Helper()
+	disp := newTestAPIDispatcher(t)
+	var q *queue.Queue
+	q = queue.New(queue.WithHooks(queue.Hooks{
+		OnAdd: func(qj *queue.Job, m *queue.Manifest) {
+			j := job.New(qj.ID, qj.Name, job.Policy{})
+			jm := convertQueueManifestToJobManifest(m)
+			if jm != nil {
+				_ = j.AttachContent(jm)
+			}
+			_ = disp.Add(j, dispatch.Header{
+				Name:     qj.Name,
+				Filename: qj.Filename,
+				Category: qj.Category,
+				Priority: int(qj.Priority),
+				Bytes:    qj.TotalBytes(),
+				Warning:  qj.Warning,
+				Script:   qj.Script,
+				Password: qj.Password,
+				PP:       qj.PP,
+			})
+			_ = j.BeginAttempt(time.Now().UTC())
+			disp.Tick(context.Background())
+			if qj.Status == constants.StatusPaused {
+				_ = disp.PauseJob(qj.ID)
+				_ = disp.Yielded(qj.ID)
+			}
+		},
+		OnRemove: func(id string) {
+			_ = disp.Remove(context.Background(), id)
+		},
+		OnPause: func(id string) {
+			_ = disp.PauseJob(id)
+			_ = disp.Yielded(id)
+		},
+		OnResume: func(id string) {
+			_ = disp.ResumeJob(id)
+			disp.Tick(context.Background())
+		},
+		OnPauseAll: func() {
+			disp.Pause()
+			for _, row := range disp.List() {
+				_ = disp.Yielded(row.ID)
+			}
+		},
+		OnResumeAll: func() {
+			disp.Resume()
+			disp.Tick(context.Background())
+		},
+		OnStatus: func(id string, status constants.Status) {
+			j, ok := disp.Job(id)
+			if !ok {
+				return
+			}
+			switch status {
+			case constants.StatusDownloading:
+				disp.Tick(context.Background())
+			case constants.StatusVerifying:
+				_ = j.Transition(job.Assessing)
+				disp.Tick(context.Background())
+			case constants.StatusRepairing:
+				_ = j.Transition(job.Repairing)
+				disp.Tick(context.Background())
+			case constants.StatusExtracting:
+				if j.State().State != job.Extracting {
+					if j.State().State == job.Fetching {
+						_ = j.Transition(job.Assessing)
+					}
+					_ = j.SetNext(job.Extracting)
+					_, _ = j.Cross(job.Extracting)
+				}
+				disp.Tick(context.Background())
+			}
+		},
+	}))
+	var application AppServices
+	if makeApp != nil {
+		application = makeApp(disp, q)
+	} else {
+		application = apitest.NopApp{Dispatcher: disp, Queue: q}
+	}
+	s := New(Options{
+		Config:     cfg,
+		Version:    "1.0.0-test",
+		Dispatcher: disp,
+		Queue:      q,
+		App:        application,
+	})
+	return s, q
+}
+
+func newTestQueueBridge(t *testing.T, cfg *config.Config, speed float64) (*Server, *queue.Queue) {
+	return newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
+		return apitest.NopApp{Dispatcher: disp, Queue: q, SpeedVal: speed}
+	})
+}
+
 // testQueueServer builds a Server wired with a fresh queue (and no history).
 func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 	t.Helper()
-	q := queue.New()
-	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     apitest.NopApp{Queue: q},
-	})
-	return s, q
+	return newTestQueueBridge(t, &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}, 0)
 }
 
 // testQueueServerWithRoot builds a Server wired with a fresh queue and root
@@ -66,14 +184,7 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 // check permits paths under root.
 func testQueueServerWithRoot(t *testing.T, root string) (*Server, *queue.Queue) {
 	t.Helper()
-	q := queue.New()
-	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: root}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     apitest.NopApp{Queue: q},
-	})
-	return s, q
+	return newTestQueueBridge(t, &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: root}}, 0)
 }
 
 // addTestJob adds a job parsed from a minimal NZB to the queue and returns it.
@@ -365,14 +476,7 @@ func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
 // download speed through mockApp so ETA computation can be exercised.
 func testQueueServerWithSpeed(t *testing.T, speed float64) (*Server, *queue.Queue) {
 	t.Helper()
-	q := queue.New()
-	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     apitest.NopApp{Queue: q, SpeedVal: speed},
-	})
-	return s, q
+	return newTestQueueBridge(t, &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}, speed)
 }
 
 // makeLargeTestNZB builds an NZB with a single file split across numSegs
@@ -570,12 +674,16 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 	if jobInternal == nil {
 		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 	}
-	m := mustManifest(t, jobInternal)
+	dispJob, ok := s.dispatcher.Job(job.ID)
+	if !ok {
+		t.Fatalf("dispatcher.Job(%s): not in dispatcher", job.ID)
+	}
+	m := mustManifest(t, dispJob)
 	if m.NumFiles() != 1 {
 		t.Fatalf("expected 1 file, got %d", m.NumFiles())
 	}
 	doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
-	ackDone(t, q, job.ID, doneIDs...)
+	ackDone(t, s.dispatcher, job.ID, doneIDs...)
 
 	rr := apiGet(t, s.Handler(),
 		"/api?mode=queue&nzo_id="+job.ID+"&files=1&apikey="+testAPIKey)
@@ -667,23 +775,23 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		setup func(t *testing.T, q *queue.Queue, jobID string)
+		setup func(t *testing.T, disp *dispatch.Dispatcher, jobID string, j *job.Job)
 		want  string
 	}{
-		{"queued", func(*testing.T, *queue.Queue, string) {}, "queued"},
-		{"downloading", func(t *testing.T, q *queue.Queue, jobID string) {
-			ackDone(t, q, jobID, "a0@t")
+		{"queued", func(*testing.T, *dispatch.Dispatcher, string, *job.Job) {}, "queued"},
+		{"downloading", func(t *testing.T, disp *dispatch.Dispatcher, jobID string, j *job.Job) {
+			ackDone(t, disp, jobID, "a0@t")
 		}, "downloading"},
-		{"done", func(t *testing.T, q *queue.Queue, jobID string) {
-			ackDone(t, q, jobID, "a0@t", "a1@t")
-			if err := q.MarkFileComplete(jobID, 0); err != nil {
+		{"done", func(t *testing.T, disp *dispatch.Dispatcher, jobID string, j *job.Job) {
+			ackDone(t, disp, jobID, "a0@t", "a1@t")
+			if err := j.MarkFileComplete(0); err != nil {
 				t.Fatalf("MarkFileComplete: %v", err)
 			}
 		}, "done"},
-		{"failed", func(t *testing.T, q *queue.Queue, jobID string) {
-			ackDone(t, q, jobID, "a0@t")
-			ackFailed(t, q, jobID, "a1@t")
-			if err := q.MarkFileComplete(jobID, 0); err != nil {
+		{"failed", func(t *testing.T, disp *dispatch.Dispatcher, jobID string, j *job.Job) {
+			ackDone(t, disp, jobID, "a0@t")
+			ackFailed(t, disp, jobID, "a1@t")
+			if err := j.MarkFileComplete(0); err != nil {
 				t.Fatalf("MarkFileComplete: %v", err)
 			}
 		}, "failed"},
@@ -691,23 +799,14 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			parsed := &nzb.NZB{Files: []nzb.File{
-				{Subject: "f", Bytes: 1000, Articles: []nzb.Article{
-					{ID: "a0@t", Bytes: 500, Number: 1},
-					{ID: "a1@t", Bytes: 500, Number: 2},
-				}},
-			}}
-			job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
-			if err != nil {
-				t.Fatalf("NewJob: %v", err)
-			}
-			q := queue.New()
-			if err := q.Add(job); err != nil {
-				t.Fatalf("Add: %v", err)
-			}
-			tt.setup(t, q, job.ID)
-			snap := q.SnapshotJob(job.ID)
-			if got := fileState(mustManifest(t, snap), snap.Progress(), 0); got != tt.want {
+			disp := newTestAPIDispatcher(t)
+			m := makeJobManifest(t, []string{"f"}, []int64{1000}, [][]int64{{500, 500}}, [][]string{{"a0@t", "a1@t"}})
+			j := job.New("j_class", "f.nzb", job.Policy{})
+			_ = j.AttachContent(m)
+			_ = disp.Add(j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
+
+			tt.setup(t, disp, "j_class", j)
+			if got := fileState(m, j.Progress(), 0); got != tt.want {
 				t.Errorf("fileState = %q; want %q", got, tt.want)
 			}
 		})
@@ -1572,18 +1671,11 @@ func TestQueueChangeOpts_UnknownJob(t *testing.T) {
 // testQueueServerWithCats builds a Server wired with the given categories.
 func testQueueServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Server, *queue.Queue) {
 	t.Helper()
-	q := queue.New()
 	cfg := &config.Config{
 		General:    config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey},
 		Categories: cats,
 	}
-	s := New(Options{
-		Config:  cfg,
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     apitest.NopApp{Queue: q},
-	})
-	return s, q
+	return newTestQueueBridge(t, cfg, 0)
 }
 
 func TestQueueChangeCat_Success(t *testing.T) {
@@ -1852,41 +1944,6 @@ func TestQueueChangeCat_ConcurrentMutationRace(t *testing.T) {
 	mutatorWG.Wait()
 }
 
-// TestRespondCategoryChanged_NilJobStillSucceeds proves that a category
-// change is reported as successful even when the post-change job snapshot
-// is nil. This is the case when the job is concurrently removed between
-// SetCategory succeeding and SnapshotJob running (TRACE-1's SnapshotJob
-// deep-copy fixed the *read*, but the nil case still needs its own handling:
-// SetCategory has already committed by the time job is snapshotted, so a
-// nil snapshot here is only missing logging detail, never a request
-// failure). Exercises respondCategoryChanged directly with a nil job — the
-// exact interleaving that produces a nil snapshot in production is a real
-// but vanishingly narrow race window (two back-to-back lock operations)
-// that is not practical to force reliably via goroutine timing, so this
-// tests the resulting logic deterministically instead.
-func TestRespondCategoryChanged_NilJobStillSucceeds(t *testing.T) {
-	s, _ := testQueueServer(t)
-
-	rr := httptest.NewRecorder()
-	s.respondCategoryChanged(rr, "some-nzo-id", nil)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 even when the job snapshot is nil "+
-			"(the category change already succeeded before the snapshot)", rr.Code)
-	}
-
-	var resp struct {
-		Status bool     `json:"status"`
-		NzoIDs []string `json:"nzo_ids"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !resp.Status || len(resp.NzoIDs) != 1 || resp.NzoIDs[0] != "some-nzo-id" {
-		t.Errorf("unexpected response body: %+v", resp)
-	}
-}
-
 type mockApp struct {
 	apitest.NopApp
 	statuses map[string]directunpack.Status
@@ -1903,7 +1960,6 @@ func (m mockApp) DirectUnpackStatuses() map[string]directunpack.Status {
 
 func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
 
 	statuses := map[string]directunpack.Status{
 		"test-job-id": {
@@ -1915,16 +1971,12 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 			FailedSets:       []string{"set2"},
 		},
 	}
-	app := mockApp{
-		Queue:    q,
-		statuses: statuses,
-	}
-
-	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     app,
+	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
+	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
+		return mockApp{
+			NopApp:   apitest.NopApp{Dispatcher: disp, Queue: q},
+			statuses: statuses,
+		}
 	})
 
 	data := makeTestNZB(t)
@@ -2026,7 +2078,6 @@ func (a callCountingDUApp) DirectUnpackStatuses() map[string]directunpack.Status
 
 func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
 
 	statuses := map[string]directunpack.Status{
 		"job-1": {Active: true, CurrentSet: "set1"},
@@ -2035,17 +2086,13 @@ func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
 	}
 
 	calls := 0
-	app := callCountingDUApp{
-		Queue:            q,
-		statuses:         statuses,
-		statusesCallsPtr: &calls,
-	}
-
-	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     app,
+	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
+	s, q := newTestQueueBridgeWithApp(t, cfg, func(disp *dispatch.Dispatcher, q *queue.Queue) AppServices {
+		return callCountingDUApp{
+			NopApp:           apitest.NopApp{Dispatcher: disp, Queue: q},
+			statuses:         statuses,
+			statusesCallsPtr: &calls,
+		}
 	})
 
 	data := makeTestNZB(t)
@@ -2585,29 +2632,36 @@ func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
 func TestFilterQueueSlots(t *testing.T) {
 	t.Parallel()
 
-	newFilterJob := func(id, name, filename, category string, status constants.Status) *queue.Job {
-		job, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: filename}, fsutil.SanitizeOptions{})
-		if err != nil {
-			t.Fatalf("NewJob: %v", err)
+	newFilterRow := func(id, name, filename, category string, running bool, reason job.WaitReason, state job.State) dispatch.Row {
+		return dispatch.Row{
+			ID: id,
+			Header: dispatch.Header{
+				Name:     name,
+				Filename: filename,
+				Category: category,
+			},
+			View: job.RenderView{
+				StateView: job.StateView{
+					State: state,
+				},
+				Running: running,
+				Reason:  reason,
+			},
 		}
-		job.ID = id
-		job.Name = name
-		job.Category = category
-		job.Status = status
-		return job
 	}
-	jobs := []*queue.Job{
-		newFilterJob("job1", "Ubuntu ISO", "ubuntu.nzb", "linux", constants.StatusDownloading),
-		newFilterJob("job2", "Debian ISO", "debian.nzb", "linux", constants.StatusPaused),
-		newFilterJob("job3", "Some Movie", "movie.nzb", "movies", constants.StatusDownloading),
+	rows := []dispatch.Row{
+		newFilterRow("job1", "Ubuntu ISO", "ubuntu.nzb", "linux", true, 0, job.Fetching),
+		newFilterRow("job2", "Debian ISO", "debian.nzb", "linux", false, job.UserPaused, job.Fetching),
+		newFilterRow("job3", "Some Movie", "movie.nzb", "movies", true, 0, job.Fetching),
 	}
 	duStatuses := map[string]directunpack.Status{
 		"job1": {CurrentSet: "vol01"},
 	}
+	s := &Server{}
 
 	t.Run("no filters returns everything", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses, nil)
+		slots := s.filterQueueSlots(rows, "", "", "", false, 0, duStatuses, nil)
 		if len(slots) != 3 {
 			t.Fatalf("len(slots) = %d, want 3", len(slots))
 		}
@@ -2615,7 +2669,7 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("category filter", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "movies", "", "", false, 0, duStatuses, nil)
+		slots := s.filterQueueSlots(rows, "movies", "", "", false, 0, duStatuses, nil)
 		if len(slots) != 1 || slots[0].NzoID != "job3" {
 			t.Fatalf("filterQueueSlots(category=movies, nil) = %+v, want only job3", slots)
 		}
@@ -2623,7 +2677,7 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("status filter", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", string(constants.StatusPaused), "", false, 0, duStatuses, nil)
+		slots := s.filterQueueSlots(rows, "", string(constants.StatusPaused), "", false, 0, duStatuses, nil)
 		if len(slots) != 1 || slots[0].NzoID != "job2" {
 			t.Fatalf("filterQueueSlots(status=Paused, nil) = %+v, want only job2", slots)
 		}
@@ -2631,7 +2685,7 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("search filter matches name or filename, case-insensitively", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", "", "debian", false, 0, duStatuses, nil)
+		slots := s.filterQueueSlots(rows, "", "", "debian", false, 0, duStatuses, nil)
 		if len(slots) != 1 || slots[0].NzoID != "job2" {
 			t.Fatalf("filterQueueSlots(search=debian, nil) = %+v, want only job2", slots)
 		}
@@ -2639,16 +2693,16 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("duStatuses populates DirectUnpack for matching job only", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses, nil)
-		for _, s := range slots {
-			switch s.NzoID {
+		slots := s.filterQueueSlots(rows, "", "", "", false, 0, duStatuses, nil)
+		for _, sl := range slots {
+			switch sl.NzoID {
 			case "job1":
-				if s.DirectUnpack == nil || s.DirectUnpack.CurrentSet != "vol01" {
-					t.Errorf("job1.DirectUnpack = %+v, want CurrentSet=vol01", s.DirectUnpack)
+				if sl.DirectUnpack == nil || sl.DirectUnpack.CurrentSet != "vol01" {
+					t.Errorf("job1.DirectUnpack = %+v, want CurrentSet=vol01", sl.DirectUnpack)
 				}
 			default:
-				if s.DirectUnpack != nil {
-					t.Errorf("%s.DirectUnpack = %+v, want nil", s.NzoID, s.DirectUnpack)
+				if sl.DirectUnpack != nil {
+					t.Errorf("%s.DirectUnpack = %+v, want nil", sl.NzoID, sl.DirectUnpack)
 				}
 			}
 		}
@@ -2656,7 +2710,7 @@ func TestFilterQueueSlots(t *testing.T) {
 
 	t.Run("combined filters narrow to nothing", func(t *testing.T) {
 		t.Parallel()
-		slots := filterQueueSlots(jobs, "movies", string(constants.StatusPaused), "", false, 0, duStatuses, nil)
+		slots := s.filterQueueSlots(rows, "movies", string(constants.StatusPaused), "", false, 0, duStatuses, nil)
 		if len(slots) != 0 {
 			t.Fatalf("filterQueueSlots(category=movies, status=Paused, nil) = %+v, want empty", slots)
 		}
@@ -2670,30 +2724,59 @@ func TestFilterQueueSlots(t *testing.T) {
 // (exercising FailedBytes) and a direct-unpack status attached.
 func TestBuildSlot_MapsJobFields(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
-	job := addLargeTestJob(t, q, 10) // single file, 10 x 1 MiB segments = 10 MiB
-	job.PP = 3
-	job.Password = "hunter2"
-	job.Script = "post.py"
-	job.Warning = "low disk space"
 
-	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
-		t.Fatalf("SetStatusIf: %v", err)
+	articles := make([]job.JobArticle, 10)
+	for i := range articles {
+		articles[i] = job.JobArticle{
+			ID:     fmt.Sprintf("big-article-%03d@example.com", i+1),
+			Bytes:  1024 * 1024,
+			Number: i + 1,
+		}
 	}
-	ackFailed(t, q, job.ID, "big-article-001@example.com")
+	files := []job.JobFile{
+		{
+			Subject:  "large.file",
+			Bytes:    10 * 1024 * 1024,
+			Articles: articles,
+		},
+	}
+	m := job.NewManifest(files)
+	j := job.New("job-1", "large.file", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := j.BeginAttempt(time.Now().UTC()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	if err := j.MarkArticleFailed(0); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
 
-	live := q.SnapshotJob(job.ID)
-	if live == nil {
-		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
+	row := dispatch.Row{
+		ID: j.ID(),
+		Header: dispatch.Header{
+			Name:     "large.file",
+			Filename: "large.file.nzb",
+			Bytes:    m.TotalBytes(),
+			PP:       3,
+			Password: "hunter2",
+			Script:   "post.py",
+			Warning:  "low disk space",
+		},
+		View: job.RenderView{
+			StateView: j.State(),
+			Running:   false,
+			Reason:    job.GlobalPause,
+		},
 	}
 
 	const speed = 1024.0 * 1024.0 // 1 MiB/s; well above the noise floor
 	duStatus := &directunpack.Status{CurrentSet: "vol01"}
 
-	slot := buildSlot(live, true /* queue-wide paused */, speed, 2, duStatus, app.JobCheckpointState{})
+	slot := buildSlot(row, j, true /* queue-wide paused */, speed, 2, duStatus, app.JobCheckpointState{})
 
-	if slot.NzoID != job.ID {
-		t.Errorf("NzoID = %q, want %q", slot.NzoID, job.ID)
+	if slot.NzoID != j.ID() {
+		t.Errorf("NzoID = %q, want %q", slot.NzoID, j.ID())
 	}
 	if slot.Index != 2 {
 		t.Errorf("Index = %d, want 2", slot.Index)
@@ -2717,7 +2800,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 		t.Errorf("Warning = %q, want %q", slot.Warning, "low disk space")
 	}
 	if slot.FailedBytes == 0 {
-		t.Error("FailedBytes = 0, want > 0 after ackFailed")
+		t.Error("FailedBytes = 0, want > 0 after MarkArticleFailed")
 	}
 	if slot.Bytes != 10*1024*1024 {
 		t.Errorf("Bytes = %d, want %d", slot.Bytes, 10*1024*1024)

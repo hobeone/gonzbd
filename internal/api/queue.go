@@ -19,7 +19,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -309,19 +308,17 @@ func stageFromStatus(status constants.Status) string {
 	return strings.ToLower(string(status))
 }
 
-// firstIncompleteFile returns the subject of the first not-yet-complete
-// file in the job, or empty if every file is complete.
-func firstIncompleteFile(j *queue.Job) string {
+
+// firstIncompleteFile returns the subject of the first file that has not been
+// completely downloaded, skipping files with non-FetchAlways policy.
+func firstIncompleteFile(j *job.Job) string {
 	m, err := j.Manifest()
 	p := j.Progress()
 	if err != nil || p == nil {
 		return ""
 	}
 	for i := range m.NumFiles() {
-		// A file the job is not fetching is never Complete, so without this
-		// skip a held or discarded recovery volume becomes the reported
-		// current file for the rest of the job's life.
-		if p.FileFetchPolicy(i) != queue.FetchAlways {
+		if p.FileFetchPolicy(i) != job.FetchAlways {
 			continue
 		}
 		if !p.FileComplete(i) {
@@ -334,11 +331,11 @@ func firstIncompleteFile(j *queue.Job) string {
 // fileState classifies a file into a coarse UI state. "downloading"
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
-func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
+func fileState(m *job.Manifest, p *job.JobProgress, fileIdx int) string {
 	switch p.FileFetchPolicy(fileIdx) {
-	case queue.FetchIfNeeded:
+	case job.FetchIfNeeded:
 		return "held"
-	case queue.FetchNever:
+	case job.FetchNever:
 		return "skipped"
 	}
 	if p.FileComplete(fileIdx) {
@@ -383,7 +380,7 @@ func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
 // Reconciling the two views is a UI-side arithmetic question, not a missing
 // field — State carries "held" and "skipped" per file, so summing only the
 // files in neither state reproduces the row total exactly. Tracked as #325.
-func buildQueueFiles(j *queue.Job) []queueFile {
+func buildQueueFiles(j *job.Job) []queueFile {
 	m, err := j.Manifest()
 	p := j.Progress()
 	if err != nil || p == nil {
@@ -401,157 +398,17 @@ func buildQueueFiles(j *queue.Job) []queueFile {
 	return out
 }
 
-func firstIncompleteFileJob(j *job.Job) string {
-	m, err := j.Manifest()
-	p := j.Progress()
-	if err != nil || p == nil {
-		return ""
-	}
-	for i := range m.NumFiles() {
-		if p.FileFetchPolicy(i) != job.FetchAlways {
-			continue
-		}
-		if !p.FileComplete(i) {
-			return m.FileSubject(i)
-		}
-	}
-	return ""
-}
-
-func fileStateJob(m *job.Manifest, p *job.JobProgress, fileIdx int) string {
-	switch p.FileFetchPolicy(fileIdx) {
-	case job.FetchIfNeeded:
-		return "held"
-	case job.FetchNever:
-		return "skipped"
-	}
-	if p.FileComplete(fileIdx) {
-		anyFailed := false
-		lo, hi := m.FileRange(fileIdx)
-		for i := lo; i < hi; i++ {
-			if p.ArticleFailed(i) {
-				anyFailed = true
-				break
-			}
-		}
-		if anyFailed {
-			return "failed"
-		}
-		return "done"
-	}
-	if p.FileBytesDownloaded(fileIdx) > 0 {
-		return "downloading"
-	}
-	return "queued"
-}
-
-func buildQueueFilesJob(j *job.Job) []queueFile {
-	m, err := j.Manifest()
-	p := j.Progress()
-	if err != nil || p == nil {
-		return []queueFile{}
-	}
-	out := make([]queueFile, 0, m.NumFiles())
-	for fi := range m.NumFiles() {
-		out = append(out, queueFile{
-			Name:            m.FileSubject(fi),
-			Bytes:           m.FileBytes(fi),
-			BytesDownloaded: p.FileBytesDownloaded(fi),
-			State:           fileStateJob(m, p, fi),
-		})
-	}
-	return out
-}
-
 // noiseFloorBPS is the speed below which ETA computation is suppressed
 // (returns 0). Random fluctuations in BPS would otherwise produce wildly
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
 const noiseFloorBPS = 1024.0 // 1 KiB/s
 
-// buildSlot renders one Job into the API queueSlot shape. paused is the
+// buildSlot renders one Row into the API queueSlot shape. paused is the
 // queue-wide pause flag; speed is the snapshot aggregate BPS used for
 // ETA. index is the slot's display index in the listing (0 for the
 // detail endpoint). cp carries the durability figures that live in the
 // application rather than in the queue, snapshotted once per request.
-func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
-	// No manifest access: every value below comes from the job's promoted
-	// scalars or from JobProgress, both of which are resident for the life
-	// of the job. A queue listing is polled continuously and includes every
-	// queued and paused job, all of which have had their manifests evicted,
-	// so needing one here meant either a disk read per job per poll or a nil
-	// deref — this used to do both.
-	p := j.Progress()
-	totalBytes := p.ExpectedBytes()
-	remainingBytes := p.RemainingBytes()
-
-	var pct int
-	if totalBytes > 0 {
-		pct = int(100 * (totalBytes - remainingBytes) / totalBytes)
-	}
-
-	displayStatus := j.Status
-	if paused && j.Status == constants.StatusDownloading {
-		displayStatus = constants.StatusPaused
-	}
-
-	var etaSeconds int
-	timeleft := "0:00:00"
-	etaStr := "unknown"
-	if !paused && j.Status == constants.StatusDownloading &&
-		speed > noiseFloorBPS && remainingBytes > 0 {
-		etaSeconds = int(float64(remainingBytes) / speed)
-		timeleft = formatDuration(etaSeconds)
-		etaStr = timeleft
-	}
-
-	return queueSlot{
-		NzoID:          j.ID,
-		Filename:       j.Filename,
-		Name:           j.Name,
-		Category:       j.Category,
-		Index:          index,
-		Priority:       j.Priority.String(),
-		Status:         string(displayStatus),
-		Script:         nonEmpty(j.Script, "none"),
-		Password:       j.Password,
-		Size:           humanfmt.Bytes(totalBytes),
-		SizeLeft:       humanfmt.Bytes(remainingBytes),
-		MB:             toMBString(totalBytes),
-		MBLeft:         toMBString(remainingBytes),
-		Bytes:          totalBytes,
-		RemainingBytes: remainingBytes,
-		Percentage:     pct,
-		Timeleft:       timeleft,
-		ETA:            etaStr,
-		PP:             strconv.Itoa(j.PP),
-		Warning:        j.Warning,
-		FailedBytes:    p.FailedBytes(),
-		// Job.RepairState is residency-agnostic, which this call site needs:
-		// a listing includes jobs whose manifests have been evicted.
-		RepairState:       job.RepairState(j.RepairState()),
-		RecoveryBytes:     j.RecoveryBytes(),
-		RecoveryFiles:     j.RecoveryFiles(),
-		CurrentStage:      stageFromStatus(displayStatus),
-		ArticlesRemaining: p.PendingArticles(),
-		ETASeconds:        etaSeconds,
-		CurrentFile:       firstIncompleteFile(j),
-		Par2Held:          j.UsesOnDemandPar2(),
-		Par2ReleaseReason: p.Par2ReleaseReason(),
-		DirectUnpack:      duStatus,
-		StallReason:       cp.StallReason,
-		// From the job's own progress rather than a second snapshot: on this
-		// design a downloaded byte IS a durable byte, because the only things
-		// that mark an article Done are the barrier's ack and a replay of the
-		// recorded runs. That also fixes its unit as the encoded one
-		// -- see the field doc for why it is not the same unit as
-		// BytesPending below, and why neither can move.
-		BytesDurable:    app.DurableBytesOf(p),
-		BytesPending:    cp.PendingBytes,
-		LastBarrierUnix: unixOrZero(cp.LastBarrier),
-	}
-}
-
-func buildSlotFromRow(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
+func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
 	var p *job.JobProgress
 	if j != nil {
 		p = j.Progress()
@@ -595,8 +452,8 @@ func buildSlotFromRow(r dispatch.Row, j *job.Job, paused bool, speed float64, in
 		repairState = j.RepairState()
 		recoveryBytes = j.RecoveryBytes()
 		recoveryFiles = j.RecoveryFiles()
-		currentFile = firstIncompleteFileJob(j)
-		par2Held = j.HasDeferredPar2()
+		currentFile = firstIncompleteFile(j)
+		par2Held = j.UsesOnDemandPar2()
 	}
 	if p != nil {
 		failedBytes = p.FailedBytes()
@@ -653,36 +510,9 @@ func unixOrZero(t time.Time) int64 {
 	return t.Unix()
 }
 
-// filterQueueSlots applies the category/status/search filters to jobs and
-// builds the resulting queueSlot list. Split out of queueList to isolate
-// per-job filtering from pagination and response assembly (OPT-9).
-func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
-	slots := make([]queueSlot, 0, len(jobs))
-	for _, j := range jobs {
-		// Post-processing jobs remain in the queue with their current
-		// status (Verifying, Repairing, Extracting, etc.) until
-		// OnJobDone removes them and moves them to history.
-		if catFilter != "" && j.Category != catFilter {
-			continue
-		}
-		if statusFilter != "" && string(j.Status) != statusFilter {
-			continue
-		}
-		if searchLower != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
-			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
-			continue
-		}
-
-		var duStatus *directunpack.Status
-		if status, ok := duStatuses[j.ID]; ok {
-			duStatus = &status
-		}
-		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus, cpStates[j.ID]))
-	}
-	return slots
-}
-
-func (s *Server) filterDispatcherRows(rows []dispatch.Row, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
+// filterQueueSlots applies the category/status/search filters to rows and
+// builds the resulting queueSlot list.
+func (s *Server) filterQueueSlots(rows []dispatch.Row, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
 	slots := make([]queueSlot, 0, len(rows))
 	for _, r := range rows {
 		st := string(r.Status())
@@ -705,7 +535,7 @@ func (s *Server) filterDispatcherRows(rows []dispatch.Row, catFilter, statusFilt
 		if s.dispatcher != nil {
 			j, _ = s.dispatcher.Job(r.ID)
 		}
-		slots = append(slots, buildSlotFromRow(r, j, paused, speed, len(slots), duStatus, cpStates[r.ID]))
+		slots = append(slots, buildSlot(r, j, paused, speed, len(slots), duStatus, cpStates[r.ID]))
 	}
 	return slots
 }
@@ -759,11 +589,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher != nil {
 		rows := s.dispatcher.List()
 		paused = s.dispatcher.Paused()
-		slots = s.filterDispatcherRows(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
-	} else if s.queue != nil {
-		jobs := s.queue.Snapshot()
-		paused = s.queue.IsPaused()
-		slots = filterQueueSlots(jobs, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
+		slots = s.filterQueueSlots(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
 	}
 
 	total := len(slots)
@@ -827,61 +653,16 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 // frontend can reuse the same parser; Slots will contain exactly one
 // entry (or zero if the job has been removed).
 func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID string) {
-	if s.dispatcher != nil {
-		row, ok := s.dispatcher.Row(nzoID)
-		if !ok {
-			respondJSON(w, http.StatusOK, queueResponse{
-				Status: true,
-				Queue: queueDetail{
-					Status:    "Idle",
-					Paused:    s.dispatcher.Paused(),
-					NoOfSlots: 0,
-					Slots:     []queueSlot{},
-				},
-			})
-			return
-		}
-
-		paused := s.dispatcher.Paused()
-		var speed float64
-		if s.status != nil {
-			speed = s.status.Speed()
-		}
-
-		var duStatus *directunpack.Status
-		var cp app.JobCheckpointState
-		if s.status != nil {
-			if status, ok := s.status.DirectUnpackStatus(nzoID); ok {
-				duStatus = &status
-			}
-			cp = s.status.CheckpointState(nzoID)
-		}
-		j, _ := s.dispatcher.Job(nzoID)
-		slot := buildSlotFromRow(row, j, paused, speed, 0, duStatus, cp)
-		if j != nil {
-			slot.Files = buildQueueFilesJob(j)
-		}
-
-		respondJSON(w, http.StatusOK, queueResponse{
-			Status: true,
-			Queue: queueDetail{
-				Status:         slot.Status,
-				Paused:         paused,
-				NoOfSlots:      1,
-				NoOfSlotsTotal: 1,
-				Slots:          []queueSlot{slot},
-			},
-		})
+	if s.dispatcher == nil {
 		return
 	}
-
-	qJob := s.queue.SnapshotJob(nzoID)
-	if qJob == nil {
+	row, ok := s.dispatcher.Row(nzoID)
+	if !ok {
 		respondJSON(w, http.StatusOK, queueResponse{
 			Status: true,
 			Queue: queueDetail{
 				Status:    "Idle",
-				Paused:    s.queue.IsPaused(),
+				Paused:    s.dispatcher.Paused(),
 				NoOfSlots: 0,
 				Slots:     []queueSlot{},
 			},
@@ -889,7 +670,7 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 		return
 	}
 
-	paused := s.queue.IsPaused()
+	paused := s.dispatcher.Paused()
 	var speed float64
 	if s.status != nil {
 		speed = s.status.Speed()
@@ -898,13 +679,16 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 	var duStatus *directunpack.Status
 	var cp app.JobCheckpointState
 	if s.status != nil {
-		if status, ok := s.status.DirectUnpackStatus(qJob.ID); ok {
+		if status, ok := s.status.DirectUnpackStatus(nzoID); ok {
 			duStatus = &status
 		}
-		cp = s.status.CheckpointState(qJob.ID)
+		cp = s.status.CheckpointState(nzoID)
 	}
-	slot := buildSlot(qJob, paused, speed, 0, duStatus, cp)
-	slot.Files = buildQueueFiles(qJob)
+	j, _ := s.dispatcher.Job(nzoID)
+	slot := buildSlot(row, j, paused, speed, 0, duStatus, cp)
+	if j != nil {
+		slot.Files = buildQueueFiles(j)
+	}
 
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
@@ -934,10 +718,6 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 		if s.dispatcher != nil {
 			for _, row := range s.dispatcher.List() {
 				ids = append(ids, row.ID)
-			}
-		} else if s.queue != nil {
-			for _, j := range s.queue.Snapshot() {
-				ids = append(ids, j.ID)
 			}
 		}
 	} else {
@@ -1135,29 +915,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := s.queue.SetCategory(nzoID, cat, cats); err != nil {
-		s.respondError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	qJob := s.queue.SnapshotJob(nzoID)
-	s.respondCategoryChanged(w, nzoID, qJob)
-}
-
-// respondCategoryChanged writes the change_cat success response. qJob is the
-// post-change snapshot used only for the log line and may be nil: SetCategory
-// has already succeeded by the time this is called, and a concurrent removal
-// of the job between that call and the snapshot is not a failure of this
-// request — it is only missing logging detail, so the response must stay
-// 200 regardless.
-func (s *Server) respondCategoryChanged(w http.ResponseWriter, nzoID string, qJob *queue.Job) {
-	if qJob != nil {
-		s.log.Info("job category changed", "job", nzoID,
-			"cat", qJob.Category, "pp", qJob.PP, "script", qJob.Script, "priority", qJob.Priority)
-	}
-	respondJSON(w, http.StatusOK, map[string]any{
-		"status":  true,
-		"nzo_ids": []string{nzoID},
-	})
+	s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
 }
 
 // queueChangeName handles name=rename and name=change_name.

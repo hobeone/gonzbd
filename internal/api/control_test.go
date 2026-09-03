@@ -3,17 +3,15 @@ package api
 import (
 	"net/http"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func TestModePause_OK(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
-	s := testServerWithQueue(t, q)
+	d := newTestAPIDispatcher(t)
+	s := testDispatcherServer(t, d)
 
 	// Verify queue is initially not paused
-	if q.IsPaused() {
+	if d.Paused() {
 		t.Fatalf("queue initially paused")
 	}
 
@@ -28,20 +26,20 @@ func TestModePause_OK(t *testing.T) {
 	}
 
 	// Verify queue is now paused
-	if !q.IsPaused() {
+	if !d.Paused() {
 		t.Errorf("queue not paused after pause call")
 	}
 }
 
 func TestModeResume_OK(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
-	s := testServerWithQueue(t, q)
+	d := newTestAPIDispatcher(t)
+	s := testDispatcherServer(t, d)
 
 	// Pause first
-	q.PauseAll()
-	if !q.IsPaused() {
-		t.Fatalf("queue not paused after PauseAll")
+	d.Pause()
+	if !d.Paused() {
+		t.Fatalf("queue not paused after Pause")
 	}
 
 	rr := apiGet(t, s.Handler(), "/api?mode=resume&apikey="+testAPIKey)
@@ -55,7 +53,7 @@ func TestModeResume_OK(t *testing.T) {
 	}
 
 	// Verify queue is now not paused
-	if q.IsPaused() {
+	if d.Paused() {
 		t.Errorf("queue paused after resume call")
 	}
 }

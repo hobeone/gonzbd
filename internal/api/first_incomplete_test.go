@@ -8,11 +8,11 @@ import "testing"
 // whole post-processing phase — a loop a reviewer classifies correctly as
 // index-space and still ships the bug.
 func TestFirstIncompleteFile_SkipsUnfetchedVolumes(t *testing.T) {
-	q, job := newOnDemandPar2Job(t)
+	_, job := newOnDemandPar2Job(t)
 
 	// File 0 is the only content file; complete it. File 1 is the recovery
 	// volume, held and therefore never Complete.
-	if err := q.MarkFileComplete(job.ID, 0); err != nil {
+	if err := job.MarkFileComplete(0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
 

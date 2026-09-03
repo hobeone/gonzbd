@@ -2254,6 +2254,13 @@ func (app *Application) enqueuePostProc(qJob *queue.Job, failMsg string) {
 		app.postProcessor.Process(&postproc.Job{
 			Queue:                qJob,
 			Job:                  j,
+			Filename:             qJob.Filename,
+			NZBBackup:            qJob.NZBBackup,
+			Category:             qJob.Category,
+			Password:             qJob.Password,
+			Script:               qJob.Script,
+			PP:                   qJob.PP,
+			URL:                  qJob.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
 			Sanitize:             sanitize,

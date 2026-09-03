@@ -163,6 +163,7 @@ type Hooks struct {
 	OnRetry     func(string)
 	OnPauseAll  func()
 	OnResumeAll func()
+	OnStatus    func(string, constants.Status)
 }
 
 // WithHooks sets lifecycle hooks on the Queue.
@@ -1371,6 +1372,9 @@ func (q *Queue) setStatusLocked(job *Job, status constants.Status) error {
 		return illegalTransition(job.Status, status)
 	}
 	job.Status = status
+	if q.hooks.OnStatus != nil {
+		q.hooks.OnStatus(job.ID, status)
+	}
 	return nil
 }
 
