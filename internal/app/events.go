@@ -83,11 +83,7 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 			var remaining int64
 			if app.dispatcher != nil {
 				for _, row := range app.dispatcher.List() {
-					if j, ok := app.dispatcher.Job(row.ID); ok {
-						if p := j.Progress(); p != nil {
-							remaining += p.RemainingBytes()
-						}
-					}
+					remaining += row.RemainingBytes
 				}
 			}
 			app.mu.Lock()

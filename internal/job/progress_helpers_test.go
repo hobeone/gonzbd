@@ -532,3 +532,37 @@ func TestRestoreDownloadStamps_FiltersEachFieldIndependently(t *testing.T) {
 		})
 	}
 }
+
+func TestRestorePar2ReleaseReason_And_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	p := &JobProgress{}
+	p.restorePar2ReleaseReason("test-reason")
+	if got := p.Par2ReleaseReason(); got != "test-reason" {
+		t.Errorf("Par2ReleaseReason() = %q, want test-reason", got)
+	}
+
+	// Test UnmarshalJSON via round-trip
+	orig := &JobProgress{
+		done:              newBitset(1),
+		failed:            newBitset(1),
+		emitted:           newBitset(1),
+		files:             []FileProgress{{Complete: true, Fetch: FetchAlways, Filename: "file.rar", AssembledCRC32: 123}},
+		par2Recovered:     true,
+		par2ReleaseReason: "recovered",
+	}
+	data, err := orig.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	var unmarshaled JobProgress
+	if err := unmarshaled.UnmarshalJSON(data); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if got := unmarshaled.Par2ReleaseReason(); got != "recovered" {
+		t.Errorf("Par2ReleaseReason = %q, want recovered", got)
+	}
+	if !unmarshaled.Par2Recovered() {
+		t.Error("Par2Recovered = false, want true")
+	}
+}

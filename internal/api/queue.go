@@ -402,18 +402,15 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // detail endpoint). cp carries the durability figures that live in the
 // application rather than in the queue, snapshotted once per request.
 func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
-	var p *job.JobProgress
-	if j != nil {
-		p = j.Progress()
-	}
-
+	// remainingBytes is initialized from r.RemainingBytes, which the Dispatcher
+	// captured atomically at listing time. If the job was unregistered between
+	// List() and Job(r.ID) (a transient race window), we retain that snapshot
+	// rather than resetting to Header.Bytes so progress never falsely flashes 0%.
 	totalBytes := r.Header.Bytes
-	// Fallback to Header.Bytes when the active job is not yet loaded into
-	// memory (e.g. during promotion or slot build race windows).
-	remainingBytes := r.Header.Bytes
-	if p != nil {
-		totalBytes = p.ExpectedBytes()
-		remainingBytes = p.RemainingBytes()
+	remainingBytes := r.RemainingBytes
+	if j != nil && j.HasProgress() {
+		totalBytes = j.ExpectedBytes()
+		remainingBytes = j.RemainingBytes()
 	}
 
 	var pct int
@@ -449,12 +446,12 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		recoveryFiles = j.RecoveryFiles()
 		currentFile = firstIncompleteFile(j)
 		par2Held = j.UsesOnDemandPar2()
-	}
-	if p != nil {
-		failedBytes = p.FailedBytes()
-		pendingArticles = p.PendingArticles()
-		par2ReleaseReason = p.Par2ReleaseReason()
-		durableBytes = app.DurableBytesOf(p)
+		if j.HasProgress() {
+			failedBytes = j.FailedBytes()
+			pendingArticles = j.PendingArticles()
+			par2ReleaseReason = j.Par2ReleaseReason()
+			durableBytes = app.DurableBytesOf(j)
+		}
 	}
 
 	return queueSlot{

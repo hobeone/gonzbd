@@ -3001,3 +3001,29 @@ func TestQueueChangeName_DispatcherWiredAndUnwired(t *testing.T) {
 		t.Errorf("status = %d; want 404", rrNotFound.Code)
 	}
 }
+
+func TestQueueSlot_TransientNilJobPreservesProgress(t *testing.T) {
+	t.Parallel()
+
+	r := dispatch.Row{
+		ID: "transient-job",
+		Header: dispatch.Header{
+			Filename: "transient.nzb",
+			Name:     "transient",
+			Bytes:    1000,
+		},
+		RemainingBytes: 200,
+	}
+
+	slot := buildSlot(r, nil, false, 0, 0, nil, app.JobCheckpointState{})
+
+	if slot.Percentage != 80 {
+		t.Errorf("slot.Percentage = %d, want 80", slot.Percentage)
+	}
+	if slot.RemainingBytes != 200 {
+		t.Errorf("slot.RemainingBytes = %d, want 200", slot.RemainingBytes)
+	}
+	if slot.Bytes != 1000 {
+		t.Errorf("slot.Bytes = %d, want 1000", slot.Bytes)
+	}
+}

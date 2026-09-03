@@ -261,7 +261,7 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(jobID); ok {
-			out.DurableBytes = DurableBytesOf(j.Progress())
+			out.DurableBytes = DurableBytesOf(j)
 			return out
 		}
 	}

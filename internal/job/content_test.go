@@ -544,3 +544,132 @@ func TestMarkDownloadFinished_FirstWins(t *testing.T) {
 		t.Errorf("DownloadFinished moved to %v on second call, want %v (first wins)", got, first)
 	}
 }
+
+func TestJob_ProgressAccessors(t *testing.T) {
+	t.Parallel()
+
+	// 1. Unattached job returns zero values for all accessors
+	jUnattached := New("unattached-job", "test.nzb", Policy{})
+	if jUnattached.HasProgress() {
+		t.Error("HasProgress() = true on unattached job, want false")
+	}
+	if got := jUnattached.ExpectedBytes(); got != 0 {
+		t.Errorf("ExpectedBytes() = %d, want 0", got)
+	}
+	if got := jUnattached.RemainingBytes(); got != 0 {
+		t.Errorf("RemainingBytes() = %d, want 0", got)
+	}
+	if got := jUnattached.FailedBytes(); got != 0 {
+		t.Errorf("FailedBytes() = %d, want 0", got)
+	}
+	if got := jUnattached.ContentFailedBytes(); got != 0 {
+		t.Errorf("ContentFailedBytes() = %d, want 0", got)
+	}
+	if got := jUnattached.PendingArticles(); got != 0 {
+		t.Errorf("PendingArticles() = %d, want 0", got)
+	}
+	if got := jUnattached.DownloadStarted(); !got.IsZero() {
+		t.Errorf("DownloadStarted() = %v, want zero", got)
+	}
+	if got := jUnattached.DownloadFinished(); !got.IsZero() {
+		t.Errorf("DownloadFinished() = %v, want zero", got)
+	}
+	if got := jUnattached.Par2ReleaseReason(); got != "" {
+		t.Errorf("Par2ReleaseReason() = %q, want empty", got)
+	}
+
+	// 2. Attached job returns proper values matching progress
+	m := NewManifest([]JobFile{
+		{
+			Subject: "data.rar",
+			Bytes:   100,
+			Articles: []JobArticle{
+				{ID: "<d1@x>", Bytes: 50, Number: 1},
+				{ID: "<d2@x>", Bytes: 50, Number: 2},
+			},
+		},
+		{
+			Subject:        "data.vol01+01.par2",
+			Bytes:          60,
+			IsPar2Recovery: true,
+			Deferred:       true,
+			Articles: []JobArticle{
+				{ID: "<p1@x>", Bytes: 60, Number: 3},
+			},
+		},
+	})
+	j := New("attached-job", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+
+	if !j.HasProgress() {
+		t.Fatal("HasProgress() = false on attached job, want true")
+	}
+	// Initial state: data.rar is FetchAlways (100 bytes, 2 articles), par2 is FetchIfNeeded (deferred, 0 bytes expected).
+	if got := j.ExpectedBytes(); got != 100 {
+		t.Errorf("ExpectedBytes() = %d, want 100", got)
+	}
+	if got := j.RemainingBytes(); got != 100 {
+		t.Errorf("RemainingBytes() = %d, want 100", got)
+	}
+	if got := j.FailedBytes(); got != 0 {
+		t.Errorf("FailedBytes() = %d, want 0", got)
+	}
+	if got := j.ContentFailedBytes(); got != 0 {
+		t.Errorf("ContentFailedBytes() = %d, want 0", got)
+	}
+	if got := j.PendingArticles(); got != 3 {
+		t.Errorf("PendingArticles() = %d, want 3", got)
+	}
+	if got := j.DownloadStarted(); !got.IsZero() {
+		t.Errorf("DownloadStarted() = %v, want zero", got)
+	}
+	if got := j.DownloadFinished(); !got.IsZero() {
+		t.Errorf("DownloadFinished() = %v, want zero", got)
+	}
+	if got := j.Par2ReleaseReason(); got != "" {
+		t.Errorf("Par2ReleaseReason() = %q, want empty", got)
+	}
+
+	// Mutate progress via Job methods
+	start := time.Unix(1700000000, 0).UTC()
+	finish := time.Unix(1700000100, 0).UTC()
+	if err := j.MarkJobStarted(start); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if err := j.MarkArticleDone(0, 50, "srv1"); err != nil {
+		t.Fatalf("MarkArticleDone: %v", err)
+	}
+	// MarkArticleFailed triggers on-demand par2 release and sets Par2ReleaseReason
+	if err := j.MarkArticleFailed(1); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if err := j.MarkDownloadFinished(finish); err != nil {
+		t.Fatalf("MarkDownloadFinished: %v", err)
+	}
+
+	if got := j.DownloadStarted(); !got.Equal(start) {
+		t.Errorf("DownloadStarted() = %v, want %v", got, start)
+	}
+	if got := j.DownloadFinished(); !got.Equal(finish) {
+		t.Errorf("DownloadFinished() = %v, want %v", got, finish)
+	}
+	if got := j.FailedBytes(); got != 50 {
+		t.Errorf("FailedBytes() = %d, want 50", got)
+	}
+	if got := j.ContentFailedBytes(); got != 50 {
+		t.Errorf("ContentFailedBytes() = %d, want 50", got)
+	}
+	if got := j.Par2ReleaseReason(); got == "" {
+		t.Error("Par2ReleaseReason() is empty after par2 release")
+	}
+
+	j.SetRecoveryBytes(1234)
+	if got := j.RecoveryBytes(); got != 1234 {
+		t.Errorf("RecoveryBytes() = %d, want 1234", got)
+	}
+}

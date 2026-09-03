@@ -99,6 +99,93 @@ func (j *Job) Progress() *JobProgress {
 	return j.progress.clone()
 }
 
+// HasProgress reports whether the progress tier is resident.
+func (j *Job) HasProgress() bool {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.progress != nil
+}
+
+// ExpectedBytes returns what the job is expected to fetch, or 0 if progress is not resident.
+func (j *Job) ExpectedBytes() int64 {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return 0
+	}
+	return j.progress.ExpectedBytes()
+}
+
+// RemainingBytes returns what is still to fetch, or 0 if progress is not resident.
+func (j *Job) RemainingBytes() int64 {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return 0
+	}
+	return j.progress.RemainingBytes()
+}
+
+// FailedBytes returns the total failed article bytes, or 0 if progress is not resident.
+func (j *Job) FailedBytes() int64 {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return 0
+	}
+	return j.progress.FailedBytes()
+}
+
+// ContentFailedBytes returns failed bytes excluding par2, or 0 if progress is not resident.
+func (j *Job) ContentFailedBytes() int64 {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return 0
+	}
+	return j.progress.ContentFailedBytes()
+}
+
+// PendingArticles returns the number of un-downloaded articles, or 0 if progress is not resident.
+func (j *Job) PendingArticles() int {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return 0
+	}
+	return j.progress.PendingArticles()
+}
+
+// DownloadStarted returns the time the first article began downloading, or zero if unstarted/not resident.
+func (j *Job) DownloadStarted() time.Time {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return time.Time{}
+	}
+	return j.progress.DownloadStarted()
+}
+
+// DownloadFinished returns the time downloading completed, or zero if unfinished/not resident.
+func (j *Job) DownloadFinished() time.Time {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return time.Time{}
+	}
+	return j.progress.DownloadFinished()
+}
+
+// Par2ReleaseReason returns the reason par2 articles were released, or empty if not released/not resident.
+func (j *Job) Par2ReleaseReason() string {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return ""
+	}
+	return j.progress.Par2ReleaseReason()
+}
+
 // SetFileFetchPolicy sets the fetch policy for file fi under the content lock.
 func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 	j.contentMu.Lock()

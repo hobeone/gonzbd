@@ -42,9 +42,10 @@ type Header struct {
 // Row is one line of a queue listing: the scheduling view sched computes,
 // beside the header the caller supplied.
 type Row struct {
-	ID     string
-	Header Header
-	View   job.RenderView
+	ID             string
+	Header         Header
+	View           job.RenderView
+	RemainingBytes int64
 }
 
 // entry is the registry's record for one job.
@@ -275,7 +276,16 @@ func (d *Dispatcher) List() []Row {
 	views := d.q.RenderAll(js)
 	out := make([]Row, 0, len(ids))
 	for i, id := range ids {
-		out = append(out, Row{ID: id, Header: hs[i], View: views[i]})
+		rem := hs[i].Bytes
+		if js[i] != nil && js[i].HasProgress() {
+			rem = js[i].RemainingBytes()
+		}
+		out = append(out, Row{
+			ID:             id,
+			Header:         hs[i],
+			View:           views[i],
+			RemainingBytes: rem,
+		})
 	}
 	return out
 }
@@ -297,7 +307,11 @@ func (d *Dispatcher) Row(id string) (Row, bool) {
 	j, h := e.j, e.h
 	d.mu.Unlock()
 
-	return Row{ID: id, Header: h, View: d.q.Render(j)}, true
+	rem := h.Bytes
+	if j.HasProgress() {
+		rem = j.RemainingBytes()
+	}
+	return Row{ID: id, Header: h, View: d.q.Render(j), RemainingBytes: rem}, true
 }
 
 // Job returns the live *job.Job for id.
