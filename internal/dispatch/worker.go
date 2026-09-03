@@ -122,15 +122,35 @@ func (d *Dispatcher) launch(ctx context.Context, j *job.Job) {
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.launched[id] {
+	if _, ok := d.launched[id]; ok {
 		return false
 	}
-	d.launched[id] = true
+	d.launched[id] = make(chan struct{})
 	return true
 }
 
 func (d *Dispatcher) clearLaunched(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	delete(d.launched, id)
+	if ch, ok := d.launched[id]; ok {
+		close(ch)
+		delete(d.launched, id)
+	}
+}
+
+// waitLaunched waits for any active worker for id to complete (exit and call
+// Finished or Yielded). Returns nil immediately if no worker is launched.
+func (d *Dispatcher) waitLaunched(ctx context.Context, id string) error {
+	d.mu.Lock()
+	ch := d.launched[id]
+	d.mu.Unlock()
+	if ch == nil {
+		return nil
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

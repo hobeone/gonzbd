@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -67,7 +68,13 @@ func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 // the tick only walks registered jobs.
 func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 	st := &fakeStore{}
-	d := newTestDispatcher(t, withCaps(1, 1), withStore(st))
+	w := &stubWorkers{}
+	d := newTestDispatcher(t, withCaps(1, 1), withStore(st), withWorkers(w))
+	w.onAbort = func(id string) {
+		go func() {
+			_ = d.Yielded(id)
+		}()
+	}
 	jA := job.New("a", "Job A", job.PolicyFromPP(3))
 	if err := d.Add(jA, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add(a): %v", err)
@@ -117,5 +124,96 @@ func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 	}
 	if _, ok := dErr.Job("e"); !ok {
 		t.Fatal("a Remove that failed must leave the job registered")
+	}
+}
+
+type blockingRunner struct {
+	runCalled     chan struct{}
+	releaseWorker chan struct{}
+	d             *Dispatcher
+}
+
+func (r *blockingRunner) Run(_ context.Context, id string, _ job.State) {
+	close(r.runCalled)
+	go func() {
+		<-r.releaseWorker
+		_ = r.d.Yielded(id)
+	}()
+}
+
+func TestRemove_WaitsForActiveWorkerBeforeEvicting(t *testing.T) {
+	res := &fakeResidency{}
+	runner := &blockingRunner{
+		runCalled:     make(chan struct{}),
+		releaseWorker: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withResidency(res), withRunner(runner))
+	runner.d = d
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Two ticks: first opens attempt, second grants lease, hydrates manifest, and launches worker.
+	d.tick(context.Background())
+	d.tick(context.Background())
+
+	select {
+	case <-runner.runCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker to launch")
+	}
+
+	if !res.resident("j1") {
+		t.Fatal("precondition: manifest must be hydrated while worker is running")
+	}
+
+	// First verify retry contract with a timed-out context.
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := d.Remove(timeoutCtx, "j1"); err == nil {
+		t.Fatal("Remove with expired context must error")
+	}
+	if _, ok := d.Job("j1"); !ok {
+		t.Fatal("job must remain registered after failed Remove")
+	}
+	if !res.resident("j1") {
+		t.Fatal("manifest must remain resident after failed Remove")
+	}
+
+	removeDone := make(chan error, 1)
+	go func() {
+		removeDone <- d.Remove(context.Background(), "j1")
+	}()
+
+	// Assert that while releaseWorker is not closed, Remove does not complete
+	// and manifest is NOT evicted.
+	select {
+	case err := <-removeDone:
+		t.Fatalf("Remove completed prematurely with %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if !res.resident("j1") {
+		t.Fatal("manifest was evicted while worker was still active")
+	}
+
+	// Close releaseWorker to let the worker call Yielded and finish.
+	close(runner.releaseWorker)
+
+	select {
+	case err := <-removeDone:
+		if err != nil {
+			t.Fatalf("Remove returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Remove timed out waiting for worker exit")
+	}
+
+	if res.resident("j1") {
+		t.Fatal("manifest was not evicted after Remove completed")
+	}
+	if _, ok := d.Job("j1"); ok {
+		t.Fatal("job must be deregistered after Remove completed")
 	}
 }

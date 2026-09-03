@@ -190,6 +190,12 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 // claiming to test a crash.
 func (a *Application) ForceStopWorkers() {
 	a.stopWorkers(15*time.Second, nil, noBarrierOnStop)
+	if a.postProcessor != nil {
+		_ = a.postProcessor.Stop()
+	}
+	if a.dispatcher != nil {
+		_ = a.dispatcher.Stop()
+	}
 }
 
 // BarrierRuns reports how many checkpoint barriers have been started.

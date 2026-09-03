@@ -58,7 +58,7 @@ type Dispatcher struct {
 	// because a Stopped Dispatcher is still inspectable and its jobs still
 	// exist. remove is the only site that must be total.
 	resident map[string]bool
-	launched map[string]bool
+	launched map[string]chan struct{}
 	written  map[string]Persisted
 
 	// nextSeq is the sequence register will hand the next job, and register is
@@ -244,7 +244,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	return &Dispatcher{
 		byID:      map[string]*entry{},
 		resident:  map[string]bool{},
-		launched:  map[string]bool{},
+		launched:  map[string]chan struct{}{},
 		written:   map[string]Persisted{},
 		q:         sched.New(leaseCap, slotCap, clock, w),
 		wake:      make(chan struct{}, 1),

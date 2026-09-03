@@ -100,6 +100,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		}
 	}
 	if app.dispatcher != nil {
+		_ = app.dispatcher.Cancel(job.Job.ID())
+		_ = app.dispatcher.Yielded(job.Job.ID())
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := app.dispatcher.Remove(dbCtx, job.Job.ID()); err != nil {

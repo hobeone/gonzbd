@@ -14,9 +14,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-type apiStubWorkers struct{ aborted []string }
+type apiStubWorkers struct {
+	disp    *dispatch.Dispatcher
+	aborted []string
+}
 
-func (s *apiStubWorkers) Abort(jobID string) { s.aborted = append(s.aborted, jobID) }
+func (s *apiStubWorkers) Abort(jobID string) {
+	s.aborted = append(s.aborted, jobID)
+	if s.disp != nil {
+		go func() { _ = s.disp.Yielded(jobID) }()
+	}
+}
 
 type apiStubResidency struct{}
 
@@ -35,7 +43,9 @@ func (r *apiStubRunner) Run(ctx context.Context, id string, state job.State) {}
 
 func newTestAPIDispatcher(t *testing.T) *dispatch.Dispatcher {
 	t.Helper()
-	d := dispatch.New(2, 2, time.Hour, time.Now, &apiStubWorkers{}, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
+	workers := &apiStubWorkers{}
+	d := dispatch.New(2, 2, time.Hour, time.Now, workers, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
+	workers.disp = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}

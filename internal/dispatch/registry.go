@@ -237,7 +237,10 @@ func (d *Dispatcher) remove(id string) {
 	delete(d.byID, id)
 	delete(d.written, id)
 	delete(d.resident, id)
-	delete(d.launched, id)
+	if ch, ok := d.launched[id]; ok {
+		close(ch)
+		delete(d.launched, id)
+	}
 	// slices.Delete rather than the append-shift idiom: the shift leaves the
 	// vacated tail slot holding its old string header, and d.order lives as
 	// long as the Dispatcher, so a removed job's ID stayed reachable from the
@@ -349,12 +352,17 @@ func (d *Dispatcher) ResumeJob(id string) error {
 	return nil
 }
 
-// Remove cancels a job, deletes its persisted row and deregisters it.
+// Remove cancels a job, waits for any in-flight worker to exit, deletes its
+// persisted row and deregisters it.
 //
 // The order is deliberate: Cancel first so sched reclaims the lease and the
 // compute slot while the job is still registered. Deregistering first would
 // strand both -- the tick only walks registered jobs, so nothing would ever
 // return them.
+//
+// Retry contract: If Remove returns an error (e.g. context cancellation while
+// waiting for worker, or store failure), the job remains cancelled and
+// registered, allowing the caller to retry Remove safely.
 func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	if _, ok := d.Job(id); !ok {
 		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
@@ -362,13 +370,11 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	if err := d.Cancel(id); err != nil {
 		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
 	}
-	if err := d.Yielded(id); err != nil {
-		return fmt.Errorf("dispatch: remove %s: park: %w", id, err)
+	if err := d.waitLaunched(ctx, id); err != nil {
+		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
 	}
-	if d.store != nil {
-		if err := d.store.Delete(ctx, id); err != nil {
-			return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
-		}
+	if err := d.store.Delete(ctx, id); err != nil {
+		return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
 	}
 	d.res.Evict(id)
 	d.remove(id)

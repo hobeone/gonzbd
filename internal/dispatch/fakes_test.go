@@ -12,9 +12,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/sched"
 )
 
-type stubWorkers struct{ aborted []string }
+type stubWorkers struct {
+	aborted []string
+	onAbort func(string)
+}
 
-func (s *stubWorkers) Abort(jobID string) { s.aborted = append(s.aborted, jobID) }
+func (s *stubWorkers) Abort(jobID string) {
+	s.aborted = append(s.aborted, jobID)
+	if s.onAbort != nil {
+		s.onAbort(jobID)
+	}
+}
 
 func testClock() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
