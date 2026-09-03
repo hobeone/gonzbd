@@ -227,6 +227,26 @@ func (d *Dispatcher) remove(id string) {
 	}
 }
 
+// Row composes one job's listing entry: the header tier plus its rendered
+// state, without loading or reading a manifest.
+//
+// It exists because List renders EVERY job through RenderAll, so using List
+// for a single-job lookup trades one manifest read for an O(n) walk. That is
+// #436: header-tier callers paying manifest-tier cost because the only safe
+// single-job door was the expensive one.
+func (d *Dispatcher) Row(id string) (Row, bool) {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok {
+		d.mu.Unlock()
+		return Row{}, false
+	}
+	j, h := e.j, e.h
+	d.mu.Unlock()
+
+	return Row{ID: id, Header: h, View: d.q.Render(j)}, true
+}
+
 // List composes the queue listing. It takes Queue.mu exactly once, through
 // RenderAll, so every row is from one instant.
 func (d *Dispatcher) List() []Row {
