@@ -240,24 +240,31 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 		if err != nil {
 			return nil, fmt.Errorf("queue: load article counts: %w", err)
 		}
-		// The stamps come from a second grouped query for the same reason the
-		// counts do: SQLiteStore.Get restores them only on its resident
-		// branch, so a job hydrated here arrives with both fields zero. Left
-		// that way they are not merely missing from the UI — the next
-		// updateTx encodes the zeros back over the persisted values and the
-		// real stamps are gone. See
-		// TestSQLiteStore_NonResidentJobKeepsItsDownloadStamps.
-		stampsByJob, err := q.store.DownloadStampsByJob(context.Background())
+		// The jobs-row fields come from a second grouped query for the same
+		// reason the counts do: SQLiteStore.Get restores them only on its
+		// resident branch, so a job hydrated here arrives with all of them
+		// zero. Left that way they are not merely missing from the UI — the
+		// next updateTx encodes the zeros back over the persisted values and
+		// the real ones are gone.
+		//
+		// The set is whatever updateTx writes from JobProgress: the two
+		// download stamps, and the par2 release reason since #491. See
+		// TestSQLiteStore_NonResidentJobKeepsItsDownloadStamps and
+		// TestSQLiteStore_NonResidentJobKeepsItsPar2ReleaseReason — one per
+		// field, because each was added by a separate change and the second
+		// would have reintroduced the first's bug.
+		fieldsByJob, err := q.store.NonResidentFieldsByJob(context.Background())
 		if err != nil {
-			return nil, fmt.Errorf("queue: load download stamps: %w", err)
+			return nil, fmt.Errorf("queue: load non-resident job fields: %w", err)
 		}
 		for _, job := range jobs {
 			if job.progress != nil {
 				continue
 			}
 			job.progress = newJobProgressSized(countsByJob[job.ID])
-			stamps := stampsByJob[job.ID]
-			job.progress.restoreDownloadStamps(stamps.Started, stamps.Finished)
+			fields := fieldsByJob[job.ID]
+			job.progress.restoreDownloadStamps(fields.Started, fields.Finished)
+			job.setPar2ReleaseReason(fields.Par2ReleaseReason)
 		}
 		func() {
 			q.mu.Lock()

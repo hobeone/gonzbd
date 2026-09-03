@@ -1,0 +1,31 @@
+-- Persists the reason the on-demand par2 verdict released or withheld a job's
+-- recovery volumes.
+--
+-- The value already existed on JobProgress and was already exposed by the API,
+-- but only in memory: its JSON form (jobProgressJSON.Par2ReleaseReason) is
+-- reached solely through Job.UnmarshalJSON, which has no production caller and
+-- is tracked as dead code in #304. So a restart lost it.
+--
+-- Losing it stopped being cosmetic once the post-processing file list began
+-- branching on it. A job that reached a verdict is left at StatusVerifying,
+-- which is resident and re-enqueues for post-processing after a restart; with
+-- the reason gone, buildDownloadFileList falls through to the "verified clean
+-- from index" line for a job where nothing was verified at all.
+--
+-- What this column is NOT: a repair result, and not something any control flow
+-- branches on by text. Only its emptiness is load-bearing — a non-empty value
+-- is the marker that a verdict was reached, which is what distinguishes
+-- "volumes held because nothing could be identified" from "volumes still
+-- awaiting a verdict".
+--
+-- See docs/superpowers/plans/2026-09-02-par2-unidentifiable-verdict.md.
+--
+-- +goose Up
+-- +goose StatementBegin
+ALTER TABLE jobs ADD COLUMN par2_release_reason TEXT NOT NULL DEFAULT '';
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+ALTER TABLE jobs DROP COLUMN par2_release_reason;
+-- +goose StatementEnd

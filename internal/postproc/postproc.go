@@ -68,7 +68,7 @@ type PostProcessor struct {
 	// busy is true while a job's stages are executing.
 	// currentJobID is the ID of the in-flight job (empty when not busy).
 	// currentJobCancel cancels the in-flight job's derived context (see
-	// popWithPause); Cancel calls it to abort a job that is actively being
+	// popJob); Cancel calls it to abort a job that is actively being
 	// processed, distinct from workerCancel which aborts everything.
 	// started guards against double Start calls.
 	// All four are guarded by busyMu so Has can atomically observe the
@@ -181,11 +181,23 @@ func (p *PostProcessor) Cancel(jobID string) bool {
 
 // Empty returns true when the queue is empty and no job is currently being
 // processed.
+//
+// The queue read and the busy read happen under one q.mu -> busyMu critical
+// section (via ppQueue.withLock) rather than as two independent lock/unlock
+// pairs, so a job mid-transition between "queued" and "in flight" (see
+// popJob) cannot make both reads report false at once.
 func (p *PostProcessor) Empty() bool {
-	p.busyMu.Lock()
-	busy := p.busy
-	p.busyMu.Unlock()
-	return !busy && p.q.Empty()
+	var empty bool
+	p.q.withLock(func(jobs []*Job) {
+		if len(jobs) != 0 {
+			empty = false
+			return
+		}
+		p.busyMu.Lock()
+		empty = !p.busy
+		p.busyMu.Unlock()
+	})
+	return empty
 }
 
 // Has reports whether a job with jobID is either pending in the queue or
@@ -193,14 +205,21 @@ func (p *PostProcessor) Empty() bool {
 // deduplication gate when bypassing the regular handoff path (e.g. the
 // Application startup rescan for jobs whose PostProc flag persisted
 // across a crash).
+//
+// The queue read and the busy read happen under one q.mu -> busyMu critical
+// section (via ppQueue.withLock), for the same reason given on Empty above.
 func (p *PostProcessor) Has(jobID string) bool {
-	p.busyMu.Lock()
-	current := p.currentJobID
-	p.busyMu.Unlock()
-	if current == jobID {
-		return true
-	}
-	return p.q.Has(jobID)
+	var found bool
+	p.q.withLock(func(jobs []*Job) {
+		if findJob(jobs, jobID) >= 0 {
+			found = true
+			return
+		}
+		p.busyMu.Lock()
+		found = p.currentJobID == jobID
+		p.busyMu.Unlock()
+	})
+	return found
 }
 
 // History returns a deep-copy snapshot of all jobs that have passed through
@@ -238,8 +257,9 @@ func (p *PostProcessor) run() {
 			return
 		}
 
-		// setBusyWithJob was already called inside popWithPause to
-		// eliminate the race window between pop and busy-set.
+		// setBusyWithJob was already called inside popJob's mark callback,
+		// while ppQueue.tryPop still held q.mu, to eliminate the window
+		// between the job leaving the queue and busy being set (see popJob).
 		p.processJob(jobCtx, job)
 
 		// If the worker context was cancelled (shutdown), the job was only
@@ -285,16 +305,24 @@ func (p *PostProcessor) run() {
 // context is done. jobCtx is derived from workerCtx and is independently
 // cancellable via Cancel, so a single in-flight job can be aborted without
 // affecting any other job or the worker itself.
+//
+// The mark callback passed to q.Pop runs inside ppQueue.tryPop while q.mu is
+// still held, immediately after the job is removed from the slice -- so
+// setBusyWithJob publishes "in flight" before any caller of Has/Empty can
+// observe the job as removed from the queue. There is no window where the
+// job is in neither place: Has and Empty read the queue and busy state
+// under that same q.mu -> busyMu order (see their doc comments), so they
+// see one consistent snapshot rather than two independent reads.
 func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
-	job, ok := p.q.Pop(p.workerCtx)
+	var jobCtx context.Context
+	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
+		var jobCancel context.CancelFunc
+		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
+		p.setBusyWithJob(true, j.Queue.ID, jobCancel)
+	})
 	if !ok {
 		return nil, nil, false
 	}
-
-	// Set busy atomically before returning so Has()/Empty() never
-	// see the intermediate state (queue empty, not busy).
-	jobCtx, jobCancel := context.WithCancel(p.workerCtx)
-	p.setBusyWithJob(true, job.Queue.ID, jobCancel)
 	return job, jobCtx, true
 }
 
@@ -509,10 +537,10 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	default:
 	}
 
-	// Note: job.NeedRequeue is set by the repair stage when par2
-	// reports insufficient blocks or a corrupt main file. It is
-	// recorded for informational purposes (history/UI) but no longer
-	// aborts the pipeline — downstream stages (unpack, finalize,
+	// Note: when the repair stage finds insufficient blocks or a corrupt
+	// main par2 file, it sets job.ParError (which stage_unpack.go:128 uses
+	// to skip extraction) and logs the block/diagnosis detail itself — it
+	// does not abort the pipeline. Downstream stages (unpack, finalize,
 	// script) still run so the job completes to history.
 	return entry, false
 }

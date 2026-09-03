@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // TestJobProgressArticleAccessorsOutOfRange pins the bounds-guard branch on
@@ -106,6 +108,7 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 		"Par2Recovered":      func() { _ = p.Par2Recovered() },
 		"Par2ReleaseReason":  func() { _ = p.Par2ReleaseReason() },
 		"HasDeferredPar2":    func() { _ = p.HasDeferredPar2() },
+		"HasPar2Verdict":     func() { _ = p.HasPar2Verdict() },
 	}
 
 	for name, call := range checks {
@@ -127,6 +130,36 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 	}
 	if got := p.PendingArticles(); got != 0 {
 		t.Errorf("PendingArticles() on nil = %d, want 0", got)
+	}
+}
+
+// TestHasPar2Verdict_TracksTheReleaseReason pins the lifecycle HasPar2Verdict
+// reports: false on a fresh job, true once a release reason is recorded,
+// false again after ResetForRetry clears it, and false on a nil receiver.
+func TestHasPar2Verdict_TracksTheReleaseReason(t *testing.T) {
+	t.Parallel()
+
+	var nilP *JobProgress
+	if nilP.HasPar2Verdict() {
+		t.Error("nil *JobProgress HasPar2Verdict() = true, want false")
+	}
+
+	job, err := NewJob(minimalNZB(), AddOptions{Filename: "verdict.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if job.progress.HasPar2Verdict() {
+		t.Error("fresh job: HasPar2Verdict() = true, want false")
+	}
+
+	job.setPar2ReleaseReason("volume 3 damaged")
+	if !job.progress.HasPar2Verdict() {
+		t.Error("after setPar2ReleaseReason: HasPar2Verdict() = false, want true")
+	}
+
+	job.ResetForRetry()
+	if job.progress.HasPar2Verdict() {
+		t.Error("after ResetForRetry: HasPar2Verdict() = true, want false")
 	}
 }
 

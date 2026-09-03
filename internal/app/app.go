@@ -1412,7 +1412,9 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 // downloader will fetch the volumes and trigger another completion event).
 //
 // Returns false when: there are no deferred volumes, the data verifies clean,
-// or un-deferral itself fails (in which case we fall through to finalize without
+// the verdict is unknown (nothing on disk could be identified against the
+// par2 index, so the volumes are held rather than spent or discarded), or
+// un-deferral itself fails (in which case we fall through to finalize without
 // recovery volumes, matching the pre-on-demand-par2 behaviour).
 func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string, snap *queue.Job) bool {
 	if ctx.Err() != nil {
@@ -1448,7 +1450,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	// "a repair nothing checked for" — and set out to fetch the volumes
 	// anyway. It could never do that, and the premise was wrong besides.
 	// See TestMaybeReleaseRecoveryVolumes_UnreadableManifest.
-	needsRecovery, reason := true, "manifest unreadable, cannot verify integrity"
+	outcome, reason := outcomeRepair, "manifest unreadable, cannot verify integrity"
 	if m, mErr := snap.Manifest(); mErr != nil {
 		app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
 			"job", jobID, "err", mErr)
@@ -1470,7 +1472,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		sets, sErr := par2.FindPar2Files(dir, parseOpts)
 		switch {
 		case sErr != nil || len(sets) == 0:
-			needsRecovery = true
+			outcome = outcomeRepair
 			reason = "no usable par2 index found to verify against"
 			if sErr != nil {
 				reason = fmt.Sprintf("no usable par2 index found (err: %v)", sErr)
@@ -1480,7 +1482,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		default:
 			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
 			if aErr != nil {
-				needsRecovery = true
+				outcome = outcomeRepair
 				reason = fmt.Sprintf("could not match downloaded files against the par2 index (err: %v)", aErr)
 				app.log.Warn("on-demand par2: could not assess the download against the par2 index; fetching recovery volumes",
 					"job", jobID, "dir", dir, "err", aErr)
@@ -1506,10 +1508,11 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 			// exist, and durability.Resume reads a missing file as disproof of
 			// every run it holds: it discards them and re-downloads a file that
 			// was already complete.
-			needsRecovery, reason = par2Verdict(a, app.log)
+			outcome, reason = par2Verdict(a, app.log)
 		}
 	}
-	if !needsRecovery {
+	switch outcome {
+	case outcomeClean:
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		// Log rather than discard: the only failure DiscardDeferredPar2 can
 		// still return is the job being genuinely gone (ErrNotFound), and
@@ -1529,21 +1532,127 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 				"job", jobID, "err", err)
 		}
 		return false
-	}
-	if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
-		app.log.Warn("on-demand par2: could not record the release reason",
-			"job", jobID, "err", err)
-	}
-	idxs := snap.DeferredRecoveryIndices()
-	if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
-		app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
-			"job", jobID, "err", err)
+	case outcomeUnknown:
+		// Neither discard nor un-defer. Nothing on disk could be identified
+		// against the par2 index, so this is not a clean verdict — see
+		// outcomeUnknown's doc comment for why holding the volumes does not
+		// rescue the damaged case it is indistinguishable from. Recording the
+		// reason is still worth doing: it is the only place the "why" of a
+		// held-not-fetched job is written down.
+		if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
+			app.log.Warn("on-demand par2: could not record the release reason",
+				"job", jobID, "err", err)
+		}
+		app.log.Info("on-demand par2: nothing on disk matched the par2 index; holding the volumes and finalizing",
+			"job", jobID, "reason", reason)
+		return false
+	case outcomeRepair:
+		if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
+			app.log.Warn("on-demand par2: could not record the release reason",
+				"job", jobID, "err", err)
+		}
+		idxs := snap.DeferredRecoveryIndices()
+		if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
+			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
+				"job", jobID, "err", err)
+			// Overwrite the reason set above: that one only explains why
+			// repair was needed, and on its own reads identically to
+			// outcomeUnknown's "nothing could be identified" reason once
+			// filelist.go can no longer tell them apart (Par2Recovered()
+			// stays false either way). Verification DID run and DID find
+			// damage here — the volumes just could not be fetched — so the
+			// reason needs to say that too, even though the two outcomes
+			// remain indistinguishable to the caller without a persisted
+			// par2Outcome (deliberately not added by this change).
+			failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
+			if err := app.queue.SetPar2ReleaseReason(jobID, failReason); err != nil {
+				app.log.Warn("on-demand par2: could not record the release reason",
+					"job", jobID, "err", err)
+			}
+			return false
+		}
+		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
+			"job", jobID, "volumes", len(idxs), "reason", reason)
+		app.emit(Event{Type: "queue_updated"})
+		return true
+	default:
+		app.log.Error("on-demand par2: unrecognized outcome; finalizing without acting on recovery volumes",
+			"job", jobID, "outcome", outcome)
 		return false
 	}
-	app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
-		"job", jobID, "volumes", len(idxs), "reason", reason)
-	app.emit(Event{Type: "queue_updated"})
-	return true
+}
+
+// par2Outcome is what par2Verdict was able to determine about a completed
+// job's deferred par2 recovery volumes.
+//
+// It replaces a two-valued needsRecovery bool, which could not express its
+// third state and so collapsed two unrelated cases into one: "verified
+// clean" and "nothing could be identified" both read as needsRecovery ==
+// false, and the caller could not tell them apart. See outcomeUnknown for
+// what that collapse cost.
+type par2Outcome int
+
+const (
+	// outcomeClean means every par2-tracked file was identified and its
+	// assembled CRC matched. The recovery volumes are spent for nothing and
+	// may be discarded.
+	outcomeClean par2Outcome = iota
+
+	// outcomeRepair means at least one par2-tracked file is corrupt, has no
+	// assembled CRC to check, could not be verified, or a par2 entry matched
+	// no delivered file while others in the same set did match — repair is
+	// possible and the volumes must be fetched.
+	outcomeRepair
+
+	// outcomeUnknown means nothing delivered matched any par2 entry, by name
+	// or by content. That is a Layout B post — par2 protecting the extracted
+	// contents rather than the delivered archives — and it is ALSO an
+	// obfuscated single-file post damaged inside its first 16 KB, which
+	// defeats identification passes 1, 2 and 3 together. The two are
+	// indistinguishable from this value, so it must not be reported as a
+	// clean verdict.
+	//
+	// Holding the volumes does not rescue the damaged case: nothing promotes
+	// a held volume after the job finalizes, and ResetForRetry downgrades
+	// FetchNever to FetchIfNeeded anyway, so a retry behaves the same under
+	// either policy. What the hold buys is an honest label — fileState
+	// renders FetchIfNeeded as "held" and FetchNever as "skipped"
+	// (internal/api/queue.go), and "skipped" would assert a verdict that was
+	// never earned.
+	outcomeUnknown
+)
+
+// allPar2Outcomes returns every declared outcome, so a test can assert that
+// a switch over them handles each one rather than falling through silently.
+// Kept in declaration order.
+//
+// It is hand-written, which on its own would make it a second copy of the
+// enum carrying the same defect: a value added to the const block but not
+// here is invisible to every loop over it, and every exhaustiveness test
+// built on it passes vacuously. TestAllPar2Outcomes_Exhaustive closes that
+// loop by parsing the const block itself, the same way
+// postproc.AllQuickCheckOutcomes is pinned.
+func allPar2Outcomes() []par2Outcome {
+	return []par2Outcome{
+		outcomeClean,
+		outcomeRepair,
+		outcomeUnknown,
+	}
+}
+
+// String makes the outcome legible in logs and test failures rather than
+// printing a bare integer.
+func (o par2Outcome) String() string {
+	switch o {
+	case outcomeClean:
+		return "clean"
+	case outcomeRepair:
+		return "repair"
+	case outcomeUnknown:
+		return "unknown"
+	default:
+		return "invalid"
+	}
 }
 
 // par2Verdict decides whether a completed job needs its deferred par2
@@ -1560,7 +1669,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // recorded CRC to check against (NoCRC), or could not be checked at all
 // (Unverified). A job with no usable par2 index never reaches here — the
 // caller fetches the volumes instead, which is the safe fallback.
-func par2Verdict(a par2.Assessment, log *slog.Logger) (needsRecovery bool, reason string) {
+func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reason string) {
 	id, r := a.ID, a.CRC
 
 	// Accounting comes before verification, and it is a separate question.
@@ -1578,28 +1687,39 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (needsRecovery bool, reaso
 	// never compared to anything. A real release reaching it was measured
 	// (#492).
 	if !id.Accounted() && len(id.Files) == 0 {
-		// Nothing delivered matched ANY entry, by name or by content: the
-		// Layout B signature, where par2 protects the EXTRACTED contents
+		// Nothing delivered matched ANY entry, by name or by content. That is
+		// the Layout B signature — par2 protecting the EXTRACTED contents
 		// rather than the delivered archives, so every entry names a file
-		// that will not exist until unpack has run.
+		// that will not exist until unpack has run — and it is ALSO an
+		// obfuscated single-file post damaged inside its first 16 KB, which
+		// defeats identification passes 1, 2 and 3 together. The two are
+		// indistinguishable from this value; see outcomeUnknown.
 		//
-		// The volumes cannot be spent usefully, and the branch that makes
-		// that true is the STAGE ORDER, not anything about par2: buildStages
-		// registers RepairStage before UnpackStage (internal/app/stages.go)
-		// and there is no second repair pass afterwards. The one repair this
-		// pipeline runs therefore executes while the protected files still do
-		// not exist. Were a post-unpack repair ever added, this branch would
-		// become wrong and would have to fetch.
+		// The volumes are held (SetPar2ReleaseReason without discarding or
+		// un-deferring, at the call site) rather than spent or dropped: for
+		// Layout B they cannot be spent usefully — the branch that makes that
+		// true is the STAGE ORDER, not anything about par2 (RepairStage runs
+		// before UnpackStage, internal/app/stages.go, with no second repair
+		// pass) — and for the damaged case, holding does not rescue it either.
+		// What holding buys is that the fetch policy stays FetchIfNeeded
+		// ("held") instead of being marked FetchNever ("skipped"), so the
+		// on-disk state does not assert a verdict that was never earned.
 		//
 		// Distinguishing this from a partial shortfall is safe ONLY because
 		// identification is content-based. Under name-only matching, "nothing
 		// matched" was equally what a perfectly healthy obfuscated release
 		// looked like — which is exactly what made discarding on this
-		// signature the #492 defect. Hash16k is what tells the two apart, so
-		// this test may not be reintroduced anywhere that matches on names.
-		log.Info("on-demand par2: no delivered file matches any par2 entry; recovery volumes cannot repair what was never delivered",
+		// signature the #492 defect. For a healthy obfuscated post, Hash16k
+		// would tell them apart, but damage inside the first 16 KB defeats
+		// Hash16k and the whole-file CRC32 check together, making it
+		// indistinguishable from Layout B; that is why the outcome is
+		// outcomeUnknown rather than clean or repair. This test may not be
+		// reintroduced anywhere that matches on names.
+		log.Info("on-demand par2: no delivered file matches any par2 entry; identification is inconclusive",
 			"entries", len(id.Unaccounted))
-		return false, ""
+		return outcomeUnknown, fmt.Sprintf("no delivered file matched any of %d par2-protected entr(y/ies); "+
+			"could be a Layout B post (par2 protects extracted contents) or damage inside the first 16 KB of an obfuscated file",
+			len(id.Unaccounted))
 	}
 	if !id.Accounted() {
 		names := make([]string, 0, len(id.Unaccounted))
@@ -1608,14 +1728,34 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (needsRecovery bool, reaso
 		}
 		log.Info("on-demand par2: par2 entries matched no delivered file; fetching recovery volumes",
 			"unaccounted", len(id.Unaccounted))
-		return true, fmt.Sprintf("%d par2-protected file(s) not found in this download (%s)",
+		reason := fmt.Sprintf("%d par2-protected file(s) not found in this download (%s)",
 			len(id.Unaccounted), strings.Join(names, ", "))
+		// The files that WERE identified may still carry their own CRC
+		// findings; fold those in rather than discarding them, using the
+		// same summary construction crcVerdictParts builds for the
+		// all-accounted case below.
+		if crcParts := crcVerdictParts(r); len(crcParts) > 0 {
+			reason += "; also " + strings.Join(crcParts, "; ")
+		}
+		return outcomeRepair, reason
 	}
 
 	if r.Mismatched+r.NoCRC+r.Unverified == 0 {
-		return false, ""
+		return outcomeClean, ""
 	}
 
+	return outcomeRepair, strings.Join(crcVerdictParts(r), "; ")
+}
+
+// crcVerdictParts renders par2.Assessment.CRC's per-category findings
+// (mismatched, missing-CRC, unverified) as human-readable clauses, one per
+// non-zero category, in Mismatched/NoCRC/Unverified order. It is the sole
+// place this rendering happens — par2Verdict's !id.Accounted() branch and
+// its all-accounted branch both call it, rather than each building its own
+// copy: `git grep -n 'crcVerdictParts(' internal/app/app.go` finds 4 lines —
+// this comment's own self-match, the declaration below, and the two call
+// sites in par2Verdict above.
+func crcVerdictParts(r par2.CRCVerifyResult) []string {
 	var parts []string
 	if r.Mismatched > 0 {
 		var corruptFiles []string
@@ -1634,8 +1774,7 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (needsRecovery bool, reaso
 	if r.Unverified > 0 {
 		parts = append(parts, fmt.Sprintf("%d file(s) unverified", r.Unverified))
 	}
-
-	return true, strings.Join(parts, "; ")
+	return parts
 }
 
 // drainCompletions processes all buffered events on internalFileComplete.

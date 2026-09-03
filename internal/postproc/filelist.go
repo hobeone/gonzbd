@@ -92,12 +92,66 @@ func buildDownloadFileList(job *Job) []string {
 	}
 
 	switch {
+	case heldVols > 0 && !p.Par2Recovered() && p.HasPar2Verdict():
+		// A verdict was reached (HasPar2Verdict) but the volumes were never
+		// un-deferred (!Par2Recovered) and are still held (heldVols > 0).
+		// That combination covers two situations this method cannot tell
+		// apart: outcomeUnknown (nothing on disk could be identified against
+		// the par2 index, so verification never ran) and an outcomeRepair
+		// verdict whose UndeferRecoveryVolumes call failed (verification DID
+		// find damage, but the volumes could not be fetched). Reporting
+		// either as "verified clean" would be the mislabel this case exists
+		// to remove, so both get the same non-committal headline; the
+		// release reason in the parenthetical is what carries the real
+		// explanation for whichever one actually happened.
+		// HasPar2Verdict() is true in this arm (the switch guards on it
+		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
+		// "" (internal/queue/progress.go:633), so the reason is always
+		// non-empty here — no fallback needed.
+		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
+		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
+			heldVols, reasonStr))
 	case heldVols > 0:
-		// Still withheld at finalize => never downloaded => verified clean.
-		// On the clean path these are FetchNever by now, the verdict having
-		// landed; a job finalized before the verdict leaves them
-		// FetchIfNeeded. Either way the bytes were not fetched, which is
-		// what this line reports, so heldVols counts both.
+		// Still withheld at finalize. This arm is reached three ways, and
+		// "only when HasPar2Verdict() is false" is NOT one of them — that
+		// phrasing was tried and is false:
+		//
+		//  (a) on-demand par2 never ran (fetch policy off, or the job
+		//      finalized before verification) — HasPar2Verdict() is false.
+		//  (b) the clean-verdict path discarded the volumes without
+		//      recording a reason (outcomeClean never calls
+		//      SetPar2ReleaseReason) — HasPar2Verdict() is false.
+		//  (c) a verdict-bearing job whose recovery volumes were only
+		//      PARTIALLY un-deferred: Par2Recovered() is true (set on any
+		//      change by undeferRecovery), so the case above's
+		//      !p.Par2Recovered() conjunct excludes it, and some volumes
+		//      are still held — HasPar2Verdict() is true.
+		//
+		// (c) reports "verified clean" for a job a verdict already found
+		// damage in, which is the same class of mislabel the case above
+		// exists to remove — reordering the switch to fix it is deliberately
+		// NOT done here (tracked as issue #505; moving the `recoveryVols > 0
+		// && p.Par2Recovered()` case above this one and re-running `go test
+		// ./...` broke nothing in this suite, so no test currently pins the
+		// order — the fix is deferred on scope, not on test coupling). It is
+		// not reached today: undeferRecovery is the only site that sets
+		// par2Recovered to true (internal/queue/job_articles.go:205; the
+		// other assignment, job.go:1077, sets it back to false on retry, and
+		// the rest are the field declaration and plain reads/copies — see a
+		// grep for par2Recovered outside tests), and undeferRecovery has two
+		// production callers: Queue.UndeferRecoveryVolumes
+		// (internal/queue/queue.go:1878, reached from app.go's
+		// maybeReleaseRecoveryVolumes) and workset.go's AckPermanentFailure
+		// (internal/queue/workset.go:159). Both pass
+		// job.progress.DeferredRecoveryIndices() — every deferred index at
+		// once — so a real job's held volumes go from "all deferred" to
+		// "none deferred" in one step and heldVols is 0 by the time
+		// Par2Recovered() is true. (c) only becomes reachable once a caller
+		// un-defers a strict subset — e.g. a future block-exact selection
+		// seam on UndeferRecoveryVolumes' fileIdxs parameter.
+		//
+		// (a) and (b) both leave the bytes never fetched, which is what
+		// this line reports; (c) is the latent exception.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
 	case recoveryVols > 0 && p.Par2Recovered():

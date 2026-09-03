@@ -160,21 +160,6 @@ type Job struct {
 	// this job's file CRCs. See QuickCheckOutcome.
 	QuickCheck QuickCheckOutcome
 
-	// NeedRequeue is set by the repair stage when par2 reports that the
-	// job needs additional recovery blocks ("You need N more blocks") or
-	// the main par2 file is corrupt/missing. When true, processJob stops
-	// the pipeline after repair and the caller should push the job back
-	// to the download queue to fetch more par2 volumes.
-	// Matches SABnzbd's readd path in par2_repair / par2cmdline_verify.
-	NeedRequeue bool
-
-	// RequeueBlocksNeeded is the number of additional recovery blocks
-	// par2 requires. Only meaningful when NeedRequeue is true.
-	RequeueBlocksNeeded int
-
-	// RequeueReason describes why the job needs requeue (for logging).
-	RequeueReason string
-
 	// OutputLines is a scratch buffer that stages populate with tool output
 	// lines (e.g. par2 stdout, unrar output). processJob moves these into
 	// StageLogEntry.Lines after each stage runs and clears the buffer.

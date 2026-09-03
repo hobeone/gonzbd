@@ -296,6 +296,68 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown: verdict reached but nothing was verified", func(t *testing.T) {
+		dir := t.TempDir()
+		q, qjob := buildQueueJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+		})
+		if err := q.SetPar2ReleaseReason(qjob.ID, "no delivered file matched any par2 entry"); err != nil {
+			t.Fatalf("SetPar2ReleaseReason: %v", err)
+		}
+		qjob = q.SnapshotJob(qjob.ID)
+		job := &Job{DownloadDir: dir, Queue: qjob}
+		got := strings.Join(buildDownloadFileList(job), "\n")
+		if strings.Contains(got, "verified clean") {
+			t.Errorf("must not claim verified clean when nothing was verified; got:\n%s", got)
+		}
+		if !strings.Contains(got, "no delivered file matched any par2 entry") {
+			t.Errorf("expected the release reason in the output; got:\n%s", got)
+		}
+	})
+
+	t.Run("recovered: an already-undeferred volume must not read as could-not-verify", func(t *testing.T) {
+		// Two recovery volumes, only one undeferred: Par2Recovered() reads
+		// true (undeferRecovery sets it on any change) while the other
+		// volume is still held, so heldVols > 0 too. That combination is
+		// what pins the new case's `!p.Par2Recovered()` conjunct — drop it
+		// and heldVols>0 && HasPar2Verdict() alone starts matching here,
+		// which it must not: a job that already has a repair verdict is not
+		// the "could not verify" state that case exists to report.
+		//
+		// The plain `case heldVols > 0:` fallback (unconditional on
+		// Par2Recovered) intercepts this fixture ahead of `case
+		// recoveryVols > 0 && p.Par2Recovered():`, so the correct-code
+		// output actually observed here is "verified clean", not "fetched
+		// ... for repair" — that ordering is pre-existing (unconditional on
+		// UndeferRecoveryVolumes always releasing every deferred index at
+		// once, so filelist.go never sees this state from app.go) and out
+		// of this task's scope. What this test pins is narrower and
+		// sufficient: the new case must not fire and claim "could not
+		// verify" for a job a verdict already released volumes for.
+		dir := t.TempDir()
+		q, qjob := buildQueueJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+			{subject: "x.vol001+01.par2", bytes: 500},
+		})
+		if err := q.UndeferRecoveryVolumes(qjob.ID, []int{1}); err != nil {
+			t.Fatalf("UndeferRecoveryVolumes: %v", err)
+		}
+		if err := q.SetPar2ReleaseReason(qjob.ID, "repair needed"); err != nil {
+			t.Fatalf("SetPar2ReleaseReason: %v", err)
+		}
+		qjob = q.SnapshotJob(qjob.ID)
+		if !qjob.Progress().Par2Recovered() {
+			t.Fatal("fixture guard: Par2Recovered() must be true")
+		}
+		job := &Job{DownloadDir: dir, Queue: qjob}
+		got := strings.Join(buildDownloadFileList(job), "\n")
+		if strings.Contains(got, "could not verify") {
+			t.Errorf("a job whose verdict already released volumes must not read as could-not-verify; got:\n%s", got)
+		}
+	})
+
 	t.Run("off/normal: no on-demand, no summary line", func(t *testing.T) {
 		dir := t.TempDir()
 		_, qjob := buildQueueJob(t, false, []fileSpec{

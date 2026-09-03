@@ -92,11 +92,19 @@ func findJob(jobs []*Job, id string) int {
 // Pop blocks until a job is available or ctx is done.
 // Returns the next job and true, or nil and false when ctx is cancelled.
 //
+// mark, when non-nil, is invoked on the popped job while q.mu is still held
+// (see tryPop) -- i.e. before Pop's caller can observe the job as removed
+// from the queue via any other method on q. This lets a caller publish
+// "now in flight" state atomically with the removal, closing the window
+// where the job would otherwise be observable in neither the queue nor the
+// caller's own busy state. mark must not call back into q (it already holds
+// q.mu) and must return promptly, since it runs under the lock.
+//
 // Must be called from exactly one goroutine (the worker).
-func (q *ppQueue) Pop(ctx context.Context) (*Job, bool) {
+func (q *ppQueue) Pop(ctx context.Context, mark func(*Job)) (*Job, bool) {
 	for {
 		// Try to dequeue without waiting.
-		if job := q.tryPop(); job != nil {
+		if job := q.tryPop(mark); job != nil {
 			return job, true
 		}
 
@@ -111,8 +119,9 @@ func (q *ppQueue) Pop(ctx context.Context) (*Job, bool) {
 	}
 }
 
-// tryPop dequeues one job, or returns nil.
-func (q *ppQueue) tryPop() *Job {
+// tryPop dequeues one job, or returns nil. If mark is non-nil, it runs on
+// the popped job before q.mu is released -- see Pop's doc comment.
+func (q *ppQueue) tryPop(mark func(*Job)) *Job {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -123,5 +132,28 @@ func (q *ppQueue) tryPop() *Job {
 	job := q.jobs[0]
 	q.jobs[0] = nil // allow GC of old pointer
 	q.jobs = q.jobs[1:]
+	if mark != nil {
+		mark(job)
+	}
 	return job
+}
+
+// withLock runs fn while holding q.mu, passing it the live q.jobs slice. It
+// exists so PostProcessor.Has and PostProcessor.Empty can read the queue and
+// the busyMu-guarded fields under one consistent q.mu -> busyMu lock order
+// (the same order tryPop's mark callback uses to publish busy state),
+// instead of taking and releasing each lock independently -- which is what
+// let the two reads tear and made Has/Empty observe the job as absent from
+// both.
+//
+// Passing jobs as a parameter rather than letting fn reach into q.jobs
+// directly keeps the lock-held slice scoped to the callback: there is no
+// longer a second, unexported-field access path that a future caller could
+// use to read q.jobs outside q.mu without a compile error forcing the
+// question. fn must not retain or mutate jobs beyond its own call, since the
+// slice header aliases the live backing array under lock.
+func (q *ppQueue) withLock(fn func(jobs []*Job)) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	fn(q.jobs)
 }

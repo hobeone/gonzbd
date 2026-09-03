@@ -151,17 +151,17 @@ func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job)
 // of #494 — the verdict is now a pure function of an observation taken before
 // anything moves — so these tests compose the two the same way production
 // does rather than reaching for a combined helper that no longer exists.
-func assessVerdict(t *testing.T, dir string, qjob *queue.Job, log *slog.Logger) (bool, string) {
+func assessVerdict(t *testing.T, dir string, qjob *queue.Job, log *slog.Logger) (par2Outcome, string) {
 	t.Helper()
 	sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
 	if err != nil || len(sets) == 0 {
 		// The caller's own fallback: no index to verify against means fetch.
-		return true, "no usable par2 index found to verify against"
+		return outcomeRepair, "no usable par2 index found to verify against"
 	}
 	a, err := par2.AssessWithOptions(dir, sets,
 		assembledFiles(mustManifest(t, qjob), qjob.Progress()), log, par2.DefaultParseOptions())
 	if err != nil {
-		return true, "could not match downloaded files against the par2 index"
+		return outcomeRepair, "could not match downloaded files against the par2 index"
 	}
 	return par2Verdict(a, log)
 }
@@ -179,8 +179,8 @@ func TestPar2Verdict(t *testing.T) {
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 			deferredVol,
 		})
-		if got, _ := assessVerdict(t, dir, qjob, log); got {
-			t.Error("clean download must NOT trigger recovery-volume download")
+		if got, _ := assessVerdict(t, dir, qjob, log); got != outcomeClean {
+			t.Errorf("clean download must NOT trigger recovery-volume download, got outcome %s", got)
 		}
 	})
 
@@ -192,8 +192,8 @@ func TestPar2Verdict(t *testing.T) {
 			{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100},
 			deferredVol,
 		})
-		if got, reason := assessVerdict(t, dir, qjob, log); !got {
-			t.Error("corrupt file (CRC mismatch) must trigger recovery")
+		if got, reason := assessVerdict(t, dir, qjob, log); got != outcomeRepair {
+			t.Errorf("corrupt file (CRC mismatch) must trigger recovery, got outcome %s", got)
 		} else if !strings.Contains(reason, "corruption/CRC mismatch") {
 			t.Errorf("expected CRC mismatch reason, got: %q", reason)
 		}
@@ -207,8 +207,8 @@ func TestPar2Verdict(t *testing.T) {
 			{subject: "data.bin", bytes: 100},
 			deferredVol,
 		})
-		if got, reason := assessVerdict(t, dir, qjob, log); !got {
-			t.Error("par2-tracked file with no CRC must trigger recovery")
+		if got, reason := assessVerdict(t, dir, qjob, log); got != outcomeRepair {
+			t.Errorf("par2-tracked file with no CRC must trigger recovery, got outcome %s", got)
 		} else if !strings.Contains(reason, "failed download") {
 			t.Errorf("expected failed download reason, got: %q", reason)
 		}
@@ -219,8 +219,8 @@ func TestPar2Verdict(t *testing.T) {
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 		})
-		if got, reason := assessVerdict(t, dir, qjob, log); !got {
-			t.Error("no usable par2 index must fall back to fetching recovery volumes")
+		if got, reason := assessVerdict(t, dir, qjob, log); got != outcomeRepair {
+			t.Errorf("no usable par2 index must fall back to fetching recovery volumes, got outcome %s", got)
 		} else if !strings.Contains(reason, "no usable par2 index found") {
 			t.Errorf("expected missing index reason, got: %q", reason)
 		}
@@ -252,10 +252,17 @@ func TestPar2Verdict(t *testing.T) {
 			{subject: "other.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
+		// This used to pin the old bool `false` here — "verified clean". It no
+		// longer is: "nothing matched" is not a clean verdict, it is
+		// outcomeUnknown, because this same signature is also what an
+		// obfuscated post damaged in its first 16 KB looks like. The
+		// production behaviour this subtest cares about — the volumes are not
+		// fetched — is unchanged; only the label for why is more honest.
 		got, reason := assessVerdict(t, dir, qjob, log)
-		if got {
+		if got != outcomeUnknown {
 			t.Fatalf("nothing delivered matches any par2 entry, so the recovery volumes protect files this pipeline "+
-				"never repairs; fetching them spends the whole set for the identical outcome (reason: %q)", reason)
+				"never repairs (or the damage defeated identification); fetching them spends the whole set for no "+
+				"gain, but reporting it as clean would be dishonest — got outcome %s (reason: %q)", got, reason)
 		}
 	})
 
@@ -272,16 +279,30 @@ func TestPar2Verdict(t *testing.T) {
 		copyFixtureSubdirPar2(t, dir) // protects Screens/data.bin
 		copyFixturePayload(t, dir, "data.bin")
 
+		// crc 0x99999999 is deliberately wrong (the fixture's real CRC32 is
+		// 0x1068AFA6), so the identified file (data.bin) also carries a CRC
+		// mismatch. That makes this fixture double as the regression case for
+		// folding CRC findings into the !id.Accounted() reason below: without
+		// it, every file this suite identifies while also leaving another
+		// entry unaccounted verifies clean, and the fold-in code would never
+		// be exercised by a non-empty CRC summary.
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
 		got, reason := assessVerdict(t, dir, qjob, log)
-		if !got {
-			t.Fatal("one entry is accounted for and another is not, so repair is possible and the volumes must be fetched")
+		if got != outcomeRepair {
+			t.Fatalf("one entry is accounted for and another is not, so repair is possible and the volumes must "+
+				"be fetched, got outcome %s", got)
 		}
 		if !strings.Contains(reason, "not found in this download") {
 			t.Errorf("expected an unaccounted-file reason, got: %q", reason)
+		}
+		// The identified file's own CRC mismatch must not be discarded just
+		// because another entry was unaccounted for (the bug this subtest
+		// pins): both findings belong in the reason together.
+		if !strings.Contains(reason, "also corruption/CRC mismatch") {
+			t.Errorf("expected the identified file's CRC mismatch folded into the reason, got: %q", reason)
 		}
 	})
 
@@ -317,6 +338,75 @@ func TestPar2Verdict(t *testing.T) {
 			t.Error("NeedsRename() = false for an obfuscated file")
 		}
 	})
+}
+
+// TestCrcVerdictParts exercises crcVerdictParts directly (rather than only
+// through par2Verdict's two callers), pinning the per-category clause order
+// (Mismatched, then NoCRC, then Unverified) and that a category contributes
+// nothing when its count is zero.
+func TestCrcVerdictParts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all categories zero produces no parts", func(t *testing.T) {
+		got := crcVerdictParts(par2.CRCVerifyResult{})
+		if len(got) != 0 {
+			t.Fatalf("crcVerdictParts(zero value) = %v, want empty", got)
+		}
+	})
+
+	t.Run("every category renders its own clause, in order", func(t *testing.T) {
+		r := par2.CRCVerifyResult{
+			Mismatched: 1,
+			Files:      []par2.CRCResult{{FileName: "bad.rar", Match: false}},
+			NoCRC:      2,
+			NoCRCFiles: []string{"a.rar", "b.rar"},
+			Unverified: 3,
+		}
+		got := crcVerdictParts(r)
+		want := []string{
+			"corruption/CRC mismatch in 1 file(s) (bad.rar)",
+			"failed download in 2 file(s) (a.rar, b.rar)",
+			"3 file(s) unverified",
+		}
+		if len(got) != len(want) {
+			t.Fatalf("crcVerdictParts(%+v) = %v, want %v", r, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("part %d = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+}
+
+func TestPar2Verdict_NothingIdentifiedIsNotACleanVerdict(t *testing.T) {
+	t.Parallel()
+
+	// Nothing on disk matched any par2 entry. That is a Layout B post — and
+	// it is ALSO an obfuscated single-file post damaged inside its first
+	// 16 KB, which defeats identification passes 1, 2 and 3 together. The
+	// two are indistinguishable from this value, so it cannot be reported as
+	// a clean verdict.
+	//
+	// Holding the volumes does NOT rescue the damaged case: nothing promotes
+	// a held volume after finalize (undeferRecovery has two callers, neither
+	// reachable post-finalize) and ResetForRetry downgrades FetchNever to
+	// FetchIfNeeded anyway. What the hold buys is an honest label — fileState
+	// renders FetchIfNeeded as "held" and FetchNever as "skipped"
+	// (internal/api/queue.go:327-329), and "skipped" claims a verdict that
+	// was never earned.
+	a := par2.Assessment{
+		ID:  par2.Identification{Unaccounted: []par2.FileDesc{{FileName: "payload.mkv"}}},
+		CRC: par2.CRCVerifyResult{Unverified: 1},
+	}
+
+	got, reason := par2Verdict(a, slog.New(slog.DiscardHandler))
+	if got != outcomeUnknown {
+		t.Fatalf("outcome = %s, want %s", got, outcomeUnknown)
+	}
+	if reason == "" {
+		t.Error("reason is empty; nothing records why the volumes were held")
+	}
 }
 
 func TestMaybeReleaseRecoveryVolumes(t *testing.T) {

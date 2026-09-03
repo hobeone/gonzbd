@@ -259,11 +259,6 @@ func (s *RepairStage) handleRepairResult(
 
 		// I3: Not enough recovery blocks
 		if res.NeedMoreBlocks {
-			job.NeedRequeue = true
-			job.RequeueBlocksNeeded = res.BlocksNeeded
-			job.RequeueReason = fmt.Sprintf(
-				"par2 needs %d more recovery blocks for %q",
-				res.BlocksNeeded, set.Name)
 			logf(ctx, log, job, slog.LevelWarn,
 				"Par2 repair %q needs %d more blocks — repair not possible with current data",
 				set.Name, res.BlocksNeeded)
@@ -272,10 +267,6 @@ func (s *RepairStage) handleRepairResult(
 
 		// I4: Main par2 file corrupt/missing
 		if res.Parsed != nil && res.Parsed.Status == par2.StatusInvalidPar2 {
-			job.NeedRequeue = true
-			job.RequeueReason = fmt.Sprintf(
-				"par2 main file corrupt/missing for %q — re-download needed",
-				set.Name)
 			logf(ctx, log, job, slog.LevelWarn,
 				"Par2 main file corrupt/missing for %q — repair not possible",
 				set.Name)
