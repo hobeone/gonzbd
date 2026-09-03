@@ -1,4 +1,5 @@
-// Package checkpoint owns every write of job state to the database.
+// Package checkpoint owns batched writes of job progress (per-file completion,
+// CRC, and failed articles) to the database.
 //
 // It exists because internal/queue had SIX single-job writers beside its
 // batched periodic save, each closing a read-after-write window against one
@@ -71,13 +72,14 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 		c.mu.Unlock()
 		return nil
 	}
-	cps := make([]job.Checkpoint, 0, len(c.dirty))
 	batch := c.dirty
+	c.dirty = make(map[string]*job.Job)
+	c.mu.Unlock()
+
+	cps := make([]job.Checkpoint, 0, len(batch))
 	for _, j := range batch {
 		cps = append(cps, j.Checkpoint())
 	}
-	c.dirty = make(map[string]*job.Job)
-	c.mu.Unlock()
 
 	if err := c.store.SaveBatch(ctx, cps); err != nil {
 		c.mu.Lock()

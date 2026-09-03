@@ -84,14 +84,6 @@ func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmtJobs, err := tx.PrepareContext(ctx,
-		`UPDATE dispatch_jobs SET state = ?, next = ?, activity = ?, outcome = ?, assessed = ?, intent = ?, download_started = ?, download_finished = ?, par2_release_reason = ? WHERE id = ?`,
-	)
-	if err != nil {
-		return fmt.Errorf("checkpoint: prepare dispatch_jobs: %w", err)
-	}
-	defer func() { _ = stmtJobs.Close() }()
-
 	stmtFiles, err := tx.PrepareContext(ctx,
 		`UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, failed_bytes = ?, bytes_downloaded = ? WHERE job_id = ? AND file_index = ?`,
 	)
@@ -109,26 +101,6 @@ func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint
 	defer func() { _ = stmtFailed.Close() }()
 
 	for _, cp := range cps {
-		var downloadStarted, downloadFinished int64
-		var par2Reason string
-		if cp.Progress != nil {
-			if ds := cp.Progress.DownloadStarted(); !ds.IsZero() {
-				downloadStarted = ds.Unix()
-			}
-			if df := cp.Progress.DownloadFinished(); !df.IsZero() {
-				downloadFinished = df.Unix()
-			}
-			par2Reason = cp.Progress.Par2ReleaseReason()
-		}
-
-		if _, err := stmtJobs.ExecContext(ctx,
-			cp.State.State, cp.State.Next, cp.State.Activity, cp.State.Outcome,
-			cp.State.Assessed, cp.Intent, downloadStarted, downloadFinished, par2Reason,
-			cp.ID,
-		); err != nil {
-			return fmt.Errorf("checkpoint: update dispatch_job %s: %w", cp.ID, err)
-		}
-
 		if cp.Progress != nil {
 			for i := range cp.Progress.NumFiles() {
 				complete := 0

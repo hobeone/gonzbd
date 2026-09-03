@@ -15,6 +15,10 @@ type Checkpoint struct {
 }
 
 // Checkpoint takes the job's state for persistence.
+//
+// The snapshot is taken atomically under nested j.mu.RLock() then
+// j.contentMu.RLock(), with no lock inversion hazard because contentMu is never
+// held when acquiring mu.
 func (j *Job) Checkpoint() Checkpoint {
 	j.mu.RLock()
 	st := StateView{}
@@ -22,7 +26,6 @@ func (j *Job) Checkpoint() Checkpoint {
 		st = a.view()
 	}
 	in := j.intent
-	j.mu.RUnlock()
 
 	j.contentMu.RLock()
 	var p *JobProgress
@@ -30,6 +33,7 @@ func (j *Job) Checkpoint() Checkpoint {
 		p = j.progress.clone()
 	}
 	j.contentMu.RUnlock()
+	j.mu.RUnlock()
 
 	return Checkpoint{ID: j.id, State: st, Intent: in, Progress: p}
 }

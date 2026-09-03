@@ -112,7 +112,7 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 	repo := history.NewRepository(hdb)
 	db := repo.DB()
 
-	// Seed dispatch_jobs and job_files rows.
+	// Seed dispatch_jobs and job_files rows for job-1 and job-2.
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO dispatch_jobs (id, sort_key, name, state) VALUES (?, ?, ?, ?)`,
 		"job-1", 1, "Job 1", 10,
@@ -129,18 +129,24 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete) VALUES (?, ?, ?, ?, ?, ?)`,
 		"job-1", 0, "subject-1", 1700000000, 100, 0,
 	); err != nil {
-		t.Fatalf("insert job_files: %v", err)
+		t.Fatalf("insert job_files job-1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete) VALUES (?, ?, ?, ?, ?, ?)`,
+		"job-2", 0, "subject-2", 1700000000, 200, 0,
+	); err != nil {
+		t.Fatalf("insert job_files job-2: %v", err)
 	}
 
-	// Create trigger that fails whenever job-2 is updated.
+	// Create trigger that fails whenever job_files for job-2 is updated.
 	if _, err := db.ExecContext(ctx,
-		`CREATE TRIGGER fail_job2 BEFORE UPDATE ON dispatch_jobs WHEN NEW.id = 'job-2' BEGIN SELECT RAISE(ABORT, 'simulated mid-batch update failure'); END;`,
+		`CREATE TRIGGER fail_job2 BEFORE UPDATE ON job_files WHEN NEW.job_id = 'job-2' BEGIN SELECT RAISE(ABORT, 'simulated mid-batch update failure'); END;`,
 	); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
 
 	// Build checkpoints:
-	// cp1 for job-1 has content, 1 failed article, timestamps, par2 release reason.
+	// cp1 for job-1 has content and 1 failed article.
 	j1 := job.New("job-1", "Job 1", job.PolicyFromPP(3))
 	m1 := job.NewManifest([]job.JobFile{{
 		Subject:  "file1.bin",
@@ -153,22 +159,22 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 	if err := j1.MarkArticleFailed(0); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
-	start := time.Unix(1700000010, 0).UTC()
-	finish := time.Unix(1700000090, 0).UTC()
-	if err := j1.MarkJobStarted(start); err != nil {
-		t.Fatalf("MarkJobStarted: %v", err)
+	if err := j1.SetFileFilename(0, "file1.bin"); err != nil {
+		t.Fatalf("SetFileFilename: %v", err)
 	}
-	if err := j1.MarkDownloadFinished(finish); err != nil {
-		t.Fatalf("MarkDownloadFinished: %v", err)
-	}
-	j1.SetPar2ReleaseReason("damage detected")
 	cp1 := j1.Checkpoint()
-	cp1.State.State = 20
 
-	// cp2 for job-2 is a simple checkpoint whose update will trigger abort.
+	// cp2 for job-2 has content so SaveBatch executes stmtFiles on job-2 and triggers abort.
 	j2 := job.New("job-2", "Job 2", job.PolicyFromPP(3))
+	m2 := job.NewManifest([]job.JobFile{{
+		Subject:  "file2.bin",
+		Bytes:    200,
+		Articles: []job.JobArticle{{ID: "art2@example.com", Bytes: 200, Number: 1}},
+	}})
+	if err := j2.AttachContent(m2); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
 	cp2 := j2.Checkpoint()
-	cp2.State.State = 20
 
 	store := &appCheckpointStore{db: db}
 
@@ -177,15 +183,7 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 		t.Fatal("SaveBatch should have failed due to trigger")
 	}
 
-	// Verify rollback across dispatch_jobs, job_files, and failed_articles.
-	var j1State int
-	if err := db.QueryRowContext(ctx, `SELECT state FROM dispatch_jobs WHERE id = 'job-1'`).Scan(&j1State); err != nil {
-		t.Fatalf("query j1 state: %v", err)
-	}
-	if j1State != 10 {
-		t.Errorf("job-1 state = %d, want 10 (rolled back)", j1State)
-	}
-
+	// Verify rollback across job_files and failed_articles.
 	var j1Complete int
 	if err := db.QueryRowContext(ctx, `SELECT complete FROM job_files WHERE job_id = 'job-1' AND file_index = 0`).Scan(&j1Complete); err != nil {
 		t.Fatalf("query j1 complete: %v", err)
@@ -211,25 +209,13 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 		t.Fatalf("SaveBatch without trigger failed: %v", err)
 	}
 
-	// Verify committed state in dispatch_jobs.
-	var dlStarted, dlFinished int64
-	var par2Reason string
-	if err := db.QueryRowContext(ctx,
-		`SELECT state, download_started, download_finished, par2_release_reason FROM dispatch_jobs WHERE id = 'job-1'`,
-	).Scan(&j1State, &dlStarted, &dlFinished, &par2Reason); err != nil {
-		t.Fatalf("query j1 committed: %v", err)
+	// Verify committed state in job_files.
+	var j1Filename string
+	if err := db.QueryRowContext(ctx, `SELECT filename FROM job_files WHERE job_id = 'job-1' AND file_index = 0`).Scan(&j1Filename); err != nil {
+		t.Fatalf("query j1 filename: %v", err)
 	}
-	if j1State != 20 {
-		t.Errorf("committed j1 state = %d, want 20", j1State)
-	}
-	if dlStarted != start.Unix() {
-		t.Errorf("committed j1 download_started = %d, want %d", dlStarted, start.Unix())
-	}
-	if dlFinished != finish.Unix() {
-		t.Errorf("committed j1 download_finished = %d, want %d", dlFinished, finish.Unix())
-	}
-	if par2Reason != "damage detected" {
-		t.Errorf("committed j1 par2Reason = %q, want %q", par2Reason, "damage detected")
+	if j1Filename != "file1.bin" {
+		t.Errorf("committed j1 filename = %q, want %q", j1Filename, "file1.bin")
 	}
 
 	// Verify committed state in failed_articles.
