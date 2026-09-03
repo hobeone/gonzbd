@@ -264,7 +264,6 @@ func testServer(t *testing.T, name, addr string, opts ...func(*config.ServerConf
 	return NewServer(cfg)
 }
 
-
 // collect reads up to n results from ch or errors after timeout.
 func collect(t *testing.T, ch <-chan *ArticleResult, n int, timeout time.Duration) []*ArticleResult {
 	t.Helper()

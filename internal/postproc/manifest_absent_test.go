@@ -134,4 +134,3 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified_RehomedJob
 		t.Errorf("QuickCheck = %s, want inconclusive", j.QuickCheck)
 	}
 }
-

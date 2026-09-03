@@ -150,6 +150,26 @@ type Queue struct {
 	log *slog.Logger
 
 	activeSet *ActiveSet
+
+	hooks Hooks
+}
+
+// Hooks provides lifecycle callbacks for external subscribers (e.g. the transition bridge to Dispatcher).
+type Hooks struct {
+	OnAdd       func(*Job, *Manifest)
+	OnRemove    func(string)
+	OnPause     func(string)
+	OnResume    func(string)
+	OnRetry     func(string)
+	OnPauseAll  func()
+	OnResumeAll func()
+}
+
+// WithHooks sets lifecycle hooks on the Queue.
+func WithHooks(hooks Hooks) Option {
+	return func(q *Queue) {
+		q.hooks = hooks
+	}
 }
 
 // Store returns the underlying SQLite persistence store, or nil if using legacy in-memory/JSON storage.
@@ -549,6 +569,7 @@ func (q *Queue) Add(job *Job) error {
 	}
 	q.byID[job.ID] = job
 
+	origManifest := job.manifest
 	if job.Status == constants.StatusQueued && (q.store != nil || q.stateDir != "") {
 		// Release only the manifest. Progress stays resident — see
 		// docs/queue-lifecycle.md: JobProgress is cheap (bitsets) relative to
@@ -562,6 +583,9 @@ func (q *Queue) Add(job *Job) error {
 	q.mu.Unlock()
 
 	q.PromoteNext(context.Background())
+	if q.hooks.OnAdd != nil {
+		q.hooks.OnAdd(job, origManifest)
+	}
 	return nil
 }
 
@@ -612,6 +636,9 @@ func (q *Queue) Remove(id string) error {
 		}
 	}
 	q.PromoteNext(context.Background())
+	if q.hooks.OnRemove != nil {
+		q.hooks.OnRemove(id)
+	}
 	return nil
 }
 
@@ -633,6 +660,9 @@ func (q *Queue) Pause(id string) error {
 	q.mu.Unlock()
 
 	q.PromoteNext(context.Background())
+	if q.hooks.OnPause != nil {
+		q.hooks.OnPause(id)
+	}
 	return nil
 }
 
@@ -656,6 +686,9 @@ func (q *Queue) Resume(id string) error {
 	q.mu.Unlock()
 
 	q.PromoteNext(context.Background())
+	if q.hooks.OnResume != nil {
+		q.hooks.OnResume(id)
+	}
 	return nil
 }
 
@@ -779,6 +812,9 @@ func (q *Queue) Retry(id string) error {
 	q.mu.Unlock()
 
 	q.PromoteNext(context.Background())
+	if q.hooks.OnRetry != nil {
+		q.hooks.OnRetry(id)
+	}
 	return nil
 }
 
@@ -1001,6 +1037,9 @@ func (q *Queue) finishClaimFailure(ctx context.Context, cf claimFailure) {
 				"err", err,
 			)
 		}
+	}
+	if q.hooks.OnRemove != nil {
+		q.hooks.OnRemove(cf.job.ID)
 	}
 }
 
@@ -2078,9 +2117,12 @@ func (q *Queue) SetFileCRC32FromRuns(jobID string, fileIdx int, runs []durabilit
 // dispatching new articles.
 func (q *Queue) PauseAll() {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.paused = true
 	q.dirty.Store(true)
+	q.mu.Unlock()
+	if q.hooks.OnPauseAll != nil {
+		q.hooks.OnPauseAll()
+	}
 }
 
 // ResumeAll clears the queue-wide pause flag, marks the queue dirty,
@@ -2098,6 +2140,9 @@ func (q *Queue) ResumeAll(ctx context.Context) {
 		ctx = context.Background()
 	}
 	q.PromoteNext(ctx)
+	if q.hooks.OnResumeAll != nil {
+		q.hooks.OnResumeAll()
+	}
 }
 
 // Reorder moves a job to newIndex in the queue, shifting other jobs

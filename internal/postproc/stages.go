@@ -309,6 +309,8 @@ type Progress interface {
 }
 
 // Manifest returns the job's manifest.
+//
+//nolint:ireturn // transitional interface bridge during queue -> job swap
 func (j *Job) Manifest() (Manifest, error) {
 	if j.Job != nil {
 		return j.Job.Manifest()
@@ -324,6 +326,8 @@ func (j *Job) Manifest() (Manifest, error) {
 }
 
 // Progress returns the job's progress record.
+//
+//nolint:ireturn // transitional interface bridge during queue -> job swap
 func (j *Job) Progress() Progress {
 	if j.Job != nil {
 		p := j.Job.Progress()
@@ -353,16 +357,16 @@ func (a queueProgressAdapter) FileAssembledCRC32(fi int) uint32 {
 func (a queueProgressAdapter) FileFetchPolicy(fi int) job.FetchPolicy {
 	return job.FetchPolicy(a.p.FileFetchPolicy(fi))
 }
-func (a queueProgressAdapter) ExpectedBytes() int64            { return a.p.ExpectedBytes() }
-func (a queueProgressAdapter) FailedBytes() int64              { return a.p.FailedBytes() }
-func (a queueProgressAdapter) DownloadStarted() time.Time      { return a.p.DownloadStarted() }
-func (a queueProgressAdapter) DownloadFinished() time.Time     { return a.p.DownloadFinished() }
-func (a queueProgressAdapter) Par2Recovered() bool             { return a.p.Par2Recovered() }
-func (a queueProgressAdapter) HasPar2Verdict() bool            { return a.p.HasPar2Verdict() }
-func (a queueProgressAdapter) Par2ReleaseReason() string       { return a.p.Par2ReleaseReason() }
-func (a queueProgressAdapter) ServerStats() map[string]int64   { return a.p.ServerStats() }
-func (a queueProgressAdapter) ArticleDone(i int) bool          { return a.p.ArticleDone(i) }
-func (a queueProgressAdapter) ArticleFailed(i int) bool        { return a.p.ArticleFailed(i) }
+func (a queueProgressAdapter) ExpectedBytes() int64          { return a.p.ExpectedBytes() }
+func (a queueProgressAdapter) FailedBytes() int64            { return a.p.FailedBytes() }
+func (a queueProgressAdapter) DownloadStarted() time.Time    { return a.p.DownloadStarted() }
+func (a queueProgressAdapter) DownloadFinished() time.Time   { return a.p.DownloadFinished() }
+func (a queueProgressAdapter) Par2Recovered() bool           { return a.p.Par2Recovered() }
+func (a queueProgressAdapter) HasPar2Verdict() bool          { return a.p.HasPar2Verdict() }
+func (a queueProgressAdapter) Par2ReleaseReason() string     { return a.p.Par2ReleaseReason() }
+func (a queueProgressAdapter) ServerStats() map[string]int64 { return a.p.ServerStats() }
+func (a queueProgressAdapter) ArticleDone(i int) bool        { return a.p.ArticleDone(i) }
+func (a queueProgressAdapter) ArticleFailed(i int) bool      { return a.p.ArticleFailed(i) }
 
 // NumFiles returns the number of files in the job.
 func (j *Job) NumFiles() int {
@@ -374,5 +378,3 @@ func (j *Job) NumFiles() int {
 	}
 	return 0
 }
-
-

@@ -28,9 +28,9 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		workCh[srv.Cfg().Name] = make(chan *articleRequest, 1)
 	}
 	d := &Downloader{
-		log:     slog.New(slog.DiscardHandler),
-		servers: servers,
-		workCh:  workCh,
+		log:          slog.New(slog.DiscardHandler),
+		servers:      servers,
+		workCh:       workCh,
 		dispatcher:   newTestDispatcher(nil),
 		tracker:      newDispatchTracker(),
 		completions:  make(chan *ArticleResult, 10),

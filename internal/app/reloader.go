@@ -251,7 +251,17 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 			"barrier acks them",
 			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
 	}
-	app.queue.ClearAllEmitted(unprotected)
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if j, ok := app.dispatcher.Job(row.ID); ok {
+				_, skip := unprotected[row.ID]
+				j.ClearEmittedForReload(skip)
+			}
+		}
+	}
+	if app.queue != nil {
+		app.queue.ClearAllEmitted(unprotected)
+	}
 
 	servers := make([]*downloader.Server, len(scs))
 	for i, sc := range scs {

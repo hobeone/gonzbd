@@ -45,21 +45,11 @@ type manifestFile struct {
 	isPar2Recovery bool
 }
 
-// newManifest builds a Manifest from files, flattening each file's nested
-// articles into the parallel global arrays and computing the
-// fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
-//
-// NewJob and UnmarshalJSON are the only callers, which is the point: every
-// Manifest in the process, however it arrived, has its derived state computed
-// here and nowhere else. DiscardDeferredPar2 used to call it too, to rebuild
-// against a reduced file set, and that rebuild is why the recovery
-// figures were once stored rather than derived — the discard deliberately
-// left them describing the larger, pre-discard job. Since #331 the discard
-// only marks a FetchPolicy and changes no file set, so nothing can make
-// these figures disagree with the file list they are computed from.
 // JobFile is the intermediate, NZB-parsed shape NewJob builds before
 // converting into a Manifest/JobProgress pair. It is not part of Job's
 // runtime state — construction scaffolding only.
+//
+//nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobFile struct {
 	Subject        string
 	Date           time.Time
@@ -74,6 +64,8 @@ type JobFile struct {
 
 // JobArticle is the intermediate, NZB-parsed shape of a single article,
 // consumed by newManifest during construction.
+//
+//nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobArticle struct {
 	ID     string
 	Bytes  int
@@ -85,6 +77,18 @@ func NewManifest(files []JobFile) *Manifest {
 	return newManifest(files)
 }
 
+// newManifest builds a Manifest from files, flattening each file's nested
+// articles into the parallel global arrays and computing the
+// fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
+//
+// NewJob and UnmarshalJSON are the only callers, which is the point: every
+// Manifest in the process, however it arrived, has its derived state computed
+// here and nowhere else. DiscardDeferredPar2 used to call it too, to rebuild
+// against a reduced file set, and that rebuild is why the recovery
+// figures were once stored rather than derived — the discard deliberately
+// left them describing the larger, pre-discard job. Since #331 the discard
+// only marks a FetchPolicy and changes no file set, so nothing can make
+// these figures disagree with the file list they are computed from.
 func newManifest(files []JobFile) *Manifest {
 	m := &Manifest{
 		files:              make([]manifestFile, len(files)),

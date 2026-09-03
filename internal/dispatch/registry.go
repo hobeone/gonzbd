@@ -26,6 +26,7 @@ type Header struct {
 	Category string
 	Priority int
 	Bytes    int64
+	Warning  string
 }
 
 // Row is one line of a queue listing: the scheduling view sched computes,
@@ -350,5 +351,17 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	d.res.Evict(id)
 	d.remove(id)
 	d.kick()
+	return nil
+}
+
+// SetWarning sets or updates the warning message for a registered job.
+func (d *Dispatcher) SetWarning(id, warning string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set warning %s: %w", id, ErrNotFound)
+	}
+	e.h.Warning = warning
 	return nil
 }

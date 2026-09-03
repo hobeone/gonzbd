@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -338,7 +339,14 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// 2, because phase 1 returns early while anything is still blocked — so a
 	// departed job with a pending finalize would be retried on every interval
 	// for the life of the process, and its routed fault re-logged each time.
-	if app.queue.SnapshotJob(jobID) == nil {
+	exists := false
+	if app.dispatcher != nil {
+		_, exists = app.dispatcher.Job(jobID)
+	}
+	if !exists && app.queue != nil {
+		exists = (app.queue.SnapshotJob(jobID) != nil)
+	}
+	if !exists {
 		app.log.Info("stall re-evaluation: the job has left the queue; forgetting its parked state",
 			"job", jobID)
 		app.clearStall(jobID)
@@ -397,8 +405,26 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// cleared, because handles stay open through a pause, so the next
 	// checkpoint failed the same way.
 	if app.weParked(jobID) {
-		if err := app.queue.Resume(jobID); err != nil {
-			app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
+		resumed := false
+		if app.dispatcher != nil {
+			if err := app.dispatcher.ResumeJob(jobID); err != nil {
+				app.log.Warn("stall re-evaluation: the job could not be resumed in dispatcher", "job", jobID, "err", err)
+			} else {
+				resumed = true
+			}
+		}
+		if app.queue != nil {
+			if err := app.queue.Resume(jobID); err != nil {
+				app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
+				if !resumed {
+					app.clearStall(jobID)
+					return
+				}
+			} else {
+				resumed = true
+			}
+		}
+		if !resumed {
 			app.clearStall(jobID)
 			return
 		}
@@ -465,9 +491,19 @@ func (app *Application) seedFromCommittedRuns(ctx context.Context, jobID string)
 			"job", jobID, "err", err)
 		return
 	}
-	if err := app.queue.SeedFromRuns(jobID, runs); err != nil {
-		app.log.Warn("stall re-evaluation: could not seed the work set; the job will re-fetch",
-			"job", jobID, "err", err)
+	if app.dispatcher != nil {
+		if j, ok := app.dispatcher.Job(jobID); ok {
+			if err := j.SeedFromRuns(runs); err != nil {
+				app.log.Warn("stall re-evaluation: could not seed the work set in job; the job will re-fetch",
+					"job", jobID, "err", err)
+			}
+		}
+	}
+	if app.queue != nil {
+		if err := app.queue.SeedFromRuns(jobID, runs); err != nil {
+			app.log.Warn("stall re-evaluation: could not seed the work set; the job will re-fetch",
+				"job", jobID, "err", err)
+		}
 	}
 }
 
@@ -535,7 +571,7 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 			"can be run over it", ErrNotFinalized, jobID, fileIdx)
 	}
 	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
-	if errors.Is(err, queue.ErrJobNotResident) {
+	if errors.Is(err, queue.ErrJobNotResident) || errors.Is(err, job.ErrNotResident) {
 		app.log.Debug("retried finalize recorded its durable runs but could not ack a "+
 			"non-resident job; the articles are replayed from the record after the resume",
 			"job", jobID, "fileidx", fileIdx)
@@ -585,7 +621,12 @@ func (app *Application) stallLost(jobID string, fileIdx int) {
 				"restart gonzbd to resume this job from its recorded runs", path)
 	}
 	app.noteStallReason(jobID, reason)
-	if err := app.queue.SetWarning(jobID, reason); err != nil {
-		app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
+	if app.dispatcher != nil {
+		_ = app.dispatcher.SetWarning(jobID, reason)
+	}
+	if app.queue != nil {
+		if err := app.queue.SetWarning(jobID, reason); err != nil {
+			app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
+		}
 	}
 }

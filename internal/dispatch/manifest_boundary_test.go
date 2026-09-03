@@ -20,31 +20,34 @@ func TestDispatchNamesNoManifestType(t *testing.T) {
 	const banned = "Manifest"
 
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse package: %v", err)
+		t.Fatalf("read dir: %v", err)
 	}
 
-	for _, pkg := range pkgs {
-		for name, f := range pkg.Files {
-			ast.Inspect(f, func(n ast.Node) bool {
-				sel, ok := n.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				x, ok := sel.X.(*ast.Ident)
-				if !ok || x.Name != "job" {
-					return true
-				}
-				if strings.Contains(sel.Sel.Name, banned) {
-					t.Errorf("%s: internal/dispatch names job.%s; the dispatcher "+
-						"must delegate WHAT to load to Residency and never read "+
-						"manifest contents", name, sel.Sel.Name)
-				}
-				return true
-			})
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
 		}
+		f, err := parser.ParseFile(fset, entry.Name(), nil, 0)
+		if err != nil {
+			t.Fatalf("parse file %s: %v", entry.Name(), err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			x, ok := sel.X.(*ast.Ident)
+			if !ok || x.Name != "job" {
+				return true
+			}
+			if strings.Contains(sel.Sel.Name, banned) {
+				t.Errorf("%s: internal/dispatch names job.%s; the dispatcher "+
+					"must delegate WHAT to load to Residency and never read "+
+					"manifest contents", entry.Name(), sel.Sel.Name)
+			}
+			return true
+		})
 	}
 }

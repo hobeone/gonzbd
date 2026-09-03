@@ -8,6 +8,7 @@ package app
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -355,7 +357,49 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	if maxActiveJobs > 0 {
 		qOpts = append(qOpts, queue.WithMaxActiveJobs(maxActiveJobs))
 	}
-	qOpts = append(qOpts, queue.WithLogger(log), queue.WithSanitizeOptions(sanitize))
+	qOpts = append(qOpts,
+		queue.WithLogger(log),
+		queue.WithSanitizeOptions(sanitize),
+		queue.WithHooks(queue.Hooks{
+			OnAdd: func(j *queue.Job, m *queue.Manifest) {
+				app.bridgeOneJob(j, m)
+			},
+			OnRemove: func(id string) {
+				if app.dispatcher != nil {
+					_ = app.dispatcher.Remove(context.Background(), id)
+				}
+			},
+			OnPause: func(id string) {
+				if app.dispatcher != nil {
+					_ = app.dispatcher.PauseJob(id)
+				}
+			},
+			OnResume: func(id string) {
+				if app.dispatcher != nil {
+					_ = app.dispatcher.ResumeJob(id)
+				}
+			},
+			OnRetry: func(id string) {
+				if app.dispatcher != nil {
+					if err := app.dispatcher.Retry(id); err != nil {
+						if snap := app.queue.SnapshotJob(id); snap != nil {
+							app.bridgeOneJob(snap)
+						}
+					}
+				}
+			},
+			OnPauseAll: func() {
+				if app.dispatcher != nil {
+					app.dispatcher.Pause()
+				}
+			},
+			OnResumeAll: func() {
+				if app.dispatcher != nil {
+					app.dispatcher.Resume()
+				}
+			},
+		}),
+	)
 	q, err := queue.Load(queueStateDir, qOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("app: load queue: %w", err)
@@ -436,16 +480,23 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	p := &pipeline{
 		log:         log.With("component", "pipeline"),
 		queue:       q,
+		dispatcher:  app.dispatcher,
 		completions: app.downloader.Completions(),
 		downloadDir: dlDir,
 		sanitize:    sanitize,
 		onHeartbeat: app.RecordHeartbeat,
 		onJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
-				return
+			var msg string
+			if app.dispatcher != nil {
+				if j, ok := app.dispatcher.Job(jobID); ok {
+					msg = failMsgForJob(j)
+				}
 			}
-			msg := failMsgForJob(snap)
+			if msg == "" && q != nil {
+				if snap := q.SnapshotJob(jobID); snap != nil {
+					msg = failMsgForJob(snap)
+				}
+			}
 			if msg == "" {
 				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
 			}
@@ -536,7 +587,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	if repo != nil && repo.DB() != nil {
 		app.runs = durability.NewSQLiteRunStore(repo.DB())
 		app.resumer = durability.NewResumer(app.runs, log)
-		app.barrier = durability.NewBarrier(app.runs, q, app, log)
+		app.barrier = durability.NewBarrier(app.runs, app, app, log)
 	} else {
 		log.Warn("no history database: durability barrier disabled, " +
 			"no article will be acked and every restart re-downloads the whole queue")
@@ -643,21 +694,21 @@ func (app *Application) Speed() float64 {
 // whether it's a duplicate and the Warning string AddJob should attach to
 // the job (empty if not a duplicate). Split out of AddJob to isolate the
 // duplicate-detection branching from queue insertion (OPT-9).
-func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, force bool, nzbDir string) (isDuplicate bool, warning string) {
+func (app *Application) detectDuplicateNZB(ctx context.Context, qJob *queue.Job, force bool, nzbDir string) (isDuplicate bool, warning string) {
 	dupReason := ""
-	if app.queue.ExistsByMD5(job.MD5) {
+	if app.queue.ExistsByMD5(qJob.MD5) {
 		isDuplicate = true
 		dupReason = "found in active queue (MD5)"
 	}
 	if !isDuplicate && app.historyRepo != nil {
-		results, err := app.historyRepo.Search(ctx, history.SearchOptions{MD5Sum: job.MD5})
+		results, err := app.historyRepo.Search(ctx, history.SearchOptions{MD5Sum: qJob.MD5})
 		if err == nil && len(results) > 0 {
 			isDuplicate = true
 			dupReason = fmt.Sprintf("found in history DB (MD5: %q)", results[0].NzoID)
 		}
 	}
-	if !isDuplicate && job.Filename != "" {
-		base := filepath.Base(job.Filename)
+	if !isDuplicate && qJob.Filename != "" {
+		base := filepath.Base(qJob.Filename)
 		// Check for gzipped backup (current format) and uncompressed (legacy).
 		if _, err := os.Stat(filepath.Join(nzbDir, base+".gz")); err == nil {
 			isDuplicate = true
@@ -670,7 +721,7 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, 
 	if !isDuplicate {
 		return false, ""
 	}
-	app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason, "forced", force)
+	app.log.Info("duplicate NZB detected", "filename", qJob.Filename, "md5", qJob.MD5, "reason", dupReason, "forced", force)
 	if !force {
 		return true, "Duplicate NZB"
 	}
@@ -679,26 +730,26 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, 
 
 // AddJob validates, deduplicates, and enqueues a new download job. If force
 // is false and a duplicate is detected, the job is added in a paused state.
-func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
+func (app *Application) AddJob(ctx context.Context, qJob *queue.Job, rawNZB []byte, force bool) error {
 	adminDir := app.config.GetGeneral().AdminDir
 	nzbDir := filepath.Join(adminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
 		return fmt.Errorf("app: mkdir admin nzb: %w", err)
 	}
 
-	isDuplicate, warning := app.detectDuplicateNZB(ctx, job, force, nzbDir)
+	isDuplicate, warning := app.detectDuplicateNZB(ctx, qJob, force, nzbDir)
 	if isDuplicate {
 		if !force {
-			job.Status = constants.StatusPaused
+			qJob.Status = constants.StatusPaused
 		}
 		// Appended rather than assigned: BuildIngestJob may already have
 		// recorded what the parser discarded, and a job can be both a
 		// duplicate and malformed. Overwriting would drop the parse warning
 		// silently, on exactly the jobs most likely to need it.
-		if job.Warning != "" {
-			job.Warning += "; " + warning
+		if qJob.Warning != "" {
+			qJob.Warning += "; " + warning
 		} else {
-			job.Warning = warning
+			qJob.Warning = warning
 		}
 	}
 	// Pick a name not already taken in the queue or on disk. queue.Add
@@ -709,7 +760,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	downloadDir := gen.DownloadDir
 	completeDir := gen.CompleteDir
 	categories := snap.Categories
-	job.Name = queue.UniqueName(job.Name, func(name string) bool {
+	qJob.Name = queue.UniqueName(qJob.Name, func(name string) bool {
 		if app.queue.ExistsByName(name) {
 			return true
 		}
@@ -736,24 +787,58 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	// message-IDs once the manifest is unlinked, that job was silently
 	// unretryable. A non-forced duplicate is enqueued paused and can still
 	// be resumed, so it needs one too.
-	if job.Filename != "" && len(rawNZB) > 0 {
-		name, err := writeNZBBackup(nzbDir, job.Filename, rawNZB)
+	if qJob.Filename != "" && len(rawNZB) > 0 {
+		name, err := writeNZBBackup(nzbDir, qJob.Filename, rawNZB)
 		if err != nil {
 			// Not fatal: the download itself does not need the backup.
 			// job.NZBBackup stays empty and RetryHistoryJob reports the
 			// absence rather than failing obscurely later.
 			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable",
-				"filename", job.Filename, "err", err)
+				"filename", qJob.Filename, "err", err)
 		} else {
-			job.NZBBackup = name
+			qJob.NZBBackup = name
 		}
 	}
-	addStatus := job.Status // snapshot before q.Add notifies the dispatcher
-	if err := app.queue.Add(job); err != nil {
-		return fmt.Errorf("app: add to queue: %w", err)
+	if app.dispatcher != nil {
+		ppLevel := 3
+		if !qJob.PostProc {
+			ppLevel = 0
+		}
+		pol := job.PolicyFromPP(ppLevel)
+		j := job.New(qJob.ID, qJob.Name, pol)
+		if m, err := qJob.Manifest(); err == nil && m != nil {
+			var jm job.Manifest
+			if data, mErr := json.Marshal(m); mErr == nil {
+				if uErr := json.Unmarshal(data, &jm); uErr == nil {
+					_ = j.AttachContent(&jm)
+				}
+			}
+		}
+		if qJob.Status == constants.StatusPaused {
+			_ = j.SetIntent(job.IntentPause)
+		}
+		hdr := dispatch.Header{
+			Name:     qJob.Name,
+			Category: qJob.Category,
+			Priority: int(qJob.Priority),
+			Bytes:    qJob.TotalBytes(),
+			Warning:  qJob.Warning,
+		}
+		if err := app.dispatcher.Add(j, hdr); err != nil {
+			return fmt.Errorf("app: add to dispatcher: %w", err)
+		}
+	}
+	if app.queue != nil {
+		addStatus := qJob.Status // snapshot before q.Add notifies the dispatcher
+		if err := app.queue.Add(qJob); err != nil {
+			return fmt.Errorf("app: add to queue: %w", err)
+		}
+		app.emit(Event{Type: "queue_updated"})
+		app.log.Info("job added", "name", qJob.Name, "id", qJob.ID, "status", addStatus)
+		return nil
 	}
 	app.emit(Event{Type: "queue_updated"})
-	app.log.Info("job added", "name", job.Name, "id", job.ID, "status", addStatus)
+	app.log.Info("job added", "name", qJob.Name, "id", qJob.ID, "status", qJob.Status)
 	return nil
 }
 
@@ -772,8 +857,15 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 // asking to keep a removed job's bytes — the caller wanted the data, not a
 // resumable job.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
-	snap := app.queue.SnapshotJob(id)
-	if snap == nil {
+	var snap *queue.Job
+	if app.queue != nil {
+		snap = app.queue.SnapshotJob(id)
+	}
+	var j *job.Job
+	if app.dispatcher != nil {
+		j, _ = app.dispatcher.Job(id)
+	}
+	if snap == nil && j == nil {
 		return fmt.Errorf("job %q not found", id)
 	}
 	// Abort any active DirectUnpacker for this job before removing files.
@@ -817,8 +909,14 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// disposition every already-completed file of a removed job gets, and
 	// MarkFileComplete refuses the completion, so nothing downstream acts
 	// on it.
-	if err := app.queue.Remove(id); err != nil {
-		return err
+	if app.dispatcher != nil {
+		_ = app.dispatcher.Cancel(id)
+		_ = app.dispatcher.Remove(ctx, id)
+	}
+	if app.queue != nil {
+		if err := app.queue.Remove(id); err != nil {
+			return err
+		}
 	}
 	// CancelJob blocks until the assembler has actually closed the job's
 	// open file handles. If it returns an error (ctx cancelled, assembler
@@ -853,9 +951,17 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	app.deleteJobDurability(ctx, id)
 	if deleteFiles {
 		downloadDir := app.config.GetGeneral().DownloadDir
-		path := filepath.Join(downloadDir, snap.Name)
-		if err := safeDeleteDir(path, downloadDir); err != nil {
-			app.log.Warn("failed to delete job directory", "path", path, "err", err)
+		name := ""
+		if snap != nil {
+			name = snap.Name
+		} else if j != nil {
+			name = j.Name()
+		}
+		if name != "" {
+			path := filepath.Join(downloadDir, name)
+			if err := safeDeleteDir(path, downloadDir); err != nil {
+				app.log.Warn("failed to delete job directory", "path", path, "err", err)
+			}
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
@@ -1076,6 +1182,14 @@ func (app *Application) Start(ctx context.Context) error {
 	if err := app.resumeAllJobs(app.ctx); err != nil {
 		_ = app.assembler.Stop()
 		return err
+	}
+	if app.queue != nil && app.dispatcher != nil {
+		app.bridgeQueueJobs()
+		if app.queue.IsPaused() {
+			app.dispatcher.Pause()
+		}
+		app.dispatcher.Tick(app.ctx)
+		app.dispatcher.Tick(app.ctx)
 	}
 	// Snapshot app.downloader under app.mu once and reuse it below. started
 	// flips true (via CompareAndSwap) before this point, so a concurrent
@@ -1433,12 +1547,22 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	// Before MarkFileComplete, so the value is on the progress record by the
 	// time maybeFinalize below can hand the job to post-processing.
 	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
-	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
-		// Returning bare here was itself the shape #261 describes: the file
-		// never gets marked complete, no event is emitted, and nothing says
-		// why.
-		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-		return err
+	if app.dispatcher != nil {
+		if j, ok := app.dispatcher.Job(fc.JobID); ok {
+			_ = j.MarkFileComplete(fc.FileIdx)
+			if j.IsComplete() {
+				_ = j.SetNext(job.Assessing)
+			}
+		}
+	}
+	if app.queue != nil {
+		if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
+			// Returning bare here was itself the shape #261 describes: the file
+			// never gets marked complete, no event is emitted, and nothing says
+			// why.
+			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			return err
+		}
 	}
 	app.emit(Event{Type: "queue_updated"})
 
@@ -1451,12 +1575,23 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		app.duOrch.maybeStart(fc)
 	}
 
-	snap := app.queue.SnapshotJob(fc.JobID)
-	if snap != nil && snap.IsComplete() {
-		if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
-			return nil // downloader will fetch recovery volumes
+	if app.queue != nil {
+		snap := app.queue.SnapshotJob(fc.JobID)
+		if snap != nil && snap.IsComplete() {
+			if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
+				return nil // downloader will fetch recovery volumes
+			}
+			var msg string
+			if app.dispatcher != nil {
+				if j, ok := app.dispatcher.Job(fc.JobID); ok {
+					msg = failMsgForJob(j)
+				}
+			}
+			if msg == "" {
+				msg = failMsgForJob(snap)
+			}
+			app.maybeFinalize(fc.JobID, msg)
 		}
-		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
 	}
 	return nil
 }
@@ -1471,18 +1606,50 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 // par2 index, so the volumes are held rather than spent or discarded), or
 // un-deferral itself fails (in which case we fall through to finalize without
 // recovery volumes, matching the pre-on-demand-par2 behaviour).
-func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string, snap *queue.Job) bool {
+func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string, optSnap ...*queue.Job) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	if !snap.HasDeferredPar2() || snap.Progress().Par2Recovered() {
+	var snap *queue.Job
+	if len(optSnap) > 0 {
+		snap = optSnap[0]
+	}
+	if snap == nil && app.queue != nil {
+		snap = app.queue.SnapshotJob(jobID)
+	}
+	var j *job.Job
+	if app.dispatcher != nil {
+		j, _ = app.dispatcher.Job(jobID)
+	}
+
+	var hasDeferredPar2 bool
+	var par2Recovered bool
+	var jobName string
+	switch {
+	case j != nil:
+		hasDeferredPar2 = j.HasDeferredPar2()
+		if p := j.Progress(); p != nil {
+			par2Recovered = p.Par2Recovered()
+		}
+		jobName = j.Name()
+	case snap != nil:
+		hasDeferredPar2 = snap.HasDeferredPar2()
+		if p := snap.Progress(); p != nil {
+			par2Recovered = p.Par2Recovered()
+		}
+		jobName = snap.Name
+	default:
+		return false
+	}
+
+	if !hasDeferredPar2 || par2Recovered {
 		return false
 	}
 	cfgSnap := app.config.Snapshot()
 	downloadDir := cfgSnap.General.DownloadDir
 	pp := &cfgSnap.PostProc
 	parseOpts := par2.ParseOptionsFromConfig(pp)
-	dir := filepath.Join(downloadDir, snap.Name)
+	dir := filepath.Join(downloadDir, jobName)
 
 	// An unreadable manifest means the CRC comparison cannot be made here, so
 	// this job finalizes with its recovery volumes still deferred. That is
@@ -1506,10 +1673,27 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	// anyway. It could never do that, and the premise was wrong besides.
 	// See TestMaybeReleaseRecoveryVolumes_UnreadableManifest.
 	outcome, reason := outcomeRepair, "manifest unreadable, cannot verify integrity"
-	if m, mErr := snap.Manifest(); mErr != nil {
-		app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
-			"job", jobID, "err", mErr)
-	} else {
+	var mf manifestReader
+	var prog progressReader
+	if j != nil {
+		if m, err := j.Manifest(); err == nil {
+			mf = m
+			prog = j.Progress()
+		} else {
+			app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
+				"job", jobID, "err", err)
+		}
+	} else if snap != nil {
+		if m, err := snap.Manifest(); err == nil {
+			mf = m
+			prog = snap.Progress()
+		} else {
+			app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
+				"job", jobID, "err", err)
+		}
+	}
+
+	if mf != nil && prog != nil {
 		// Assess, decide, and only then move anything.
 		//
 		// The order is the fix. This used to rename first so that verification
@@ -1523,7 +1707,6 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		// move" in one pass over the pre-rename directory. The renames it
 		// reports are applied afterwards, and cannot be obtained without a
 		// verdict, so this ordering is not a convention to remember.
-		prog := snap.Progress()
 		sets, sErr := par2.FindPar2Files(dir, parseOpts)
 		switch {
 		case sErr != nil || len(sets) == 0:
@@ -1535,7 +1718,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 			app.log.Info("on-demand par2: no usable par2 index to verify against; fetching recovery volumes",
 				"job", jobID, "dir", dir, "err", sErr)
 		default:
-			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
+			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(mf, prog), app.log, parseOpts)
 			if aErr != nil {
 				outcome = outcomeRepair
 				reason = fmt.Sprintf("could not match downloaded files against the par2 index (err: %v)", aErr)
@@ -1582,9 +1765,14 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		// The only failure left is the job being genuinely absent
 		// (ErrNotFound), which cannot happen here: jobID was just resolved
 		// to snap above.
-		if err := app.queue.DiscardDeferredPar2(jobID); err != nil {
-			app.log.Warn("on-demand par2: discarding the deferred volumes did not fully succeed",
-				"job", jobID, "err", err)
+		if j != nil {
+			_ = j.DiscardDeferredPar2()
+		}
+		if app.queue != nil {
+			if err := app.queue.DiscardDeferredPar2(jobID); err != nil {
+				app.log.Warn("on-demand par2: discarding the deferred volumes did not fully succeed",
+					"job", jobID, "err", err)
+			}
 		}
 		return false
 	case outcomeUnknown:
@@ -1594,37 +1782,60 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		// rescue the damaged case it is indistinguishable from. Recording the
 		// reason is still worth doing: it is the only place the "why" of a
 		// held-not-fetched job is written down.
-		if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
-			app.log.Warn("on-demand par2: could not record the release reason",
-				"job", jobID, "err", err)
+		if j != nil {
+			j.SetPar2ReleaseReason(reason)
+		}
+		if app.queue != nil {
+			if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
+				app.log.Warn("on-demand par2: could not record the release reason",
+					"job", jobID, "err", err)
+			}
 		}
 		app.log.Info("on-demand par2: nothing on disk matched the par2 index; holding the volumes and finalizing",
 			"job", jobID, "reason", reason)
 		return false
 	case outcomeRepair:
-		if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
-			app.log.Warn("on-demand par2: could not record the release reason",
-				"job", jobID, "err", err)
+		if j != nil {
+			j.SetPar2ReleaseReason(reason)
 		}
-		idxs := snap.DeferredRecoveryIndices()
-		if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
-			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
-				"job", jobID, "err", err)
-			// Overwrite the reason set above: that one only explains why
-			// repair was needed, and on its own reads identically to
-			// outcomeUnknown's "nothing could be identified" reason once
-			// filelist.go can no longer tell them apart (Par2Recovered()
-			// stays false either way). Verification DID run and DID find
-			// damage here — the volumes just could not be fetched — so the
-			// reason needs to say that too, even though the two outcomes
-			// remain indistinguishable to the caller without a persisted
-			// par2Outcome (deliberately not added by this change).
-			failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
-			if err := app.queue.SetPar2ReleaseReason(jobID, failReason); err != nil {
+		if app.queue != nil {
+			if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
 				app.log.Warn("on-demand par2: could not record the release reason",
 					"job", jobID, "err", err)
 			}
-			return false
+		}
+		var idxs []int
+		if j != nil {
+			idxs = j.DeferredRecoveryIndices()
+			if err := j.UndeferRecoveryVolumes(idxs); err != nil {
+				app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
+					"job", jobID, "err", err)
+				failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
+				j.SetPar2ReleaseReason(failReason)
+				return false
+			}
+		}
+		if app.queue != nil && snap != nil {
+			idxs = snap.DeferredRecoveryIndices()
+			if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
+				app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
+					"job", jobID, "err", err)
+				// Overwrite the reason set above: that one only explains why
+				// repair was needed, and on its own reads identically to
+				// outcomeUnknown's "nothing could be identified" reason once
+				// filelist.go can no longer tell them apart (Par2Recovered()
+				// stays false either way). Verification DID run and DID find
+				// damage here — the volumes just could not be fetched — so the
+				// reason needs to say that too, even though the two outcomes
+				// remain indistinguishable to the caller without a persisted
+				// par2Outcome (deliberately not added by this change).
+				failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
+				if err := app.queue.SetPar2ReleaseReason(jobID, failReason); err != nil {
+					app.log.Warn("on-demand par2: could not record the release reason",
+						"job", jobID, "err", err)
+				}
+				return false
+			}
 		}
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
 			"job", jobID, "volumes", len(idxs), "reason", reason)
@@ -1961,11 +2172,11 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 	}
 }
 
-func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
+func (app *Application) enqueuePostProc(qJob *queue.Job, failMsg string) {
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
-	app.pipeline.forgetJob(job.ID)
-	app.forgetJobBarrierState(job.ID)
+	app.pipeline.forgetJob(qJob.ID)
+	app.forgetJobBarrierState(qJob.ID)
 
 	snap := app.config.Snapshot()
 	gen := &snap.General
@@ -1973,22 +2184,22 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	completeDir := gen.CompleteDir
 	categories := snap.Categories
 	sanitize := snap.Downloads.SanitizeOptions()
-	downloadDir := filepath.Join(downloadDirBase, job.Name)
+	downloadDir := filepath.Join(downloadDirBase, qJob.Name)
 
 	// Log the handoff from download → postproc. This is the "entering
 	// postproc" bookend; processJob logs the "exiting" bookend.
 	var dlDuration time.Duration
-	if !job.Progress().DownloadStarted().IsZero() {
-		dlDuration = job.Progress().DownloadFinished().Sub(job.Progress().DownloadStarted())
+	if !qJob.Progress().DownloadStarted().IsZero() {
+		dlDuration = qJob.Progress().DownloadFinished().Sub(qJob.Progress().DownloadStarted())
 	}
 	app.log.Info("postproc: job entering pipeline",
-		"job", job.ID,
-		"name", job.Name,
-		"category", job.Category,
+		"job", qJob.ID,
+		"name", qJob.Name,
+		"category", qJob.Category,
 		"download_dir", downloadDir,
 		"download_duration", dlDuration.Round(time.Second),
-		"total_bytes", job.TotalBytes(),
-		"failed_bytes", job.Progress().FailedBytes(),
+		"total_bytes", qJob.TotalBytes(),
+		"failed_bytes", qJob.Progress().FailedBytes(),
 		"fail_msg", failMsg,
 	)
 
@@ -2003,7 +2214,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 				sz = info.Size()
 			}
 			app.log.Info("postproc: download file",
-				"job", job.ID,
+				"job", qJob.ID,
 				"file", e.Name(),
 				"size", sz,
 				"dir", e.IsDir(),
@@ -2011,7 +2222,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		}
 	}
 
-	cat := config.FindCategory(categories, job.Category)
+	cat := config.FindCategory(categories, qJob.Category)
 	catDir := cat.Dir
 	// P6: Category dir trailing '*' suppresses the per-job subfolder.
 	// Files go directly into the category directory ("flat layout").
@@ -2021,7 +2232,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	if flatLayout {
 		catDir = strings.TrimSuffix(catDir, "*")
 	}
-	finalDir := filepath.Join(completeDir, catDir, job.Name)
+	finalDir := filepath.Join(completeDir, catDir, qJob.Name)
 	if flatLayout {
 		finalDir = filepath.Join(completeDir, catDir)
 	}
@@ -2029,11 +2240,16 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// When du != nil, Wait() is executed inside an asynchronous worker
 	// goroutine on app.wg so the completion event consumer (watchCompletions)
 	// never blocks waiting for disk unpacking to finish.
-	du := app.duOrch.collect(job.ID)
+	du := app.duOrch.collect(qJob.ID)
+	var j *job.Job
+	if app.dispatcher != nil {
+		j, _ = app.dispatcher.Job(qJob.ID)
+	}
 
 	enqueuePostProc := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		app.postProcessor.Process(&postproc.Job{
-			Queue:                job,
+			Queue:                qJob,
+			Job:                  j,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
 			Sanitize:             sanitize,
@@ -2043,7 +2259,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 			DirectUnpackSkipped:  duSkipped,
 		})
 		select {
-		case app.jobComplete <- JobComplete{JobID: job.ID}:
+		case app.jobComplete <- JobComplete{JobID: qJob.ID}:
 		default:
 		}
 	}
@@ -2065,15 +2281,15 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 			duSkipped := du.Skipped()
 			if len(duResults) > 0 {
 				app.log.Info("directunpack: passing results to postproc",
-					"job", job.ID, "sets", len(duResults))
+					"job", qJob.ID, "sets", len(duResults))
 			}
 			if len(duFailures) > 0 {
 				app.log.Warn("directunpack: passing failures to postproc",
-					"job", job.ID, "failed_sets", len(duFailures))
+					"job", qJob.ID, "failed_sets", len(duFailures))
 			}
 			if len(duSkipped) > 0 {
 				app.log.Info("directunpack: passing skipped sets to postproc",
-					"job", job.ID, "skipped_sets", len(duSkipped))
+					"job", qJob.ID, "skipped_sets", len(duSkipped))
 			}
 			enqueuePostProc(duResults, duFailures, duSkipped)
 		})
@@ -2129,7 +2345,7 @@ func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, err
 			pp = n
 		}
 	}
-	job, err := BuildIngestJob(app.config, parsed, entry.NzbName, types.FetchOptions{
+	qJob, err := BuildIngestJob(app.config, parsed, entry.NzbName, types.FetchOptions{
 		NzbName:  entry.Name,
 		Category: entry.Category,
 		Script:   entry.Script,
@@ -2139,9 +2355,9 @@ func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, err
 	if err != nil {
 		return nil, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
 	}
-	job.ID = entry.NzoID
-	job.NZBBackup = entry.NZBBackup
-	return job, nil
+	qJob.ID = entry.NzoID
+	qJob.NZBBackup = entry.NZBBackup
+	return qJob, nil
 }
 
 // RetryHistoryJob re-enqueues a failed history job for re-download.
@@ -2169,7 +2385,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			jobID, entry.Status)
 	}
 
-	job, err := app.rebuildJobFromNZB(entry)
+	qJob, err := app.rebuildJobFromNZB(entry)
 	if err != nil {
 		return err
 	}
@@ -2179,7 +2395,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// against.
 	var progressApplied bool
 	if store := app.queue.Store(); store != nil {
-		applied, rErr := store.RestoreRetryProgress(ctx, job)
+		applied, rErr := store.RestoreRetryProgress(ctx, qJob)
 		if rErr != nil {
 			return fmt.Errorf("app: retry %s: restore retained progress: %w", jobID, rErr)
 		}
@@ -2189,7 +2405,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 		progressApplied = applied
 	}
-	job.ResetForRetry()
+	qJob.ResetForRetry()
 	// The job returns under the SAME ID, and its durability rows survive with
 	// it — see the deletion below, which is what makes that true. The barrier
 	// latches overlap warnings per (jobID, fileIdx), so without this the
@@ -2282,7 +2498,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 				"would skip the very articles it exists to re-attempt: %w", jobID, err)
 		}
 	}
-	if err := app.queue.Add(job); err != nil {
+	if err := app.queue.Add(qJob); err != nil {
 		return err
 	}
 	// Deliberately a Delete variant rather than deleteHistoryEntries: the job
@@ -2321,7 +2537,16 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	app.emit(Event{Type: "history_updated"})
 	snap := app.queue.SnapshotJob(jobID)
 	if snap != nil && snap.IsComplete() {
-		app.maybeFinalize(jobID, failMsgForJob(snap))
+		var msg string
+		if app.dispatcher != nil {
+			if j, ok := app.dispatcher.Job(jobID); ok {
+				msg = failMsgForJob(j)
+			}
+		}
+		if msg == "" {
+			msg = failMsgForJob(snap)
+		}
+		app.maybeFinalize(jobID, msg)
 	}
 	return nil
 }
@@ -2346,12 +2571,150 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		PreCheck:         preCheck,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
-				return
+			var msg string
+			if app.dispatcher != nil {
+				if j, ok := app.dispatcher.Job(jobID); ok {
+					msg = failMsgForJob(j)
+				}
 			}
-			app.maybeFinalize(jobID, failMsgForJob(snap))
+			if msg == "" && q != nil {
+				if snap := q.SnapshotJob(jobID); snap != nil {
+					msg = failMsgForJob(snap)
+				}
+			}
+			if msg == "" {
+				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+			}
+			app.maybeFinalize(jobID, msg)
 		},
+	}
+}
+
+func (app *Application) bridgeOneJob(snap *queue.Job, explicitManifest ...*queue.Manifest) {
+	if app.dispatcher == nil || snap == nil {
+		return
+	}
+	var m *queue.Manifest
+	if len(explicitManifest) > 0 && explicitManifest[0] != nil {
+		m = explicitManifest[0]
+	} else if snapM, err := snap.Manifest(); err == nil && snapM != nil {
+		m = snapM
+	}
+	if _, ok := app.dispatcher.Row(snap.ID); !ok {
+		ppLevel := 3
+		if !snap.PostProc {
+			ppLevel = 0
+		}
+		pol := job.PolicyFromPP(ppLevel)
+		j := job.New(snap.ID, snap.Name, pol)
+		var jm *job.Manifest
+		if m != nil {
+			var parsed job.Manifest
+			if data, mErr := json.Marshal(m); mErr == nil {
+				if uErr := json.Unmarshal(data, &parsed); uErr == nil {
+					jm = &parsed
+				}
+			}
+		} else if app.residency != nil {
+			jm, _ = app.residency.readManifest(context.Background(), snap.ID)
+		}
+
+		var jp *job.JobProgress
+		if p := snap.Progress(); p != nil {
+			var parsedP job.JobProgress
+			if pData, pErr := json.Marshal(p); pErr == nil {
+				if uErr := json.Unmarshal(pData, &parsedP); uErr == nil {
+					jp = &parsedP
+				}
+			}
+		}
+
+		if jm != nil {
+			if jp != nil {
+				_ = j.RestoreContent(jm, jp)
+			} else {
+				_ = j.AttachContent(jm)
+			}
+		}
+		if p := snap.Progress(); p != nil {
+			for fi := range j.NumFiles() {
+				if fn := p.FileFilename(fi); fn != "" {
+					_ = j.SetFileFilename(fi, fn)
+				}
+			}
+		}
+		if snap.Status == constants.StatusPaused {
+			_ = j.SetIntent(job.IntentPause)
+		}
+		hdr := dispatch.Header{
+			Name:     snap.Name,
+			Category: snap.Category,
+			Priority: int(snap.Priority),
+			Bytes:    snap.TotalBytes(),
+			Warning:  snap.Warning,
+		}
+		if err := app.dispatcher.Add(j, hdr); err != nil {
+			app.log.Warn("failed to bridge queue job to dispatcher", "job", snap.ID, "err", err)
+		}
+	} else {
+		if j, ok := app.dispatcher.Job(snap.ID); ok {
+			var jm *job.Manifest
+			switch {
+			case m != nil:
+				var parsed job.Manifest
+				if data, mErr := json.Marshal(m); mErr == nil {
+					if uErr := json.Unmarshal(data, &parsed); uErr == nil {
+						jm = &parsed
+					}
+				}
+			case app.residency != nil:
+				jm, _ = app.residency.readManifest(context.Background(), snap.ID)
+			case j.Resident():
+				jm, _ = j.Manifest()
+			}
+
+			var jp *job.JobProgress
+			if p := snap.Progress(); p != nil {
+				var parsedP job.JobProgress
+				if pData, pErr := json.Marshal(p); pErr == nil {
+					if uErr := json.Unmarshal(pData, &parsedP); uErr == nil {
+						jp = &parsedP
+					}
+				}
+			}
+
+			if jm != nil {
+				if jp != nil {
+					_ = j.RestoreContent(jm, jp)
+				} else if !j.Resident() {
+					_ = j.AttachContent(jm)
+				}
+			}
+			if p := snap.Progress(); p != nil && j.Progress() != nil {
+				for fi := range j.NumFiles() {
+					if fn := p.FileFilename(fi); fn != "" && j.Progress().FileFilename(fi) == "" {
+						_ = j.SetFileFilename(fi, fn)
+					}
+				}
+			}
+		}
+	}
+	if app.started.Load() && !app.stopped.Load() {
+		app.dispatcher.Tick(app.ctx)
+		app.dispatcher.Tick(app.ctx)
+	}
+}
+
+func (app *Application) bridgeQueueJobs() {
+	if app.queue == nil || app.dispatcher == nil {
+		return
+	}
+	for _, snap := range app.queue.Snapshot() {
+		if hydrated := app.queue.SnapshotJob(snap.ID); hydrated != nil {
+			app.bridgeOneJob(hydrated)
+		} else {
+			app.bridgeOneJob(snap)
+		}
 	}
 }
 
@@ -2515,8 +2878,27 @@ func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	return nil
 }
 
-func failMsgForJob(job *queue.Job) string {
-	p := job.Progress()
+func failMsgForJob(v any) string {
+	switch j := v.(type) {
+	case *queue.Job:
+		if j == nil {
+			return ""
+		}
+		return failMsgForCounters(j.Progress(), string(j.RepairState()), j.RecoveryBytes(), j.RecoveryFiles(), j.RepairState().Hopeless())
+	case *job.Job:
+		if j == nil {
+			return ""
+		}
+		return failMsgForCounters(j.Progress(), string(j.RepairState()), j.RecoveryBytes(), j.RecoveryFiles(), j.RepairState().Hopeless())
+	default:
+		return ""
+	}
+}
+
+func failMsgForCounters(p ProgressByteCounters, state string, recBytes int64, recFiles int, hopeless bool) string {
+	if p == nil {
+		return ""
+	}
 
 	// Promoted scalars and JobProgress, never job.Manifest(): this runs from
 	// the startup recovery walk over Queue.Snapshot(), where a job may have
@@ -2556,23 +2938,23 @@ func failMsgForJob(job *queue.Job) string {
 	// into maybeFinalize with no fallback string — so a dispatcher that
 	// declares a job hopeless while this one still considers it repairable
 	// finalizes the job with an empty reason and shows the user nothing.
-	switch state := job.RepairState(); state {
-	case queue.RepairIntact, queue.RepairPossible, queue.RepairUnknown:
+	switch state {
+	case string(job.RepairIntact), string(job.RepairPossible), string(job.RepairUnknown):
 		// RepairIntact: only par2 failed, so there is nothing to repair and
 		// the job merely cannot be verified. RepairPossible: within capacity.
 		// RepairUnknown: par2 present but unrecognized, so capacity is
 		// unmeasured rather than absent. All three proceed to
 		// post-processing.
 		return ""
-	case queue.RepairBeyondCapacity:
+	case string(job.RepairBeyondCapacity):
 		// Capacity may be understated if some plainly-named par2 file also
 		// carries slices, so this errs toward aborting.
-		recoveryMB := float64(job.RecoveryBytes()) / (1024 * 1024)
+		recoveryMB := float64(recBytes) / (1024 * 1024)
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d recovery volumes). Job is beyond repair",
-			failedMB, recoveryMB, job.RecoveryFiles(),
+			failedMB, recoveryMB, recFiles,
 		)
-	case queue.RepairNoCapacity:
+	case string(job.RepairNoCapacity):
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
 			failedMB,
@@ -2588,7 +2970,7 @@ func failMsgForJob(job *queue.Job) string {
 		//
 		// TestFailMsgForJob_WordsEveryHopelessState fails when a state reaches
 		// here; this arm only bounds the damage until someone reads it.
-		if state.Hopeless() {
+		if hopeless {
 			return fmt.Sprintf(
 				"Aborted: %.1f MB failed (%s). Job is beyond repair",
 				failedMB, state,

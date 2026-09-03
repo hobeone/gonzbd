@@ -347,3 +347,27 @@ func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 		t.Fatal("Row of an unknown id must report not-found")
 	}
 }
+
+func TestDispatcher_SetWarning(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.SetWarning("unknown", "warn"); err == nil {
+		t.Fatal("SetWarning on unknown job should error")
+	}
+
+	if err := d.SetWarning("j1", "disk low"); err != nil {
+		t.Fatalf("SetWarning: %v", err)
+	}
+
+	row, ok := d.Row("j1")
+	if !ok {
+		t.Fatal("Row(j1) not found")
+	}
+	if row.Header.Warning != "disk low" {
+		t.Fatalf("Header.Warning = %q, want 'disk low'", row.Header.Warning)
+	}
+}

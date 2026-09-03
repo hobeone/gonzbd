@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // BinaryVersions holds the resolved version strings for external
@@ -85,6 +85,44 @@ func (app *Application) PingDB(ctx context.Context) error {
 func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	if !app.started.Load() || app.stopped.Load() {
 		return false
+	}
+	if app.dispatcher != nil {
+		if app.dispatcher.Paused() || (app.queue != nil && app.queue.IsPaused()) {
+			app.RecordHeartbeat()
+			return true
+		}
+		rows := app.dispatcher.List()
+		hasPostProc := false
+		hasDownloading := false
+		for _, r := range rows {
+			switch r.View.State {
+			case job.Repairing, job.Extracting, job.Finalizing:
+				hasPostProc = true
+			case job.Fetching:
+				hasDownloading = true
+			}
+		}
+		if app.queue != nil {
+			if app.queue.HasPostProcJobs() {
+				hasPostProc = true
+			}
+			if app.queue.HasDownloadingJobs() {
+				hasDownloading = true
+			}
+		}
+		if hasPostProc {
+			app.RecordHeartbeat()
+			return true
+		}
+		if hasDownloading {
+			last := app.lastHeartbeat.Load()
+			if last > 0 && time.Since(time.Unix(last, 0)) > 2*time.Minute {
+				return false
+			}
+		} else {
+			app.RecordHeartbeat()
+		}
+		return true
 	}
 	if app.queue == nil {
 		return true
@@ -249,9 +287,24 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 	if app.queue != nil {
 		if snap := app.queue.SnapshotJob(jobID); snap != nil {
 			out.DurableBytes = DurableBytesOf(snap.Progress())
+			return out
+		}
+	}
+	if app.dispatcher != nil {
+		if j, ok := app.dispatcher.Job(jobID); ok {
+			out.DurableBytes = DurableBytesOf(j.Progress())
+			return out
 		}
 	}
 	return out
+}
+
+// ProgressByteCounters is the subset of JobProgress that DurableBytesOf requires.
+type ProgressByteCounters interface {
+	ExpectedBytes() int64
+	FailedBytes() int64
+	RemainingBytes() int64
+	ContentFailedBytes() int64
 }
 
 // DurableBytesOf derives a job's durable byte total from its progress.
@@ -267,7 +320,7 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 // the DECODED payload bytes an fsync proved -- docs/queue-lifecycle.md records
 // that substitution overstating every non-resident job's remaining bytes by
 // the encoding overhead.
-func DurableBytesOf(p *queue.JobProgress) int64 {
+func DurableBytesOf(p ProgressByteCounters) int64 {
 	if p == nil {
 		return 0
 	}

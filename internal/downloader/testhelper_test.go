@@ -84,4 +84,3 @@ func makeJobWithArticles(t *testing.T, msgIDs []string) (*job.Job, *job.Manifest
 	m := job.NewManifest([]job.JobFile{file})
 	return j, m
 }
-

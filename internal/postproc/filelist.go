@@ -310,10 +310,10 @@ func completionPct(downloaded, total int64) int {
 
 // buildFinalFileList creates a file listing of the job's final directory
 // for the summary stage. This shows the end state after all processing.
-func buildFinalFileList(job *Job) []string {
-	dir := job.FinalDir
+func buildFinalFileList(j *Job) []string {
+	dir := j.FinalDir
 	if dir == "" {
-		dir = job.DownloadDir
+		dir = j.DownloadDir
 	}
 
 	entries, err := os.ReadDir(dir)

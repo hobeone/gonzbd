@@ -89,8 +89,8 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	}
 
 	jobID := job.ID
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue().Add: %v", err)
+	if err := application.AddJob(t.Context(), job, []byte("<nzb/>"), false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
 
 	// Wait for completion (it should move to history as Failed)
@@ -187,7 +187,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 	// If unrar is present, it will fail because the content is not a real RAR.
 	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "fail-test", PP: 3}, fsutil.SanitizeOptions{})
 	jobID := job.ID
-	_ = application.Queue().Add(job)
+	_ = application.AddJob(t.Context(), job, []byte("<nzb/>"), false)
 
 	// Wait for completion (it will move to history as Failed)
 	select {
@@ -278,8 +278,8 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		}
 		job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "history-test"}, fsutil.SanitizeOptions{})
 		jobID := job.ID
-		if err := application.Queue().Add(job); err != nil {
-			t.Fatalf("Queue.Add: %v", err)
+		if err := application.AddJob(t.Context(), job, []byte("<nzb/>"), false); err != nil {
+			t.Fatalf("AddJob: %v", err)
 		}
 
 		// Wait for completion
@@ -642,8 +642,8 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	if err := application.AddJob(t.Context(), job, []byte("<nzb/>"), false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
 
 	// Wait for Post-Processing (PostProcComplete)

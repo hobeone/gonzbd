@@ -13,7 +13,6 @@ import (
 func TestScenario_DecodeError(t *testing.T) {
 	t.Parallel()
 	h := newScenarioHarness(t)
-	h.Start()
 
 	// 1. Add a job
 	job := h.AddSimpleJob("decode-error", []byte("dummy"))
@@ -28,6 +27,8 @@ func TestScenario_DecodeError(t *testing.T) {
 		return true
 	})
 	h.server.AddArticle(msgID, []byte("this is not yenc"))
+
+	h.Start()
 
 	// Wait for the job to complete or fail.
 	// If the fix is NOT present, this will timeout because the article is neither Done nor Failed.
@@ -58,7 +59,6 @@ func TestScenario_DecodeError(t *testing.T) {
 func TestScenario_DecodeJunkRecovery(t *testing.T) {
 	t.Parallel()
 	h := newScenarioHarness(t)
-	h.Start()
 
 	// 1. Prepare valid yEnc article
 	payload := []byte("hello world")
@@ -80,6 +80,8 @@ func TestScenario_DecodeJunkRecovery(t *testing.T) {
 		return true
 	})
 	h.server.AddArticle(msgID, junkBody)
+
+	h.Start()
 
 	// Wait for the job to complete.
 	if !h.WaitForPostProc(job.ID, 5*time.Second) {

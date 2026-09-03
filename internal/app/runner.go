@@ -59,9 +59,14 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 }
 
 func (r *appRunner) runFetch(_ context.Context, id string) {
-	if r.app != nil && r.app.downloader != nil {
-		if dl, ok := r.app.downloader.(interface{ Wake() }); ok {
-			dl.Wake()
+	if r.app != nil {
+		r.app.mu.Lock()
+		dl := r.app.downloader
+		r.app.mu.Unlock()
+		if dl != nil {
+			if w, ok := dl.(interface{ Wake() }); ok {
+				w.Wake()
+			}
 		}
 	}
 	if r.report != nil {
@@ -69,7 +74,51 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 	}
 }
 
-func (r *appRunner) runAssess(_ context.Context, id string) {
+func (r *appRunner) runAssess(ctx context.Context, id string) {
+	if r.app == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+	var j *job.Job
+	if r.app.dispatcher != nil {
+		j, _ = r.app.dispatcher.Job(id)
+	}
+	if j == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	if r.app.maybeReleaseRecoveryVolumes(ctx, id) {
+		_ = j.SetNext(job.Fetching)
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	repairState := j.RepairState()
+	if repairState.Hopeless() {
+		failMsg := failMsgForJob(j)
+		r.app.maybeFinalize(id, failMsg)
+		if r.report != nil {
+			_ = r.report.Finished(id, job.OutcomeFailed)
+		}
+		return
+	}
+
+	if repairState == job.RepairPossible || repairState == job.RepairUnknown {
+		_ = j.SetNext(job.Repairing)
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	_ = j.SetNext(job.Extracting)
 	if r.report != nil {
 		_ = r.report.Yielded(id)
 	}

@@ -13,6 +13,8 @@ import (
 // and job-level counters. Always sized to match its Manifest's
 // NumArticles()/NumFiles(). Deep-copied on every Snapshot/SnapshotJob
 // (unlike Manifest, which is shared).
+//
+//nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobProgress struct {
 	// Flat, global article index. emitted is transient and never persisted.
 	// Bitsets rather than []bool: see bitset.go for the memory argument.
