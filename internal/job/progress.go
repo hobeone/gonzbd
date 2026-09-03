@@ -385,6 +385,20 @@ func (p *JobProgress) ArticleEmitted(i int) bool {
 	return p.emitted.Get(i)
 }
 
+// NumFiles returns how many files this progress record was sized for.
+//
+// Job.NumFiles answers the same question from the manifest-derived scalars and
+// is the door a reporting path should use. This one exists for a consumer that
+// holds only a progress record and no Job — Checkpoint carries exactly that
+// pair of ID and *JobProgress, and a persister walking its per-file accessors
+// has no other way to bound the walk.
+func (p *JobProgress) NumFiles() int {
+	if p == nil {
+		return 0
+	}
+	return len(p.files)
+}
+
 // FileComplete reports whether file fileIdx has been fully assembled on disk.
 func (p *JobProgress) FileComplete(fi int) bool {
 	if p == nil || fi < 0 || fi >= len(p.files) {

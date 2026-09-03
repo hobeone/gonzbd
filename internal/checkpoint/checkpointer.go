@@ -19,6 +19,13 @@ import (
 )
 
 // Store is the persistence this package needs and no more.
+//
+// internal/checkpoint/store is the SQLite implementation, kept in its own
+// package so that this one stays free of a SQL driver — the shape
+// internal/dispatch and internal/dispatch/store already have. It writes
+// job_files and only job_files: the State and Intent a Checkpoint also
+// carries belong to dispatch_jobs and are internal/dispatch's to write, and
+// writing them twice would be two owners for one fact.
 type Store interface {
 	SaveBatch(ctx context.Context, cps []job.Checkpoint) error
 }
