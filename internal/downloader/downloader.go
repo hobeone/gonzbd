@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 )
 
 // ErrAlreadyStarted is returned by Start when called twice without an
@@ -218,11 +218,11 @@ type ServerSnapshot struct {
 
 // Downloader orchestrates article dispatch across a set of NNTP servers.
 type Downloader struct {
-	log     *slog.Logger
-	queue   *queue.Queue
-	servers []*Server
-	meter   *bpsmeter.Meter
-	opts    Options
+	log        *slog.Logger
+	dispatcher *dispatch.Dispatcher
+	servers    []*Server
+	meter      *bpsmeter.Meter
+	opts       Options
 
 	// onJobHopeless is guarded by optsMu — set via SetOnJobHopeless,
 	// read via snapshot in buildDispatchPlan.
@@ -238,7 +238,7 @@ type Downloader struct {
 
 	// dispatchReady is a cap-1 signal: workers poke it after each
 	// result so the main loop knows to scan for more work. Coalesces
-	// like queue.Notify.
+	// like dispatcher.Notify.
 	dispatchReady chan struct{}
 
 	limiter *bpsmeter.Limiter
@@ -254,7 +254,7 @@ type Downloader struct {
 	propagationDelay time.Duration
 
 	// paused short-circuits the dispatch pass without tearing down
-	// worker goroutines. Independent of queue.IsPaused (either flag
+	// worker goroutines. Independent of dispatcher.Paused (either flag
 	// suppresses dispatch).
 	paused atomic.Bool
 
@@ -295,9 +295,9 @@ type Downloader struct {
 //
 // An empty server slice is allowed — the downloader will start but
 // dispatch nothing until servers are added via ReloadDownloader.
-func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options, log *slog.Logger) *Downloader {
-	if q == nil {
-		panic("downloader: queue is nil")
+func New(disp *dispatch.Dispatcher, servers []*Server, meter *bpsmeter.Meter, opts Options, log *slog.Logger) *Downloader {
+	if disp == nil {
+		panic("downloader: dispatcher is nil")
 	}
 	if opts.CompletionsBuffer <= 0 {
 		opts.CompletionsBuffer = 256
@@ -307,7 +307,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 	}
 	d := &Downloader{
 		log:              log.With("component", "downloader"),
-		queue:            q,
+		dispatcher:       disp,
 		servers:          servers,
 		meter:            meter,
 		opts:             opts,
@@ -515,7 +515,7 @@ func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool
 }
 
 // IsPaused reports the downloader's own pause flag. Orthogonal to
-// queue.IsPaused; either being true suppresses dispatch.
+// dispatcher.Paused(); either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }
 
 // DisconnectAll signals all connWorker goroutines to close their idle
@@ -771,6 +771,9 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 // Returns 0 when unlimited.
 func (d *Downloader) SpeedLimit() int64 { return int64(d.limiter.Rate()) }
 
+// Wake non-blocking-pokes the main loop to run a dispatch pass.
+func (d *Downloader) Wake() { d.signalDispatch() }
+
 // signalDispatch non-blocking-pokes the main loop. Coalesces rapid
 // signals (cap-1 channel); callers never block.
 func (d *Downloader) signalDispatch() {
@@ -797,7 +800,7 @@ func (d *Downloader) checkExpiredPenalties() {
 // sources:
 //
 //   - ctx.Done       — begin shutdown
-//   - queue.Notify   — new work was added / resumed / reordered
+//   - dispatcher.Notify — new work was added / resumed / reordered
 //   - dispatchReady  — a worker freed up
 //
 // The loop must stay tight: all heavy lifting (per-article iteration,
@@ -815,7 +818,7 @@ func (d *Downloader) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-d.queue.Notify():
+		case <-d.dispatcher.Notify():
 			d.checkExpiredPenalties()
 			d.dispatchPass(ctx)
 		case <-d.dispatchReady:

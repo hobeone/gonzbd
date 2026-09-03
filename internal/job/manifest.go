@@ -80,6 +80,11 @@ type JobArticle struct {
 	Number int
 }
 
+// NewManifest builds a Manifest from parsed files.
+func NewManifest(files []JobFile) *Manifest {
+	return newManifest(files)
+}
+
 func newManifest(files []JobFile) *Manifest {
 	m := &Manifest{
 		files:              make([]manifestFile, len(files)),

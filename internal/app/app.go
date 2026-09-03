@@ -413,7 +413,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		for i, sc := range serversConfig {
 			servers[i] = downloader.NewServer(sc)
 		}
-		realDL := downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
+		realDL := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), log)
 		app.downloader = realDL
 		app.downloaderStats = realDL
 	}

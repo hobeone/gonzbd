@@ -77,8 +77,9 @@ type Dispatcher struct {
 	// Add (registry.go) for what an interleaved registration costs.
 	restoring bool
 
-	q    *sched.Queue
-	wake chan struct{}
+	q      *sched.Queue
+	wake   chan struct{}
+	notify chan struct{}
 
 	res    Residency
 	store  Store
@@ -176,15 +177,23 @@ func (d *Dispatcher) logStoreError(id string, err error) {
 	d.log.Error("store write failed", "job_id", id, "err", err)
 }
 
-// kick wakes the ticker without blocking. The channel is buffered to 1, so a
-// burst of Adds collapses into one wakeup and a full buffer means a wakeup is
-// already pending.
+// kick wakes the ticker and any external observers without blocking. The
+// channels are buffered to 1, so a burst of Adds collapses into one wakeup
+// and a full buffer means a wakeup is already pending.
 func (d *Dispatcher) kick() {
 	select {
 	case d.wake <- struct{}{}:
 	default:
 	}
+	select {
+	case d.notify <- struct{}{}:
+	default:
+	}
 }
+
+// Notify returns a receive-only channel poked whenever the queue state changes
+// (jobs added, paused, resumed, cancelled, or retried).
+func (d *Dispatcher) Notify() <-chan struct{} { return d.notify }
 
 // New builds a Dispatcher and the sched.Queue it owns.
 //
@@ -218,6 +227,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		written:   map[string]Persisted{},
 		q:         sched.New(leaseCap, slotCap, clock, w),
 		wake:      make(chan struct{}, 1),
+		notify:    make(chan struct{}, 1),
 		res:       r,
 		store:     s,
 		runner:    run,
@@ -226,6 +236,13 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		done:      make(chan struct{}),
 		log:       slog.Default(),
 	}
+}
+
+// Tick runs one cycle of promotion, residency reconciliation, worker launch,
+// and state persistence. In production this is driven by the ticker loop in Start;
+// exposed for deterministic tests and manual stepping.
+func (d *Dispatcher) Tick(ctx context.Context) {
+	d.tick(ctx)
 }
 
 // Start registers everything the store holds, then launches the ticker and

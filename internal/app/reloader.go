@@ -257,7 +257,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)
 	}
-	newDownloader := downloader.New(app.queue, servers, app.meter, app.buildDownloaderOptions(), app.log)
+	newDownloader := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), app.log)
 	if err := newDownloader.Start(app.ctx); err != nil {
 		return err
 	}

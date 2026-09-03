@@ -14,10 +14,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
@@ -33,11 +31,7 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		log:     slog.New(slog.DiscardHandler),
 		servers: servers,
 		workCh:  workCh,
-		// A real queue rather than nil. emitResult clears the Emitted bit of a
-		// result it drops, so a Downloader without a queue is not a Downloader
-		// any production path constructs — New always supplies one. An empty
-		// queue answers ErrJobNotResident, which that path ignores.
-		queue:        queue.New(),
+		dispatcher:   newTestDispatcher(nil),
 		tracker:      newDispatchTracker(),
 		completions:  make(chan *ArticleResult, 10),
 		connActivity: make(map[string]*ConnActivity),
@@ -67,10 +61,9 @@ func fakeSrv(name string, priority int, enabled bool) *Server {
 // an index are one entry, not two. Stating it here is what makes that a
 // decision rather than an accident; a test needing two articles under one job
 // must give them distinct indices.
-func fakeArticle(msgID string) queue.UnfinishedArticle {
-	return queue.UnfinishedArticle{
+func fakeArticle(msgID string) UnfinishedArticle {
+	return UnfinishedArticle{
 		JobID:     "j1",
-		JobStatus: constants.StatusDownloading,
 		JobAdded:  time.Now().Add(-time.Hour),
 		MessageID: msgID,
 		FileIdx:   0,
@@ -396,12 +389,9 @@ func TestBuildDispatchPlan_SkipsPausedJobs(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"p@h"})
-	job.Status = constants.StatusPaused
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"p@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	_ = d.dispatcher.PauseJob(j.ID())
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
@@ -417,11 +407,8 @@ func TestBuildDispatchPlan_PropagationDelayHoldsBack(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"new@h"})
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"new@h"})
+	addTestJob(t, d.dispatcher, j, m)
 	opts := defaultOpts(d.servers)
 	opts.propagationDelay = 1 * time.Hour // job was added just now; this holds it back
 
@@ -446,27 +433,21 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
 	// h@h (1000 bytes) fails below, against 100 bytes of recovery volume:
 	// 1000 > 100, so the job is beyond repair. The 40-byte index is content
 	// and contributes nothing to the threshold.
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "test.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "h@h", Bytes: 1000, Number: 1}}},
-		{Subject: "test.par2", Bytes: 40, Articles: []nzb.Article{{ID: "idx@h", Bytes: 40, Number: 1}}},
-		{Subject: "test.vol000+01.par2", Bytes: 100, Articles: []nzb.Article{{ID: "vol@h", Bytes: 100, Number: 1}}},
-	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if got := job.RecoveryBytes(); got != 100 {
+	j := job.New("j1", "test.nzb", job.Policy{})
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "test.bin", Bytes: 1000, Articles: []job.JobArticle{{ID: "h@h", Bytes: 1000, Number: 1}}},
+		{Subject: "test.par2", Bytes: 40, Articles: []job.JobArticle{{ID: "idx@h", Bytes: 40, Number: 1}}},
+		{Subject: "test.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "vol@h", Bytes: 100, Number: 1}}},
+	})
+	addTestJob(t, d.dispatcher, j, m)
+	if got := j.RecoveryBytes(); got != 100 {
 		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 100 — a zero threshold would make "+
 			"this test pass for the wrong reason, since any failure exceeds zero", got)
 	}
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
-	ackFailed(t, d.queue, job.ID, "h@h")
+	ackFailed(t, d.dispatcher, j.ID(), "h@h")
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
@@ -474,7 +455,7 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	if plan.dispatched != 0 {
 		t.Errorf("dispatched = %d, want 0 for hopeless job", plan.dispatched)
 	}
-	if _, ok := plan.hopelessJobs[job.ID]; !ok {
+	if _, ok := plan.hopelessJobs[j.ID()]; !ok {
 		t.Error("hopelessJobs does not contain the job ID")
 	}
 }
@@ -493,34 +474,28 @@ func TestBuildDispatchPlan_UnrecognizedPar2KeepsDispatching(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "test.bin", Bytes: 550, Articles: []nzb.Article{
+	j := job.New("j1", "test.nzb", job.Policy{})
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "test.bin", Bytes: 550, Articles: []job.JobArticle{
 			{ID: "h@h", Bytes: 50, Number: 1},
 			{ID: "ok@h", Bytes: 500, Number: 2},
 		}},
-		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
-	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if got := job.RecoveryBytes(); got != 0 {
+		{Subject: "test.par2", Bytes: 100, Articles: []job.JobArticle{{ID: "idx@h", Bytes: 100, Number: 1}}},
+	})
+	addTestJob(t, d.dispatcher, j, m)
+	if got := j.RecoveryBytes(); got != 0 {
 		t.Fatalf("fixture guard: RecoveryBytes() = %d, want 0 — no subject matches the volume "+
 			"convention, so nothing here is recognized capacity", got)
-	}
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
 	}
 	// One article of two fails: 50 bytes of damaged content against a
 	// recognized capacity of zero. Acting on that comparison would kill the
 	// job; the capacity is unknown, so the gate declines to.
-	ackFailed(t, d.queue, job.ID, "h@h")
+	ackFailed(t, d.dispatcher, j.ID(), "h@h")
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
 
-	if _, ok := plan.hopelessJobs[job.ID]; ok {
+	if _, ok := plan.hopelessJobs[j.ID()]; ok {
 		t.Error("job was marked hopeless. Its par2 file did not match the volume-naming " +
 			"convention, which says nothing about whether it carries recovery slices — the " +
 			"format permits them in a plainly-named file. Post-processing reads the actual " +
@@ -537,11 +512,8 @@ func TestBuildDispatchPlan_NormalJobDispatched(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"ok@h"})
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"ok@h"})
+	addTestJob(t, d.dispatcher, j, m)
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
@@ -549,7 +521,7 @@ func TestBuildDispatchPlan_NormalJobDispatched(t *testing.T) {
 	if plan.dispatched != 1 {
 		t.Errorf("dispatched = %d, want 1", plan.dispatched)
 	}
-	if _, ok := plan.activeJobs[job.ID]; !ok {
+	if _, ok := plan.activeJobs[j.ID()]; !ok {
 		t.Error("activeJobs does not contain the job ID")
 	}
 }
@@ -559,14 +531,11 @@ func TestBuildDispatchPlan_PropagationDelayZeroDoesNotHoldBackFutureJob(t *testi
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"new@h"})
+	j, m := makeJobWithArticles(t, []string{"new@h"})
 	// Set job added time to the future relative to opts.now
 	now := time.Now()
-	job.Added = now.Add(5 * time.Minute)
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j.SetAdded(now.Add(5 * time.Minute))
+	addTestJob(t, d.dispatcher, j, m)
 	opts := defaultOpts(d.servers)
 	opts.now = now
 	opts.propagationDelay = 0 // disabled
@@ -584,11 +553,8 @@ func TestBuildDispatchPlan_DispatchesMultipleArticlesInOnePass(t *testing.T) {
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.workCh["s1"] = make(chan *articleRequest, 10)
-	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"msg1@h", "msg2@h", "msg3@h"})
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"msg1@h", "msg2@h", "msg3@h"})
+	addTestJob(t, d.dispatcher, j, m)
 	opts := defaultOpts(d.servers)
 
 	plan := d.buildDispatchPlan(context.Background(), opts)
@@ -603,11 +569,8 @@ func TestBuildDispatchPlan_StopsOnCancelledContext(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"msg1@h", "msg2@h"})
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"msg1@h", "msg2@h"})
+	addTestJob(t, d.dispatcher, j, m)
 	opts := defaultOpts(d.servers)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -625,7 +588,6 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.queue = queue.New()
 
 	// Set up connActivity to simulate an active connection.
 	d.connActivityMu.Lock()
@@ -652,10 +614,8 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 	}
 
 	// Case 2: plan.dispatched == 0, but queue has downloadable jobs. Should NOT disconnect.
-	job := makeJobWithArticles(t, []string{"msg1@h"})
-	if err := d.queue.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"msg1@h"})
+	addTestJob(t, d.dispatcher, j, m)
 	plan = dispatchPlan{
 		dispatched: 0,
 	}
@@ -669,7 +629,7 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 
 	// Case 3: plan.dispatched == 0, queue has no downloadable jobs. Should disconnect.
 	// Empty the queue.
-	d.queue = queue.New()
+	d.dispatcher = newTestDispatcher(t)
 	plan = dispatchPlan{
 		dispatched: 0,
 	}
@@ -765,14 +725,10 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	q := queue.New()
-	d.queue = q
 
 	// 1. Test plan.exhausted side-effects
-	job := makeJobWithArticles(t, []string{"msg1@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("q.Add: %v", err)
-	}
+	j, m := makeJobWithArticles(t, []string{"msg1@h"})
+	addTestJob(t, d.dispatcher, j, m)
 
 	// Setup tried mapping to test that it gets cleared. The key must name the
 	// SAME job the exhausted request below carries: the tracker keys on
@@ -781,12 +737,12 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 	d.tracker.Lock()
 	mask := serverMask{}
 	mask.set(0)
-	d.tracker.SetTriedLocked(articleKey{jobID: job.ID, artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(articleKey{jobID: j.ID(), artIdx: 0}, mask)
 	d.tracker.Unlock()
 
 	plan := dispatchPlan{
 		exhausted: []*articleRequest{{
-			jobID:     job.ID,
+			jobID:     j.ID(),
 			messageID: "msg1@h",
 			bytes:     100,
 		}},
@@ -823,24 +779,24 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 	}
 	plan = dispatchPlan{
 		hopelessJobs: map[string]struct{}{
-			job.ID: {},
+			j.ID(): {},
 		},
 	}
 	d.applyDispatchPlan(context.Background(), plan, opts)
-	if callbackJob != job.ID {
-		t.Errorf("expected hopeless callback to fire for %s, got %s", job.ID, callbackJob)
+	if callbackJob != j.ID() {
+		t.Errorf("expected hopeless callback to fire for %s, got %s", j.ID(), callbackJob)
 	}
 
 	// 3. Test plan.hopelessJobs fallback (without callback -> should pause the job in queue)
 	plan = dispatchPlan{
 		hopelessJobs: map[string]struct{}{
-			job.ID: {},
+			j.ID(): {},
 		},
 	}
 	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{}) // no callback
-	snap := q.SnapshotJob(job.ID)
-	if snap == nil || snap.Status != constants.StatusPaused {
-		t.Errorf("expected job status to be Paused, got %+v", snap)
+	row, ok := d.dispatcher.Row(j.ID())
+	if !ok || row.View.Intent != job.IntentPause {
+		t.Errorf("expected job intent to be IntentPause, got %+v", row.View)
 	}
 }
 
@@ -895,15 +851,10 @@ func TestAllServersFull(t *testing.T) {
 }
 
 func TestBuildDispatchPlan_EarlyExitWhenServersFull(t *testing.T) {
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h", "d@h", "e@h", "f@h", "g@h", "h@h", "i@h", "j@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
-
 	srv1 := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv1})
-	d.queue = q
+	j, m := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h", "d@h", "e@h", "f@h", "g@h", "h@h", "i@h", "j@h"})
+	addTestJob(t, d.dispatcher, j, m)
 	opts := defaultOpts(d.servers)
 
 	// Pre-fill the single capacity-1 work channel for s1 so that allServersFull is true immediately
@@ -969,9 +920,8 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
 
-	q := queue.New()
 	d := &Downloader{
-		queue:       q,
+		dispatcher:  newTestDispatcher(t),
 		completions: make(chan *ArticleResult, 10),
 		log:         slog.Default(),
 		tracker:     newDispatchTracker(),
@@ -1048,11 +998,11 @@ func TestClassifyDecodeError(t *testing.T) {
 }
 
 func TestDownloader_FetchArticle_Coverage(t *testing.T) {
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.Default(),
+		dispatcher: disp,
+		tracker:    newDispatchTracker(),
+		log:        slog.Default(),
 	}
 
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
@@ -1076,16 +1026,11 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 
 	// 2. Job paused status check coverage (job paused)
 	d.paused.Store(false)
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
-			{ID: "msg1", Bytes: 100, Number: 1},
-		}},
-	}}
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	job.Status = constants.StatusPaused
-	_ = q.Add(job)
+	j, m := makeJobWithArticles(t, []string{"msg1"})
+	addTestJob(t, disp, j, m)
+	_ = disp.PauseJob(j.ID())
 
-	req.jobID = job.ID
+	req.jobID = j.ID()
 	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Error("expected fetchArticle to return nil, false on paused job")
@@ -1095,54 +1040,33 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 // TestFetchArticle_PausedJobEvictedMidFlight drives the per-job pause branch
 // the way production reaches it: an article already in flight when the user
 // pauses a downloading job.
-//
-// The sibling test above pauses by assigning job.Status directly on a queue
-// built with a bare New(), so the job stays hydrated and the branch never
-// touches a released Manifest. Going through Queue.Pause on a queue with a
-// state directory is what makes the difference — Pause sets StatusPaused and
-// releases Manifest/JobProgress inside one critical section, so by the time
-// fetchArticle observes StatusPaused the fields are already nil. Clearing the
-// emitted flag then dereferenced them and killed the daemon.
 func TestFetchArticle_PausedJobEvictedMidFlight(t *testing.T) {
 	t.Parallel()
 
-	// A state directory is required: Queue.Pause only releases Manifest and
-	// JobProgress when a store or state directory is configured, so with a
-	// bare New() this test would pass without exercising anything.
-	q := queue.New(queue.WithStateDir(t.TempDir()))
+	disp := newTestDispatcher(t)
 	srv := testServer(t, "s", "127.0.0.1:1")
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: disp,
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
 
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
-			{ID: "inflight@h", Bytes: 100, Number: 1},
-		}},
-	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	q.PromoteNext(context.Background())
+	j, m := makeJobWithArticles(t, []string{"inflight@h"})
+	addTestJob(t, disp, j, m)
 
-	// The article is dispatched and in flight before the pause lands.
-	if err := q.MarkArticleEmittedByIdx(job.ID, artIdxFor(t, q, job.ID, "inflight@h")); err != nil {
-		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	artIdx := artIdxFor(t, disp, j.ID(), "inflight@h")
+	if err := j.MarkArticleEmitted(int(artIdx)); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
-	if err := q.Pause(job.ID); err != nil {
+	if err := disp.PauseJob(j.ID()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
+	j.Evict()
 
-	req := &articleRequest{jobID: job.ID, fileIdx: 0, messageID: "inflight@h"}
+	req := &articleRequest{jobID: j.ID(), fileIdx: 0, messageID: "inflight@h", artIdx: artIdx}
 	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Errorf("fetchArticle = (%v, %v), want (nil, false) for a paused job", body, ok)
@@ -1199,14 +1123,13 @@ func TestFetchArticle_NoPenaltiesClampsPenaltyDuration(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	q := queue.New()
 	srv := testServer(t, "dead", addr)
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -1349,10 +1272,9 @@ func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
 	// 430 (no such article). If Fetch (BODY) were called anyway, the
 	// mock's rejections counter would increment.
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr)
 	d := &Downloader{
-		queue:       q,
+		dispatcher:  newTestDispatcher(t),
 		tracker:     newDispatchTracker(),
 		log:         slog.New(slog.DiscardHandler),
 		opts:        Options{PreCheck: true},
@@ -1400,10 +1322,9 @@ func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
 
 	ms := newMockNNTP(t)
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr)
 	d := &Downloader{
-		queue:       q,
+		dispatcher:  newTestDispatcher(t),
 		tracker:     newDispatchTracker(),
 		log:         slog.New(slog.DiscardHandler),
 		opts:        Options{PreCheck: true},
@@ -1435,10 +1356,9 @@ func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 
 	ms := newMockNNTP(t) // "missing@h" is never added, so BODY returns 430
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr)
 	d := &Downloader{
-		queue:       q,
+		dispatcher:  newTestDispatcher(t),
 		tracker:     newDispatchTracker(),
 		log:         slog.New(slog.DiscardHandler),
 		completions: make(chan *ArticleResult, 1),
@@ -1476,14 +1396,13 @@ func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	q := queue.New()
 	srv := testServer(t, "dead", addr)
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -1510,14 +1429,13 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 	ms.addArticle("hangup@h", "body")
 	ms.hangupOnFetch("hangup@h")
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr)
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -1558,14 +1476,13 @@ func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	ms.addArticle("hangup@h", "body")
 	ms.hangupOnFetch("hangup@h")
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr)
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -1601,14 +1518,13 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 	ms.addArticle("hangup@h", "body")
 	ms.hangupOnFetch("hangup@h")
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr)
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -1648,15 +1564,14 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	ms.hangupOnFetch("hangup1@h")
 	ms.hangupOnFetch("hangup2@h")
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr, func(c *config.ServerConfig) { c.PipeliningRequests = 2 })
 	tracker := newDispatchTracker()
 	d := &Downloader{
-		queue:   q,
-		tracker: tracker,
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    tracker,
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -1743,14 +1658,13 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	ms.hangupOnFetch("hangup1@h")
 	ms.hangupOnFetch("hangup2@h")
 
-	q := queue.New()
 	srv := testServer(t, "s", ms.addr, func(c *config.ServerConfig) { c.PipeliningRequests = 2 })
 	d := &Downloader{
-		queue:   q,
-		tracker: newDispatchTracker(),
-		log:     slog.New(slog.DiscardHandler),
-		opts:    Options{NoPenalties: true},
-		limiter: bpsmeter.NewLimiter(0),
+		dispatcher: newTestDispatcher(t),
+		tracker:    newDispatchTracker(),
+		log:        slog.New(slog.DiscardHandler),
+		opts:       Options{NoPenalties: true},
+		limiter:    bpsmeter.NewLimiter(0),
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
 	defer d.pauseCancel()
@@ -2017,13 +1931,13 @@ func TestSelectWork_NilDisconnectBlocksUntilWorkOrCancel(t *testing.T) {
 	}
 }
 
-func TestMarkArticleEmittedByIdx_ErrNotFound(t *testing.T) {
+func TestMarkArticleEmitted_ErrNotResident(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	err := q.MarkArticleEmittedByIdx("nonexistent-job", 0)
-	if !errors.Is(err, queue.ErrNotFound) {
-		t.Fatalf("got %v, want ErrNotFound", err)
+	j := job.New("nonexistent-job", "test.nzb", job.Policy{})
+	err := j.MarkArticleEmitted(0)
+	if !errors.Is(err, job.ErrNotResident) {
+		t.Fatalf("got %v, want ErrNotResident", err)
 	}
 }
 
@@ -2076,14 +1990,12 @@ func TestDispatchPass_DownloaderPausedSkipsDispatch(t *testing.T) {
 	t.Parallel()
 
 	ms := newMockNNTP(t)
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "s1", ms.addr)
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 	d.paused.Store(true)
 
 	d.dispatchPass(t.Context())
@@ -2101,15 +2013,13 @@ func TestDispatchPass_QueuePausedSkipsDispatch(t *testing.T) {
 	t.Parallel()
 
 	ms := newMockNNTP(t)
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
-	q.PauseAll()
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
+	disp.Pause()
 
 	srv := testServer(t, "s1", ms.addr)
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	d.dispatchPass(t.Context())
 
@@ -2126,14 +2036,12 @@ func TestDispatchPass_CancelledContextSkipsDispatch(t *testing.T) {
 	t.Parallel()
 
 	ms := newMockNNTP(t)
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "s1", ms.addr)
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -2153,14 +2061,12 @@ func TestDispatchPass_DispatchesReadyArticle(t *testing.T) {
 	t.Parallel()
 
 	ms := newMockNNTP(t)
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "s1", ms.addr)
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	d.dispatchPass(t.Context())
 
@@ -2174,7 +2080,7 @@ func TestDispatchPass_DispatchesReadyArticle(t *testing.T) {
 	}
 
 	d.tracker.Lock()
-	mask, ok := d.tracker.TryListLocked(articleKey{jobID: job.ID, artIdx: 0})
+	mask, ok := d.tracker.TryListLocked(articleKey{jobID: j.ID(), artIdx: 0})
 	d.tracker.Unlock()
 	if !ok || !mask.has(0) {
 		t.Errorf("try-list for a@h = (%+v, %v), want server 0 marked tried", mask, ok)

@@ -208,12 +208,13 @@ type Job struct {
 	contentMu sync.RWMutex
 	manifest  *Manifest
 	progress  *JobProgress
+	created   time.Time
 }
 
 // New builds a job that has never run. It has no attempt record, because
 // nothing has happened to it yet.
 func New(id, name string, p Policy) *Job {
-	return &Job{id: id, name: name, policy: p}
+	return &Job{id: id, name: name, policy: p, created: time.Now().UTC()}
 }
 
 // ID returns the job's identifier.
@@ -224,6 +225,12 @@ func (j *Job) Name() string { return j.name }
 
 // Policy returns the job's retry/repair policy.
 func (j *Job) Policy() Policy { return j.policy }
+
+// Added returns the job's creation timestamp.
+func (j *Job) Added() time.Time { return j.created }
+
+// SetAdded updates the job's creation timestamp (used for testing propagation delay).
+func (j *Job) SetAdded(t time.Time) { j.created = t }
 
 // State returns the current attempt's view, or a StateUnset view for a job that
 // has never run. A job with no attempt is not AT a state — the old model

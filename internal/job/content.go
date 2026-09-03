@@ -106,6 +106,9 @@ func (j *Job) MarkArticleDone(artIdx int, bytes int64, server string) error {
 	if j.progress == nil || j.manifest == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
+	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
 	j.progress.markDone(j.manifest, artIdx)
 	return nil
 }
@@ -117,6 +120,9 @@ func (j *Job) MarkArticleFailed(artIdx int) error {
 	if j.progress == nil || j.manifest == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
+	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
 	j.progress.markFailed(j.manifest, artIdx)
 	return nil
 }
@@ -127,6 +133,9 @@ func (j *Job) MarkArticleEmitted(artIdx int) error {
 	defer j.contentMu.Unlock()
 	if j.progress == nil || j.manifest == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 	j.progress.markEmitted(j.manifest, artIdx)
 	return nil
@@ -140,7 +149,40 @@ func (j *Job) ClearArticleEmitted(artIdx int) error {
 	if j.progress == nil || j.manifest == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
+	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
 	j.progress.clearEmitted(j.manifest, artIdx)
+	return nil
+}
+
+// ForEachUnfinishedArticle invokes fn for each unfinished (not Done, not Emitted) article
+// in FetchAlways files, under contentMu.RLock. Iteration stops when fn returns false.
+func (j *Job) ForEachUnfinishedArticle(fn func(fileIdx int, artIdx int32, id string, bytes int, number int, subject string) bool) error {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.manifest == nil || j.progress == nil {
+		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	m := j.manifest
+	p := j.progress
+	if p.pendingArticles == 0 {
+		return nil
+	}
+	for fi := range m.NumFiles() {
+		if p.files[fi].Complete || p.files[fi].Pending == 0 || p.files[fi].Fetch != FetchAlways {
+			continue
+		}
+		lo, hi := m.FileRange(fi)
+		for i := lo; i < hi; i++ {
+			if p.done.Get(i) || p.emitted.Get(i) {
+				continue
+			}
+			if !fn(fi, int32(i), m.ArticleID(i), m.ArticleBytes(i), m.ArticleNumber(i), m.FileSubject(fi)) {
+				return nil
+			}
+		}
+	}
 	return nil
 }
 

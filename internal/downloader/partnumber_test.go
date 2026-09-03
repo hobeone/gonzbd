@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
@@ -105,7 +104,7 @@ func TestProcessFetchedArticle_PartNumberDisagreementChangesNothing(t *testing.T
 	emit := func(t *testing.T, served, expected int) *ArticleResult {
 		t.Helper()
 		d := &Downloader{
-			queue:       queue.New(),
+			dispatcher:  newTestDispatcher(t),
 			completions: make(chan *ArticleResult, 4),
 			log:         slog.New(slog.DiscardHandler),
 			tracker:     newDispatchTracker(),
