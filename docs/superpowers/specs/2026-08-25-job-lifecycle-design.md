@@ -1098,11 +1098,120 @@ that plan 2's deletions have somewhere to land.
 > | `Checkpointer` | unchanged, and larger than first sized — six single-job writers |
 > | `app`/`downloader`/`postproc` rewired | unchanged |
 > | Deletes column | minus `resumeAllJobs` (§10.1), minus `par2NeedsRecovery` and `NeedRequeue`/`RequeueBlocksNeeded` (landed), and minus **the `quickcheck` stage, which is retained permanently** |
-| Repoint the `quickcheck` stage | **new, replacing its deletion** — six `job.Queue` reads across `Run`, `assess` and `recordVerdict`; `:180`'s error return must stay distinguishable (#294) |
+> | Repoint the `quickcheck` stage | **new, replacing its deletion** — six `job.Queue` reads across `Run`, `assess` and `recordVerdict`; `:180`'s error return must stay distinguishable (#294) |
+> | `Row.Status()` on `dispatch.Row` | **new** — the legacy-status accessor, see §12.1 below |
+> | `Dispatcher.Row(id)` | **new** — the header-tier single-job lookup #436 asks for, see §12.2 below |
 > | ~~`NeedsMore(blocks)` / "repair never fails for insufficiency"~~ | **not owed** — §5's banner; it is `docs/post-processing-contract.md`'s Block-Exact Promotion gap, not a plan 2 deliverable |
 >
 > Sequence: **~~`Assess`/`Verdict`~~ (landed: #494, #495, #507) → plan 2 →
 > plan 3.** The precondition is met; plan 2 is writable.
+>
+> ---
+>
+> ### §12.1 The legacy-status accessor goes on `dispatch.Row`, not on `job.Job`
+>
+> Settled 2026-09-03. The ask was `func (j *Job) Status() constants.Status` on
+> `job.Job`, so that the swap is a `.Status` → `.Status()` edit at the call
+> sites rather than a rewrite of each into `job.ToSABnzbd(row.View)`. The
+> encapsulation is right and this section adopts it. **The receiver is not.**
+>
+> `ToSABnzbd` takes a `RenderView` (`internal/job/sabnzbd.go:45`), and three of
+> that type's four extra fields are facts `internal/job` cannot produce. Its
+> own doc comment (`internal/job/render.go:20`) states the constraint:
+>
+> > *Running-ness and the wait reason are DERIVED, never stored (design §3.4,
+> > D-I4)… **Nothing in this package can answer that** — it depends on pool-B
+> > slots and on a queue-wide pause flag that live in the Queue — so this type
+> > is the seam.*
+>
+> `Running`, `Reason` and `Holds` are `internal/sched`'s. The dependency runs
+> one way — `internal/sched` imports `internal/job` (`sched/pool.go:7`), and
+> `git grep -n 'gonzbd/internal/sched"' -- internal/job/` returns nothing — so
+> a `Status()` on `Job` would need a back-pointer that inverts it into a cycle,
+> or a `RenderView` parameter, which is `ToSABnzbd(v)` with extra syntax.
+>
+> **`dispatch.Row` already carries the inputs** (`registry.go:29-33`: `ID`,
+> `Header`, `View job.RenderView`), so the accessor belongs there:
+>
+> ```go
+> func (r Row) Status() constants.Status { return job.ToSABnzbd(r.View) }
+> ```
+>
+> One computation, one owner, no new coupling, and the call-site churn the
+> recommendation was protecting against is still avoided on the render path.
+>
+> **What the accessor must NOT become.** It is for the sites that *render* a
+> status — `internal/api`, history, log lines. It is not for the sites that
+> **branch** on one: those are exactly what the swap converts to
+> `State`/`Outcome`/`Intent`, and an accessor applied to them blanket-wise
+> would preserve the old vocabulary permanently at every one. §12 already
+> fixes the rule this serves — `ToSABnzbd` is *"the one place `constants.Status`
+> may appear, and it is write-only"* — and `Row.Status()` is a second door onto
+> that same one place, not a licence to read status back into the machine.
+>
+> ### §12.2 The size of that population, corrected
+>
+> **The "326 references to `.Status`" figure is an overcount and must not be
+> planned against.** It comes from `git grep -c '\.Status\b'`, which matches
+> every type with a `Status` field. Decomposed at `19e95690`:
+>
+> | Population | Count |
+> |---|---:|
+> | `\.Status\b` outside `internal/queue` — the quoted figure | 326 |
+> | of which `directunpack.Status` | 32 |
+> | of which in `internal/par2` (par2's own parse status) | 59 |
+> | of which in `internal/history` (history entry status) | 17 |
+>
+> At least 108 have nothing to do with the lifecycle. The population that does
+> is `constants.Status`:
+>
+> | Population | Count |
+> |---|---:|
+> | `constants.Status` outside `internal/queue` | 277 |
+> | — of those, **non-test** | **56** |
+> | `constants.Status` inside `internal/queue` | 281 |
+>
+> The 281 inside `internal/queue` retire with the package. **56 non-test sites
+> is a hand-triage, not a mechanical sweep** — which is what makes §12.1's
+> "render, don't branch" split enforceable at all. Against 326 it would not
+> have been, and the accessor would have had to absorb every site
+> indiscriminately.
+>
+> This is the third wrong count in this document's history (see the
+> `store.Update` note above, which was wrong twice). The pattern is the same
+> each time: a `git grep` whose pattern is broader than the population being
+> described. Name the population first, then write the pattern that matches it
+> and nothing else.
+>
+> ### §12.3 The ten `internal/queue` issues — triage (#456 D3)
+>
+> Settled 2026-09-03. **It is nine, not ten:** #306 (*restore paths load
+> `bytes_downloaded`, then recompute overwrites it*) is already CLOSED.
+>
+> **#436 — a plan 2 deliverable, not an automatic consequence.** The claim it
+> closes itself once the API reads `dispatch.Row(id)` does not hold, because
+> **that method does not exist**: `internal/dispatch` has `List() []Row`
+> (`registry.go:232`) and nothing singular. `List` renders every job through
+> `RenderAll`, so for #436's own example — `stall.go`'s per-tick existence
+> check — it trades a manifest read for an O(n) walk, which is not the fix.
+>
+> It is cheap to add, since `sched.Queue.Render(j)` singular already exists
+> (`render.go:39`), and that is why it is in the owes-table above. But #436's
+> body puts a gate before the API: `git grep -c 'SnapshotJob(' -- '*.go'
+> ':!*_test.go' ':!internal/queue/*'` returns **17** production call sites, of
+> which three are triaged, and the issue says *"First task is the triage, not
+> the API"* — whether the header-tier lookup is per-field accessors or one
+> small value struct is a Decision-Protocol call the 17 sites decide.
+>
+> **The other eight are strictly deferred**, and the basis is stronger than
+> "do not tangle the swap": D1 measured that `manifest.go` and `progress.go`
+> reference no `Queue` state, so they move into `internal/job` **intact** —
+> and so do their defects. #337, #429, #415, #380, #329, #304 and #297 are
+> progress/manifest-tier concerns whose fixes are strictly easier after the
+> move, in the package that will own them. #330 is an `internal/app` comment
+> defect that never was queue work.
+>
+> Plan 2 must not fix any of the eight, and must not be blocked by them.
 
 Plan 2 is large and deliberately so. It is the commit where the daemon stops
 running the old model, and splitting it would mean shipping exactly the
