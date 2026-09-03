@@ -232,3 +232,18 @@ func (j *Job) RepairState() RepairState {
 	}
 	return RepairStateFrom(j.progress.ContentFailedBytes(), recBytes, j.progress.HasPar2Files())
 }
+
+// NumFiles returns the number of files in the job if content has been attached,
+// or 0 if neither progress nor manifest is resident.
+func (j *Job) NumFiles() int {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress != nil {
+		return len(j.progress.files)
+	}
+	if j.manifest != nil {
+		return j.manifest.NumFiles()
+	}
+	return 0
+}
+

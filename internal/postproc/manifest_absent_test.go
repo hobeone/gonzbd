@@ -9,6 +9,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -88,3 +89,49 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing
 		t.Errorf("QuickCheck = %s, want inconclusive: downstream cannot tell a verification that could not run from one that had nothing to run on", job.QuickCheck)
 	}
 }
+
+func evictedRehomedJob(t *testing.T) *Job {
+	t.Helper()
+	j := job.New("job-rehomed", "job-rehomed", job.Policy{})
+	m := job.NewManifest([]job.JobFile{{
+		Subject:  "movie.part01.rar",
+		Bytes:    100,
+		Articles: []job.JobArticle{{ID: "a0@t", Bytes: 100}},
+	}})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	j.Evict()
+	if _, mErr := j.Manifest(); mErr == nil {
+		t.Fatal("fixture guard: manifest still resident")
+	}
+	return &Job{Job: j}
+}
+
+func TestBuildDownloadFileList_AbsentManifestExplainsItself_RehomedJob(t *testing.T) {
+	lines := buildDownloadFileList(evictedRehomedJob(t))
+
+	if len(lines) == 0 {
+		t.Fatal("returned no lines at all; the history record would show an empty download stage with no explanation")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "File listing unavailable") {
+		t.Errorf("listing does not explain its own absence:\n%s", joined)
+	}
+}
+
+func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified_RehomedJob(t *testing.T) {
+	j := evictedRehomedJob(t)
+	j.QuickCheck = QuickCheckInconclusive
+	q := &QuickCheckStage{}
+
+	err := q.recordVerdict(context.Background(), slog.Default(), j, []par2.Set{}, par2.Assessment{})
+
+	if err == nil {
+		t.Fatal("recordVerdict returned nil with no manifest; the stage log would record a clean pass over nothing")
+	}
+	if j.QuickCheck != QuickCheckInconclusive {
+		t.Errorf("QuickCheck = %s, want inconclusive", j.QuickCheck)
+	}
+}
+

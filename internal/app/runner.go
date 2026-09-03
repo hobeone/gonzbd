@@ -60,7 +60,9 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 
 func (r *appRunner) runFetch(_ context.Context, id string) {
 	if r.app != nil && r.app.downloader != nil {
-		r.app.downloader.Wake()
+		if dl, ok := r.app.downloader.(interface{ Wake() }); ok {
+			dl.Wake()
+		}
 	}
 	if r.report != nil {
 		_ = r.report.Yielded(id)

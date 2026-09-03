@@ -42,3 +42,30 @@ func TestAttachContent_IsTheSoleConstructorOfThePair(t *testing.T) {
 		t.Fatalf("PendingArticles = %d, want 1", j.Progress().PendingArticles())
 	}
 }
+
+func TestJob_NumFiles(t *testing.T) {
+	j := New("abc", "test", PolicyFromPP(3))
+	if got := j.NumFiles(); got != 0 {
+		t.Fatalf("NumFiles before attach = %d, want 0", got)
+	}
+
+	m := newManifest([]JobFile{
+		{Subject: "file1.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
+		{Subject: "file2.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 200}}},
+	})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if got := j.NumFiles(); got != 2 {
+		t.Fatalf("NumFiles after attach = %d, want 2", got)
+	}
+
+	j.Evict()
+	if j.Resident() {
+		t.Fatal("expected non-resident after Evict")
+	}
+	if got := j.NumFiles(); got != 2 {
+		t.Fatalf("NumFiles after Evict = %d, want 2 (progress remains resident)", got)
+	}
+}
+

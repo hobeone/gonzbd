@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/humanfmt"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
@@ -17,9 +17,9 @@ import (
 //   - per-file name and size
 //   - download duration and total size
 //   - article completion stats from the queue
-func buildDownloadFileList(job *Job) []string {
+func buildDownloadFileList(j *Job) []string {
 	var lines []string
-	p := job.Queue.Progress()
+	p := j.Progress()
 
 	// The listing is a per-file report, so it needs the manifest's file
 	// table and there is no scalar substitute. Degrade rather than fail:
@@ -27,7 +27,7 @@ func buildDownloadFileList(job *Job) []string {
 	// reporting — the download itself is unaffected. Say so in the record
 	// instead of returning a silently empty listing, since an empty file
 	// list and a job that downloaded nothing look identical to a reader.
-	m, mErr := job.Queue.Manifest()
+	m, mErr := j.Manifest()
 	if mErr != nil {
 		return []string{fmt.Sprintf("File listing unavailable: %v", mErr)}
 	}
@@ -40,7 +40,7 @@ func buildDownloadFileList(job *Job) []string {
 			continue
 		}
 		recoveryVols++
-		if p.FileFetchPolicy(fi) != queue.FetchAlways {
+		if p.FileFetchPolicy(fi) != job.FetchAlways {
 			heldVols++
 		}
 	}
@@ -170,12 +170,12 @@ func buildDownloadFileList(job *Job) []string {
 	// derived from article byte sums rather than JobFile.Bytes so they are
 	// internally consistent: a file reads 100% only when every article
 	// downloaded successfully.
-	lines = append(lines, buildFileCompletionLines(job)...)
+	lines = append(lines, buildFileCompletionLines(j)...)
 
 	// Enumerate files in the download directory, recursing into
 	// subdirectories so nothing nested (e.g. by extraction or par2 staging)
 	// is hidden from the listing.
-	treeLines, fileCount, err := buildDirTree(job.DownloadDir, "  ")
+	treeLines, fileCount, err := buildDirTree(j.DownloadDir, "  ")
 	if err != nil {
 		lines = append(lines, fmt.Sprintf("Error reading download dir: %v", err))
 		return lines
@@ -238,14 +238,14 @@ func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 // in full. A short file is not necessarily a broken file — a later par2
 // repair stage may still recover it; this section reports download
 // completeness only.
-func buildFileCompletionLines(job *Job) []string {
+func buildFileCompletionLines(j *Job) []string {
 	// Same reasoning as buildDownloadFileList, which has already reported
 	// the cause in the record by the time this runs — no second notice.
-	m, mErr := job.Queue.Manifest()
+	m, mErr := j.Manifest()
 	if mErr != nil {
 		return nil
 	}
-	p := job.Queue.Progress()
+	p := j.Progress()
 	numFiles := m.NumFiles()
 	if numFiles == 0 {
 		return nil
@@ -258,7 +258,7 @@ func buildFileCompletionLines(job *Job) []string {
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
 		}
-		if p.FileFetchPolicy(fi) != queue.FetchAlways {
+		if p.FileFetchPolicy(fi) != job.FetchAlways {
 			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}
