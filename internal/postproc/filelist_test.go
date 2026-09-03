@@ -8,16 +8,12 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // artIdxForID resolves a message ID to its global article index using only
-// exported Manifest accessors — job.manifest itself is unexported outside
-// package queue, so tests in this package cannot reach the fast lookup the
-// queue package uses internally.
-func artIdxForID(t *testing.T, m *queue.Manifest, msgID string) int32 {
+// exported Manifest accessors.
+func artIdxForID(t *testing.T, m *job.Manifest, msgID string) int32 {
 	t.Helper()
 	for i := range m.NumArticles() {
 		if m.ArticleID(i) == msgID {
@@ -29,12 +25,11 @@ func artIdxForID(t *testing.T, m *queue.Manifest, msgID string) int32 {
 }
 
 // dupcomment:ok four packages each need their own copy of this helper;
-// Manifest.fileIndexForArticle is unexported outside package queue.
+// Manifest.fileIndexForArticle is unexported outside package job.
 //
 // fileIdxForArticle returns the manifest file index owning global article
-// index i, using only exported Manifest accessors (Manifest.fileIndexForArticle
-// is unexported outside package queue).
-func fileIdxForArticle(m *queue.Manifest, i int) (int, bool) {
+// index i, using only exported Manifest accessors.
+func fileIdxForArticle(m *job.Manifest, i int) (int, bool) {
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
 		if i >= lo && i < hi {
@@ -44,17 +39,14 @@ func fileIdxForArticle(m *queue.Manifest, i int) (int, bool) {
 	return 0, false
 }
 
-// ackFailedIDs is AckPermanentFailure keyed by message ID, replacing the
-// deleted MarkArticlesFailed. A permanent failure asserts nothing about
-// disk, so unlike done articles it needs no durable-run proof.
-func ackFailedIDs(t *testing.T, q *queue.Queue, m *queue.Manifest, jobID string, msgIDs []string) {
+// ackFailedIDs marks articles failed keyed by message ID.
+func ackFailedIDs(t *testing.T, j *job.Job, m *job.Manifest, msgIDs []string) {
 	t.Helper()
-	idxs := make([]int32, 0, len(msgIDs))
 	for _, id := range msgIDs {
-		idxs = append(idxs, artIdxForID(t, m, id))
-	}
-	if err := q.AckPermanentFailure(jobID, idxs); err != nil {
-		t.Fatalf("AckPermanentFailure: %v", err)
+		idx := int(artIdxForID(t, m, id))
+		if err := j.MarkArticleFailed(idx); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
 	}
 }
 
@@ -97,53 +89,45 @@ type fileSpec struct {
 	articles []artSpec
 }
 
-// buildQueueJob builds a real *queue.Job via queue.NewJob and drives it
-// through a live *queue.Queue's mutation methods to reach the described
-// per-article done/failed state — there is exactly one way to get a job
-// into a given state, and this is it.
-func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Queue, *queue.Job) {
+// buildTestJob builds a real *job.Job and drives it to reach the described
+// per-article done/failed state.
+func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 	t.Helper()
-	parsed := &nzb.NZB{}
+	var files []job.JobFile
 	for fi, f := range specs {
-		nf := nzb.File{Subject: f.subject, Bytes: f.bytes}
+		isPar2 := job.IsPar2File(f.subject)
+		isRecovery := isPar2 && job.IsRecoveryVolume(f.subject)
+		jf := job.JobFile{
+			Subject:        f.subject,
+			Bytes:          f.bytes,
+			IsPar2Recovery: isRecovery,
+			Deferred:       isRecovery && onDemandPar2,
+		}
 		for ai, a := range f.articles {
-			nf.Articles = append(nf.Articles, nzb.Article{
+			jf.Articles = append(jf.Articles, job.JobArticle{
 				ID:     fmt.Sprintf("f%da%d@t", fi, ai),
 				Bytes:  a.bytes,
 				Number: ai + 1,
 			})
-			nf.Bytes += int64(a.bytes)
+			jf.Bytes += int64(a.bytes)
 		}
-		parsed.Files = append(parsed.Files, nf)
+		files = append(files, jf)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "t.nzb", OnDemandPar2: onDemandPar2}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	job.SortJobFiles(files)
+
+	j := job.New("test-id", "test-name", job.Policy{})
+	m := job.NewManifest(files)
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
+	for fi, jf := range files {
+		if jf.Deferred {
+			if err := j.SetFileFetchPolicy(fi, job.FetchIfNeeded); err != nil {
+				t.Fatalf("SetFileFetchPolicy: %v", err)
+			}
+		}
 	}
 
-	m, err := job.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest: %v", err)
-	}
-
-	// Collect done/failed state first, then apply it in two batched calls:
-	// SeedFromRuns installs the runs a barrier recorded, and
-	// AckPermanentFailure asserts nothing about disk so it needs no proof.
-	// Since buildQueueJob knows the full spec upfront there is no need to
-	// reconstruct "current" state from the job's progress (which is
-	// unexported outside package queue anyway).
-	//
-	// specs' file order is NOT the manifest's: NewJob calls sortJobFiles,
-	// so every lookup below goes through the message ID rather than
-	// trusting fi/ai to line up with the manifest's file/article indices.
-	//
-	// One single-article Run per done article: a run's article range is all
-	// SeedFromRuns reads, and markDone is idempotent, so merging spans here
-	// would only make the fixture harder to read.
 	var runs []durability.Run
 	var failedIDs []string
 	for fi, f := range specs {
@@ -156,7 +140,7 @@ func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Qu
 				globalIdx := int(artIdxForID(t, m, id))
 				mfi, ok := fileIdxForArticle(m, globalIdx)
 				if !ok {
-					t.Fatalf("buildQueueJob: article %s (global idx %d) not owned by any manifest file", id, globalIdx)
+					t.Fatalf("buildTestJob: article %s (global idx %d) not owned by any manifest file", id, globalIdx)
 				}
 				runs = append(runs, durability.Run{
 					FileIdx:     int32(mfi),       //nolint:gosec // G115: file counts are far below int32
@@ -168,14 +152,14 @@ func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Qu
 		}
 	}
 	if len(failedIDs) > 0 {
-		ackFailedIDs(t, q, m, job.ID, failedIDs)
+		ackFailedIDs(t, j, m, failedIDs)
 	}
 	if len(runs) > 0 {
-		if err := q.SeedFromRuns(job.ID, runs); err != nil {
+		if err := j.SeedFromRuns(runs); err != nil {
 			t.Fatalf("SeedFromRuns: %v", err)
 		}
 	}
-	return q, job
+	return j
 }
 
 func TestBuildFileCompletionLines(t *testing.T) {
@@ -185,11 +169,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 		// This mirrors the user's scenario: the per-file ⚠ line pinpoints
 		// which file is short, and its missing bytes are the job's failed
 		// bytes (at finalize nothing is still pending).
-		_, qjob := buildQueueJob(t, false, []fileSpec{
+		qjob := buildTestJob(t, false, []fileSpec{
 			{subject: "movie.mkv", articles: []artSpec{{bytes: 100, done: true}, {bytes: 100, done: true}}},
 			{subject: "extra.rar", articles: []artSpec{{bytes: 100, done: true}, {bytes: 100, failed: true}}},
 		})
-		job := &Job{Queue: qjob}
+		job := &Job{Job: qjob}
 
 		lines := buildFileCompletionLines(job)
 		joined := strings.Join(lines, "\n")
@@ -209,11 +193,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 
 	t.Run("deferred par2 files are marked as not downloaded and omit from incomplete", func(t *testing.T) {
-		_, qjob := buildQueueJob(t, true, []fileSpec{
+		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "movie.mkv", articles: []artSpec{{bytes: 100, done: true}}},
 			{subject: "extra.vol000+01.par2", bytes: 1000},
 		})
-		job := &Job{Queue: qjob}
+		job := &Job{Job: qjob}
 		lines := buildFileCompletionLines(job)
 		joined := strings.Join(lines, "\n")
 
@@ -229,11 +213,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 
 	t.Run("all complete", func(t *testing.T) {
-		_, qjob := buildQueueJob(t, false, []fileSpec{
+		qjob := buildTestJob(t, false, []fileSpec{
 			{subject: "a.bin", articles: []artSpec{{bytes: 50, done: true}}},
 			{subject: "b.bin", articles: []artSpec{{bytes: 50, done: true}}},
 		})
-		job := &Job{Queue: qjob}
+		job := &Job{Job: qjob}
 		lines := buildFileCompletionLines(job)
 		joined := strings.Join(lines, "\n")
 		if !strings.Contains(joined, "File completion (2 files, all complete):") {
@@ -245,8 +229,8 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 
 	t.Run("no files yields no lines", func(t *testing.T) {
-		_, qjob := buildQueueJob(t, false, nil)
-		job := &Job{Queue: qjob}
+		qjob := buildTestJob(t, false, nil)
+		job := &Job{Job: qjob}
 		if lines := buildFileCompletionLines(job); lines != nil {
 			t.Errorf("expected nil for empty file list, got %v", lines)
 		}
@@ -256,11 +240,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 	t.Run("clean: deferred volumes skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		_, qjob := buildQueueJob(t, true, []fileSpec{
+		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 		})
-		job := &Job{DownloadDir: dir, Queue: qjob}
+		job := &Job{DownloadDir: dir, Job: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if !strings.Contains(got, "✓ Par2: verified clean") {
 			t.Errorf("expected clean par2 line; got:\n%s", got)
@@ -275,18 +259,15 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 
 	t.Run("fetched: repair was needed", func(t *testing.T) {
 		dir := t.TempDir()
-		q, qjob := buildQueueJob(t, true, []fileSpec{
+		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 		})
-		if err := q.UndeferRecoveryVolumes(qjob.ID, []int{1}); err != nil {
+		if err := qjob.UndeferRecoveryVolumes([]int{1}); err != nil {
 			t.Fatalf("UndeferRecoveryVolumes: %v", err)
 		}
-		if err := q.SetPar2ReleaseReason(qjob.ID, "repair needed"); err != nil {
-			t.Fatalf("SetPar2ReleaseReason: %v", err)
-		}
-		qjob = q.SnapshotJob(qjob.ID)
-		job := &Job{DownloadDir: dir, Queue: qjob}
+		qjob.SetPar2ReleaseReason("repair needed")
+		job := &Job{DownloadDir: dir, Job: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if !strings.Contains(got, "⚠ Par2: fetched") {
 			t.Errorf("expected fetched par2 line; got:\n%s", got)
@@ -298,15 +279,12 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 
 	t.Run("unknown: verdict reached but nothing was verified", func(t *testing.T) {
 		dir := t.TempDir()
-		q, qjob := buildQueueJob(t, true, []fileSpec{
+		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 		})
-		if err := q.SetPar2ReleaseReason(qjob.ID, "no delivered file matched any par2 entry"); err != nil {
-			t.Fatalf("SetPar2ReleaseReason: %v", err)
-		}
-		qjob = q.SnapshotJob(qjob.ID)
-		job := &Job{DownloadDir: dir, Queue: qjob}
+		qjob.SetPar2ReleaseReason("no delivered file matched any par2 entry")
+		job := &Job{DownloadDir: dir, Job: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if strings.Contains(got, "verified clean") {
 			t.Errorf("must not claim verified clean when nothing was verified; got:\n%s", got)
@@ -336,22 +314,19 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		// sufficient: the new case must not fire and claim "could not
 		// verify" for a job a verdict already released volumes for.
 		dir := t.TempDir()
-		q, qjob := buildQueueJob(t, true, []fileSpec{
+		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 			{subject: "x.vol001+01.par2", bytes: 500},
 		})
-		if err := q.UndeferRecoveryVolumes(qjob.ID, []int{1}); err != nil {
+		if err := qjob.UndeferRecoveryVolumes([]int{1}); err != nil {
 			t.Fatalf("UndeferRecoveryVolumes: %v", err)
 		}
-		if err := q.SetPar2ReleaseReason(qjob.ID, "repair needed"); err != nil {
-			t.Fatalf("SetPar2ReleaseReason: %v", err)
-		}
-		qjob = q.SnapshotJob(qjob.ID)
+		qjob.SetPar2ReleaseReason("repair needed")
 		if !qjob.Progress().Par2Recovered() {
 			t.Fatal("fixture guard: Par2Recovered() must be true")
 		}
-		job := &Job{DownloadDir: dir, Queue: qjob}
+		job := &Job{DownloadDir: dir, Job: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if strings.Contains(got, "could not verify") {
 			t.Errorf("a job whose verdict already released volumes must not read as could-not-verify; got:\n%s", got)
@@ -360,11 +335,11 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 
 	t.Run("off/normal: no on-demand, no summary line", func(t *testing.T) {
 		dir := t.TempDir()
-		_, qjob := buildQueueJob(t, false, []fileSpec{
+		qjob := buildTestJob(t, false, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 		})
-		job := &Job{DownloadDir: dir, Queue: qjob}
+		job := &Job{DownloadDir: dir, Job: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if strings.Contains(got, "Par2:") {
 			t.Errorf("expected no Par2 summary line; got:\n%s", got)
@@ -382,14 +357,13 @@ func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q, qjob := buildQueueJob(t, false, []fileSpec{
+	qjob := buildTestJob(t, false, []fileSpec{
 		{subject: "short.rar", articles: []artSpec{{bytes: 100, done: true}, {bytes: 100, failed: true}}},
 	})
-	if err := q.RecordDownload(qjob.ID, "news.server.com", 123); err != nil {
+	if err := qjob.RecordDownload("news.server.com", 123); err != nil {
 		t.Fatalf("RecordDownload: %v", err)
 	}
-	qjob = q.SnapshotJob(qjob.ID)
-	job := &Job{DownloadDir: dir, Queue: qjob}
+	job := &Job{DownloadDir: dir, Job: qjob}
 	lines := buildDownloadFileList(job)
 	joined := strings.Join(lines, "\n")
 
@@ -434,8 +408,8 @@ func TestBuildDownloadFileListRecursesSubdirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, qjob := buildQueueJob(t, false, nil)
-	job := &Job{DownloadDir: dir, Queue: qjob}
+	qjob := buildTestJob(t, false, nil)
+	job := &Job{DownloadDir: dir, Job: qjob}
 	joined := strings.Join(buildDownloadFileList(job), "\n")
 
 	if !strings.Contains(joined, "Files in download directory (2):") {

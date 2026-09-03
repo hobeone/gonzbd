@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // attrRecorder captures the attributes a logger carries.
@@ -88,11 +88,11 @@ func TestCleanupStageLogger_BindsJobAndStage(t *testing.T) {
 						stageLog = slog.New(rec)
 					}
 
-					job := &Job{}
+					jobRec := &Job{}
 					if withQueue {
-						job.Queue = &queue.Job{ID: jobID}
+						jobRec.Job = job.New(jobID, jobID, job.Policy{})
 					}
-					build(stageLog, job).Info("probe")
+					build(stageLog, jobRec).Info("probe")
 
 					if got := rec.attrs["stage"]; got != stageName {
 						t.Errorf("stage attr = %q, want %q", got, stageName)
@@ -100,7 +100,7 @@ func TestCleanupStageLogger_BindsJobAndStage(t *testing.T) {
 					got, present := rec.attrs["job"]
 					if !withQueue {
 						if present {
-							t.Errorf("job attr = %q, want it absent when Job.Queue is nil", got)
+							t.Errorf("job attr = %q, want it absent when Job.Job is nil", got)
 						}
 						return
 					}

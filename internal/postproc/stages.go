@@ -12,7 +12,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // QuickCheckOutcome is what the quickcheck stage was able to determine about
@@ -123,15 +122,19 @@ type Stage interface {
 }
 
 // Job is the post-processing unit of work.  It wraps the download-queue Job
-// with post-proc-specific state.  The queue.Job must not be mutated here;
+// with post-proc-specific state.
 // stages accumulate their results into the fields below.
 type Job struct {
-	// Queue is the source job from the download queue. Read-only for stages.
-	// Kept for backward compatibility during migration; deleted in Task 13.
-	Queue *queue.Job
-
 	// Job is the rehomed job record from internal/job.
 	Job *job.Job
+
+	// Ingest / Queue metadata needed by post-processing stages:
+	Filename string
+	Category string
+	Password string
+	Script   string
+	PP       int
+	URL      string
 
 	// DownloadDir is the absolute path where the assembler wrote the job's
 	// files — the working directory for in-place stages (par2, unpack,
@@ -267,7 +270,7 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 
 // HasRecord reports whether this post-processing job wraps a download job record.
 func (j *Job) HasRecord() bool {
-	return j.Job != nil || j.Queue != nil
+	return j.Job != nil
 }
 
 // JobID returns the job identifier.
@@ -275,8 +278,13 @@ func (j *Job) JobID() string {
 	if j.Job != nil {
 		return j.Job.ID()
 	}
-	if j.Queue != nil {
-		return j.Queue.ID
+	return ""
+}
+
+// Name returns the job display name.
+func (j *Job) Name() string {
+	if j.Job != nil {
+		return j.Job.Name()
 	}
 	return ""
 }
@@ -310,24 +318,17 @@ type Progress interface {
 
 // Manifest returns the job's manifest.
 //
-//nolint:ireturn // transitional interface bridge during queue -> job swap
+//nolint:ireturn // interface bridge for stages
 func (j *Job) Manifest() (Manifest, error) {
 	if j.Job != nil {
 		return j.Job.Manifest()
-	}
-	if j.Queue != nil {
-		m, err := j.Queue.Manifest()
-		if err != nil {
-			return nil, err
-		}
-		return m, nil
 	}
 	return nil, job.ErrNotResident
 }
 
 // Progress returns the job's progress record.
 //
-//nolint:ireturn // transitional interface bridge during queue -> job swap
+//nolint:ireturn // interface bridge for stages
 func (j *Job) Progress() Progress {
 	if j.Job != nil {
 		p := j.Job.Progress()
@@ -336,45 +337,13 @@ func (j *Job) Progress() Progress {
 		}
 		return p
 	}
-	if j.Queue != nil {
-		p := j.Queue.Progress()
-		if p == nil {
-			return nil
-		}
-		return queueProgressAdapter{p: p}
-	}
 	return nil
 }
-
-type queueProgressAdapter struct {
-	p *queue.JobProgress
-}
-
-func (a queueProgressAdapter) FileFilename(fi int) string { return a.p.FileFilename(fi) }
-func (a queueProgressAdapter) FileAssembledCRC32(fi int) uint32 {
-	return a.p.FileAssembledCRC32(fi)
-}
-func (a queueProgressAdapter) FileFetchPolicy(fi int) job.FetchPolicy {
-	return job.FetchPolicy(a.p.FileFetchPolicy(fi))
-}
-func (a queueProgressAdapter) ExpectedBytes() int64          { return a.p.ExpectedBytes() }
-func (a queueProgressAdapter) FailedBytes() int64            { return a.p.FailedBytes() }
-func (a queueProgressAdapter) DownloadStarted() time.Time    { return a.p.DownloadStarted() }
-func (a queueProgressAdapter) DownloadFinished() time.Time   { return a.p.DownloadFinished() }
-func (a queueProgressAdapter) Par2Recovered() bool           { return a.p.Par2Recovered() }
-func (a queueProgressAdapter) HasPar2Verdict() bool          { return a.p.HasPar2Verdict() }
-func (a queueProgressAdapter) Par2ReleaseReason() string     { return a.p.Par2ReleaseReason() }
-func (a queueProgressAdapter) ServerStats() map[string]int64 { return a.p.ServerStats() }
-func (a queueProgressAdapter) ArticleDone(i int) bool        { return a.p.ArticleDone(i) }
-func (a queueProgressAdapter) ArticleFailed(i int) bool      { return a.p.ArticleFailed(i) }
 
 // NumFiles returns the number of files in the job.
 func (j *Job) NumFiles() int {
 	if j.Job != nil {
 		return j.Job.NumFiles()
-	}
-	if j.Queue != nil {
-		return j.Queue.NumFiles()
 	}
 	return 0
 }

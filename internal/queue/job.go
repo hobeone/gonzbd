@@ -58,6 +58,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -734,28 +735,11 @@ func (j *Job) IsEarlyAbort() bool {
 	return j.progress.isEarlyAbort()
 }
 
-// JobFile is the intermediate, NZB-parsed shape NewJob builds before
-// converting into a Manifest/JobProgress pair. It is not part of Job's
-// runtime state — construction scaffolding only.
-type JobFile struct {
-	Subject        string
-	Date           time.Time
-	Articles       []JobArticle
-	Bytes          int64
-	IsPar2Recovery bool
-	// Deferred marks a file whose articles are intentionally held back from
-	// dispatch (on-demand par2: recovery volumes not downloaded until repair
-	// is shown to be needed).
-	Deferred bool
-}
+// JobFile is an alias to job.JobFile.
+type JobFile = job.JobFile
 
-// JobArticle is the intermediate, NZB-parsed shape of a single article,
-// consumed by newManifest during construction.
-type JobArticle struct {
-	ID     string
-	Bytes  int
-	Number int
-}
+// JobArticle is an alias to job.JobArticle.
+type JobArticle = job.JobArticle
 
 // AddOptions carries the call-site arguments for NewJob. Zero values
 // are valid and produce sensible defaults.

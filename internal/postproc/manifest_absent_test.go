@@ -3,49 +3,31 @@ package postproc
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-// evictedJob returns a postproc Job whose queue job has no resident
+// evictedJob returns a postproc Job whose job.Job has no resident
 // manifest, the state a job reaches when its manifest file cannot be read.
 func evictedJob(t *testing.T) *Job {
 	t.Helper()
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.part01.rar", Bytes: 100, Articles: []nzb.Article{{ID: "a0@t", Bytes: 100, Number: 1}}},
-	}}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	j := job.New("job-evicted", "m.nzb", job.Policy{})
+	m := job.NewManifest([]job.JobFile{{
+		Subject:  "movie.part01.rar",
+		Bytes:    100,
+		Articles: []job.JobArticle{{ID: "a0@t", Bytes: 100}},
+	}})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	// A store is required for the queue to evict on pause; without one every
-	// manifest stays resident and there is nothing to test.
-	dir := t.TempDir()
-	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-	q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)), queue.WithStateDir(dir))
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := q.Pause(qjob.ID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if _, mErr := qjob.Manifest(); mErr == nil {
+	j.Evict()
+	if _, mErr := j.Manifest(); mErr == nil {
 		t.Fatal("fixture guard: manifest still resident, nothing is being tested")
 	}
-	return &Job{Queue: qjob}
+	return &Job{Job: j}
 }
 
 // The file listing is reporting, so it degrades — but it says why, in the
@@ -90,47 +72,3 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing
 	}
 }
 
-func evictedRehomedJob(t *testing.T) *Job {
-	t.Helper()
-	j := job.New("job-rehomed", "job-rehomed", job.Policy{})
-	m := job.NewManifest([]job.JobFile{{
-		Subject:  "movie.part01.rar",
-		Bytes:    100,
-		Articles: []job.JobArticle{{ID: "a0@t", Bytes: 100}},
-	}})
-	if err := j.AttachContent(m); err != nil {
-		t.Fatalf("AttachContent: %v", err)
-	}
-	j.Evict()
-	if _, mErr := j.Manifest(); mErr == nil {
-		t.Fatal("fixture guard: manifest still resident")
-	}
-	return &Job{Job: j}
-}
-
-func TestBuildDownloadFileList_AbsentManifestExplainsItself_RehomedJob(t *testing.T) {
-	lines := buildDownloadFileList(evictedRehomedJob(t))
-
-	if len(lines) == 0 {
-		t.Fatal("returned no lines at all; the history record would show an empty download stage with no explanation")
-	}
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "File listing unavailable") {
-		t.Errorf("listing does not explain its own absence:\n%s", joined)
-	}
-}
-
-func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified_RehomedJob(t *testing.T) {
-	j := evictedRehomedJob(t)
-	j.QuickCheck = QuickCheckInconclusive
-	q := &QuickCheckStage{}
-
-	err := q.recordVerdict(context.Background(), slog.Default(), j, []par2.Set{}, par2.Assessment{})
-
-	if err == nil {
-		t.Fatal("recordVerdict returned nil with no manifest; the stage log would record a clean pass over nothing")
-	}
-	if j.QuickCheck != QuickCheckInconclusive {
-		t.Errorf("QuickCheck = %s, want inconclusive", j.QuickCheck)
-	}
-}

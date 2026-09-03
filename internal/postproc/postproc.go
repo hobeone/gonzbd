@@ -156,7 +156,7 @@ func (p *PostProcessor) Stop() error {
 
 // Process enqueues job for post-processing.
 func (p *PostProcessor) Process(job *Job) {
-	p.log.Info("postproc: enqueuing job", "job", job.Queue.ID)
+	p.log.Info("postproc: enqueuing job", "job", job.JobID())
 	p.q.Push(job)
 }
 
@@ -269,7 +269,7 @@ func (p *PostProcessor) run() {
 		if p.workerCtx.Err() != nil {
 			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: shutdown interrupted job, preserving for recovery",
-				"job", job.Queue.ID)
+				"job", job.JobID())
 			return
 		}
 
@@ -281,7 +281,7 @@ func (p *PostProcessor) run() {
 		if jobCtx.Err() != nil {
 			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: job cancelled mid-processing, dropping",
-				"job", job.Queue.ID)
+				"job", job.JobID())
 			continue
 		}
 
@@ -318,7 +318,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
 		var jobCancel context.CancelFunc
 		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, j.Queue.ID, jobCancel)
+		p.setBusyWithJob(true, j.JobID(), jobCancel)
 	})
 	if !ok {
 		return nil, nil, false
@@ -337,12 +337,15 @@ func buildPreambleLog(job *Job) []StageLogEntry {
 	// in the download directory before any stages run. This gives the
 	// history UI a clear view of the starting state for debugging.
 	var dlElapsed time.Duration
-	dlStarted := job.Queue.Progress().DownloadStarted()
+	var dlStarted time.Time
+	if prog := job.Progress(); prog != nil {
+		dlStarted = prog.DownloadStarted()
+		if !prog.DownloadFinished().IsZero() && !dlStarted.IsZero() {
+			dlElapsed = prog.DownloadFinished().Sub(dlStarted)
+		}
+	}
 	if dlStarted.IsZero() {
 		dlStarted = time.Now()
-	}
-	if !job.Queue.Progress().DownloadFinished().IsZero() {
-		dlElapsed = job.Queue.Progress().DownloadFinished().Sub(dlStarted)
 	}
 	dlLines := buildDownloadFileList(job)
 	entries := []StageLogEntry{
@@ -460,16 +463,16 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	//   3 = +delete (repair + unpack + cleanup)
 	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
 	// Other stages (deobfuscate, sort, finalize, script) always run.
-	if shouldSkipForPP(stage.Name(), job.Queue.PP) {
+	if shouldSkipForPP(stage.Name(), job.PP) {
 		p.log.Info("postproc: skipping stage (PP level)",
 			"stage", stage.Name(),
-			"job", job.Queue.ID,
-			"pp", job.Queue.PP,
+			"job", job.JobID(),
+			"pp", job.PP,
 		)
 		return StageLogEntry{
 			Stage:   stage.Name(),
 			Started: time.Now(),
-			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Queue.PP)},
+			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.PP)},
 		}, false
 	}
 
@@ -485,7 +488,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		default:
 			status = constants.StatusRunning
 		}
-		p.statusUpdater(job.Queue.ID, status)
+		p.statusUpdater(job.JobID(), status)
 	}
 
 	entry := StageLogEntry{
@@ -513,13 +516,13 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		// Radarr) can handle the failure.
 		p.log.Warn("postproc: stage failed, continuing pipeline",
 			"stage", stage.Name(),
-			"job", job.Queue.ID,
+			"job", job.JobID(),
 			"err", err,
 		)
 	} else {
 		p.log.Info("postproc: stage done",
 			"stage", stage.Name(),
-			"job", job.Queue.ID,
+			"job", job.JobID(),
 			"elapsed", entry.Elapsed,
 		)
 	}
@@ -531,7 +534,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	select {
 	case <-ctx.Done():
 		p.log.Info("postproc: context cancelled, aborting remaining stages",
-			"job", job.Queue.ID,
+			"job", job.JobID(),
 		)
 		return entry, true
 	default:
@@ -554,16 +557,16 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	job.OnOutput = func(tool, line string) {
 		if p.onOutput != nil {
-			p.onOutput(job.Queue.ID, tool, line)
+			p.onOutput(job.JobID(), tool, line)
 		}
 	}
-	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
+	p.log.Info("postproc: processing job", "job", job.JobID(), "name", job.Name())
 
 	job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 
 	if job.FailMsg != "" {
 		p.log.Warn("postproc: skipping all stages — job already failed",
-			"job", job.Queue.ID,
+			"job", job.JobID(),
 			"reason", job.FailMsg,
 		)
 		job.StageLog = append(job.StageLog, StageLogEntry{
@@ -587,7 +590,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 			}
 			job.FailMsg = reason
 			p.log.Warn("postproc: skipping all stages — empty job",
-				"job", job.Queue.ID,
+				"job", job.JobID(),
 				"dir", job.DownloadDir,
 				"reason", reason,
 			)
@@ -622,7 +625,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	}
 
 	p.log.Info("postproc: job complete",
-		"job", job.Queue.ID,
+		"job", job.JobID(),
 		"stages", len(job.StageLog),
 		"fail_msg", job.FailMsg,
 	)

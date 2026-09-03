@@ -82,7 +82,7 @@ func (q *ppQueue) Has(jobID string) bool {
 // findJob returns the index of the job with the given ID, or -1.
 func findJob(jobs []*Job, id string) int {
 	for i, j := range jobs {
-		if j.Queue.ID == id {
+		if j.JobID() == id {
 			return i
 		}
 	}

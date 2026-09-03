@@ -622,9 +622,9 @@ func TestUnpackHelpers(t *testing.T) {
 	t.Run("prepareOptions", func(t *testing.T) {
 		u := NewUnpackStage()
 		qjob := newQueueJob(t, "pw-job", 0)
-		qjob.Password = "jobpass"
 		job := &Job{
-			Queue: qjob,
+			Job:      qjob,
+			Password: "jobpass",
 		}
 
 		// Create a temporary password file
@@ -657,7 +657,7 @@ func TestUnpackHelpers(t *testing.T) {
 		}
 
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: dir,
 		}
 		u.applyPermissions(t.Context(), slog.Default(), job, "755", []unpack.Archive{{}})
@@ -674,7 +674,7 @@ func TestUnpackHelpers(t *testing.T) {
 	t.Run("extractArchive RAR", func(t *testing.T) {
 		u := NewUnpackStage()
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
@@ -705,7 +705,7 @@ func TestUnpackHelpers(t *testing.T) {
 	t.Run("extractArchive 7-Zip", func(t *testing.T) {
 		u := NewUnpackStage()
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
@@ -732,7 +732,7 @@ func TestUnpackHelpers(t *testing.T) {
 	t.Run("extractArchive SplitArchive disabled", func(t *testing.T) {
 		u := NewUnpackStage()
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
@@ -752,7 +752,7 @@ func TestUnpackHelpers(t *testing.T) {
 		}
 		u := NewUnpackStage()
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 		copyToDir(t, unpackFixture("single_rar5.rar"), job.DownloadDir)
@@ -786,7 +786,7 @@ func TestUnpackHelpers(t *testing.T) {
 	t.Run("extractPendingArchives containment violation", func(t *testing.T) {
 		u := NewUnpackStage()
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 		copyToDir(t, unpackFixture("single_rar5.rar"), job.DownloadDir)
@@ -1451,7 +1451,7 @@ func TestUnpackStage_ApplyStrictSandbox(t *testing.T) {
 	}
 
 	s.Apply(UnpackConfig{Base: unpack.Options{Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: true}}})
-	job := &Job{DownloadDir: "/tmp/test-sandbox-target", Queue: newQueueJob(t, "sandbox-target", 0)}
+	job := &Job{DownloadDir: "/tmp/test-sandbox-target", Job: newQueueJob(t, "sandbox-target", 0)}
 	opts := s.prepareOptions(t.Context(), slog.Default(), job, s.BaseOpts, "")
 	if opts.Sandbox.TargetDir != "/tmp/test-sandbox-target" {
 		t.Errorf("expected prepareOptions to set TargetDir to %q, got %q", job.DownloadDir, opts.Sandbox.TargetDir)

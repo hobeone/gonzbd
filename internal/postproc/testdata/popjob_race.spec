@@ -19,7 +19,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
 		var jobCancel context.CancelFunc
 		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, j.Queue.ID, jobCancel)
+		p.setBusyWithJob(true, j.JobID(), jobCancel)
 	})
 	if !ok {
 		return nil, nil, false
@@ -33,7 +33,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 		return nil, nil, false
 	}
 	jobCtx, jobCancel := context.WithCancel(p.workerCtx)
-	p.setBusyWithJob(true, job.Queue.ID, jobCancel)
+	p.setBusyWithJob(true, job.JobID(), jobCancel)
 	return job, jobCtx, true
 }
 --- end

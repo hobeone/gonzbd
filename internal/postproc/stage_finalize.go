@@ -38,7 +38,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "finalize", "job", job.Queue.ID)
+	log = log.With("component", "finalize", "job", job.JobID())
 
 	// Snapshot once; used in multiple branches below.
 	folderRename := f.folderRename.Load()

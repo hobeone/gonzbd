@@ -301,9 +301,9 @@ func repairJob(t *testing.T) (*Job, *VerifiedSets) {
 	t.Helper()
 	dir := t.TempDir()
 	qjob := newQueueJob(t, "rjob", 0)
-	qjob.Name = "RepairTest"
+	qjob.SetName("RepairTest")
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: dir,
 	}
 	vs := NewVerifiedSets(dir, nil)
@@ -557,7 +557,7 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 	run := func(command string) bool {
 		var retried bool
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 			OnOutput: func(_ string, line string) {
 				if strings.Contains(line, "retrying with external") {
@@ -626,7 +626,7 @@ func TestRepairHelpers(t *testing.T) {
 	// 2. Test dispatchRepairTool
 	t.Run("dispatchRepairTool", func(t *testing.T) {
 		job := &Job{
-			Queue:       newQueueJob(t, "testjob", 0),
+			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 
@@ -695,7 +695,7 @@ func TestRepairHelpers(t *testing.T) {
 	// 3. Test processPar2Set
 	t.Run("processPar2Set", func(t *testing.T) {
 		job := &Job{
-			Queue:         newQueueJob(t, "testjob", 0),
+			Job:           newQueueJob(t, "testjob", 0),
 			ConsumedFiles: make(map[string]struct{}),
 			DownloadDir:   t.TempDir(),
 		}

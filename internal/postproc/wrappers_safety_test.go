@@ -41,9 +41,9 @@ func TestFinalizeStage_PartialMovePreservesSourceDir(t *testing.T) {
 	}
 
 	qjob := newQueueJob(t, "partial-move-test", 0)
-	qjob.Name = "partial-move"
+	qjob.SetName("partial-move")
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -85,9 +85,9 @@ func TestFinalizeStage_AllFilesMovedCleansSource(t *testing.T) {
 	os.WriteFile(filepath.Join(finalDir, "existing.txt"), []byte("x"), 0o644)
 
 	qjob := newQueueJob(t, "full-move-test", 0)
-	qjob.Name = "full-move"
+	qjob.SetName("full-move")
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -128,7 +128,7 @@ func TestFinalizeStage_PartialMoveErrorContainsAllFailures(t *testing.T) {
 
 	qjob := newQueueJob(t, "multi-fail", 0)
 	job := &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}

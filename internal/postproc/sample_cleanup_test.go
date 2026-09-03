@@ -48,9 +48,9 @@ func makeTestJob(t *testing.T, name string) *Job {
 	t.Helper()
 	dir := t.TempDir()
 	qjob := newQueueJob(t, "job-"+name, 0)
-	qjob.Name = name
+	qjob.SetName(name)
 	return &Job{
-		Queue:       qjob,
+		Job:         qjob,
 		DownloadDir: dir,
 	}
 }
