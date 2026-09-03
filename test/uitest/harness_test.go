@@ -55,9 +55,15 @@ type testEnv struct {
 	Browser    playwright.Browser
 }
 
-type uiStubWorkers struct{}
+type uiStubWorkers struct {
+	disp *dispatch.Dispatcher
+}
 
-func (uiStubWorkers) Abort(string) {}
+func (w *uiStubWorkers) Abort(id string) {
+	if w.disp != nil {
+		go func() { _ = w.disp.Yielded(id) }()
+	}
+}
 
 type uiStubResidency struct{}
 
@@ -76,7 +82,9 @@ func (uiStubRunner) Run(context.Context, string, job.State) {}
 
 func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	t.Helper()
-	d := dispatch.New(10, 10, time.Hour, time.Now, uiStubWorkers{}, uiStubResidency{}, uiStubStore{}, uiStubRunner{})
+	workers := &uiStubWorkers{}
+	d := dispatch.New(10, 10, time.Hour, time.Now, workers, uiStubResidency{}, uiStubStore{}, uiStubRunner{})
+	workers.disp = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}

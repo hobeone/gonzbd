@@ -242,6 +242,14 @@ func TestQueueDeleteJob(t *testing.T) {
 		t.Fatalf("click Delete Job confirm: %v", err)
 	}
 
+	// Wait for the delete action to complete and close the confirmation modal.
+	if err := confirmBtn.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("Delete Job confirmation button still visible: %v", err)
+	}
+
 	// Reload to force the SPA to re-fetch queue state.
 	if _, err := page.Reload(playwright.PageReloadOptions{
 		WaitUntil: playwright.WaitUntilStateNetworkidle,
