@@ -10,12 +10,17 @@ import "fmt"
 // They were once literally one State, called Waiting, with this as its
 // reason. That state is gone: a job that cannot proceed now stays in its work
 // state and is simply not running, and the reason is derived by the Queue
-// rather than stored on the attempt — it reaches consumers as a field on
-// RenderView (render.go), not StateView. No non-test code in this package
-// writes it (`git grep -n 'Reaso[n]:' -- 'internal/job/*.go'
-// ':!internal/job/*_test.go'` returns nothing); sabnzbd_test.go builds
-// RenderView literals that set it, which is how the render table is driven
-// without a Queue to derive it.
+// rather than stored on the attempt — it reaches consumers as the Reason
+// field on RenderView (render.go), not StateView. No non-test code in this
+// package writes RenderView.Reason (`git grep -n -E '\bReaso[n]:' --
+// 'internal/job/*.go' ':!internal/job/*_test.go'` returns nothing);
+// sabnzbd_test.go builds RenderView literals that set it, which is how the
+// render table is driven without a Queue to derive it. The word-boundary
+// `\b` matters now that the content-tier move brought progress.go's
+// `Par2ReleaseReason:` composite-literal key into this package — an
+// unrelated string field on JobProgress whose name happens to share the
+// same trailing letters and colon that this pattern looks for, which an
+// unanchored version of it would also match.
 type WaitReason uint8
 
 const (

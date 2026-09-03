@@ -134,11 +134,18 @@ type Attempt struct {
 	assessed bool
 	// started and ended have no reader yet in this package outside their own
 	// tests — TestNewAttempt_StartsFetching checks started, and
-	// TestAttempt_FinishIsWriteOnce checks ended (`git grep -n
-	// '\.ended\|\.started' internal/job/*_test.go` returns exactly these
-	// four lines). That is expected for a package built ahead of its
-	// consumers (see doc.go, "What this package does not do"). The next
-	// plan's history/durability surface is the intended consumer:
+	// TestAttempt_FinishIsWriteOnce checks ended (`git grep -n -E
+	// '\ba\.(started|ended)\b' -- 'internal/job/*_test.go'` returns exactly
+	// these four lines, all in attempt_test.go). The `a.` receiver prefix and
+	// word boundaries matter now that the content-tier move brought
+	// progress_test.go into this package: its table-driven
+	// TestRestoreDownloadStamps_FiltersEachFieldIndependently declares an
+	// unrelated `tc.started time.Time` field on a local test-case struct, and
+	// an unanchored '\.ended\|\.started' also matches `tc.started` at
+	// progress_test.go:296 — a different field on a different type, not a
+	// reader of Attempt.started. That is expected for a package built ahead
+	// of its consumers (see doc.go, "What this package does not do"). The
+	// next plan's history/durability surface is the intended consumer:
 	// per-attempt start/end timestamps are what a
 	// retried job's history entry needs to show each attempt's own duration,
 	// rather than only the job's.

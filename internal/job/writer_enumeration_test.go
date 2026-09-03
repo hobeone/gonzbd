@@ -22,25 +22,31 @@ import (
 // OTHER struct here declares any of these five names is established by
 // reading the declarations, not by grepping the names: `git grep -n '^typ[e]
 // [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns eight types — Attempt, Job, Lease, Policy, RenderView, Snapshot,
-// StateView, and edge — and only the first two declare any of these fields.
-// (edge arrived with change 02; Snapshot with Half B1 task 3, which is what
-// took this count from seven to eight.) TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
-// that, so this sentence is orientation rather than the guarantee.
+// now returns 22 types — Attempt, bitset, Checkpoint, Job, Snapshot, Lease,
+// Manifest, JobFile, JobArticle, manifestFile, manifestJSONArticle,
+// manifestJSONFile, manifestJSON, Policy, JobProgress, FileProgress,
+// FileMeta, fileProgressJSON, jobProgressJSON, RenderView, edge, and
+// StateView — and only Attempt and Job declare any of these five fields.
+// The jump from eight (Half B1 task 3) to 22 is the content-tier move (task
+// 2): manifest.go, progress.go and bitset.go landed in this package and
+// brought Manifest, JobFile, JobArticle, manifestFile, the three
+// manifestJSON* wire types, JobProgress, FileProgress, FileMeta and the two
+// *JSON progress wire types with them — thirteen new structs, none of which
+// declare outcome, next, attempts, intent or lease.
+// TestFieldOwners_AreTheOnlyDeclarers is what actually enforces that, so
+// this sentence is orientation rather than the guarantee.
 // A grep for the five field names themselves (`git grep -n -E
 // 'outcome|next|attempts|intent|lease' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'`) returns well over a hundred lines of comments
 // and error strings that no reader can filter into an answer, which is why it
-// is not the citation. The exact figure is deliberately a bound rather than a
-// number: it moves with every edit to any non-test file in this package —
-// three times while this very comment was being corrected — so a precise
-// count here would be a stale citation by its own next commit. Where a
-// quantity is that volatile, a bound that stays true beats a number that was
-// true once. Matching on the field name alone would therefore still be
-// correct today; this table exists so that stops being an accident if a
-// further type is added later. Deliberately not a number: this sentence said
-// "a seventh" while the count above already said seven, so the two disagreed
-// about whether the next one was the seventh or the eighth.
+// is not the citation. This count is not a bound that survives every future
+// edit — it moved twice already, seven to eight and eight to 22, on
+// additions this comment did not anticipate either time — so treat the
+// number as a snapshot to re-run check_citations against, not a ceiling.
+// What does not move is the claim scanWriters actually depends on: no
+// non-Attempt, non-Job struct in this package declares any of the five
+// tracked names, and that half is machine-checked on every run regardless of
+// how many structs exist.
 var fieldOwner = map[string]string{
 	"outcome":  "Attempt",
 	"next":     "Attempt",
