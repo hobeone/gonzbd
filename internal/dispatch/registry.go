@@ -18,9 +18,11 @@ var ErrNotFound = errors.New("dispatch: job not found")
 //
 // Name is the one field job.Job DOES carry, and it is duplicated here on
 // purpose: it lets a listing be composed from Header alone, without the
-// registry handing out *job.Job pointers to do it. The duplication is a
-// second copy of a display string, not a second source of truth for any
-// scheduling decision — nothing reads Header.Name to decide anything.
+// registry handing out *job.Job pointers to do it. Header.Name is read by
+// API queue search filtering (internal/api/queue.go) and Application
+// name collision detection (internal/app/app.go), while downstream filesystem
+// paths and finalization read Job.Name(). SetName updates both under d.mu so the
+// two copies stay in lockstep.
 type Header struct {
 	Name      string
 	Filename  string
