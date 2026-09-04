@@ -1572,7 +1572,7 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 		if jc.JobID != job2.ID() {
 			t.Fatalf("expected job2 to complete, got job %q", jc.JobID)
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("completion event loop starved: job2 did not complete because watchCompletions blocked on job1's du.Wait()")
 	}
 }

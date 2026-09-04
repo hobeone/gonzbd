@@ -134,15 +134,15 @@ func buildDownloadFileList(j *Job) []string {
 		// && p.Par2Recovered()` case above this one and re-running `go test
 		// ./...` broke nothing in this suite, so no test currently pins the
 		// order — the fix is deferred on scope, not on test coupling). It is
-		// not reached today: undeferRecovery is the only site that sets
-		// par2Recovered to true (internal/job/content.go:288; the
-		// other assignment, content.go:605, sets it back to false on retry, and
-		// the rest are the field declaration and plain reads/copies — see a
-		// grep for par2Recovered outside tests), and undeferRecovery has two
-		// production callers: Job.UndeferRecoveryVolumes
-		// (internal/job/content.go:296, reached from app.go's
-		// maybeReleaseRecoveryVolumes) and content.go's MarkArticleFailed
-		// (internal/job/content.go:142). Both pass
+		// not reached today: undeferRecovery is the only active mutation that sets
+		// par2Recovered to true (`git grep -n 'par2Recovered = true' internal/job/`
+		// finds one line; UnmarshalJSON restores it from persisted state, and
+		// ResetForRetry resets it to false — `git grep -n 'par2Recovered =' internal/job/`
+		// finds three lines). undeferRecovery has callers in Job.UndeferRecoveryVolumes
+		// (reached from app.go's maybeReleaseRecoveryVolumes;
+		// `git grep -n 'func (j \*Job) UndeferRecoveryVolumes' internal/job/` finds one line)
+		// and Job.MarkArticleFailed (`git grep -n 'func (j \*Job) MarkArticleFailed' internal/job/`
+		// finds one line). Both pass
 		// job.progress.DeferredRecoveryIndices() — every deferred index at
 		// once — so a real job's held volumes go from "all deferred" to
 		// "none deferred" in one step and heldVols is 0 by the time

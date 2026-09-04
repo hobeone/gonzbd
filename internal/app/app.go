@@ -821,6 +821,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
 		return err
 	}
+	if app.checkpointer != nil {
+		app.checkpointer.Prune(id)
+	}
 	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", id+".json.gz")
 	if rmErr := os.Remove(manifestPath); rmErr != nil && !os.IsNotExist(rmErr) {
 		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)

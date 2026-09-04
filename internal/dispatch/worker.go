@@ -116,9 +116,9 @@ func (d *Dispatcher) launch(j *job.Job) {
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
-// job already being worked. Finished, Yielded and Stop's sweep are its three
+// job already being worked. Finished, Yielded, Stop's sweep and remove are its four
 // exit-path clearers — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
-// grep -v _test.go` finds three lines, one per site.
+// grep -v _test.go` finds four lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

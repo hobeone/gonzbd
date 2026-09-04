@@ -43,17 +43,17 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds ten lines:
+	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds nine lines:
 	//
-	//   - remove (registry.go), five lines: byID, written, resident,
-	//     removing, launched. It is total by rule; d.order is pruned by the loop
-	//     below those rather than by a delete, so it does not appear.
+	//   - remove (registry.go), four lines: byID, written, resident,
+	//     removing. launched is cleared via clearLaunched. d.order is pruned by
+	//     the loop below those rather than by a delete, so it does not appear.
 	//   - Remove error branches (registry.go), three lines: removing on
 	//     Cancel, wait worker, or store failure.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
-	//     accessor Finished, Yielded and Stop's sweep all call.
+	//     accessor Finished, Yielded, Stop's sweep and remove all call.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,

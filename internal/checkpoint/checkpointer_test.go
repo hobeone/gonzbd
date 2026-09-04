@@ -243,3 +243,35 @@ func TestCheckpointer_RunTickerFlushError(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 }
+
+func TestCheckpointer_PruneRemovesFromDirtySet(t *testing.T) {
+	st := &recordingStore{}
+	c := New(st, time.Hour, nil)
+
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	b := job.New("b", "B", job.PolicyFromPP(3))
+
+	c.Mark(a)
+	c.Mark(b)
+	if got := c.DirtyCount(); got != 2 {
+		t.Fatalf("DirtyCount before Prune = %d, want 2", got)
+	}
+
+	c.Prune("a")
+	if got := c.DirtyCount(); got != 1 {
+		t.Fatalf("DirtyCount after Prune = %d, want 1", got)
+	}
+
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if len(st.batches) != 1 {
+		t.Fatalf("batches = %d, want 1", len(st.batches))
+	}
+	if got := len(st.batches[0]); got != 1 {
+		t.Fatalf("batch size = %d, want 1 (only b flushed, a was pruned)", got)
+	}
+	if st.batches[0][0].ID != "b" {
+		t.Fatalf("flushed job = %q, want %q", st.batches[0][0].ID, "b")
+	}
+}

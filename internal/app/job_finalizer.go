@@ -110,6 +110,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
 		}
 	}
+	if app.checkpointer != nil && job != nil && job.Job != nil {
+		app.checkpointer.Prune(job.Job.ID())
+	}
 	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
 	_ = os.Remove(manifestPath)
 

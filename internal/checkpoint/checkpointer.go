@@ -52,6 +52,14 @@ func (c *Checkpointer) Mark(j *job.Job) {
 	c.mu.Unlock()
 }
 
+// Prune removes a job from the dirty set so a removed job is not flushed
+// after its durability and state have been cleaned up.
+func (c *Checkpointer) Prune(id string) {
+	c.mu.Lock()
+	delete(c.dirty, id)
+	c.mu.Unlock()
+}
+
 // DirtyCount returns the number of jobs currently marked dirty awaiting flush.
 func (c *Checkpointer) DirtyCount() int {
 	c.mu.Lock()

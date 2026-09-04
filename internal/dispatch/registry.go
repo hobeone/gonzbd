@@ -234,15 +234,10 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 //     forever, so a reused ID is permanently unlaunchable.
 func (d *Dispatcher) remove(id string) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	delete(d.byID, id)
 	delete(d.written, id)
 	delete(d.resident, id)
 	delete(d.removing, id)
-	if ch, ok := d.launched[id]; ok {
-		close(ch)
-		delete(d.launched, id)
-	}
 	// slices.Delete rather than the append-shift idiom: the shift leaves the
 	// vacated tail slot holding its old string header, and d.order lives as
 	// long as the Dispatcher, so a removed job's ID stayed reachable from the
@@ -250,6 +245,8 @@ func (d *Dispatcher) remove(id string) {
 	if i := slices.Index(d.order, id); i >= 0 {
 		d.order = slices.Delete(d.order, i, i+1)
 	}
+	d.mu.Unlock()
+	d.clearLaunched(id)
 }
 
 // Len returns the count of jobs currently registered in the queue.
