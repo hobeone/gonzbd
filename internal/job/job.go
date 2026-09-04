@@ -161,6 +161,13 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // Job does no I/O. It exposes State() and the attempt accessors. The
 // checkpoint package (internal/checkpoint.Checkpointer) reads those and writes
 // the database.
+//
+// Lock Hierarchy:
+// - j.mu is the outer lock (guards lifecycle state, attempts, leases, metadata).
+// - j.contentMu is the inner lock (guards manifest, progress, and article/byte tracking).
+//
+// Code holding j.mu MAY acquire j.contentMu.
+// Code holding j.contentMu must NEVER acquire j.mu.
 type Job struct {
 	mu sync.RWMutex
 

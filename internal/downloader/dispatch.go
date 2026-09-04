@@ -101,11 +101,12 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			continue
 		}
 
+		jobAdded := j.Added()
 		stopAll := false
 		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
 			a := UnfinishedArticle{
 				JobID:       j.ID(),
-				JobAdded:    j.Added(),
+				JobAdded:    jobAdded,
 				FileIdx:     fi,
 				ArtIdx:      artIdx,
 				MessageID:   id,
