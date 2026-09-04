@@ -64,7 +64,10 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 }
 
 // persistAndCommit writes the history entry to the database, removes the job
-// from the dispatcher, and broadcasts the finalization events. Returns a non-nil error if persistence failed and the job was kept for recovery (the error is already logged; callers can simply return).
+// from the dispatcher, and broadcasts the finalization events. Returns a non-nil
+// error if persistence failed; worker resources were released so the job does
+// not leak dispatcher claims, but the history entry failed to persist (the error
+// is already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && job != nil && job.Job != nil {
@@ -75,7 +78,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-			log.Error("failed to add history entry; keeping job for recovery",
+			log.Error("failed to add history entry; worker resources were released but history entry failed to persist",
 				"job", job.Job.ID(), "err", err)
 			app.emit(Event{Type: "queue_updated"})
 			return err
