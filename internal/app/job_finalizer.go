@@ -65,8 +65,12 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 
 // persistAndCommit writes the history entry to the database, removes the job
 // from the dispatcher, and broadcasts the finalization events. Returns a non-nil error if persistence failed and the job was kept for recovery (the error is already logged; callers can simply return).
-func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error { //nocover: orchestrates queue-to-history transition and error fallbacks
+func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
 	app := f.app
+	if app.dispatcher != nil && job != nil && job.Job != nil {
+		_ = app.dispatcher.Cancel(job.Job.ID())
+		_ = app.dispatcher.Yielded(job.Job.ID())
+	}
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
@@ -99,9 +103,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			}
 		}
 	}
-	if app.dispatcher != nil {
-		_ = app.dispatcher.Cancel(job.Job.ID())
-		_ = app.dispatcher.Yielded(job.Job.ID())
+	if app.dispatcher != nil && job != nil && job.Job != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := app.dispatcher.Remove(dbCtx, job.Job.ID()); err != nil {

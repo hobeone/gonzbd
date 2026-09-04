@@ -816,7 +816,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	app.postProcessor.Cancel(id)
 
 	_ = app.dispatcher.Cancel(id)
-	if err := app.dispatcher.Remove(ctx, id); err != nil {
+	removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
 		return err
 	}
 	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", id+".json.gz")
