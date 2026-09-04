@@ -104,13 +104,13 @@ func (d *Dispatcher) Yielded(id string) error {
 // (D-B8) and a concurrent Cancel may have latched IntentCancel. Launching
 // anyway is not a correctness failure — the next tick aborts it — but it starts
 // work the user already cancelled and pays a further tick to stop it.
-func (d *Dispatcher) launch(ctx context.Context, j *job.Job) {
+func (d *Dispatcher) launch(j *job.Job) {
 	v := d.q.Render(j)
 	if !v.Running || v.Intent != job.IntentRun {
 		return
 	}
 	if d.claimLaunched(j.ID()) {
-		d.runner.Run(ctx, j.ID(), v.State)
+		d.runner.Run(d.ctx, j.ID(), v.State)
 	}
 }
 

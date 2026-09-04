@@ -58,7 +58,7 @@ func (d *Dispatcher) tick(ctx context.Context) {
 			d.persistIfChanged(ctx, j)
 			continue
 		}
-		d.launch(ctx, j)
+		d.launch(j)
 		d.persistIfChanged(ctx, j)
 	}
 }

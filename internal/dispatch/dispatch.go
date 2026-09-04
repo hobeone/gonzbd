@@ -93,6 +93,8 @@ type Dispatcher struct {
 	store  Store
 	runner Runner
 
+	ctx       context.Context
+	cancel    context.CancelFunc
 	tickEvery time.Duration
 	stop      chan struct{}
 	done      chan struct{}
@@ -249,6 +251,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	if tickEvery <= 0 {
 		panic("dispatch: New: tick interval must be positive")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Dispatcher{
 		byID:      map[string]*entry{},
 		resident:  map[string]bool{},
@@ -261,6 +264,8 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		res:       r,
 		store:     s,
 		runner:    run,
+		ctx:       ctx,
+		cancel:    cancel,
 		tickEvery: tickEvery,
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
@@ -456,27 +461,30 @@ func (d *Dispatcher) run(ctx context.Context) {
 // sequential — finds it already false and skips straight to the sweep,
 // which never touches d.stop or d.done. stopped is a separate, one-way latch:
 // it is set on every call (there is no "already stopped" branch to take),
-// because Stop's terminal contract holds regardless of how many times it is
-// called or whether the ticker was ever running.
+// so a later Start is refused immediately even if it was queued behind this
+// call.
 //
 // The sweep also clears each job's launched claim and its manifest
-// residency, alongside Park and Evict. Stop is a third worker-exit path
-// beside Finished and Yielded — the ticker goroutine has already stopped by
-// the time the sweep runs (the wait above), so nothing races a launch here —
-// and it must clear the same bookkeeping they do. Now that Stop is terminal,
-// this is no longer about surviving a later Start: it is about leaving the
-// Dispatcher's own bookkeeping consistent and inspectable after shutdown,
-// since this package's tests (and any caller keeping a Stopped Dispatcher
-// around to inspect) drive tick and its helpers directly, and a stale
-// launched or resident entry would be a lie about what the Dispatcher
-// believes is true. Without the resident clear specifically, a job that held
-// a lease when Stop ran would still read as manifest-resident afterward, so a
-// direct tick() call reaching reconcileResidency for it (v.Holds is now
-// false, post-Park) would see d.isResident true and correctly evict — but
-// only because reconcileResidency's own else-branch happens to cover it; the
-// job would never re-hydrate, because the branch that grants residency
-// requires !d.isResident(id) and this entry would already, wrongly, satisfy
-// that.
+// residency, alongside Park and Evict. To strictly discharge Park's
+// precondition ("the caller's worker for j has returned and will not touch
+// the job's lease, slot, manifest or barrier again"), Stop waits for any
+// active worker via waitLaunched under a bounded timeout before
+// parking or evicting. Stop is a third worker-exit path beside Finished and
+// Yielded — the ticker goroutine has already stopped by the time the sweep
+// runs (the wait above), so nothing races a launch here — and it must clear
+// the same bookkeeping they do. Now that Stop is terminal, this is no longer
+// about surviving a later Start: it is about leaving the Dispatcher's own
+// bookkeeping consistent and inspectable after shutdown, since this package's
+// tests (and any caller keeping a Stopped Dispatcher around to inspect) drive
+// tick and its helpers directly, and a stale launched or resident entry would
+// be a lie about what the Dispatcher believes is true. Without the resident
+// clear specifically, a job that held a lease when Stop ran would still read
+// as manifest-resident afterward, so a direct tick() call reaching
+// reconcileResidency for it (v.Holds is now false, post-Park) would see
+// d.isResident true and correctly evict — but only because
+// reconcileResidency's own else-branch happens to cover it; the job would
+// never re-hydrate, because the branch that grants residency requires
+// !d.isResident(id) and this entry would already, wrongly, satisfy that.
 func (d *Dispatcher) Stop() error {
 	// The whole sequence runs once, and every caller waits for it. Reading
 	// the latches under d.mu is enough to make Stop IDEMPOTENT in sequence
@@ -501,12 +509,22 @@ func (d *Dispatcher) Stop() error {
 		d.stopped = true
 		d.mu.Unlock()
 
+		if d.cancel != nil {
+			d.cancel()
+		}
+
 		if wasStarted {
 			close(d.stop)
 			<-d.done
 		}
 
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer waitCancel()
+
 		for _, j := range d.snapshotOrder() {
+			if err := d.waitLaunched(waitCtx, j.ID()); err != nil && d.stopErr == nil {
+				d.stopErr = fmt.Errorf("dispatch: Stop: wait worker %s: %w", j.ID(), err)
+			}
 			if err := d.q.Park(j); err != nil && d.stopErr == nil {
 				d.stopErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
 			}

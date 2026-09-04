@@ -217,3 +217,64 @@ func TestRemove_WaitsForActiveWorkerBeforeEvicting(t *testing.T) {
 		t.Fatal("job must be deregistered after Remove completed")
 	}
 }
+
+func TestStop_WaitsForActiveWorkersBeforeEviction(t *testing.T) {
+	res := &fakeResidency{}
+	runner := &blockingRunner{
+		runCalled:     make(chan struct{}),
+		releaseWorker: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withResidency(res), withRunner(runner))
+	runner.d = d
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Two ticks: first opens attempt, second grants lease, hydrates manifest, and launches worker.
+	d.tick(context.Background())
+	d.tick(context.Background())
+
+	select {
+	case <-runner.runCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker to launch")
+	}
+
+	if !res.resident("j1") {
+		t.Fatal("precondition: manifest must be hydrated while worker is running")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- d.Stop()
+	}()
+
+	// Assert that while releaseWorker is not closed, Stop does not complete
+	// and manifest remains hydrated (not evicted).
+	select {
+	case err := <-stopDone:
+		t.Fatalf("Stop completed prematurely with %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if !res.resident("j1") {
+		t.Fatal("manifest was evicted while worker was still active")
+	}
+
+	// Close releaseWorker to let the worker call Yielded and finish.
+	close(runner.releaseWorker)
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop timed out waiting for worker exit")
+	}
+
+	if res.resident("j1") {
+		t.Fatal("manifest was not evicted after Stop completed")
+	}
+}

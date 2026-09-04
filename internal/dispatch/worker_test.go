@@ -164,7 +164,7 @@ func TestLaunch_DirectCallStartsWhenRunningAndClaimable(t *testing.T) {
 	runner.seen = map[string]bool{}
 	runner.mu.Unlock()
 
-	d.launch(context.Background(), j)
+	d.launch(j)
 
 	if !runner.started(j.ID()) {
 		t.Error("launch did not start the runner for a running, claimable job")
@@ -182,7 +182,7 @@ func TestLaunch_DirectCallSkipsWhenNotRunning(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	d.launch(context.Background(), j)
+	d.launch(j)
 
 	if runner.started(j.ID()) {
 		t.Error("launch started the runner for a job that is not Running")

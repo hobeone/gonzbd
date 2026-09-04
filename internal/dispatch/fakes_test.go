@@ -189,15 +189,25 @@ func (f *fakeStore) deleted(id string) bool {
 type fakeRunner struct {
 	mu   sync.Mutex
 	seen map[string]bool
+	d    *Dispatcher
+	wg   sync.WaitGroup
 }
 
-func (f *fakeRunner) Run(_ context.Context, id string, _ job.State) {
+func (f *fakeRunner) Run(ctx context.Context, id string, _ job.State) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.seen == nil {
 		f.seen = map[string]bool{}
 	}
 	f.seen[id] = true
+	d := f.d
+	f.mu.Unlock()
+
+	if d != nil {
+		f.wg.Go(func() {
+			<-ctx.Done()
+			_ = d.Yielded(id)
+		})
+	}
 }
 
 func (f *fakeRunner) started(id string) bool {
@@ -241,6 +251,15 @@ func newTestDispatcher(t *testing.T, mods ...func(*testOpts)) *Dispatcher {
 	// test that exercises error paths would otherwise print them.
 	d := New(o.leaseCap, o.slotCap, time.Hour, testClock, o.workers, o.res, o.store, o.runner)
 	d.log = slog.New(slog.DiscardHandler)
+	if fr, ok := o.runner.(*fakeRunner); ok {
+		fr.d = d
+	}
+	t.Cleanup(func() {
+		d.cancel()
+		if fr, ok := o.runner.(*fakeRunner); ok {
+			fr.wg.Wait()
+		}
+	})
 	return d
 }
 

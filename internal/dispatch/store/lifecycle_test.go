@@ -26,9 +26,18 @@ type nopResidency struct{}
 func (nopResidency) Hydrate(context.Context, string) error { return nil }
 func (nopResidency) Evict(string)                          {}
 
-type nopRunner struct{}
+type yieldRunner struct {
+	d *dispatch.Dispatcher
+}
 
-func (nopRunner) Run(context.Context, string, job.State) {}
+func (r *yieldRunner) Run(ctx context.Context, id string, _ job.State) {
+	go func() {
+		<-ctx.Done()
+		if r.d != nil {
+			_ = r.d.Yielded(id)
+		}
+	}()
+}
 
 // tickEvery is short because these tests drive the dispatcher through its
 // EXPORTED surface, and persistIfChanged only runs on a tick. internal/dispatch's
@@ -91,8 +100,11 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 	st := store.New(history.NewRepository(db).DB())
 
 	newDispatcher := func() *dispatch.Dispatcher {
-		return dispatch.New(2, 2, tickEvery, time.Now,
-			nopWorkers{}, nopResidency{}, st, nopRunner{})
+		r := &yieldRunner{}
+		d := dispatch.New(2, 2, tickEvery, time.Now,
+			nopWorkers{}, nopResidency{}, st, r)
+		r.d = d
+		return d
 	}
 
 	pol := job.Policy{Verify: true, Repair: true, Unpack: true, Delete: true}
@@ -209,8 +221,11 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 	st := store.New(history.NewRepository(db).DB())
 
 	newDispatcher := func() *dispatch.Dispatcher {
-		return dispatch.New(2, 2, tickEvery, time.Now,
-			nopWorkers{}, nopResidency{}, st, nopRunner{})
+		r := &yieldRunner{}
+		d := dispatch.New(2, 2, tickEvery, time.Now,
+			nopWorkers{}, nopResidency{}, st, r)
+		r.d = d
+		return d
 	}
 	ids := []string{"a", "b", "c"}
 
