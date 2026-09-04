@@ -122,6 +122,9 @@ func (d *Dispatcher) launch(j *job.Job) {
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.removing[id] > 0 || d.byID[id] == nil {
+		return false
+	}
 	if _, ok := d.launched[id]; ok {
 		return false
 	}

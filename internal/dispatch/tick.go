@@ -108,7 +108,7 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	}
 	d.storeMu.Lock()
 	d.mu.Lock()
-	if d.removing[j.ID()] || d.byID[j.ID()] == nil {
+	if d.removing[j.ID()] > 0 || d.byID[j.ID()] == nil {
 		d.mu.Unlock()
 		d.storeMu.Unlock()
 		return
@@ -267,7 +267,7 @@ func (d *Dispatcher) isResident(id string) bool {
 func (d *Dispatcher) markResident(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.removing[id] || d.byID[id] == nil {
+	if d.removing[id] > 0 || d.byID[id] == nil {
 		return
 	}
 	d.resident[id] = true

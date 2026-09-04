@@ -718,9 +718,9 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Setting removing[id] = true manually under lock simulates an in-progress Remove.
+	// Setting removing[id] = 1 manually under lock simulates an in-progress Remove.
 	d.mu.Lock()
-	d.removing["j1"] = true
+	d.removing["j1"] = 1
 	d.mu.Unlock()
 
 	// persistIfChanged must not save or mark written while removing.
@@ -744,6 +744,11 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 		t.Fatal("markWritten recorded job while marked removing")
 	}
 
+	// claimLaunched must not launch while removing.
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded while job was marked removing")
+	}
+
 	// After job is completely removed from byID:
 	d.remove("j1")
 
@@ -755,6 +760,10 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 	d.markWritten(Persisted{ID: "j1"})
 	if _, ok := d.lastWritten("j1"); ok {
 		t.Fatal("markWritten recorded job for a removed job (not in byID)")
+	}
+
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded for a removed job (not in byID)")
 	}
 }
 

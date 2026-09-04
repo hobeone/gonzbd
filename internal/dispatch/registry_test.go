@@ -132,8 +132,19 @@ func TestRemove_PrunesTheResidentAndLaunchedFlags(t *testing.T) {
 	if d.isResident("j1") {
 		t.Error("isResident(j1) = true after remove — a reused ID would never hydrate, since reconcileResidency only hydrates when !isResident")
 	}
+	d.mu.Lock()
+	_, launched := d.launched["j1"]
+	d.mu.Unlock()
+	if launched {
+		t.Error("launched[j1] = true after remove")
+	}
+
+	// Re-add to simulate ID reuse: must be launchable.
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("re-add j1: %v", err)
+	}
 	if !d.claimLaunched("j1") {
-		t.Error("claimLaunched(j1) = false after remove — a reused ID would be permanently unlaunchable")
+		t.Error("claimLaunched(j1) = false after re-register — a reused ID would be permanently unlaunchable")
 	}
 }
 

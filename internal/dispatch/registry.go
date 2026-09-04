@@ -382,18 +382,24 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
 	}
-	d.removing[id] = true
+	d.removing[id]++
 	d.mu.Unlock()
 
 	if err := d.Cancel(id); err != nil {
 		d.mu.Lock()
-		delete(d.removing, id)
+		d.removing[id]--
+		if d.removing[id] <= 0 {
+			delete(d.removing, id)
+		}
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
 	}
 	if err := d.waitLaunched(ctx, id); err != nil {
 		d.mu.Lock()
-		delete(d.removing, id)
+		d.removing[id]--
+		if d.removing[id] <= 0 {
+			delete(d.removing, id)
+		}
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
 	}
@@ -402,7 +408,10 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	d.storeMu.Unlock()
 	if err != nil {
 		d.mu.Lock()
-		delete(d.removing, id)
+		d.removing[id]--
+		if d.removing[id] <= 0 {
+			delete(d.removing, id)
+		}
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
 	}

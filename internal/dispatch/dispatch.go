@@ -62,7 +62,7 @@ type Dispatcher struct {
 	resident map[string]bool
 	launched map[string]chan struct{}
 	written  map[string]Persisted
-	removing map[string]bool
+	removing map[string]int
 
 	// storeMu serializes store writes (Save in persistIfChanged) and
 	// deletions (Delete in Remove and evictCancelledNeverRun) so a concurrent
@@ -257,7 +257,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		resident:  map[string]bool{},
 		launched:  map[string]chan struct{}{},
 		written:   map[string]Persisted{},
-		removing:  make(map[string]bool),
+		removing:  make(map[string]int),
 		q:         sched.New(leaseCap, slotCap, clock, w),
 		wake:      make(chan struct{}, 1),
 		notify:    make(chan struct{}, 1),
@@ -838,7 +838,7 @@ func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 func (d *Dispatcher) markWritten(p Persisted) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.removing[p.ID] || d.byID[p.ID] == nil {
+	if d.removing[p.ID] > 0 || d.byID[p.ID] == nil {
 		return
 	}
 	d.written[p.ID] = p
