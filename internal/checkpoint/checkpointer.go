@@ -13,6 +13,7 @@ package checkpoint
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -95,9 +96,7 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 	}
 	batch := c.dirty
 	c.dirty = make(map[string]*job.Job)
-	for id, j := range batch {
-		c.inFlight[id] = j
-	}
+	maps.Copy(c.inFlight, batch)
 	c.mu.Unlock()
 
 	cps := make([]job.Checkpoint, 0, len(batch))

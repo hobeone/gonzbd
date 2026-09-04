@@ -62,15 +62,17 @@ func TestStoreMuLockNesting_MatchesEnumeration(t *testing.T) {
 				// Check if selector is d.mu or d.storeMu
 				switch inner := sel.X.(type) {
 				case *ast.SelectorExpr:
-					if inner.Sel.Name == "mu" {
+					switch inner.Sel.Name {
+					case "mu":
 						lockName = "mu"
-					} else if inner.Sel.Name == "storeMu" {
+					case "storeMu":
 						lockName = "storeMu"
 					}
 				case *ast.Ident:
-					if inner.Name == "mu" {
+					switch inner.Name {
+					case "mu":
 						lockName = "mu"
-					} else if inner.Name == "storeMu" {
+					case "storeMu":
 						lockName = "storeMu"
 					}
 				}
@@ -79,22 +81,25 @@ func TestStoreMuLockNesting_MatchesEnumeration(t *testing.T) {
 					return true
 				}
 
-				if method == "Lock" {
-					if lockName == "storeMu" {
+				switch method {
+				case "Lock":
+					switch lockName {
+					case "storeMu":
 						if inMu {
 							muToStoreMu = append(muToStoreMu, fnName)
 						}
 						inStoreMu = true
-					} else if lockName == "mu" {
+					case "mu":
 						if inStoreMu {
 							storeMuToMu = append(storeMuToMu, fnName)
 						}
 						inMu = true
 					}
-				} else if method == "Unlock" {
-					if lockName == "storeMu" {
+				case "Unlock":
+					switch lockName {
+					case "storeMu":
 						inStoreMu = false
-					} else if lockName == "mu" {
+					case "mu":
 						inMu = false
 					}
 				}

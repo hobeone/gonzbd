@@ -104,13 +104,13 @@ func TestClosureLockMethods_MatchEnumeration(t *testing.T) {
 		}
 	}
 
-	var foundList []string
+	foundList := make([]string, 0, len(found))
 	for k := range found {
 		foundList = append(foundList, k)
 	}
 	slices.Sort(foundList)
 
-	var registeredList []string
+	registeredList := make([]string, 0, len(closureLockMethods))
 	for k := range closureLockMethods {
 		registeredList = append(registeredList, k)
 	}

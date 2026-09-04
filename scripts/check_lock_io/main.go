@@ -421,7 +421,7 @@ func checkFile(path string) ([]finding, error) {
 // does not leak back to affect sibling statements after the branch, which
 // is what lets an early "unlock, log, return" pattern (the repo's own
 // correct idiom) pass cleanly instead of producing a false positive.
-func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commentsByLine map[int]string, lockedFuncs map[string]*ast.FuncDecl, packageFuncs map[string]*ast.FuncDecl) []finding {
+func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commentsByLine map[int]string, lockedFuncs, packageFuncs map[string]*ast.FuncDecl) []finding {
 	deferredFrom := collectDeferredLocks(body)
 
 	w := &walker{
