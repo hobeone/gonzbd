@@ -3027,3 +3027,18 @@ func TestQueueSlot_TransientNilJobPreservesProgress(t *testing.T) {
 		t.Errorf("slot.Bytes = %d, want 1000", slot.Bytes)
 	}
 }
+
+func TestBuildSlot_PercentageClamped(t *testing.T) {
+	// RemainingBytes > Bytes (e.g. torn read or unexpected state) must clamp to 0%, not negative.
+	r := dispatch.Row{
+		ID: "clamped-negative",
+		Header: dispatch.Header{
+			Bytes: 1000,
+		},
+		RemainingBytes: 1500,
+	}
+	slot := buildSlot(r, nil, false, 0, 0, nil, app.JobCheckpointState{})
+	if slot.Percentage != 0 {
+		t.Errorf("slot.Percentage = %d, want 0", slot.Percentage)
+	}
+}

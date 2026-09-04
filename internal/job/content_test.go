@@ -577,6 +577,9 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	if got := jUnattached.Par2ReleaseReason(); got != "" {
 		t.Errorf("Par2ReleaseReason() = %q, want empty", got)
 	}
+	if exp, rem, fail := jUnattached.ProgressFigures(); exp != 0 || rem != 0 || fail != 0 {
+		t.Errorf("ProgressFigures() = (%d, %d, %d), want (0, 0, 0)", exp, rem, fail)
+	}
 
 	// 2. Attached job returns proper values matching progress
 	m := NewManifest([]JobFile{
@@ -618,6 +621,9 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	}
 	if got := j.FailedBytes(); got != 0 {
 		t.Errorf("FailedBytes() = %d, want 0", got)
+	}
+	if exp, rem, fail := j.ProgressFigures(); exp != 100 || rem != 100 || fail != 0 {
+		t.Errorf("ProgressFigures() = (%d, %d, %d), want (100, 100, 0)", exp, rem, fail)
 	}
 	if got := j.ContentFailedBytes(); got != 0 {
 		t.Errorf("ContentFailedBytes() = %d, want 0", got)
@@ -663,6 +669,9 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	}
 	if got := j.ContentFailedBytes(); got != 50 {
 		t.Errorf("ContentFailedBytes() = %d, want 50", got)
+	}
+	if exp, rem, fail := j.ProgressFigures(); exp != j.ExpectedBytes() || rem != j.RemainingBytes() || fail != j.FailedBytes() {
+		t.Errorf("ProgressFigures() = (%d, %d, %d), want (%d, %d, %d)", exp, rem, fail, j.ExpectedBytes(), j.RemainingBytes(), j.FailedBytes())
 	}
 	if got := j.Par2ReleaseReason(); got == "" {
 		t.Error("Par2ReleaseReason() is empty after par2 release")

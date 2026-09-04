@@ -282,6 +282,28 @@ func TestDurableBytesOf_IsSafeOnAJobWithNoProgress(t *testing.T) {
 	}
 }
 
+type mockProgressCounters struct {
+	expected, remaining, failed int64
+}
+
+func (m mockProgressCounters) ProgressFigures() (int64, int64, int64) {
+	return m.expected, m.remaining, m.failed
+}
+func (m mockProgressCounters) ExpectedBytes() int64      { return m.expected }
+func (m mockProgressCounters) FailedBytes() int64        { return m.failed }
+func (m mockProgressCounters) RemainingBytes() int64     { return m.remaining }
+func (m mockProgressCounters) ContentFailedBytes() int64 { return m.failed }
+
+func TestDurableBytesOf_ClampsNegativeValues(t *testing.T) {
+	t.Parallel()
+	// When remaining exceeds expected due to an interleaving or torn read,
+	// the result must clamp to 0 rather than reporting negative bytes.
+	p := mockProgressCounters{expected: 100, remaining: 200, failed: 0}
+	if got := DurableBytesOf(p); got != 0 {
+		t.Errorf("DurableBytesOf(torn) = %d, want 0", got)
+	}
+}
+
 // TestCheckpointState_ComposesTheThreeSourcesForOneJob pins the single-job form
 // the whole-queue snapshot and JobDurability both build on. The three figures
 // come from three different maps under two different locks, and a job that has

@@ -62,6 +62,8 @@ func (app *Application) DownloadDirFreeBytes(ctx context.Context) (int64, error)
 // TestDownloadDirWriteSpeedMBPerSec runs a bounded disk write-speed test
 // against the configured download directory. Backs the status page's
 // on-demand "Test Disk Speed" action.
+//
+//testdouble:allow SABnzbd test_download_dir_write_speed API implementation
 func (app *Application) TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error) {
 	const testSizeBytes = 64 * 1024 * 1024 // 64 MiB
 	return assembler.WriteSpeedMBPerSec(ctx, app.downloadDir(), testSizeBytes)
@@ -270,6 +272,7 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 
 // ProgressByteCounters is the subset of JobProgress that DurableBytesOf requires.
 type ProgressByteCounters interface {
+	ProgressFigures() (expected, remaining, failed int64)
 	ExpectedBytes() int64
 	FailedBytes() int64
 	RemainingBytes() int64
@@ -293,5 +296,10 @@ func DurableBytesOf(p ProgressByteCounters) int64 {
 	if p == nil {
 		return 0
 	}
-	return p.ExpectedBytes() - p.FailedBytes() - p.RemainingBytes()
+	expected, remaining, failed := p.ProgressFigures()
+	durable := expected - failed - remaining
+	if durable < 0 {
+		return 0
+	}
+	return durable
 }

@@ -403,19 +403,24 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // application rather than in the queue, snapshotted once per request.
 func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
 	// remainingBytes is initialized from r.RemainingBytes, which the Dispatcher
-	// captured atomically at listing time. If the job was unregistered between
+	// captured at listing time. If the job was unregistered between
 	// List() and Job(r.ID) (a transient race window), we retain that snapshot
 	// rather than resetting to Header.Bytes so progress never falsely flashes 0%.
 	totalBytes := r.Header.Bytes
 	remainingBytes := r.RemainingBytes
+	var failedBytes int64
 	if j != nil && j.HasProgress() {
-		totalBytes = j.ExpectedBytes()
-		remainingBytes = j.RemainingBytes()
+		totalBytes, remainingBytes, failedBytes = j.ProgressFigures()
 	}
 
 	var pct int
 	if totalBytes > 0 {
 		pct = int(100 * (totalBytes - remainingBytes) / totalBytes)
+		if pct < 0 {
+			pct = 0
+		} else if pct > 100 {
+			pct = 100
+		}
 	}
 
 	displayStatus := r.Status()
@@ -430,7 +435,6 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		etaStr = timeleft
 	}
 
-	var failedBytes int64
 	var repairState job.RepairState
 	var recoveryBytes int64
 	var recoveryFiles int
@@ -447,7 +451,6 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		currentFile = firstIncompleteFile(j)
 		par2Held = j.UsesOnDemandPar2()
 		if j.HasProgress() {
-			failedBytes = j.FailedBytes()
 			pendingArticles = j.PendingArticles()
 			par2ReleaseReason = j.Par2ReleaseReason()
 			durableBytes = app.DurableBytesOf(j)

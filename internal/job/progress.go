@@ -543,6 +543,20 @@ func (p *JobProgress) ExpectedBytes() int64 {
 	return expected
 }
 
+// ProgressFigures returns (expected, remaining, failed) bytes in a single pass
+// over the file progress entries.
+//
+// Computing them together under one lock acquisition prevents torn values
+// where expected, remaining, or failed bytes drift across concurrent updates
+// (such as article failure or on-demand par2 release).
+func (p *JobProgress) ProgressFigures() (expected, remaining, failed int64) {
+	if p == nil {
+		return 0, 0, 0
+	}
+	expected, remaining = p.sizeFigures()
+	return expected, remaining, p.failedBytes
+}
+
 // ServerStats returns a defensive copy, matching cloneJob's current
 // maps.Copy behavior — callers cannot mutate the job's live map through it.
 func (p *JobProgress) ServerStats() map[string]int64 {

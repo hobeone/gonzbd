@@ -148,10 +148,11 @@ type fakeProgressCounters struct {
 	exp     int64
 }
 
-func (f fakeProgressCounters) FailedBytes() int64        { return f.failed }
-func (f fakeProgressCounters) ContentFailedBytes() int64 { return f.content }
-func (f fakeProgressCounters) ExpectedBytes() int64      { return f.exp }
-func (f fakeProgressCounters) RemainingBytes() int64     { return 0 }
+func (f fakeProgressCounters) ProgressFigures() (int64, int64, int64) { return f.exp, 0, f.failed }
+func (f fakeProgressCounters) FailedBytes() int64                     { return f.failed }
+func (f fakeProgressCounters) ContentFailedBytes() int64              { return f.content }
+func (f fakeProgressCounters) ExpectedBytes() int64                   { return f.exp }
+func (f fakeProgressCounters) RemainingBytes() int64                  { return 0 }
 
 func TestFailMsgForCounters_Direct(t *testing.T) {
 	t.Parallel()

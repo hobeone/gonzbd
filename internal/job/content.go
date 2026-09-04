@@ -106,6 +106,21 @@ func (j *Job) HasProgress() bool {
 	return j.progress != nil
 }
 
+// ProgressFigures returns (expected, remaining, failed) bytes under a single
+// contentMu.RLock() acquisition, or (0, 0, 0) if progress is not resident.
+//
+// Callers computing differences (such as downloaded = expected - failed - remaining)
+// or completion percentages should call this rather than separate point reads to
+// prevent observing torn states across concurrent article updates or par2 releases.
+func (j *Job) ProgressFigures() (expected, remaining, failed int64) {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return 0, 0, 0
+	}
+	return j.progress.ProgressFigures()
+}
+
 // ExpectedBytes returns what the job is expected to fetch, or 0 if progress is not resident.
 func (j *Job) ExpectedBytes() int64 {
 	j.contentMu.RLock()

@@ -258,7 +258,8 @@ func (d *Dispatcher) Len() int {
 }
 
 // List composes the queue listing. It takes Queue.mu exactly once, through
-// RenderAll, so every row is from one instant.
+// RenderAll, so every row's scheduler StateView is from one instant.
+// RemainingBytes is read per job from live progress under contentMu.RLock.
 func (d *Dispatcher) List() []Row {
 	d.mu.Lock()
 	ids := make([]string, len(d.order))
