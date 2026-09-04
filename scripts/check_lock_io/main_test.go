@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -533,6 +534,42 @@ func (a *App) SetDir(dir string) {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings — //lockio: comment should suppress, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestSuppressionComment_BareRequiresReason(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (a *App) SetDir(dir string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dir = dir
+	a.log.Info("dir updated", "dir", dir) //lockio:
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	// Expect 2 findings: bare comment violation AND unsuppressed I/O call
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings for bare //lockio: (reason required + unsuppressed I/O), got %d: %v", len(findings), findings)
+	}
+	hasReasonError := false
+	hasIOError := false
+	for _, f := range findings {
+		if strings.Contains(f.desc, "//lockio: requires a reason") {
+			hasReasonError = true
+		}
+		if strings.Contains(f.desc, "I/O call while holding lock") {
+			hasIOError = true
+		}
+	}
+	if !hasReasonError {
+		t.Errorf("expected finding with reason requirement, got: %v", findings)
+	}
+	if !hasIOError {
+		t.Errorf("expected finding for unsuppressed I/O call, got: %v", findings)
 	}
 }
 

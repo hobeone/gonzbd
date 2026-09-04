@@ -435,7 +435,7 @@ func TestCheckSource_StructuralDurableProofCheck(t *testing.T) {
 		contains string
 	}{
 		{
-			name: "exported func returning DurableProof in internal/durability outside barrier.go",
+			name: "exported func returning DurableProof in internal/durability",
 			path: "internal/durability/helper.go",
 			src: `package durability
 
@@ -444,10 +444,10 @@ func MintProof(jobID string) DurableProof {
 }
 `,
 			expected: 1,
-			contains: "structural encapsulation violation: exported function MintProof in internal/durability outside barrier.go returns DurableProof",
+			contains: "structural encapsulation violation: exported function MintProof in internal/durability returns DurableProof",
 		},
 		{
-			name: "exported method returning *DurableProof in internal/durability outside barrier.go",
+			name: "exported method returning *DurableProof in internal/durability",
 			path: "internal/durability/helper.go",
 			src: `package durability
 
@@ -458,7 +458,55 @@ func (f *Factory) Build() *DurableProof {
 }
 `,
 			expected: 1,
-			contains: "structural encapsulation violation: exported method Build in internal/durability outside barrier.go returns DurableProof",
+			contains: "structural encapsulation violation: exported method Build in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning []DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func BatchProofs() []DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function BatchProofs in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning map[string]DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func MapProofs() map[string]DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function MapProofs in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning []*DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func BatchPtrProofs() []*DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function BatchPtrProofs in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning map[string]*DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func MapPtrProofs() map[string]*DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function MapPtrProofs in internal/durability returns DurableProof",
 		},
 		{
 			name: "unexported func returning DurableProof in internal/durability is allowed",
@@ -472,7 +520,7 @@ func unexportedProof() DurableProof {
 			expected: 0,
 		},
 		{
-			name: "exported func returning DurableProof inside barrier.go is allowed",
+			name: "exported func returning DurableProof inside barrier.go is flagged (no carve-out)",
 			path: "internal/durability/barrier.go",
 			src: `package durability
 
@@ -480,7 +528,8 @@ func (b *Barrier) FinalProof() DurableProof {
 	return DurableProof{}
 }
 `,
-			expected: 0,
+			expected: 1,
+			contains: "structural encapsulation violation: exported method FinalProof in internal/durability returns DurableProof",
 		},
 		{
 			name: "exported func returning DurableProof in file with test build tag is allowed",

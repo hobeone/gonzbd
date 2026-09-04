@@ -214,13 +214,12 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	}
 
 	// 2) Structural DurableProof encapsulation check:
-	// In internal/durability: any exported function or method outside barrier.go
-	// that returns DurableProof in a non-test file without a test build tag is flagged as a violation.
+	// In internal/durability: NO exported function or method in a non-test file
+	// without a test build tag may return DurableProof.
 	// (This structurally closes the class of bug from Round 3 B2 regardless of function name spelling).
 	cleanPath := filepath.Clean(filepath.ToSlash(path))
 	isDurabilityPkg := strings.HasPrefix(cleanPath, "internal/durability/") || cleanPath == "internal/durability"
-	isBarrierFile := filepath.Base(cleanPath) == "barrier.go"
-	if !hasTestBuildTag && isDurabilityPkg && !isBarrierFile {
+	if !hasTestBuildTag && isDurabilityPkg {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Name == nil || !fn.Name.IsExported() || fn.Type == nil || fn.Type.Results == nil {
@@ -235,7 +234,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 					findings = append(findings, finding{
 						file: path,
 						line: fset.Position(fn.Pos()).Line,
-						desc: fmt.Sprintf("structural encapsulation violation: exported %s %s in internal/durability outside barrier.go returns DurableProof", kind, fn.Name.Name),
+						desc: fmt.Sprintf("structural encapsulation violation: exported %s %s in internal/durability returns DurableProof", kind, fn.Name.Name),
 					})
 					break
 				}
@@ -366,6 +365,10 @@ func returnsDurableProof(expr ast.Expr) bool {
 		return t.Sel.Name == "DurableProof"
 	case *ast.StarExpr:
 		return returnsDurableProof(t.X)
+	case *ast.ArrayType:
+		return returnsDurableProof(t.Elt)
+	case *ast.MapType:
+		return returnsDurableProof(t.Value)
 	default:
 		return false
 	}

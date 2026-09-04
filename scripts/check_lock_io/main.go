@@ -27,12 +27,15 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 
 	"github.com/hobeone/gonzbd/scripts/gitscope"
 )
+
+var lockioAllowRe = regexp.MustCompile(`lockio:\s+\S+`)
 
 // loggerMethods are *slog.Logger-shaped method names. Matched by name alone
 // (no type information), so a false positive is possible if some other type
@@ -387,10 +390,18 @@ func checkFile(path string) ([]finding, error) {
 	}
 
 	commentsByLine := make(map[int]string)
+	var findings []finding
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			line := fset.Position(c.Pos()).Line
 			commentsByLine[line] += " " + c.Text
+			if strings.Contains(c.Text, "lockio:") && !lockioAllowRe.MatchString(c.Text) {
+				findings = append(findings, finding{
+					file: path,
+					line: line,
+					desc: "//lockio: requires a reason (e.g. //lockio: <reason>)",
+				})
+			}
 		}
 	}
 
@@ -399,7 +410,6 @@ func checkFile(path string) ([]finding, error) {
 	lockedFuncs := lockedFuncsInPackage(filepath.Dir(path))
 	packageFuncs := packageFuncsInPackage(filepath.Dir(path))
 
-	var findings []finding
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -990,7 +1000,7 @@ func (w *walker) report(start, end token.Pos, desc string) {
 	startLine := w.fset.Position(start).Line
 	endLine := w.fset.Position(end).Line
 	for line := startLine; line <= endLine; line++ {
-		if strings.Contains(w.commentsByLine[line], "lockio:") {
+		if lockioAllowRe.MatchString(w.commentsByLine[line]) {
 			return
 		}
 	}

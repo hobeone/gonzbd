@@ -74,8 +74,8 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
 // unlinking, durability cleanup, and barrier state reset) is always attempted
 // regardless of history persistence success. If dispatcher.Remove returns an
-// error, the error is logged and returned while the job remains registered for
-// retry or caller handling.
+// error, the error is logged while the job remains registered for retry or
+// caller handling.
 //
 // Durability rows for a failed job are owned by the retry path and must never
 // be deleted here. Furthermore, if history persistence fails against a
