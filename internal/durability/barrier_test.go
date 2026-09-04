@@ -486,9 +486,9 @@ func TestRouteFault(t *testing.T) {
 	}
 }
 
-func TestNewTestDurableProof(t *testing.T) {
+func TestNewProof(t *testing.T) {
 	t.Parallel()
-	proof := NewTestDurableProof("job-123", []int32{1, 2, 3})
+	proof := newProof("job-123", []int32{1, 2, 3})
 	if proof.JobID() != "job-123" {
 		t.Errorf("JobID = %q, want job-123", proof.JobID())
 	}

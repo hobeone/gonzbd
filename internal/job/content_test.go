@@ -122,7 +122,7 @@ func TestJob_ContentMethods(t *testing.T) {
 	}
 
 	// AckDurable
-	proof := durability.NewTestDurableProof(j.ID(), []int32{0, 99})
+	proof := mintProof(t, j.ID(), []int32{0, 99})
 	inv, nArt, err := j.AckDurable(proof)
 	if err != nil || inv != 1 || nArt != 3 {
 		t.Fatalf("AckDurable = inv:%d, nArt:%d, err:%v; want inv:1, nArt:3, nil", inv, nArt, err)
