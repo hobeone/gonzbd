@@ -776,7 +776,6 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 				_ = s.dispatcher.PauseJob(id)
 			} else {
 				_ = s.dispatcher.ResumeJob(id)
-				s.dispatcher.Tick(r.Context())
 			}
 			if row, ok := s.dispatcher.Row(id); ok {
 				name = row.Header.Name
