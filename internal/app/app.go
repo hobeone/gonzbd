@@ -243,6 +243,9 @@ type Application struct {
 	// just before its barrier. Same discipline as checkpointHook.
 	jobCheckpointHook func(context.Context)
 
+	// postProcStopHook, when non-nil, overrides postProcessor.Stop during Shutdown.
+	postProcStopHook func() error
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -1285,16 +1288,29 @@ func (app *Application) Shutdown() error {
 		errs = append(errs, fmt.Errorf("wg wait: %w", err))
 	}
 
-	ppErr := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log)
+	ppStopFn := app.postProcessor.Stop
+	if app.postProcStopHook != nil {
+		ppStopFn = app.postProcStopHook
+	}
+	ppErr := waitBounded("postprocessor", stepTimeout, ppStopFn, app.log)
 	if ppErr != nil {
 		errs = append(errs, fmt.Errorf("postprocessor stop: %w", ppErr))
 	}
-	// Yield active post-processing rows only if post-processor stopped cleanly.
-	// If ppErr is non-nil (timed out), do NOT yield so Dispatcher.Stop skips eviction.
-	if ppErr == nil && app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
-				_ = app.dispatcher.Yielded(row.ID)
+	if app.dispatcher != nil {
+		if ppErr == nil {
+			for _, row := range app.dispatcher.List() {
+				if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
+					_ = app.dispatcher.Yielded(row.ID)
+				}
+			}
+		} else {
+			// Postprocessor timed out. Any job still actively finalizing had its
+			// launch claim latch cleared by persistAndCommit before history I/O.
+			// Re-claim launched so Dispatcher.Stop skips eviction for in-flight jobs.
+			for _, row := range app.dispatcher.List() {
+				if app.finalizer != nil && app.finalizer.isInFlight(row.ID) {
+					_ = app.dispatcher.ClaimLaunched(row.ID)
+				}
 			}
 		}
 	}

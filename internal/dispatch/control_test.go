@@ -389,3 +389,15 @@ outer:
 		t.Fatal("worker context did not receive cancellation from parent context")
 	}
 }
+
+func TestSetStopTimeout(t *testing.T) {
+	t.Parallel()
+	d := newTestDispatcher(t)
+	d.SetStopTimeout(50 * time.Millisecond)
+	d.mu.Lock()
+	got := d.stopTimeout
+	d.mu.Unlock()
+	if got != 50*time.Millisecond {
+		t.Fatalf("stopTimeout = %v, want 50ms", got)
+	}
+}

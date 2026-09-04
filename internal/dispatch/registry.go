@@ -365,8 +365,8 @@ func (d *Dispatcher) ResumeJob(id string) error {
 	return nil
 }
 
-// Remove cancels a job, waits for any in-flight worker to exit, deletes its
-// persisted row and deregisters it.
+// Remove cancels a job, waits for its launch claim latch to be cleared via
+// waitLaunched, deletes its persisted row and deregisters it.
 //
 // The order is deliberate: Cancel first so sched reclaims the lease and the
 // compute slot while the job is still registered. Deregistering first would

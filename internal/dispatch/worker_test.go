@@ -133,14 +133,14 @@ func TestClaimLaunched_ClaimsOnce(t *testing.T) {
 	if err := d.Add(j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if !d.claimLaunched("j1") {
+	if !d.ClaimLaunched("j1") {
 		t.Fatal("first claim should succeed")
 	}
-	if d.claimLaunched("j1") {
+	if d.ClaimLaunched("j1") {
 		t.Fatal("second claim before clear should fail")
 	}
 	d.clearLaunched("j1")
-	if !d.claimLaunched("j1") {
+	if !d.ClaimLaunched("j1") {
 		t.Fatal("claim after clearLaunched should succeed")
 	}
 }

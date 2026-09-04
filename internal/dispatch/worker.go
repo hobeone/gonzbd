@@ -14,22 +14,23 @@ import (
 // Cancelled, and a worker allowed to report it could make any exit look like a
 // user deletion.
 //
-// The launched claim is cleared by a deferred call, covering every return
-// path, not one written after Settle's success line. A call to Finished
-// happens only after the Runner's Run invocation has already returned — that
-// is what a worker calling Finished means — so the claim it made in launch is
-// stale the moment Finished is entered, whether or not Settle goes on to
-// succeed. Clearing only on success would leave launched[id] set forever
+// The launched claim latch is cleared by clearLaunched, covering every return
+// path, not one written after Settle's success line. For runner workers,
+// Finished is called by the worker goroutine after Run returns, so the claim
+// it made in launch is stale the moment Finished is entered, whether or not
+// Settle goes on to succeed. External callers call it explicitly to release the
+// launch claim without waiting for goroutine teardown.
+// Clearing only on success would leave launched[id] set forever
 // after a Settle failure (a refused Finish, a failed reclaim identity audit)
 // or the OutcomeCancelled rejection above: the job would then be permanently
 // unlaunchable, since claimLaunched never returns true for an ID already set.
-// Clearing unconditionally BEFORE calling Settle, instead of deferring, would
-// be wrong the other way: a concurrent tick's launch reads Render(j).Running
-// from Queue state, which Settle has not yet changed, so it could observe the
-// job still Running with the claim already clear and start a second worker on
-// resources the first has not yet released. The defer is what makes the clear
-// land after Settle has run — so Running (if it changes) has already changed
-// — while still being unconditional on Settle's outcome.
+// Clearing unconditionally BEFORE calling Settle would be wrong the other way:
+// a concurrent tick's launch reads Render(j).Running from Queue state, which
+// Settle has not yet changed, so it could observe the job still Running with
+// the claim already clear and start a second worker on resources the first has
+// not yet released. Clearing after Settle has run ensures Running (if it
+// changes) has already changed, while still being unconditional on Settle's
+// outcome.
 func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 	j, ok := d.lookup(id)
 	if !ok {
@@ -72,15 +73,16 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 // from a yielded one, and stripping a live worker is the worse failure. Only
 // the dispatcher knows which it is.
 //
-// The launched claim is cleared by a deferred call, for the same reason as
-// Finished: a call to Yielded means the Runner's Run invocation has already
-// returned, so the claim is stale on entry regardless of whether Park
-// succeeds. Clearing only after a successful Park would strand the claim
-// forever on a Park failure, making the job permanently unlaunchable;
-// clearing before calling Park would let a concurrent tick's launch observe
-// the job still Running (Park has not yet released it) with the claim
-// already free, and start a second worker on resources the first has not yet
-// surrendered.
+// The launched claim latch is cleared via clearLaunched(id),
+// for the same reason as Finished: for runner workers, Yielded is called after
+// Run returns or when yielding mid-pipeline, so the claim is stale on entry
+// regardless of whether Park succeeds. External callers call it explicitly to
+// release the launch claim without waiting for goroutine teardown.
+// Clearing only after a successful Park would strand the claim forever on a
+// Park failure, making the job permanently unlaunchable; clearing before
+// calling Park would let a concurrent tick's launch observe the job still
+// Running (Park has not yet released it) with the claim already free, and start
+// a second worker on resources the first has not yet surrendered.
 func (d *Dispatcher) Yielded(id string) error {
 	j, ok := d.lookup(id)
 	if !ok {
@@ -135,6 +137,12 @@ func (d *Dispatcher) claimLaunched(id string) bool {
 	return true
 }
 
+// ClaimLaunched sets the launched claim latch for id if it is registered
+// and not removing or already launched. Reports whether the claim was set.
+func (d *Dispatcher) ClaimLaunched(id string) bool {
+	return d.claimLaunched(id)
+}
+
 func (d *Dispatcher) clearLaunched(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -144,8 +152,8 @@ func (d *Dispatcher) clearLaunched(id string) {
 	}
 }
 
-// waitLaunched waits for any active worker for id to complete (exit and call
-// Finished or Yielded). Returns nil immediately if no worker is launched.
+// waitLaunched waits for the job's launch claim latch to be cleared (by a call
+// to Finished or Yielded). Returns nil immediately if no worker is launched.
 func (d *Dispatcher) waitLaunched(ctx context.Context, id string) error {
 	d.mu.Lock()
 	ch := d.launched[id]

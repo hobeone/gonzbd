@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -23,15 +24,20 @@ import (
 // deleted; it is now the NZB backup plus the per-file progress MoveToHistory
 // retains for failed jobs only.
 //
-// It holds *Application only for read-only, construction-immutable dependencies
+// It holds *Application for read-only, construction-immutable dependencies
 // (config, historyRepo, dispatcher, postProcComplete, ctx, log, emit,
-// notifyDispatcher); it introduces no lock of its own.
+// notifyDispatcher). mu protects inFlight tracking of active finalizations.
 type jobFinalizer struct {
-	app *Application
+	app      *Application
+	mu       sync.Mutex
+	inFlight map[string]struct{}
 }
 
 func newJobFinalizer(app *Application) *jobFinalizer {
-	return &jobFinalizer{app: app}
+	return &jobFinalizer{
+		app:      app,
+		inFlight: make(map[string]struct{}),
+	}
 }
 
 // finalize is called by the post-processor (OnJobDone) when a job is done
@@ -79,6 +85,16 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // Returns a non-nil error if persistence failed (the error is already logged;
 // callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
+	if job != nil && job.Job != nil {
+		f.mu.Lock()
+		f.inFlight[job.Job.ID()] = struct{}{}
+		f.mu.Unlock()
+		defer func() {
+			f.mu.Lock()
+			delete(f.inFlight, job.Job.ID())
+			f.mu.Unlock()
+		}()
+	}
 	app := f.app
 	if app.dispatcher != nil && job != nil && job.Job != nil {
 		_ = app.dispatcher.Cancel(job.Job.ID())
@@ -177,4 +193,11 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		JobName:   entry.Name,
 		Timestamp: time.Now(),
 	})
+}
+
+func (f *jobFinalizer) isInFlight(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.inFlight[id]
+	return ok
 }

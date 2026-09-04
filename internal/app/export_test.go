@@ -94,14 +94,32 @@ func (a *Application) InjectCtx(ctx context.Context) {
 	a.ctx = ctx
 }
 
+// InjectCancel injects a lifecycle cancel function.
+func (a *Application) InjectCancel(cancel context.CancelFunc) {
+	a.cancel = cancel
+}
+
 // SetActiveDU sets the DirectUnpack active count.
 func (a *Application) SetActiveDU(val int32) {
 	a.duOrch.setActive(int(val))
 }
 
+// SetStarted sets the started state for testing.
+func (a *Application) SetStarted(val bool) {
+	a.started.Store(val)
+}
+
 // TriggerFireCompletionNotification calls the finalizer's fireCompletionNotification method.
 func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 	a.finalizer.fireCompletionNotification(entry)
+}
+
+// FinalizerIsInFlight reports whether the given job ID is tracked as in-flight by the finalizer.
+func (a *Application) FinalizerIsInFlight(id string) bool {
+	if a.finalizer == nil {
+		return false
+	}
+	return a.finalizer.isInFlight(id)
 }
 
 // TriggerOnFileComplete invokes the OnFileComplete callback directly for testing.
@@ -223,4 +241,14 @@ func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool, 
 	_, hasMu = a.jobBarrierMu[jobID]
 	_, hasLast = a.lastBarrier[jobID]
 	return
+}
+
+// SetPostProcessorStopHook overrides postProcessor.Stop behavior during testing.
+func (a *Application) SetPostProcessorStopHook(fn func() error) {
+	a.postProcStopHook = fn
+}
+
+// SetShutdownStepTimeout sets the shutdownStepTimeout for testing.
+func (a *Application) SetShutdownStepTimeout(d time.Duration) {
+	a.shutdownStepTimeout = d
 }

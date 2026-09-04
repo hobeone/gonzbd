@@ -185,6 +185,13 @@ func (d *Dispatcher) SlotCap() int {
 	return d.q.SlotCap()
 }
 
+// SetStopTimeout overrides the worker wait timeout during Stop for testing.
+func (d *Dispatcher) SetStopTimeout(timeout time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stopTimeout = timeout
+}
+
 // The three log helpers exist so the tick has exactly one shape for "this job
 // failed, keep walking". A tick must never abandon the rest of the queue
 // because one job errored — that would let a single bad job stall every other,
@@ -468,14 +475,12 @@ func (d *Dispatcher) run(ctx context.Context) {
 // call.
 //
 // The sweep also clears each job's launched claim and its manifest
-// residency, alongside Park and Evict. To strictly discharge Park's
-// precondition ("the caller's worker for j has returned and will not touch
-// the job's lease, slot, manifest or barrier again"), Stop cancels workers
-// and waits via waitLaunched under a total bounded timeout across all jobs
-// before parking or evicting. waitLaunched waits on launched, which is the
-// dispatcher's launch claim latch cleared by whichever path reports the worker
-// exit (e.g. Yielded, Finished). Goroutine draining for external subsystems
-// (downloader, postprocessor) is driven by their respective Stop methods.
+// residency, alongside Park and Evict. Stop cancels workers and waits via
+// waitLaunched under a total bounded timeout across all jobs before parking or
+// evicting. waitLaunched waits on launched, which is the dispatcher's launch
+// claim latch cleared when worker exit or yield is reported (e.g. Yielded,
+// Finished). Worker goroutine draining for external subsystems (downloader,
+// postprocessor) is owned and driven by their respective Stop methods.
 // If the wait times out for a job, Stop records the error and deliberately
 // SKIPS Park and Evict for that job, leaving its resident manifest and
 // scheduler state untouched so the running worker does not experience
@@ -532,7 +537,9 @@ func (d *Dispatcher) Stop() error {
 			<-d.done
 		}
 
+		d.mu.Lock()
 		timeout := d.stopTimeout
+		d.mu.Unlock()
 		if timeout <= 0 {
 			timeout = 15 * time.Second
 		}

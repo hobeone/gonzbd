@@ -287,3 +287,105 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		t.Errorf("expected job barrier state to be forgotten, got bytes=%v mu=%v last=%v", hasBytes, hasMu, hasLast)
 	}
 }
+
+// TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction pins that
+// when the postprocessor times out during shutdown, any job currently in-flight in
+// the finalizer has its launch claim re-asserted so Dispatcher.Stop skips evicting it.
+func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t *testing.T) {
+	t.Parallel()
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test-reclaim-inflight.bin",
+			Bytes:   100,
+		}},
+	}
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "reclaim-inflight-test"})
+	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ppJob := &postproc.Job{
+		Job: qJob,
+	}
+
+	// 1. Acquire an exclusive write lock on the history DB so persistAndCommit blocks
+	// inside historyRepo.Add while holding the finalizer's in-flight registration.
+	tx, err := repo.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	entry := history.Entry{
+		NzoID:  qJob.ID(),
+		Name:   qJob.Name(),
+		Status: "Completed",
+	}
+
+	application.SetStarted(true)
+	shutCtx, shutCancel := context.WithCancel(context.Background())
+	application.InjectCtx(shutCtx)
+	application.InjectCancel(shutCancel)
+
+	finalizerDone := make(chan error, 1)
+	go func() {
+		finalizerDone <- application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
+	}()
+
+	// Wait until the finalizer registers the job as in-flight.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if application.FinalizerIsInFlight(qJob.ID()) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !application.FinalizerIsInFlight(qJob.ID()) {
+		t.Fatal("timed out waiting for finalizer to mark job in-flight")
+	}
+
+	// At this point, persistAndCommit has run:
+	// - f.inFlight[jobID] = struct{}{}
+	// - app.dispatcher.Cancel(jobID)
+	// - app.dispatcher.Yielded(jobID) -> cleared launched claim latch!
+	application.SetPostProcessorStopHook(func() error {
+		// Simulate a step timeout
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	})
+	application.SetShutdownStepTimeout(20 * time.Millisecond)
+	application.Dispatcher().SetStopTimeout(20 * time.Millisecond)
+
+	shutdownErr := application.Shutdown()
+	if shutdownErr == nil {
+		t.Fatal("expected Shutdown to report error due to postprocessor timeout")
+	}
+
+	// Because pp timed out and finalizer had job in flight, Shutdown must have called
+	// ClaimLaunched(jobID), causing Dispatcher.Stop to skip eviction for qJob.
+	if !qJob.Resident() {
+		t.Errorf("expected job %s to remain manifest-resident (eviction skipped), but was evicted", qJob.ID())
+	}
+
+	// Release tx lock so the finalizer goroutine can complete.
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("tx.Commit: %v", err)
+	}
+	<-finalizerDone
+}
