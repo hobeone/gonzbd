@@ -472,10 +472,14 @@ func (d *Dispatcher) run(ctx context.Context) {
 // precondition ("the caller's worker for j has returned and will not touch
 // the job's lease, slot, manifest or barrier again"), Stop cancels workers
 // and waits via waitLaunched under a total bounded timeout across all jobs
-// before parking or evicting. If the wait times out for a job, Stop records
-// the error and deliberately SKIPS Park and Evict for that job, leaving its
-// resident manifest and scheduler state untouched so the running worker does
-// not experience manifest eviction or panics under concurrent access.
+// before parking or evicting. waitLaunched waits on launched, which is the
+// dispatcher's launch claim latch cleared by whichever path reports the worker
+// exit (e.g. Yielded, Finished). Goroutine draining for external subsystems
+// (downloader, postprocessor) is driven by their respective Stop methods.
+// If the wait times out for a job, Stop records the error and deliberately
+// SKIPS Park and Evict for that job, leaving its resident manifest and
+// scheduler state untouched so the running worker does not experience
+// manifest eviction or panics under concurrent access.
 // All wait and park errors are aggregated and returned via errors.Join.
 //
 // Stop is a third worker-exit path beside Finished and
@@ -516,10 +520,11 @@ func (d *Dispatcher) Stop() error {
 		wasStarted := d.started
 		d.started = false
 		d.stopped = true
+		cancel := d.cancel
 		d.mu.Unlock()
 
-		if d.cancel != nil {
-			d.cancel()
+		if cancel != nil {
+			cancel()
 		}
 
 		if wasStarted {
@@ -546,7 +551,9 @@ func (d *Dispatcher) Stop() error {
 			if err := d.q.Park(j); err != nil {
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err))
 			}
-			d.persistIfChanged(context.Background(), j)
+			persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			d.persistIfChanged(persistCtx, j)
+			persistCancel()
 			d.res.Evict(j.ID())
 			d.markNotResident(j.ID())
 			d.clearLaunched(j.ID())

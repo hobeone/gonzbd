@@ -19,6 +19,12 @@ type reporter interface {
 // appRunner routes a job at one state to the subsystem that does that state's
 // work, and returns immediately.
 //
+// runAssess executes work synchronously in-goroutine and passes ctx to
+// maybeReleaseRecoveryVolumes(ctx, id). runFetch and runPostProc hand off work
+// to downstream subsystem pools (downloader and postProcessor), whose cancellation
+// and worker drains are owned by their respective Stop methods during
+// Application.Shutdown.
+//
 // Every branch must end in exactly one Finished or Yielded, on some goroutine.
 // Returning without either strands the job's lease and compute slot: the Queue
 // cannot distinguish "holding and working" from "holding and yielded", so
@@ -80,6 +86,9 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 	}
 }
 
+// runFetch hands off work to the downstream downloader subsystem pool by poking
+// dl.Wake(). Downloader worker goroutines are cancelled and drained by
+// downloader.Stop during Application.Shutdown.
 func (r *appRunner) runFetch(_ context.Context, id string) {
 	if r.app == nil {
 		if r.report != nil {
@@ -108,6 +117,9 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 	}
 }
 
+// runAssess executes assessment work synchronously in-goroutine and passes ctx
+// to maybeReleaseRecoveryVolumes(ctx, id). It directly reports completion or
+// state transition via Yielded or Finished.
 func (r *appRunner) runAssess(ctx context.Context, id string) {
 	if r.app == nil {
 		if r.report != nil {
@@ -158,6 +170,9 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 	}
 }
 
+// runPostProc hands off work to the downstream postProcessor subsystem pool via
+// enqueuePostProc. Post-processor worker goroutines are cancelled and drained by
+// postProcessor.Stop during Application.Shutdown.
 func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 	if r.app == nil {
 		if r.report != nil {

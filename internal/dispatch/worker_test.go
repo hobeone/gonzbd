@@ -417,3 +417,42 @@ func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 		t.Fatal("d.removing[j1] still present after remove")
 	}
 }
+
+// TestWaitLaunched_PrefersClosedChannelOverCancelledContext verifies that when
+// both the worker channel is closed and ctx is expired, waitLaunched prioritizes
+// the closed channel via its pre-select rather than returning ctx.Err() at random.
+func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	for i := range 200 {
+		if !d.claimLaunched("j1") {
+			t.Fatalf("iteration %d: claimLaunched failed", i)
+		}
+		// Close the channel (worker exited).
+		d.clearLaunched("j1")
+
+		// Re-populate launched map with a closed channel to test waitLaunched directly
+		// while id is in launched. Note clearLaunched deletes it from launched, so
+		// re-add a closed channel to test waitLaunched when ch != nil.
+		closedCh := make(chan struct{})
+		close(closedCh)
+		d.mu.Lock()
+		d.launched["j1"] = closedCh
+		d.mu.Unlock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // context is cancelled immediately
+
+		if err := d.waitLaunched(ctx, "j1"); err != nil {
+			t.Fatalf("iteration %d: waitLaunched returned %v, want nil (closed channel must take priority over cancelled context)", i, err)
+		}
+
+		d.mu.Lock()
+		delete(d.launched, "j1")
+		d.mu.Unlock()
+	}
+}

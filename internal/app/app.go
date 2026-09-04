@@ -1261,9 +1261,9 @@ func (app *Application) Shutdown() error {
 	// below. See the field's doc.
 	app.stopping.Store(true)
 
-	// Pause the dispatcher queue immediately so Advance cannot grant new leases,
-	// hydrate manifests, or launch new workers while components are being torn down.
-	// This eliminates shutdown churn between worker yield and dispatcher stop.
+	// Pause the dispatcher queue immediately: sets q.paused, which blocks new
+	// lease/slot grants by Advance and prevents job state moves during teardown,
+	// eliminating state churn between worker yield and dispatcher stop.
 	if app.dispatcher != nil {
 		app.dispatcher.Pause()
 	}
@@ -1300,7 +1300,7 @@ func (app *Application) Shutdown() error {
 	}
 
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Stop(); err != nil {
+		if err := waitBounded("dispatcher", stepTimeout, app.dispatcher.Stop, app.log); err != nil {
 			errs = append(errs, fmt.Errorf("dispatcher stop: %w", err))
 		}
 	}

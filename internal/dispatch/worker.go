@@ -110,7 +110,10 @@ func (d *Dispatcher) launch(j *job.Job) {
 		return
 	}
 	if d.claimLaunched(j.ID()) {
-		d.runner.Run(d.ctx, j.ID(), v.State)
+		d.mu.Lock()
+		runCtx := d.ctx
+		d.mu.Unlock()
+		d.runner.Run(runCtx, j.ID(), v.State)
 	}
 }
 
@@ -149,6 +152,11 @@ func (d *Dispatcher) waitLaunched(ctx context.Context, id string) error {
 	d.mu.Unlock()
 	if ch == nil {
 		return nil
+	}
+	select {
+	case <-ch:
+		return nil
+	default:
 	}
 	select {
 	case <-ch:
