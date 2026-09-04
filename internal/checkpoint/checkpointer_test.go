@@ -275,3 +275,30 @@ func TestCheckpointer_PruneRemovesFromDirtySet(t *testing.T) {
 		t.Fatalf("flushed job = %q, want %q", st.batches[0][0].ID, "b")
 	}
 }
+
+func TestCheckpointer_PruneDuringFlushIsNotReMergedOnFailure(t *testing.T) {
+	st := &failingStore{failsLeft: 1}
+	c := New(st, time.Hour, nil)
+
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	c.Mark(a)
+
+	st.beforeFail = func() {
+		c.Prune("a")
+	}
+
+	if err := c.Flush(context.Background()); !errors.Is(err, errSaveBatchFailed) {
+		t.Fatalf("Flush: got %v, want errSaveBatchFailed", err)
+	}
+
+	if got := c.DirtyCount(); got != 0 {
+		t.Fatalf("DirtyCount after Prune during failed Flush = %d, want 0 (pruned job must not be re-merged)", got)
+	}
+
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatalf("second Flush: %v", err)
+	}
+	if len(st.batches) != 0 {
+		t.Fatalf("batches = %d, want 0 (pruned job must not be flushed on retry)", len(st.batches))
+	}
+}

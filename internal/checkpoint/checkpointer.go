@@ -31,8 +31,10 @@ type Checkpointer struct {
 	every time.Duration
 	log   *slog.Logger
 
-	mu    sync.Mutex
-	dirty map[string]*job.Job
+	flushMu  sync.Mutex
+	mu       sync.Mutex
+	dirty    map[string]*job.Job
+	inFlight map[string]*job.Job
 }
 
 // New constructs a Checkpointer. every is the batch cadence.
@@ -40,7 +42,13 @@ func New(store Store, every time.Duration, log *slog.Logger) *Checkpointer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Checkpointer{store: store, every: every, log: log, dirty: map[string]*job.Job{}}
+	return &Checkpointer{
+		store:    store,
+		every:    every,
+		log:      log,
+		dirty:    map[string]*job.Job{},
+		inFlight: map[string]*job.Job{},
+	}
 }
 
 // Mark records that a job's state has moved and should be written at the next
@@ -52,11 +60,13 @@ func (c *Checkpointer) Mark(j *job.Job) {
 	c.mu.Unlock()
 }
 
-// Prune removes a job from the dirty set so a removed job is not flushed
-// after its durability and state have been cleaned up.
+// Prune removes a job from both the dirty set and any in-flight flush batch
+// so a removed job is not written or re-merged after its durability and state
+// have been cleaned up.
 func (c *Checkpointer) Prune(id string) {
 	c.mu.Lock()
 	delete(c.dirty, id)
+	delete(c.inFlight, id)
 	c.mu.Unlock()
 }
 
@@ -73,8 +83,11 @@ func (c *Checkpointer) DirtyCount() int {
 //
 // A failed SaveBatch does not lose the jobs it was carrying: Flush swaps in a
 // fresh map before writing so marks arriving during the write land in the new
-// map, then on error re-merges the un-remarked jobs back into c.dirty.
+// map, then on error re-merges the un-remarked, un-pruned jobs back into c.dirty.
 func (c *Checkpointer) Flush(ctx context.Context) error {
+	c.flushMu.Lock()
+	defer c.flushMu.Unlock()
+
 	c.mu.Lock()
 	if len(c.dirty) == 0 {
 		c.mu.Unlock()
@@ -82,6 +95,9 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 	}
 	batch := c.dirty
 	c.dirty = make(map[string]*job.Job)
+	for id, j := range batch {
+		c.inFlight[id] = j
+	}
 	c.mu.Unlock()
 
 	cps := make([]job.Checkpoint, 0, len(batch))
@@ -89,17 +105,23 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 		cps = append(cps, j.Checkpoint())
 	}
 
-	if err := c.store.SaveBatch(ctx, cps); err != nil {
-		c.mu.Lock()
+	err := c.store.SaveBatch(ctx, cps)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
 		for id, j := range batch {
-			if _, remarked := c.dirty[id]; !remarked {
-				c.dirty[id] = j
+			if _, stillInFlight := c.inFlight[id]; stillInFlight {
+				if _, remarked := c.dirty[id]; !remarked {
+					c.dirty[id] = j
+				}
 			}
 		}
-		c.mu.Unlock()
-		return err
 	}
-	return nil
+	for id := range batch {
+		delete(c.inFlight, id)
+	}
+	return err
 }
 
 // Run drives the periodic batch until ctx is cancelled, then flushes once more.
