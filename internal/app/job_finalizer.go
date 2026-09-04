@@ -64,26 +64,27 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 }
 
 // persistAndCommit writes the history entry to the database, removes the job
-// from the dispatcher, and broadcasts the finalization events. Returns a non-nil
-// error if persistence failed; worker resources were released so the job does
-// not leak dispatcher claims, but the history entry failed to persist (the error
-// is already logged; callers can simply return).
+// from the dispatcher, and broadcasts the finalization events. Registry and
+// filesystem teardown (checkpointer prune, dispatcher removal, manifest
+// unlinking, durability cleanup, and barrier state reset) always completes
+// regardless of history persistence success so that failed jobs do not leak
+// into the active registry. Returns a non-nil error if persistence failed (the
+// error is already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && job != nil && job.Job != nil {
 		_ = app.dispatcher.Cancel(job.Job.ID())
 		_ = app.dispatcher.Yielded(job.Job.ID())
 	}
+	var persistErr error
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
+		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
 		defer dbCancel()
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-			log.Error("failed to add history entry; worker resources were released but history entry failed to persist",
+			log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
 				"job", job.Job.ID(), "err", err)
-			app.emit(Event{Type: "queue_updated"})
-			return err
-		}
-		if entry.Status == string(constants.StatusFailed) && job != nil && job.Job != nil {
+			persistErr = err
+		} else if entry.Status == string(constants.StatusFailed) && job != nil && job.Job != nil {
 			p := job.Job.Progress()
 			m, _ := job.Job.Manifest()
 			if p != nil && m != nil {
@@ -106,25 +107,29 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			}
 		}
 	}
-	if app.dispatcher != nil && job != nil && job.Job != nil {
-		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		defer dbCancel()
-		if err := app.dispatcher.Remove(dbCtx, job.Job.ID()); err != nil {
-			log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
-		}
-	}
 	if app.checkpointer != nil && job != nil && job.Job != nil {
 		app.checkpointer.Prune(job.Job.ID())
+	}
+	if app.dispatcher != nil && job != nil && job.Job != nil {
+		removeCtx, removeCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
+		defer removeCancel()
+		if err := app.dispatcher.Remove(removeCtx, job.Job.ID()); err != nil {
+			log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
+		}
 	}
 	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
 	_ = os.Remove(manifestPath)
 
-	if entry.Status != string(constants.StatusFailed) {
-		delCtx, delCancel := context.WithTimeout(app.ctx, 5*time.Second)
+	if entry.Status != string(constants.StatusFailed) || persistErr != nil {
+		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
 		app.deleteJobDurability(delCtx, job.Job.ID())
 		delCancel()
 	}
 	app.forgetJobBarrierState(job.Job.ID())
+	if persistErr != nil {
+		app.emit(Event{Type: "queue_updated"})
+		return persistErr
+	}
 	select {
 	case app.postProcComplete <- PostProcComplete{JobID: job.Job.ID()}:
 	default:

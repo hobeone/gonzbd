@@ -1635,7 +1635,7 @@ func TestApp_ShutdownContextInheritance(t *testing.T) {
 		t.Errorf("expected completion notification context to inherit cancellation from parent lifecycle context, got %v", gotErr)
 	}
 
-	// 2. Verify persistAndCommit derives from canceled lifecycle context rather than orphaned context.Background()
+	// 2. Verify persistAndCommit uses WithoutCancel so shutdown finalization succeeds
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
 			Subject: "test.bin",
@@ -1649,8 +1649,11 @@ func TestApp_ShutdownContextInheritance(t *testing.T) {
 	}
 
 	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected persistAndCommit to fail with context.Canceled when parent lifecycle context is canceled, got %v", err)
+	if err != nil {
+		t.Errorf("expected persistAndCommit to succeed using WithoutCancel when parent lifecycle context is canceled, got %v", err)
+	}
+	if _, err := repo.Get(t.Context(), entry.NzoID); err != nil {
+		t.Errorf("expected history entry to be written during shutdown finalization, got %v", err)
 	}
 }
 

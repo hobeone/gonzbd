@@ -14,20 +14,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// TestFinalize_KeepsJobInQueueWhenHistoryWriteFails pins the recovery
-// behaviour of the queue→history transition: if the history write fails, the
-// job stays in the queue so the next attempt can retry it.
-//
-// Dropping it instead would lose the job entirely — it is gone from the queue
-// and never arrived in history. persistAndCommit's error path exists for
-// exactly this, and nothing exercised it: finalize is only ever reached
-// through the live pipeline, where the write does not fail.
-//
-// A duplicate nzo_id is the cheapest way to make MoveToHistory fail for real
-// rather than through an injected fake; history.nzo_id carries a UNIQUE index
-// (migration 001), and a finalize re-run after a crash between commit and
-// Dispatcher.Remove is how it happens in practice.
-func TestFinalize_KeepsJobInQueueWhenHistoryWriteFails(t *testing.T) {
+// TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails pins that when the
+// history write fails during finalization, the job is still removed from the
+// dispatcher and queue teardown completes so that the job does not leak
+// permanently into the active registry.
+func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
 
@@ -81,8 +72,8 @@ func TestFinalize_KeepsJobInQueueWhenHistoryWriteFails(t *testing.T) {
 		DownloadDir: t.TempDir(),
 	})
 
-	if _, ok := application.Dispatcher().Job(job.ID()); !ok {
-		t.Error("job was removed from the queue although its history write failed")
+	if _, ok := application.Dispatcher().Job(job.ID()); ok {
+		t.Error("job remained in the queue although its history write failed; expected teardown to complete")
 	}
 	entry, err := repo.Get(ctx, job.ID())
 	if err != nil {

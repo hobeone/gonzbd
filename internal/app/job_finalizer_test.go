@@ -1,9 +1,12 @@
 package app_test
 
 import (
+	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -15,9 +18,9 @@ import (
 
 // TestFinalizer_PersistError_ReleasesDispatcherResources pins that when
 // historyRepo.Add fails in persistAndCommit, the dispatcher Cancel and Yielded
-// calls were already executed, so the job is latched IntentCancel and yielded,
-// ensuring worker claims are not left stranded and Dispatcher.Remove can
-// complete without hanging indefinitely on waitLaunched.
+// calls were already executed before history persistence was attempted, so the
+// job is latched IntentCancel and yielded, ensuring worker claims are not left
+// stranded while database I/O runs.
 func TestFinalizer_PersistError_ReleasesDispatcherResources(t *testing.T) {
 	t.Parallel()
 	dl := t.TempDir()
@@ -51,8 +54,178 @@ func TestFinalizer_PersistError_ReleasesDispatcherResources(t *testing.T) {
 		Job: qJob,
 	}
 
-	// Insert an existing entry with the same NzoID into historyRepo to trigger
-	// a SQLite UNIQUE constraint violation when persistAndCommit calls Add.
+	// Begin an immediate write transaction and insert an entry with the same NzoID.
+	// This does two things:
+	// 1. It guarantees repo.Add will fail with a UNIQUE constraint violation once unblocked.
+	// 2. Because tx holds SQLite's exclusive write lock, repo.Add will block, allowing us
+	//    to verify that Cancel and Yielded executed BEFORE historyRepo.Add was reached.
+	tx, err := repo.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	existing := history.Entry{
+		NzoID: qJob.ID(),
+		Name:  "already-exists",
+	}
+	if err := repo.AddTx(t.Context(), tx, existing); err != nil {
+		t.Fatalf("repo.AddTx existing: %v", err)
+	}
+
+	entry := history.Entry{
+		NzoID: qJob.ID(),
+		Name:  qJob.Name(),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
+	}()
+
+	// Verify that Cancel was called before history persistence by polling the job's intent
+	// while historyRepo.Add is blocked on tx's write lock.
+	var intent job.Intent
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		intent = qJob.Snapshot().Intent
+		if intent == job.IntentCancel {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if intent != job.IntentCancel {
+		t.Errorf("expected job intent to be IntentCancel before history persistence, got %v", intent)
+	}
+
+	// Commit tx to release the write lock, unblocking repo.Add which now fails on the duplicate key.
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("tx.Commit: %v", err)
+	}
+
+	err = <-errCh
+	if err == nil {
+		t.Fatal("expected persistAndCommit to fail on duplicate NzoID, got nil")
+	}
+
+	// Verify that teardown completed: job is removed from dispatcher despite history persist error.
+	if _, ok := application.Dispatcher().Job(qJob.ID()); ok {
+		t.Errorf("expected job %s to be removed from dispatcher after persist error", qJob.ID())
+	}
+}
+
+// TestFinalizer_ShutdownContext_PersistSucceeds pins that when app.ctx is cancelled
+// before finalization (simulating post-processor drain during shutdown), persistAndCommit
+// protects database writes with context.WithoutCancel and successfully writes history.
+func TestFinalizer_ShutdownContext_PersistSucceeds(t *testing.T) {
+	t.Parallel()
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test-shutdown-drain.bin",
+			Bytes:   100,
+		}},
+	}
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "shutdown-drain-test"})
+	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ppJob := &postproc.Job{
+		Job: qJob,
+	}
+
+	// Cancel application lifecycle context to simulate shutdown drain.
+	ctx, cancel := context.WithCancel(t.Context())
+	application.InjectCtx(ctx)
+	cancel()
+
+	entry := history.Entry{
+		NzoID:  qJob.ID(),
+		Name:   qJob.Name(),
+		Status: "Completed",
+	}
+
+	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
+	if err != nil {
+		t.Fatalf("expected persistAndCommit to succeed using WithoutCancel when app.ctx is canceled, got %v", err)
+	}
+
+	// Verify history entry was written despite canceled app.ctx.
+	if _, err := repo.Get(t.Context(), entry.NzoID); err != nil {
+		t.Errorf("expected history entry to be present after shutdown finalization, got %v", err)
+	}
+
+	// Verify job was removed from dispatcher.
+	if _, ok := application.Dispatcher().Job(qJob.ID()); ok {
+		t.Errorf("expected job %s to be removed from dispatcher after finalization", qJob.ID())
+	}
+}
+
+// TestFinalizer_PersistError_CleanupExecutes pins that when historyRepo.Add fails with
+// an error, dispatcher removal, checkpointer prune, and manifest deletion still execute.
+func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
+	t.Parallel()
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test-cleanup-on-error.bin",
+			Bytes:   100,
+		}},
+	}
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "cleanup-on-error-test"})
+	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ppJob := &postproc.Job{
+		Job: qJob,
+	}
+
+	// Write a manifest file to verify it gets unlinked during cleanup.
+	manifestPath := filepath.Join(admin, "queue", "manifests", qJob.ID()+".json.gz")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, []byte("fake-manifest"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Mark the job in checkpointer so we verify it gets pruned.
+	application.Checkpointer().Mark(qJob)
+	if application.Checkpointer().DirtyCount() != 1 {
+		t.Fatalf("expected 1 dirty job before finalization, got %d", application.Checkpointer().DirtyCount())
+	}
+
+	// Pre-seed duplicate entry so historyRepo.Add fails with a UNIQUE constraint violation.
 	existing := history.Entry{
 		NzoID: qJob.ID(),
 		Name:  "already-exists",
@@ -71,19 +244,18 @@ func TestFinalizer_PersistError_ReleasesDispatcherResources(t *testing.T) {
 		t.Fatal("expected persistAndCommit to fail on duplicate NzoID, got nil")
 	}
 
-	// Verify that Cancel was called by checking the job's intent is IntentCancel
-	dj, ok := application.Dispatcher().Job(qJob.ID())
-	if !ok {
-		t.Fatalf("expected job %s to remain in dispatcher after failed persist", qJob.ID())
-	}
-	if dj.Snapshot().Intent != job.IntentCancel {
-		t.Errorf("expected job intent to be IntentCancel after persist failure, got %v", dj.Snapshot().Intent)
+	// 1. Dispatcher removal still executed.
+	if _, ok := application.Dispatcher().Job(qJob.ID()); ok {
+		t.Errorf("expected job %s to be removed from dispatcher after persist error", qJob.ID())
 	}
 
-	// Verify that dispatcher.Remove can succeed without hanging
-	// (worker claims cleared via Yielded/Cancel)
-	removeCtx := t.Context()
-	if err := application.Dispatcher().Remove(removeCtx, qJob.ID()); err != nil {
-		t.Errorf("expected Dispatcher.Remove to succeed after persist error, got %v", err)
+	// 2. Manifest deletion still executed.
+	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+		t.Errorf("expected manifest %s to be deleted after persist error, got err: %v", manifestPath, err)
+	}
+
+	// 3. Checkpointer prune still executed.
+	if application.Checkpointer().DirtyCount() != 0 {
+		t.Errorf("expected checkpointer dirty count to be 0 after prune, got %d", application.Checkpointer().DirtyCount())
 	}
 }
