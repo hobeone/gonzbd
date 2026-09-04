@@ -346,6 +346,14 @@ func (j *Job) RecoveryBytes() int64 {
 }
 
 // SetRecoveryBytes records the summed size of the job's par2 recovery volumes.
+//
+// Writers of recoveryBytes — `git grep -n 'recoveryBytes\s*=' internal/job/`:
+//   - AttachContent: derives truth from Manifest
+//   - RestoreContent: derives truth from Manifest
+//   - SetRecoveryBytes: restores persisted count from SQLite on startup prior to hydration
+//
+// Manifest hydration (AttachContent/RestoreContent) strictly supersedes any
+// value restored from SQLite via SetRecoveryBytes.
 func (j *Job) SetRecoveryBytes(n int64) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()

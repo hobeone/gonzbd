@@ -33,9 +33,9 @@ type Manifest struct {
 	// array, one longer than files (a final sentinel = total article count).
 	fileArticleOffsets []int
 
-	totalBytes    int64
-	recoveryBytes int64
-	recoveryFiles int
+	totalBytes        int64
+	par2RecoveryBytes int64
+	par2RecoveryFiles int
 }
 
 type manifestFile struct {
@@ -110,7 +110,7 @@ func newManifest(files []JobFile) *Manifest {
 		m.totalBytes += f.Bytes
 	}
 	m.fileArticleOffsets[len(files)] = len(m.articleIDs)
-	m.recoveryBytes, m.recoveryFiles = recoveryFigures(m.files)
+	m.par2RecoveryBytes, m.par2RecoveryFiles = recoveryFigures(m.files)
 	return m
 }
 
@@ -223,11 +223,11 @@ func (m *Manifest) TotalBytes() int64 { return m.totalBytes }
 // exceeding this figure does imply unrepairable, since recovery bytes are at
 // least the slice payload. Damage failing to exceed it implies nothing,
 // because scattered damage destroys more blocks than its byte count suggests.
-func (m *Manifest) RecoveryBytes() int64 { return m.recoveryBytes }
+func (m *Manifest) RecoveryBytes() int64 { return m.par2RecoveryBytes }
 
 // RecoveryFiles returns the count of par2 recovery volumes, excluding the
 // index. See RecoveryBytes.
-func (m *Manifest) RecoveryFiles() int { return m.recoveryFiles }
+func (m *Manifest) RecoveryFiles() int { return m.par2RecoveryFiles }
 
 // manifestJSONArticle is one article's on-disk shape within a manifestJSONFile.
 type manifestJSONArticle struct {

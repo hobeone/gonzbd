@@ -47,6 +47,7 @@ var fieldOwner = map[string]string{
 	"intent":            "Job",
 	"lease":             "Job",
 	"par2ReleaseReason": "JobProgress",
+	"recoveryBytes":     "Job",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -313,6 +314,19 @@ func TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse(t *testing.T)
 		t.Errorf("functions assigning par2ReleaseReason = %v, want %v\n\n"+
 			"the par2ReleaseReason field is owned by JobProgress and may only be written "+
 			"via clearPar2ReleaseReason, restorePar2ReleaseReason, and setPar2ReleaseReason.",
+			writers, want)
+	}
+}
+
+// TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse asserts that the
+// only writers of j.recoveryBytes are AttachContent, RestoreContent, and SetRecoveryBytes.
+func TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "recoveryBytes")
+	want := []string{"AttachContent", "RestoreContent", "SetRecoveryBytes"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning recoveryBytes = %v, want %v\n\n"+
+			"the recoveryBytes field is owned by Job and may only be written "+
+			"via AttachContent, RestoreContent, and SetRecoveryBytes.",
 			writers, want)
 	}
 }
