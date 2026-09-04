@@ -155,3 +155,22 @@ func TestRestoreJobMetadata_Coverage(t *testing.T) {
 		t.Errorf("Par2ReleaseReason = %q, want 'repair needed'", j.Progress().Par2ReleaseReason())
 	}
 }
+
+func TestRestoreJobMetadata_ZeroAddedDoesNotResetToEpoch(t *testing.T) {
+	j := job.New("j1", "Job 1", job.Policy{})
+	origAdded := j.Added()
+	if origAdded.IsZero() {
+		t.Fatal("job.New must assign non-zero created timestamp")
+	}
+
+	p := Persisted{
+		Header: Header{
+			Added: 0,
+		},
+	}
+	restoreJobMetadata(j, p)
+
+	if j.Added() != origAdded {
+		t.Errorf("Added = %v, want original %v (zero Added must not reset to Unix epoch)", j.Added(), origAdded)
+	}
+}
