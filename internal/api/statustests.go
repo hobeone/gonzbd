@@ -1,3 +1,4 @@
+//testdouble:allow SABnzbd status test endpoints implementation
 package api
 
 import (

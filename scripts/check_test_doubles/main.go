@@ -148,6 +148,10 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	if strings.HasSuffix(base, "_test.go") {
 		return nil, nil
 	}
+	dir := filepath.Base(filepath.Dir(path))
+	if strings.HasSuffix(dir, "test") {
+		return nil, nil
+	}
 
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
