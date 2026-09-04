@@ -114,12 +114,13 @@ func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
 	for _, st := range job.AllStates() {
 		t.Run(st.String()+"/StoppingYieldsImmediately", func(t *testing.T) {
 			app := newTestApplication(t)
+			j := buildRunnerJob(t, app, []failMsgFile{{subject: "file.rar", bytes: 100}})
 			app.stopping.Store(true)
 			rec := &reportRecorder{}
 			r := newAppRunner(app)
 			r.report = rec
 
-			r.Run(context.Background(), "any-job", st)
+			r.Run(context.Background(), j.ID(), st)
 			waitFor(t, func() bool { return rec.calls() == 1 })
 			if got := rec.calls(); got != 1 {
 				t.Fatalf("state %s when stopping reported %d times, want exactly 1", st, got)
