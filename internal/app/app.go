@@ -1201,11 +1201,16 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 	app.reloadMu.Unlock()
 	// --- No lock held below this line ---
 
+	var dlErr error
 	if dl != nil {
-		if err := waitBounded("downloader", stepTimeout, dl.Stop, app.log); err != nil && errs != nil {
-			*errs = append(*errs, fmt.Errorf("downloader stop: %w", err))
+		if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
+			*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
 		}
-		if app.dispatcher != nil {
+		// If dl.Stop returned cleanly with no error, all downloader workers have definitely
+		// exited and will not touch manifests or barriers again. Yield Fetching jobs so
+		// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
+		// so Dispatcher.Stop observes wait worker timeout and skips eviction.
+		if dlErr == nil && app.dispatcher != nil {
 			for _, row := range app.dispatcher.List() {
 				if row.View.State == job.Fetching {
 					_ = app.dispatcher.Yielded(row.ID)
@@ -1256,6 +1261,13 @@ func (app *Application) Shutdown() error {
 	// below. See the field's doc.
 	app.stopping.Store(true)
 
+	// Pause the dispatcher queue immediately so Advance cannot grant new leases,
+	// hydrate manifests, or launch new workers while components are being torn down.
+	// This eliminates shutdown churn between worker yield and dispatcher stop.
+	if app.dispatcher != nil {
+		app.dispatcher.Pause()
+	}
+
 	var errs []error
 	stepTimeout := app.shutdownStepTimeout
 	if stepTimeout <= 0 {
@@ -1273,10 +1285,13 @@ func (app *Application) Shutdown() error {
 		errs = append(errs, fmt.Errorf("wg wait: %w", err))
 	}
 
-	if err := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log); err != nil {
-		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
+	ppErr := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log)
+	if ppErr != nil {
+		errs = append(errs, fmt.Errorf("postprocessor stop: %w", ppErr))
 	}
-	if app.dispatcher != nil {
+	// Yield active post-processing rows only if post-processor stopped cleanly.
+	// If ppErr is non-nil (timed out), do NOT yield so Dispatcher.Stop skips eviction.
+	if ppErr == nil && app.dispatcher != nil {
 		for _, row := range app.dispatcher.List() {
 			if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
 				_ = app.dispatcher.Yielded(row.ID)

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,5 +277,115 @@ func TestStop_WaitsForActiveWorkersBeforeEviction(t *testing.T) {
 
 	if res.resident("j1") {
 		t.Fatal("manifest was not evicted after Stop completed")
+	}
+}
+
+func TestStop_WorkerTimeout_SkipsEvictionAndAggregatesErrors(t *testing.T) {
+	res := &fakeResidency{}
+	runner := &blockingRunner{
+		runCalled:     make(chan struct{}),
+		releaseWorker: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withResidency(res), withRunner(runner))
+	runner.d = d
+	d.stopTimeout = 50 * time.Millisecond
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.tick(context.Background())
+	d.tick(context.Background())
+
+	select {
+	case <-runner.runCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker to launch")
+	}
+
+	// Stop without closing releaseWorker: waitLaunched must time out.
+	err := d.Stop()
+	if err == nil {
+		t.Fatal("expected Stop to return error on worker timeout, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "wait worker j1") {
+		t.Fatalf("expected error mentioning wait worker j1, got: %v", err)
+	}
+
+	// Invariant: manifest must NOT be evicted and scheduler resources must NOT be parked
+	// under a live in-flight worker.
+	if !res.resident("j1") {
+		t.Fatal("manifest was evicted despite worker timeout; live worker's manifest was pulled!")
+	}
+	if !d.q.Render(j).Holds {
+		t.Fatal("job was parked despite worker timeout; live worker's lease was revoked!")
+	}
+
+	// Cleanup worker goroutine to avoid leaking into other tests.
+	close(runner.releaseWorker)
+}
+
+type inspectingRunner struct {
+	onRun func(ctx context.Context, id string, state job.State)
+}
+
+func (r *inspectingRunner) Run(ctx context.Context, id string, state job.State) {
+	if r.onRun != nil {
+		r.onRun(ctx, id, state)
+	}
+}
+
+func TestStart_PropagatesContextCancellation(t *testing.T) {
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	workerCtxSeen := make(chan context.Context, 1)
+	runner := &inspectingRunner{
+		onRun: func(ctx context.Context, id string, state job.State) {
+			workerCtxSeen <- ctx
+		},
+	}
+	d := newTestDispatcher(t, withRunner(runner))
+
+	if err := d.Start(parentCtx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer d.Stop() //nolint:errcheck
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	var wCtx context.Context
+outer:
+	for range 50 {
+		d.kick()
+		select {
+		case wCtx = <-workerCtxSeen:
+			break outer
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if wCtx == nil {
+		t.Fatal("worker was not launched")
+	}
+
+	// Verify worker context is not cancelled yet.
+	select {
+	case <-wCtx.Done():
+		t.Fatal("worker context should not be cancelled yet")
+	default:
+	}
+
+	// Cancel parent context.
+	cancel()
+
+	// Verify worker context receives cancellation.
+	select {
+	case <-wCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("worker context did not receive cancellation from parent context")
 	}
 }

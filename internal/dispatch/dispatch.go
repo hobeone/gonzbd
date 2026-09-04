@@ -106,8 +106,9 @@ type Dispatcher struct {
 	// cleared there, so a second Stop entering while the first is still
 	// waiting on d.done reads wasStarted false and would skip the wait.
 	// Every caller now blocks on the same Do and observes the same result.
-	stopOnce sync.Once
-	stopErr  error
+	stopOnce    sync.Once
+	stopErr     error
+	stopTimeout time.Duration
 
 	log *slog.Logger
 }
@@ -253,23 +254,24 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Dispatcher{
-		byID:      map[string]*entry{},
-		resident:  map[string]bool{},
-		launched:  map[string]chan struct{}{},
-		written:   map[string]Persisted{},
-		removing:  make(map[string]int),
-		q:         sched.New(leaseCap, slotCap, clock, w),
-		wake:      make(chan struct{}, 1),
-		notify:    make(chan struct{}, 1),
-		res:       r,
-		store:     s,
-		runner:    run,
-		ctx:       ctx,
-		cancel:    cancel,
-		tickEvery: tickEvery,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		log:       slog.Default(),
+		byID:        map[string]*entry{},
+		resident:    map[string]bool{},
+		launched:    map[string]chan struct{}{},
+		written:     map[string]Persisted{},
+		removing:    make(map[string]int),
+		q:           sched.New(leaseCap, slotCap, clock, w),
+		wake:        make(chan struct{}, 1),
+		notify:      make(chan struct{}, 1),
+		res:         r,
+		store:       s,
+		runner:      run,
+		ctx:         ctx,
+		cancel:      cancel,
+		tickEvery:   tickEvery,
+		stopTimeout: 15 * time.Second,
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		log:         slog.Default(),
 	}
 }
 
@@ -306,6 +308,7 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return errors.New("dispatch: Start: already started")
 	}
 	d.started = true
+	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.mu.Unlock()
 
 	if err := d.restore(ctx); err != nil {
@@ -467,9 +470,15 @@ func (d *Dispatcher) run(ctx context.Context) {
 // The sweep also clears each job's launched claim and its manifest
 // residency, alongside Park and Evict. To strictly discharge Park's
 // precondition ("the caller's worker for j has returned and will not touch
-// the job's lease, slot, manifest or barrier again"), Stop waits for any
-// active worker via waitLaunched under a bounded timeout before
-// parking or evicting. Stop is a third worker-exit path beside Finished and
+// the job's lease, slot, manifest or barrier again"), Stop cancels workers
+// and waits via waitLaunched under a total bounded timeout across all jobs
+// before parking or evicting. If the wait times out for a job, Stop records
+// the error and deliberately SKIPS Park and Evict for that job, leaving its
+// resident manifest and scheduler state untouched so the running worker does
+// not experience manifest eviction or panics under concurrent access.
+// All wait and park errors are aggregated and returned via errors.Join.
+//
+// Stop is a third worker-exit path beside Finished and
 // Yielded — the ticker goroutine has already stopped by the time the sweep
 // runs (the wait above), so nothing races a launch here — and it must clear
 // the same bookkeeping they do. Now that Stop is terminal, this is no longer
@@ -518,21 +527,31 @@ func (d *Dispatcher) Stop() error {
 			<-d.done
 		}
 
-		waitCtx, waitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		timeout := d.stopTimeout
+		if timeout <= 0 {
+			timeout = 15 * time.Second
+		}
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), timeout)
 		defer waitCancel()
 
+		var stopErrs []error
 		for _, j := range d.snapshotOrder() {
-			if err := d.waitLaunched(waitCtx, j.ID()); err != nil && d.stopErr == nil {
-				d.stopErr = fmt.Errorf("dispatch: Stop: wait worker %s: %w", j.ID(), err)
+			if err := d.waitLaunched(waitCtx, j.ID()); err != nil {
+				// Wait timed out or context cancelled. The worker for this job has
+				// not returned. Skip Park and Evict to preserve memory safety and
+				// prevent panics / null dereference under the running worker.
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait worker %s: %w", j.ID(), err))
+				continue
 			}
-			if err := d.q.Park(j); err != nil && d.stopErr == nil {
-				d.stopErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
+			if err := d.q.Park(j); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err))
 			}
 			d.persistIfChanged(context.Background(), j)
 			d.res.Evict(j.ID())
 			d.markNotResident(j.ID())
 			d.clearLaunched(j.ID())
 		}
+		d.stopErr = errors.Join(stopErrs...)
 	})
 	return d.stopErr
 }
