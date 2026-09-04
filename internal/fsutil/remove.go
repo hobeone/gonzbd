@@ -27,6 +27,8 @@ var (
 // EACCES) does not have to pay the real ~775ms exhaustion cost. Does not
 // import "testing", so it carries no flag-registration risk for
 // production binaries that transitively import this package.
+//
+//testdouble:allow unit test hook for filesystem retry backoffs
 func SetRemoveBackoffsForTest(backoffs []time.Duration) (restore func()) {
 	orig := removeBackoffs
 	removeBackoffs = backoffs

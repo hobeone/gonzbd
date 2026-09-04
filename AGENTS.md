@@ -700,32 +700,34 @@ Three rules follow:
   both directions. If a reported function looks untouched by your change,
   commit and re-run before writing a test for it.
 
-Three further gates are **whole-repository**, not diff-scoped, and exist because
+Four further gates are **whole-repository**, not diff-scoped, and exist because
 build, vet, lint and the test suite are structurally blind to what they check —
 comments and Markdown are neither type-checked nor executed:
 
 ```bash
-go run ./scripts/check_dup_comments     # duplicated multi-line // blocks
-go run ./scripts/check_review_banner    # docs/reviews/*.md frozen-record banners
-go run ./scripts/check_citations        # embedded grep / git grep claims whose count has moved
+go run ./scripts/check_dup_comments         # duplicated multi-line // blocks
+go run ./scripts/check_review_banner        # docs/reviews/*.md frozen-record banners
+go run ./scripts/check_citations            # embedded grep / git grep claims whose count has moved
+go run ./scripts/check_test_doubles --all   # test doubles or test-named files leaking into production builds
 ```
 
 | Gate | What it catches | How to satisfy it |
 |------|-----------------|-------------------|
 | `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory, the marker must start the comment line, and a reason that wraps onto a second line must be closed by a blank `//` unless the marker is the block's last line — an unclosed wrapped reason is a hard exit-2 error, because guessing where it ends silently suppresses the finding on the *other* copy. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
 | `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
-| `check_citations` | A comment that embeds a backticked `grep` or `git grep` and states a count, where running the command no longer produces that count. This is Rule 4's enforcement arm: the rule requires the enumeration to be stated, and this runs it. | Re-run the command and correct the number, or correct the command so it means what the prose says — a count stated as "outside tests" whose command has no `\| grep -v _test.go` is the common case, as is a pattern that also matches its own comment or the declaration it describes. Where the population is real but not greppable ("the errors one function returns"), name it and do not dress it as a citation — and describe a historical command rather than backticking it, since a backticked example is indistinguishable from a live citation. A command with no count stated is reported as unverified, not failed. Commands are parsed to argv, only `grep` and `git grep` are executed, quoted text is treated as literal rather than as shell syntax, and every file operand must resolve inside the repository — so a comment can be neither a code-execution surface nor a way to read files outside the tree. |
+| `check_citations` | A comment that embeds a backticked `grep` or `git grep` and states a count, where running the command no longer produces that count. This is Rule 4's enforcement arm: the rule requires the enumeration to be stated, and this runs it. | Re-run the command and correct the number, or correct the command so it means what the prose says — a count stated as "outside tests" whose command has no `\| grep -v _test.go` is the common case, as is a pattern that also matches its own comment or the declaration it describes. Where the population is real but not greppable ("the errors one function returns"), name it and do not dress it as a citation — and describe a historical command rather than backticking it, since a backticked example is indistinguishable from a live citation. Commands are parsed to argv, only `grep` and `git grep` are executed, quoted text is treated as literal rather than as shell syntax, and every file operand must resolve inside the repository — so a comment can be neither a code-execution surface nor a way to read files outside the tree. |
+| `check_test_doubles` | Test doubles (`Fake`, `Mock`, `Stub`, `Nop`, `*ForTesting`) or test-named files leaking into production builds without test build tags (`test`, `integration`, `uitest`, `crash`) | Add a recognized test build tag, move to a `*_test.go` file, or add `//testdouble:allow <reason>` on the declaration (or before `package` for filename exemptions). The reason is mandatory; a bare marker is flagged. |
 
-All three are part of `ci.yml`, but `ci.yml` has no automatic trigger (see
+All four are part of `ci.yml`, but `ci.yml` has no automatic trigger (see
 "Continuous Integration" below) — it runs only on `workflow_dispatch`. So in
-practice all three run when you run them locally, which is exactly what the
+practice all four run when you run them locally, which is exactly what the
 block above is for; dispatching CI by hand is the other way to reach them. They were once
 absent from `ci.yml` entirely while the three diff-scoped gates were present,
 which is how a defect in `check_dup_comments`' own marker handling survived in
 the tree: nothing ever ran the tool that would have caught it. That failure
 mode now depends on the local block being run, not on a server.
 
-None of the three is diff-scoped, so any of them can fail on a file you did not
+None of the four is diff-scoped, so any of them can fail on a file you did not
 touch. Each found a real defect on its first run against this repository: a
 package doc comment duplicated across two files of `scripts/nntpfaultproxy`; a
 fixture comment in `internal/queue/progress_helpers_test.go` that named
@@ -873,7 +875,7 @@ What this means in practice, for agents and humans alike:
   "Quality Gates" is now the *only* thing standing between a defect and `main`,
   which raises rather than lowers the cost of skipping it. `go test -race ./...`
   and the whole-repo checks (`check_dup_comments`, `check_review_banner`,
-  `check_citations`) are reached automatically nowhere — only by running them
+  `check_citations`, `check_test_doubles`) are reached automatically nowhere — only by running them
   locally, or by dispatching `ci.yml` by hand.
 - **`security.yml` still triggers on `push` and `pull_request`**, plus a weekly
   cron. It is unaffected by any of the above, and a failure there is real.

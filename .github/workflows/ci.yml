@@ -97,6 +97,9 @@ jobs:
       - name: Check citation counts
         run: go run ./scripts/check_citations
 
+      - name: Test double leakage check
+        run: go run scripts/check_test_doubles/main.go --all
+
       - name: Mutation specs check
         run: |
           find . -name '*.spec' -path '*testdata*' | sort | while read -r spec; do

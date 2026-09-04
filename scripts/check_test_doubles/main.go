@@ -8,13 +8,15 @@
 //
 // This tool performs two AST inspections:
 //  1. File name check: Any file under internal/ or cmd/ whose filename matches
-//     *test*.go (excluding *_test.go) MUST have a //go:build tag (e.g. //go:build test).
+//     *test*.go (excluding *_test.go) MUST have a test //go:build tag (test, integration, uitest, crash).
 //  2. Identifier check: In any non-test .go file that lacks a test build tag
 //     (//go:build test, //go:build integration, //go:build uitest, //go:build crash),
-//     inspect AST FuncDecls. Flag any function or method matching
-//     ^(New)?(Test|Fake|Mock|Stub|Nop)[A-Z].
+//     inspect AST FuncDecls, TypeDecls, and ValueDecls. Flag any function, method,
+//     type, or variable matching ^(New)?(Test|Fake|Mock|Stub|Nop)[A-Z] or
+//     .*(ForTesting|ForTests|ForTest)$.
 //
 // Line-level suppression is supported via comment `//testdouble:allow <reason>`.
+// The reason is mandatory; a bare marker is itself reported.
 package main
 
 import (
@@ -34,7 +36,10 @@ import (
 	"github.com/hobeone/gonzbd/scripts/gitscope"
 )
 
-var testDoubleIdentRe = regexp.MustCompile(`^(New)?(Test|Fake|Mock|Stub|Nop)[A-Z]`)
+var (
+	testDoubleIdentRe = regexp.MustCompile(`^(New)?(Test|Fake|Mock|Stub|Nop)[A-Z]|.*(ForTesting|ForTests|ForTest)$`)
+	testDoubleAllowRe = regexp.MustCompile(`testdouble:allow\s+\S+`)
+)
 
 type finding struct {
 	file string
@@ -161,19 +166,27 @@ func checkSource(path string, src []byte) ([]finding, error) {
 
 	commentsByLine := make(map[int]string)
 	hasFileLevelSuppression := false
+	var findings []finding
+
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			line := fset.Position(c.Pos()).Line
 			commentsByLine[line] += " " + c.Text
 			if strings.Contains(c.Text, "testdouble:allow") {
-				hasFileLevelSuppression = true
+				if !testDoubleAllowRe.MatchString(c.Text) {
+					findings = append(findings, finding{
+						file: path,
+						line: line,
+						desc: "//testdouble:allow requires a reason (e.g. //testdouble:allow <reason>)",
+					})
+				} else if c.Pos() < file.Package {
+					hasFileLevelSuppression = true
+				}
 			}
 		}
 	}
 
-	hasGoBuild := false
 	hasTestBuildTag := false
-
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			if c.Pos() >= file.Package {
@@ -181,7 +194,6 @@ func checkSource(path string, src []byte) ([]finding, error) {
 			}
 			text := strings.TrimSpace(c.Text)
 			if constraint.IsGoBuild(text) {
-				hasGoBuild = true
 				if expr, err := constraint.Parse(text); err == nil {
 					if containsTestTag(expr) {
 						hasTestBuildTag = true
@@ -191,64 +203,128 @@ func checkSource(path string, src []byte) ([]finding, error) {
 		}
 	}
 
-	var findings []finding
-
 	// 1) File name check: Any file under internal/ or cmd/ whose filename
-	// matches *test*.go (excluding *_test.go) MUST have a //go:build tag (e.g. //go:build test).
+	// matches *test*.go (excluding *_test.go) MUST have a test //go:build tag
+	// (test, integration, uitest, crash).
 	matched, _ := filepath.Match("*test*.go", base)
-	if matched && !hasGoBuild {
+	if matched && !hasTestBuildTag {
 		if !hasFileLevelSuppression {
 			findings = append(findings, finding{
 				file: path,
 				line: 1,
-				desc: fmt.Sprintf("file %s matches *test*.go but lacks a //go:build tag", base),
+				desc: fmt.Sprintf("file %s matches *test*.go but lacks a test //go:build tag (test, integration, uitest, crash)", base),
 			})
 		}
 	}
 
 	// 2) Identifier check: In any non-test .go file that lacks a test build tag
-	// (//go:build test, //go:build integration, //go:build uitest, //go:build crash), inspect AST FuncDecls.
-	// Flag any function or method matching ^(New)?(Test|Fake|Mock|Stub|Nop)[A-Z].
+	// (//go:build test, //go:build integration, //go:build uitest, //go:build crash),
+	// inspect AST FuncDecls, TypeDecls, and ValueDecls.
+	// Flag any symbol matching testDoubleIdentRe unless suppressed.
 	if !hasTestBuildTag {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Name == nil {
-				continue
+		isSuppressed := func(startLine, endLine int) bool {
+			if startLine > 1 {
+				startLine--
 			}
-			if testDoubleIdentRe.MatchString(fn.Name.Name) {
-				startLine := fset.Position(fn.Pos()).Line
-				endLine := fset.Position(fn.End()).Line
-				if fn.Doc != nil {
-					docStart := fset.Position(fn.Doc.Pos()).Line
-					if docStart < startLine {
-						startLine = docStart
+			for l := startLine; l <= endLine; l++ {
+				if testDoubleAllowRe.MatchString(commentsByLine[l]) {
+					return true
+				}
+			}
+			return false
+		}
+
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name != nil {
+				if testDoubleIdentRe.MatchString(fn.Name.Name) {
+					startLine := fset.Position(fn.Pos()).Line
+					endLine := fset.Position(fn.End()).Line
+					if fn.Doc != nil {
+						docStart := fset.Position(fn.Doc.Pos()).Line
+						if docStart < startLine {
+							startLine = docStart
+						}
+					}
+					if !isSuppressed(startLine, endLine) {
+						kind := "function"
+						if fn.Recv != nil && len(fn.Recv.List) > 0 {
+							kind = "method"
+						}
+						findings = append(findings, finding{
+							file: path,
+							line: fset.Position(fn.Pos()).Line,
+							desc: fmt.Sprintf("test double %s %s in non-test file without test build tag", kind, fn.Name.Name),
+						})
 					}
 				}
-				if startLine > 1 {
-					startLine--
-				}
+			}
 
-				suppressed := false
-				for l := startLine; l <= endLine; l++ {
-					if strings.Contains(commentsByLine[l], "testdouble:allow") {
-						suppressed = true
-						break
+			if gen, ok := decl.(*ast.GenDecl); ok {
+				switch gen.Tok {
+				case token.TYPE:
+					for _, spec := range gen.Specs {
+						ts, ok := spec.(*ast.TypeSpec)
+						if !ok || ts.Name == nil {
+							continue
+						}
+						if testDoubleIdentRe.MatchString(ts.Name.Name) {
+							startLine := fset.Position(ts.Pos()).Line
+							endLine := fset.Position(ts.End()).Line
+							if ts.Doc != nil {
+								docStart := fset.Position(ts.Doc.Pos()).Line
+								if docStart < startLine {
+									startLine = docStart
+								}
+							} else if gen.Doc != nil {
+								docStart := fset.Position(gen.Doc.Pos()).Line
+								if docStart < startLine {
+									startLine = docStart
+								}
+							}
+							if !isSuppressed(startLine, endLine) {
+								findings = append(findings, finding{
+									file: path,
+									line: fset.Position(ts.Pos()).Line,
+									desc: fmt.Sprintf("test double type %s in non-test file without test build tag", ts.Name.Name),
+								})
+							}
+						}
+					}
+				case token.VAR:
+					for _, spec := range gen.Specs {
+						vs, ok := spec.(*ast.ValueSpec)
+						if !ok {
+							continue
+						}
+						for _, name := range vs.Names {
+							if name == nil {
+								continue
+							}
+							if testDoubleIdentRe.MatchString(name.Name) {
+								startLine := fset.Position(name.Pos()).Line
+								endLine := fset.Position(vs.End()).Line
+								if vs.Doc != nil {
+									docStart := fset.Position(vs.Doc.Pos()).Line
+									if docStart < startLine {
+										startLine = docStart
+									}
+								} else if gen.Doc != nil {
+									docStart := fset.Position(gen.Doc.Pos()).Line
+									if docStart < startLine {
+										startLine = docStart
+									}
+								}
+								if !isSuppressed(startLine, endLine) {
+									findings = append(findings, finding{
+										file: path,
+										line: fset.Position(name.Pos()).Line,
+										desc: fmt.Sprintf("test double var %s in non-test file without test build tag", name.Name),
+									})
+								}
+							}
+						}
 					}
 				}
-				if suppressed {
-					continue
-				}
-
-				fnPos := fset.Position(fn.Pos())
-				kind := "function"
-				if fn.Recv != nil && len(fn.Recv.List) > 0 {
-					kind = "method"
-				}
-				findings = append(findings, finding{
-					file: path,
-					line: fnPos.Line,
-					desc: fmt.Sprintf("test double %s %s in non-test file without test build tag", kind, fn.Name.Name),
-				})
 			}
 		}
 	}
@@ -265,7 +341,7 @@ func containsTestTag(expr constraint.Expr) bool {
 	case *constraint.AndExpr:
 		return containsTestTag(e.X) || containsTestTag(e.Y)
 	case *constraint.OrExpr:
-		return containsTestTag(e.X) || containsTestTag(e.Y)
+		return containsTestTag(e.X) && containsTestTag(e.Y)
 	default:
 		return false
 	}

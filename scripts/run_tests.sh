@@ -100,7 +100,7 @@ echo "Running golangci-lint..."
 golangci-lint run ./...
 
 echo "Running Test Double Guard Check..."
-go run scripts/check_test_doubles/main.go
+go run scripts/check_test_doubles/main.go --all
 
 # govulncheck's status is captured rather than left to `set -e`, and reported
 # at the very end.
