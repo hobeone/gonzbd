@@ -106,7 +106,7 @@ func buildDownloadFileList(j *Job) []string {
 		// explanation for whichever one actually happened.
 		// HasPar2Verdict() is true in this arm (the switch guards on it
 		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
-		// "" (internal/job/progress.go:708), so the reason is always
+		// "" (`git grep -n 'func (p \*JobProgress) HasPar2Verdict' internal/job/`), so the reason is always
 		// non-empty here — no fallback needed.
 		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",

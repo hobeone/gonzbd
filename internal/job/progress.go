@@ -728,10 +728,10 @@ func (p *JobProgress) restorePar2ReleaseReason(reason string) {
 // One writer sets it without a verdict: content.go's permanent-article-failure
 // path. That is safe rather than an exception, and the branch is why — the
 // assignment sits inside `if job.undeferRecovery(...)`, and undeferRecovery
-// sets par2Recovered whenever it reports a change (content.go:288). So
+// sets par2Recovered whenever it reports a change (`git grep -n 'func (j \*Job) undeferRecovery' internal/job/`). So
 // every caller that must exclude that case already tests Par2Recovered().
 //
-// ResetForRetry is the only clearer (content.go:605), which is what makes a
+// ResetForRetry is the only clearer (`git grep -n 'func (j \*Job) ResetForRetry' internal/job/`), which is what makes a
 // retry re-derive the verdict rather than inherit it.
 func (p *JobProgress) HasPar2Verdict() bool {
 	if p == nil {

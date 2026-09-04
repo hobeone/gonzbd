@@ -678,7 +678,7 @@ var replayPath = map[job.State][]hop{
 //
 // The brief this task started from called a `job.Restore(id, name, Policy{},
 // state, intent)` that does not exist. internal/job exports exactly one
-// constructor, New (job.go:205); adding a second is the first smell Standing
+// constructor, New (`git grep -n 'func New(' internal/job/`); adding a second is the first smell Standing
 // Design Rule 2 names, with newManifest/UnmarshalJSON as the worked example
 // that had already diverged over totalBytes before anyone noticed. That was
 // escalated per AGENTS.md's Decision Protocol and declined. Replaying instead

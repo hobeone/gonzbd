@@ -52,7 +52,7 @@ func TestCheckpointer_CoalescesMarksIntoOneBatch(t *testing.T) {
 }
 
 // TestCheckpointer_FlushIsSynchronous pins the surviving read-after-write
-// window. workset.go:453 persisted a cleared Complete/CRC before re-hydration
+// window. An earlier queue implementation persisted a cleared Complete/CRC before re-hydration
 // could re-read the stale row; §10.1's banner keeps resumeAllJobs, which
 // reaches it via ReplaceFromRuns, so that window survives the swap and Flush
 // is what closes it.

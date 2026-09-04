@@ -87,7 +87,8 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 
 // TestAppResidency_HydrateUnknownJobErrors pins that a missing job is an error
 // rather than a silent no-op: the dispatcher logs Residency failures
-// (logResidencyError, dispatch.go:171) and a silent success would strand a job
+// (see logResidencyError — `git grep -n 'func (d \*Dispatcher) logResidencyError' internal/dispatch/`)
+// and a silent success would strand a job
 // at Fetching with nothing to fetch from.
 func TestAppResidency_HydrateUnknownJobErrors(t *testing.T) {
 	r := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil, nil)

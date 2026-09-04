@@ -53,8 +53,8 @@ func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 //
 // Assessed is set true here because it is the only value a real Repairing row
 // could carry: Repairing's one inbound edge is Assessing (legalEdges,
-// internal/job/transition.go:47), and Assessed is set unconditionally on
-// entering Assessing (transition, internal/job/attempt.go:280-281) with no
+// `git grep -n 'var legalEdges' internal/job/` finds one line), and Assessed is set unconditionally on
+// entering Assessing (transition, `git grep -n 'func (j \*Job) Transition' internal/job/`) with no
 // door that later clears it — so a Repairing row with Assessed false names a
 // position no attempt could have reached. The fixture does not trust this
 // field at face value; reconstruct re-derives it by replaying the job through
