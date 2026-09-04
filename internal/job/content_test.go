@@ -580,6 +580,10 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	if exp, rem, fail := jUnattached.ProgressFigures(); exp != 0 || rem != 0 || fail != 0 {
 		t.Errorf("ProgressFigures() = (%d, %d, %d), want (0, 0, 0)", exp, rem, fail)
 	}
+	var nilProg *JobProgress
+	if exp, rem, fail := nilProg.ProgressFigures(); exp != 0 || rem != 0 || fail != 0 {
+		t.Errorf("nil JobProgress.ProgressFigures() = (%d, %d, %d), want (0, 0, 0)", exp, rem, fail)
+	}
 
 	// 2. Attached job returns proper values matching progress
 	m := NewManifest([]JobFile{
