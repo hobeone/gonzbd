@@ -97,6 +97,12 @@ jobs:
       - name: Check citation counts
         run: go run ./scripts/check_citations
 
+      - name: Mutation specs check
+        run: |
+          find . -name '*.spec' -path '*testdata*' | sort | while read -r spec; do
+            go run ./scripts/mutate "$spec"
+          done
+
       - name: Mutex-held-during-I/O check
         run: go run scripts/check_lock_io/main.go
 

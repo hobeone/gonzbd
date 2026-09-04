@@ -158,6 +158,15 @@ echo -e "\nRunning Review-Banner Check..."
 go run ./scripts/check_review_banner
 echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
 
+# Mutation Specs Check: verifies that all committed mutation specs in the repository
+# compile against the codebase, match valid anchors, and kill all mutations.
+echo -e "\nRunning Mutation Specs Check..."
+find . -name '*.spec' -path '*testdata*' | sort | while read -r spec; do
+    echo "Running mutation spec: $spec"
+    go run ./scripts/mutate "$spec"
+done
+echo -e "${GREEN}✓ All Mutation Specs Killed${NC}"
+
 # 3. Go Integration Tests
 echo -e "\n[3/7] Running Go Integration Tests..."
 go test -v -tags=integration ./test/integration/... ./internal/par2/...
