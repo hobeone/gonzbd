@@ -72,9 +72,10 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // persistAndCommit writes the history entry to the database, removes the job
 // from the dispatcher, and broadcasts the finalization events. Registry and
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
-// unlinking, durability cleanup, and barrier state reset) always completes
-// regardless of history persistence success so that failed jobs do not leak
-// into the active registry.
+// unlinking, durability cleanup, and barrier state reset) is always attempted
+// regardless of history persistence success. If dispatcher.Remove returns an
+// error, the error is logged and returned while the job remains registered for
+// retry or caller handling.
 //
 // Durability rows for a failed job are owned by the retry path and must never
 // be deleted here. Furthermore, if history persistence fails against a
@@ -100,11 +101,13 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 		_ = app.dispatcher.Cancel(job.Job.ID())
 		_ = app.dispatcher.Yielded(job.Job.ID())
 	}
+
+	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 10*time.Second)
+	defer finalCancel()
+
 	var persistErr error
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
-		defer dbCancel()
-		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
+		if err := app.historyRepo.Add(finalCtx, entry); err != nil {
 			log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
 				"job", job.Job.ID(), "err", err)
 			persistErr = err
@@ -122,7 +125,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 					}
 					crc := p.FileAssembledCRC32(fi)
 					fetch := int(p.FileFetchPolicy(fi))
-					_, _ = app.historyRepo.DB().ExecContext(dbCtx, `
+					_, _ = app.historyRepo.DB().ExecContext(finalCtx, `
 INSERT OR REPLACE INTO history_job_files
   (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -135,25 +138,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		app.checkpointer.Prune(job.Job.ID())
 	}
 	if app.dispatcher != nil && job != nil && job.Job != nil {
-		removeCtx, removeCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
-		defer removeCancel()
-		if err := app.dispatcher.Remove(removeCtx, job.Job.ID()); err != nil {
+		if err := app.dispatcher.Remove(finalCtx, job.Job.ID()); err != nil {
 			log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
 		}
 	}
 	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
 	_ = os.Remove(manifestPath)
 
-	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
-	defer delCancel()
 	shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
 	if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if existing, err := app.historyRepo.Get(delCtx, job.Job.ID()); err == nil && existing.Status == string(constants.StatusFailed) {
+		if existing, err := app.historyRepo.Get(finalCtx, job.Job.ID()); err == nil && existing.Status == string(constants.StatusFailed) {
 			shouldDeleteDurability = false
 		}
 	}
 	if shouldDeleteDurability {
-		app.deleteJobDurability(delCtx, job.Job.ID())
+		app.deleteJobDurability(finalCtx, job.Job.ID())
 	}
 	app.forgetJobBarrierState(job.Job.ID())
 	if persistErr != nil {
