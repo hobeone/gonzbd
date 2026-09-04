@@ -43,7 +43,8 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 	}
 
 	if p != nil {
-		expectedBytes = p.ExpectedBytes()
+		expected, _, failed := p.ProgressFigures()
+		expectedBytes = expected
 		if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
 			downloadDuration = int64(p.DownloadFinished().Sub(p.DownloadStarted()).Seconds())
 		}
@@ -51,8 +52,8 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 			downloadDuration = 1
 		}
 
-		completeness = downloadCompleteness(expectedBytes, p.FailedBytes())
-		downloaded = expectedBytes - p.FailedBytes() - p.RemainingBytes()
+		completeness = downloadCompleteness(expectedBytes, failed)
+		downloaded = DurableBytesOf(p)
 
 		stats := p.ServerStats()
 		serverNames := make([]string, 0, len(stats))
