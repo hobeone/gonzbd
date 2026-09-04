@@ -119,6 +119,58 @@ func dispatch(j *Job) {
 	}
 }
 
+// TestClosureWrapper_HelperDescentInsideClosure verifies that calling a helper
+// function that acquires locks inside a closure wrapper is caught by one-level descent.
+func TestClosureWrapper_HelperDescentInsideClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func addedOf(j *Job) int {
+	return j.Added()
+}
+
+func dispatch(j *Job) {
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = addedOf(j)
+		return true
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for helper calling Job lock method inside ForEachUnfinishedArticle closure, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside ForEachUnfinishedArticle(...) closure (via addedOf): j.Added()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_NonJobClosureNotFlagged verifies that calling a method
+// named Name() inside a non-Job closure (like Config.With) does not trigger a false positive.
+func TestClosureWrapper_NonJobClosureNotFlagged(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+type Cfg struct{ n string }
+func (c *Cfg) With(fn func(*Cfg)) { fn(c) }
+func (c *Cfg) Name() string       { return c.n }
+func Probe(c *Cfg) string {
+	var out string
+	c.With(func(cc *Cfg) { out = cc.Name() })
+	return out
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for non-job closure calling Name(), got %d: %v", len(findings), findings)
+	}
+}
+
 // TestClosureWrapper_SafeClosureNotFlagged verifies that a closure passed to a
 // closureLockMethod that does not perform I/O or acquire locks is not flagged.
 func TestClosureWrapper_SafeClosureNotFlagged(t *testing.T) {

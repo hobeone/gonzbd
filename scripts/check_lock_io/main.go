@@ -111,15 +111,26 @@ var storeMethods = map[string]bool{
 const lockedSuffix = "Locked"
 
 // closureLockMethods is the allowlist of methods that hold a lock for the
-// duration of a func-literal argument. Confirmed by exhaustive repo-wide
-// grep to be the only two such methods as of this writing:
-// config.Config.With, and
-// job.Job.ForEachUnfinishedArticle. Adding a new lock-wrapping closure
-// method anywhere in the repo requires updating this list (see
-// docs/go-standards.md).
+// duration of a func-literal argument. Confirmed by AST scan across the entire
+// repository (enforced by TestClosureLockMethods_MatchEnumeration in
+// closure_enumeration_test.go).
 var closureLockMethods = map[string]bool{
 	"With":                     true,
 	"ForEachUnfinishedArticle": true,
+	"withOpenAttempt":          true,
+	"withOpenAttemptLease":     true,
+	"Pop":                      true,
+	"tryPop":                   true,
+	"withLock":                 true,
+}
+
+// jobClosureMethods specifies the closureLockMethods that execute under a
+// Job lock (such as j.contentMu or j.mu). For these methods, calling
+// Job methods that acquire locks inside the closure constitutes a lock-inversion hazard.
+var jobClosureMethods = map[string]bool{
+	"ForEachUnfinishedArticle": true,
+	"withOpenAttempt":          true,
+	"withOpenAttemptLease":     true,
 }
 
 type finding struct {
@@ -218,24 +229,15 @@ func gatherTargetFiles(all bool) ([]string, error) {
 	return files, nil
 }
 
-// lockedFuncCache memoises the per-package map of *Locked declarations so a
-// package with many changed files is parsed once rather than once per file.
-var lockedFuncCache = map[string]map[string]*ast.FuncDecl{}
+// packageFuncCache memoises the per-package map of function and method
+// declarations so a package with many changed files is parsed once rather
+// than once per file.
+var packageFuncCache = map[string]map[string]*ast.FuncDecl{}
 
-// lockedFuncsInPackage returns every *Locked function and method declared in
-// dir, keyed by name.
-//
-// Package scope rather than file scope is required, not merely tidier:
-// internal/downloader/tracker.go declares TryListLocked, SetTriedLocked,
-// InFlightLocked and IncrementInFlightLocked, all of which are called from
-// dispatch.go. A file-scoped map would silently miss every one.
-//
-// Names are assumed unique within a package. That holds for the *Locked
-// convention in this repo, and a collision would at worst scan the wrong
-// body of two similarly-named helpers — a false positive a //lockio: marker
-// can settle, not a missed violation.
-func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
-	if cached, ok := lockedFuncCache[dir]; ok {
+// packageFuncsInPackage returns every function and method declared in dir,
+// keyed by name.
+func packageFuncsInPackage(dir string) map[string]*ast.FuncDecl {
+	if cached, ok := packageFuncCache[dir]; ok {
 		return cached
 	}
 	funcs := map[string]*ast.FuncDecl{}
@@ -245,9 +247,6 @@ func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
 			if strings.HasSuffix(f, "_test.go") {
 				continue
 			}
-			// A separate FileSet per package member is fine: only the body
-			// nodes are used, and positions are resolved against the caller's
-			// own file when reporting.
 			parsed, perr := parser.ParseFile(token.NewFileSet(), f, nil, 0)
 			if perr != nil {
 				continue
@@ -257,14 +256,25 @@ func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
 				if !ok || fn.Body == nil {
 					continue
 				}
-				if strings.HasSuffix(fn.Name.Name, lockedSuffix) {
-					funcs[fn.Name.Name] = fn
-				}
+				funcs[fn.Name.Name] = fn
 			}
 		}
 	}
-	lockedFuncCache[dir] = funcs
+	packageFuncCache[dir] = funcs
 	return funcs
+}
+
+// lockedFuncsInPackage returns every *Locked function and method declared in
+// dir, keyed by name.
+func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
+	all := packageFuncsInPackage(dir)
+	locked := make(map[string]*ast.FuncDecl)
+	for k, v := range all {
+		if strings.HasSuffix(k, lockedSuffix) {
+			locked[k] = v
+		}
+	}
+	return locked
 }
 
 var (
@@ -387,6 +397,7 @@ func checkFile(path string) ([]finding, error) {
 	// One level of call-graph resolution: a call to a *Locked helper from
 	// inside a locked span keeps the lock held for that helper's body too.
 	lockedFuncs := lockedFuncsInPackage(filepath.Dir(path))
+	packageFuncs := packageFuncsInPackage(filepath.Dir(path))
 
 	var findings []finding
 	for _, decl := range file.Decls {
@@ -394,7 +405,7 @@ func checkFile(path string) ([]finding, error) {
 		if !ok || fn.Body == nil {
 			continue
 		}
-		findings = append(findings, checkFuncBody(fset, path, fn.Body, commentsByLine, lockedFuncs)...)
+		findings = append(findings, checkFuncBody(fset, path, fn.Body, commentsByLine, lockedFuncs, packageFuncs)...)
 	}
 	return findings, nil
 }
@@ -410,7 +421,7 @@ func checkFile(path string) ([]finding, error) {
 // does not leak back to affect sibling statements after the branch, which
 // is what lets an early "unlock, log, return" pattern (the repo's own
 // correct idiom) pass cleanly instead of producing a false positive.
-func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commentsByLine map[int]string, lockedFuncs map[string]*ast.FuncDecl) []finding {
+func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commentsByLine map[int]string, lockedFuncs map[string]*ast.FuncDecl, packageFuncs map[string]*ast.FuncDecl) []finding {
 	deferredFrom := collectDeferredLocks(body)
 
 	w := &walker{
@@ -419,6 +430,7 @@ func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commen
 		commentsByLine: commentsByLine,
 		deferredFrom:   deferredFrom,
 		lockedFuncs:    lockedFuncs,
+		packageFuncs:   packageFuncs,
 	}
 	w.walkClosures(body)
 	w.walkBlock(body.List, map[string]bool{})
@@ -545,12 +557,15 @@ type walker struct {
 	// lockedFuncs maps *Locked declarations in this package by name, for the
 	// one-level call-graph descent (see scanCall).
 	lockedFuncs map[string]*ast.FuncDecl
-	findings    []finding
+	// packageFuncs maps all declarations in this package by name, for the
+	// one-level call-graph descent in closures (see scanClosureForLocks).
+	packageFuncs map[string]*ast.FuncDecl
+	findings     []finding
 }
 
 // walkClosures finds every closure-wrapper call (With/
 // ForEachUnfinishedArticle, or any future addition to closureLockMethods)
-// anywhere in body and treats its sole func-literal argument's entire body
+// anywhere in body and treats its func-literal argument's entire body
 // as a locked span, regardless of which block it's nested in.
 func (w *walker) walkClosures(body *ast.BlockStmt) {
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -562,11 +577,14 @@ func (w *walker) walkClosures(body *ast.BlockStmt) {
 		if !ok || !closureLockMethods[sel.Sel.Name] {
 			return true
 		}
-		if len(call.Args) != 1 {
-			return true
+		var lit *ast.FuncLit
+		for _, arg := range call.Args {
+			if f, ok := arg.(*ast.FuncLit); ok {
+				lit = f
+				break
+			}
 		}
-		lit, ok := call.Args[0].(*ast.FuncLit)
-		if !ok {
+		if lit == nil {
 			return true
 		}
 		desc := fmt.Sprintf("I/O call inside %s(...) closure (holds a lock for its entire body)", sel.Sel.Name)
@@ -581,13 +599,41 @@ func (w *walker) walkClosures(body *ast.BlockStmt) {
 // Class 4 lock-inversion deadlocks:
 // 1) Direct mutex acquisitions: any call to Lock() or RLock().
 // 2) Method calls on job.Job that acquire locks (e.g. j.Added()).
+// 3) One-level call-graph descent into package-level helper functions.
 func (w *walker) scanClosureForLocks(body *ast.BlockStmt, closureMethod string) {
 	jobLocking := jobMethodsAcquiringLocks(filepath.Dir(w.path))
+	isJobClosure := jobClosureMethods[closureMethod]
+
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
+
+		// Descend one level into package-local helper functions (e.g. addedOf(j))
+		name := calleeNameExpr(call.Fun)
+		if helper, ok := w.packageFuncs[name]; ok && helper.Body != nil {
+			ast.Inspect(helper.Body, func(hn ast.Node) bool {
+				hcall, ok := hn.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if hsel, ok := hcall.Fun.(*ast.SelectorExpr); ok {
+					if hsel.Sel.Name == "Lock" || hsel.Sel.Name == "RLock" {
+						desc := fmt.Sprintf("lock acquisition inside %s(...) closure (via %s): %s()", closureMethod, name, types.ExprString(hcall.Fun))
+						w.report(call.Pos(), call.End(), desc)
+						return true
+					}
+					if isJobClosure && jobLocking[hsel.Sel.Name] {
+						desc := fmt.Sprintf("lock acquisition inside %s(...) closure (via %s): %s()", closureMethod, name, types.ExprString(hcall.Fun))
+						w.report(call.Pos(), call.End(), desc)
+						return true
+					}
+				}
+				return true
+			})
+		}
+
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -600,8 +646,8 @@ func (w *walker) scanClosureForLocks(body *ast.BlockStmt, closureMethod string) 
 			return true
 		}
 
-		// 2) Methods on job.Job that acquire locks
-		if jobLocking[sel.Sel.Name] {
+		// 2) Methods on job.Job that acquire locks (only checked for Job closure methods)
+		if isJobClosure && jobLocking[sel.Sel.Name] {
 			desc := fmt.Sprintf("lock acquisition inside %s(...) closure: %s()", closureMethod, types.ExprString(call.Fun))
 			w.report(call.Pos(), call.End(), desc)
 			return true
@@ -609,6 +655,17 @@ func (w *walker) scanClosureForLocks(body *ast.BlockStmt, closureMethod string) 
 
 		return true
 	})
+}
+
+func calleeNameExpr(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return v.Sel.Name
+	default:
+		return ""
+	}
 }
 
 // walkBlock recursively walks a statement list, maintaining a local,

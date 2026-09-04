@@ -115,7 +115,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 				PartNumber:  number,
 				RepairState: repairState,
 			}
-			handled, exReq := d.tryDispatch(ctx, a, opts)
+			handled, exReq := d.tryDispatch(ctx, a, opts) //lockio: tracker lock is leaf under contentMu
 			if handled {
 				plan.dispatched++
 				plan.activeJobs[a.JobID] = struct{}{}
