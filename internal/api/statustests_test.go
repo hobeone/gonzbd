@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 
@@ -205,3 +206,19 @@ func TestModeStatus_TestDiskSpeed_Error(t *testing.T) {
 		t.Errorf("result.ok = %v; want false on write error", result["ok"])
 	}
 }
+
+func TestServer_StatusTestConnection_DirectCall(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := New(Options{Config: cfg, App: &app.Application{}})
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=status&name=test_connection&value=missing", nil)
+	w := httptest.NewRecorder()
+	s.statusTestConnection(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("statusTestConnection code = %d, want 200", w.Code)
+	}
+}
+
