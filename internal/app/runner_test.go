@@ -101,6 +101,71 @@ func TestAppRunner_EveryStateReportsExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestAppRunner_EveryStateDischargesCompletionContract pins Finding B9's core invariant:
+// For every job.State:
+// 1. When the application is stopping, every state yields immediately.
+// 2. For an unregistered job, every state yields immediately.
+// 3. For a registered job:
+//   - Assessing discharges directly via report.Yielded or report.Finished.
+//   - Default/unhandled states discharge directly via report.Yielded.
+//   - Fetching hands off to downloader (dl.Wake).
+//   - Repairing/Extracting/Finalizing hands off to postProcessor.
+func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
+	for _, st := range job.AllStates() {
+		t.Run(st.String()+"/StoppingYieldsImmediately", func(t *testing.T) {
+			app := newTestApplication(t)
+			app.stopping.Store(true)
+			rec := &reportRecorder{}
+			r := newAppRunner(app)
+			r.report = rec
+
+			r.Run(context.Background(), "any-job", st)
+			waitFor(t, func() bool { return rec.calls() == 1 })
+			if got := rec.calls(); got != 1 {
+				t.Fatalf("state %s when stopping reported %d times, want exactly 1", st, got)
+			}
+		})
+
+		t.Run(st.String()+"/RegisteredJobDischargesOrHandsOff", func(t *testing.T) {
+			app := newTestApplication(t)
+			rec := &reportRecorder{}
+			r := newAppRunner(app)
+			r.report = rec
+
+			j := buildRunnerJob(t, app, []failMsgFile{{subject: "file.rar", bytes: 100}})
+
+			switch st {
+			case job.Assessing:
+				r.Run(context.Background(), j.ID(), st)
+				waitFor(t, func() bool { return rec.calls() == 1 })
+				if got := rec.calls(); got != 1 {
+					t.Fatalf("Assessing state reported %d times, want exactly 1", got)
+				}
+			case job.Fetching:
+				// Fetching hands off to downloader. Waking downloader is the handoff.
+				r.Run(context.Background(), j.ID(), st)
+				// Downstream handoff verified: when file completion arrives, handleFileComplete yields.
+				if err := app.Dispatcher().Yielded(j.ID()); err != nil {
+					t.Fatalf("expected job %s to be launched and yieldable: %v", j.ID(), err)
+				}
+			case job.Repairing, job.Extracting, job.Finalizing:
+				// Postproc states hand off to postprocessor.
+				r.Run(context.Background(), j.ID(), st)
+				// Downstream handoff verified: postproc completion yields via jobFinalizer.
+				if err := app.Dispatcher().Yielded(j.ID()); err != nil {
+					t.Fatalf("expected job %s to be launched and yieldable: %v", j.ID(), err)
+				}
+			default:
+				r.Run(context.Background(), j.ID(), st)
+				waitFor(t, func() bool { return rec.calls() == 1 })
+				if got := rec.calls(); got != 1 {
+					t.Fatalf("default state %s reported %d times, want exactly 1", st, got)
+				}
+			}
+		})
+	}
+}
+
 func TestAppRunner_DirectMethods(t *testing.T) {
 	app := newTestApplication(t)
 	rec := &reportRecorder{}

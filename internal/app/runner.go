@@ -23,6 +23,21 @@ type reporter interface {
 // Returning without either strands the job's lease and compute slot: the Queue
 // cannot distinguish "holding and working" from "holding and yielded", so
 // nothing else can return them (ports.go, Runner).
+//
+// The obligation is discharged either synchronously within the runner or via
+// four documented downstream pipeline handoffs:
+//  1. Fetching: hands off to downloader (dl.Wake()). Downloader work completes
+//     and yields via handleFileComplete (app.go:1441) on download completion,
+//     durability.noteStall (durability.go:268) on stall, appWorkers.Abort
+//     (dispatcher_wiring.go:60) on cancellation, or stopWorkers (app.go:1208)
+//     on shutdown.
+//  2. Assessing: discharges directly within runAssess via Yielded (intact,
+//     repairable, or deferred recovery) or Finished(OutcomeFailed) (hopeless).
+//  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
+//     (enqueuePostProc). Post-processing completes and yields via
+//     jobFinalizer.persistAndCommit (job_finalizer.go:72) or Shutdown (app.go:1280).
+//  4. Guard branches (missing app, missing job, app.stopping, unhandled states):
+//     discharges synchronously via immediate Yielded.
 type appRunner struct {
 	app    *Application
 	report reporter
