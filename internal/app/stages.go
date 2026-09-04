@@ -49,12 +49,6 @@ func probeBinaries(ctx context.Context, cfg *config.Config, log *slog.Logger) bi
 		return cached
 	}
 
-	probeCacheMu.Lock()
-	defer probeCacheMu.Unlock()
-	if cached, ok := probeCache[cacheKey]; ok {
-		return cached
-	}
-
 	ppLog := log.With("component", "postproc")
 
 	par2Caps := par2.DetectCapabilities(ctx, par2Command)
@@ -87,7 +81,9 @@ func probeBinaries(ctx context.Context, cfg *config.Config, log *slog.Logger) bi
 		UnrarInfo:  unrarInfo,
 		SevenzInfo: sevenzInfo,
 	}
+	probeCacheMu.Lock()
 	probeCache[cacheKey] = probe
+	probeCacheMu.Unlock()
 	return probe
 }
 
