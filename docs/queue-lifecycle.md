@@ -451,7 +451,7 @@ Recorded so these are not re-investigated as open questions:
   from an ID, which added the ID to the error, and `Job.resident` for a caller
   that already held the `*Job`. With `internal/queue` subsequently retired in favor
   of `internal/dispatch`, the gate on `*Job` is `j.manifest == nil` returning
-  `job.ErrNotResident`.
+  `job.ErrNotResident`, pinned by `internal/job.TestManifestAccessIsGated` (`internal/job/manifest_gate_test.go`).
 
   The rule that falls out:
   **gate on residency if and only if the method needs the manifest.** Adding a

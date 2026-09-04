@@ -43,7 +43,7 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds nine lines:
+	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds nine lines:
 	//
 	//   - remove (registry.go), four lines: byID, written, resident,
 	//     removing. launched is cleared via clearLaunched. d.order is pruned by

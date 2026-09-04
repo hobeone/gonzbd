@@ -144,12 +144,13 @@ echo -e "\nRunning Mutex-held-during-I/O Check..."
 go run scripts/check_lock_io/main.go
 echo -e "${GREEN}✓ Mutex-held-during-I/O Check Passed${NC}"
 
-# The two whole-repository checks. Unlike the three above they are NOT scoped
-# to the diff, because what they examine is invisible to every other gate here:
-# comments and Markdown are neither compiled nor executed, so a duplicated
-# comment block that authoritatively describes the wrong declaration, or an
-# audit snapshot that does not admit it is frozen, passes vet, lint and the
-# whole test suite. Both found a real defect on their first run.
+# The three whole-repository checks (alongside check_test_doubles above). Unlike
+# the diff-scoped checks they are NOT scoped to the diff, because what they
+# examine is invisible to every other gate here: comments and Markdown are
+# neither compiled nor executed, so a duplicated comment block that
+# authoritatively describes the wrong declaration, or an audit snapshot that
+# does not admit it is frozen, passes vet, lint and the whole test suite.
+# Both found a real defect on their first run.
 echo -e "\nRunning Duplicated-Comment Check..."
 go run ./scripts/check_dup_comments
 echo -e "${GREEN}✓ Duplicated-Comment Check Passed${NC}"

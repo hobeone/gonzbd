@@ -140,7 +140,7 @@ func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 // that decision. Job.ResetForRetry clears every failed bit in memory; nothing
 // on this path cleared the rows behind them.
 //
-// The undo is immediate rather than restart-only. Dispatcher.Register writes no
+// The undo is immediate rather than restart-only. Dispatcher.Add writes no
 // resolution, and hydration would call Store.RestoreJobProgress,
 // which re-derives the per-article state from durable_runs and
 // failed_articles and re-marks exactly those articles Failed+Done. So the very
