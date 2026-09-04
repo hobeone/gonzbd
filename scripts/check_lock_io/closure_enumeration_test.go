@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -15,6 +14,13 @@ type methodInfo struct {
 	name      string
 	callsLock bool
 	callsRecv map[string]bool
+}
+
+// closureMethodExclusions are methods taking a closure argument that acquire a lock
+// but deliberately do not hold the lock across the closure callback (or are
+// otherwise excluded from closureLockMethods), with the mandatory reason.
+var closureMethodExclusions = map[string]string{
+	// method_name: "mandatory reason why lock is not held across callback"
 }
 
 // TestClosureLockMethods_MatchEnumeration asserts that closureLockMethods in
@@ -41,16 +47,39 @@ func TestClosureLockMethods_MatchEnumeration(t *testing.T) {
 		if err != nil {
 			return err
 		}
+
+		// Index package-level named func types (e.g. type FileIdxFunc func(...) ...)
+		packageFuncTypes := make(map[string]bool)
+		for _, decl := range parsed.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Name == nil {
+					continue
+				}
+				if _, isFunc := ts.Type.(*ast.FuncType); isFunc {
+					packageFuncTypes[ts.Name.Name] = true
+				}
+			}
+		}
+
 		for _, decl := range parsed.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Body == nil {
 				continue
 			}
-			// Check if method takes a func argument:
+			// Check if method takes a func argument (directly or via named func type):
 			takesFunc := false
 			if fn.Type.Params != nil {
 				for _, param := range fn.Type.Params.List {
 					if _, isFunc := param.Type.(*ast.FuncType); isFunc {
+						takesFunc = true
+						break
+					}
+					if ident, ok := param.Type.(*ast.Ident); ok && packageFuncTypes[ident.Name] {
 						takesFunc = true
 						break
 					}
@@ -104,19 +133,34 @@ func TestClosureLockMethods_MatchEnumeration(t *testing.T) {
 		}
 	}
 
-	foundList := make([]string, 0, len(found))
-	for k := range found {
-		foundList = append(foundList, k)
+	for name := range found {
+		if closureLockMethods[name] {
+			continue
+		}
+		if reason, ok := closureMethodExclusions[name]; ok {
+			if reason == "" {
+				t.Errorf("closureMethodExclusions names %q with an empty reason; a mandatory reason is required", name)
+			} else {
+				t.Logf("closure method %s excluded from closureLockMethods: %s", name, reason)
+			}
+			continue
+		}
+		t.Errorf("method %s takes a func and acquires a lock, but is not registered in closureLockMethods or closureMethodExclusions; register it in main.go or exclude it with a reason", name)
 	}
-	slices.Sort(foundList)
 
-	registeredList := make([]string, 0, len(closureLockMethods))
-	for k := range closureLockMethods {
-		registeredList = append(registeredList, k)
+	for name := range closureLockMethods {
+		if found[name] {
+			continue
+		}
+		t.Errorf("closureLockMethods registers %q, which was not found by AST enumeration; the detector will match a non-existent method", name)
 	}
-	slices.Sort(registeredList)
 
-	if !slices.Equal(foundList, registeredList) {
-		t.Errorf("closureLockMethods does not match AST enumeration:\nfound in codebase:      %v\nregistered in main.go: %v", foundList, registeredList)
+	for name, reason := range closureMethodExclusions {
+		if reason == "" {
+			t.Errorf("closureMethodExclusions names %q with an empty reason; a mandatory reason is required", name)
+		}
+		if !found[name] {
+			t.Errorf("closureMethodExclusions names %q, which was not found by AST enumeration; drop the stale exclusion", name)
+		}
 	}
 }

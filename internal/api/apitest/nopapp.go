@@ -18,6 +18,8 @@ import (
 // therefore of every api role interface it embeds).
 // It is intended for use in tests (unit, integration, and UI) to eliminate
 // duplicate mock definitions of the 20+-method interface.
+//
+//testdouble:allow shared test double for api.AppServices
 type NopApp struct {
 	Dispatcher         *dispatch.Dispatcher
 	History            *history.Repository
@@ -153,6 +155,8 @@ func (n NopApp) ArticleCacheBytes() int64 { return 0 }
 func (n NopApp) DownloadDirFreeBytes(context.Context) (int64, error) { return 0, nil }
 
 // TestDownloadDirWriteSpeedMBPerSec is a stub.
+//
+//testdouble:allow implements AppServices.TestDownloadDirWriteSpeedMBPerSec
 func (n NopApp) TestDownloadDirWriteSpeedMBPerSec(context.Context) (float64, error) { return 0, nil }
 
 // PingDB is a stub.
@@ -162,6 +166,8 @@ func (n NopApp) PingDB(context.Context) error { return nil }
 func (n NopApp) IsPipelineHealthy(context.Context) bool { return true }
 
 // TestNNTPServer is a stub.
+//
+//testdouble:allow implements AppServices.TestNNTPServer
 func (n NopApp) TestNNTPServer(context.Context, config.ServerConfig) (app.NNTPTestResult, error) {
 	return app.NNTPTestResult{}, nil
 }

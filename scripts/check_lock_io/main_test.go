@@ -119,6 +119,32 @@ func dispatch(j *Job) {
 	}
 }
 
+// TestClosureWrapper_HoistedClosure verifies that hoisting a closure to a local
+// variable (fn := func(...) { ... }; j.ForEachUnfinishedArticle(fn)) is detected.
+func TestClosureWrapper_HoistedClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func dispatch(j *Job) {
+	fn := func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.Added()
+		return true
+	}
+	_ = j.ForEachUnfinishedArticle(fn)
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for hoisted closure passed to ForEachUnfinishedArticle, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside ForEachUnfinishedArticle(...) closure: j.Added()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
 // TestClosureWrapper_HelperDescentInsideClosure verifies that calling a helper
 // function that acquires locks inside a closure wrapper is caught by one-level descent.
 func TestClosureWrapper_HelperDescentInsideClosure(t *testing.T) {

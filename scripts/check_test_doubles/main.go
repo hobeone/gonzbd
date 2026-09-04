@@ -153,10 +153,6 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	if strings.HasSuffix(base, "_test.go") {
 		return nil, nil
 	}
-	dir := filepath.Base(filepath.Dir(path))
-	if strings.HasSuffix(dir, "test") {
-		return nil, nil
-	}
 
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
@@ -217,16 +213,46 @@ func checkSource(path string, src []byte) ([]finding, error) {
 		}
 	}
 
-	// 2) Identifier check: In any non-test .go file that lacks a test build tag
+	// 2) Structural DurableProof encapsulation check:
+	// In internal/durability: any exported function or method outside barrier.go
+	// that returns DurableProof in a non-test file without a test build tag is flagged as a violation.
+	// (This structurally closes the class of bug from Round 3 B2 regardless of function name spelling).
+	cleanPath := filepath.Clean(filepath.ToSlash(path))
+	isDurabilityPkg := strings.HasPrefix(cleanPath, "internal/durability/") || cleanPath == "internal/durability"
+	isBarrierFile := filepath.Base(cleanPath) == "barrier.go"
+	if !hasTestBuildTag && isDurabilityPkg && !isBarrierFile {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil || !fn.Name.IsExported() || fn.Type == nil || fn.Type.Results == nil {
+				continue
+			}
+			for _, result := range fn.Type.Results.List {
+				if returnsDurableProof(result.Type) {
+					kind := "function"
+					if fn.Recv != nil && len(fn.Recv.List) > 0 {
+						kind = "method"
+					}
+					findings = append(findings, finding{
+						file: path,
+						line: fset.Position(fn.Pos()).Line,
+						desc: fmt.Sprintf("structural encapsulation violation: exported %s %s in internal/durability outside barrier.go returns DurableProof", kind, fn.Name.Name),
+					})
+					break
+				}
+			}
+		}
+	}
+
+	// 3) Identifier check: In any non-test .go file that lacks a test build tag
 	// (//go:build test, //go:build integration, //go:build uitest, //go:build crash),
 	// inspect AST FuncDecls, TypeDecls, and ValueDecls.
 	// Flag any symbol matching testDoubleIdentRe unless suppressed.
 	if !hasTestBuildTag {
-		isSuppressed := func(startLine, endLine int) bool {
+		isSuppressed := func(startLine, declLine int) bool {
 			if startLine > 1 {
 				startLine--
 			}
-			for l := startLine; l <= endLine; l++ {
+			for l := startLine; l <= declLine; l++ {
 				if testDoubleAllowRe.MatchString(commentsByLine[l]) {
 					return true
 				}
@@ -238,14 +264,14 @@ func checkSource(path string, src []byte) ([]finding, error) {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name != nil {
 				if testDoubleIdentRe.MatchString(fn.Name.Name) {
 					startLine := fset.Position(fn.Pos()).Line
-					endLine := fset.Position(fn.End()).Line
+					declLine := startLine
 					if fn.Doc != nil {
 						docStart := fset.Position(fn.Doc.Pos()).Line
 						if docStart < startLine {
 							startLine = docStart
 						}
 					}
-					if !isSuppressed(startLine, endLine) {
+					if !isSuppressed(startLine, declLine) {
 						kind := "function"
 						if fn.Recv != nil && len(fn.Recv.List) > 0 {
 							kind = "method"
@@ -269,7 +295,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 						}
 						if testDoubleIdentRe.MatchString(ts.Name.Name) {
 							startLine := fset.Position(ts.Pos()).Line
-							endLine := fset.Position(ts.End()).Line
+							declLine := startLine
 							if ts.Doc != nil {
 								docStart := fset.Position(ts.Doc.Pos()).Line
 								if docStart < startLine {
@@ -281,7 +307,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 									startLine = docStart
 								}
 							}
-							if !isSuppressed(startLine, endLine) {
+							if !isSuppressed(startLine, declLine) {
 								findings = append(findings, finding{
 									file: path,
 									line: fset.Position(ts.Pos()).Line,
@@ -302,7 +328,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 							}
 							if testDoubleIdentRe.MatchString(name.Name) {
 								startLine := fset.Position(name.Pos()).Line
-								endLine := fset.Position(vs.End()).Line
+								declLine := startLine
 								if vs.Doc != nil {
 									docStart := fset.Position(vs.Doc.Pos()).Line
 									if docStart < startLine {
@@ -314,7 +340,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 										startLine = docStart
 									}
 								}
-								if !isSuppressed(startLine, endLine) {
+								if !isSuppressed(startLine, declLine) {
 									findings = append(findings, finding{
 										file: path,
 										line: fset.Position(name.Pos()).Line,
@@ -330,6 +356,19 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	}
 
 	return findings, nil
+}
+
+func returnsDurableProof(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == "DurableProof"
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "DurableProof"
+	case *ast.StarExpr:
+		return returnsDurableProof(t.X)
+	default:
+		return false
+	}
 }
 
 func containsTestTag(expr constraint.Expr) bool {

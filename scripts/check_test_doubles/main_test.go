@@ -18,15 +18,15 @@ func NewTestDurableProof(jobID string, arts []int32) DurableProof {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
+	// Flagged by both the structural DurableProof check and test double name check
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d: %+v", len(findings), findings)
 	}
-	f := findings[0]
-	if f.line != 3 {
-		t.Errorf("expected finding on line 3, got %d", f.line)
+	if findings[0].line != 3 || !strings.Contains(findings[0].desc, "structural encapsulation violation") {
+		t.Errorf("expected structural encapsulation violation on line 3, got: %+v", findings[0])
 	}
-	if !strings.Contains(f.desc, "test double function NewTestDurableProof") {
-		t.Errorf("unexpected description: %s", f.desc)
+	if findings[1].line != 3 || !strings.Contains(findings[1].desc, "test double function NewTestDurableProof") {
+		t.Errorf("expected test double finding on line 3, got: %+v", findings[1])
 	}
 }
 
@@ -92,15 +92,6 @@ func FakeServer() {}
 //
 //testdouble:allow legitimate test stub
 func FakeServer() {}
-`,
-		},
-		{
-			name: "inside func body",
-			src: `package testpkg
-
-func FakeServer() {
-	//testdouble:allow legitimate test stub
-}
 `,
 		},
 	}
@@ -412,5 +403,127 @@ func RealHelper() {
 	}
 	if !strings.Contains(findings[0].desc, "matches *test*.go but lacks a test //go:build tag") {
 		t.Errorf("unexpected desc: %s", findings[0].desc)
+	}
+}
+
+func TestCheckSource_BodyLevelSuppressionDoesNotSuppress(t *testing.T) {
+	// Comment inside function body must NOT suppress function declaration
+	src := `package testpkg
+
+func FakeServer() {
+	//testdouble:allow legitimate test stub
+}
+`
+	findings, err := checkSource("internal/testpkg/server.go", []byte(src))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding because suppression is inside body, got %d: %+v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0].desc, "test double function FakeServer") {
+		t.Errorf("unexpected desc: %s", findings[0].desc)
+	}
+}
+
+func TestCheckSource_StructuralDurableProofCheck(t *testing.T) {
+	cases := []struct {
+		name     string
+		path     string
+		src      string
+		expected int
+		contains string
+	}{
+		{
+			name: "exported func returning DurableProof in internal/durability outside barrier.go",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func MintProof(jobID string) DurableProof {
+	return DurableProof{}
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function MintProof in internal/durability outside barrier.go returns DurableProof",
+		},
+		{
+			name: "exported method returning *DurableProof in internal/durability outside barrier.go",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type Factory struct{}
+
+func (f *Factory) Build() *DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported method Build in internal/durability outside barrier.go returns DurableProof",
+		},
+		{
+			name: "unexported func returning DurableProof in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func unexportedProof() DurableProof {
+	return DurableProof{}
+}
+`,
+			expected: 0,
+		},
+		{
+			name: "exported func returning DurableProof inside barrier.go is allowed",
+			path: "internal/durability/barrier.go",
+			src: `package durability
+
+func (b *Barrier) FinalProof() DurableProof {
+	return DurableProof{}
+}
+`,
+			expected: 0,
+		},
+		{
+			name: "exported func returning DurableProof in file with test build tag is allowed",
+			path: "internal/durability/helper.go",
+			src: `//go:build test
+
+package durability
+
+func MintProof() DurableProof {
+	return DurableProof{}
+}
+`,
+			expected: 0,
+		},
+		{
+			name: "exported func returning DurableProof outside internal/durability is not checked by structural rule",
+			path: "internal/job/proof.go",
+			src: `package job
+
+import "github.com/hobeone/gonzbd/internal/durability"
+
+func AckProof() durability.DurableProof {
+	return durability.DurableProof{}
+}
+`,
+			expected: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings, err := checkSource(tc.path, []byte(tc.src))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.expected {
+				t.Fatalf("expected %d findings, got %d: %+v", tc.expected, len(findings), findings)
+			}
+			if tc.expected > 0 && tc.contains != "" {
+				if !strings.Contains(findings[0].desc, tc.contains) {
+					t.Errorf("expected finding to contain %q, got %q", tc.contains, findings[0].desc)
+				}
+			}
+		})
 	}
 }

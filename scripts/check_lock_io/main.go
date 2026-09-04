@@ -568,6 +568,29 @@ type walker struct {
 // anywhere in body and treats its func-literal argument's entire body
 // as a locked span, regardless of which block it's nested in.
 func (w *walker) walkClosures(body *ast.BlockStmt) {
+	localClosures := make(map[string]*ast.FuncLit)
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range s.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && i < len(s.Rhs) {
+					if lit, ok := s.Rhs[i].(*ast.FuncLit); ok {
+						localClosures[ident.Name] = lit
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for i, name := range s.Names {
+				if i < len(s.Values) {
+					if lit, ok := s.Values[i].(*ast.FuncLit); ok {
+						localClosures[name.Name] = lit
+					}
+				}
+			}
+		}
+		return true
+	})
+
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -582,6 +605,12 @@ func (w *walker) walkClosures(body *ast.BlockStmt) {
 			if f, ok := arg.(*ast.FuncLit); ok {
 				lit = f
 				break
+			}
+			if id, ok := arg.(*ast.Ident); ok {
+				if f, ok := localClosures[id.Name]; ok {
+					lit = f
+					break
+				}
 			}
 		}
 		if lit == nil {
