@@ -630,9 +630,6 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)
 		}
-		if p.Header.Added <= 0 {
-			p.Header.Added = now.Unix()
-		}
 		restoreJobMetadata(j, p)
 		// register, not Add: Add would assign a FRESH sequence while
 		// markWritten below records the stored one, and the first
@@ -828,9 +825,7 @@ func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.In
 }
 
 func restoreJobMetadata(j *job.Job, p Persisted) {
-	if p.Header.Added > 0 {
-		j.SetAdded(time.Unix(p.Header.Added, 0).UTC())
-	}
+	j.SetAdded(time.Unix(p.Header.Added, 0).UTC())
 	var started, finished time.Time
 	if p.DownloadStarted > 0 {
 		started = time.Unix(p.DownloadStarted, 0).UTC()

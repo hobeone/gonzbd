@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -470,5 +471,28 @@ func TestSetPriority_Validation(t *testing.T) {
 	}
 	if row.Header.Priority != int(constants.HighPriority) {
 		t.Errorf("Priority = %d, want %d", row.Header.Priority, constants.HighPriority)
+	}
+}
+
+func TestAdd_NormalizesZeroOrNegativeAdded(t *testing.T) {
+	d := newTestDispatcher(t)
+	before := time.Now().UTC().Unix()
+
+	// Zero Added
+	j1 := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j1, Header{Name: "Job 1", Added: 0}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+	if j1.Added().Unix() < before {
+		t.Errorf("j1.Added() = %v, want >= %v (zero Added must be normalized to current time)", j1.Added().Unix(), before)
+	}
+
+	// Negative Added
+	j2 := job.New("j2", "Job 2", job.Policy{})
+	if err := d.Add(j2, Header{Name: "Job 2", Added: -100}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+	if j2.Added().Unix() < before {
+		t.Errorf("j2.Added() = %v, want >= %v (negative Added must be normalized to current time)", j2.Added().Unix(), before)
 	}
 }

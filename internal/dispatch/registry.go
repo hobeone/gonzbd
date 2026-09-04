@@ -103,7 +103,7 @@ func (d *Dispatcher) Add(j *job.Job, h Header) error {
 	}
 	d.mu.Unlock()
 
-	if h.Added == 0 {
+	if h.Added <= 0 {
 		h.Added = time.Now().UTC().Unix()
 	}
 	j.SetAdded(time.Unix(h.Added, 0).UTC())

@@ -90,6 +90,13 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		// Propagation delay: skip jobs that haven't aged enough.
 		// Posts need time to propagate to all NNTP servers; dispatching
 		// too early causes 430 (article not found) errors on backups.
+		//
+		// Trade-off: Because Added is normalized at ingestion (Dispatcher.Add)
+		// to the current time when zero or negative, a job restored without an
+		// explicit add time will age from its ingestion time rather than epoch
+		// (1970-01-01). This deliberately holds back newly ingested jobs for
+		// propagationDelay to prevent premature missing-article churn, rather
+		// than dispatching immediately.
 		if opts.propagationDelay > 0 && opts.now.Before(j.Added().Add(opts.propagationDelay)) {
 			continue // too young, skip for now
 		}

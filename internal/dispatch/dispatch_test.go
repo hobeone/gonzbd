@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -156,21 +157,17 @@ func TestRestoreJobMetadata_Coverage(t *testing.T) {
 	}
 }
 
-func TestRestoreJobMetadata_ZeroAddedDoesNotResetToEpoch(t *testing.T) {
+func TestRestoreJobMetadata_RestoresAddedTimestamp(t *testing.T) {
 	j := job.New("j1", "Job 1", job.Policy{})
-	origAdded := j.Added()
-	if origAdded.IsZero() {
-		t.Fatal("job.New must assign non-zero created timestamp")
-	}
-
+	targetTime := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	p := Persisted{
 		Header: Header{
-			Added: 0,
+			Added: targetTime.Unix(),
 		},
 	}
 	restoreJobMetadata(j, p)
 
-	if j.Added() != origAdded {
-		t.Errorf("Added = %v, want original %v (zero Added must not reset to Unix epoch)", j.Added(), origAdded)
+	if !j.Added().Equal(targetTime) {
+		t.Errorf("Added = %v, want %v", j.Added(), targetTime)
 	}
 }
