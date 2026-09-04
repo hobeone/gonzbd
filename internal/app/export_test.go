@@ -209,3 +209,18 @@ func (a *Application) BarrierRuns() int64 { return a.barrierRuns.Load() }
 func (a *Application) Assembler() *assembler.Assembler {
 	return a.assembler
 }
+
+// NoteJobBytes notes written bytes for a job in the barrier accumulator.
+func (a *Application) NoteJobBytes(jobID string, n int) {
+	a.noteJobBytes(jobID, n)
+}
+
+// JobBarrierState reports whether the job has tracked barrier state (bytes, mutex, or last barrier).
+func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool, hasLast bool) {
+	a.barrierMu.Lock()
+	defer a.barrierMu.Unlock()
+	_, hasBytes = a.jobBarrierBytes[jobID]
+	_, hasMu = a.jobBarrierMu[jobID]
+	_, hasLast = a.lastBarrier[jobID]
+	return
+}

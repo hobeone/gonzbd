@@ -113,8 +113,8 @@ func TestFinalizer_PersistError_ReleasesDispatcherResources(t *testing.T) {
 }
 
 // TestFinalizer_ShutdownContext_PersistSucceeds pins that when app.ctx is cancelled
-// before finalization (simulating post-processor drain during shutdown), persistAndCommit
-// protects database writes with context.WithoutCancel and successfully writes history.
+// while finalizer executes during shutdown, persistAndCommit protects database writes
+// with context.WithoutCancel and successfully writes history.
 func TestFinalizer_ShutdownContext_PersistSucceeds(t *testing.T) {
 	t.Parallel()
 	dl := t.TempDir()
@@ -148,7 +148,7 @@ func TestFinalizer_ShutdownContext_PersistSucceeds(t *testing.T) {
 		Job: qJob,
 	}
 
-	// Cancel application lifecycle context to simulate shutdown drain.
+	// Cancel application lifecycle context to simulate parent context cancellation during shutdown.
 	ctx, cancel := context.WithCancel(t.Context())
 	application.InjectCtx(ctx)
 	cancel()
@@ -234,9 +234,22 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		t.Fatalf("repo.Add existing: %v", err)
 	}
 
+	// Seed durability row (failed_articles) to verify it gets deleted during cleanup.
+	if _, err := repo.DB().ExecContext(t.Context(),
+		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, qJob.ID()); err != nil {
+		t.Fatalf("seed failed_articles: %v", err)
+	}
+
+	// Seed barrier accumulator bytes to verify forgetJobBarrierState cleans it up.
+	application.NoteJobBytes(qJob.ID(), 1024)
+	if hasBytes, _, _ := application.JobBarrierState(qJob.ID()); !hasBytes {
+		t.Fatal("expected barrier bytes to be tracked before finalization")
+	}
+
 	entry := history.Entry{
-		NzoID: qJob.ID(),
-		Name:  qJob.Name(),
+		NzoID:  qJob.ID(),
+		Name:   qJob.Name(),
+		Status: "Completed",
 	}
 
 	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
@@ -257,5 +270,20 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	// 3. Checkpointer prune still executed.
 	if application.Checkpointer().DirtyCount() != 0 {
 		t.Errorf("expected checkpointer dirty count to be 0 after prune, got %d", application.Checkpointer().DirtyCount())
+	}
+
+	// 4. Durability rows deletion still executed for completed job.
+	var failedCount int
+	if err := repo.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM failed_articles WHERE job_id = ?`, qJob.ID()).Scan(&failedCount); err != nil {
+		t.Fatalf("query failed_articles: %v", err)
+	}
+	if failedCount != 0 {
+		t.Errorf("expected failed_articles to be deleted after persist error, got count %d", failedCount)
+	}
+
+	// 5. forgetJobBarrierState still executed.
+	if hasBytes, hasMu, hasLast := application.JobBarrierState(qJob.ID()); hasBytes || hasMu || hasLast {
+		t.Errorf("expected job barrier state to be forgotten, got bytes=%v mu=%v last=%v", hasBytes, hasMu, hasLast)
 	}
 }

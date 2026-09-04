@@ -68,8 +68,16 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
 // unlinking, durability cleanup, and barrier state reset) always completes
 // regardless of history persistence success so that failed jobs do not leak
-// into the active registry. Returns a non-nil error if persistence failed (the
-// error is already logged; callers can simply return).
+// into the active registry.
+//
+// Durability rows for a failed job are owned by the retry path and must never
+// be deleted here. Furthermore, if history persistence fails against a
+// pre-existing failed history entry (such as after a crash between commit and
+// Dispatcher.Remove), those durability rows belong to the existing failed entry
+// and are preserved for retry.
+//
+// Returns a non-nil error if persistence failed (the error is already logged;
+// callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && job != nil && job.Job != nil {
@@ -120,10 +128,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
 	_ = os.Remove(manifestPath)
 
-	if entry.Status != string(constants.StatusFailed) || persistErr != nil {
-		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
+	defer delCancel()
+	shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
+	if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
+		if existing, err := app.historyRepo.Get(delCtx, job.Job.ID()); err == nil && existing.Status == string(constants.StatusFailed) {
+			shouldDeleteDurability = false
+		}
+	}
+	if shouldDeleteDurability {
 		app.deleteJobDurability(delCtx, job.Job.ID())
-		delCancel()
 	}
 	app.forgetJobBarrierState(job.Job.ID())
 	if persistErr != nil {
