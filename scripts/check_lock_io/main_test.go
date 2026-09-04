@@ -67,6 +67,102 @@ func trustedFn(cfg *Config, log *Logger) bool {
 	}
 }
 
+// TestClosureWrapper_DirectLockInsideClosure verifies that calling Lock() or
+// RLock() inside a closure wrapper (e.g. With or ForEachUnfinishedArticle) is
+// flagged as a lock acquisition inside the closure.
+func TestClosureWrapper_DirectLockInsideClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func process(cfg *Config) {
+	cfg.With(func(c *Config) {
+		mu.Lock()
+		defer mu.Unlock()
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for direct lock inside With closure, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside With(...) closure: mu.Lock()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_JobLockMethodInsideClosure verifies that calling a job.Job
+// method that acquires locks (such as j.Added()) inside a ForEachUnfinishedArticle
+// closure is flagged as a lock acquisition inside the closure.
+func TestClosureWrapper_JobLockMethodInsideClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func dispatch(j *Job) {
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.Added()
+		return true
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for Job locking method inside ForEachUnfinishedArticle closure, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside ForEachUnfinishedArticle(...) closure: j.Added()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_SafeClosureNotFlagged verifies that a closure passed to a
+// closureLockMethod that does not perform I/O or acquire locks is not flagged.
+func TestClosureWrapper_SafeClosureNotFlagged(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func inspect(j *Job) int {
+	count := 0
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		count++
+		return true
+	})
+	return count
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for safe closure, got %d: %v", len(findings), findings)
+	}
+}
+
+// TestClosureWrapper_LockSuppressionComment verifies that a trailing //lockio:
+// suppression comment suppresses a lock acquisition finding inside a closure wrapper.
+func TestClosureWrapper_LockSuppressionComment(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func dispatch(j *Job) {
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.Added() //lockio: intentional lock acquisition in test
+		return true
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings when //lockio: suppression is present, got %d: %v", len(findings), findings)
+	}
+}
+
 // TestManualUnlock_PreFix reconstructs events.go's Broadcast before its fix:
 // a log call between RLock and the manual (non-deferred) RUnlock. Must be
 // flagged — this specifically validates the non-defer detection path.

@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/hobeone/gonzbd/scripts/gitscope"
 )
@@ -266,6 +267,106 @@ func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
 	return funcs
 }
 
+var (
+	jobLockMethodsOnce sync.Once
+	jobLockMethods     map[string]bool
+)
+
+// findRepoRoot finds the repository root directory by walking up from the current
+// working directory or an optional start path until go.mod and internal/job are found.
+func findRepoRoot(start string) string {
+	check := func(dir string) string {
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "internal", "job")); err == nil {
+				if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+					return dir
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		return ""
+	}
+
+	if start != "" {
+		if abs, err := filepath.Abs(start); err == nil {
+			if root := check(abs); root != "" {
+				return root
+			}
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if root := check(cwd); root != "" {
+			return root
+		}
+	}
+	return ""
+}
+
+// jobMethodsAcquiringLocks returns a set of method names declared on *Job
+// in internal/job/*.go that contain a direct call to .Lock() or .RLock().
+func jobMethodsAcquiringLocks(startDir string) map[string]bool {
+	jobLockMethodsOnce.Do(func() {
+		jobLockMethods = make(map[string]bool)
+		repoRoot := findRepoRoot(startDir)
+		if repoRoot == "" {
+			return
+		}
+		entries, err := filepath.Glob(filepath.Join(repoRoot, "internal", "job", "*.go"))
+		if err != nil {
+			return
+		}
+		for _, f := range entries {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			parsed, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+			if err != nil {
+				continue
+			}
+			for _, decl := range parsed.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Body == nil {
+					continue
+				}
+				recvType := fn.Recv.List[0].Type
+				star, ok := recvType.(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				ident, ok := star.X.(*ast.Ident)
+				if !ok || ident.Name != "Job" {
+					continue
+				}
+
+				hasLock := false
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					if sel.Sel.Name == "Lock" || sel.Sel.Name == "RLock" {
+						hasLock = true
+						return false
+					}
+					return true
+				})
+				if hasLock {
+					jobLockMethods[fn.Name.Name] = true
+				}
+			}
+		}
+	})
+	return jobLockMethods
+}
+
 // checkFile parses one Go source file and returns every mutex-held-during-
 // I/O finding in it, filtered by //lockio: suppression comments.
 func checkFile(path string) ([]finding, error) {
@@ -470,6 +571,42 @@ func (w *walker) walkClosures(body *ast.BlockStmt) {
 		}
 		desc := fmt.Sprintf("I/O call inside %s(...) closure (holds a lock for its entire body)", sel.Sel.Name)
 		w.scanForIO(lit.Body, desc)
+		w.scanClosureForLocks(lit.Body, sel.Sel.Name)
+		return true
+	})
+}
+
+// scanClosureForLocks inspects a closure passed to a closureLockMethod
+// (e.g. With, ForEachUnfinishedArticle) for lock acquisitions, preventing
+// Class 4 lock-inversion deadlocks:
+// 1) Direct mutex acquisitions: any call to Lock() or RLock().
+// 2) Method calls on job.Job that acquire locks (e.g. j.Added()).
+func (w *walker) scanClosureForLocks(body *ast.BlockStmt, closureMethod string) {
+	jobLocking := jobMethodsAcquiringLocks(filepath.Dir(w.path))
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+
+		// 1) Direct mutex acquisitions: call to .Lock() or .RLock()
+		if sel.Sel.Name == "Lock" || sel.Sel.Name == "RLock" {
+			desc := fmt.Sprintf("lock acquisition inside %s(...) closure: %s()", closureMethod, types.ExprString(call.Fun))
+			w.report(call.Pos(), call.End(), desc)
+			return true
+		}
+
+		// 2) Methods on job.Job that acquire locks
+		if jobLocking[sel.Sel.Name] {
+			desc := fmt.Sprintf("lock acquisition inside %s(...) closure: %s()", closureMethod, types.ExprString(call.Fun))
+			w.report(call.Pos(), call.End(), desc)
+			return true
+		}
+
 		return true
 	})
 }
