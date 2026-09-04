@@ -745,10 +745,7 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 	}
 
 	// After job is completely removed from byID:
-	d.mu.Lock()
-	delete(d.removing, "j1")
-	delete(d.byID, "j1")
-	d.mu.Unlock()
+	d.remove("j1")
 
 	d.markResident("j1")
 	if d.isResident("j1") {
