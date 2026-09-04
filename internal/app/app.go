@@ -1202,6 +1202,13 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 		if err := waitBounded("downloader", stepTimeout, dl.Stop, app.log); err != nil && errs != nil {
 			*errs = append(*errs, fmt.Errorf("downloader stop: %w", err))
 		}
+		if app.dispatcher != nil {
+			for _, row := range app.dispatcher.List() {
+				if row.View.State == job.Fetching {
+					_ = app.dispatcher.Yielded(row.ID)
+				}
+			}
+		}
 	}
 
 	// R6's clean-shutdown barrier, in the only window where both halves
@@ -1265,6 +1272,13 @@ func (app *Application) Shutdown() error {
 
 	if err := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log); err != nil {
 		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
+	}
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
+				_ = app.dispatcher.Yielded(row.ID)
+			}
+		}
 	}
 
 	if app.dispatcher != nil {
@@ -2542,6 +2556,8 @@ type NNTPTestResult struct {
 }
 
 // TestNNTPServer dials an NNTP server to verify connectivity and credentials.
+//
+//testdouble:allow SABnzbd test_nntp_server API implementation
 func (a *Application) TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (NNTPTestResult, error) {
 	start := time.Now()
 	log := slog.Default()

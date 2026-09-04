@@ -40,6 +40,12 @@ func newAppRunner(app *Application) *appRunner {
 }
 
 func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
+	if r.app != nil && r.app.stopping.Load() {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
 	switch state {
 	case job.Fetching:
 		go r.runFetch(ctx, id)
