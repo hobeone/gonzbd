@@ -221,4 +221,3 @@ func TestServer_StatusTestConnection_DirectCall(t *testing.T) {
 		t.Fatalf("statusTestConnection code = %d, want 200", w.Code)
 	}
 }
-

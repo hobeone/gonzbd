@@ -445,4 +445,3 @@ func TestProbeBinaries(t *testing.T) {
 		t.Errorf("probeBinaries() = %+v, want cached %+v", p2, p1)
 	}
 }
-
