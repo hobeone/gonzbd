@@ -62,8 +62,8 @@ func (c *Checkpointer) Mark(j *job.Job) {
 }
 
 // Prune removes a job from both the dirty set and any in-flight flush batch
-// so a removed job is not written or re-merged after its durability and state
-// have been cleaned up.
+// so a pruned job is not re-merged into dirty by a failing flush. (A write
+// batch already handed to the store still completes.)
 func (c *Checkpointer) Prune(id string) {
 	c.mu.Lock()
 	delete(c.dirty, id)

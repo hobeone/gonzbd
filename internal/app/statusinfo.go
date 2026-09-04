@@ -273,10 +273,6 @@ func (app *Application) JobDurability(jobID string) JobDurability {
 // ProgressByteCounters is the subset of JobProgress that DurableBytesOf requires.
 type ProgressByteCounters interface {
 	ProgressFigures() (expected, remaining, failed int64)
-	ExpectedBytes() int64
-	FailedBytes() int64
-	RemainingBytes() int64
-	ContentFailedBytes() int64
 }
 
 // DurableBytesOf derives a job's durable byte total from its progress.

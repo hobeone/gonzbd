@@ -2452,7 +2452,13 @@ func failMsgForJob(j *job.Job) string {
 	return failMsgForCounters(j.Progress(), string(j.RepairState()), j.RecoveryBytes(), j.RecoveryFiles(), j.RepairState().Hopeless())
 }
 
-func failMsgForCounters(p ProgressByteCounters, state string, recBytes int64, recFiles int, hopeless bool) string {
+type failureByteCounters interface {
+	FailedBytes() int64
+	ContentFailedBytes() int64
+	ExpectedBytes() int64
+}
+
+func failMsgForCounters(p failureByteCounters, state string, recBytes int64, recFiles int, hopeless bool) string {
 	if p == nil {
 		return ""
 	}
