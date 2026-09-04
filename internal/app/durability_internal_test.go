@@ -603,7 +603,7 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 // backstop deliberately spares history-as-FAILED, so it is not equivalent.
 //
 // Both, and through their own OWNERS: durability.RunStore owns durable_runs
-// and the queue owns failed_articles. A cleanup that reached only one of them
+// and checkpoint.Store.SaveBatch owns failed_articles. A cleanup that reached only one of them
 // would leave half a departed job's rows behind.
 func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 	t.Parallel()
@@ -780,7 +780,7 @@ func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
 //
 // The two stores have different OWNERS, which is why the "one must not stop
 // the other" half matters here rather than being a tidiness rule:
-// durability.RunStore owns durable_runs and the queue owns failed_articles, so
+// durability.RunStore owns durable_runs and checkpoint.Store.SaveBatch owns failed_articles, so
 // a single early return would leave one owner's rows for a departed job while
 // the other's were collected.
 func TestDeleteJobDurability_ReportsAFailedDelete(t *testing.T) {

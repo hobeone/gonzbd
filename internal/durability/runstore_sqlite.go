@@ -416,7 +416,7 @@ func (s *SQLiteRunStore) DeleteFile(ctx context.Context, jobID string, fileIdx i
 
 // DeleteJob removes every run for a job that has left the queue. It touches
 // only durable_runs — failed_articles is owned and written solely by
-// internal/queue.
+// checkpoint.Store.SaveBatch.
 func (s *SQLiteRunStore) DeleteJob(ctx context.Context, jobID string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("durability: delete runs job=%s: %w", jobID, err)

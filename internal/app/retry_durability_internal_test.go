@@ -17,8 +17,8 @@ import (
 // one article for good.
 //
 // Both tables, because they have different owners and the retention rules have
-// to agree about them: durability.RunStore owns durable_runs and the queue
-// owns failed_articles.
+// to agree about them: durability.RunStore owns durable_runs and
+// checkpoint.Store.SaveBatch owns failed_articles.
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
 	if _, err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
@@ -60,8 +60,8 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // aborts on a failure here rather than requeueing (#422).
 //
 // Both owners' errors are joined rather than the first winning, because they
-// are different stores: durability.RunStore owns durable_runs and the queue
-// owns failed_articles. A caller deciding whether to abort is better served by
+// are different stores: durability.RunStore owns durable_runs and
+// checkpoint.Store.SaveBatch owns failed_articles. A caller deciding whether to abort is better served by
 // the whole picture, and an early return would leave one owner's rows behind
 // for a job that is about to be re-downloaded over them.
 func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
