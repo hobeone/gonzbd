@@ -106,10 +106,21 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return
 	}
-	if err := d.store.Save(ctx, p); err != nil {
+	d.storeMu.Lock()
+	d.mu.Lock()
+	if d.removing[j.ID()] || d.byID[j.ID()] == nil {
+		d.mu.Unlock()
+		d.storeMu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+
+	if err := d.store.Save(ctx, p); err != nil { //lockio: storeMu serializes store.Save with store.Delete to prevent row resurrection
+		d.storeMu.Unlock()
 		d.logStoreError(j.ID(), err)
 		return
 	}
+	d.storeMu.Unlock()
 	d.markWritten(p)
 }
 
@@ -152,7 +163,10 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 	if s.State.State != job.StateUnset || s.Intent != job.IntentCancel {
 		return false
 	}
-	if err := d.store.Delete(ctx, j.ID()); err != nil {
+	d.storeMu.Lock()
+	err := d.store.Delete(ctx, j.ID())
+	d.storeMu.Unlock()
+	if err != nil {
 		// Leave it registered: removing it from the registry here while the
 		// store still holds the row would resurrect it at the next Start,
 		// which is worse than trying again on the next tick. Returning true
@@ -253,6 +267,9 @@ func (d *Dispatcher) isResident(id string) bool {
 func (d *Dispatcher) markResident(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.removing[id] || d.byID[id] == nil {
+		return
+	}
 	d.resident[id] = true
 }
 

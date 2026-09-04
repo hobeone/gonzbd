@@ -405,6 +405,9 @@ func TestPersistIfChanged_SkipsAnUnregisteredJob(t *testing.T) {
 // ID that was never written must report ok == false.
 func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	if _, ok := d.lastWritten("j1"); ok {
 		t.Error("lastWritten(j1) = ok before any write, want false")

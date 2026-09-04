@@ -28,7 +28,7 @@ type Dispatcher struct {
 	byID  map[string]*entry
 	order []string
 
-	// resident, launched and written are the dispatcher's own per-job
+	// resident, launched, written and removing are the dispatcher's own per-job
 	// bookkeeping, all guarded by mu. None may be held across a call into
 	// sched or into Residency.Hydrate — take mu, read or write one map,
 	// release.
@@ -43,11 +43,13 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds six lines:
+	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds ten lines:
 	//
-	//   - remove (registry.go), four lines: byID, written, resident,
-	//     launched. It is total by rule; d.order is pruned by the loop
-	//     below those four rather than by a delete, so it does not appear.
+	//   - remove (registry.go), five lines: byID, written, resident,
+	//     removing, launched. It is total by rule; d.order is pruned by the loop
+	//     below those rather than by a delete, so it does not appear.
+	//   - Remove error branches (registry.go), three lines: removing on
+	//     Cancel, wait worker, or store failure.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
@@ -60,6 +62,12 @@ type Dispatcher struct {
 	resident map[string]bool
 	launched map[string]chan struct{}
 	written  map[string]Persisted
+	removing map[string]bool
+
+	// storeMu serializes store writes (Save in persistIfChanged) and
+	// deletions (Delete in Remove and evictCancelledNeverRun) so a concurrent
+	// Save cannot resurrect a row deleted by Remove.
+	storeMu sync.Mutex
 
 	// nextSeq is the sequence register will hand the next job, and register is
 	// its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch` returns
@@ -246,6 +254,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		resident:  map[string]bool{},
 		launched:  map[string]chan struct{}{},
 		written:   map[string]Persisted{},
+		removing:  make(map[string]bool),
 		q:         sched.New(leaseCap, slotCap, clock, w),
 		wake:      make(chan struct{}, 1),
 		notify:    make(chan struct{}, 1),
@@ -806,5 +815,8 @@ func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 func (d *Dispatcher) markWritten(p Persisted) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.removing[p.ID] || d.byID[p.ID] == nil {
+		return
+	}
 	d.written[p.ID] = p
 }

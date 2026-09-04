@@ -236,6 +236,7 @@ func (d *Dispatcher) remove(id string) {
 	delete(d.byID, id)
 	delete(d.written, id)
 	delete(d.resident, id)
+	delete(d.removing, id)
 	if ch, ok := d.launched[id]; ok {
 		close(ch)
 		delete(d.launched, id)
@@ -376,16 +377,33 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // waiting for worker, or store failure), the job remains cancelled and
 // registered, allowing the caller to retry Remove safely.
 func (d *Dispatcher) Remove(ctx context.Context, id string) error {
-	if _, ok := d.Job(id); !ok {
+	d.mu.Lock()
+	if _, ok := d.byID[id]; !ok {
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
 	}
+	d.removing[id] = true
+	d.mu.Unlock()
+
 	if err := d.Cancel(id); err != nil {
+		d.mu.Lock()
+		delete(d.removing, id)
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
 	}
 	if err := d.waitLaunched(ctx, id); err != nil {
+		d.mu.Lock()
+		delete(d.removing, id)
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
 	}
-	if err := d.store.Delete(ctx, id); err != nil {
+	d.storeMu.Lock()
+	err := d.store.Delete(ctx, id)
+	d.storeMu.Unlock()
+	if err != nil {
+		d.mu.Lock()
+		delete(d.removing, id)
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
 	}
 	d.res.Evict(id)

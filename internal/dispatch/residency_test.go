@@ -81,6 +81,9 @@ func TestReconcileResidency_CalledDirectlyHydrates(t *testing.T) {
 // markResident and markNotResident.
 func TestResidentBookkeeping_MarksAndClears(t *testing.T) {
 	d := newTestDispatcher(t)
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	if d.isResident("j1") {
 		t.Fatal("isResident(j1) = true before anything marked it")
