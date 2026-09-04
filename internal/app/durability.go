@@ -449,7 +449,7 @@ func (app *Application) noteJobBytes(jobID string, n int) {
 // from it — but the residency check stays, because it is the thing that
 // decides whether a checkpoint should run at all. A job whose manifest has
 // been evicted is not downloading, so it has nothing open to checkpoint; the
-// barrier's own ack would fail on a non-resident job anyway (Queue.AckDurable
+// barrier's own ack would fail on a non-resident job anyway (Job.AckDurable
 // requires residency), and reaching it only to fail there would turn an
 // ordinary event into a logged error.
 //
@@ -489,14 +489,11 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	// last_barrier stamp every 30 seconds — the exact inversion of what R26
 	// asks that figure to distinguish.
 	//
-	// The path is ordinary, not defensive, and it is worth naming precisely
-	// because the obvious guess is wrong. Eviction does NOT produce a nil
-	// target: syncTargetFor goes through Queue.SnapshotJob, which hydrates one
-	// job's manifest from disk, so a merely paused job still has one. The
-	// reachable cases are a job that left the queue between checkpointAll's
-	// OpenJobIDs and this call — the assembler still holds handles for a job
-	// the queue has dropped, so checkpointAll keeps listing it — and a
-	// manifest that cannot be read at all.
+	// The reachable cases are an evicted job (syncTargetFor requires a
+	// resident manifest and returns nil when non-resident), a job that left
+	// the dispatcher between checkpointAll's OpenJobIDs and this call — the
+	// assembler still holds handles for a job the dispatcher has dropped, so
+	// checkpointAll keeps listing it — and a manifest that cannot be read at all.
 	//
 	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the first, and
 	// asserts both halves of the fixture: no target, and the assembler still
@@ -1131,9 +1128,9 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 //
 // # This function does not decide whether the CRC is publishable
 //
-// It hands the whole record over and lets Queue.SetFileCRC32FromRuns decide.
+// It hands the whole record over and lets Job.SetFileCRC32FromRuns decide.
 // The decision needs the file's article range, which lives on the resident
-// manifest that the queue owns and this package deliberately does not reach
+// manifest that the job owns and this package deliberately does not reach
 // into (docs/queue-lifecycle.md), and — more to the point — a setter that took
 // a bare uint32 would have no way to refuse a wrong one. The predicate, and
 // the argument for its exact shape, are at the gatekeeper.

@@ -778,7 +778,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	}
 
 	// The article is not marked Done here, and this package cannot mark it
-	// Done at all: Queue.AckDurable takes a durability.DurableProof, which has
+	// Done at all: Job.AckDurable takes a durability.DurableProof, which has
 	// no exported constructor outside internal/durability. Only a barrier that
 	// has drained and fsynced the file can mint one.
 	//

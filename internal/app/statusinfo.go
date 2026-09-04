@@ -217,21 +217,21 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // DurableBytes comes from the job's downloaded-byte total rather than from a
 // counter of its own, because on this design they are the same quantity.
 // Everything that marks an article Done ultimately stands on a barrier's
-// fsync: Queue.AckDurable, which takes a DurableProof no path outside a
-// completed barrier can mint and hands its articles to queue.ackDurable; the
-// two seeding entry points — Queue.SeedFromRuns, which replays the runs a
-// barrier recorded through queue.seedFromRuns, and ReplaceFromRuns, which
+// fsync: Job.AckDurable, which takes a DurableProof no path outside a
+// completed barrier can mint and hands its articles to job.AckDurable; the
+// two seeding entry points — Job.SeedFromRuns, which replays the runs a
+// barrier recorded through job.SeedFromRuns, and ReplaceFromRuns, which
 // installs what the startup sweep's stat left standing; and
-// queue.applyResolution, which replays the resolution derived from those same
+// job.ApplyResolution, which replays the resolution derived from those same
 // records when a job is re-hydrated. The two markDone calls behind the first
 // two entry points moved onto unexported *Job methods in B2.4a; the entry
 // points and the evidence they require are unchanged.
-// queue.markFailed sets the bit too, for an
+// job.markFailed sets the bit too, for an
 // article whose bytes will never arrive and which therefore contributes no
 // downloaded bytes.
 //
 // One path sets the bit WITHOUT going through markDone at all, and it is named
-// here rather than left to the word "ultimately": queue.newJobProgressSized
+// here rather than left to the word "ultimately": job.newJobProgressSized
 // writes p.done directly when sizing a non-resident job's progress, because
 // markDone needs a manifest for byte arithmetic that has already been seeded
 // from job_files. Its input is the same derived resolution — done means
@@ -241,7 +241,7 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // So the identity holds at every residency, and a second counter would be a
 // second representation of one fact, free to drift (S5).
 //
-// See queue.jobProgressJSON, which states the markDone-scoped version of this
+// See job.jobProgressJSON, which states the markDone-scoped version of this
 // at the bit itself, and TestJobDurability_ReportsDownloadedBytesAsDurable,
 // which pins the identity and restates the enumeration above; keep all three
 // in step. A narrowing here that says "only the barrier" belongs in none of

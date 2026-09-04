@@ -272,7 +272,7 @@ func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 // that keeps a removed job from being re-evaluated forever.
 //
 // Phase 1 returns early while anything is still blocked, so without this check
-// a departed job with a pending finalize never reaches the Queue.Resume that
+// a departed job with a pending finalize never reaches the Dispatcher.ResumeJob that
 // used to notice it was gone — it would be retried on every interval for the
 // life of the process, re-logging its routed fault each time.
 func TestReevaluateStall_ForgetsADepartedJobWithWorkOutstanding(t *testing.T) {

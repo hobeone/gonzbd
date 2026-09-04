@@ -15,7 +15,7 @@ import (
 // TestStart_RetentionDoesNotDefeatCrashReconciliation pins that enabling
 // history retention leaves the startup duplicate-removal working.
 //
-// Start reconciles a crash between the history commit and Queue.Remove: a
+// Start reconciles a crash between the history commit and Dispatcher.Remove: a
 // completed job still sitting in the queue is looked up in history, and if
 // the entry is there the stale queue entry is dropped. That lookup is the
 // only evidence the job already finished. A retention sweep that runs first
@@ -44,7 +44,7 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 	}
 
 	// A completed job still in the queue — the state a crash between the
-	// history commit and Queue.Remove leaves behind.
+	// history commit and Dispatcher.Remove leaves behind.
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  "file.bin",
 		Bytes:    1024,

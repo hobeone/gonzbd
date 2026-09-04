@@ -248,7 +248,7 @@ type StallInfo struct {
 //
 // Read from here rather than from Job.Warning because the two have different
 // lifetimes: re-evaluation resumes the job to find out whether the condition
-// cleared, and Queue.Resume wipes the warning as it goes. A user polling the
+// cleared, and Dispatcher.ResumeJob wipes the warning as it goes. A user polling the
 // queue during a re-evaluation would see the reason blink out and come back.
 func (app *Application) StallReason(jobID string) StallInfo {
 	app.stallMu.Lock()
@@ -300,7 +300,7 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // # The automatic cadence does not resume a job until its finalizes have landed
 //
 // The first draft resumed first, because Barrier.FinalizeFile ends in
-// AckDurable and that needs a resident job, which Stall -> Queue.Pause evicted.
+// AckDurable and that needs a resident job, which Stall -> Dispatcher.PauseJob evicted.
 // It works, and it costs too much: an unpaused job dispatches articles into the
 // device that has just refused them, for the length of every retry, every
 // interval, forever — contradicting the reason Stall pauses at all.
@@ -333,7 +333,7 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // could not run this time runs at the next interval instead.
 func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// A job that has left the queue has nothing to recover and nothing to
-	// resume. Checked before phase 1 rather than left to Queue.Resume in phase
+	// resume. Checked before phase 1 rather than left to Dispatcher.ResumeJob in phase
 	// 2, because phase 1 returns early while anything is still blocked — so a
 	// departed job with a pending finalize would be retried on every interval
 	// for the life of the process, and its routed fault re-logged each time.

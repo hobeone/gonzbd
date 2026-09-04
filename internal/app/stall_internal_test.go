@@ -638,8 +638,8 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 //
 // Phase 3 replays the committed durable runs after a stall recovery. It has
 // verified NOTHING about any file — it is re-delivering an ack whose fsync
-// already landed — so it must stay on the additive Queue.SeedFromRuns.
-// Pointing it at Queue.ReplaceFromRuns instead compiles, reads as a tidy-up,
+// already landed — so it must stay on the additive Job.SeedFromRuns.
+// Pointing it at Job.ReplaceFromRuns instead compiles, reads as a tidy-up,
 // and silently destroys exactly the bits this phase exists to preserve: an ack
 // this process made AFTER the last commit is not in the runs that commit
 // wrote, so an authoritative replay would clear it and the article would be

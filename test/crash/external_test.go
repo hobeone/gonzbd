@@ -29,8 +29,8 @@ func externalFixture() harnessOpts {
 // working: the recomputation got the right answer and the answer was
 // discarded, so the job finished with a completed file that had a hole in it.
 // It is green as of the fix — the startup sweep installs its result through
-// the authoritative Queue.ReplaceFromRuns rather than the additive
-// Queue.SeedFromRuns. Do not relax the assertions.
+// the authoritative Job.ReplaceFromRuns rather than the additive
+// Job.SeedFromRuns. Do not relax the assertions.
 //
 // A clean stop records runs describing exactly what the file holds, so the
 // next start adopts them on one stat with no read. Truncating the file makes

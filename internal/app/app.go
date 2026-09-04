@@ -152,7 +152,7 @@ type Application struct {
 
 	// barrier is the single place the Written -> Durable -> Resolved
 	// transition happens (X2). It is the only thing that can mint a
-	// DurableProof, and Queue.AckDurable takes one, so no other path in the
+	// DurableProof, and Job.AckDurable takes one, so no other path in the
 	// program can ack an article as downloaded. nil when the process has no
 	// history database, in which case nothing acks and every restart
 	// re-downloads — see New.
@@ -1117,7 +1117,7 @@ func (app *Application) Start(ctx context.Context) error {
 	// Sweep expired history, after the reconciliation above and not before.
 	//
 	// That loop identifies a crash between the history commit and
-	// Queue.Remove by looking a still-queued completed job up in history,
+	// Dispatcher.Remove by looking a still-queued completed job up in history,
 	// and the entry is the only evidence the job already finished. Pruning
 	// first can delete it out from under the lookup, which turns into
 	// ErrNotFound and sends the job to maybeFinalize to be post-processed
@@ -2440,7 +2440,7 @@ func failMsgForCounters(p ProgressByteCounters, state string, recBytes int64, re
 	}
 
 	// Promoted scalars and JobProgress, never job.Manifest(): this runs from
-	// the startup recovery walk over Queue.Snapshot(), where a job may have
+	// the startup recovery walk over the dispatcher snapshot, where a job may have
 	// no resident manifest and a manifest read would nil-deref.
 	//
 	// Two different failure figures, and the difference matters. The

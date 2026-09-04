@@ -39,7 +39,7 @@ type fileResumer interface {
 // tested with nothing calling either, so a restart re-downloaded every byte an
 // earlier run had already fsynced. This is where the two meet.
 //
-// It seeds through Queue.ReplaceFromRuns rather than Queue.SeedFromRuns, and
+// It seeds through Job.ReplaceFromRuns rather than Job.SeedFromRuns, and
 // that is the whole of #362's fix. This is the ONLY caller that has stat'ed
 // the files, so it is the only one entitled to contradict what
 // Store.RestoreJobProgress derived — which it does by having had

@@ -350,7 +350,7 @@ func TestForgetJobBarrierState_DropsBothMaps(t *testing.T) {
 // The target itself no longer needs the manifest for anything — a run carries
 // its own article indices — but "has a resident manifest" is still what
 // decides whether a checkpoint should run at all. A job whose manifest has
-// been evicted is not downloading, and Queue.AckDurable would refuse its ack
+// been evicted is not downloading, and Job.AckDurable would refuse its ack
 // anyway, so reaching the barrier only to fail there would turn an ordinary
 // event into a logged error.
 func TestSyncTargetFor_IsNilForAJobTheQueueCannotDescribe(t *testing.T) {

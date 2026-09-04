@@ -18,7 +18,7 @@ import "slices"
 // package, not reasoned about.
 //
 // What holds is that such a proof is necessarily EMPTY — arts is nil, because
-// there is no exported way to populate it — and Queue.AckDurable returns nil
+// there is no exported way to populate it — and Job.AckDurable returns nil
 // without touching any article when Articles() is empty. So the compiler bounds
 // the PAYLOAD, and a one-line early return converts an empty payload into a
 // no-op. That early return is load-bearing, not a tidy guard: if it ever became

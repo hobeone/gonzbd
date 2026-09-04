@@ -1098,7 +1098,7 @@ type fileProgressJSON struct {
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
 // marks an article as resolved, and nothing sets it from dispatch: markDone is
-// reached from ackDurable, whose only caller Queue.AckDurable needs a
+// reached from ackDurable, whose only caller Job.AckDurable needs a
 // DurableProof a completed fsync minted; from seedFromRuns and
 // ReplaceFromRuns, which replay runs that same fsync recorded; and from
 // applyResolution, which replays the resolution derived from those same

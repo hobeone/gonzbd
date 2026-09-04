@@ -26,7 +26,7 @@ import (
 // A duplicate nzo_id is the cheapest way to make MoveToHistory fail for real
 // rather than through an injected fake; history.nzo_id carries a UNIQUE index
 // (migration 001), and a finalize re-run after a crash between commit and
-// Queue.Remove is how it happens in practice.
+// Dispatcher.Remove is how it happens in practice.
 func TestFinalize_KeepsJobInQueueWhenHistoryWriteFails(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
