@@ -401,3 +401,17 @@ func TestSetStopTimeout(t *testing.T) {
 		t.Fatalf("stopTimeout = %v, want 50ms", got)
 	}
 }
+
+// TestNew_DefaultStopTimeoutIsFractionOfStepBudget pins that a fresh Dispatcher
+// initializes stopTimeout to 5s (one-third of the 15s waitBounded step timeout),
+// ensuring Stop has guaranteed margin to complete before waitBounded abandons it.
+func TestNew_DefaultStopTimeoutIsFractionOfStepBudget(t *testing.T) {
+	t.Parallel()
+	d := newTestDispatcher(t)
+	d.mu.Lock()
+	got := d.stopTimeout
+	d.mu.Unlock()
+	if got != 5*time.Second {
+		t.Fatalf("default stopTimeout = %v, want 5s (must be fraction of 15s step budget)", got)
+	}
+}
