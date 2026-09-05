@@ -94,7 +94,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		// Trade-off: Added is normalized at ingestion (Dispatcher.Add) to
 		// the current time when <= 0. By Rule 1, persisted jobs satisfy this
 		// invariant and never carry Added <= 0, so restoreJobMetadata
-		// (internal/dispatch/dispatch.go:843-844) restores Added directly from
+		// (`grep -n 'func restoreJobMetadata' internal/dispatch/dispatch.go` finds 1 hit) restores Added directly from
 		// the persisted header with no normalization. Newly ingested jobs with
 		// unset/zero timestamps age from ingestion time rather than epoch
 		// (1970-01-01), deliberately holding them back for propagationDelay to

@@ -69,7 +69,7 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // persistAndCommit writes the history entry to the database, removes the job
 // from the dispatcher, and broadcasts the finalization events. Registry and
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
-// unlinking, durability cleanup, and barrier state reset) is always attempted
+// unlinking, and barrier state reset) is always attempted
 // regardless of history persistence success. If dispatcher.Remove returns an
 // error, the error is logged while the job remains registered for retry or
 // caller handling.
@@ -80,6 +80,7 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 //   - History write & files loop: 4s dbCtx.
 //   - Dispatcher removal: 3s removeCtx (derived from occupyCtx to retain the occupancy key).
 //   - Durability check & delete: 3s delCtx.
+//
 // The total (4s DB + 3s remove + 3s durability cleanup = 10s) fits strictly inside
 // the 15s waitBounded shutdown step budget.
 //

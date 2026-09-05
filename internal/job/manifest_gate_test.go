@@ -69,7 +69,10 @@ func TestManifestAccessIsGated(t *testing.T) {
 			}
 			recv, name := receiverName(fn), fn.Name.Name
 			key := recv + "." + name
-			if _, exempt := manifestGateExempt[key]; exempt {
+			if reason, exempt := manifestGateExempt[key]; exempt {
+				if strings.TrimSpace(reason) == "" {
+					t.Errorf("manifestGateExempt[%q] has an empty reason; every exemption must justify why it does not need the gate", key)
+				}
 				seenExempt[key] = true
 				continue
 			}
@@ -89,7 +92,10 @@ func TestManifestAccessIsGated(t *testing.T) {
 
 	// A stale exemption is a slow leak back toward the ungated state: it
 	// silently re-permits the next method that happens to take that name.
-	for key := range manifestGateExempt {
+	for key, reason := range manifestGateExempt {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("manifestGateExempt[%q] has an empty reason; every exemption must justify why it does not need the gate", key)
+		}
 		if !seenExempt[key] {
 			t.Errorf("manifestGateExempt lists %q, but no ungated method by that name touches a manifest; remove the entry", key)
 		}

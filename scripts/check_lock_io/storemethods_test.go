@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -41,7 +42,11 @@ func TestStoreMethodsMatchStoreInterface(t *testing.T) {
 			continue
 		}
 		if reason, ok := storeMethodExclusions[name]; ok {
-			t.Logf("dispatch.Store.%s excluded from storeMethods: %s", name, reason)
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("storeMethodExclusions names %q with an empty reason; every exclusion must justify why it is omitted from storeMethods", name)
+			} else {
+				t.Logf("dispatch.Store.%s excluded from storeMethods: %s", name, reason)
+			}
 			continue
 		}
 		t.Errorf("dispatch.Store.%s is not registered in storeMethods, so calls to it are never checked for I/O under a lock; add it, or add it to storeMethodExclusions with a reason", name)
@@ -54,7 +59,10 @@ func TestStoreMethodsMatchStoreInterface(t *testing.T) {
 		t.Errorf("storeMethods registers %q, which is not a method on dispatch.Store; the detector will never match it, silently disabling that check", name)
 	}
 
-	for name := range storeMethodExclusions {
+	for name, reason := range storeMethodExclusions {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("storeMethodExclusions names %q with an empty reason; every exclusion must justify why it is omitted from storeMethods", name)
+		}
 		if !actual[name] {
 			t.Errorf("storeMethodExclusions names %q, which is no longer a method on dispatch.Store; drop the stale exclusion", name)
 		}
