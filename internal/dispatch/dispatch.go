@@ -490,9 +490,10 @@ func (d *Dispatcher) run(ctx context.Context) {
 // stopTimeout sets the default wait budget (10s) for draining worker launches
 // and active occupancy, matching the finalizer's 10s occupancy budget and
 // comfortably fitting inside Application.Shutdown's default 15s stepTimeout budget.
-// Each job gets an isolated perJobTimeout (3s) bounded by stopCtx, and
-// persistIfChanged draws up to 2s per job bounded by jobCtx. This ensures that
-// an occupied or slow job does not burn the entire budget and starve subsequent jobs.
+// Each job gets an isolated perJobTimeout (3s) bounded by stopCtx, while
+// persistIfChanged draws an isolated perJobPersistWait (2s) via
+// context.WithoutCancel(stopCtx) so that earlier wait timeouts cannot starve
+// subsequent job persistence.
 // waitLaunched waits on launched, which is the dispatcher's launch claim latch cleared
 // when worker exit or yield is reported (e.g. Yielded, Finished). Worker goroutine
 // draining for external subsystems (downloader, postprocessor) is owned and driven by
@@ -500,7 +501,7 @@ func (d *Dispatcher) run(ctx context.Context) {
 // the error and deliberately SKIPS Park and Evict for that job, leaving its
 // resident manifest and scheduler state untouched so the running worker does
 // not experience manifest eviction or panics under concurrent access.
-// All wait and park errors are aggregated and returned via errors.Join.
+// All wait, park, and persist errors are aggregated and returned via errors.Join.
 //
 // Stop is a third worker-exit path beside Finished and
 // Yielded — the ticker goroutine has already stopped by the time the sweep
@@ -590,8 +591,10 @@ func (d *Dispatcher) Stop() error {
 			if err := d.q.Park(j); err != nil {
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err))
 			}
-			persistCtx, persistCancel := context.WithTimeout(jobCtx, perJobPersistWait)
-			d.persistIfChanged(persistCtx, j)
+			persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(stopCtx), perJobPersistWait)
+			if err := d.persistIfChanged(persistCtx, j); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: persist %s: %w", j.ID(), err))
+			}
 			persistCancel()
 			jobCancel()
 			d.res.Evict(j.ID())

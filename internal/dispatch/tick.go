@@ -55,11 +55,11 @@ func (d *Dispatcher) tick(ctx context.Context) {
 			// Advance's branch above deliberately does NOT do this. A
 			// position Advance reached and then failed on is not one this
 			// Queue accepted, so the store keeps the last one it did.
-			d.persistIfChanged(ctx, j)
+			_ = d.persistIfChanged(ctx, j)
 			continue
 		}
 		d.launch(j)
-		d.persistIfChanged(ctx, j)
+		_ = d.persistIfChanged(ctx, j)
 	}
 }
 
@@ -76,12 +76,12 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // Persisted records — the job's own StateView and Intent — were taken
 // straight from Snapshot instead, which drops a Queue.mu acquisition that
 // bought this function nothing.
-func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
+func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
 	h, seq, ok := d.entryFor(j.ID())
 	if !ok {
 		// Evicted (D-B12) or removed between snapshotOrder and here: nothing
 		// left in the registry to attach a Header to.
-		return
+		return nil
 	}
 	// Snapshot for the same reason as evictCancelledNeverRun: Persisted
 	// carries only the job's own StateView and Intent, so Render's Queue.mu
@@ -104,24 +104,25 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 	p.Par2ReleaseReason = j.Par2ReleaseReason()
 	p.RecoveryBytes = j.RecoveryBytes()
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
-		return
+		return nil
 	}
 	d.storeMu.Lock()
 	d.mu.Lock()
 	if d.removing[j.ID()] > 0 || d.byID[j.ID()] == nil {
 		d.mu.Unlock()
 		d.storeMu.Unlock()
-		return
+		return nil
 	}
 	d.mu.Unlock()
 
 	if err := d.store.Save(ctx, p); err != nil { //lockio: storeMu serializes store.Save with store.Delete to prevent row resurrection
 		d.storeMu.Unlock()
 		d.logStoreError(j.ID(), err)
-		return
+		return err
 	}
 	d.storeMu.Unlock()
 	d.markWritten(p)
+	return nil
 }
 
 // evictCancelledNeverRun removes a job the user cancelled before it ever ran,

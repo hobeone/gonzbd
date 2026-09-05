@@ -432,7 +432,10 @@ func (s *deadlineRecordingStore) Save(ctx context.Context, p Persisted) error {
 	return s.fakeStore.Save(ctx, p)
 }
 
-func TestStop_PersistTimeoutBoundedByWaitCtx(t *testing.T) {
+// TestStop_PersistTimeoutIsolatedFromStopCtx pins that persist during Stop receives
+// an isolated per-job deadline (perJobPersistWait = 2s) via context.WithoutCancel(stopCtx),
+// ensuring that expired stopCtx or earlier drain timeouts cannot starve persistence.
+func TestStop_PersistTimeoutIsolatedFromStopCtx(t *testing.T) {
 	t.Parallel()
 	st := &deadlineRecordingStore{
 		savedDeadline: make(chan time.Time, 1),
@@ -457,8 +460,8 @@ func TestStop_PersistTimeoutBoundedByWaitCtx(t *testing.T) {
 	}
 
 	remaining := time.Until(dl)
-	if remaining > 500*time.Millisecond {
-		t.Fatalf("persist context timeout was %v, exceeding stopTimeout budget (must be bounded by waitCtx)", remaining)
+	if remaining < 1*time.Second || remaining > 3*time.Second {
+		t.Fatalf("persist context deadline remaining was %v, want ~2s (perJobPersistWait isolated from stopTimeout)", remaining)
 	}
 }
 
@@ -533,5 +536,80 @@ func TestStop_PerJobBudgetIsolation_SubsequentJobsNotStarved(t *testing.T) {
 	}
 	if d.isResident("j2") {
 		t.Error("isResident(j2) = true, want false (j2 must be marked not resident)")
+	}
+}
+
+func TestStop_PersistErrorAggregatedIntoStopErr(t *testing.T) {
+	st := &fakeStore{
+		saveErr: errors.New("simulated disk full"),
+	}
+	d := newTestDispatcher(t, withStore(st))
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := d.Stop()
+	if err == nil {
+		t.Fatal("Stop() returned nil, want error for persist failure")
+	}
+	if !strings.Contains(err.Error(), "persist") {
+		t.Fatalf("Stop() error = %v, want error containing %q", err, "persist")
+	}
+}
+
+type contextAwareStore struct {
+	fakeStore
+}
+
+func (s *contextAwareStore) Save(ctx context.Context, p Persisted) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.fakeStore.Save(ctx, p)
+}
+
+func TestStop_TailJobPersistedWhenEarlierJobsExhaustStopTimeout(t *testing.T) {
+	st := &contextAwareStore{}
+	d := newTestDispatcher(t, withStore(st))
+
+	j1 := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add j1: %v", err)
+	}
+	j2 := job.New("j2", "Job 2", job.Policy{})
+	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+		t.Fatalf("Add j2: %v", err)
+	}
+
+	occupyEntered := make(chan struct{})
+	occupyRelease := make(chan struct{})
+	defer close(occupyRelease)
+
+	// Hold occupancy on j1 across Stop().
+	go func() {
+		_ = d.Occupy(context.Background(), "j1", func(ctx context.Context) {
+			close(occupyEntered)
+			<-occupyRelease
+		})
+	}()
+
+	<-occupyEntered
+
+	// Short stopTimeout (50ms) so j1 exhaustively burns the stopCtx budget.
+	d.SetStopTimeout(50 * time.Millisecond)
+
+	stopErr := d.Stop()
+	if stopErr == nil {
+		t.Fatal("Stop() returned nil, want error for j1 wait live timeout")
+	}
+	if !strings.Contains(stopErr.Error(), "wait live j1") {
+		t.Fatalf("Stop() error = %v, want error mentioning wait live j1", stopErr)
+	}
+
+	// Invariant: j2 (the tail job) MUST be persisted despite stopCtx expiration.
+	if _, ok := st.row("j2"); !ok {
+		t.Error("j2 was not persisted: tail job was starved by earlier timeout")
 	}
 }
