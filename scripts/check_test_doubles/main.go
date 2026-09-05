@@ -199,30 +199,73 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	}
 
 	// 2) Structural DurableProof encapsulation check:
-	// In internal/durability: NO exported function or method in a non-test file
-	// without a test build tag may return DurableProof.
+	// In internal/durability: NO exported function, method, or variable in a non-test file
+	// without a test build tag may return, accept, or carry DurableProof.
 	// (This structurally closes the class of bug from Round 3 B2 regardless of function name spelling).
 	cleanPath := filepath.Clean(filepath.ToSlash(path))
 	isDurabilityPkg := strings.HasPrefix(cleanPath, "internal/durability/") || cleanPath == "internal/durability"
 	if !hasTestBuildTag && isDurabilityPkg {
 		pkgTypeDefs := indexDurabilityTypeDefs(filepath.Dir(cleanPath), file)
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Name == nil || !fn.Name.IsExported() || fn.Type == nil || fn.Type.Results == nil {
-				continue
-			}
-			for _, result := range fn.Type.Results.List {
-				if returnsDurableProof(result.Type, pkgTypeDefs, nil) {
-					kind := "function"
-					if fn.Recv != nil && len(fn.Recv.List) > 0 {
-						kind = "method"
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				if d.Tok == token.VAR {
+					for _, spec := range d.Specs {
+						vs, ok := spec.(*ast.ValueSpec)
+						if !ok {
+							continue
+						}
+						for i, name := range vs.Names {
+							if name == nil || !name.IsExported() {
+								continue
+							}
+							carriesProof := false
+							if vs.Type != nil {
+								carriesProof = returnsDurableProof(vs.Type, pkgTypeDefs, nil)
+							} else if i < len(vs.Values) && vs.Values[i] != nil {
+								carriesProof = returnsDurableProof(vs.Values[i], pkgTypeDefs, nil)
+							}
+							if carriesProof {
+								findings = append(findings, finding{
+									file: path,
+									line: fset.Position(name.Pos()).Line,
+									desc: fmt.Sprintf("structural encapsulation violation: exported var %s in internal/durability carries DurableProof", name.Name),
+								})
+							}
+						}
 					}
-					findings = append(findings, finding{
-						file: path,
-						line: fset.Position(fn.Pos()).Line,
-						desc: fmt.Sprintf("structural encapsulation violation: exported %s %s in internal/durability returns DurableProof", kind, fn.Name.Name),
-					})
-					break
+				}
+			case *ast.FuncDecl:
+				if d.Name == nil || !d.Name.IsExported() || d.Type == nil {
+					continue
+				}
+				kind := "function"
+				if d.Recv != nil && len(d.Recv.List) > 0 {
+					kind = "method"
+				}
+				if d.Type.Results != nil {
+					for _, result := range d.Type.Results.List {
+						if returnsDurableProof(result.Type, pkgTypeDefs, nil) {
+							findings = append(findings, finding{
+								file: path,
+								line: fset.Position(d.Pos()).Line,
+								desc: fmt.Sprintf("structural encapsulation violation: exported %s %s in internal/durability returns DurableProof", kind, d.Name.Name),
+							})
+							break
+						}
+					}
+				}
+				if d.Type.Params != nil {
+					for _, param := range d.Type.Params.List {
+						if returnsDurableProof(param.Type, pkgTypeDefs, nil) {
+							findings = append(findings, finding{
+								file: path,
+								line: fset.Position(d.Pos()).Line,
+								desc: fmt.Sprintf("structural encapsulation violation: exported %s %s in internal/durability accepts DurableProof", kind, d.Name.Name),
+							})
+							break
+						}
+					}
 				}
 			}
 		}
@@ -390,6 +433,56 @@ func returnsDurableProof(expr ast.Expr, pkgTypeDefs map[string]ast.Expr, visited
 			}
 		}
 		return false
+	case *ast.InterfaceType:
+		if t.Methods != nil {
+			for _, field := range t.Methods.List {
+				if returnsDurableProof(field.Type, pkgTypeDefs, visited) {
+					return true
+				}
+			}
+		}
+		return false
+	case *ast.IndexExpr:
+		return returnsDurableProof(t.X, pkgTypeDefs, visited) || returnsDurableProof(t.Index, pkgTypeDefs, visited)
+	case *ast.IndexListExpr:
+		if returnsDurableProof(t.X, pkgTypeDefs, visited) {
+			return true
+		}
+		for _, idx := range t.Indices {
+			if returnsDurableProof(idx, pkgTypeDefs, visited) {
+				return true
+			}
+		}
+		return false
+	case *ast.CallExpr:
+		if returnsDurableProof(t.Fun, pkgTypeDefs, visited) {
+			return true
+		}
+		if ident, ok := t.Fun.(*ast.Ident); ok {
+			if ident.Name == "newProof" || ident.Name == "DurableProof" {
+				return true
+			}
+		}
+		for _, arg := range t.Args {
+			if returnsDurableProof(arg, pkgTypeDefs, visited) {
+				return true
+			}
+		}
+		return false
+	case *ast.CompositeLit:
+		if returnsDurableProof(t.Type, pkgTypeDefs, visited) {
+			return true
+		}
+		for _, elt := range t.Elts {
+			if returnsDurableProof(elt, pkgTypeDefs, visited) {
+				return true
+			}
+		}
+		return false
+	case *ast.KeyValueExpr:
+		return returnsDurableProof(t.Key, pkgTypeDefs, visited) || returnsDurableProof(t.Value, pkgTypeDefs, visited)
+	case *ast.UnaryExpr:
+		return returnsDurableProof(t.X, pkgTypeDefs, visited)
 	case *ast.ParenExpr:
 		return returnsDurableProof(t.X, pkgTypeDefs, visited)
 	default:

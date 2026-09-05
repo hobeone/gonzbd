@@ -642,6 +642,156 @@ func GetSafeBox() SafeBox {
 `,
 			expected: 0,
 		},
+		{
+			name: "exported var of type DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+var ExportedProofVar DurableProof
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported var ExportedProofVar in internal/durability carries DurableProof",
+		},
+		{
+			name: "exported var initialized with newProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+var ExportedProofInit = newProof("x", nil)
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported var ExportedProofInit in internal/durability carries DurableProof",
+		},
+		{
+			name: "unexported var with DurableProof in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+var unexportedProofVar DurableProof
+var unexportedProofInit = newProof("x", nil)
+`,
+			expected: 0,
+		},
+		{
+			name: "exported safe var in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+var SafeCount = 42
+var SafeString = "hello"
+`,
+			expected: 0,
+		},
+		{
+			name: "exported func accepting DurableProof parameter in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func Sink(p *DurableProof) {}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function Sink in internal/durability accepts DurableProof",
+		},
+		{
+			name: "exported method accepting chan<- DurableProof parameter in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type Receiver struct{}
+
+func (r *Receiver) Out(ch chan<- DurableProof) {}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported method Out in internal/durability accepts DurableProof",
+		},
+		{
+			name: "unexported func accepting DurableProof in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func internalSink(p *DurableProof) {}
+`,
+			expected: 0,
+		},
+		{
+			name: "exported func returning generic box of DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type GenericBox[T any] struct {
+	Val T
+}
+
+func BoxedProof() GenericBox[DurableProof] {
+	return GenericBox[DurableProof]{}
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function BoxedProof in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning multi-type generic box of DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type Pair[A, B any] struct {
+	First  A
+	Second B
+}
+
+func PairedProof() Pair[string, DurableProof] {
+	return Pair[string, DurableProof]{}
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function PairedProof in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning generic box without DurableProof in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type GenericBox[T any] struct {
+	Val T
+}
+
+func SafeBoxed() GenericBox[string] {
+	return GenericBox[string]{}
+}
+`,
+			expected: 0,
+		},
+		{
+			name: "exported func returning interface carrier with method returning DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type Prover interface {
+	GetProof() DurableProof
+}
+
+func NewProver() Prover {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function NewProver in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning safe interface in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type Reader interface {
+	Read() string
+}
+
+func NewReader() Reader {
+	return nil
+}
+`,
+			expected: 0,
+		},
 	}
 
 	for _, tc := range cases {
