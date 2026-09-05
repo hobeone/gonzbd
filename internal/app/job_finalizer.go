@@ -1,9 +1,7 @@
 package app
 
 import (
-	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -112,6 +110,11 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	defer finalCancel()
 
 	runCommit := func(occupyCtx context.Context) error {
+		var manifestPath string
+		if ppJob != nil && ppJob.Job != nil {
+			manifestPath = filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", ppJob.Job.ID()+".json.gz")
+		}
+
 		var persistErr error
 		if app.historyRepo != nil && app.historyRepo.DB() != nil {
 			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 4*time.Second)
@@ -124,7 +127,6 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 				p := ppJob.Job.Progress()
 				m, mErr := ppJob.Job.Manifest()
 				if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
-					manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", ppJob.Job.ID()+".json.gz")
 					if diskM, err := readManifestFile(manifestPath); err == nil {
 						m = diskM
 						mErr = nil
@@ -163,8 +165,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				log.Warn("failed to remove job from dispatcher after post-proc", "job", ppJob.Job.ID(), "err", err)
 			}
 		}
-		manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", ppJob.Job.ID()+".json.gz")
-		_ = os.Remove(manifestPath)
+		if manifestPath != "" {
+			_ = os.Remove(manifestPath)
+		}
 
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
@@ -236,22 +239,4 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		JobName:   entry.Name,
 		Timestamp: time.Now(),
 	})
-}
-
-func readManifestFile(path string) (*job.Manifest, error) {
-	f, err := os.Open(path) //nolint:gosec // path is constructed from validated AdminDir and job ID
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	zr, err := gzip.NewReader(f)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = zr.Close() }()
-	var m job.Manifest
-	if err := json.NewDecoder(zr).Decode(&m); err != nil {
-		return nil, err
-	}
-	return &m, nil
 }

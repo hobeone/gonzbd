@@ -191,8 +191,14 @@ func (r *appResidency) Evict(id string) {
 }
 
 func (r *appResidency) readManifest(_ context.Context, id string) (*job.Manifest, error) {
-	path := filepath.Join(r.dir, id+".json.gz")
-	f, err := os.Open(path) //nolint:gosec // path is dir + a validated job ID
+	return readManifestFile(filepath.Join(r.dir, id+".json.gz"))
+}
+
+// readManifestFile reads and unmarshals a gzipped JSON job manifest from disk.
+// Local filesystem disk I/O against AdminDir runs within the enclosing step budget;
+// like os.Remove, remote NFS/SMB mounts may experience filesystem latency or stalls.
+func readManifestFile(path string) (*job.Manifest, error) {
+	f, err := os.Open(path) //nolint:gosec // path is constructed from validated AdminDir and job ID
 	if err != nil {
 		return nil, err
 	}
