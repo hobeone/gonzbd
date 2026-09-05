@@ -403,16 +403,17 @@ func TestSetStopTimeout(t *testing.T) {
 }
 
 // TestNew_DefaultStopTimeoutIsFractionOfStepBudget pins that a fresh Dispatcher
-// initializes stopTimeout to 5s (one-third of the 15s waitBounded step timeout),
-// ensuring Stop has guaranteed margin to complete before waitBounded abandons it.
+// initializes stopTimeout to 10s (matching finalizer's 10s budget and comfortably
+// within the 15s waitBounded step timeout), ensuring Stop has guaranteed margin
+// to complete before waitBounded abandons it.
 func TestNew_DefaultStopTimeoutIsFractionOfStepBudget(t *testing.T) {
 	t.Parallel()
 	d := newTestDispatcher(t)
 	d.mu.Lock()
 	got := d.stopTimeout
 	d.mu.Unlock()
-	if got != 5*time.Second {
-		t.Fatalf("default stopTimeout = %v, want 5s (must be fraction of 15s step budget)", got)
+	if got != 10*time.Second {
+		t.Fatalf("default stopTimeout = %v, want 10s (must fit inside 15s step budget)", got)
 	}
 }
 
@@ -458,5 +459,79 @@ func TestStop_PersistTimeoutBoundedByWaitCtx(t *testing.T) {
 	remaining := time.Until(dl)
 	if remaining > 500*time.Millisecond {
 		t.Fatalf("persist context timeout was %v, exceeding stopTimeout budget (must be bounded by waitCtx)", remaining)
+	}
+}
+
+func TestStop_PerJobBudgetIsolation_SubsequentJobsNotStarved(t *testing.T) {
+	res := &fakeResidency{}
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withResidency(res), withStore(st))
+
+	j1 := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add j1: %v", err)
+	}
+	j2 := job.New("j2", "Job 2", job.Policy{})
+	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+		t.Fatalf("Add j2: %v", err)
+	}
+
+	// Mark both jobs resident and hydrate them in fakeResidency.
+	d.markResident("j1")
+	_ = res.Hydrate(context.Background(), "j1")
+	d.markResident("j2")
+	_ = res.Hydrate(context.Background(), "j2")
+
+	occupyEntered := make(chan struct{})
+	occupyRelease := make(chan struct{})
+	defer close(occupyRelease)
+
+	// Hold occupancy on j1 across Stop().
+	go func() {
+		_ = d.Occupy(context.Background(), "j1", func(ctx context.Context) {
+			close(occupyEntered)
+			<-occupyRelease
+		})
+	}()
+
+	<-occupyEntered
+
+	// Set a total stopTimeout of 5s. With per-job isolation, j1 will time out on its
+	// per-job budget, leaving remaining budget for j2 to be processed.
+	d.SetStopTimeout(5 * time.Second)
+
+	stopErr := d.Stop()
+	if stopErr == nil {
+		t.Fatal("Stop() returned nil, want error for j1 wait live timeout")
+	}
+	if !strings.Contains(stopErr.Error(), "wait live j1") {
+		t.Fatalf("Stop() error = %v, want error mentioning wait live j1", stopErr)
+	}
+
+	// Invariants for j1 (occupied, timed out):
+	// Skipped Park and Evict to avoid race/panics under active occupancy.
+	if !d.isResident("j1") {
+		t.Error("isResident(j1) = false, want true (Stop must skip markNotResident for j1 on timeout)")
+	}
+	if !res.resident("j1") {
+		t.Error("res.resident(j1) = false, want true (Stop must skip Evict for j1 on timeout)")
+	}
+
+	// Invariants for j2 (unoccupied, must NOT be starved):
+	// - was parked
+	// - had changes persisted to store
+	// - was evicted from residency
+	// - was marked not resident
+	if d.q.Render(j2).Holds {
+		t.Error("j2 was not parked (Render(j2).Holds is true)")
+	}
+	if _, ok := st.row("j2"); !ok {
+		t.Error("j2 changes were not persisted to store")
+	}
+	if res.resident("j2") {
+		t.Error("res.resident(j2) = true, want false (j2 must be evicted)")
+	}
+	if d.isResident("j2") {
+		t.Error("isResident(j2) = true, want false (j2 must be marked not resident)")
 	}
 }

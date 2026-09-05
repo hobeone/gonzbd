@@ -284,7 +284,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		ctx:             ctx,
 		cancel:          cancel,
 		tickEvery:       tickEvery,
-		stopTimeout:     5 * time.Second,
+		stopTimeout:     10 * time.Second,
 		stop:            make(chan struct{}),
 		done:            make(chan struct{}),
 		log:             slog.Default(),
@@ -486,16 +486,16 @@ func (d *Dispatcher) run(ctx context.Context) {
 //
 // The sweep also clears each job's launched claim and its manifest
 // residency, alongside Park and Evict. Stop cancels workers and waits via
-// waitLaunched under a total bounded timeout across all jobs before parking or
-// evicting. stopTimeout sets the default wait budget (5s) for draining worker
-// launches and active occupancy, and persistIfChanged draws up to 2s per job
-// bounded by waitCtx. The 5s default is intended to fit within typical caller
-// shutdown timeouts (such as Application.Shutdown's default step budget),
-// without asserting an unconditional containment guarantee across custom caller
-// budgets configured via WithShutdownStepTimeout. waitLaunched waits on
-// launched, which is the dispatcher's launch claim latch cleared when worker
-// exit or yield is reported (e.g. Yielded, Finished). Worker goroutine draining
-// for external subsystems (downloader, postprocessor) is owned and driven by
+// waitLaunched and waitLive under stopCtx before parking or evicting.
+// stopTimeout sets the default wait budget (10s) for draining worker launches
+// and active occupancy, matching the finalizer's 10s occupancy budget and
+// comfortably fitting inside Application.Shutdown's default 15s stepTimeout budget.
+// Each job gets an isolated perJobTimeout (3s) bounded by stopCtx, and
+// persistIfChanged draws up to 2s per job bounded by jobCtx. This ensures that
+// an occupied or slow job does not burn the entire budget and starve subsequent jobs.
+// waitLaunched waits on launched, which is the dispatcher's launch claim latch cleared
+// when worker exit or yield is reported (e.g. Yielded, Finished). Worker goroutine
+// draining for external subsystems (downloader, postprocessor) is owned and driven by
 // their respective Stop methods. If the wait times out for a job, Stop records
 // the error and deliberately SKIPS Park and Evict for that job, leaving its
 // resident manifest and scheduler state untouched so the running worker does
@@ -556,33 +556,44 @@ func (d *Dispatcher) Stop() error {
 		timeout := d.stopTimeout
 		d.mu.Unlock()
 		if timeout <= 0 {
-			timeout = 5 * time.Second
+			// 10s matches the finalizer's 10s budget and comfortably fits inside
+			// Application.Shutdown's default 15s stepTimeout budget for dispatcher.Stop.
+			timeout = 10 * time.Second
 		}
-		waitCtx, waitCancel := context.WithTimeout(context.Background(), timeout)
-		defer waitCancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), timeout)
+		defer stopCancel()
+
+		const (
+			perJobTimeout     = 3 * time.Second
+			perJobPersistWait = 2 * time.Second
+		)
 
 		var stopErrs []error
 		for _, j := range d.snapshotOrder() {
-			if err := d.waitLaunched(waitCtx, j.ID()); err != nil {
+			jobCtx, jobCancel := context.WithTimeout(stopCtx, perJobTimeout)
+			if err := d.waitLaunched(jobCtx, j.ID()); err != nil {
 				// Wait timed out or context cancelled. The worker for this job has
 				// not returned. Skip Park and Evict to preserve memory safety and
 				// prevent panics / null dereference under the running worker.
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait worker %s: %w", j.ID(), err))
+				jobCancel()
 				continue
 			}
-			if err := d.waitLive(waitCtx, j.ID()); err != nil {
+			if err := d.waitLive(jobCtx, j.ID()); err != nil {
 				// Wait timed out or context cancelled. Active occupiers for this job
 				// have not drained. Skip Park and Evict to preserve memory safety and
 				// prevent panics / null dereference under active finalization.
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait live %s: %w", j.ID(), err))
+				jobCancel()
 				continue
 			}
 			if err := d.q.Park(j); err != nil {
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err))
 			}
-			persistCtx, persistCancel := context.WithTimeout(waitCtx, 2*time.Second)
+			persistCtx, persistCancel := context.WithTimeout(jobCtx, perJobPersistWait)
 			d.persistIfChanged(persistCtx, j)
 			persistCancel()
+			jobCancel()
 			d.res.Evict(j.ID())
 			d.markNotResident(j.ID())
 			d.clearLaunched(j.ID())
