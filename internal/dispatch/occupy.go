@@ -138,7 +138,8 @@ func (d *Dispatcher) waitLiveExcept(ctx context.Context, id string, callerToken 
 		case <-ctx.Done():
 			d.mu.Lock()
 			tokens, ok := d.occupancyTokens[id]
-			drained := !ok || len(tokens) <= 1
+			_, callerPresent := tokens[callerToken]
+			drained := !ok || len(tokens) == 0 || (callerPresent && len(tokens) == 1)
 			d.mu.Unlock()
 			if drained {
 				return nil

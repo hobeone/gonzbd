@@ -474,3 +474,45 @@ func TestWaitLiveExcept_DirectReference(t *testing.T) {
 	delete(d.occupancyTokens, "j1")
 	d.mu.Unlock()
 }
+
+func TestWaitLiveExcept_DoneArm_RequiresCallerPresence(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	callerTok := new(byte)
+	otherTok := new(byte)
+
+	d.mu.Lock()
+	d.occupancyTokens["j1"] = map[any]struct{}{
+		callerTok: {},
+		otherTok:  {},
+	}
+	d.occupiers["j1"] = 2
+	d.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Concurrently remove caller's token and cancel context so waitLiveExcept
+	// wakes on ctx.Done() with len(tokens) == 1 and caller NOT present.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		d.mu.Lock()
+		delete(d.occupancyTokens["j1"], callerTok)
+		d.occupiers["j1"]--
+		d.mu.Unlock()
+		cancel()
+	}()
+
+	err := d.waitLiveExcept(ctx, "j1", callerTok)
+	if err == nil {
+		t.Fatal("waitLiveExcept returned nil under canceled context while another occupier was live")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitLiveExcept returned error = %v, want context.Canceled", err)
+	}
+}
+
+
