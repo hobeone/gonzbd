@@ -385,9 +385,3 @@ func TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t *testing.T) {
 	}
 	<-finalizerDone
 }
-
-// TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction is an alias for
-// TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction to preserve exact-name test run compatibility.
-func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t *testing.T) {
-	TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t)
-}

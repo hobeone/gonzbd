@@ -191,6 +191,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			runErr = runCommit(occupyCtx)
 		}); err != nil {
 			// If Occupy fails (e.g. ErrNotFound if already removed), fallback to running without occupy wrapper.
+			log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", job.Job.ID(), "err", err)
 			return runCommit(finalCtx)
 		}
 		return runErr
