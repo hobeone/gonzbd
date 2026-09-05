@@ -43,29 +43,31 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 14 lines:
+	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 19 lines:
 	//
-	//   - remove (registry.go), six lines: byID, written, resident,
-	//     removing, occupiers, occupyDrained. launched is cleared via clearLaunched. d.order is pruned by
+	//   - remove (registry.go), eight lines: byID, written, resident,
+	//     removing, occupiers, occupancyTokens, occupyDrained, occupyStep. launched is cleared via clearLaunched. d.order is pruned by
 	//     the loop below those rather than by a delete, so it does not appear.
-	//   - Remove error branches (registry.go), four lines: removing on
-	//     Cancel, wait worker, wait live, or store failure.
+	//   - Remove error branches (registry.go), five lines: removing on
+	//     Cancel, wait worker, wait live (both branches), or store failure.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
 	//     accessor Finished, Yielded, Stop's sweep and remove all call.
-	//   - Occupy (occupy.go), two lines: occupiers and occupyDrained when refcount drops to 0.
+	//   - Occupy (occupy.go), four lines: occupancyTokens, occupiers, occupyDrained, and occupyStep when refcount drops to 0.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,
 	// because a Stopped Dispatcher is still inspectable and its jobs still
 	// exist. remove is the only site that must be total.
-	resident      map[string]bool
-	launched      map[string]chan struct{}
-	written       map[string]Persisted
-	removing      map[string]int
-	occupiers     map[string]int
-	occupyDrained map[string]chan struct{}
+	resident        map[string]bool
+	launched        map[string]chan struct{}
+	written         map[string]Persisted
+	removing        map[string]int
+	occupiers       map[string]int
+	occupancyTokens map[string]map[any]struct{}
+	occupyDrained   map[string]chan struct{}
+	occupyStep      map[string]chan struct{}
 
 	// storeMu serializes store writes (Save in persistIfChanged) and
 	// deletions (Delete in Remove and evictCancelledNeverRun) so a concurrent
@@ -264,26 +266,28 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dispatcher{
-		byID:          map[string]*entry{},
-		resident:      map[string]bool{},
-		launched:      map[string]chan struct{}{},
-		written:       map[string]Persisted{},
-		removing:      make(map[string]int),
-		occupiers:     make(map[string]int),
-		occupyDrained: make(map[string]chan struct{}),
-		q:             sched.New(leaseCap, slotCap, clock, w),
-		wake:          make(chan struct{}, 1),
-		notify:        make(chan struct{}, 1),
-		res:           r,
-		store:         s,
-		runner:        run,
-		ctx:           ctx,
-		cancel:        cancel,
-		tickEvery:     tickEvery,
-		stopTimeout:   5 * time.Second,
-		stop:          make(chan struct{}),
-		done:          make(chan struct{}),
-		log:           slog.Default(),
+		byID:            map[string]*entry{},
+		resident:        map[string]bool{},
+		launched:        map[string]chan struct{}{},
+		written:         map[string]Persisted{},
+		removing:        make(map[string]int),
+		occupiers:       make(map[string]int),
+		occupancyTokens: make(map[string]map[any]struct{}),
+		occupyDrained:   make(map[string]chan struct{}),
+		occupyStep:      make(map[string]chan struct{}),
+		q:               sched.New(leaseCap, slotCap, clock, w),
+		wake:            make(chan struct{}, 1),
+		notify:          make(chan struct{}, 1),
+		res:             r,
+		store:           s,
+		runner:          run,
+		ctx:             ctx,
+		cancel:          cancel,
+		tickEvery:       tickEvery,
+		stopTimeout:     5 * time.Second,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+		log:             slog.Default(),
 	}
 	return d
 }

@@ -27,9 +27,9 @@ func TestOccupy_BasicLifecycleAndIsOccupied(t *testing.T) {
 		if !d.IsOccupied("j1") {
 			t.Error("IsOccupied reported false inside Occupy")
 		}
-		occID, ok := ctx.Value(occupyContextKey{}).(string)
-		if !ok || occID != "j1" {
-			t.Errorf("ctx value for occupyContextKey = %v, %v; want %q, true", occID, ok, "j1")
+		tok, ok := ctx.Value(occupyContextKey{}).(occupyToken)
+		if !ok || tok.id != "j1" || tok.token == nil {
+			t.Errorf("ctx value for occupyContextKey = %v, %v; want occupyToken with id=%q, true", tok, ok, "j1")
 		}
 	})
 	if err != nil {
@@ -242,4 +242,131 @@ func TestWaitLive_DirectAssertions(t *testing.T) {
 	delete(d.occupiers, "j1")
 	delete(d.occupyDrained, "j1")
 	d.mu.Unlock()
+}
+
+func TestOccupy_RejectedWhenJobBeingRemoved(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.mu.Lock()
+	d.removing["j1"] = 1
+	d.mu.Unlock()
+
+	err := d.Occupy(context.Background(), "j1", func(ctx context.Context) {
+		t.Fatal("callback should not run when job is being removed")
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Occupy while removing = %v, want ErrNotFound", err)
+	}
+
+	d.mu.Lock()
+	delete(d.removing, "j1")
+	d.mu.Unlock()
+}
+
+func TestOccupy_ConcurrentOccupiers_RemoveWaitsForOtherOccupier(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	enteredA := make(chan struct{})
+	releaseA := make(chan struct{})
+	enteredB := make(chan struct{})
+	removeDone := make(chan error, 1)
+
+	var wg sync.WaitGroup
+
+	// Occupier A: will stay running until released
+	wg.Go(func() {
+		_ = d.Occupy(context.Background(), "j1", func(ctx context.Context) {
+			close(enteredA)
+			<-releaseA
+		})
+	})
+
+	<-enteredA
+
+	// Occupier B: calls Remove using its own occupyCtx while A is still active
+	wg.Go(func() {
+		_ = d.Occupy(context.Background(), "j1", func(occupyCtx context.Context) {
+			close(enteredB)
+			// Remove must wait for A to exit even though B is an occupier
+			removeDone <- d.Remove(occupyCtx, "j1")
+		})
+	})
+
+	<-enteredB
+
+	// Verify Remove in B does NOT return immediately while A is occupying
+	select {
+	case err := <-removeDone:
+		t.Fatalf("Remove returned before Occupier A released: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Release Occupier A
+	close(releaseA)
+
+	select {
+	case err := <-removeDone:
+		if err != nil {
+			t.Fatalf("Remove failed after Occupier A released: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Remove timed out waiting for Occupier A to drain")
+	}
+
+	wg.Wait()
+
+	if _, ok := d.lookup("j1"); ok {
+		t.Fatal("j1 still found after Remove completed")
+	}
+}
+
+func TestOccupy_StaleContext_CannotBypassWaitLive(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	var staleCtx context.Context
+	err := d.Occupy(context.Background(), "j1", func(ctx context.Context) {
+		staleCtx = ctx
+	})
+	if err != nil {
+		t.Fatalf("first Occupy: %v", err)
+	}
+
+	// Now start a second occupier C that stays active
+	enteredC := make(chan struct{})
+	releaseC := make(chan struct{})
+	defer close(releaseC)
+
+	go func() {
+		_ = d.Occupy(context.Background(), "j1", func(ctx context.Context) {
+			close(enteredC)
+			<-releaseC
+		})
+	}()
+
+	<-enteredC
+
+	// Calling Remove with staleCtx must NOT bypass waitLive because the token in staleCtx
+	// is no longer in d.occupancyTokens. It should time out rather than succeeding immediately.
+	timeoutCtx, cancel := context.WithTimeout(staleCtx, 50*time.Millisecond)
+	defer cancel()
+
+	remErr := d.Remove(timeoutCtx, "j1")
+	if remErr == nil {
+		t.Fatal("Remove with stale context bypassed waitLive, want DeadlineExceeded")
+	}
+	if !errors.Is(remErr, context.DeadlineExceeded) {
+		t.Fatalf("Remove error = %v, want DeadlineExceeded", remErr)
+	}
 }

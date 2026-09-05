@@ -242,9 +242,14 @@ func (d *Dispatcher) remove(id string) {
 	delete(d.resident, id)
 	delete(d.removing, id)
 	delete(d.occupiers, id)
+	delete(d.occupancyTokens, id)
 	if ch, ok := d.occupyDrained[id]; ok {
 		close(ch)
 		delete(d.occupyDrained, id)
+	}
+	if ch, ok := d.occupyStep[id]; ok {
+		close(ch)
+		delete(d.occupyStep, id)
 	}
 	// slices.Delete rather than the append-shift idiom: the shift leaves the
 	// vacated tail slot holding its old string header, and d.order lives as
@@ -411,7 +416,17 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
 	}
-	if occID, ok := ctx.Value(occupyContextKey{}).(string); !ok || occID != id {
+	if tok, ok := ctx.Value(occupyContextKey{}).(occupyToken); ok && tok.id == id {
+		if err := d.waitLiveExcept(ctx, id, tok.token); err != nil {
+			d.mu.Lock()
+			d.removing[id]--
+			if d.removing[id] <= 0 {
+				delete(d.removing, id)
+			}
+			d.mu.Unlock()
+			return fmt.Errorf("dispatch: remove %s: wait live: %w", id, err)
+		}
+	} else {
 		if err := d.waitLive(ctx, id); err != nil {
 			d.mu.Lock()
 			d.removing[id]--

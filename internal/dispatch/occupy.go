@@ -7,34 +7,63 @@ import (
 
 type occupyContextKey struct{}
 
+type occupyToken struct {
+	id    string
+	token any
+}
+
 // Occupy marks the calling context as actively occupying the job with ID id.
 //
 // While Occupy is active:
 //   - Dispatcher.Stop waits on waitLive (up to its timeout) and skips Park and
 //     Evict if active occupiers do not yield in time.
 //   - Dispatcher.Remove called with the occupied context bypasses waiting on
-//     waitLive (since the caller is the occupier), preventing self-deadlocks.
+//     waitLive for its own token (via waitLiveExcept), preventing self-deadlocks
+//     while still waiting on any concurrent occupiers to finish.
 //   - Other external Remove calls will wait for active occupiers to reach 0.
 //
-// Returns ErrNotFound if the job is not currently registered.
+// Returns ErrNotFound if the job is not currently registered or if Remove is
+// actively removing it.
 func (d *Dispatcher) Occupy(ctx context.Context, id string, fn func(ctx context.Context)) error {
 	d.mu.Lock()
-	if d.byID[id] == nil {
+	if d.byID[id] == nil || d.removing[id] > 0 {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: Occupy %s: %w", id, ErrNotFound)
 	}
+	tok := new(byte)
+	tokens, ok := d.occupancyTokens[id]
+	if !ok {
+		tokens = make(map[any]struct{})
+		d.occupancyTokens[id] = tokens
+	}
+	tokens[tok] = struct{}{}
 	d.occupiers[id]++
 	d.mu.Unlock()
 
-	occupyCtx := context.WithValue(ctx, occupyContextKey{}, id)
+	occupyCtx := context.WithValue(ctx, occupyContextKey{}, occupyToken{id: id, token: tok})
 	defer func() {
 		d.mu.Lock()
+		if tokens, ok := d.occupancyTokens[id]; ok {
+			delete(tokens, tok)
+			if len(tokens) == 0 {
+				delete(d.occupancyTokens, id)
+			}
+		}
 		d.occupiers[id]--
 		if d.occupiers[id] <= 0 {
 			delete(d.occupiers, id)
 			if ch, ok := d.occupyDrained[id]; ok {
 				close(ch)
 				delete(d.occupyDrained, id)
+			}
+			if ch, ok := d.occupyStep[id]; ok {
+				close(ch)
+				delete(d.occupyStep, id)
+			}
+		} else {
+			if ch, ok := d.occupyStep[id]; ok {
+				close(ch)
+				d.occupyStep[id] = make(chan struct{})
 			}
 		}
 		d.mu.Unlock()
@@ -69,6 +98,48 @@ func (d *Dispatcher) waitLive(ctx context.Context, id string) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// waitLiveExcept waits for all active occupiers of job id other than callerToken
+// to drain or for ctx to expire.
+// If callerToken is not active in d.occupancyTokens[id], it falls back to waitLive.
+func (d *Dispatcher) waitLiveExcept(ctx context.Context, id string, callerToken any) error {
+	for {
+		d.mu.Lock()
+		tokens, ok := d.occupancyTokens[id]
+		if !ok || callerToken == nil {
+			d.mu.Unlock()
+			return d.waitLive(ctx, id)
+		}
+		if _, present := tokens[callerToken]; !present {
+			d.mu.Unlock()
+			return d.waitLive(ctx, id)
+		}
+		if len(tokens) <= 1 {
+			d.mu.Unlock()
+			return nil
+		}
+		ch, ok := d.occupyStep[id]
+		if !ok {
+			ch = make(chan struct{})
+			d.occupyStep[id] = ch
+		}
+		d.mu.Unlock()
+
+		select {
+		case <-ch:
+			continue
+		case <-ctx.Done():
+			d.mu.Lock()
+			tokens, ok := d.occupancyTokens[id]
+			drained := !ok || len(tokens) <= 1
+			d.mu.Unlock()
+			if drained {
+				return nil
+			}
+			return ctx.Err()
+		}
 	}
 }
 
