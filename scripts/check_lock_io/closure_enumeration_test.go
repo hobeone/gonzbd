@@ -20,7 +20,7 @@ type methodInfo struct {
 // but deliberately do not hold the lock across the closure callback (or are
 // otherwise excluded from closureLockMethods), with the mandatory reason.
 var closureMethodExclusions = map[string]string{
-	// method_name: "mandatory reason why lock is not held across callback"
+	"Occupy": "d.mu is acquired only to increment and decrement occupancy refcounts; it is released before fn(occupyCtx) is invoked and re-acquired in defer",
 }
 
 // TestClosureLockMethods_MatchEnumeration asserts that closureLockMethods in

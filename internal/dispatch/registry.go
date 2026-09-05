@@ -211,9 +211,10 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 }
 
 // remove deletes a job from EVERY per-job structure — d.byID, d.order,
-// d.written, d.resident and d.launched — under one d.mu span. See the
-// Dispatcher struct's per-job map comment (dispatch.go) for why "every" is
-// the rule here rather than "the ones this caller happens to care about".
+// d.written, d.resident, d.launched, d.removing, d.occupiers and d.occupyDrained —
+// under one d.mu span. See the Dispatcher struct's per-job map comment
+// (dispatch.go) for why "every" is the rule here rather than "the ones this
+// caller happens to care about".
 //
 // It preserves the relative order of the remaining entries: queue order is
 // the priority policy sched consults, and a swap-with-last deletion would
@@ -232,12 +233,19 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 //     never hydrates and runs without its manifest.
 //   - d.launched: a stale true entry makes claimLaunched return false
 //     forever, so a reused ID is permanently unlaunchable.
+//   - d.occupiers / d.occupyDrained: a stale entry leaves callers waiting on
+//     waitLive forever or reports false occupancy.
 func (d *Dispatcher) remove(id string) {
 	d.mu.Lock()
 	delete(d.byID, id)
 	delete(d.written, id)
 	delete(d.resident, id)
 	delete(d.removing, id)
+	delete(d.occupiers, id)
+	if ch, ok := d.occupyDrained[id]; ok {
+		close(ch)
+		delete(d.occupyDrained, id)
+	}
 	// slices.Delete rather than the append-shift idiom: the shift leaves the
 	// vacated tail slot holding its old string header, and d.order lives as
 	// long as the Dispatcher, so a removed job's ID stayed reachable from the
@@ -402,6 +410,17 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 		}
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
+	}
+	if occID, ok := ctx.Value(occupyContextKey{}).(string); !ok || occID != id {
+		if err := d.waitLive(ctx, id); err != nil {
+			d.mu.Lock()
+			d.removing[id]--
+			if d.removing[id] <= 0 {
+				delete(d.removing, id)
+			}
+			d.mu.Unlock()
+			return fmt.Errorf("dispatch: remove %s: wait live: %w", id, err)
+		}
 	}
 	d.storeMu.Lock()
 	err := d.store.Delete(ctx, id)

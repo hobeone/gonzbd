@@ -52,6 +52,14 @@ func (a *Application) TriggerPersistAndCommit(log *slog.Logger, entry history.En
 	return a.finalizer.persistAndCommit(log, entry, job)
 }
 
+// DispatcherIsOccupied reports whether the dispatcher has active occupiers for id.
+func (a *Application) DispatcherIsOccupied(id string) bool {
+	if a.dispatcher == nil {
+		return false
+	}
+	return a.dispatcher.IsOccupied(id)
+}
+
 // InjectDirectUnpacker injects a direct unpacker for testing.
 func (a *Application) InjectDirectUnpacker(jobID string, du *directunpack.DirectUnpacker) {
 	a.duOrch.inject(jobID, du)
@@ -112,14 +120,6 @@ func (a *Application) SetStarted(val bool) {
 // TriggerFireCompletionNotification calls the finalizer's fireCompletionNotification method.
 func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 	a.finalizer.fireCompletionNotification(entry)
-}
-
-// FinalizerIsInFlight reports whether the given job ID is tracked as in-flight by the finalizer.
-func (a *Application) FinalizerIsInFlight(id string) bool {
-	if a.finalizer == nil {
-		return false
-	}
-	return a.finalizer.isInFlight(id)
 }
 
 // TriggerOnFileComplete invokes the OnFileComplete callback directly for testing.

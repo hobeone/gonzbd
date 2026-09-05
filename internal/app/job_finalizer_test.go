@@ -288,11 +288,11 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	}
 }
 
-// TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction pins that
-// when the postprocessor times out during shutdown, any job currently in-flight in
-// the finalizer has its launch claim re-asserted so Dispatcher.Stop skips evicting it.
-func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t *testing.T) {
-	t.Parallel()
+// TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction pins that when
+// persistAndCommit is active (inside Occupy) and Shutdown runs while the finalizer
+// is blocked (e.g. on database I/O), Dispatcher.Stop waits on waitLive and, upon
+// timeout, skips eviction so the active finalizer is not disrupted.
+func TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t *testing.T) {
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
@@ -311,11 +311,11 @@ func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
-			Subject: "test-reclaim-inflight.bin",
+			Subject: "test-occupy-inflight.bin",
 			Bytes:   100,
 		}},
 	}
-	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "reclaim-inflight-test"})
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "occupy-inflight-test"})
 	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t
 	}
 
 	// 1. Acquire an exclusive write lock on the history DB so persistAndCommit blocks
-	// inside historyRepo.Add while holding the finalizer's in-flight registration.
+	// inside historyRepo.Add while holding the dispatcher's Occupy latch.
 	tx, err := repo.DB().BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
@@ -348,22 +348,18 @@ func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t
 		finalizerDone <- application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
 	}()
 
-	// Wait until the finalizer registers the job as in-flight.
+	// Wait until persistAndCommit enters Occupy.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if application.FinalizerIsInFlight(qJob.ID()) {
+		if application.DispatcherIsOccupied(qJob.ID()) {
 			break
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if !application.FinalizerIsInFlight(qJob.ID()) {
-		t.Fatal("timed out waiting for finalizer to mark job in-flight")
+	if !application.DispatcherIsOccupied(qJob.ID()) {
+		t.Fatal("timed out waiting for dispatcher to mark job occupied")
 	}
 
-	// At this point, persistAndCommit has run:
-	// - f.inFlight[jobID] = struct{}{}
-	// - app.dispatcher.Cancel(jobID)
-	// - app.dispatcher.Yielded(jobID) -> cleared launched claim latch!
 	application.SetPostProcessorStopHook(func() error {
 		// Simulate a step timeout
 		time.Sleep(50 * time.Millisecond)
@@ -377,8 +373,8 @@ func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t
 		t.Fatal("expected Shutdown to report error due to postprocessor timeout")
 	}
 
-	// Because pp timed out and finalizer had job in flight, Shutdown must have called
-	// ClaimLaunched(jobID), causing Dispatcher.Stop to skip eviction for qJob.
+	// Because finalizer is occupied in persistAndCommit and Dispatcher.Stop timed out,
+	// Dispatcher.Stop must have skipped eviction for qJob.
 	if !qJob.Resident() {
 		t.Errorf("expected job %s to remain manifest-resident (eviction skipped), but was evicted", qJob.ID())
 	}
@@ -388,4 +384,10 @@ func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t
 		t.Fatalf("tx.Commit: %v", err)
 	}
 	<-finalizerDone
+}
+
+// TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction is an alias for
+// TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction to preserve exact-name test run compatibility.
+func TestFinalizer_PostProcessorTimeout_InFlightReClaimsLaunchAndSkipsEviction(t *testing.T) {
+	TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t)
 }

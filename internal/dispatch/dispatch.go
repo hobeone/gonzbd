@@ -28,8 +28,8 @@ type Dispatcher struct {
 	byID  map[string]*entry
 	order []string
 
-	// resident, launched, written and removing are the dispatcher's own per-job
-	// bookkeeping, all guarded by mu. None may be held across a call into
+	// resident, launched, written, removing and occupiers are the dispatcher's
+	// own per-job bookkeeping, all guarded by mu. None may be held across a call into
 	// sched or into Residency.Hydrate — take mu, read or write one map,
 	// release.
 	//
@@ -43,26 +43,29 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds nine lines:
+	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 14 lines:
 	//
-	//   - remove (registry.go), four lines: byID, written, resident,
-	//     removing. launched is cleared via clearLaunched. d.order is pruned by
+	//   - remove (registry.go), six lines: byID, written, resident,
+	//     removing, occupiers, occupyDrained. launched is cleared via clearLaunched. d.order is pruned by
 	//     the loop below those rather than by a delete, so it does not appear.
-	//   - Remove error branches (registry.go), three lines: removing on
-	//     Cancel, wait worker, or store failure.
+	//   - Remove error branches (registry.go), four lines: removing on
+	//     Cancel, wait worker, wait live, or store failure.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
 	//     accessor Finished, Yielded, Stop's sweep and remove all call.
+	//   - Occupy (occupy.go), two lines: occupiers and occupyDrained when refcount drops to 0.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,
 	// because a Stopped Dispatcher is still inspectable and its jobs still
 	// exist. remove is the only site that must be total.
-	resident map[string]bool
-	launched map[string]chan struct{}
-	written  map[string]Persisted
-	removing map[string]int
+	resident      map[string]bool
+	launched      map[string]chan struct{}
+	written       map[string]Persisted
+	removing      map[string]int
+	occupiers     map[string]int
+	occupyDrained map[string]chan struct{}
 
 	// storeMu serializes store writes (Save in persistIfChanged) and
 	// deletions (Delete in Remove and evictCancelledNeverRun) so a concurrent
@@ -260,26 +263,29 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		panic("dispatch: New: tick interval must be positive")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Dispatcher{
-		byID:        map[string]*entry{},
-		resident:    map[string]bool{},
-		launched:    map[string]chan struct{}{},
-		written:     map[string]Persisted{},
-		removing:    make(map[string]int),
-		q:           sched.New(leaseCap, slotCap, clock, w),
-		wake:        make(chan struct{}, 1),
-		notify:      make(chan struct{}, 1),
-		res:         r,
-		store:       s,
-		runner:      run,
-		ctx:         ctx,
-		cancel:      cancel,
-		tickEvery:   tickEvery,
-		stopTimeout: 5 * time.Second,
-		stop:        make(chan struct{}),
-		done:        make(chan struct{}),
-		log:         slog.Default(),
+	d := &Dispatcher{
+		byID:          map[string]*entry{},
+		resident:      map[string]bool{},
+		launched:      map[string]chan struct{}{},
+		written:       map[string]Persisted{},
+		removing:      make(map[string]int),
+		occupiers:     make(map[string]int),
+		occupyDrained: make(map[string]chan struct{}),
+		q:             sched.New(leaseCap, slotCap, clock, w),
+		wake:          make(chan struct{}, 1),
+		notify:        make(chan struct{}, 1),
+		res:           r,
+		store:         s,
+		runner:        run,
+		ctx:           ctx,
+		cancel:        cancel,
+		tickEvery:     tickEvery,
+		stopTimeout:   5 * time.Second,
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		log:           slog.Default(),
 	}
+	return d
 }
 
 // Tick runs one cycle of promotion, residency reconciliation, worker launch,
@@ -555,6 +561,13 @@ func (d *Dispatcher) Stop() error {
 				// not returned. Skip Park and Evict to preserve memory safety and
 				// prevent panics / null dereference under the running worker.
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait worker %s: %w", j.ID(), err))
+				continue
+			}
+			if err := d.waitLive(waitCtx, j.ID()); err != nil {
+				// Wait timed out or context cancelled. Active occupiers for this job
+				// have not drained. Skip Park and Evict to preserve memory safety and
+				// prevent panics / null dereference under active finalization.
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait live %s: %w", j.ID(), err))
 				continue
 			}
 			if err := d.q.Park(j); err != nil {

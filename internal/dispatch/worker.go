@@ -137,12 +137,6 @@ func (d *Dispatcher) claimLaunched(id string) bool {
 	return true
 }
 
-// ClaimLaunched sets the launched claim latch for id if it is registered
-// and not removing or already launched. Reports whether the claim was set.
-func (d *Dispatcher) ClaimLaunched(id string) bool {
-	return d.claimLaunched(id)
-}
-
 func (d *Dispatcher) clearLaunched(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

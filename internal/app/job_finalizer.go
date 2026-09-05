@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -26,17 +25,14 @@ import (
 //
 // It holds *Application for read-only, construction-immutable dependencies
 // (config, historyRepo, dispatcher, postProcComplete, ctx, log, emit,
-// notifyDispatcher). mu protects inFlight tracking of active finalizations.
+// notifyDispatcher).
 type jobFinalizer struct {
-	app      *Application
-	mu       sync.Mutex
-	inFlight map[string]struct{}
+	app *Application
 }
 
 func newJobFinalizer(app *Application) *jobFinalizer {
 	return &jobFinalizer{
-		app:      app,
-		inFlight: make(map[string]struct{}),
+		app: app,
 	}
 }
 
@@ -86,16 +82,6 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // Returns a non-nil error if persistence failed (the error is already logged;
 // callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
-	if job != nil && job.Job != nil {
-		f.mu.Lock()
-		f.inFlight[job.Job.ID()] = struct{}{}
-		f.mu.Unlock()
-		defer func() {
-			f.mu.Lock()
-			delete(f.inFlight, job.Job.ID())
-			f.mu.Unlock()
-		}()
-	}
 	app := f.app
 	if app.dispatcher != nil && job != nil && job.Job != nil {
 		_ = app.dispatcher.Cancel(job.Job.ID())
@@ -105,68 +91,82 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 10*time.Second)
 	defer finalCancel()
 
-	var persistErr error
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if err := app.historyRepo.Add(finalCtx, entry); err != nil {
-			log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
-				"job", job.Job.ID(), "err", err)
-			persistErr = err
-		} else if entry.Status == string(constants.StatusFailed) && job != nil && job.Job != nil {
-			p := job.Job.Progress()
-			m, _ := job.Job.Manifest()
-			if p != nil && m != nil {
-				for fi := range m.NumFiles() {
-					lo, hi := m.FileRange(fi)
-					artCount := hi - lo
-					filename := p.FileFilename(fi)
-					complete := 0
-					if p.FileComplete(fi) {
-						complete = 1
-					}
-					crc := p.FileAssembledCRC32(fi)
-					fetch := int(p.FileFetchPolicy(fi))
-					_, _ = app.historyRepo.DB().ExecContext(finalCtx, `
+	runCommit := func(ctx context.Context) error {
+		var persistErr error
+		if app.historyRepo != nil && app.historyRepo.DB() != nil {
+			if err := app.historyRepo.Add(ctx, entry); err != nil {
+				log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
+					"job", job.Job.ID(), "err", err)
+				persistErr = err
+			} else if entry.Status == string(constants.StatusFailed) && job != nil && job.Job != nil {
+				p := job.Job.Progress()
+				m, _ := job.Job.Manifest()
+				if p != nil && m != nil {
+					for fi := range m.NumFiles() {
+						lo, hi := m.FileRange(fi)
+						artCount := hi - lo
+						filename := p.FileFilename(fi)
+						complete := 0
+						if p.FileComplete(fi) {
+							complete = 1
+						}
+						crc := p.FileAssembledCRC32(fi)
+						fetch := int(p.FileFetchPolicy(fi))
+						_, _ = app.historyRepo.DB().ExecContext(ctx, `
 INSERT OR REPLACE INTO history_job_files
   (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-						job.Job.ID(), fi, complete, fetch, filename, crc, artCount)
+							job.Job.ID(), fi, complete, fetch, filename, crc, artCount)
+					}
 				}
 			}
 		}
-	}
-	if app.checkpointer != nil && job != nil && job.Job != nil {
-		app.checkpointer.Prune(job.Job.ID())
-	}
-	if app.dispatcher != nil && job != nil && job.Job != nil {
-		if err := app.dispatcher.Remove(finalCtx, job.Job.ID()); err != nil {
-			log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
+		if app.checkpointer != nil && job != nil && job.Job != nil {
+			app.checkpointer.Prune(job.Job.ID())
 		}
-	}
-	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
-	_ = os.Remove(manifestPath)
+		if app.dispatcher != nil && job != nil && job.Job != nil {
+			if err := app.dispatcher.Remove(ctx, job.Job.ID()); err != nil {
+				log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
+			}
+		}
+		manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
+		_ = os.Remove(manifestPath)
 
-	shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
-	if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if existing, err := app.historyRepo.Get(finalCtx, job.Job.ID()); err == nil && existing.Status == string(constants.StatusFailed) {
-			shouldDeleteDurability = false
+		shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
+		if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
+			if existing, err := app.historyRepo.Get(ctx, job.Job.ID()); err == nil && existing.Status == string(constants.StatusFailed) {
+				shouldDeleteDurability = false
+			}
 		}
+		if shouldDeleteDurability {
+			app.deleteJobDurability(ctx, job.Job.ID())
+		}
+		app.forgetJobBarrierState(job.Job.ID())
+		if persistErr != nil {
+			app.emit(Event{Type: "queue_updated"})
+			return persistErr
+		}
+		select {
+		case app.postProcComplete <- PostProcComplete{JobID: job.Job.ID()}:
+		default:
+		}
+		// job_finalized signals a queue→history transition so both stores
+		// refresh from a single trigger and reach the new state together.
+		app.emit(Event{Type: "job_finalized", NzoID: job.Job.ID()})
+		return nil
 	}
-	if shouldDeleteDurability {
-		app.deleteJobDurability(finalCtx, job.Job.ID())
+
+	if app.dispatcher != nil && job != nil && job.Job != nil {
+		var runErr error
+		if err := app.dispatcher.Occupy(finalCtx, job.Job.ID(), func(occupyCtx context.Context) {
+			runErr = runCommit(occupyCtx)
+		}); err != nil {
+			// If Occupy fails (e.g. ErrNotFound if already removed), fallback to running without occupy wrapper.
+			return runCommit(finalCtx)
+		}
+		return runErr
 	}
-	app.forgetJobBarrierState(job.Job.ID())
-	if persistErr != nil {
-		app.emit(Event{Type: "queue_updated"})
-		return persistErr
-	}
-	select {
-	case app.postProcComplete <- PostProcComplete{JobID: job.Job.ID()}:
-	default:
-	}
-	// job_finalized signals a queue→history transition so both stores
-	// refresh from a single trigger and reach the new state together.
-	app.emit(Event{Type: "job_finalized", NzoID: job.Job.ID()})
-	return nil
+	return runCommit(finalCtx)
 }
 
 // fireCompletionNotification sends a push notification for a finished job.
@@ -192,11 +192,4 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		JobName:   entry.Name,
 		Timestamp: time.Now(),
 	})
-}
-
-func (f *jobFinalizer) isInFlight(id string) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	_, ok := f.inFlight[id]
-	return ok
 }

@@ -1303,15 +1303,6 @@ func (app *Application) Shutdown() error {
 					_ = app.dispatcher.Yielded(row.ID)
 				}
 			}
-		} else {
-			// Postprocessor timed out. Any job still actively finalizing had its
-			// launch claim latch cleared by persistAndCommit before history I/O.
-			// Re-claim launched so Dispatcher.Stop skips eviction for in-flight jobs.
-			for _, row := range app.dispatcher.List() {
-				if app.finalizer != nil && app.finalizer.isInFlight(row.ID) {
-					_ = app.dispatcher.ClaimLaunched(row.ID)
-				}
-			}
 		}
 	}
 
