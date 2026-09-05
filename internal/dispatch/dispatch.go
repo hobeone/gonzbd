@@ -490,10 +490,13 @@ func (d *Dispatcher) run(ctx context.Context) {
 // stopTimeout sets the overall shutdown wait budget across all jobs (10s) for
 // draining worker launches and active occupancy, fitting within the 15s step
 // budget (Application.Shutdown's default stepTimeout).
-// Each job gets an isolated perJobTimeout (3s) bounded by stopCtx, while
+// Each job gets an isolated perJobTimeout (3s) bounded by stopCtx for
+// waitLaunched and waitLive. To prevent dropped queue state on shutdown,
 // persistIfChanged draws an isolated perJobPersistWait (2s) via
-// context.WithoutCancel(stopCtx) so that earlier wait timeouts cannot starve
-// subsequent job persistence.
+// context.WithoutCancel(stopCtx) so earlier wait timeouts cannot starve
+// subsequent persistence; total Stop duration across N jobs is thus bounded
+// by stopTimeout plus N * 2s, constrained by the caller's enclosing
+// waitBounded("dispatcher", 15s) step budget.
 // waitLaunched waits on launched, which is the dispatcher's launch claim latch cleared
 // when worker exit or yield is reported (e.g. Yielded, Finished). Worker goroutine
 // draining for external subsystems (downloader, postprocessor) is owned and driven by
@@ -557,8 +560,8 @@ func (d *Dispatcher) Stop() error {
 		timeout := d.stopTimeout
 		d.mu.Unlock()
 		if timeout <= 0 {
-			// 10s matches the finalizer's 10s budget and comfortably fits inside
-			// Application.Shutdown's default 15s stepTimeout budget for dispatcher.Stop.
+			// 10s comfortably fits inside Application.Shutdown's default 15s
+			// stepTimeout budget for dispatcher.Stop.
 			timeout = 10 * time.Second
 		}
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), timeout)
