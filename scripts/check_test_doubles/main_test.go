@@ -557,6 +557,91 @@ func AckProof() durability.DurableProof {
 `,
 			expected: 0,
 		},
+		{
+			name: "exported func returning struct carrier with DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type ProofBox struct {
+	P DurableProof
+}
+
+func BoxedProof() ProofBox {
+	return ProofBox{}
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function BoxedProof in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning chan DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func ProofChannel() chan DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function ProofChannel in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning func() DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func ProofGenerator() func() DurableProof {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function ProofGenerator in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning type alias of DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type ProofAlias DurableProof
+
+func AliasedProof() ProofAlias {
+	return ProofAlias{}
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function AliasedProof in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning pointer to struct carrier with DurableProof in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type ProofBox struct {
+	P DurableProof
+}
+
+func BoxedProofPtr() *ProofBox {
+	return nil
+}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function BoxedProofPtr in internal/durability returns DurableProof",
+		},
+		{
+			name: "exported func returning safe struct without DurableProof in internal/durability is allowed",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+type SafeBox struct {
+	ID string
+}
+
+func GetSafeBox() SafeBox {
+	return SafeBox{}
+}
+`,
+			expected: 0,
+		},
 	}
 
 	for _, tc := range cases {

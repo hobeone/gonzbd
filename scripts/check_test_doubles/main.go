@@ -182,22 +182,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 		}
 	}
 
-	hasTestBuildTag := false
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			if c.Pos() >= file.Package {
-				continue
-			}
-			text := strings.TrimSpace(c.Text)
-			if constraint.IsGoBuild(text) {
-				if expr, err := constraint.Parse(text); err == nil {
-					if containsTestTag(expr) {
-						hasTestBuildTag = true
-					}
-				}
-			}
-		}
-	}
+	hasTestBuildTag := fileHasTestBuildTag(file)
 
 	// 1) File name check: Any file under internal/ or cmd/ whose filename
 	// matches *test*.go (excluding *_test.go) MUST have a test //go:build tag
@@ -220,13 +205,14 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	cleanPath := filepath.Clean(filepath.ToSlash(path))
 	isDurabilityPkg := strings.HasPrefix(cleanPath, "internal/durability/") || cleanPath == "internal/durability"
 	if !hasTestBuildTag && isDurabilityPkg {
+		pkgTypeDefs := indexDurabilityTypeDefs(filepath.Dir(cleanPath), file)
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Name == nil || !fn.Name.IsExported() || fn.Type == nil || fn.Type.Results == nil {
 				continue
 			}
 			for _, result := range fn.Type.Results.List {
-				if returnsDurableProof(result.Type) {
+				if returnsDurableProof(result.Type, pkgTypeDefs, nil) {
 					kind := "function"
 					if fn.Recv != nil && len(fn.Recv.List) > 0 {
 						kind = "method"
@@ -357,21 +343,128 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	return findings, nil
 }
 
-func returnsDurableProof(expr ast.Expr) bool {
+func returnsDurableProof(expr ast.Expr, pkgTypeDefs map[string]ast.Expr, visited map[string]bool) bool {
+	if expr == nil {
+		return false
+	}
+	if visited == nil {
+		visited = make(map[string]bool)
+	}
 	switch t := expr.(type) {
 	case *ast.Ident:
-		return t.Name == "DurableProof"
+		if t.Name == "DurableProof" {
+			return true
+		}
+		if underlying, ok := pkgTypeDefs[t.Name]; ok && !visited[t.Name] {
+			visited[t.Name] = true
+			res := returnsDurableProof(underlying, pkgTypeDefs, visited)
+			delete(visited, t.Name)
+			return res
+		}
+		return false
 	case *ast.SelectorExpr:
-		return t.Sel.Name == "DurableProof"
+		return t.Sel != nil && t.Sel.Name == "DurableProof"
 	case *ast.StarExpr:
-		return returnsDurableProof(t.X)
+		return returnsDurableProof(t.X, pkgTypeDefs, visited)
 	case *ast.ArrayType:
-		return returnsDurableProof(t.Elt)
+		return returnsDurableProof(t.Elt, pkgTypeDefs, visited)
 	case *ast.MapType:
-		return returnsDurableProof(t.Value)
+		return returnsDurableProof(t.Key, pkgTypeDefs, visited) || returnsDurableProof(t.Value, pkgTypeDefs, visited)
+	case *ast.ChanType:
+		return returnsDurableProof(t.Value, pkgTypeDefs, visited)
+	case *ast.FuncType:
+		if t.Results != nil {
+			for _, field := range t.Results.List {
+				if returnsDurableProof(field.Type, pkgTypeDefs, visited) {
+					return true
+				}
+			}
+		}
+		return false
+	case *ast.StructType:
+		if t.Fields != nil {
+			for _, field := range t.Fields.List {
+				if returnsDurableProof(field.Type, pkgTypeDefs, visited) {
+					return true
+				}
+			}
+		}
+		return false
+	case *ast.ParenExpr:
+		return returnsDurableProof(t.X, pkgTypeDefs, visited)
 	default:
 		return false
 	}
+}
+
+func indexDurabilityTypeDefs(dir string, file *ast.File) map[string]ast.Expr {
+	pkgTypeDefs := make(map[string]ast.Expr)
+
+	scanDir := dir
+	if info, err := os.Stat(scanDir); err != nil || !info.IsDir() {
+		scanDir = "internal/durability"
+	}
+	if info, err := os.Stat(scanDir); err == nil && info.IsDir() {
+		entries, err := os.ReadDir(scanDir)
+		if err == nil {
+			fset := token.NewFileSet()
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+					continue
+				}
+				filePath := filepath.Join(scanDir, entry.Name())
+				f, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
+				if err != nil {
+					continue
+				}
+				if fileHasTestBuildTag(f) {
+					continue
+				}
+				addTypeDefs(pkgTypeDefs, f)
+			}
+		}
+	}
+
+	if file != nil {
+		addTypeDefs(pkgTypeDefs, file)
+	}
+
+	return pkgTypeDefs
+}
+
+func addTypeDefs(defs map[string]ast.Expr, file *ast.File) {
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name == nil || ts.Type == nil {
+				continue
+			}
+			defs[ts.Name.Name] = ts.Type
+		}
+	}
+}
+
+func fileHasTestBuildTag(file *ast.File) bool {
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			if c.Pos() >= file.Package {
+				continue
+			}
+			text := strings.TrimSpace(c.Text)
+			if constraint.IsGoBuild(text) {
+				if expr, err := constraint.Parse(text); err == nil {
+					if containsTestTag(expr) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func containsTestTag(expr constraint.Expr) bool {
