@@ -483,16 +483,19 @@ func (d *Dispatcher) run(ctx context.Context) {
 // The sweep also clears each job's launched claim and its manifest
 // residency, alongside Park and Evict. Stop cancels workers and waits via
 // waitLaunched under a total bounded timeout across all jobs before parking or
-// evicting. The default wait timeout (5s) and per-job persist timeout (2s) are
-// bounded to a fraction of the shutdown step budget (15s) to guarantee
-// containment within waitBounded. waitLaunched waits on launched, which is the
-// dispatcher's launch claim latch cleared when worker exit or yield is reported
-// (e.g. Yielded, Finished). Worker goroutine draining for external subsystems
-// (downloader, postprocessor) is owned and driven by their respective Stop
-// methods. If the wait times out for a job, Stop records the error and
-// deliberately SKIPS Park and Evict for that job, leaving its resident
-// manifest and scheduler state untouched so the running worker does not
-// experience manifest eviction or panics under concurrent access.
+// evicting. stopTimeout sets the default wait budget (5s) for draining worker
+// launches and active occupancy, and persistIfChanged draws up to 2s per job
+// bounded by waitCtx. The 5s default is intended to fit within typical caller
+// shutdown timeouts (such as Application.Shutdown's default step budget),
+// without asserting an unconditional containment guarantee across custom caller
+// budgets configured via WithShutdownStepTimeout. waitLaunched waits on
+// launched, which is the dispatcher's launch claim latch cleared when worker
+// exit or yield is reported (e.g. Yielded, Finished). Worker goroutine draining
+// for external subsystems (downloader, postprocessor) is owned and driven by
+// their respective Stop methods. If the wait times out for a job, Stop records
+// the error and deliberately SKIPS Park and Evict for that job, leaving its
+// resident manifest and scheduler state untouched so the running worker does
+// not experience manifest eviction or panics under concurrent access.
 // All wait and park errors are aggregated and returned via errors.Join.
 //
 // Stop is a third worker-exit path beside Finished and
@@ -573,7 +576,7 @@ func (d *Dispatcher) Stop() error {
 			if err := d.q.Park(j); err != nil {
 				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err))
 			}
-			persistCtx, persistCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			persistCtx, persistCancel := context.WithTimeout(waitCtx, 2*time.Second)
 			d.persistIfChanged(persistCtx, j)
 			persistCancel()
 			d.res.Evict(j.ID())

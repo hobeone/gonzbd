@@ -415,3 +415,48 @@ func TestNew_DefaultStopTimeoutIsFractionOfStepBudget(t *testing.T) {
 		t.Fatalf("default stopTimeout = %v, want 5s (must be fraction of 15s step budget)", got)
 	}
 }
+
+type deadlineRecordingStore struct {
+	fakeStore
+	savedDeadline chan time.Time
+}
+
+func (s *deadlineRecordingStore) Save(ctx context.Context, p Persisted) error {
+	if dl, ok := ctx.Deadline(); ok {
+		select {
+		case s.savedDeadline <- dl:
+		default:
+		}
+	}
+	return s.fakeStore.Save(ctx, p)
+}
+
+func TestStop_PersistTimeoutBoundedByWaitCtx(t *testing.T) {
+	t.Parallel()
+	st := &deadlineRecordingStore{
+		savedDeadline: make(chan time.Time, 1),
+	}
+	d := newTestDispatcher(t, withStore(st))
+	d.SetStopTimeout(300 * time.Millisecond)
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	var dl time.Time
+	select {
+	case dl = <-st.savedDeadline:
+	default:
+		t.Fatal("expected Save to be called during Stop")
+	}
+
+	remaining := time.Until(dl)
+	if remaining > 500*time.Millisecond {
+		t.Fatalf("persist context timeout was %v, exceeding stopTimeout budget (must be bounded by waitCtx)", remaining)
+	}
+}
