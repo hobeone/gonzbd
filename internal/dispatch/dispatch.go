@@ -28,10 +28,10 @@ type Dispatcher struct {
 	byID  map[string]*entry
 	order []string
 
-	// resident, launched, written, removing and occupiers are the dispatcher's
-	// own per-job bookkeeping, all guarded by mu. None may be held across a call into
-	// sched or into Residency.Hydrate — take mu, read or write one map,
-	// release.
+	// resident, launched, written, removing, occupiers, occupancyTokens,
+	// occupyDrained and occupyStep are the dispatcher's own per-job bookkeeping,
+	// all guarded by mu. None may be held across a call into sched or into
+	// Residency.Hydrate — take mu, read or write one map, release.
 	//
 	// ADDING A MAP HERE MEANS EXTENDING EVERY TEARDOWN. This has been got
 	// wrong three times on this branch — Stop not clearing resident, remove
@@ -487,9 +487,9 @@ func (d *Dispatcher) run(ctx context.Context) {
 // The sweep also clears each job's launched claim and its manifest
 // residency, alongside Park and Evict. Stop cancels workers and waits via
 // waitLaunched and waitLive under stopCtx before parking or evicting.
-// stopTimeout sets the default wait budget (10s) for draining worker launches
-// and active occupancy, matching the finalizer's 10s occupancy budget and
-// comfortably fitting inside Application.Shutdown's default 15s stepTimeout budget.
+// stopTimeout sets the overall shutdown wait budget across all jobs (10s) for
+// draining worker launches and active occupancy, fitting within the 15s step
+// budget (Application.Shutdown's default stepTimeout).
 // Each job gets an isolated perJobTimeout (3s) bounded by stopCtx, while
 // persistIfChanged draws an isolated perJobPersistWait (2s) via
 // context.WithoutCancel(stopCtx) so that earlier wait timeouts cannot starve

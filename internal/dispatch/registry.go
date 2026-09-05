@@ -211,11 +211,13 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 }
 
 // remove deletes a job from EVERY per-job structure — d.byID, d.order,
-// d.written, d.resident, d.launched, d.removing, d.occupiers and d.occupyDrained —
-// under one d.mu span. It is the single internal registry eraser, called only
-// when no active occupiers or launched workers remain on the job. See the
-// Dispatcher struct's per-job map comment (dispatch.go) for why "every" is the
-// rule here rather than "the ones this caller happens to care about".
+// d.written, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
+// d.occupyDrained and d.occupyStep — under one d.mu span. It is the single
+// internal registry eraser. External callers drain launched workers and external
+// occupiers before calling, while the finalizer's own Remove proceeds with its
+// own lease token active. See the Dispatcher struct's per-job map comment
+// (dispatch.go) for why "every" is the rule here rather than "the ones this
+// caller happens to care about".
 //
 // It preserves the relative order of the remaining entries: queue order is
 // the priority policy sched consults, and a swap-with-last deletion would
@@ -234,8 +236,9 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 //     never hydrates and runs without its manifest.
 //   - d.launched: a stale true entry makes claimLaunched return false
 //     forever, so a reused ID is permanently unlaunchable.
-//   - d.occupiers / d.occupyDrained: a stale entry leaves callers waiting on
-//     waitLive forever or reports false occupancy.
+//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
+//     entry leaves callers waiting on waitLive forever or reports false
+//     occupancy.
 func (d *Dispatcher) remove(id string) {
 	d.mu.Lock()
 	delete(d.byID, id)

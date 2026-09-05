@@ -33,9 +33,10 @@ type appWorkers struct {
 	app *Application
 }
 
-// Abort signals the downloader pool via CancelJob to clear tracking state
-// and abort in-flight work for the given jobID before yielding the job
-// on the dispatcher.
+// Abort calls CancelJob on the downloader pool. CancelJob clears downloader
+// tracking records (tryList and inFlight) for the given jobID before yielding
+// the job on the dispatcher. Note that CancelJob clears tracking records; it
+// does not cancel or drain active NNTP worker goroutines.
 func (w *appWorkers) Abort(jobID string) {
 	if w.app == nil {
 		return

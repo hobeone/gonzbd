@@ -86,9 +86,10 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 //     context.WithoutCancel(app.ctx).
 //
 // Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
-// write cannot starve dispatcher removal or durability cleanup. Untimed local
-// filesystem and checkpointer operations (Prune, os.Remove) complete promptly
-// in memory or on the local filesystem. Note that the enclosing finalize method
+// write cannot starve dispatcher removal or durability cleanup. Prune operates
+// in memory. os.Remove unlinks the queue manifest on the filesystem hosting
+// AdminDir (which docs/durability-contract.md notes can experience IO latency or
+// stalls under remote NFS/SMB mounts). Note that the enclosing finalize method
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
