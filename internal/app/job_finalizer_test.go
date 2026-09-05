@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -385,3 +388,90 @@ func TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t *testing.T) {
 	}
 	<-finalizerDone
 }
+
+func TestFinalizer_FailedJob_NonResidentManifest_WritesHistoryJobFiles(t *testing.T) {
+	t.Parallel()
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject: "test-file-1.bin",
+				Bytes:   100,
+				Articles: []nzb.Article{
+					{ID: "art1@domain", Bytes: 100, Number: 1},
+				},
+			},
+			{
+				Subject: "test-file-2.bin",
+				Bytes:   200,
+				Articles: []nzb.Article{
+					{ID: "art2@domain", Bytes: 200, Number: 1},
+				},
+			},
+		},
+	}
+	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "nonresident-manifest-test"})
+
+	// Write the manifest to the queue manifests location on disk.
+	m, err := qJob.Manifest()
+	if err != nil {
+		t.Fatalf("qJob.Manifest: %v", err)
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal manifest: %v", err)
+	}
+	manifestPath := filepath.Join(admin, "queue", "manifests", qJob.ID()+".json.gz")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := fsutil.WriteGzAtomicBytes(manifestPath, data); err != nil {
+		t.Fatalf("WriteGzAtomicBytes manifest: %v", err)
+	}
+
+	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Evict the manifest from memory.
+	qJob.Evict()
+	if qJob.Resident() {
+		t.Fatal("expected qJob.Resident() to be false after Evict()")
+	}
+
+	entry := history.Entry{
+		NzoID:  qJob.ID(),
+		Name:   qJob.Name(),
+		Status: string(constants.StatusFailed),
+	}
+
+	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: qJob}); err != nil {
+		t.Fatalf("TriggerPersistAndCommit: %v", err)
+	}
+
+	var count int
+	if err := repo.DB().QueryRowContext(t.Context(),
+		"SELECT COUNT(*) FROM history_job_files WHERE job_id = ?", qJob.ID()).Scan(&count); err != nil {
+		t.Fatalf("QueryRowContext: %v", err)
+	}
+
+	if count != 2 {
+		t.Fatalf("history_job_files count = %d, want 2", count)
+	}
+}
+

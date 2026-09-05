@@ -1,7 +1,9 @@
 package app
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
@@ -97,11 +100,11 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 //
 // Returns a non-nil error if persistence failed (the error is already logged;
 // callers can simply return).
-func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
+func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
-	if app.dispatcher != nil && job != nil && job.Job != nil {
-		_ = app.dispatcher.Cancel(job.Job.ID())
-		_ = app.dispatcher.Yielded(job.Job.ID())
+	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+		_ = app.dispatcher.Cancel(ppJob.Job.ID())
+		_ = app.dispatcher.Yielded(ppJob.Job.ID())
 	}
 
 	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 10*time.Second)
@@ -114,12 +117,22 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 			defer dbCancel()
 			if err := app.historyRepo.Add(dbCtx, entry); err != nil {
 				log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
-					"job", job.Job.ID(), "err", err)
+					"job", ppJob.Job.ID(), "err", err)
 				persistErr = err
-			} else if entry.Status == string(constants.StatusFailed) && job != nil && job.Job != nil {
-				p := job.Job.Progress()
-				m, _ := job.Job.Manifest()
-				if p != nil && m != nil {
+			} else if entry.Status == string(constants.StatusFailed) && ppJob != nil && ppJob.Job != nil {
+				p := ppJob.Job.Progress()
+				m, mErr := ppJob.Job.Manifest()
+				if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
+					manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", ppJob.Job.ID()+".json.gz")
+					if diskM, err := readManifestFile(manifestPath); err == nil {
+						m = diskM
+						mErr = nil
+					}
+				}
+				if mErr != nil {
+					log.Error("failed to load manifest for failed job files; history_job_files not populated",
+						"job", ppJob.Job.ID(), "err", mErr)
+				} else if p != nil && m != nil {
 					for fi := range m.NumFiles() {
 						lo, hi := m.FileRange(fi)
 						artCount := hi - lo
@@ -134,64 +147,64 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 INSERT OR REPLACE INTO history_job_files
   (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-							job.Job.ID(), fi, complete, fetch, filename, crc, artCount)
+							ppJob.Job.ID(), fi, complete, fetch, filename, crc, artCount)
 					}
 				}
 			}
 		}
-		if app.checkpointer != nil && job != nil && job.Job != nil {
-			app.checkpointer.Prune(job.Job.ID())
+		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
+			app.checkpointer.Prune(ppJob.Job.ID())
 		}
-		if app.dispatcher != nil && job != nil && job.Job != nil {
+		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
 			defer removeCancel()
-			if err := app.dispatcher.Remove(removeCtx, job.Job.ID()); err != nil {
-				log.Warn("failed to remove job from dispatcher after post-proc", "job", job.Job.ID(), "err", err)
+			if err := app.dispatcher.Remove(removeCtx, ppJob.Job.ID()); err != nil {
+				log.Warn("failed to remove job from dispatcher after post-proc", "job", ppJob.Job.ID(), "err", err)
 			}
 		}
-		manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", job.Job.ID()+".json.gz")
+		manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", ppJob.Job.ID()+".json.gz")
 		_ = os.Remove(manifestPath)
 
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
 		shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
 		if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
-			existing, err := app.historyRepo.Get(delCtx, job.Job.ID())
+			existing, err := app.historyRepo.Get(delCtx, ppJob.Job.ID())
 			if err == nil {
 				if existing.Status == string(constants.StatusFailed) {
 					shouldDeleteDurability = false
 				}
 			} else if !errors.Is(err, history.ErrNotFound) {
 				log.Warn("history lookup failed during finalize conflict check; preserving durability rows on doubt",
-					"job", job.Job.ID(), "err", err)
+					"job", ppJob.Job.ID(), "err", err)
 				shouldDeleteDurability = false
 			}
 		}
 		if shouldDeleteDurability {
-			app.deleteJobDurability(delCtx, job.Job.ID())
+			app.deleteJobDurability(delCtx, ppJob.Job.ID())
 		}
-		app.forgetJobBarrierState(job.Job.ID())
+		app.forgetJobBarrierState(ppJob.Job.ID())
 		if persistErr != nil {
 			app.emit(Event{Type: "queue_updated"})
 			return persistErr
 		}
 		select {
-		case app.postProcComplete <- PostProcComplete{JobID: job.Job.ID()}:
+		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
 		default:
 		}
 		// job_finalized signals a queue→history transition so both stores
 		// refresh from a single trigger and reach the new state together.
-		app.emit(Event{Type: "job_finalized", NzoID: job.Job.ID()})
+		app.emit(Event{Type: "job_finalized", NzoID: ppJob.Job.ID()})
 		return nil
 	}
 
-	if app.dispatcher != nil && job != nil && job.Job != nil {
+	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 		var runErr error
-		if err := app.dispatcher.Occupy(finalCtx, job.Job.ID(), func(occupyCtx context.Context) {
+		if err := app.dispatcher.Occupy(finalCtx, ppJob.Job.ID(), func(occupyCtx context.Context) {
 			runErr = runCommit(occupyCtx)
 		}); err != nil {
 			// If Occupy fails (e.g. ErrNotFound if already removed), fallback to running without occupy wrapper.
-			log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", job.Job.ID(), "err", err)
+			log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", ppJob.Job.ID(), "err", err)
 			return runCommit(finalCtx)
 		}
 		return runErr
@@ -223,3 +236,22 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		Timestamp: time.Now(),
 	})
 }
+
+func readManifestFile(path string) (*job.Manifest, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = zr.Close() }()
+	var m job.Manifest
+	if err := json.NewDecoder(zr).Decode(&m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
