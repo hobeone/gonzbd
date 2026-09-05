@@ -76,6 +76,32 @@ func TestOccupy_RemoveInsideOccupyBypassesWaitLive(t *testing.T) {
 	}
 }
 
+func TestOccupy_RemoveBypassesSelfDeadlock(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("job-1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.markResident("job-1")
+
+	err := d.Occupy(context.Background(), "job-1", func(occupyCtx context.Context) {
+		removeCtx, removeCancel := context.WithTimeout(occupyCtx, 100*time.Millisecond)
+		defer removeCancel()
+
+		err := d.Remove(removeCtx, "job-1")
+		if err != nil {
+			t.Fatalf("Remove within Occupy failed: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Occupy: %v", err)
+	}
+
+	if _, ok := d.lookup("job-1"); ok {
+		t.Fatal("job-1 still found after Remove within Occupy")
+	}
+}
+
 func TestOccupy_ExternalRemoveWaitsForOccupancyToDrain(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
