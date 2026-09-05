@@ -899,3 +899,60 @@ func TestRemove_InFlightPersistBlockedByStoreMuDoesNotResurrect(t *testing.T) {
 		t.Fatal("j1 recorded in written map after Remove")
 	}
 }
+
+func TestEvictCancelledNeverRun_SkipsWhenLiveOrLaunched(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+
+	// Case 1: When occupied via d.Occupy, evictCancelledNeverRun returns false
+	// and does not delete or deregister the job.
+	err := d.Occupy(context.Background(), j.ID(), func(ctx context.Context) {
+		if d.evictCancelledNeverRun(ctx, j) {
+			t.Error("evictCancelledNeverRun returned true while job is occupied, want false")
+		}
+		if st.deleted(j.ID()) {
+			t.Error("evictCancelledNeverRun deleted store row while job is occupied")
+		}
+		if _, ok := d.Job(j.ID()); !ok {
+			t.Error("job deregistered while job is occupied")
+		}
+	})
+	if err != nil {
+		t.Fatalf("Occupy: %v", err)
+	}
+
+	// Case 2: When claimLaunched is true, evictCancelledNeverRun returns false
+	// and does not delete or deregister the job.
+	if !d.claimLaunched(j.ID()) {
+		t.Fatal("claimLaunched returned false")
+	}
+	if d.evictCancelledNeverRun(context.Background(), j) {
+		t.Error("evictCancelledNeverRun returned true while job is launched, want false")
+	}
+	if st.deleted(j.ID()) {
+		t.Error("evictCancelledNeverRun deleted store row while job is launched")
+	}
+	if _, ok := d.Job(j.ID()); !ok {
+		t.Error("job deregistered while job is launched")
+	}
+	d.clearLaunched(j.ID())
+
+	// Case 3: When neither occupied nor launched, evictCancelledNeverRun returns true
+	// and cleans up the job.
+	if !d.evictCancelledNeverRun(context.Background(), j) {
+		t.Error("evictCancelledNeverRun returned false for idle unset cancelled job, want true")
+	}
+	if !st.deleted(j.ID()) {
+		t.Error("evictCancelledNeverRun did not delete store row for idle job")
+	}
+	if _, ok := d.Job(j.ID()); ok {
+		t.Error("job still registered after evictCancelledNeverRun")
+	}
+}

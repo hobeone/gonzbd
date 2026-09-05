@@ -128,6 +128,11 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 // and reports whether THIS JOB'S PASS IS OVER — which is not the same as
 // whether the removal succeeded, and the difference was a defect.
 //
+// An unset, cancelled job must not be deregistered if an active occupier or
+// worker is still attached to it. If the job has active occupiers or is
+// launched, eviction is refused under live work and returns false so that live
+// operations are not unseated and resources are cleanly tracked.
+//
 // The bool used to mean "did I evict?", so a failed store.Delete returned
 // false and tick could not tell that case apart from "this is not a cancelled
 // never-run job at all". It walked on to persistIfChanged, and because the
@@ -163,6 +168,14 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 	if s.State.State != job.StateUnset || s.Intent != job.IntentCancel {
 		return false
 	}
+
+	d.mu.Lock()
+	isLiveOrLaunched := len(d.occupancyTokens[j.ID()]) > 0 || d.launched[j.ID()] != nil
+	d.mu.Unlock()
+	if isLiveOrLaunched {
+		return false
+	}
+
 	d.storeMu.Lock()
 	err := d.store.Delete(ctx, j.ID())
 	d.storeMu.Unlock()

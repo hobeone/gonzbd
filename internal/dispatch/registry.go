@@ -212,15 +212,16 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 
 // remove deletes a job from EVERY per-job structure — d.byID, d.order,
 // d.written, d.resident, d.launched, d.removing, d.occupiers and d.occupyDrained —
-// under one d.mu span. See the Dispatcher struct's per-job map comment
-// (dispatch.go) for why "every" is the rule here rather than "the ones this
-// caller happens to care about".
+// under one d.mu span. It is the single internal registry eraser, called only
+// when no active occupiers or launched workers remain on the job. See the
+// Dispatcher struct's per-job map comment (dispatch.go) for why "every" is the
+// rule here rather than "the ones this caller happens to care about".
 //
 // It preserves the relative order of the remaining entries: queue order is
 // the priority policy sched consults, and a swap-with-last deletion would
 // silently reorder jobs behind the removed one. evictCancelledNeverRun
-// (tick.go) is the first caller — it never removes a running job, but this
-// method makes no such assumption itself.
+// (tick.go) is the first caller — it guards against launched workers or active
+// occupiers before calling, and this method makes no such assumption itself.
 //
 // What each prune buys, since none of them is obviously load-bearing on its
 // own and all three were omitted at least once:
