@@ -184,6 +184,91 @@ VALUES (?, 0, "file.bin", 0, 1024, 0, 0, "file.bin", 0, 1)`, job.ID()); err != n
 	}
 }
 
+// TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError pins that when
+// history persistence fails and historyRepo.Get returns an unexpected error
+// (e.g. SQLite error or context canceled, anything other than history.ErrNotFound),
+// durability rows are preserved on doubt rather than deleted.
+func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T) {
+	adminDir := t.TempDir()
+	cfg := testConfigInternal(t, adminDir)
+
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+
+	application, err := New(cfg, repo)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Shutdown() })
+	application.PauseDownloads()
+	application.Dispatcher().Pause()
+
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  "file.bin",
+		Bytes:    1024,
+		Articles: []nzb.Article{{ID: "fin3@t", Bytes: 1024, Number: 1}},
+	}}}
+	job, hdr, err := BuildIngestJob(application.config, parsed, "finalize-dberr.nzb", types.FetchOptions{JobID: "dberrconflict"}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := application.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// 1. Seed durability rows (job_files, durable_runs, failed_articles).
+	seedDurability(t, application, job.ID())
+	if _, err := application.historyRepo.DB().ExecContext(ctx, `
+INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete, fetch_policy, filename, assembled_crc32, article_count)
+VALUES (?, 0, "file.bin", 0, 1024, 0, 0, "file.bin", 0, 1)`, job.ID()); err != nil {
+		t.Fatalf("seed job_files: %v", err)
+	}
+
+	nf, ne := durabilityRowCounts(t, application, job.ID())
+	if nf != 1 || ne != 1 {
+		t.Fatalf("fixture seeded %d runs and %d failed rows, want 1 and 1", nf, ne)
+	}
+
+	// 2. Corrupt the history schema so historyRepo.Add and historyRepo.Get both fail
+	// with a table missing / SQLite query error (not ErrNotFound).
+	if _, err := application.historyRepo.DB().ExecContext(ctx, `DROP TABLE history`); err != nil {
+		t.Fatalf("drop history table: %v", err)
+	}
+
+	// 3. Finalize the job with non-failed status. History write will fail because
+	// history table is gone. Then history lookup will fail with an error
+	// (sqlite table not found, which is NOT history.ErrNotFound).
+	newJobFinalizer(application).finalize(&postproc.Job{
+		Job:         job,
+		FinalDir:    t.TempDir(),
+		DownloadDir: t.TempDir(),
+	})
+
+	// 4. Verify durability rows are NOT deleted (preserved on doubt).
+	nfAfter, neAfter := durabilityRowCounts(t, application, job.ID())
+	if nfAfter != 1 || neAfter != 1 {
+		t.Errorf("durability rows were deleted when history lookup failed with error: runs=%d, failed=%d, want 1 and 1",
+			nfAfter, neAfter)
+	}
+	var jobFilesCount int
+	if err := application.historyRepo.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM job_files WHERE job_id = ?`, job.ID()).Scan(&jobFilesCount); err != nil {
+		t.Fatalf("count job_files: %v", err)
+	}
+	if jobFilesCount != 1 {
+		t.Errorf("job_files rows were deleted when history lookup failed with error: count=%d, want 1", jobFilesCount)
+	}
+}
+
 // testConfigInternal builds a minimal config for package-internal tests.
 func testConfigInternal(t *testing.T, adminDir string) *config.Config {
 	t.Helper()

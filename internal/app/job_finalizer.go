@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -134,7 +135,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 
 		shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
 		if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
-			if existing, err := app.historyRepo.Get(ctx, job.Job.ID()); err == nil && existing.Status == string(constants.StatusFailed) {
+			existing, err := app.historyRepo.Get(ctx, job.Job.ID())
+			if err == nil {
+				if existing.Status == string(constants.StatusFailed) {
+					shouldDeleteDurability = false
+				}
+			} else if !errors.Is(err, history.ErrNotFound) {
+				log.Warn("history lookup failed during finalize conflict check; preserving durability rows on doubt",
+					"job", job.Job.ID(), "err", err)
 				shouldDeleteDurability = false
 			}
 		}
