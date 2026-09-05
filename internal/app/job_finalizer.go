@@ -73,16 +73,21 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // regardless of history persistence success. If dispatcher.Remove returns an
 // error, the error is logged while the job remains registered for retry or
 // caller handling.
+// Sub-budgets within persistAndCommit are strictly partitioned against
+// starvation:
+//   - History write & files loop: 4s dbCtx, derived from
+//     context.WithoutCancel(app.ctx).
+//   - Dispatcher removal: 3s removeCtx, derived from occupyCtx to retain the
+//     occupancy lease token for bypass in Dispatcher.Remove.
+//   - Durability check & delete: 3s delCtx, derived from
+//     context.WithoutCancel(app.ctx).
 //
-// Sub-budgets are strictly partitioned against starvation so a slow database
-// operation cannot exhaust the finalization window:
-//   - Overall Occupy wrapper: bounded by 10s finalCtx (WithoutCancel(app.ctx)).
-//   - History write & files loop: 4s dbCtx.
-//   - Dispatcher removal: 3s removeCtx (derived from occupyCtx to retain the occupancy key).
-//   - Durability check & delete: 3s delCtx.
-//
-// The total (4s DB + 3s remove + 3s durability cleanup = 10s) fits strictly inside
-// the 15s waitBounded shutdown step budget.
+// Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
+// write cannot starve dispatcher removal or durability cleanup. Untimed local
+// filesystem and checkpointer operations (Prune, os.Remove) complete promptly
+// in memory or on the local filesystem. Note that the enclosing finalize method
+// also executes completion notifications and asynchronous history pruning
+// under its own 30s context outside of persistAndCommit.
 //
 // Durability rows for a failed job are owned by the retry path and must never
 // be deleted here. Furthermore, if history persistence fails against a

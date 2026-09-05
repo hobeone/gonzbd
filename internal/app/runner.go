@@ -86,7 +86,7 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 	}
 }
 
-// runFetch hands off work to the downstream downloader subsystem pool by poking
+// runFetch hands off work to the downstream downloader pool by poking
 // dl.Wake(). Downloader worker goroutines are cancelled and drained by
 // downloader.Stop during Application.Shutdown.
 func (r *appRunner) runFetch(_ context.Context, id string) {

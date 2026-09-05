@@ -12,15 +12,20 @@ type occupyToken struct {
 	token any
 }
 
-// Occupy marks the calling context as actively occupying the job with ID id.
+// Occupy leases execution on a resident job for post-processing and job
+// finalization teardown.
 //
 // While Occupy is active:
-//   - Dispatcher.Stop waits on waitLive (up to its timeout) and skips Park and
-//     Evict if active occupiers do not yield in time.
-//   - Dispatcher.Remove called with the occupied context bypasses waiting on
-//     waitLive for its own token (via waitLiveExcept), preventing self-deadlocks
-//     while still waiting on any concurrent occupiers to finish.
+//   - Dispatcher.Stop waits for active occupiers to yield (up to its per-job
+//     timeout) and skips Park and Evict if they do not yield in time.
+//   - Dispatcher.Remove called by an active occupier with its lease context
+//     bypasses waiting on its own token (via waitLiveExcept), preventing
+//     self-deadlocks while still waiting on any concurrent occupiers to yield.
 //   - Other external Remove calls will wait for active occupiers to reach 0.
+//
+// Note that downloader fetch handoffs rely on connection pool cancellation
+// signaling (CancelJob) rather than the occupancy lease (which protects
+// post-processing and finalization).
 //
 // Returns ErrNotFound if the job is not currently registered or if Remove is
 // actively removing it.

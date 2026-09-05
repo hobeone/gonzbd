@@ -33,6 +33,9 @@ type appWorkers struct {
 	app *Application
 }
 
+// Abort signals the downloader pool via CancelJob to clear tracking state
+// and abort in-flight work for the given jobID before yielding the job
+// on the dispatcher.
 func (w *appWorkers) Abort(jobID string) {
 	if w.app == nil {
 		return
