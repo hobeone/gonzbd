@@ -792,6 +792,26 @@ func NewReader() Reader {
 `,
 			expected: 0,
 		},
+		{
+			name: "exported func accepting variadic *DurableProof parameter in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func VariadicPtrSink(ps ...*DurableProof) {}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function VariadicPtrSink in internal/durability accepts DurableProof",
+		},
+		{
+			name: "exported func accepting variadic DurableProof value parameter in internal/durability",
+			path: "internal/durability/helper.go",
+			src: `package durability
+
+func VariadicValSink(ps ...DurableProof) {}
+`,
+			expected: 1,
+			contains: "structural encapsulation violation: exported function VariadicValSink in internal/durability accepts DurableProof",
+		},
 	}
 
 	for _, tc := range cases {

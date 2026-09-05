@@ -409,6 +409,8 @@ func returnsDurableProof(expr ast.Expr, pkgTypeDefs map[string]ast.Expr, visited
 		return t.Sel != nil && t.Sel.Name == "DurableProof"
 	case *ast.StarExpr:
 		return returnsDurableProof(t.X, pkgTypeDefs, visited)
+	case *ast.Ellipsis:
+		return returnsDurableProof(t.Elt, pkgTypeDefs, visited)
 	case *ast.ArrayType:
 		return returnsDurableProof(t.Elt, pkgTypeDefs, visited)
 	case *ast.MapType:
