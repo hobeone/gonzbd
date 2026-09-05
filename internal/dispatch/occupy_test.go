@@ -514,5 +514,3 @@ func TestWaitLiveExcept_DoneArm_RequiresCallerPresence(t *testing.T) {
 		t.Fatalf("waitLiveExcept returned error = %v, want context.Canceled", err)
 	}
 }
-
-

@@ -2,13 +2,13 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"encoding/json"
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -474,4 +474,3 @@ func TestFinalizer_FailedJob_NonResidentManifest_WritesHistoryJobFiles(t *testin
 		t.Fatalf("history_job_files count = %d, want 2", count)
 	}
 }
-

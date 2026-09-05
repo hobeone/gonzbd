@@ -42,10 +42,10 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 
 // finalize is called by the post-processor (OnJobDone) when a job is done
 // (success or failure).
-func (f *jobFinalizer) finalize(job *postproc.Job) {
+func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	app := f.app
-	entry := buildHistoryEntry(job)
-	if err := f.persistAndCommit(app.log, entry, job); err != nil {
+	entry := buildHistoryEntry(ppJob)
+	if err := f.persistAndCommit(app.log, entry, ppJob); err != nil {
 		return
 	}
 	f.fireCompletionNotification(entry)
@@ -65,7 +65,7 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 	defer pruneCancel()
 	if _, err := app.PruneHistory(pruneCtx); err != nil {
 		app.log.Warn("history retention sweep failed after finalize",
-			"job", job.Job.ID(), "err", err)
+			"job", ppJob.Job.ID(), "err", err)
 	}
 }
 
@@ -239,7 +239,7 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 }
 
 func readManifestFile(path string) (*job.Manifest, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is constructed from validated AdminDir and job ID
 	if err != nil {
 		return nil, err
 	}
@@ -255,4 +255,3 @@ func readManifestFile(path string) (*job.Manifest, error) {
 	}
 	return &m, nil
 }
-
