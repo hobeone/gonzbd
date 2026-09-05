@@ -396,3 +396,81 @@ func TestOccupy_StaleContext_CannotBypassWaitLive(t *testing.T) {
 		t.Fatalf("Remove error = %v, want DeadlineExceeded", remErr)
 	}
 }
+
+func TestWaitLiveExcept_DirectReference(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// 1. Unregistered token: falls back to waitLive (no occupiers -> returns nil).
+	if err := d.waitLiveExcept(context.Background(), "j1", "non-existent-token"); err != nil {
+		t.Fatalf("waitLiveExcept non-existent token: %v", err)
+	}
+
+	// 2. Caller is the sole occupier: returns nil immediately.
+	tok1 := new(byte)
+	d.mu.Lock()
+	if d.occupancyTokens["j1"] == nil {
+		d.occupancyTokens["j1"] = make(map[any]struct{})
+	}
+	d.occupancyTokens["j1"][tok1] = struct{}{}
+	d.mu.Unlock()
+
+	if err := d.waitLiveExcept(context.Background(), "j1", tok1); err != nil {
+		t.Fatalf("waitLiveExcept sole occupier: %v", err)
+	}
+
+	// 3. Multiple occupiers: waitLiveExcept waits until second occupier leaves.
+	tok2 := new(byte)
+	d.mu.Lock()
+	d.occupancyTokens["j1"][tok2] = struct{}{}
+	d.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.waitLiveExcept(context.Background(), "j1", tok1)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("waitLiveExcept returned prematurely: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	// Release tok2 and signal
+	d.mu.Lock()
+	delete(d.occupancyTokens["j1"], tok2)
+	if ch, ok := d.occupyStep["j1"]; ok {
+		close(ch)
+		delete(d.occupyStep, "j1")
+	}
+	d.mu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waitLiveExcept after release: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("waitLiveExcept timed out waiting for release")
+	}
+
+	// 4. Context cancellation when waiting for another occupier
+	d.mu.Lock()
+	d.occupancyTokens["j1"][tok2] = struct{}{}
+	d.mu.Unlock()
+
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := d.waitLiveExcept(cancelCtx, "j1", tok1)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waitLiveExcept timeout error = %v, want DeadlineExceeded", err)
+	}
+
+	// Clean up tok1 and tok2
+	d.mu.Lock()
+	delete(d.occupancyTokens, "j1")
+	d.mu.Unlock()
+}
