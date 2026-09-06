@@ -23,13 +23,14 @@ func manifestDir(adminDir string) string {
 // It is the sole gatekeeper for a job ID reaching the filesystem, and the guard
 // is stated here rather than left to be re-derived from the ingest path.
 //
-// The daemon mints every job ID itself — newJobID (ingest.go) returns 16
-// lowercase hex characters from crypto/rand, and types.FetchOptions.JobID is
-// set at exactly one non-test site (`git grep -n 'JobID:' -- internal cmd
-// ':!*_test.go'` finds one line, app.go's retry path, which passes a
-// history entry's own NzoID). But the ID arrives here from the API without
-// re-validation — /api?mode=queue&name=delete&value=<csv> reaches RemoveJob
-// unchanged — so it is untrusted at this boundary.
+// The daemon mints every job ID itself: newJobID (ingest.go) returns 16
+// lowercase hex characters from crypto/rand, and it is the fallback whenever
+// types.FetchOptions.JobID is empty. `git grep -n 'types\.FetchOptions{' --
+// internal cmd ':!*_test.go'` finds 5 construction sites; of those, only
+// rebuildJobFromNZB sets JobID, and it passes a history entry's own NzoID.
+// But the ID arrives here from the API without re-validation —
+// /api?mode=queue&name=delete&value=<csv> reaches RemoveJob unchanged — so it
+// is untrusted at this boundary.
 //
 // Standing Design Rule 1's carve-out is the reason this guard stays rather
 // than being argued away: a value interpolated into a path keeps its check,

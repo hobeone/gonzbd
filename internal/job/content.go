@@ -16,10 +16,16 @@ var ErrNotResident = errors.New("job: content tier not resident")
 
 // AttachContent installs the manifest and derives the progress record from it.
 //
-// It is the SOLE constructor of the (manifest, progress) pair. Progress is
-// derived here and never supplied by a caller, which is what makes
-// "progress describes this manifest" an invariant rather than a comment: there
-// is no second path that could pair a manifest with progress for another job.
+// It is the sole path that DERIVES a fresh progress record from a manifest:
+// progress is computed here from m and never supplied by an AttachContent
+// caller, which is what makes "progress describes this manifest" hold for a
+// job starting out rather than being merely asserted.
+//
+// It is not the sole writer of the pair. RestoreContent, below, installs a
+// manifest alongside progress recovered from the store, and says so in its own
+// comment. `git grep -n 'func (j \*Job) \(AttachContent\|RestoreContent\)' --
+// 'internal/job/*.go'` finds 2 lines, one per constructor. Both are methods on
+// Job, so the pair still cannot be set from outside the package.
 func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
