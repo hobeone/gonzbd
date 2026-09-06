@@ -34,8 +34,8 @@ type Dispatcher struct {
 	// Residency.Hydrate — take mu, read or write one map, release.
 	//
 	// ADDING A MAP HERE MEANS EXTENDING EVERY TEARDOWN. This has been got
-	// wrong three times on this branch — Stop not clearing resident, remove
-	// not clearing written, remove not clearing resident and launched — and
+	// wrong three times on this branch — Stop not clearing resident, deregister
+	// not clearing written, deregister not clearing resident and launched — and
 	// each time the shape was identical: a new per-job map arrived and an
 	// existing teardown was not extended. The failure is silent, because a
 	// stale entry only bites a job ID that comes back (a reused ID reads as
@@ -43,23 +43,26 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 19 lines:
+	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 15 lines:
 	//
-	//   - remove (registry.go), eight lines: byID, written, resident,
+	//   - deregister (registry.go), eight lines: byID, written, resident,
 	//     removing, occupiers, occupancyTokens, occupyDrained, occupyStep. launched is cleared via clearLaunched. d.order is pruned by
 	//     the loop below those rather than by a delete, so it does not appear.
-	//   - Remove error branches (registry.go), five lines: removing on
-	//     Cancel, wait worker, wait live (both branches), or store failure.
+	//   - removal.abort (registry.go), one line: removing, when a teardown
+	//     releases its marker instead of finishing. This was five lines until
+	//     #513 gave Remove a single deferred rollback — and it is why the
+	//     pattern above carries the `r\.d\.` alternative, since abort reaches
+	//     the map through the removal token rather than through d.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
-	//     accessor Finished, Yielded, Stop's sweep and remove all call.
+	//     accessor Finished, Yielded, Stop's sweep and deregister all call.
 	//   - Occupy (occupy.go), four lines: occupancyTokens, occupiers, occupyDrained, and occupyStep when refcount drops to 0.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,
 	// because a Stopped Dispatcher is still inspectable and its jobs still
-	// exist. remove is the only site that must be total.
+	// exist. deregister is the only site that must be total.
 	resident        map[string]bool
 	launched        map[string]chan struct{}
 	written         map[string]Persisted
@@ -655,9 +658,9 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	// can never start again. In between, List and Stop would be operating on
 	// a queue that was never fully restored.
 	//
-	// remove is total (registry.go), so rolling back a partial restore needs
+	// deregister is total (registry.go), so rolling back a partial restore needs
 	// nothing beyond calling it for each ID this call registered — including
-	// the write markWritten recorded, which remove also clears.
+	// the write markWritten recorded, which deregister also clears.
 	// Sort rather than trust Load's slice order, with a tiebreak matching the
 	// SQLite store's `ORDER BY sort_key ASC, id ASC`. A sort keyed on SortKey
 	// alone disagrees with SQLite whenever two keys collide, and the
@@ -675,7 +678,24 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	var registered []string
 	defer func() {
 		for _, id := range registered {
-			d.remove(id)
+			// This rollback does not NEED the removal protocol: it runs
+			// inside Start before the tick goroutine launches, so no
+			// occupier, worker or store write can exist for a job it is
+			// unwinding, and the invariant the marker enforces holds
+			// vacuously here.
+			//
+			// It takes the door anyway, because the door having no exception
+			// is the whole point of #513. An exemption would have to be
+			// re-justified by every reader, and the justification is a
+			// property of the CALLER (pre-tick) rather than of this loop —
+			// exactly the kind of reasoning that goes stale when Start grows
+			// a step. Two map operations on an error path that runs at most
+			// once per Start is not a price worth reasoning about.
+			rm, ok := d.beginRemoval(id)
+			if !ok {
+				continue
+			}
+			rm.end()
 		}
 	}()
 	for _, p := range rows {
@@ -905,7 +925,7 @@ func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 func (d *Dispatcher) markWritten(p Persisted) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.removing[p.ID] > 0 || d.byID[p.ID] == nil {
+	if !d.admitsLocked(p.ID) {
 		return
 	}
 	d.written[p.ID] = p

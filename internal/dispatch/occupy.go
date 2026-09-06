@@ -31,7 +31,7 @@ type occupyToken struct {
 // actively removing it.
 func (d *Dispatcher) Occupy(ctx context.Context, id string, fn func(ctx context.Context)) error {
 	d.mu.Lock()
-	if d.byID[id] == nil || d.removing[id] > 0 {
+	if !d.admitsLocked(id) {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: Occupy %s: %w", id, ErrNotFound)
 	}

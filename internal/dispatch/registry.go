@@ -60,7 +60,7 @@ type entry struct {
 	//
 	// Nothing revises it TODAY, and that is a statement about the operations
 	// that exist rather than a property of the design. The two that change
-	// d.order — register's append and remove's order-preserving slices.Delete
+	// d.order — register's append and deregister's order-preserving slices.Delete
 	// — both leave surviving keys alone, so the sequence keeps reproducing
 	// queue order without a renumbering pass.
 	// TestSortKey_ReproducesQueueOrderAcrossRemoval pins that.
@@ -125,7 +125,7 @@ const seqNext int64 = -1
 
 // register is the only path by which a job ENTERS the registry — the sole
 // writer of d.nextSeq, and the sole inserter into d.byID and d.order, which
-// remove is the only other writer of (it deletes from both). Add calls it with
+// deregister is the only other writer of (it deletes from both). Add calls it with
 // seqNext to have a sequence allocated; restore calls it with the sequence the
 // store recorded, which is what preserves queue order across a restart.
 //
@@ -180,7 +180,7 @@ func (d *Dispatcher) sortKeyOf(id string) int64 {
 // It replaced a headerFor call followed by a separate sortKeyOf call, which
 // left a window: a job removed between the two passed the header check and then
 // got sortKeyOf's not-registered sentinel, so persistIfChanged built a row with
-// SortKey -1, found no matching lastWritten (remove prunes d.written too), and
+// SortKey -1, found no matching lastWritten (deregister prunes d.written too), and
 // Saved a job that had just been deleted back into the store. A resurrected row
 // with a negative key sorts ahead of the entire queue.
 //
@@ -210,7 +210,7 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 	return out
 }
 
-// remove deletes a job from EVERY per-job structure — d.byID, d.order,
+// deregister deletes a job from EVERY per-job structure — d.byID, d.order,
 // d.written, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
 // d.occupyDrained and d.occupyStep — under one d.mu span. It is the single
 // internal registry eraser. External callers drain launched workers and external
@@ -239,7 +239,137 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 //   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
 //     entry leaves callers waiting on waitLive forever or reports false
 //     occupancy.
-func (d *Dispatcher) remove(id string) {
+//
+// admitsLocked reports whether job id may take on new work: it is registered,
+// and no teardown is outstanding against it. Caller must hold d.mu.
+//
+// This is the single read side of the removal marker, and it is one function
+// rather than a repeated expression for the reason Standing Design Rule 2
+// gives: the predicate had five copies (Occupy, claimLaunched,
+// persistIfChanged, markResident, markWritten), and a sixth reader that got it
+// subtly wrong — or a new field the invariant grows — would be invisible at
+// the other five.
+func (d *Dispatcher) admitsLocked(id string) bool {
+	return d.byID[id] != nil && d.removing[id] == 0
+}
+
+// removal is proof that a deregistration has begun, and it is the only way to
+// finish one: deregister is a method on this type and nothing else can reach
+// it. That is the point of the type existing rather than a beginRemoval /
+// endRemoval pair of plain functions — a pair leaves the second half callable
+// on its own, so a new deregistration path can still skip the first half, and
+// the failure mode of skipping it is silence rather than an error (#513).
+//
+// While a removal is outstanding, admitsLocked reports false for its job, so
+// no occupier, worker launch, residency mark or store write attaches to a job
+// that is being torn down. It ends exactly one way:
+//
+//   - end deregisters the job. The teardown succeeded.
+//   - abort releases the marker and leaves the job registered, for a caller
+//     that failed partway and means to retry.
+//
+// Both are idempotent and safe on a nil *removal, so a caller may defer one
+// unconditionally.
+//
+// The marker is a COUNT, not a flag, because concurrent Remove calls for one
+// ID are legal: each holds its own removal, and the job stops admitting work
+// until the last of them finishes.
+type removal struct {
+	d    *Dispatcher
+	id   string
+	done bool
+}
+
+// beginRemoval marks id as being torn down and returns the proof needed to
+// finish. Reports false if the job is not registered, in which case there is
+// nothing to remove and no marker was set.
+func (d *Dispatcher) beginRemoval(id string) (*removal, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.byID[id] == nil {
+		return nil, false
+	}
+	return d.beginRemovalLocked(id), true
+}
+
+// beginRemovalLocked is the sole constructor of a removal — the marker is
+// raised and the token minted in one place, so the two cannot drift the way
+// two independently-maintained constructors of one type have here before
+// (Standing Design Rule 2). Caller must hold d.mu and must already have
+// established that the job is registered.
+func (d *Dispatcher) beginRemovalLocked(id string) *removal {
+	d.removing[id]++
+	return &removal{d: d, id: id}
+}
+
+// beginRemovalIfIdle is beginRemoval for a caller that must not tear down a
+// job something is already running on. It reports live if an occupier or a
+// launched worker is present, in which case no marker is set and the job is
+// left alone.
+//
+// It exists as its own door rather than as a check the caller makes first
+// because the check and the marker have to be ONE d.mu acquisition. Split
+// across two, the gap between them is precisely the window #513 is about, and
+// a caller that got the order right would be indistinguishable from one that
+// did not until something raced.
+//
+// Returns (nil, false) if the job is not registered — nothing to remove.
+func (d *Dispatcher) beginRemovalIfIdle(id string) (rm *removal, live bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.byID[id] == nil {
+		return nil, false
+	}
+	if len(d.occupancyTokens[id]) > 0 || d.launched[id] != nil {
+		return nil, true
+	}
+	return d.beginRemovalLocked(id), false
+}
+
+// abort releases the marker without deregistering, returning the job to
+// service. Used by a teardown that failed partway and left the job registered
+// for a later retry.
+func (r *removal) abort() {
+	if r == nil || r.done {
+		return
+	}
+	r.done = true
+	r.d.mu.Lock()
+	defer r.d.mu.Unlock()
+	r.d.removing[r.id]--
+	if r.d.removing[r.id] <= 0 {
+		delete(r.d.removing, r.id)
+	}
+}
+
+// end deregisters the job, completing the teardown.
+func (r *removal) end() {
+	if r == nil || r.done {
+		return
+	}
+	r.done = true
+	r.d.deregister(r.id)
+}
+
+// deregister erases every trace of a job from the registry.
+//
+// removal.end is its only caller, which is what makes the marker impossible
+// to skip: `git grep -n 'deregister(r\.id)' -- 'internal/dispatch/*.go'` finds
+// 1 line, end's own call. The pattern carries the argument because the bare
+// call spelling matches this sentence too, and a citation that counts its own
+// prose is not a check.
+// The path in is beginRemoval or beginRemovalIfIdle,
+// both of which raise the marker before minting the token this needs, so
+// there is no spelling of "deregister without marking" for a new caller to
+// reach for — the gap #513 was.
+//
+// What the citation does NOT cover is a test calling this directly — the
+// pattern is anchored on end's argument, so `d.deregister("j1")` would not
+// match it. That is deliberate rather than an oversight:
+// TestDeregister_IsTotal does exactly that, because the property worth
+// pinning here is that this clears EVERY per-job map, and reaching it through
+// the token would test end instead.
+func (d *Dispatcher) deregister(id string) {
 	d.mu.Lock()
 	delete(d.byID, id)
 	delete(d.written, id)
@@ -393,68 +523,46 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // Retry contract: If Remove returns an error (e.g. context cancellation while
 // waiting for worker, or store failure), the job remains cancelled and
 // registered, allowing the caller to retry Remove safely.
-func (d *Dispatcher) Remove(ctx context.Context, id string) error {
-	d.mu.Lock()
-	if _, ok := d.byID[id]; !ok {
-		d.mu.Unlock()
+// The named return is what lets the marker be released in ONE place. Every
+// error path here leaves the job registered and retryable, so every error path
+// owed an identical decrement — five copies of it before #513, which is the
+// shape Rule 2 calls a second enforcement point for one invariant. The defer
+// below is the enforcement point; adding a sixth error path now costs nothing
+// and cannot forget.
+func (d *Dispatcher) Remove(ctx context.Context, id string) (err error) {
+	rm, ok := d.beginRemoval(id)
+	if !ok {
 		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
 	}
-	d.removing[id]++
-	d.mu.Unlock()
+	defer func() {
+		if err != nil {
+			rm.abort()
+		}
+	}()
 
 	if err := d.Cancel(id); err != nil {
-		d.mu.Lock()
-		d.removing[id]--
-		if d.removing[id] <= 0 {
-			delete(d.removing, id)
-		}
-		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
 	}
 	if err := d.waitLaunched(ctx, id); err != nil {
-		d.mu.Lock()
-		d.removing[id]--
-		if d.removing[id] <= 0 {
-			delete(d.removing, id)
-		}
-		d.mu.Unlock()
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
 	}
 	if tok, ok := ctx.Value(occupyContextKey{}).(occupyToken); ok && tok.id == id {
 		if err := d.waitLiveExcept(ctx, id, tok.token); err != nil {
-			d.mu.Lock()
-			d.removing[id]--
-			if d.removing[id] <= 0 {
-				delete(d.removing, id)
-			}
-			d.mu.Unlock()
 			return fmt.Errorf("dispatch: remove %s: wait live: %w", id, err)
 		}
 	} else {
 		if err := d.waitLive(ctx, id); err != nil {
-			d.mu.Lock()
-			d.removing[id]--
-			if d.removing[id] <= 0 {
-				delete(d.removing, id)
-			}
-			d.mu.Unlock()
 			return fmt.Errorf("dispatch: remove %s: wait live: %w", id, err)
 		}
 	}
 	d.storeMu.Lock()
-	err := d.store.Delete(ctx, id)
+	delErr := d.store.Delete(ctx, id)
 	d.storeMu.Unlock()
-	if err != nil {
-		d.mu.Lock()
-		d.removing[id]--
-		if d.removing[id] <= 0 {
-			delete(d.removing, id)
-		}
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: remove %s: store: %w", id, err)
+	if delErr != nil {
+		return fmt.Errorf("dispatch: remove %s: store: %w", id, delErr)
 	}
 	d.res.Evict(id)
-	d.remove(id)
+	rm.end()
 	d.kick()
 	return nil
 }

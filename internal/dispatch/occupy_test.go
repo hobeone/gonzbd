@@ -277,9 +277,12 @@ func TestOccupy_RejectedWhenJobBeingRemoved(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	d.mu.Lock()
-	d.removing["j1"] = 1
-	d.mu.Unlock()
+	// A real in-progress removal, not a hand-set marker: beginRemoval is the
+	// only thing that sets d.removing now, so this exercises what production
+	// does rather than an imitation of it.
+	if _, ok := d.beginRemoval("j1"); !ok {
+		t.Fatal("beginRemoval: job not registered")
+	}
 
 	err := d.Occupy(context.Background(), "j1", func(ctx context.Context) {
 		t.Fatal("callback should not run when job is being removed")

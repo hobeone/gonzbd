@@ -339,9 +339,13 @@ func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
 	d.clearLaunched("j1")
 
 	// While job is being removed, claimLaunched must refuse and leak no channel.
-	d.mu.Lock()
-	d.removing["j1"] = 1
-	d.mu.Unlock()
+	// Through the real protocol, not by poking d.removing: a test that sets
+	// the marker itself passes whether or not any production path sets it the
+	// same way, which is how #513's missing marker survived.
+	rm, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("beginRemoval: job not registered")
+	}
 
 	if d.claimLaunched("j1") {
 		t.Fatal("claimLaunched succeeded while job was marked removing")
@@ -351,12 +355,15 @@ func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
 		d.mu.Unlock()
 		t.Fatal("claimLaunched leaked a channel in d.launched while removing")
 	}
-	rem := d.removing
-	delete(rem, "j1")
 	d.mu.Unlock()
+	rm.abort()
 
 	// Once job is removed from byID, claimLaunched must refuse and leak no channel.
-	d.remove("j1")
+	rm, ok = d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("beginRemoval (second): job not registered")
+	}
+	rm.end()
 
 	if d.claimLaunched("j1") {
 		t.Fatal("claimLaunched succeeded for job not in byID")
@@ -376,26 +383,28 @@ func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Simulate two concurrent removals entering and incrementing refcount.
-	d.mu.Lock()
-	d.removing["j1"] = 2
-	d.mu.Unlock()
-
-	// First removal hits an error and decrements.
-	d.mu.Lock()
-	d.removing["j1"]--
-	if d.removing["j1"] <= 0 {
-		rem := d.removing
-		delete(rem, "j1")
+	// Two concurrent removals, driven through the protocol itself. This test
+	// used to assign d.removing["j1"] = 2 and hand-roll the decrement, which
+	// asserted that the guards respect a count rather than that any removal
+	// path maintains one — the gap #513 lived in.
+	first, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("beginRemoval (first): job not registered")
 	}
-	d.mu.Unlock()
+	second, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("beginRemoval (second): job not registered")
+	}
+
+	// First removal hits an error and releases its marker.
+	first.abort()
 
 	// Second removal is still in-flight: removing count is 1, so guards must remain active.
 	d.mu.Lock()
 	count := d.removing["j1"]
 	d.mu.Unlock()
 	if count != 1 {
-		t.Fatalf("d.removing[j1] = %d, want 1", count)
+		t.Fatalf("d.removing[j1] = %d, want 1 — one removal aborted, one still outstanding", count)
 	}
 
 	if d.claimLaunched("j1") {
@@ -407,8 +416,19 @@ func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 		t.Fatal("markResident marked job resident while second removal was in-flight")
 	}
 
-	// Second removal completes and cleans up via remove.
-	d.remove("j1")
+	// An aborted removal must be inert: a second abort or end from it would
+	// decrement the count the surviving removal is holding.
+	first.abort()
+	first.end()
+	d.mu.Lock()
+	count = d.removing["j1"]
+	d.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("d.removing[j1] = %d after re-using a finished removal, want 1", count)
+	}
+
+	// Second removal completes and cleans up.
+	second.end()
 
 	d.mu.Lock()
 	_, stillRemoving := d.removing["j1"]
