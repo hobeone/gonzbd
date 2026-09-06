@@ -1230,7 +1230,14 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 // saveQueueIfDirty persists the queue when something changed.
 func (app *Application) saveQueueIfDirty() {
 	if app.checkpointer != nil {
-		_ = app.checkpointer.Flush(context.Background())
+		// Logged, not discarded: neither Checkpointer.Flush nor
+		// appCheckpointStore.SaveBatch logs internally, and only Checkpointer's
+		// own ticker loop logs its Flush error. On this path a full disk or a
+		// locked SQLite would otherwise be entirely silent - which the code this
+		// replaced did not do, it warned on a failed queue save.
+		if err := app.checkpointer.Flush(context.Background()); err != nil {
+			app.log.Warn("periodic checkpoint flush failed", "err", err)
+		}
 	}
 }
 
