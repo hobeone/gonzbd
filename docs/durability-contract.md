@@ -123,11 +123,17 @@ The second table is **`failed_articles`** — `{job_id, art_idx}`, one row per
 permanently failed article. It is not a durability record and `internal/durability`
 never touches it: a failed article never decodes, so nothing was ever written
 for it and no run could cover it. Its rows are inserted only by
-`checkpoint.Store.SaveBatch` and deleted only by the two job-cleanup paths in
-`internal/app` (`git grep -n 'failed_articles (job_id\|failed_articles WHERE' --
-'internal/**/*.go' ':!*_test.go'` finds 4 lines: one INSERT, two DELETEs and one
-SELECT — the plain table name also matches prose, which is why the pattern
-anchors on the SQL).
+`checkpoint.Store.SaveBatch` and deleted by three paths: the two job-cleanup
+DELETEs in `internal/app` (retry clear and job cleanup), and the history purge
+in `internal/history`, which drops retained `durable_runs` and `failed_articles`
+rows together when a history entry goes. That third one is the reason the
+pattern below carries a bare-quoted alternative: the history purge builds its
+statement as `"DELETE FROM "+table+" WHERE ..."` over a `[]string{...}` of table
+names, so no grep anchored on the SQL text can see it (`git grep -n
+'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --
+'internal/**/*.go' ':!*_test.go'` finds 5 lines: one INSERT, two DELETEs, one
+SELECT, and the history purge's table list — the plain table name also matches
+prose, which is why the pattern anchors on the SQL or the quoted literal).
 
 One consequence worth stating explicitly, because it has been got wrong:
 **neither record carries a failed-byte figure, and neither can.** No sum over
@@ -815,8 +821,8 @@ refuses a permanently failed article, and a restart re-applies the persisted
 row. This was #417.
 
 So `checkpointAllShare` returns the jobs it could **not** protect, and
-the reload loop passes each of those jobs `skipEmitted` to
-`Job.ClearEmittedForReload`, withholding their Emitted bits.
+the reload loop calls `Job.ClearEmittedForReload(skipEmitted: true)` for each of
+those jobs, withholding their Emitted bits.
 `checkpointJob`'s bool answers "does this job hold written-but-unacked articles
 that clearing Emitted would strand?" — which is not the same question as "did a
 barrier run": a job with no open files ran none and is still safe, while a job
