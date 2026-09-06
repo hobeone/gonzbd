@@ -122,7 +122,18 @@ reconcile them: `verifiedPrefix`, the abutment walk, `durableAt`, the durable
 The second table is **`failed_articles`** — `{job_id, art_idx}`, one row per
 permanently failed article. It is not a durability record and `internal/durability`
 never touches it: a failed article never decodes, so nothing was ever written
-for it and no run could cover it, and `internal/queue` is its sole writer.
+for it and no run could cover it. Its rows are inserted only by
+`checkpoint.Store.SaveBatch` and deleted by three paths: the two job-cleanup
+DELETEs in `internal/app` (retry clear and job cleanup), and the history purge
+in `internal/history`, which drops retained `durable_runs` and `failed_articles`
+rows together when a history entry goes. That third one is the reason the
+pattern below carries a bare-quoted alternative: the history purge builds its
+statement as `"DELETE FROM "+table+" WHERE ..."` over a `[]string{...}` of table
+names, so no grep anchored on the SQL text can see it (`git grep -n
+'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --
+'internal/**/*.go' ':!*_test.go'` finds 5 lines: one INSERT, two DELETEs, one
+SELECT, and the history purge's table list — the plain table name also matches
+prose, which is why the pattern anchors on the SQL or the quoted literal).
 
 One consequence worth stating explicitly, because it has been got wrong:
 **neither record carries a failed-byte figure, and neither can.** No sum over
@@ -798,7 +809,7 @@ visible rather than assumed:
 Every other trigger may fail a job silently: the bytes stay on disk, the
 articles stay Outstanding, and the next barrier picks them up. The reload
 trigger is different, because `ReloadDownloader` follows it with
-`Job.ClearAllEmitted` — and clearing an Emitted bit hands the article back to
+`Job.ClearEmittedForReload` — and clearing an Emitted bit hands the article back to
 a downloader that is about to be pointed at a **different server set**.
 
 An article the assembler had written but no barrier had acked would then be
@@ -810,7 +821,8 @@ refuses a permanently failed article, and a restart re-applies the persisted
 row. This was #417.
 
 So `checkpointAllShare` returns the jobs it could **not** protect, and
-`ClearAllEmitted` takes that set and withholds their Emitted bits.
+the reload loop calls `Job.ClearEmittedForReload(skipEmitted: true)` for each of
+those jobs, withholding their Emitted bits.
 `checkpointJob`'s bool answers "does this job hold written-but-unacked articles
 that clearing Emitted would strand?" — which is not the same question as "did a
 barrier run": a job with no open files ran none and is still safe, while a job
@@ -818,15 +830,24 @@ whose `OpenFiles` call *errored* may hold megabytes and is not.
 
 Two consequences worth stating, because both are surprising:
 
-- **The skip withholds the Emitted clear and nothing else.** `ClearAllEmitted`
+- **The skip withholds the Emitted clear and nothing else.** `ClearEmittedForReload`
   also un-fails articles the old downloader's teardown marked failed, and those
   two act on disjoint articles — `markFailed` clears `emitted` as it sets
   `failed`. Skipping both would leave a teardown failure permanent, trading one
   strand for another on the same inflated figure.
-- **The resulting stall is only partly self-clearing.** A later barrier releases
-  an Emitted bit when its article's bytes reach disk, but an article whose data
-  died with the old downloader is never acked and needs a restart. The reload
-  logs a warning naming the affected jobs for that reason.
+- **The resulting stall is self-clearing, and no longer needs a restart.** An
+  earlier version of this bullet said it was only partly self-clearing, and it
+  was right about the code it described: an article whose result a cancelled
+  `emitResult` dropped had its Emitted bit set with no result coming, so nothing
+  downstream ever cleared it. `emitResult` now clears that bit itself on the
+  cancelled-send path (`internal/downloader/dispatch.go`), which is where that
+  bit's owner is — the Rule 2 move, precise where a bulk clear could not tell
+  that article from one whose bytes are on disk awaiting a barrier. So every
+  withheld article is now one whose bytes ARE on disk, and `markDone` releases
+  it when a later barrier acks them — ordinarily the next periodic checkpoint.
+  The reload still logs a warning naming the affected jobs, because the delay is
+  real and a job that quietly stops after a settings change is harder to
+  diagnose than the corruption the withholding replaces.
 
 The checkpoint remains **best-effort in coverage** — a budget expiry or a
 storage fault still leaves a job unacked. What changed is that the caller now
@@ -1534,7 +1555,7 @@ articles or sparse regions.
   `OnWriteFault` used to carry a single article index and do both, so every
   batch failure reported one article and rolled the rest back silently: they
   were left neither Done, nor Failed, nor Outstanding, and only a restart's
-  `ClearAllEmitted` recovered them.
+  `ClearEmittedForReload` recovered them.
 
   A rolled-back article also **gives back its part**. `partsWritten` is
   incremented when an article is *accepted*, so leaving the count in place put
@@ -1639,7 +1660,7 @@ recorded here so the next reader does not mistake them for design.
    (`seedFromCommittedRuns`) logs and returns on failure, while phase 4 still
    delivers the completion. The result is a file marked `Complete` with some of
    its articles still Outstanding — `IsComplete` is file-based
-   (`internal/queue/job.go`), so the two do not have to agree. The cost is wrong
+   (`internal/job/content.go`), so the two do not have to agree. The cost is wrong
    figures and a wasted re-fetch, not corruption or a short file. Recorded and
    unfixed.
 
@@ -1734,8 +1755,11 @@ recorded here so the next reader does not mistake them for design.
    barrier's own transaction, so it lands with the runs and a restart
    reconstructs it from the same authority. That would close the window
    atomically rather than by repair, but it needs a schema change and makes the
-   barrier write state `internal/queue` owns — the line `durable_runs`' own doc
-   draws when it says `failed_articles` is written solely by the queue.
+   barrier write state the checkpointer owns — the line `durable_runs`' own doc
+   draws when it says `failed_articles` has a single writer. Since the swap that
+   writer is `checkpoint.Store.SaveBatch`, which migration
+   `006_recovery_bytes_and_retire_jobs.sql` records as superseding the
+   designation `002_durable_runs.sql` made.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**

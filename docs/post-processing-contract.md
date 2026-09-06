@@ -259,10 +259,15 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
   reports insufficient blocks, nothing currently promotes the additional
   `.par2` volumes the job needs and re-enters `StatusDownloading` — the job
   simply finishes with `ParError = true`. The seam for this already exists
-  and is live: `Queue.UndeferRecoveryVolumes`'s `fileIdxs` argument
-  (`internal/queue/queue.go`) is documented to accept either the full
-  deferred set (Phase 1, already used) or "a block-covering subset" (Phase 2,
-  not yet implemented). Target: compute the block-covering subset from the
+  and is live: `Job.UndeferRecoveryVolumes`'s `fileIdxs` argument
+  (`internal/job/content.go`) takes arbitrary file indices, so it already
+  accepts a block-covering subset as readily as the full deferred set its
+  one production caller passes (`git grep -n 'UndeferRecoveryVolumes' -- '*.go'
+  | grep -v _test.go` finds 7 lines: one call site in `internal/app/app.go`,
+  the declaration and its godoc in `internal/job/content.go`, and four comment
+  mentions in `internal/postproc/filelist.go`). Nothing in the signature or its godoc needs to
+  change for Phase 2 — the missing piece is the caller that computes the
+  subset. Target: compute the block-covering subset from the
   repair stage's reported shortfall and call `UndeferRecoveryVolumes` with
   it, falling back to `Status = "Failed"` when no further recovery volumes
   remain to undefer.

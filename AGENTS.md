@@ -218,7 +218,7 @@ with a different check.
 
 `CheckEarlyAbort`'s comment read "Nothing is lost by declining. The verdict is
 deferred, not discarded." True, and only while `q.store != nil`: `PromoteNext`
-guards its `RestoreJobProgress` call on exactly that, and `newJobProgress`
+guarded its `RestoreJobProgress` call on exactly that, and `newJobProgress`
 alone starts the counters at zero, so a store-less queue loses the failure rate
 across pause/resume and the abort never re-fires. The condition sat one branch
 away from the sentence and survived a full review round, because nothing in the
@@ -245,7 +245,7 @@ for a weaker universal.
 ## Repository Layout
 
 - `cmd/gonzbd/`: Entry point, flag parsing, and application orchestration.
-- `internal/`: Core packages (API, app, downloader, queue, nzb, assembler, decoder, etc.).
+- `internal/`: Core packages (API, app, downloader, job, sched, dispatch, nzb, assembler, decoder, etc.).
 - `docs/`: Critical design documents (`ARCHITECTURE.md`, `sabnzbd_spec.md`, `TESTING.md`).
 - `test/`: Integration tests, fixtures, and a mock NNTP server.
 - `ui/`: Svelte 5 + TypeScript + Vite SPA, embedded via `//go:embed`.
@@ -282,7 +282,7 @@ design-level change.
 | [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
 | [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind Standing Design Rules 1-3 above (rule 4 is not from this document) |
-| [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the `ActiveSet`, the promotion loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
+| [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the dispatcher tick loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
 | [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
 | [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | The `durable_runs` record and what may put content into it, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
 | [`docs/post-processing-contract.md`](docs/post-processing-contract.md) | Touching `internal/postproc`, `internal/par2`, or `internal/unpack` | Stage execution loop, self-gating matrix, Fast/Slow queue priority, QuickCheck bypass guarantees, insufficient-blocks/`ParError` handling, and script isolation |
@@ -924,7 +924,10 @@ When in doubt about whether a Python behavior is essential or accidental, ask.
 
 - **API Handlers:** `internal/api/`
 - **Download Engine:** `internal/downloader/`
-- **Queue Logic:** `internal/queue/`
+- **Job Record & Content Tiers:** `internal/job/` — the `Job`, its `Manifest` and `JobProgress`
+- **Scheduling Decisions:** `internal/sched/` — leases, compute slots, state transitions, no I/O
+- **Job Registry & Persistence:** `internal/dispatch/` — the ordered registry, the tick loop, manifest residency, queue-state rows
+- **Batched Progress Writes:** `internal/checkpoint/`
 - **Web UI (Svelte SPA):** `ui/` — Svelte 5 + TypeScript + Vite, embedded via `//go:embed all:dist` in `ui/embed.go`
 - **SPA Handler:** `internal/web/` — serves embedded dist with SPA catch-all fallback to index.html
 - **Configuration Schema:** `internal/config/`

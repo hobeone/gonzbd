@@ -49,7 +49,7 @@ them; the third was written to stop work §2 of this document was inviting.
 > here first, which was a placement error: this document is read only before
 > touching `internal/nzb`, `internal/nntp`, `internal/decoder` and the two paths
 > named in its header, while the rules govern constructor design and migration
-> decisions everywhere. Someone working in `internal/queue` or
+> decisions everywhere. Someone working in `internal/dispatch` or
 > `internal/history` would never have seen them. The third is not a correction
 > of the same error: it was added to `AGENTS.md` and to this section in one
 > change, with `AGENTS.md` canonical from the outset.

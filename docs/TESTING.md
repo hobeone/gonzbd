@@ -38,10 +38,10 @@ download → assembly → post-processing flows without shelling out to real too
 go test -race -count=1 ./...
 
 # Single package
-go test -race ./internal/queue/
+go test -race ./internal/dispatch/
 
 # Verbose with specific test
-go test -v -race -run TestSetCategory ./internal/queue/
+go test -v -race -run TestAdd_RejectsADuplicateID ./internal/dispatch/
 ```
 
 ## 2. Integration Tests (`-tags=integration`)
