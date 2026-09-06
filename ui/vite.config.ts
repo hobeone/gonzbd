@@ -8,6 +8,7 @@ export default defineConfig({
 		conditions: ['browser', 'development']
 	},
 	test: {
+		fsModuleCache: true,
 		include: ['src/**/*.{test,spec}.{js,ts}'],
 		environment: 'happy-dom',
 		globals: true,
