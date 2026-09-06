@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,5 +51,42 @@ func TestManifestPath_AcceptsMintedIDs(t *testing.T) {
 		if !strings.HasSuffix(got, ".json.gz") {
 			t.Errorf("manifestPath(%q) = %q, want a .json.gz suffix", id, got)
 		}
+	}
+}
+
+// TestOpenManifestIn_RefusesSymlinkEscapingTheDirectory pins the property the
+// string guard cannot provide. jobIDIsPathSafe inspects the ID; it says nothing
+// about what the resulting name resolves to on disk. os.Root resolves the name
+// against an open directory handle and refuses to leave it, so a manifest entry
+// that is a symlink out of the directory does not hand back the target.
+//
+// Plain os.Open follows that symlink, which is what makes this a real
+// difference rather than a restatement of the guard.
+func TestOpenManifestIn_RefusesSymlinkEscapingTheDirectory(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "manifests")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	secret := filepath.Join(base, "secret.txt")
+	if err := os.WriteFile(secret, []byte("not a manifest"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	link := filepath.Join(dir, "escape.json.gz")
+	if err := os.Symlink(filepath.Join("..", "secret.txt"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	// Baseline: the path-based open this replaced would have followed it.
+	if f, err := os.Open(link); err == nil { //nolint:gosec // fixture path, test-only
+		_ = f.Close()
+	} else {
+		t.Fatalf("setup: os.Open(%q) = %v; the fixture does not demonstrate the difference", link, err)
+	}
+
+	f, err := openManifestIn(dir, "escape")
+	if err == nil {
+		_ = f.Close()
+		t.Fatal("openManifestIn followed a symlink out of the manifest directory")
 	}
 }

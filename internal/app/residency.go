@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -212,17 +211,23 @@ func (r *appResidency) Evict(id string) {
 }
 
 func (r *appResidency) readManifest(_ context.Context, id string) (*job.Manifest, error) {
-	return readManifestFile(filepath.Join(r.dir, id+".json.gz"))
-}
-
-// readManifestFile reads and unmarshals a gzipped JSON job manifest from disk.
-// Local filesystem disk I/O against AdminDir runs within the enclosing step budget;
-// like os.Remove, remote NFS/SMB mounts may experience filesystem latency or stalls.
-func readManifestFile(path string) (*job.Manifest, error) {
-	f, err := os.Open(path) //nolint:gosec // path is constructed from validated AdminDir and job ID
+	f, err := openManifestIn(r.dir, id)
 	if err != nil {
 		return nil, err
 	}
+	return decodeManifest(f)
+}
+
+// decodeManifest reads and unmarshals a gzipped JSON job manifest, closing f.
+//
+// It takes an already-open file rather than a path so that every caller reaches
+// a manifest through openManifestIn's os.Root, which confines the job ID to the
+// manifest directory at the syscall.
+//
+// The read is untimed. AdminDir is ordinarily local, but a remote NFS/SMB mount
+// can stall it — docs/durability-contract.md carries that failure class — so a
+// caller under a deadline gets no help from this function.
+func decodeManifest(f *os.File) (*job.Manifest, error) {
 	defer func() { _ = f.Close() }()
 
 	zr, err := gzip.NewReader(f)

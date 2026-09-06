@@ -830,11 +830,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
 		return err
 	}
-	mpath, pErr := manifestPath(app.config.GetGeneral().AdminDir, id)
-	if pErr != nil {
-		return pErr
-	}
-	if rmErr := os.Remove(mpath); rmErr != nil && !os.IsNotExist(rmErr) {
+	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); rmErr != nil && !os.IsNotExist(rmErr) {
 		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
 	}
 

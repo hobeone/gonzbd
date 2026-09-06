@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -84,9 +83,10 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 //
 // Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
 // write cannot starve dispatcher removal or durability cleanup. Prune operates
-// in memory. os.Remove unlinks the queue manifest on the filesystem hosting
-// AdminDir (which docs/durability-contract.md notes can experience IO latency or
-// stalls under remote NFS/SMB mounts). Note that the enclosing finalize method
+// in memory. removeManifestIn unlinks the queue manifest on the filesystem
+// hosting AdminDir, and takes no context: docs/durability-contract.md notes
+// that a remote NFS/SMB mount can stall such a call, and nothing here bounds
+// it. Note that the enclosing finalize method
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
@@ -109,13 +109,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	defer finalCancel()
 
 	runCommit := func(occupyCtx context.Context) error {
-		var mpath string
-		if ppJob != nil && ppJob.Job != nil {
-			var pErr error
-			if mpath, pErr = manifestPath(app.config.GetGeneral().AdminDir, ppJob.Job.ID()); pErr != nil {
-				log.Error("refusing to touch manifest for job", "job", ppJob.Job.ID(), "err", pErr)
-			}
-		}
+		mdir := manifestDir(app.config.GetGeneral().AdminDir)
 
 		var persistErr error
 		if app.historyRepo != nil && app.historyRepo.DB() != nil {
@@ -129,9 +123,11 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 				p := ppJob.Job.Progress()
 				m, mErr := ppJob.Job.Manifest()
 				if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
-					if diskM, err := readManifestFile(mpath); err == nil {
-						m = diskM
-						mErr = nil
+					if f, oErr := openManifestIn(mdir, ppJob.Job.ID()); oErr == nil {
+						if diskM, dErr := decodeManifest(f); dErr == nil {
+							m = diskM
+							mErr = nil
+						}
 					}
 				}
 				if mErr != nil {
@@ -167,8 +163,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				log.Warn("failed to remove job from dispatcher after post-proc", "job", ppJob.Job.ID(), "err", err)
 			}
 		}
-		if mpath != "" {
-			_ = os.Remove(mpath)
+		if ppJob != nil && ppJob.Job != nil {
+			_ = removeManifestIn(mdir, ppJob.Job.ID())
 		}
 
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
