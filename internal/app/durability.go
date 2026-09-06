@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -1305,8 +1304,9 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 			app.log.Error("failed to remove duplicate job from dispatcher", "jobID", jobID, "err", rmErr)
 		}
 	}
-	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", jobID+".json.gz")
-	if rmErr := os.Remove(manifestPath); rmErr != nil && !os.IsNotExist(rmErr) {
+	if mpath, pErr := manifestPath(app.config.GetGeneral().AdminDir, jobID); pErr != nil {
+		app.log.Error("refusing to unlink manifest for duplicate job", "jobID", jobID, "err", pErr)
+	} else if rmErr := os.Remove(mpath); rmErr != nil && !os.IsNotExist(rmErr) {
 		app.log.Debug("could not unlink manifest for duplicate job", "jobID", jobID, "err", rmErr)
 	}
 	if entry != nil && entry.Status == string(constants.StatusFailed) {

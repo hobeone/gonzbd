@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -110,9 +109,12 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	defer finalCancel()
 
 	runCommit := func(occupyCtx context.Context) error {
-		var manifestPath string
+		var mpath string
 		if ppJob != nil && ppJob.Job != nil {
-			manifestPath = filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", ppJob.Job.ID()+".json.gz")
+			var pErr error
+			if mpath, pErr = manifestPath(app.config.GetGeneral().AdminDir, ppJob.Job.ID()); pErr != nil {
+				log.Error("refusing to touch manifest for job", "job", ppJob.Job.ID(), "err", pErr)
+			}
 		}
 
 		var persistErr error
@@ -127,7 +129,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 				p := ppJob.Job.Progress()
 				m, mErr := ppJob.Job.Manifest()
 				if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
-					if diskM, err := readManifestFile(manifestPath); err == nil {
+					if diskM, err := readManifestFile(mpath); err == nil {
 						m = diskM
 						mErr = nil
 					}
@@ -165,8 +167,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				log.Warn("failed to remove job from dispatcher after post-proc", "job", ppJob.Job.ID(), "err", err)
 			}
 		}
-		if manifestPath != "" {
-			_ = os.Remove(manifestPath)
+		if mpath != "" {
+			_ = os.Remove(mpath)
 		}
 
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)

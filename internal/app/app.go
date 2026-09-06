@@ -364,13 +364,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	if slotCap <= 0 {
 		slotCap = 2
 	}
-	manifestDir := filepath.Join(adminDir, "queue", "manifests")
+	mdir := manifestDir(adminDir)
 	app.checkpointer = checkpoint.New(checkpointStore, 5*time.Second, log)
 	var historyDB *sql.DB
 	if repo != nil {
 		historyDB = repo.DB()
 	}
-	app.residency = newAppResidency(app.lookupJob, manifestDir, historyDB, log)
+	app.residency = newAppResidency(app.lookupJob, mdir, historyDB, log)
 	app.runner = newAppRunner(app)
 	app.dispatcher = dispatch.New(
 		leaseCap,
@@ -741,8 +741,8 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 
-	manifestDir := filepath.Join(adminDir, "queue", "manifests")
-	if err := os.MkdirAll(manifestDir, 0o750); err != nil {
+	mdir := manifestDir(adminDir)
+	if err := os.MkdirAll(mdir, 0o750); err != nil {
 		return fmt.Errorf("app: mkdir manifests: %w", err)
 	}
 	if m, err := j.Manifest(); err == nil && m != nil {
@@ -750,8 +750,11 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		if mErr != nil {
 			return fmt.Errorf("app: marshal manifest: %w", mErr)
 		}
-		manifestPath := filepath.Join(manifestDir, j.ID()+".json.gz")
-		if err := fsutil.WriteGzAtomicBytes(manifestPath, data); err != nil {
+		mpath, pErr := manifestPath(adminDir, j.ID())
+		if pErr != nil {
+			return fmt.Errorf("app: write manifest: %w", pErr)
+		}
+		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
 			return fmt.Errorf("app: write manifest: %w", err)
 		}
 	}
@@ -827,8 +830,11 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
 		return err
 	}
-	manifestPath := filepath.Join(app.config.GetGeneral().AdminDir, "queue", "manifests", id+".json.gz")
-	if rmErr := os.Remove(manifestPath); rmErr != nil && !os.IsNotExist(rmErr) {
+	mpath, pErr := manifestPath(app.config.GetGeneral().AdminDir, id)
+	if pErr != nil {
+		return pErr
+	}
+	if rmErr := os.Remove(mpath); rmErr != nil && !os.IsNotExist(rmErr) {
 		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
 	}
 
@@ -2170,8 +2176,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 
 	adminDir := app.config.GetGeneral().AdminDir
-	manifestDir := filepath.Join(adminDir, "queue", "manifests")
-	if err := os.MkdirAll(manifestDir, 0o750); err != nil {
+	mdir := manifestDir(adminDir)
+	if err := os.MkdirAll(mdir, 0o750); err != nil {
 		return fmt.Errorf("app: retry %s: mkdir manifests: %w", jobID, err)
 	}
 	if m, err := j.Manifest(); err == nil && m != nil {
@@ -2179,8 +2185,11 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		if mErr != nil {
 			return fmt.Errorf("app: retry %s: marshal manifest: %w", jobID, mErr)
 		}
-		manifestPath := filepath.Join(manifestDir, j.ID()+".json.gz")
-		if err := fsutil.WriteGzAtomicBytes(manifestPath, data); err != nil {
+		mpath, pErr := manifestPath(adminDir, j.ID())
+		if pErr != nil {
+			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, pErr)
+		}
+		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
 			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, err)
 		}
 	}
