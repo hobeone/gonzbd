@@ -123,9 +123,20 @@ func (r *appResidency) restoreJobFiles(ctx context.Context, j *job.Job) {
 		var crc uint32
 		var fetch int
 		if err := rows.Scan(&fi, &filename, &complete, &crc, &fetch); err != nil {
+			// Not silent: this file keeps whatever default state the fresh
+			// progress record gave it (not complete, zero CRC, default fetch
+			// policy) rather than what was persisted, and nothing downstream
+			// can tell the difference.
+			r.log.Warn("residency: scan job_files", "job", j.ID(), "err", err)
 			continue
 		}
 		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+	}
+	// rows.Next() returns false for "no more rows" AND for a mid-iteration
+	// fault, so without this a dropped connection reads as a complete result
+	// set and the job hydrates with silently truncated file metadata.
+	if err := rows.Err(); err != nil {
+		r.log.Warn("residency: iterate job_files", "job", j.ID(), "err", err)
 	}
 }
 
@@ -150,6 +161,9 @@ func (r *appResidency) restoreResolution(ctx context.Context, j *job.Job) {
 		}
 		runs = append(runs, rr)
 	}
+	if err := runsRows.Err(); err != nil {
+		r.log.Warn("residency: iterate durable_runs", "job", j.ID(), "err", err)
+	}
 
 	failedRows, err := r.db.QueryContext(ctx,
 		`SELECT art_idx FROM failed_articles WHERE job_id = ?`, j.ID())
@@ -163,10 +177,17 @@ func (r *appResidency) restoreResolution(ctx context.Context, j *job.Job) {
 	for failedRows.Next() {
 		var idx int32
 		if err := failedRows.Scan(&idx); err != nil {
+			// break, not return: the durable runs read moments ago are already
+			// in hand, and returning here would discard them along with the
+			// failed articles, leaving the job with no resolution at all
+			// rather than a partial one.
 			r.log.Warn("residency: scan failed_articles", "job", j.ID(), "err", err)
-			return
+			break
 		}
 		failed = append(failed, idx)
+	}
+	if err := failedRows.Err(); err != nil {
+		r.log.Warn("residency: iterate failed_articles", "job", j.ID(), "err", err)
 	}
 
 	if err := j.ApplyResolution(runs, failed); err != nil {
