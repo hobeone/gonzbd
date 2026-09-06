@@ -28,10 +28,10 @@ type Dispatcher struct {
 	byID  map[string]*entry
 	order []string
 
-	// resident, launched and written are the dispatcher's own per-job
-	// bookkeeping, all guarded by mu. None may be held across a call into
-	// sched or into Residency.Hydrate — take mu, read or write one map,
-	// release.
+	// resident, launched, written, removing, occupiers, occupancyTokens,
+	// occupyDrained and occupyStep are the dispatcher's own per-job bookkeeping,
+	// all guarded by mu. None may be held across a call into sched or into
+	// Residency.Hydrate — take mu, read or write one map, release.
 	//
 	// ADDING A MAP HERE MEANS EXTENDING EVERY TEARDOWN. This has been got
 	// wrong three times on this branch — Stop not clearing resident, remove
@@ -43,23 +43,36 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `grep -n 'delete(d\.' internal/dispatch/*.go` finds six lines:
+	// `git grep -n 'delete(d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 19 lines:
 	//
-	//   - remove (registry.go), four lines: byID, written, resident,
-	//     launched. It is total by rule; d.order is pruned by the loop
-	//     below those four rather than by a delete, so it does not appear.
+	//   - remove (registry.go), eight lines: byID, written, resident,
+	//     removing, occupiers, occupancyTokens, occupyDrained, occupyStep. launched is cleared via clearLaunched. d.order is pruned by
+	//     the loop below those rather than by a delete, so it does not appear.
+	//   - Remove error branches (registry.go), five lines: removing on
+	//     Cancel, wait worker, wait live (both branches), or store failure.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
-	//     accessor Finished, Yielded and Stop's sweep all call.
+	//     accessor Finished, Yielded, Stop's sweep and remove all call.
+	//   - Occupy (occupy.go), four lines: occupancyTokens, occupiers, occupyDrained, and occupyStep when refcount drops to 0.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,
 	// because a Stopped Dispatcher is still inspectable and its jobs still
 	// exist. remove is the only site that must be total.
-	resident map[string]bool
-	launched map[string]bool
-	written  map[string]Persisted
+	resident        map[string]bool
+	launched        map[string]chan struct{}
+	written         map[string]Persisted
+	removing        map[string]int
+	occupiers       map[string]int
+	occupancyTokens map[string]map[any]struct{}
+	occupyDrained   map[string]chan struct{}
+	occupyStep      map[string]chan struct{}
+
+	// storeMu serializes store writes (Save in persistIfChanged) and
+	// deletions (Delete in Remove and evictCancelledNeverRun) so a concurrent
+	// Save cannot resurrect a row deleted by Remove.
+	storeMu sync.Mutex
 
 	// nextSeq is the sequence register will hand the next job, and register is
 	// its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch` returns
@@ -77,13 +90,16 @@ type Dispatcher struct {
 	// Add (registry.go) for what an interleaved registration costs.
 	restoring bool
 
-	q    *sched.Queue
-	wake chan struct{}
+	q      *sched.Queue
+	wake   chan struct{}
+	notify chan struct{}
 
 	res    Residency
 	store  Store
 	runner Runner
 
+	ctx       context.Context
+	cancel    context.CancelFunc
 	tickEvery time.Duration
 	stop      chan struct{}
 	done      chan struct{}
@@ -95,8 +111,9 @@ type Dispatcher struct {
 	// cleared there, so a second Stop entering while the first is still
 	// waiting on d.done reads wasStarted false and would skip the wait.
 	// Every caller now blocks on the same Do and observes the same result.
-	stopOnce sync.Once
-	stopErr  error
+	stopOnce    sync.Once
+	stopErr     error
+	stopTimeout time.Duration
 
 	log *slog.Logger
 }
@@ -157,6 +174,29 @@ func (d *Dispatcher) Resume() { d.q.Resume(); d.kick() }
 // Paused reports the Queue's pause flag (D-B13).
 func (d *Dispatcher) Paused() bool { return d.q.Paused() }
 
+// SetCaps updates the scheduler's lease and slot capacities and kicks the scheduler.
+func (d *Dispatcher) SetCaps(leaseCap, slotCap int) {
+	d.q.SetCaps(leaseCap, slotCap)
+	d.kick()
+}
+
+// LeaseCap returns the current lease capacity.
+func (d *Dispatcher) LeaseCap() int {
+	return d.q.LeaseCap()
+}
+
+// SlotCap returns the current slot capacity.
+func (d *Dispatcher) SlotCap() int {
+	return d.q.SlotCap()
+}
+
+// SetStopTimeout overrides the worker wait timeout during Stop for testing.
+func (d *Dispatcher) SetStopTimeout(timeout time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stopTimeout = timeout
+}
+
 // The three log helpers exist so the tick has exactly one shape for "this job
 // failed, keep walking". A tick must never abandon the rest of the queue
 // because one job errored — that would let a single bad job stall every other,
@@ -176,15 +216,28 @@ func (d *Dispatcher) logStoreError(id string, err error) {
 	d.log.Error("store write failed", "job_id", id, "err", err)
 }
 
-// kick wakes the ticker without blocking. The channel is buffered to 1, so a
-// burst of Adds collapses into one wakeup and a full buffer means a wakeup is
-// already pending.
+// kick wakes the ticker and any external observers without blocking. The
+// channels are buffered to 1, so a burst of Adds collapses into one wakeup
+// and a full buffer means a wakeup is already pending.
 func (d *Dispatcher) kick() {
 	select {
 	case d.wake <- struct{}{}:
 	default:
 	}
+	select {
+	case d.notify <- struct{}{}:
+	default:
+	}
 }
+
+// Wake pokes the ticker loop to walk the registry immediately without blocking.
+func (d *Dispatcher) Wake() {
+	d.kick()
+}
+
+// Notify returns a receive-only channel poked whenever the queue state changes
+// (jobs added, paused, resumed, cancelled, or retried).
+func (d *Dispatcher) Notify() <-chan struct{} { return d.notify }
 
 // New builds a Dispatcher and the sched.Queue it owns.
 //
@@ -211,21 +264,39 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	if tickEvery <= 0 {
 		panic("dispatch: New: tick interval must be positive")
 	}
-	return &Dispatcher{
-		byID:      map[string]*entry{},
-		resident:  map[string]bool{},
-		launched:  map[string]bool{},
-		written:   map[string]Persisted{},
-		q:         sched.New(leaseCap, slotCap, clock, w),
-		wake:      make(chan struct{}, 1),
-		res:       r,
-		store:     s,
-		runner:    run,
-		tickEvery: tickEvery,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		log:       slog.Default(),
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &Dispatcher{
+		byID:            map[string]*entry{},
+		resident:        map[string]bool{},
+		launched:        map[string]chan struct{}{},
+		written:         map[string]Persisted{},
+		removing:        make(map[string]int),
+		occupiers:       make(map[string]int),
+		occupancyTokens: make(map[string]map[any]struct{}),
+		occupyDrained:   make(map[string]chan struct{}),
+		occupyStep:      make(map[string]chan struct{}),
+		q:               sched.New(leaseCap, slotCap, clock, w),
+		wake:            make(chan struct{}, 1),
+		notify:          make(chan struct{}, 1),
+		res:             r,
+		store:           s,
+		runner:          run,
+		ctx:             ctx,
+		cancel:          cancel,
+		tickEvery:       tickEvery,
+		stopTimeout:     10 * time.Second,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+		log:             slog.Default(),
 	}
+	return d
+}
+
+// Tick runs one cycle of promotion, residency reconciliation, worker launch,
+// and state persistence. In production this is driven by the ticker loop in Start;
+// exposed for deterministic tests and manual stepping.
+func (d *Dispatcher) Tick(ctx context.Context) {
+	d.tick(ctx)
 }
 
 // Start registers everything the store holds, then launches the ticker and
@@ -254,6 +325,7 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return errors.New("dispatch: Start: already started")
 	}
 	d.started = true
+	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.mu.Unlock()
 
 	if err := d.restore(ctx); err != nil {
@@ -409,27 +481,47 @@ func (d *Dispatcher) run(ctx context.Context) {
 // sequential — finds it already false and skips straight to the sweep,
 // which never touches d.stop or d.done. stopped is a separate, one-way latch:
 // it is set on every call (there is no "already stopped" branch to take),
-// because Stop's terminal contract holds regardless of how many times it is
-// called or whether the ticker was ever running.
+// so a later Start is refused immediately even if it was queued behind this
+// call.
 //
 // The sweep also clears each job's launched claim and its manifest
-// residency, alongside Park and Evict. Stop is a third worker-exit path
-// beside Finished and Yielded — the ticker goroutine has already stopped by
-// the time the sweep runs (the wait above), so nothing races a launch here —
-// and it must clear the same bookkeeping they do. Now that Stop is terminal,
-// this is no longer about surviving a later Start: it is about leaving the
-// Dispatcher's own bookkeeping consistent and inspectable after shutdown,
-// since this package's tests (and any caller keeping a Stopped Dispatcher
-// around to inspect) drive tick and its helpers directly, and a stale
-// launched or resident entry would be a lie about what the Dispatcher
-// believes is true. Without the resident clear specifically, a job that held
-// a lease when Stop ran would still read as manifest-resident afterward, so a
-// direct tick() call reaching reconcileResidency for it (v.Holds is now
-// false, post-Park) would see d.isResident true and correctly evict — but
-// only because reconcileResidency's own else-branch happens to cover it; the
-// job would never re-hydrate, because the branch that grants residency
-// requires !d.isResident(id) and this entry would already, wrongly, satisfy
-// that.
+// residency, alongside Park and Evict. Stop cancels workers and waits via
+// waitLaunched and waitLive under stopCtx before parking or evicting.
+// stopTimeout sets the overall shutdown wait budget across all jobs (10s) for
+// draining worker launches and active occupancy, fitting within the 15s step
+// budget (Application.Shutdown's default stepTimeout).
+// Each job gets an isolated perJobTimeout (3s) bounded by stopCtx for
+// waitLaunched and waitLive. To prevent dropped queue state on shutdown,
+// persistIfChanged draws an isolated perJobPersistWait (2s) via
+// context.WithoutCancel(stopCtx) so earlier wait timeouts cannot starve
+// subsequent persistence; total Stop duration across N jobs is thus bounded
+// by stopTimeout plus N * 2s, constrained by the caller's enclosing
+// waitBounded("dispatcher", 15s) step budget.
+// waitLaunched waits on launched, which is the dispatcher's launch claim latch cleared
+// when worker exit or yield is reported (e.g. Yielded, Finished). Worker goroutine
+// draining for external subsystems (downloader, postprocessor) is owned and driven by
+// their respective Stop methods. If the wait times out for a job, Stop records
+// the error and deliberately SKIPS Park and Evict for that job, leaving its
+// resident manifest and scheduler state untouched so the running worker does
+// not experience manifest eviction or panics under concurrent access.
+// All wait, park, and persist errors are aggregated and returned via errors.Join.
+//
+// Stop is a third worker-exit path beside Finished and
+// Yielded — the ticker goroutine has already stopped by the time the sweep
+// runs (the wait above), so nothing races a launch here — and it must clear
+// the same bookkeeping they do. Now that Stop is terminal, this is no longer
+// about surviving a later Start: it is about leaving the Dispatcher's own
+// bookkeeping consistent and inspectable after shutdown, since this package's
+// tests (and any caller keeping a Stopped Dispatcher around to inspect) drive
+// tick and its helpers directly, and a stale launched or resident entry would
+// be a lie about what the Dispatcher believes is true. Without the resident
+// clear specifically, a job that held a lease when Stop ran would still read
+// as manifest-resident afterward, so a direct tick() call reaching
+// reconcileResidency for it (v.Holds is now false, post-Park) would see
+// d.isResident true and correctly evict — but only because
+// reconcileResidency's own else-branch happens to cover it; the job would
+// never re-hydrate, because the branch that grants residency requires
+// !d.isResident(id) and this entry would already, wrongly, satisfy that.
 func (d *Dispatcher) Stop() error {
 	// The whole sequence runs once, and every caller waits for it. Reading
 	// the latches under d.mu is enough to make Stop IDEMPOTENT in sequence
@@ -452,21 +544,67 @@ func (d *Dispatcher) Stop() error {
 		wasStarted := d.started
 		d.started = false
 		d.stopped = true
+		cancel := d.cancel
 		d.mu.Unlock()
+
+		if cancel != nil {
+			cancel()
+		}
 
 		if wasStarted {
 			close(d.stop)
 			<-d.done
 		}
 
+		d.mu.Lock()
+		timeout := d.stopTimeout
+		d.mu.Unlock()
+		if timeout <= 0 {
+			// 10s comfortably fits inside Application.Shutdown's default 15s
+			// stepTimeout budget for dispatcher.Stop.
+			timeout = 10 * time.Second
+		}
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), timeout)
+		defer stopCancel()
+
+		const (
+			perJobTimeout     = 3 * time.Second
+			perJobPersistWait = 2 * time.Second
+		)
+
+		var stopErrs []error
 		for _, j := range d.snapshotOrder() {
-			if err := d.q.Park(j); err != nil && d.stopErr == nil {
-				d.stopErr = fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err)
+			jobCtx, jobCancel := context.WithTimeout(stopCtx, perJobTimeout)
+			if err := d.waitLaunched(jobCtx, j.ID()); err != nil {
+				// Wait timed out or context cancelled. The worker for this job has
+				// not returned. Skip Park and Evict to preserve memory safety and
+				// prevent panics / null dereference under the running worker.
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait worker %s: %w", j.ID(), err))
+				jobCancel()
+				continue
 			}
+			if err := d.waitLive(jobCtx, j.ID()); err != nil {
+				// Wait timed out or context cancelled. Active occupiers for this job
+				// have not drained. Skip Park and Evict to preserve memory safety and
+				// prevent panics / null dereference under active finalization.
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: wait live %s: %w", j.ID(), err))
+				jobCancel()
+				continue
+			}
+			if err := d.q.Park(j); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: park %s: %w", j.ID(), err))
+			}
+			persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(stopCtx), perJobPersistWait)
+			if err := d.persistIfChanged(persistCtx, j); err != nil {
+				stopErrs = append(stopErrs, fmt.Errorf("dispatch: Stop: persist %s: %w", j.ID(), err))
+			}
+			persistCancel()
+			jobCancel()
 			d.res.Evict(j.ID())
 			d.markNotResident(j.ID())
 			d.clearLaunched(j.ID())
 		}
+		d.stopErr = errors.Join(stopErrs...)
 	})
 	return d.stopErr
 }
@@ -545,6 +683,7 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)
 		}
+		restoreJobMetadata(j, p)
 		// register, not Add: Add would assign a FRESH sequence while
 		// markWritten below records the stored one, and the first
 		// persistIfChanged would then see a difference that is not there and
@@ -611,7 +750,7 @@ var replayPath = map[job.State][]hop{
 //
 // The brief this task started from called a `job.Restore(id, name, Policy{},
 // state, intent)` that does not exist. internal/job exports exactly one
-// constructor, New (job.go:205); adding a second is the first smell Standing
+// constructor, New (`git grep -n 'func New(' internal/job/`); adding a second is the first smell Standing
 // Design Rule 2 names, with newManifest/UnmarshalJSON as the worked example
 // that had already diverged over totalBytes before anyone noticed. That was
 // escalated per AGENTS.md's Decision Protocol and declined. Replaying instead
@@ -738,6 +877,20 @@ func reconstruct(id, name string, pol job.Policy, v job.StateView, intent job.In
 	return j, nil
 }
 
+func restoreJobMetadata(j *job.Job, p Persisted) {
+	j.SetAdded(time.Unix(p.Header.Added, 0).UTC())
+	var started, finished time.Time
+	if p.DownloadStarted > 0 {
+		started = time.Unix(p.DownloadStarted, 0).UTC()
+	}
+	if p.DownloadFinished > 0 {
+		finished = time.Unix(p.DownloadFinished, 0).UTC()
+	}
+	_ = j.RestoreDownloadStamps(started, finished)
+	j.SetPar2ReleaseReason(p.Par2ReleaseReason)
+	j.SetRecoveryBytes(p.RecoveryBytes)
+}
+
 // lastWritten and markWritten are persistIfChanged's two touches of d.written,
 // each taking d.mu for one map operation and releasing it immediately. D-B9
 // forbids holding d.mu across the Render/Save calls between them — see
@@ -752,5 +905,8 @@ func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 func (d *Dispatcher) markWritten(p Persisted) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.removing[p.ID] > 0 || d.byID[p.ID] == nil {
+		return
+	}
 	d.written[p.ID] = p
 }

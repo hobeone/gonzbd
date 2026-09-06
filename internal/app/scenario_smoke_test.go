@@ -14,15 +14,15 @@ func TestScenarioHarness_Smoke(t *testing.T) {
 
 	job := h.AddSimpleJob("smoke", []byte("hello world"))
 
-	if !h.WaitForPostProc(job.ID, 10*time.Second) {
-		t.Fatalf("timeout waiting for post-proc completion of %s", job.ID)
+	if !h.WaitForPostProc(job.ID(), 10*time.Second) {
+		t.Fatalf("timeout waiting for post-proc completion of %s", job.ID())
 	}
-	if !h.WaitForHistory(job.ID, 2*time.Second) {
-		t.Fatalf("job %s did not reach history", job.ID)
+	if !h.WaitForHistory(job.ID(), 2*time.Second) {
+		t.Fatalf("job %s did not reach history", job.ID())
 	}
 
-	if h.QueueContains(job.ID) {
-		t.Errorf("job %s still in active queue after post-proc", job.ID)
+	if h.QueueContains(job.ID()) {
+		t.Errorf("job %s still in active queue after post-proc", job.ID())
 	}
 
 	jobs, pps := h.Events()

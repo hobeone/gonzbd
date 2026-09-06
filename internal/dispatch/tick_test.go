@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,12 @@ import (
 
 func TestTick_PromotesWithoutAKick(t *testing.T) {
 	d := newTestDispatcher(t)
+	d.Wake()
+	if ch := d.Notify(); ch == nil {
+		t.Fatal("Notify returned nil")
+	}
+	d.Tick(context.Background())
+
 	j := job.New("j1", "n", job.Policy{})
 	if err := d.Add(j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -628,5 +635,324 @@ func TestRun_ShutdownBeatsAPrimedWake(t *testing.T) {
 				"it took the primed wake instead of the shutdown, which is the "+
 				"coin toss a multi-ready select makes", saves)
 		}
+	}
+}
+
+// TestStop_ParkErrorAggregatesAllErrors pins that Stop returns park errors and
+// aggregates all errors when multiple jobs fail to park.
+func TestStop_ParkErrorAggregatesAllErrors(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1 := job.New("j1", "Job 1", job.Policy{})
+	_ = j1.BeginAttempt(testClock())
+	j1.Grant(job.NewLease(9991))
+	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+
+	j2 := job.New("j2", "Job 2", job.Policy{})
+	_ = j2.BeginAttempt(testClock())
+	j2.Grant(job.NewLease(9992))
+	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+
+	err := d.Stop()
+	if err == nil {
+		t.Fatal("Stop() = nil, want park error on foreign lease")
+	}
+	if !strings.Contains(err.Error(), "park j1") {
+		t.Errorf("Stop() error = %v, want to contain error for park j1", err)
+	}
+	if !strings.Contains(err.Error(), "park j2") {
+		t.Errorf("Stop() error = %v, want to aggregate error for park j2", err)
+	}
+}
+
+func TestPersistIfChanged_Coverage(t *testing.T) {
+	st := &fakeStore{saveErr: errors.New("save fail")}
+	d := newTestDispatcher(t, withStore(st))
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	m := job.NewManifest([]job.JobFile{{
+		Subject:  "f1",
+		Bytes:    1000,
+		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
+	}})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	_ = j.RestoreDownloadStamps(time.Unix(100, 0), time.Unix(200, 0))
+	j.SetPar2ReleaseReason("test reason")
+
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.persistIfChanged(context.Background(), j)
+
+	// Now with succeeding store
+	st.saveErr = nil
+	d.persistIfChanged(context.Background(), j)
+	// Second call without change should return early
+	d.persistIfChanged(context.Background(), j)
+}
+
+type hookStore struct {
+	Store
+	beforeDelete func(id string)
+}
+
+func (h *hookStore) Delete(ctx context.Context, id string) error {
+	if h.beforeDelete != nil {
+		h.beforeDelete(id)
+	}
+	return h.Store.Delete(ctx, id)
+}
+
+func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
+	fs := &fakeStore{}
+	d := newTestDispatcher(t, withStore(fs))
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Setting removing[id] = 1 manually under lock simulates an in-progress Remove.
+	d.mu.Lock()
+	d.removing["j1"] = 1
+	d.mu.Unlock()
+
+	// persistIfChanged must not save or mark written while removing.
+	d.persistIfChanged(context.Background(), j)
+	if _, ok := fs.row("j1"); ok {
+		t.Fatal("persistIfChanged wrote to store while job was marked removing")
+	}
+	if _, ok := d.lastWritten("j1"); ok {
+		t.Fatal("persistIfChanged updated d.written while job was marked removing")
+	}
+
+	// markResident must not set resident while removing.
+	d.markResident("j1")
+	if d.isResident("j1") {
+		t.Fatal("markResident set resident while job was marked removing")
+	}
+
+	// markWritten must not record in d.written while removing.
+	d.markWritten(Persisted{ID: "j1"})
+	if _, ok := d.lastWritten("j1"); ok {
+		t.Fatal("markWritten recorded job while marked removing")
+	}
+
+	// claimLaunched must not launch while removing.
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded while job was marked removing")
+	}
+
+	// After job is completely removed from byID:
+	d.remove("j1")
+
+	d.markResident("j1")
+	if d.isResident("j1") {
+		t.Fatal("markResident set resident for a removed job (not in byID)")
+	}
+
+	d.markWritten(Persisted{ID: "j1"})
+	if _, ok := d.lastWritten("j1"); ok {
+		t.Fatal("markWritten recorded job for a removed job (not in byID)")
+	}
+
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded for a removed job (not in byID)")
+	}
+}
+
+func TestRemove_ConcurrentPersistDoesNotResurrectRowOrResidency(t *testing.T) {
+	const trials = 50
+	for trial := range trials {
+		fs := &fakeStore{}
+		d := newTestDispatcher(t, withStore(fs))
+
+		id := fmt.Sprintf("j-%d", trial)
+		j := job.New(id, "Job", job.Policy{})
+		if err := d.Add(j, Header{Name: "Job"}); err != nil {
+			t.Fatalf("trial %d: Add: %v", trial, err)
+		}
+
+		// Initial persist.
+		d.persistIfChanged(context.Background(), j)
+		if _, ok := fs.row(id); !ok {
+			t.Fatalf("trial %d: setup: job not saved to store", trial)
+		}
+
+		// Mutate job so persistIfChanged has new data.
+		_ = j.RestoreDownloadStamps(time.Unix(int64(trial+1), 0), time.Unix(int64(trial+2), 0))
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+
+		// Goroutine 1: repeatedly calls persistIfChanged
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					d.persistIfChanged(context.Background(), j)
+				}
+			}
+		})
+
+		// Goroutine 2: repeatedly calls markResident
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					d.markResident(id)
+				}
+			}
+		})
+
+		// Concurrently Remove the job.
+		if err := d.Remove(context.Background(), id); err != nil {
+			t.Fatalf("trial %d: Remove: %v", trial, err)
+		}
+
+		close(stop)
+		wg.Wait()
+
+		// Verify that the job was not resurrected in store, resident, or written.
+		if _, ok := fs.row(id); ok {
+			t.Fatalf("trial %d: job %s was resurrected in store after Remove", trial, id)
+		}
+		if d.isResident(id) {
+			t.Fatalf("trial %d: job %s was marked resident after Remove", trial, id)
+		}
+		if _, ok := d.lastWritten(id); ok {
+			t.Fatalf("trial %d: job %s was left in written map after Remove", trial, id)
+		}
+	}
+}
+
+func TestRemove_InFlightPersistBlockedByStoreMuDoesNotResurrect(t *testing.T) {
+	fs := &fakeStore{}
+	delEntered := make(chan struct{})
+	persistStarted := make(chan struct{})
+	persistDone := make(chan struct{})
+
+	hs := &hookStore{
+		Store: fs,
+		beforeDelete: func(id string) {
+			select {
+			case <-delEntered:
+			default:
+				close(delEntered)
+			}
+			<-persistStarted
+			// Allow persistIfChanged to block on d.storeMu.
+			time.Sleep(20 * time.Millisecond)
+		},
+	}
+	d := newTestDispatcher(t, withStore(hs))
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.persistIfChanged(context.Background(), j)
+
+	// Mutate so it wants to persist.
+	_ = j.RestoreDownloadStamps(time.Unix(100, 0), time.Unix(200, 0))
+
+	removeDone := make(chan error, 1)
+	go func() {
+		removeDone <- d.Remove(context.Background(), "j1")
+	}()
+
+	// Wait until Remove is inside store.Delete (holding d.storeMu).
+	<-delEntered
+
+	// While Remove is holding d.storeMu and has marked removing=true,
+	// run persistIfChanged on another goroutine. It will wait on d.storeMu.
+	go func() {
+		close(persistStarted)
+		d.persistIfChanged(context.Background(), j)
+		close(persistDone)
+	}()
+
+	// Wait for Remove to complete.
+	if err := <-removeDone; err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+	<-persistDone
+
+	// Verify no resurrection.
+	if _, ok := fs.row("j1"); ok {
+		t.Fatal("j1 resurrected in store after concurrent Remove and persistIfChanged")
+	}
+	if d.isResident("j1") {
+		t.Fatal("j1 marked resident after Remove")
+	}
+	if _, ok := d.lastWritten("j1"); ok {
+		t.Fatal("j1 recorded in written map after Remove")
+	}
+}
+
+func TestEvictCancelledNeverRun_SkipsWhenLiveOrLaunched(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{Name: "test"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+
+	// Case 1: When occupied via d.Occupy, evictCancelledNeverRun returns false
+	// and does not delete or deregister the job.
+	err := d.Occupy(context.Background(), j.ID(), func(ctx context.Context) {
+		if d.evictCancelledNeverRun(ctx, j) {
+			t.Error("evictCancelledNeverRun returned true while job is occupied, want false")
+		}
+		if st.deleted(j.ID()) {
+			t.Error("evictCancelledNeverRun deleted store row while job is occupied")
+		}
+		if _, ok := d.Job(j.ID()); !ok {
+			t.Error("job deregistered while job is occupied")
+		}
+	})
+	if err != nil {
+		t.Fatalf("Occupy: %v", err)
+	}
+
+	// Case 2: When claimLaunched is true, evictCancelledNeverRun returns false
+	// and does not delete or deregister the job.
+	if !d.claimLaunched(j.ID()) {
+		t.Fatal("claimLaunched returned false")
+	}
+	if d.evictCancelledNeverRun(context.Background(), j) {
+		t.Error("evictCancelledNeverRun returned true while job is launched, want false")
+	}
+	if st.deleted(j.ID()) {
+		t.Error("evictCancelledNeverRun deleted store row while job is launched")
+	}
+	if _, ok := d.Job(j.ID()); !ok {
+		t.Error("job deregistered while job is launched")
+	}
+	d.clearLaunched(j.ID())
+
+	// Case 3: When neither occupied nor launched, evictCancelledNeverRun returns true
+	// and cleans up the job.
+	if !d.evictCancelledNeverRun(context.Background(), j) {
+		t.Error("evictCancelledNeverRun returned false for idle unset cancelled job, want true")
+	}
+	if !st.deleted(j.ID()) {
+		t.Error("evictCancelledNeverRun did not delete store row for idle job")
+	}
+	if _, ok := d.Job(j.ID()); ok {
+		t.Error("job still registered after evictCancelledNeverRun")
 	}
 }

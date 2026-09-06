@@ -23,14 +23,15 @@
 // # What this package exports, and what B2 still owes it
 //
 // `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go | grep -v
-// _test.go` finds ten lines: Advance, Cancel, Park, Retry and Settle
+// _test.go` finds 13 lines: Advance, Cancel, Park, Retry and Settle
 // (advance.go, cancel.go, settle.go) write or gate; Pause and Resume (queue.go)
-// write the pause flag; Paused (queue.go) reads it back; and Render and
-// RenderAll (render.go) are the doors that compose a job.RenderView.
+// write the pause flag; Paused (queue.go) reads it back; SetCaps, LeaseCap and
+// SlotCap (queue.go) manage pool capacities; and Render and RenderAll
+// (render.go) are the doors that compose a job.RenderView.
 // Acquisition happens only in grantFor; return happens only through reclaim
 // and releaseFor, which Settle, Park and Cancel all route through.
 //
-// Half B2 owed this package two things it could not supply for itself. One is
+// Half B2 owed this package two things it could not supply for itself. Both are
 // closed:
 //
 //   - CLOSED (B2.3). A discard path for a cancelled job that never ran.
@@ -54,11 +55,8 @@
 //     it through finishCancel. Transient and self-healing, but real for the
 //     tick it lasts.
 //
-//   - STILL OWED. A Workers implementation whose Abort neither blocks nor
+//   - CLOSED. A Workers implementation whose Abort neither blocks nor
 //     takes a lock a caller could hold across a call into Queue. See the
-//     Workers interface. `git grep -n ') Abor[t](jobID string)' -- '*.go'`
-//     (the bracket keeps this citation from matching its own quoted text)
-//     finds two hits, both named stubWorkers and both in _test.go files
-//     (internal/dispatch/fakes_test.go, internal/sched/queue_test.go); no
-//     non-test file declares an Abort method at all.
+//     Workers interface. Implemented by appWorkers in
+//     internal/app/dispatcher_wiring.go.
 package sched

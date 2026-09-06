@@ -395,3 +395,24 @@ func TestRequireDependenciesDirect(t *testing.T) {
 		}
 	})
 }
+
+func TestIsStateChangingMode(t *testing.T) {
+	if !isStateChangingMode("queue", "pause") {
+		t.Error("isStateChangingMode(queue, pause) = false, want true")
+	}
+	if isStateChangingMode("queue", "list") {
+		t.Error("isStateChangingMode(queue, list) = true, want false")
+	}
+	if isStateChangingMode("queue", "") {
+		t.Error("isStateChangingMode(queue, \"\") = true, want false")
+	}
+	if !isStateChangingMode("config", "save") {
+		t.Error("isStateChangingMode(config, save) = false, want true")
+	}
+	if !isStateChangingMode("warnings", "clear") {
+		t.Error("isStateChangingMode(warnings, clear) = false, want true")
+	}
+	if isStateChangingMode("warnings", "") {
+		t.Error("isStateChangingMode(warnings, \"\") = true, want false")
+	}
+}

@@ -129,6 +129,10 @@ func TestFinished_RefusesCancelledAsAnOutcome(t *testing.T) {
 // fails, and clearLaunched makes the ID claimable again.
 func TestClaimLaunched_ClaimsOnce(t *testing.T) {
 	d := newTestDispatcher(t)
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 	if !d.claimLaunched("j1") {
 		t.Fatal("first claim should succeed")
 	}
@@ -164,7 +168,7 @@ func TestLaunch_DirectCallStartsWhenRunningAndClaimable(t *testing.T) {
 	runner.seen = map[string]bool{}
 	runner.mu.Unlock()
 
-	d.launch(context.Background(), j)
+	d.launch(j)
 
 	if !runner.started(j.ID()) {
 		t.Error("launch did not start the runner for a running, claimable job")
@@ -182,7 +186,7 @@ func TestLaunch_DirectCallSkipsWhenNotRunning(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	d.launch(context.Background(), j)
+	d.launch(j)
 
 	if runner.started(j.ID()) {
 		t.Error("launch started the runner for a job that is not Running")
@@ -314,5 +318,141 @@ func TestWorkerExits_RejectAnUnknownID(t *testing.T) {
 	}
 	if err := d.Yielded("nope"); err == nil {
 		t.Error("Yielded on an unregistered id = nil, want an error")
+	}
+}
+
+func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Normal case: claimLaunched succeeds.
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched failed for healthy registered job")
+	}
+	// Duplicate claim fails.
+	if d.claimLaunched("j1") {
+		t.Fatal("duplicate claimLaunched succeeded")
+	}
+	d.clearLaunched("j1")
+
+	// While job is being removed, claimLaunched must refuse and leak no channel.
+	d.mu.Lock()
+	d.removing["j1"] = 1
+	d.mu.Unlock()
+
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded while job was marked removing")
+	}
+	d.mu.Lock()
+	if _, ok := d.launched["j1"]; ok {
+		d.mu.Unlock()
+		t.Fatal("claimLaunched leaked a channel in d.launched while removing")
+	}
+	rem := d.removing
+	delete(rem, "j1")
+	d.mu.Unlock()
+
+	// Once job is removed from byID, claimLaunched must refuse and leak no channel.
+	d.remove("j1")
+
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded for job not in byID")
+	}
+	d.mu.Lock()
+	if _, ok := d.launched["j1"]; ok {
+		d.mu.Unlock()
+		t.Fatal("claimLaunched leaked a channel in d.launched for evicted job")
+	}
+	d.mu.Unlock()
+}
+
+func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Simulate two concurrent removals entering and incrementing refcount.
+	d.mu.Lock()
+	d.removing["j1"] = 2
+	d.mu.Unlock()
+
+	// First removal hits an error and decrements.
+	d.mu.Lock()
+	d.removing["j1"]--
+	if d.removing["j1"] <= 0 {
+		rem := d.removing
+		delete(rem, "j1")
+	}
+	d.mu.Unlock()
+
+	// Second removal is still in-flight: removing count is 1, so guards must remain active.
+	d.mu.Lock()
+	count := d.removing["j1"]
+	d.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("d.removing[j1] = %d, want 1", count)
+	}
+
+	if d.claimLaunched("j1") {
+		t.Fatal("claimLaunched succeeded while second removal was still in-flight")
+	}
+
+	d.markResident("j1")
+	if d.isResident("j1") {
+		t.Fatal("markResident marked job resident while second removal was in-flight")
+	}
+
+	// Second removal completes and cleans up via remove.
+	d.remove("j1")
+
+	d.mu.Lock()
+	_, stillRemoving := d.removing["j1"]
+	d.mu.Unlock()
+	if stillRemoving {
+		t.Fatal("d.removing[j1] still present after remove")
+	}
+}
+
+// TestWaitLaunched_PrefersClosedChannelOverCancelledContext verifies that when
+// both the worker channel is closed and ctx is expired, waitLaunched prioritizes
+// the closed channel via its pre-select rather than returning ctx.Err() at random.
+func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	for i := range 200 {
+		if !d.claimLaunched("j1") {
+			t.Fatalf("iteration %d: claimLaunched failed", i)
+		}
+		// Close the channel (worker exited).
+		d.clearLaunched("j1")
+
+		// Re-populate launched map with a closed channel to test waitLaunched directly
+		// while id is in launched. Note clearLaunched deletes it from launched, so
+		// re-add a closed channel to test waitLaunched when ch != nil.
+		closedCh := make(chan struct{})
+		close(closedCh)
+		d.mu.Lock()
+		d.launched["j1"] = closedCh
+		d.mu.Unlock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // context is cancelled immediately
+
+		if err := d.waitLaunched(ctx, "j1"); err != nil {
+			t.Fatalf("iteration %d: waitLaunched returned %v, want nil (closed channel must take priority over cancelled context)", i, err)
+		}
+
+		d.mu.Lock()
+		delete(d.launched, "j1")
+		d.mu.Unlock()
 	}
 }

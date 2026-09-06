@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // TestBuildHistoryEntry_CarriesNZBBackup pins that the backup basename
@@ -14,12 +14,9 @@ import (
 func TestBuildHistoryEntry_CarriesNZBBackup(t *testing.T) {
 	t.Parallel()
 	entry := buildHistoryEntry(&postproc.Job{
-		Queue: &queue.Job{
-			ID:        "carrybackup00001",
-			Filename:  "Show.S01E01.nzb",
-			NZBBackup: "Show.S01E01.nzb.1.gz",
-			Name:      "Show.S01E01",
-		},
+		Filename:  "Show.S01E01.nzb",
+		NZBBackup: "Show.S01E01.nzb.1.gz",
+		Job:       job.New("carrybackup00001", "Show.S01E01", job.PolicyFromPP(3)),
 	})
 
 	if entry.NZBBackup != "Show.S01E01.nzb.1.gz" {

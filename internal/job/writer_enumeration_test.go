@@ -22,10 +22,9 @@ import (
 // OTHER struct here declares any of these five names is established by
 // reading the declarations, not by grepping the names: `git grep -n '^typ[e]
 // [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns eight types — Attempt, Job, Lease, Policy, RenderView, Snapshot,
-// StateView, and edge — and only the first two declare any of these fields.
-// (edge arrived with change 02; Snapshot with Half B1 task 3, which is what
-// took this count from seven to eight.) TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
+// returns 24 types — Attempt, Job, Lease, Policy, RenderView, Snapshot,
+// StateView, edge, and the manifest/progress types — and only the first two declare any of these fields.
+// TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
 // that, so this sentence is orientation rather than the guarantee.
 // A grep for the five field names themselves (`git grep -n -E
 // 'outcome|next|attempts|intent|lease' -- 'internal/job/*.go'
@@ -42,11 +41,13 @@ import (
 // "a seventh" while the count above already said seven, so the two disagreed
 // about whether the next one was the seventh or the eighth.
 var fieldOwner = map[string]string{
-	"outcome":  "Attempt",
-	"next":     "Attempt",
-	"attempts": "Job",
-	"intent":   "Job",
-	"lease":    "Job",
+	"outcome":           "Attempt",
+	"next":              "Attempt",
+	"attempts":          "Job",
+	"intent":            "Job",
+	"lease":             "Job",
+	"par2ReleaseReason": "JobProgress",
+	"recoveryBytes":     "Job",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -299,6 +300,33 @@ func TestLeaseWrites_MatchTheEnumerationStatedInProse(t *testing.T) {
 			"the lease field's doc comment (job.go) claims Grant and surrenderLocked are "+
 			"its only writers. If a different writer is correct, say so at that comment "+
 			"AND update this list together.",
+			writers, want)
+	}
+}
+
+// TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse asserts that
+// the only writers of p.par2ReleaseReason are its dedicated owner methods:
+// clearPar2ReleaseReason, restorePar2ReleaseReason, and setPar2ReleaseReason.
+func TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "par2ReleaseReason")
+	want := []string{"clearPar2ReleaseReason", "restorePar2ReleaseReason", "setPar2ReleaseReason"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning par2ReleaseReason = %v, want %v\n\n"+
+			"the par2ReleaseReason field is owned by JobProgress and may only be written "+
+			"via clearPar2ReleaseReason, restorePar2ReleaseReason, and setPar2ReleaseReason.",
+			writers, want)
+	}
+}
+
+// TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse asserts that the
+// only writers of j.recoveryBytes are AttachContent, RestoreContent, and SetRecoveryBytes.
+func TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "recoveryBytes")
+	want := []string{"AttachContent", "RestoreContent", "SetRecoveryBytes"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning recoveryBytes = %v, want %v\n\n"+
+			"the recoveryBytes field is owned by Job and may only be written "+
+			"via AttachContent, RestoreContent, and SetRecoveryBytes.",
 			writers, want)
 	}
 }

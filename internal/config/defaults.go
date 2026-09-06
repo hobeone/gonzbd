@@ -77,6 +77,7 @@ func Default() (*Config, error) {
 			MaxArtTries:        3,
 			MaxArtOpt:          1,
 			MaxActiveJobs:      4,
+			MaxComputeSlots:    2,
 			TopOnly:            false,
 			NoPenalties:        false,
 			PreCheck:           false,

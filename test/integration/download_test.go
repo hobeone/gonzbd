@@ -11,30 +11,32 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 // addNZBJob parses rawNZB, creates a Job, and adds it to the application
 // queue via Application.AddJob (triggering duplicate and collision logic).
-func addNZBJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *queue.Job {
+func addNZBJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *job.Job {
 	t.Helper()
 	parsed, err := nzb.Parse(bytes.NewReader(rawNZB))
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(a.Config(), parsed, name+".nzb", types.FetchOptions{NzbName: name}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.AddJob(t.Context(), job, rawNZB, false); err != nil {
+	if err := a.AddJob(t.Context(), j, hdr, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
-	return job
+	return j
 }
 
 // newMockServer builds and starts a mock NNTP server with articles registered,
@@ -149,8 +151,8 @@ func TestDownload_MultiFile(t *testing.T) {
 	// Wait for the job to complete post-processing.
 	select {
 	case ppc := <-a.PostProcComplete():
-		if ppc.JobID != job.ID {
-			t.Fatalf("unexpected PostProcComplete for job %s, want %s", ppc.JobID, job.ID)
+		if ppc.JobID != job.ID() {
+			t.Fatalf("unexpected PostProcComplete for job %s, want %s", ppc.JobID, job.ID())
 		}
 	case <-ctx.Done():
 		t.Fatalf("timeout waiting for job completion")
@@ -199,10 +201,10 @@ func TestDownload_MissingArticle(t *testing.T) {
 
 	// Assert the file DOES complete assembly (because all articles are
 	// accounted for) despite the missing article.
-	if !waitForFileComplete(t, a, job.ID, 0, 5*time.Second) {
+	if !waitForFileComplete(t, a, job.ID(), 0, 5*time.Second) {
 		t.Errorf("file did not complete assembly for job with missing article")
 	} else {
-		t.Logf("confirmed: file assembly completed for job with missing article (jobID=%s)", job.ID)
+		t.Logf("confirmed: file assembly completed for job with missing article (jobID=%s)", job.ID())
 	}
 
 	// Verify the job reaches History and is marked Failed.
@@ -210,10 +212,9 @@ func TestDownload_MissingArticle(t *testing.T) {
 		t.Fatalf("job did not reach history")
 	}
 
-	snap := a.Queue().Snapshot()
-	for _, j := range snap {
-		if j.Name == "missing-article" {
-			t.Errorf("job %s still in queue after completion", j.ID)
+	for _, row := range a.Dispatcher().List() {
+		if row.Header.Name == "missing-article" {
+			t.Errorf("job %s still in queue after completion", row.ID)
 		}
 	}
 }
@@ -230,14 +231,14 @@ func waitForFileComplete(t *testing.T, a *app.Application, jobID string, fileIdx
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		snap := a.Queue().SnapshotJob(jobID)
-		if snap == nil {
+		j, ok := a.Dispatcher().Job(jobID)
+		if !ok {
 			return true
 		}
 		// A manifest that is not available yet means not yet complete, so
 		// keep polling rather than treating it as a failure.
-		if m, mErr := snap.Manifest(); mErr == nil &&
-			fileIdx < m.NumFiles() && snap.Progress().FileComplete(fileIdx) {
+		if m, mErr := j.Manifest(); mErr == nil &&
+			fileIdx < m.NumFiles() && j.Progress().FileComplete(fileIdx) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -258,8 +259,8 @@ func waitForHistory(t *testing.T, a *app.Application, name string, timeout time.
 		// Or better: the scenarioHarness in statemachine_test.go has this.
 		// Integration tests here are a bit more raw.
 		found := false
-		for _, j := range a.Queue().Snapshot() {
-			if j.Name == name {
+		for _, row := range a.Dispatcher().List() {
+			if row.Header.Name == name {
 				found = true
 				break
 			}

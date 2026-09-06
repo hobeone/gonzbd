@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
+	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
@@ -35,7 +37,7 @@ import (
 //   - Dial errors / connection resets / I/O timeouts
 //
 // Terminal errors (other decode failures, ErrAuthRejected, etc.) return false.
-// The caller records those with Queue.AckPermanentFailure and then still hands
+// The caller records those with Job.MarkArticleFailed and then still hands
 // the article to the assembler with FatalErr set, so the file's part count
 // reaches its total and the file can complete with a hole in it. The failure
 // accounting is the pipeline's; the assembler only counts parts.
@@ -103,7 +105,7 @@ func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
 // so access is protected by mu.
 type pipeline struct {
 	log         *slog.Logger
-	queue       *queue.Queue
+	dispatcher  *dispatch.Dispatcher
 	assembler   *assembler.Assembler
 	completions <-chan *downloader.ArticleResult
 	downloadDir string
@@ -120,6 +122,8 @@ type pipeline struct {
 	// onArticleWritten reports an article's decoded byte count to the
 	// checkpoint cadence, which uses it for B1's volume bound.
 	onArticleWritten func(jobID string, n int)
+
+	checkpointer *checkpoint.Checkpointer
 
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
@@ -350,12 +354,19 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// single worker goroutine. That argument died with the assembler's
 		// ack authority: a Done now comes only from the barrier, and
 		// markDone/markFailed are both first-writer-wins on the same bit, so
-		// there is no ordering left for the two to get wrong. Without this
-		// call nothing records the failure at all, and a job whose every
+		// there is no ordering left for the two to get wrong.
+		// Without this call nothing records the failure at all, and a job whose every
 		// article failed finishes as Completed with an empty fail message.
-		if err := p.queue.AckPermanentFailure(res.JobID, []int32{res.ArtIdx}); err != nil {
-			p.log.Warn("record permanent article failure",
-				"job", res.JobID, "msgid", res.MessageID, "err", err)
+		if p.dispatcher != nil {
+			if j, ok := p.dispatcher.Job(res.JobID); ok {
+				if err := j.MarkArticleFailed(int(res.ArtIdx)); err != nil {
+					p.log.Warn("record permanent article failure",
+						"job", res.JobID, "msgid", res.MessageID, "err", err)
+				}
+				if p.checkpointer != nil {
+					p.checkpointer.Mark(j)
+				}
+			}
 		}
 
 		// The article still goes to the assembler, which counts it toward the
@@ -369,14 +380,24 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 			p.log.Warn("write fatal article failed, returning to dispatch pool",
 				"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
-			_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
+			if p.dispatcher != nil {
+				if j, ok := p.dispatcher.Job(res.JobID); ok {
+					_ = j.ClearArticleEmitted(int(res.ArtIdx))
+				}
+			}
 		}
 		telemetry.ArticlesFailed.Add(1)
 
 		// Early abort: if the first batch of articles is mostly
 		// failures, the job is likely DMCA'd or expired. Abort now
 		// to save bandwidth.
-		if p.queue.CheckEarlyAbort(res.JobID) {
+		earlyAbort := false
+		if p.dispatcher != nil {
+			if j, ok := p.dispatcher.Job(res.JobID); ok {
+				earlyAbort = j.CheckEarlyAbort()
+			}
+		}
+		if earlyAbort {
 			p.log.Warn("early abort: 80%+ of first articles failed, job appears DMCA'd/expired",
 				"job", res.JobID)
 			if p.onJobHopeless != nil {
@@ -389,8 +410,10 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// article on the next pass.
 		p.log.Debug("fetch error, returning to dispatch pool",
 			"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
-		if err := p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx); err != nil {
-			p.log.Debug("clear emitted failed, this typically happens when a job has already been stopped", "job", res.JobID, "msgid", res.MessageID, "err", err)
+		if p.dispatcher != nil {
+			if j, ok := p.dispatcher.Job(res.JobID); ok {
+				_ = j.ClearArticleEmitted(int(res.ArtIdx))
+			}
 		}
 		telemetry.ArticlesRetried.Add(1)
 	}
@@ -409,15 +432,11 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	}()
 
 	// Record download stats
-	if err := p.queue.MarkJobStarted(res.JobID, time.Now()); err != nil {
-		p.log.Debug("mark job started failed (job likely removed)", "job", res.JobID, "err", err)
-		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
-		return
-	}
-	if err := p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data)); err != nil {
-		p.log.Debug("record download failed (job likely removed)", "job", res.JobID, "err", err)
-		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
-		return
+	if p.dispatcher != nil {
+		if j, ok := p.dispatcher.Job(res.JobID); ok {
+			_ = j.MarkJobStarted(time.Now())
+			_ = j.RecordDownload(res.ServerName, len(res.Data))
+		}
 	}
 
 	p.log.Debug("decoded article received",
@@ -427,7 +446,11 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
 			"job", res.JobID, "fileidx", res.FileIdx, "err", err)
-		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
+		if p.dispatcher != nil {
+			if j, ok := p.dispatcher.Job(res.JobID); ok {
+				_ = j.ClearArticleEmitted(int(res.ArtIdx))
+			}
+		}
 		return
 	}
 
@@ -462,7 +485,11 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",
 			"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
-		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
+		if p.dispatcher != nil {
+			if j, ok := p.dispatcher.Job(res.JobID); ok {
+				_ = j.ClearArticleEmitted(int(res.ArtIdx))
+			}
+		}
 	} else if writeErr == nil {
 		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)
@@ -475,8 +502,8 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	}
 }
 
-// registerFile records the target path and expected part count for a file
-// on first encounter. Subsequent calls for the same (jobID, fileIdx) are
+// registerFile ensures the assembler knows the destination path and part
+// count for a file before any of its articles are written. Subsequent calls are
 // no-ops. It extracts the real filename from the NZB subject line (matching
 // Python SABnzbd's approach) so par2 files already have their .par2
 // extension when the repair stage scans the directory.
@@ -490,13 +517,30 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return nil
 	}
 
-	snap := p.queue.SnapshotJob(jobID)
-	if snap == nil {
-		return fmt.Errorf("queue lookup: job %q not found", jobID)
+	var (
+		m        manifestReader
+		name     string
+		filename string
+		j        *job.Job
+	)
+	if p.dispatcher != nil {
+		var ok bool
+		j, ok = p.dispatcher.Job(jobID)
+		if !ok {
+			return fmt.Errorf("dispatcher lookup: job %q not found", jobID)
+		}
+		var err error
+		m, err = j.Manifest()
+		if err != nil {
+			return fmt.Errorf("dispatcher lookup: manifest for job %q: %w", jobID, err)
+		}
+		name = j.Name()
+		if prog := j.Progress(); prog != nil {
+			filename = prog.FileFilename(fileIdx)
+		}
 	}
-	m, err := snap.Manifest()
-	if err != nil {
-		return fmt.Errorf("queue lookup: manifest for job %q: %w", jobID, err)
+	if m == nil {
+		return fmt.Errorf("lookup: job %q not found in dispatcher", jobID)
 	}
 	if fileIdx < 0 || fileIdx >= m.NumFiles() {
 		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, m.NumFiles())
@@ -517,19 +561,17 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// its real extension (.par2, .rar, etc.). Running the extraction
 	// regex again would break filenames containing characters like '&'
 	// that aren't in the basic-filename regex's character class.
-	// Compute the job directory once from the already-sanitized job name
-	// (queue.NewJob runs SanitizeFolderName at admission). This guarantees
-	// every file in a job lands in the same directory — postproc derives
-	// the same path via filepath.Join(DownloadDir, job.Name) when scanning
+	// Compute the job directory once from the already-sanitized job name.
+	// This guarantees every file in a job lands in the same directory — postproc
+	// derives the same path via filepath.Join(DownloadDir, job.Name) when scanning
 	// for par2 sets.
-	jobDir := filepath.Join(p.downloadDir, snap.Name)
+	jobDir := filepath.Join(p.downloadDir, name)
 	p.mu.Unlock()
 	// --- No lock held below this line ---
 	// jobDir snapshots p.downloadDir; p.sanitize is set once at construction
 	// and never mutated, so both are safe to use unlocked below.
 
 	var path string
-	filename := snap.Progress().FileFilename(fileIdx)
 	if filename != "" {
 		// Use the already-resolved and persisted filename directly, preventing
 		// duplicate renaming across daemon restarts.
@@ -546,9 +588,15 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// Count only unfinished articles — on resume/retry, already-done
 	// articles won't be re-dispatched, so TotalParts must match the
 	// number the assembler will actually receive.
-	totalParts, err := p.queue.CountUnfinishedArticles(jobID, fileIdx)
-	if err != nil {
-		return fmt.Errorf("count unfinished articles: %w", err)
+	var (
+		totalParts int
+		err        error
+	)
+	if j != nil {
+		totalParts, err = j.CountUnfinishedArticles(fileIdx)
+		if err != nil {
+			return fmt.Errorf("count unfinished articles: %w", err)
+		}
 	}
 
 	// The assembler is no longer told whether this file is resumed, nor
@@ -580,10 +628,15 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		// ordinary, and failing registerFile over it would turn a benign race
 		// into a pipeline error. Every other cause is a real failure to record
 		// the resolved on-disk name and still aborts.
-		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil &&
-			!errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
-			p.mu.Unlock()
-			return fmt.Errorf("set file filename: %w", err)
+		if j != nil {
+			if err := j.SetFileFilename(fileIdx, resolvedFilename); err != nil &&
+				!errors.Is(err, job.ErrNotResident) {
+				p.mu.Unlock()
+				return fmt.Errorf("set file filename: %w", err)
+			}
+			if p.checkpointer != nil {
+				p.checkpointer.Mark(j)
+			}
 		}
 	}
 	p.fileInfo[key] = info

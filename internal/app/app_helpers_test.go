@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // readGzFile decompresses the gzip file at path, failing the test on error.
@@ -105,9 +106,8 @@ func containsAll(s string, subs ...string) bool {
 // ---------- hasFailedArticle ----------
 
 // buildFailArticleJob builds a job whose single file has two articles, and
-// returns the manifest/progress pair alongside a helper to fail an article
-// by 0-based position within the file.
-func buildFailArticleJob(t *testing.T) (*queue.Queue, *queue.Job) {
+// returns the dispatcher and job.
+func buildFailArticleJob(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject: "multi.bin",
@@ -117,15 +117,15 @@ func buildFailArticleJob(t *testing.T) (*queue.Queue, *queue.Job) {
 			{ID: "second@t", Bytes: 100, Number: 2},
 		},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "fail-article-job"}, fsutil.SanitizeOptions{})
+	app := newTestApplication(t)
+	j, hdr, err := BuildIngestJob(app.config, parsed, "multi.bin", types.FetchOptions{NzbName: "fail-article-job"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
+	if err := app.Dispatcher().Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	return q, job
+	return app.Dispatcher(), j
 }
 
 // TestHasFailedArticle_TrueWhenAnyArticleInRangeFailed pins the "any"
@@ -133,10 +133,10 @@ func buildFailArticleJob(t *testing.T) (*queue.Queue, *queue.Job) {
 // article within its [lo,hi) range has exhausted retries, even with a
 // second article in the same file still pending.
 func TestHasFailedArticle_TrueWhenAnyArticleInRangeFailed(t *testing.T) {
-	q, job := buildFailArticleJob(t)
-	ackFailed(t, q, job.ID, "second@t")
+	d, j := buildFailArticleJob(t)
+	ackFailed(t, d, j.ID(), "second@t")
 
-	m, p := mustManifest(t, job), job.Progress()
+	m, p := mustManifest(t, j), j.Progress()
 	if !hasFailedArticle(m, p, 0) {
 		t.Error("hasFailedArticle = false, want true: file 0 has a failed article")
 	}
@@ -145,8 +145,8 @@ func TestHasFailedArticle_TrueWhenAnyArticleInRangeFailed(t *testing.T) {
 // TestHasFailedArticle_FalseWhenNoArticleFailed pins the negative case: a
 // file whose articles are all still pending (or done) reports no failure.
 func TestHasFailedArticle_FalseWhenNoArticleFailed(t *testing.T) {
-	_, job := buildFailArticleJob(t)
-	m, p := mustManifest(t, job), job.Progress()
+	_, j := buildFailArticleJob(t)
+	m, p := mustManifest(t, j), j.Progress()
 	if hasFailedArticle(m, p, 0) {
 		t.Error("hasFailedArticle = true, want false: no article has failed")
 	}
@@ -160,17 +160,17 @@ func TestHasFailedArticle_RespectsFileBoundary(t *testing.T) {
 		{Subject: "a.bin", Bytes: 100, Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}}},
 		{Subject: "b.bin", Bytes: 100, Articles: []nzb.Article{{ID: "b@t", Bytes: 100, Number: 1}}},
 	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "boundary-job"}, fsutil.SanitizeOptions{})
+	app := newTestApplication(t)
+	j, hdr, err := BuildIngestJob(app.config, parsed, "boundary.bin", types.FetchOptions{NzbName: "boundary-job"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
+	if err := app.Dispatcher().Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	ackFailed(t, q, job.ID, "a@t")
+	ackFailed(t, app.Dispatcher(), j.ID(), "a@t")
 
-	m, p := mustManifest(t, job), job.Progress()
+	m, p := mustManifest(t, j), j.Progress()
 	if !hasFailedArticle(m, p, 0) {
 		t.Error("hasFailedArticle(fileIdx=0) = false, want true: its article failed")
 	}
@@ -204,8 +204,8 @@ func TestWriteNZBBackup_WritesGzippedFileUsingBasename(t *testing.T) {
 
 // TestWriteNZBBackup_CollisionGetsUniqueSuffix pins that writing a backup
 // under a name that already exists does not overwrite it — it takes a
-// ".1"-style suffix instead, matching queue.UniqueName's job-name collision
-// behaviour, so the original NZB (needed to retry the older job) survives.
+// ".1"-style suffix instead, matching unique naming behaviour, so the
+// original NZB (needed to retry the older job) survives.
 func TestWriteNZBBackup_CollisionGetsUniqueSuffix(t *testing.T) {
 	nzbDir := t.TempDir()
 	first := []byte("<nzb>first</nzb>")

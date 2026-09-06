@@ -2,34 +2,33 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // duFixture builds an Application wired with just enough for maybeStart:
-// a queue holding one RAR-volume job, a pipeline that can resolve the file's
+// a dispatcher holding one RAR-volume job, a pipeline that can resolve the file's
 // on-disk path, and config.
 //
 // The volume is deliberately part02. AnalyzeRarFilename reports it as volume
 // 2, so DirectUnpacker.Add records it and queues the set rather than starting
 // extraction — volume 1 is what triggers a start. That keeps these tests on
 // the orchestrator's own logic instead of spawning an extraction.
-func duFixture(t *testing.T, threads int) (*directUnpackOrchestrator, *queue.Queue, *queue.Job) {
+func duFixture(t *testing.T, threads int) (*directUnpackOrchestrator, *dispatch.Dispatcher, *job.Job) {
 	t.Helper()
-	o, q, j, _ := duFixtureLogged(t, threads)
-	return o, q, j
+	o, d, j, _ := duFixtureLogged(t, threads)
+	return o, d, j
 }
 
 // duFixtureLogged is duFixture plus the captured log, for the one test that
 // asserts on a decision the orchestrator only reports by logging.
-func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *queue.Queue, *queue.Job, *bytes.Buffer) {
+func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *dispatch.Dispatcher, *job.Job, *bytes.Buffer) {
 	t.Helper()
 	var logBuf bytes.Buffer
 
@@ -39,14 +38,6 @@ func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *que
 			{ID: "v2a1@t", Bytes: 100, Number: 2},
 		}},
 	}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb", PP: 3}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
 
 	cfg, err := config.Default()
 	if err != nil {
@@ -58,28 +49,29 @@ func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *que
 		c.PostProc.DirectUnpackThreads = threads
 	})
 
-	app := &Application{
-		queue:   q,
-		log:     slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		config:  cfg,
-		emitter: dummyEmitter{},
-		ctx:     context.Background(),
+	j, hdr, err := BuildIngestJob(cfg, parsed, "movie.nzb", types.FetchOptions{NzbName: "movie", PP: 3}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	app.pipeline = &pipeline{
-		log:         app.log,
-		queue:       q,
-		downloadDir: dir,
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
+
+	app := newTestApplication(t)
+	app.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	app.config = cfg
+	app.pipeline.downloadDir = dir
+
+	if err := app.dispatcher.Add(j, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
+
 	// resolveFileInfo reads this map; without an entry maybeStart returns
 	// before ever reaching the orchestrator's own logic.
-	if err := app.pipeline.registerFile(job.ID, 0); err != nil {
+	if err := app.pipeline.registerFile(j.ID(), 0); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}
 
 	o := newDirectUnpackOrchestrator(app)
 	app.duOrch = o
-	return o, q, job, &logBuf
+	return o, app.dispatcher, j, &logBuf
 }
 
 func (o *directUnpackOrchestrator) countsForTest() (unpackers, active int) {
@@ -92,9 +84,9 @@ func (o *directUnpackOrchestrator) countsForTest() (unpackers, active int) {
 // accounted correctly: one unpacker per job, created once, counted once.
 func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
 	t.Parallel()
-	o, _, job := duFixture(t, 0) // 0 = unlimited
+	o, _, j := duFixture(t, 0) // 0 = unlimited
 
-	o.maybeStart(FileComplete{JobID: job.ID, FileIdx: 0})
+	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
 	n, active := o.countsForTest()
 	if n != 1 || active != 1 {
 		t.Fatalf("after first call: unpackers=%d active=%d, want 1 and 1", n, active)
@@ -102,7 +94,7 @@ func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
 
 	// A second completed file on the same job must feed the existing
 	// unpacker, not create a second one or double-count the slot.
-	o.maybeStart(FileComplete{JobID: job.ID, FileIdx: 0})
+	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
 	n, active = o.countsForTest()
 	if n != 1 || active != 1 {
 		t.Errorf("after second call: unpackers=%d active=%d, want 1 and 1 — the job was counted twice against the limit", n, active)
@@ -113,10 +105,10 @@ func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
 // left alone. Incrementing here would leak a slot no unpacker ever releases.
 func TestMaybeStart_RefusesWhenConcurrencyLimitReached(t *testing.T) {
 	t.Parallel()
-	o, _, job := duFixture(t, 1)
+	o, _, j := duFixture(t, 1)
 	o.setActive(1) // the one permitted slot is taken by another job
 
-	o.maybeStart(FileComplete{JobID: job.ID, FileIdx: 0})
+	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
 
 	n, active := o.countsForTest()
 	if n != 0 {
@@ -132,14 +124,14 @@ func TestMaybeStart_RefusesWhenConcurrencyLimitReached(t *testing.T) {
 // set is marked corrupt before the volume is handed over.
 func TestMaybeStart_MarksSetCorruptWhenTheVolumeHasFailedArticles(t *testing.T) {
 	t.Parallel()
-	o, q, job, logBuf := duFixtureLogged(t, 0)
+	o, d, j, logBuf := duFixtureLogged(t, 0)
 
-	ackFailed(t, q, job.ID, "v2a1@t")
+	ackFailed(t, d, j.ID(), "v2a1@t")
 
-	o.maybeStart(FileComplete{JobID: job.ID, FileIdx: 0})
+	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
 
 	o.mu.Lock()
-	du := o.unpackers[job.ID]
+	du := o.unpackers[j.ID()]
 	o.mu.Unlock()
 	if du == nil {
 		t.Fatal("no unpacker was created")
@@ -158,7 +150,7 @@ func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		mutate  func(t *testing.T, q *queue.Queue, job *queue.Job)
+		mutate  func(t *testing.T, d *dispatch.Dispatcher, j *job.Job)
 		fileIdx int
 	}{
 		{name: "file index out of range", fileIdx: 99},
@@ -166,11 +158,11 @@ func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			o, q, job := duFixture(t, 0)
+			o, d, j := duFixture(t, 0)
 			if tc.mutate != nil {
-				tc.mutate(t, q, job)
+				tc.mutate(t, d, j)
 			}
-			o.maybeStart(FileComplete{JobID: job.ID, FileIdx: tc.fileIdx})
+			o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: tc.fileIdx})
 			if n, active := o.countsForTest(); n != 0 || active != 0 {
 				t.Errorf("unpackers=%d active=%d, want 0 and 0", n, active)
 			}

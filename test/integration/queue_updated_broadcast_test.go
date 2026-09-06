@@ -88,7 +88,7 @@ func TestIntegration_QueueUpdatedBroadcast(t *testing.T) {
 
 	apiSrv := api.New(api.Options{
 		Version:     "integration-test",
-		Queue:       a.Queue(),
+		Dispatcher:  a.Dispatcher(),
 		History:     repo,
 		Config:      apiCfg,
 		App:         a,
@@ -173,7 +173,13 @@ waitActive:
 	if a.Speed() != 0 {
 		t.Fatalf("expected speed to be 0 immediately after pause, got %v", a.Speed())
 	}
-	if a.Queue().TotalRemainingBytes() == 0 {
+	var remainingBytes int64
+	for _, row := range a.Dispatcher().List() {
+		if j, ok := a.Dispatcher().Job(row.ID); ok && j != nil && j.Progress() != nil {
+			remainingBytes += j.Progress().RemainingBytes()
+		}
+	}
+	if remainingBytes == 0 {
 		t.Fatal("expected queue to still have remaining bytes after pausing mid-download")
 	}
 

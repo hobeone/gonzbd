@@ -13,7 +13,7 @@ import (
 
 // Barrier is the single place the Written → Durable → Resolved transition
 // happens (X2). No package outside internal/durability can ack an article
-// THROUGH Queue.AckDurable, because newProof is unexported and a proof built
+// THROUGH Job.AckDurable, because newProof is unexported and a proof built
 // from outside is necessarily empty.
 //
 // Inside this package the guarantee is package-scoped rather than enforced:
@@ -56,7 +56,7 @@ type Barrier struct {
 	// An overlap is a property of the PERSISTED runs, so every checkpoint after
 	// the first re-derives the same finding from the same rows. Without a
 	// latch a job with one malformed file raises it on every cycle until the
-	// download ends — and because Queue.SetWarning holds a single string, each
+	// download ends — and because Job.SetWarning holds a single string, each
 	// re-raise also overwrites whatever warning was written in between.
 	//
 	// Keyed on job and file because Run's caller serialises per JOB, so two

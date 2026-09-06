@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
+	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestCheckpoint_SurvivesCrashMidDownload verifies that a crash mid-job
@@ -29,33 +31,34 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
-	const conns = 4
 	server := nntptest.New(t)
 
-	const n = 3
-	msgIDs := make([]string, 0, n)
-	files := make([]nzb.File, 0, n)
-	var totalBytes int64
-	for i := range n {
-		msgID := randomMsgID(t)
-		msgIDs = append(msgIDs, msgID)
-		raw := fmt.Appendf(nil, "content %d", i)
-		fileName := fmt.Sprintf("file%d.bin", i)
-		server.AddArticle(msgID, yencSinglePart(fileName, raw))
-		files = append(files, nzb.File{
-			Subject:  fmt.Sprintf(`"%s" yEnc (1/1)`, fileName),
-			Articles: []nzb.Article{{ID: msgID, Bytes: len(raw), Number: 1}},
-			Bytes:    int64(len(raw)),
-		})
-		totalBytes += int64(len(raw))
+	// Three 1-article files: 0, 1, 2.
+	// We will stall article 1 on the server so 0 and 2 complete, then crash.
+	msgIDs := make([]string, 3)
+	parts := make([][]byte, 3)
+	files := make([]nzb.File, 3)
+	for i := range 3 {
+		msgIDs[i] = randomMsgID(t)
+		parts[i] = []byte(fmt.Sprintf("part-%d-payload-padding-data", i))
+		filename := fmt.Sprintf("file%d.bin", i)
+		server.AddArticle(msgIDs[i], yencSinglePart(filename, parts[i]))
+		files[i] = nzb.File{
+			Subject:  filename,
+			Bytes:    int64(len(parts[i])),
+			Articles: []nzb.Article{{ID: msgIDs[i], Bytes: len(parts[i]), Number: 1}},
+		}
 	}
 
-	// Stall article 1 mid-download.
+	// Article 1 stalls — worker holds the connection open, no complete event arrives.
 	server.InjectFailure(msgIDs[1], nntptest.FailureStall)
 
-	const checkInterval = 50 * time.Millisecond
-	srvCfg := server.ServerConfig("scenario-checkpoint", conns)
-	srvCfg.Timeout = 60 // Ensure stalled read outlasts crash-and-restart polling window.
+	// Checkpoint interval must be short enough to reliably save before crash.
+	const checkInterval = 20 * time.Millisecond
+
+	srvCfg := server.ServerConfig("srv", 2)
+	srvCfg.Timeout = 120 // stall must outlast the test
+
 	cfg := testConfig(
 		downloadDir,
 		completeDir,
@@ -74,74 +77,93 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	_, cancel1 := startAppAndDrain(t, a1)
 
 	parsed := &nzb.NZB{Files: files}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "crash-recovery", Filename: "crash.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := a1.Queue().Add(job); err != nil {
-		t.Fatalf("a1.Queue().Add: %v", err)
+	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "crash-recovery"})
+	hdr.Filename = "crash.nzb"
+	if err := a1.AddJob(t.Context(), j, hdr, []byte("<nzb/>"), false); err != nil {
+		t.Fatalf("a1.AddJob: %v", err)
 	}
 
 	// Wait until stall has fired and the state ON DISK is the one this test
 	// means to crash into: files 0 and 2 finished and marked complete, file 1
 	// still outstanding.
-	//
-	// The Complete flags are part of the condition, and they have to be
-	// checked separately from the article bits because the two are no longer
-	// written by one statement. Article resolution is DERIVED from
-	// durable_runs, which the barrier writes inside the finalize; the Complete
-	// flag lives on job_files, which the queue save writes afterwards. So a
-	// probe that watched only the article bits would fire one write earlier
-	// than it used to and pick a crash point where a file has every article
-	// resolved and no Complete flag.
-	//
-	// That window is not new — the old shape committed the same claim in
-	// file_extents inside the same finalize — and it is no longer unrecoverable
-	// either: Application.completeStrandedFiles finishes the interrupted
-	// finalize on the next start (durability-contract.md, limitation 6). The
-	// probe stays tight anyway, because this test is about the RE-FETCH after a
-	// crash and landing in the repair path instead would exercise something
-	// else while still going green.
 	if !waitUntil(5*time.Second, func() bool {
 		if server.StallCount() < 1 {
 			return false
 		}
-		store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
-		q, err := queue.Load(filepath.Join(adminDir, "queue"), queue.WithStore(store))
+		jobInst, ok := a1.Dispatcher().Job(j.ID())
+		if !ok {
+			return false
+		}
+		p := jobInst.Progress()
+		if !p.ArticleDone(0) || p.ArticleDone(1) || !p.ArticleDone(2) {
+			return false
+		}
+		runs, err := durability.NewSQLiteRunStore(repo.DB()).ForJob(t.Context(), j.ID())
 		if err != nil {
 			return false
 		}
-		snap := q.SnapshotJob(job.ID)
-		if snap == nil {
+		var has0, has2 bool
+		for _, r := range runs {
+			if r.FileIdx == 0 {
+				has0 = true
+			}
+			if r.FileIdx == 2 {
+				has2 = true
+			}
+		}
+		if !has0 || !has2 {
 			return false
 		}
-		p := snap.Progress()
-		return p.ArticleDone(0) && !p.ArticleDone(1) && p.ArticleDone(2) &&
-			p.FileComplete(0) && p.FileComplete(2) && !p.FileComplete(1)
+		var c0, c2 int
+		_ = repo.DB().QueryRowContext(t.Context(),
+			`SELECT complete FROM job_files WHERE job_id = ? AND file_index = 0`, j.ID()).Scan(&c0)
+		_ = repo.DB().QueryRowContext(t.Context(),
+			`SELECT complete FROM job_files WHERE job_id = ? AND file_index = 2`, j.ID()).Scan(&c2)
+		return c0 == 1 && c2 == 1
 	}) {
-		t.Fatal("timed out waiting for checkpoint on disk to capture mid-download state")
+		jobInst, _ := a1.Dispatcher().Job(j.ID())
+		var p0, p1, p2 bool
+		if jobInst != nil {
+			p := jobInst.Progress()
+			p0, p1, p2 = p.ArticleDone(0), p.ArticleDone(1), p.ArticleDone(2)
+		}
+		runs, _ := durability.NewSQLiteRunStore(repo.DB()).ForJob(t.Context(), j.ID())
+		t.Fatalf("timed out waiting for checkpoint on disk to capture mid-download state: stalls=%d p0=%v p1=%v p2=%v f0=%d f1=%d f2=%d runs=%+v",
+			server.StallCount(), p0, p1, p2,
+			server.FetchCount(msgIDs[0]), server.FetchCount(msgIDs[1]), server.FetchCount(msgIDs[2]), runs)
 	}
 
 	// Simulate an ungraceful hard crash: stop downloader and assembler workers
 	// first (so in-flight events are delivered while watchCompletions is running),
 	// then cancel the application context. We deliberately do NOT call a1.Shutdown()
-	// so queue.Save() is never invoked, preserving true no-flush hard-crash semantics.
+	// so no quiet shutdown flush runs, preserving true no-flush hard-crash semantics.
 	a1.ForceStopWorkers()
 	cancel1()
 
 	// Verify on disk: Articles 0 and 2 are durably marked Done, while Article 1 is NOT Done.
-	diskQ := loadTestQueue(t, repo, adminDir)
-	snap := diskQ.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job missing from on-disk queue after crash")
+	runs, err := durability.NewSQLiteRunStore(repo.DB()).ForJob(t.Context(), j.ID())
+	if err != nil {
+		t.Fatalf("load runs from disk: %v", err)
 	}
-	if !snap.Progress().ArticleDone(0) {
+	var has0, has1, has2 bool
+	for _, r := range runs {
+		if r.FileIdx == 0 {
+			has0 = true
+		}
+		if r.FileIdx == 1 {
+			has1 = true
+		}
+		if r.FileIdx == 2 {
+			has2 = true
+		}
+	}
+	if !has0 {
 		t.Fatal("expected Article 0 to be durably marked Done on disk after crash")
 	}
-	if snap.Progress().ArticleDone(1) {
+	if has1 {
 		t.Fatal("expected Article 1 to NOT be marked Done on disk after crash")
 	}
-	if !snap.Progress().ArticleDone(2) {
+	if !has2 {
 		t.Fatal("expected Article 2 to be durably marked Done on disk after crash")
 	}
 
@@ -161,13 +183,14 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 			t.Errorf("a2.Shutdown: %v", err)
 		}
 	})
+
 	if err := a2.Start(ctx2); err != nil {
 		t.Fatalf("a2.Start: %v", err)
 	}
 	go drainAny(ctx2, a2.JobComplete())
 	go drainAny(ctx2, a2.PostProcComplete())
 
-	waitForHistoryAndQueueCleanup(t, repo, a2, job.ID)
+	waitForHistoryAndQueueCleanup(t, repo, a2, j.ID())
 
 	if c := server.FetchCount(msgIDs[0]); c != 1 {
 		t.Errorf("expected msgID 0 to be fetched exactly once, got %d", c)
@@ -207,10 +230,6 @@ func (s *crashStage) Run(ctx context.Context, _ *postproc.Job) error {
 		default:
 		}
 		// Block until the application context is ungracefully cancelled.
-		// In post-processing, returning an error only logs a warning and allows
-		// downstream stages to proceed. By blocking on ctx.Done(), we simulate an
-		// abrupt process kill mid-stage where onJobDone is never reached, leaving
-		// PostProc=true in queue.json.gz for startup recovery.
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -219,9 +238,7 @@ func (s *crashStage) Run(ctx context.Context, _ *postproc.Job) error {
 
 // TestCheckpoint_SurvivesCrashMidPostProc verifies mid-post-processing crash
 // recovery by injecting a custom stage chain that blocks on its first run,
-// simulating an ungraceful crash. Upon restart, Application.Start rescans the
-// queue, sees PostProc == true, and re-enqueues the job to the post-processor,
-// which restarts its stage chain from the beginning (stages[0]).
+// simulating an ungraceful crash.
 func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
@@ -236,11 +253,7 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	seed := newSeedQueue(t, repo, adminDir)
-	seedCompletedJob(t, seed, jobID, "recovery-mid-pp", true)
-	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("seed.Save: %v", err)
-	}
+	seedCompletedJob(t, repo, adminDir, jobID, "recovery-mid-pp", job.Repairing)
 
 	cfg := testConfig(
 		downloadDir,
@@ -287,18 +300,28 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 
 	// Simulate an ungraceful hard crash: stop downloader and assembler workers
 	// first, then cancel the application context. We deliberately do NOT call
-	// a1.Shutdown() so queue.Save() is never invoked.
+	// a1.Shutdown() so no quiet shutdown flush runs.
 	a1.ForceStopWorkers()
 	cancel1()
 
-	// Verify on-disk queue state after crash: job must still exist and have PostProc == true.
-	diskQ := loadTestQueue(t, repo, adminDir)
-	snap := diskQ.SnapshotJob(jobID)
-	if snap == nil {
-		t.Fatal("job missing from on-disk queue after crash")
+	// Verify on-disk queue state after crash: job must still exist in dispatch_jobs.
+	store := dispatchstore.New(repo.DB())
+	rows, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
 	}
-	if !snap.PostProc {
-		t.Fatal("expected PostProc=true on disk after crash, got false")
+	var found bool
+	for _, r := range rows {
+		if r.ID == jobID {
+			found = true
+			if r.State.State != job.Repairing {
+				t.Fatalf("expected state Repairing on disk after crash, got %v", r.State.State)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("job missing from on-disk queue after crash")
 	}
 
 	// Attempt 2: Restart application with the same stage chain.

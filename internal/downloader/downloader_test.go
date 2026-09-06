@@ -14,11 +14,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
@@ -268,38 +264,6 @@ func testServer(t *testing.T, name, addr string, opts ...func(*config.ServerConf
 	return NewServer(cfg)
 }
 
-// makeJobWithArticles builds a one-file job whose articles carry the
-// given Message-IDs and a trivial byte size.
-func makeJobWithArticles(t *testing.T, msgIDs []string) *queue.Job {
-	t.Helper()
-	parsed := &nzb.NZB{
-		Meta:   map[string][]string{"title": {"test"}},
-		Groups: []string{"alt.binaries.test"},
-		AvgAge: time.Unix(1700000000, 0),
-	}
-	file := nzb.File{
-		Subject: "test.bin",
-		Date:    time.Unix(1700000000, 0),
-	}
-	for i, id := range msgIDs {
-		file.Articles = append(file.Articles, nzb.Article{
-			ID:     id,
-			Bytes:  100,
-			Number: i + 1,
-		})
-		file.Bytes += 100
-	}
-	parsed.Files = []nzb.File{file}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename: "test.nzb",
-		Priority: constants.NormalPriority,
-	}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	return job
-}
-
 // collect reads up to n results from ch or errors after timeout.
 func collect(t *testing.T, ch <-chan *ArticleResult, n int, timeout time.Duration) []*ArticleResult {
 	t.Helper()
@@ -323,14 +287,12 @@ func TestDownloaderHappyPath(t *testing.T) {
 	ms.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b"))))
 	ms.addArticle("c@h", string(mocknntp.EncodeYEnc("c.bin", []byte("body-c"))))
 
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "primary", ms.addr)
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -353,7 +315,7 @@ func TestDownloaderHappyPath(t *testing.T) {
 				continue
 			}
 			got[r.MessageID] = string(r.Data)
-			ackDone(t, q, r.JobID, r.MessageID)
+			ackDone(t, disp, r.JobID, r.MessageID)
 		case <-deadline:
 			t.Fatalf("timeout waiting for completions; got=%d", len(got))
 		}
@@ -375,16 +337,14 @@ func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
 	ms.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b"))))
 
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"a@h", "b@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h", "b@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "primary", ms.addr, func(c *config.ServerConfig) {
 		c.Connections = 1
 	})
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -395,7 +355,7 @@ func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 		if r.Err != nil {
 			t.Fatalf("unexpected err for %s: %v", r.MessageID, r.Err)
 		}
-		ackDone(t, q, r.JobID, r.MessageID)
+		ackDone(t, disp, r.JobID, r.MessageID)
 	}
 
 	// After all articles are successfully processed, tryList and
@@ -436,12 +396,13 @@ func TestDownloaderFallbackServer(t *testing.T) {
 	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))
 	backup.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b-backup"))))
 
-	q := queue.New()
-	_ = q.Add(makeJobWithArticles(t, []string{"a@h", "b@h"}))
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h", "b@h"})
+	addTestJob(t, disp, j, m)
 
 	srvPrimary := testServer(t, "primary", primary.addr)
 	srvBackup := testServer(t, "backup", backup.addr)
-	d := New(q, []*Server{srvPrimary, srvBackup}, nil, Options{}, nil)
+	d := New(disp, []*Server{srvPrimary, srvBackup}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -501,12 +462,13 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 	backup := newMockNNTP(t)
 	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))
 
-	q := queue.New()
-	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 
 	srvPrimary := testServer(t, "primary", primary.addr)
 	srvBackup := testServer(t, "backup", backup.addr)
-	d := New(q, []*Server{srvPrimary, srvBackup}, nil, Options{}, nil)
+	d := New(disp, []*Server{srvPrimary, srvBackup}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -559,8 +521,8 @@ func TestDownloaderPauseResume(t *testing.T) {
 	ms := newMockNNTP(t)
 	ms.addArticle("p@h", string(mocknntp.EncodeYEnc("p.bin", []byte("body-p"))))
 
-	q := queue.New()
-	d := New(q, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
 	d.Pause()
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -568,7 +530,8 @@ func TestDownloaderPauseResume(t *testing.T) {
 	defer func() { _ = d.Stop() }()
 
 	// Add work while paused; nothing should be fetched.
-	_ = q.Add(makeJobWithArticles(t, []string{"p@h"}))
+	j, m := makeJobWithArticles(t, []string{"p@h"})
+	addTestJob(t, disp, j, m)
 
 	select {
 	case r := <-d.Completions():
@@ -600,12 +563,12 @@ func TestDownloaderPerJobPauseResume(t *testing.T) {
 			fmt.Sprintf("f%d.bin", i), fmt.Appendf(nil, "body-%d", i))))
 	}
 
-	q := queue.New()
-	job := makeJobWithArticles(t, ids)
-	_ = q.Add(job)
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, ids)
+	addTestJob(t, disp, j, m)
 
 	// Single connection to serialize fetches.
-	d := New(q, []*Server{testServer(t, "s", ms.addr, func(c *config.ServerConfig) {
+	d := New(disp, []*Server{testServer(t, "s", ms.addr, func(c *config.ServerConfig) {
 		c.Connections = 1
 		c.PipeliningRequests = 1
 	})}, nil, Options{}, nil)
@@ -624,7 +587,7 @@ func TestDownloaderPerJobPauseResume(t *testing.T) {
 	collected := 2
 
 	// Pause the specific job.
-	if err := q.Pause(job.ID); err != nil {
+	if err := disp.PauseJob(j.ID()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 
@@ -653,7 +616,7 @@ doneDrain:
 	t.Logf("expecting %d articles after resume", remaining)
 
 	// Resume the job. Remaining articles should now be fetched.
-	if err := q.Resume(job.ID); err != nil {
+	if err := disp.ResumeJob(j.ID()); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 
@@ -675,15 +638,16 @@ func TestDownloaderDialFailure(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	q := queue.New()
-	_ = q.Add(makeJobWithArticles(t, []string{"x@h", "y@h"}))
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"x@h", "y@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "dead", addr, func(c *config.ServerConfig) {
 		c.Connections = 2
 		c.Optional = true
 		c.Required = false
 	})
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -716,15 +680,16 @@ func TestDownloaderAuth(t *testing.T) {
 	ms := newMockNNTP(t, withAuth("alice", "secret"))
 	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
 
-	q := queue.New()
-	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "auth", ms.addr, func(c *config.ServerConfig) {
 		c.Username = "alice"
 		c.Password = "secret"
 		c.Connections = 1
 	})
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -744,14 +709,15 @@ func TestDownloaderGracefulShutdown(t *testing.T) {
 	for i := range 10 {
 		ms.addArticle(fmt.Sprintf("a%d@h", i), string(mocknntp.EncodeYEnc("a.bin", fmt.Appendf(nil, "body-%d", i))))
 	}
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	ids := make([]string, 10)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("a%d@h", i)
 	}
-	_ = q.Add(makeJobWithArticles(t, ids))
+	j, m := makeJobWithArticles(t, ids)
+	addTestJob(t, disp, j, m)
 
-	d := New(q, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
+	d := New(disp, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -795,10 +761,11 @@ func TestDownloaderSetSpeedLimit(t *testing.T) {
 	ms := newMockNNTP(t)
 	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
 
-	q := queue.New()
-	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 
-	d := New(q, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
+	d := New(disp, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -818,15 +785,16 @@ func TestDownloaderSetSpeedLimit(t *testing.T) {
 func TestDownloaderNewAcceptsEmptyServers(t *testing.T) {
 	// An empty server list produces a valid downloader that starts
 	// and stops cleanly but dispatches nothing.
-	q := queue.New()
-	d := New(q, nil, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start with no servers: %v", err)
 	}
 	// Add work — nothing should be dispatched since there are no servers.
 	// Nothing to wait for: with no servers the dispatcher has no work path,
 	// so Stop can be called immediately.
-	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, disp, j, m)
 	if err := d.Stop(); err != nil {
 		t.Errorf("Stop: %v", err)
 	}
@@ -834,7 +802,7 @@ func TestDownloaderNewAcceptsEmptyServers(t *testing.T) {
 
 func TestDownloaderDoubleStart(t *testing.T) {
 	ms := newMockNNTP(t)
-	d := New(queue.New(), []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
+	d := New(newTestDispatcher(t), []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -855,16 +823,16 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 		ms.addArticle(msgid, string(mocknntp.EncodeYEnc("a.bin", []byte("body"))))
 	}
 
-	q := queue.New()
-	job := makeJobWithArticles(t, articles)
-	_ = q.Add(job)
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, articles)
+	addTestJob(t, disp, j, m)
 
 	srv := testServer(t, "pipe", ms.addr, func(c *config.ServerConfig) {
 		c.Connections = 1
 		c.PipeliningRequests = 5
 	})
 
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -878,7 +846,7 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 			if res.Err != nil {
 				t.Errorf("unexpected error for %s: %v", res.MessageID, res.Err)
 			}
-			ackDone(t, q, res.JobID, res.MessageID)
+			ackDone(t, disp, res.JobID, res.MessageID)
 		}
 		close(done)
 	}()
@@ -905,7 +873,7 @@ func TestDownloaderStart_SkipsDisabledServers(t *testing.T) {
 		c.Enable = false
 	})
 
-	d := New(queue.New(), []*Server{enabled, disabled}, nil, Options{}, nil)
+	d := New(newTestDispatcher(t), []*Server{enabled, disabled}, nil, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -927,7 +895,7 @@ func TestDownloaderStart_SkipsDisabledServers(t *testing.T) {
 
 func TestConnActivity_SetAndClear(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	srv := NewServer(config.ServerConfig{
 		Name:        "test-srv",
 		Host:        "news.example.com",
@@ -936,7 +904,7 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 		Enable:      true,
 		SSL:         true,
 	})
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	wid := "test-srv#0"
 
@@ -992,7 +960,7 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 
 func TestServerStatus_SnapshotFields(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	srv := NewServer(config.ServerConfig{
 		Name:        "primary",
 		Host:        "news.example.com",
@@ -1007,7 +975,7 @@ func TestServerStatus_SnapshotFields(t *testing.T) {
 	srv.RecordGoodConnection()
 	srv.RecordBadConnection()
 
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	// Simulate one connection active.
 	d.setConnActivity("primary#1", &articleRequest{
@@ -1073,7 +1041,7 @@ func TestServerStatus_SnapshotFields(t *testing.T) {
 
 func TestServerStatus_PenaltyField(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	srv := NewServer(config.ServerConfig{
 		Name:        "penalized",
 		Host:        "slow.example.com",
@@ -1083,7 +1051,7 @@ func TestServerStatus_PenaltyField(t *testing.T) {
 	})
 	srv.ApplyPenalty(10 * time.Minute)
 
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 	snaps := d.ServerStatus()
 	if len(snaps) != 1 {
 		t.Fatalf("len(snaps) = %d; want 1", len(snaps))
@@ -1099,18 +1067,18 @@ func TestServerStatus_PenaltyField(t *testing.T) {
 func TestNew_CompletionsBufferDefault(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	d := New(q, nil, nil, Options{CompletionsBuffer: 0}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{CompletionsBuffer: 0}, nil)
 	if cap(d.completions) != 256 {
 		t.Errorf("cap(completions) = %d, want 256", cap(d.completions))
 	}
 
-	d2 := New(q, nil, nil, Options{CompletionsBuffer: -10}, nil)
+	d2 := New(disp, nil, nil, Options{CompletionsBuffer: -10}, nil)
 	if cap(d2.completions) != 256 {
 		t.Errorf("cap(completions) = %d, want 256", cap(d2.completions))
 	}
 
-	d3 := New(q, nil, nil, Options{CompletionsBuffer: 100}, nil)
+	d3 := New(disp, nil, nil, Options{CompletionsBuffer: 100}, nil)
 	if cap(d3.completions) != 100 {
 		t.Errorf("cap(completions) = %d, want 100", cap(d3.completions))
 	}
@@ -1119,18 +1087,18 @@ func TestNew_CompletionsBufferDefault(t *testing.T) {
 func TestNew_PerServerQueueDefault(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	srv := fakeSrv("s1", 0, true)
 	srv.cfg.Connections = 3
 	srv.cfg.PipeliningRequests = 4
 
-	d := New(q, []*Server{srv}, nil, Options{PerServerQueue: 0}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{PerServerQueue: 0}, nil)
 	// Expected: 2 * 3 * 4 = 24
 	if cap(d.workCh["s1"]) != 24 {
 		t.Errorf("cap(workCh[s1]) = %d, want 24", cap(d.workCh["s1"]))
 	}
 
-	d2 := New(q, []*Server{srv}, nil, Options{PerServerQueue: 10}, nil)
+	d2 := New(disp, []*Server{srv}, nil, Options{PerServerQueue: 10}, nil)
 	if cap(d2.workCh["s1"]) != 10 {
 		t.Errorf("cap(workCh[s1]) = %d, want 10", cap(d2.workCh["s1"]))
 	}
@@ -1139,8 +1107,8 @@ func TestNew_PerServerQueueDefault(t *testing.T) {
 func TestPauseBeforeStart(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	d := New(q, nil, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{}, nil)
 	// Should not panic or crash
 	d.Pause()
 	d.Resume()
@@ -1149,7 +1117,7 @@ func TestPauseBeforeStart(t *testing.T) {
 func TestServerStatus_MeterFields(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	srv := NewServer(config.ServerConfig{
 		Name:        "primary",
 		Host:        "news.example.com",
@@ -1158,7 +1126,7 @@ func TestServerStatus_MeterFields(t *testing.T) {
 	})
 
 	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
-	d := New(q, []*Server{srv}, meter, Options{}, nil)
+	d := New(disp, []*Server{srv}, meter, Options{}, nil)
 
 	// Record some bytes on the meter.
 	meter.Record("primary", 1000)
@@ -1174,14 +1142,14 @@ func TestServerStatus_MeterFields(t *testing.T) {
 }
 
 func TestDownloader_OnJobHopelessOption(t *testing.T) {
-	q := queue.New()
+	disp := newTestDispatcher(t)
 	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
 
 	called := false
 	cb := func(jobID string) {
 		called = true
 	}
-	d := New(q, nil, meter, Options{
+	d := New(disp, nil, meter, Options{
 		OnJobHopeless: cb,
 	}, nil)
 
@@ -1197,8 +1165,8 @@ func TestDownloader_OnJobHopelessOption(t *testing.T) {
 func TestResume_CancelsPreviousContext(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	d := New(q, nil, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{}, nil)
 	d.Resume() // Initial resume sets pauseCtx
 	d.pauseMu.RLock()
 	oldCtx := d.pauseCtx
@@ -1217,8 +1185,8 @@ func TestResume_CancelsPreviousContext(t *testing.T) {
 func TestSignalDispatch_Delivers(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	d := New(q, nil, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{}, nil)
 
 	d.signalDispatch()
 
@@ -1235,8 +1203,8 @@ func TestSignalDispatch_Delivers(t *testing.T) {
 func TestSignalDispatch_CoalescesAndDoesNotBlock(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	d := New(q, nil, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{}, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -1268,8 +1236,8 @@ func TestSetConnConnected_TogglesActivityAndHasActiveConnections(t *testing.T) {
 	t.Parallel()
 
 	srv := NewServer(config.ServerConfig{Name: "s1", Connections: 1, Enable: true})
-	q := queue.New()
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	workerID := "s1#0"
 	if d.hasActiveConnections() {
@@ -1292,8 +1260,8 @@ func TestSetConnConnected_TogglesActivityAndHasActiveConnections(t *testing.T) {
 func TestSetConnConnected_UnknownWorkerIsNoop(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New()
-	d := New(q, nil, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, nil, nil, Options{}, nil)
 
 	d.setConnConnected("no-such-worker#0", true) // must not panic
 
@@ -1318,8 +1286,8 @@ func TestCheckExpiredPenalties(t *testing.T) {
 	stillPenalized.RecordBadConnection()
 	stillPenalized.ApplyPenalty(time.Hour)
 
-	q := queue.New()
-	d := New(q, []*Server{expired, stillPenalized}, nil, Options{}, nil)
+	disp := newTestDispatcher(t)
+	d := New(disp, []*Server{expired, stillPenalized}, nil, Options{}, nil)
 
 	d.checkExpiredPenalties()
 
@@ -1354,13 +1322,11 @@ func TestRun_DispatchesOnEveryWakeupAndStopsOnCancel(t *testing.T) {
 	t.Parallel()
 
 	ms := newMockNNTP(t)
-	q := queue.New()
-	job := makeJobWithArticles(t, []string{"r1@h", "r2@h"})
-	if err := q.Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
-	}
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, []string{"r1@h", "r2@h"})
+	addTestJob(t, disp, j, m)
 	srv := testServer(t, "s1", ms.addr)
-	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -1371,7 +1337,7 @@ func TestRun_DispatchesOnEveryWakeupAndStopsOnCancel(t *testing.T) {
 
 	// dispatchReady is the wakeup a finished connection worker raises. One
 	// article must land on the server's work channel because of it.
-	d.signalDispatch()
+	d.Wake()
 	select {
 	case req := <-d.workCh["s1"]:
 		if req.messageID != "r1@h" && req.messageID != "r2@h" {
@@ -1389,5 +1355,30 @@ func TestRun_DispatchesOnEveryWakeupAndStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return on context cancellation; Stop would hang on it")
+	}
+}
+
+func TestDownloader_CancelJob(t *testing.T) {
+	t.Parallel()
+
+	d := &Downloader{
+		tracker: newDispatchTracker(),
+	}
+
+	key := articleKey{jobID: "j1", artIdx: 0}
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked(key)
+	d.tracker.Unlock()
+
+	_, inFlightLen := d.tracker.Len()
+	if inFlightLen != 1 {
+		t.Fatalf("in-flight = %d, want 1", inFlightLen)
+	}
+
+	d.CancelJob("j1")
+
+	_, inFlightLen = d.tracker.Len()
+	if inFlightLen != 0 {
+		t.Errorf("after CancelJob, in-flight = %d, want 0", inFlightLen)
 	}
 }

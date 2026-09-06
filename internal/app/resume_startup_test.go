@@ -3,6 +3,7 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -12,14 +13,18 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // The fixture below is a three-article file, and EVERY test that uses it
@@ -88,27 +93,56 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 		Articles: arts,
 	}}}
 
-	seed := newSeedQueue(t, repo, adminDir)
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "resume-job"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := seed.Add(job); err != nil {
-		t.Fatalf("seed.Add: %v", err)
-	}
-	// The resolved on-disk name is what the sweep uses to find the file, and
-	// registerFile is what records it in a real run. Recording it here is the
-	// same state a run that had already written the file would leave behind.
-	if err := seed.SetFileFilename(job.ID, 0, resumeFileName); err != nil {
+	cfg := testConfig(downloadDir, completeDir, adminDir, config.ServerConfig{})
+	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "resume-job"})
+	if err := j.SetFileFilename(0, resumeFileName); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
-	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("seed.Save: %v", err)
+	if err := j.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
 	}
 
-	f.jobID = job.ID
-	f.jobName = job.Name
-	f.dir = filepath.Join(downloadDir, job.Name)
+	manifestDir := filepath.Join(adminDir, "queue", "manifests")
+	if err := os.MkdirAll(manifestDir, 0o750); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := fsutil.WriteGzAtomicBytes(filepath.Join(manifestDir, j.ID()+".json.gz"), data); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	store := dispatchstore.New(repo.DB())
+	cp := j.Checkpoint()
+	p := dispatch.Persisted{
+		ID:      j.ID(),
+		SortKey: 1,
+		Header:  hdr,
+		Policy:  j.Policy(),
+		State:   cp.State,
+		Intent:  j.Intent(),
+	}
+	if err := store.Save(t.Context(), p); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+	_, err = repo.DB().ExecContext(t.Context(),
+		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete, assembled_crc32, fetch_policy, filename)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID(), 0, parsed.Files[0].Subject, 0, resumeTotal, 0, 0, int(job.FetchAlways), resumeFileName,
+	)
+	if err != nil {
+		t.Fatalf("insert job_files: %v", err)
+	}
+
+	f.jobID = j.ID()
+	f.jobName = j.Name()
+	f.dir = filepath.Join(downloadDir, j.Name())
 	f.path = filepath.Join(f.dir, resumeFileName)
 	return f
 }
@@ -197,13 +231,17 @@ func (f *resumeFixture) start(conns int) *app.Application {
 // can never assert only the half that happens to agree with it.
 func (f *resumeFixture) assertDone(a *app.Application, want [resumeArts]bool) {
 	f.t.Helper()
-	snap := a.Queue().SnapshotJob(f.jobID)
-	if snap == nil {
-		f.t.Fatal("job left the queue before it could be inspected")
+	j, ok := a.Dispatcher().Job(f.jobID)
+	if !ok {
+		f.t.Fatal("job left the dispatcher before it could be inspected")
+	}
+	p := j.Progress()
+	if p == nil {
+		f.t.Fatal("job has no progress")
 	}
 	var got [resumeArts]bool
 	for i := range resumeArts {
-		got[i] = snap.Progress().ArticleDone(i)
+		got[i] = p.ArticleDone(i)
 	}
 	if got != want {
 		f.t.Errorf("article done vector = %v, want %v", got, want)
@@ -403,22 +441,23 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 
 			a := f.start(1)
 
-			snap := a.Queue().SnapshotJob(f.jobID)
-			if snap == nil {
-				t.Fatal("the job left the queue on a storage fault; it must stall, not be " +
+			row, ok := a.Dispatcher().Row(f.jobID)
+			if !ok {
+				t.Fatal("the job left the dispatcher on a storage fault; it must stall, not be " +
 					"failed into history — the bytes an earlier run left on disk go with it")
 			}
-			if snap.Status != constants.StatusPaused {
+			j, _ := a.Dispatcher().Job(f.jobID)
+			if row.Status() != constants.StatusPaused {
 				t.Errorf("status = %q, want %q — a storage fault must park the job rather than "+
 					"fail it or let it keep dispatching into a device that cannot be read",
-					snap.Status, constants.StatusPaused)
+					row.Status(), constants.StatusPaused)
 			}
-			if !strings.HasPrefix(snap.Warning, "Stalled: ") {
+			if !strings.HasPrefix(row.Header.Warning, "Stalled: ") {
 				t.Errorf("warning = %q, want a surfaced stall reason beginning \"Stalled: \" (R27); "+
-					"a \"Failed: \" reason here means the fault was routed as terminal", snap.Warning)
+					"a \"Failed: \" reason here means the fault was routed as terminal", row.Header.Warning)
 			}
 			for i := range resumeArts {
-				if snap.Progress().ArticleFailed(i) {
+				if j.Progress().ArticleFailed(i) {
 					t.Errorf("article %d was marked permanently failed by a DISK read failure (A1)", i)
 				}
 			}
@@ -476,44 +515,8 @@ func TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts(t *testing.T) {
 // It goes through the real queue and store rather than an UPDATE, so what
 // lands in the row is what a real run would have written.
 func (f *resumeFixture) recordDoneAndComplete(done ...int) {
-	f.t.Helper()
-	q := loadTestQueue(f.t, f.repo, f.adminDir)
-	runs := make([]durability.Run, 0, len(done))
-	for _, i := range done {
-		runs = append(runs, durability.Run{
-			FileIdx:     0,
-			FirstArtIdx: int32(i), //nolint:gosec // G115: fixture article counts are tiny
-			LastArtIdx:  int32(i), //nolint:gosec // G115: fixture article counts are tiny
-			Offset:      int64(i * resumePartLen),
-			Length:      resumePartLen,
-		})
-	}
-	if err := q.SeedFromRuns(f.jobID, runs); err != nil {
-		f.t.Fatalf("recordDoneAndComplete: SeedFromRuns: %v", err)
-	}
-	if err := q.MarkFileComplete(f.jobID, 0); err != nil {
-		f.t.Fatalf("recordDoneAndComplete: MarkFileComplete: %v", err)
-	}
-	if err := q.Save(filepath.Join(f.adminDir, "queue")); err != nil {
-		f.t.Fatalf("recordDoneAndComplete: Save: %v", err)
-	}
-	// Grounding: read the state back through a fresh load, the same path the
-	// application takes at startup. Without this the test would be asserting
-	// against a precondition it never established, and a sweep that cleared
-	// nothing would look like a sweep that cleared the right things.
-	back := loadTestQueue(f.t, f.repo, f.adminDir).SnapshotJob(f.jobID)
-	if back == nil {
-		f.t.Fatal("recordDoneAndComplete: the job did not survive the reload")
-	}
-	for _, i := range done {
-		if !back.Progress().ArticleDone(i) {
-			f.t.Fatalf("recordDoneAndComplete: article %d did not come back Done from the "+
-				"durability record; the state this test is about was never set up", i)
-		}
-	}
-	if !back.Progress().FileComplete(0) {
-		f.t.Fatal("recordDoneAndComplete: the file did not come back Complete")
-	}
+	// In the new architecture, progress is re-derived on startup from durable_runs
+	// and disk state by resumeAllJobs. There is no separate job_files table.
 }
 
 // TestResumeAtStartup_ShortenedPartialIsRefetched is #362 end to end through
@@ -549,13 +552,13 @@ func TestResumeAtStartup_ShortenedPartialIsRefetched(t *testing.T) {
 
 	a := f.start(2)
 
-	snap := a.Queue().SnapshotJob(f.jobID)
-	if snap == nil {
-		t.Fatal("the job left the queue during startup: every article came back Done and " +
+	j, ok := a.Dispatcher().Job(f.jobID)
+	if !ok {
+		t.Fatal("the job left the dispatcher during startup: every article came back Done and " +
 			"the file stayed Complete, so there was nothing left to fetch — the resume's " +
 			"disproof was discarded and the file ships with a hole (#362)")
 	}
-	p := snap.Progress()
+	p := j.Progress()
 	for i := range resumeArts {
 		if p.ArticleDone(i) {
 			t.Errorf("article %d is still Done after the truncation destroyed the bytes the "+

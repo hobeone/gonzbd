@@ -251,7 +251,7 @@ type Options struct {
 	//
 	// The article is permanently failed from this package's point of view —
 	// the offset comes from the server and a re-fetch yields the same one —
-	// so the caller records it with Queue.AckPermanentFailure. That is what
+	// so the caller records it with Job.MarkArticleFailed. That is what
 	// charges its bytes against the job's par2 recovery budget and releases
 	// on-demand recovery volumes. Without it the article stays Emitted, which
 	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
@@ -1670,7 +1670,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 // part total without writing anything.
 //
 // It records no ack. A permanent failure is the queue's to record via
-// AckPermanentFailure (R10), and this package no longer has an ack path in
+// Job.MarkArticleFailed (R10), and this package no longer has an ack path in
 // either direction. The dedup that keeps partsWritten from overshooting
 // TotalParts is purely local bookkeeping, and it lives on the writer with the
 // seen-sets it reads and the counter it moves — see admitPermanentFailure.

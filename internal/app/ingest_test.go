@@ -5,6 +5,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -31,7 +32,7 @@ func multiVolumeNZB() *nzb.NZB {
 				},
 			},
 			{
-				Subject: "movie.vol00+01.par2",
+				Subject: "movie.vol01+02.par2",
 				Bytes:   100,
 				Articles: []nzb.Article{
 					{ID: "p1.1@b", Bytes: 100, Number: 1},
@@ -45,21 +46,25 @@ func TestBuildIngestJob_HappyPath(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{}
 
-	job, err := BuildIngestJob(cfg, multiVolumeNZB(), "movie.nzb", types.FetchOptions{}, nil)
+	j, hdr, err := BuildIngestJob(cfg, multiVolumeNZB(), "movie.nzb", types.FetchOptions{}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if job.Filename != "movie.nzb" {
-		t.Errorf("Filename = %q, want %q", job.Filename, "movie.nzb")
+	if hdr.Filename != "movie.nzb" {
+		t.Errorf("Filename = %q, want %q", hdr.Filename, "movie.nzb")
 	}
-	if mustManifest(t, job).NumFiles() != 3 {
-		t.Errorf("NumFiles = %d, want 3", mustManifest(t, job).NumFiles())
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
 	}
-	if mustManifest(t, job).TotalBytes() != 500 {
-		t.Errorf("TotalBytes = %d, want 500", mustManifest(t, job).TotalBytes())
+	if m.NumFiles() != 3 {
+		t.Errorf("NumFiles = %d, want 3", m.NumFiles())
 	}
-	if mustManifest(t, job).RecoveryBytes() != 100 {
-		t.Errorf("Par2Bytes = %d, want 100", mustManifest(t, job).RecoveryBytes())
+	if m.TotalBytes() != 500 {
+		t.Errorf("TotalBytes = %d, want 500", m.TotalBytes())
+	}
+	if m.RecoveryBytes() != 100 {
+		t.Errorf("Par2Bytes = %d, want 100", m.RecoveryBytes())
 	}
 }
 
@@ -76,21 +81,21 @@ func TestBuildIngestJob_CategoryPriorityInherit(t *testing.T) {
 		},
 	}
 
-	job, err := BuildIngestJob(cfg, multiVolumeNZB(), "movie.nzb", types.FetchOptions{
+	_, hdr, err := BuildIngestJob(cfg, multiVolumeNZB(), "movie.nzb", types.FetchOptions{
 		PP:       types.PPInherit,
 		Priority: constants.DefaultPriority,
 	}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if job.PP != 1 {
-		t.Errorf("PP = %d, want 1 (from configured Default category)", job.PP)
+	if hdr.PP != 1 {
+		t.Errorf("PP = %d, want 1 (from configured Default category)", hdr.PP)
 	}
-	if job.Script != "custom.sh" {
-		t.Errorf("Script = %q, want %q (from configured Default category)", job.Script, "custom.sh")
+	if hdr.Script != "custom.sh" {
+		t.Errorf("Script = %q, want %q (from configured Default category)", hdr.Script, "custom.sh")
 	}
-	if job.Priority != constants.HighPriority {
-		t.Errorf("Priority = %d, want %d (from configured Default category)", job.Priority, constants.HighPriority)
+	if hdr.Priority != int(constants.HighPriority) {
+		t.Errorf("Priority = %d, want %d (from configured Default category)", hdr.Priority, constants.HighPriority)
 	}
 }
 
@@ -105,12 +110,12 @@ func TestBuildIngestJob_SanitizeOptionsApplied(t *testing.T) {
 		},
 	}
 
-	job, err := BuildIngestJob(cfg, multiVolumeNZB(), "my cool release.nzb", types.FetchOptions{}, nil)
+	j, _, err := BuildIngestJob(cfg, multiVolumeNZB(), "my cool release.nzb", types.FetchOptions{}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if job.Name != "my.cool.release" {
-		t.Errorf("Name = %q, want %q (spaces replaced per config)", job.Name, "my.cool.release")
+	if j.Name() != "my.cool.release" {
+		t.Errorf("Name = %q, want %q (spaces replaced per config)", j.Name(), "my.cool.release")
 	}
 }
 
@@ -120,28 +125,45 @@ func TestBuildIngestJob_SanitizeOptionsApplied(t *testing.T) {
 func TestBuildIngestJob_NilConfig(t *testing.T) {
 	t.Parallel()
 
-	job, err := BuildIngestJob(nil, multiVolumeNZB(), "movie.nzb", types.FetchOptions{PP: types.PPInherit}, nil)
+	_, hdr, err := BuildIngestJob(nil, multiVolumeNZB(), "movie.nzb", types.FetchOptions{PP: types.PPInherit}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if job.PP != 3 {
-		t.Errorf("PP = %d, want 3 (builtin default category fallback)", job.PP)
+	if hdr.PP != 3 {
+		t.Errorf("PP = %d, want 3 (builtin default category fallback)", hdr.PP)
 	}
 }
 
 func TestBuildIngestJob_PausedPriority(t *testing.T) {
 	t.Parallel()
 
-	job, err := BuildIngestJob(nil, multiVolumeNZB(), "movie.nzb", types.FetchOptions{
+	j, hdr, err := BuildIngestJob(nil, multiVolumeNZB(), "movie.nzb", types.FetchOptions{
 		Priority: constants.PausedPriority,
 	}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if job.Priority != constants.PausedPriority {
-		t.Errorf("Priority = %v, want %v", job.Priority, constants.PausedPriority)
+	if hdr.Priority != int(constants.PausedPriority) {
+		t.Errorf("Priority = %v, want %v", hdr.Priority, constants.PausedPriority)
 	}
-	if job.Status != constants.StatusPaused {
-		t.Errorf("Status = %v, want %v", job.Status, constants.StatusPaused)
+	if j.Intent() != job.IntentPause {
+		t.Errorf("Intent = %v, want %v", j.Intent(), job.IntentPause)
+	}
+}
+
+func TestDeriveName(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input, want string
+	}{
+		{"/path/to/movie.nzb", "movie"},
+		{"/path/to/archive.tar.gz", "archive.tar"},
+		{"/path/to/archive.tar", "archive"},
+		{"barefile", "barefile"},
+	}
+	for _, tc := range cases {
+		if got := deriveName(tc.input); got != tc.want {
+			t.Errorf("deriveName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
 	}
 }

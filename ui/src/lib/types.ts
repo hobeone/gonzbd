@@ -3,7 +3,7 @@
 
 /**
  * Whether a job's damaged content can be rebuilt from its par2 recovery
- * capacity. Mirrors queue.RepairState in internal/queue/repair.go, which is
+ * capacity. Mirrors job.RepairState in internal/job/repair.go, which is
  * the single derivation the abort gates also read.
  *
  * 'repairable' is the unsound direction of a byte-based proxy — it means "not

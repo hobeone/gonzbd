@@ -477,3 +477,30 @@ func TestPause_DoesNotTakeResourcesFromAHoldingJob(t *testing.T) {
 		t.Errorf("leases outstanding after Park = %d, want 0", got)
 	}
 }
+
+func TestQueue_SetCaps_LeaseCap_SlotCap(t *testing.T) {
+	q := New(2, 3, testClock, &stubWorkers{})
+	if got := q.LeaseCap(); got != 2 {
+		t.Errorf("LeaseCap() = %d, want 2", got)
+	}
+	if got := q.SlotCap(); got != 3 {
+		t.Errorf("SlotCap() = %d, want 3", got)
+	}
+
+	q.SetCaps(5, 7)
+	if got := q.LeaseCap(); got != 5 {
+		t.Errorf("after SetCaps(5, 7), LeaseCap() = %d, want 5", got)
+	}
+	if got := q.SlotCap(); got != 7 {
+		t.Errorf("after SetCaps(5, 7), SlotCap() = %d, want 7", got)
+	}
+
+	// Clamp to 1
+	q.SetCaps(0, -1)
+	if got := q.LeaseCap(); got != 1 {
+		t.Errorf("after SetCaps(0, -1), LeaseCap() = %d, want 1", got)
+	}
+	if got := q.SlotCap(); got != 1 {
+		t.Errorf("after SetCaps(0, -1), SlotCap() = %d, want 1", got)
+	}
+}

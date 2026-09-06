@@ -55,11 +55,11 @@ func (d *Dispatcher) tick(ctx context.Context) {
 			// Advance's branch above deliberately does NOT do this. A
 			// position Advance reached and then failed on is not one this
 			// Queue accepted, so the store keeps the last one it did.
-			d.persistIfChanged(ctx, j)
+			_ = d.persistIfChanged(ctx, j)
 			continue
 		}
-		d.launch(ctx, j)
-		d.persistIfChanged(ctx, j)
+		d.launch(j)
+		_ = d.persistIfChanged(ctx, j)
 	}
 }
 
@@ -76,12 +76,12 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // Persisted records — the job's own StateView and Intent — were taken
 // straight from Snapshot instead, which drops a Queue.mu acquisition that
 // bought this function nothing.
-func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
+func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
 	h, seq, ok := d.entryFor(j.ID())
 	if !ok {
 		// Evicted (D-B12) or removed between snapshotOrder and here: nothing
 		// left in the registry to attach a Header to.
-		return
+		return nil
 	}
 	// Snapshot for the same reason as evictCancelledNeverRun: Persisted
 	// carries only the job's own StateView and Intent, so Render's Queue.mu
@@ -95,19 +95,44 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) {
 		State:   s.State,
 		Intent:  s.Intent,
 	}
+	if ds := j.DownloadStarted(); !ds.IsZero() {
+		p.DownloadStarted = ds.Unix()
+	}
+	if df := j.DownloadFinished(); !df.IsZero() {
+		p.DownloadFinished = df.Unix()
+	}
+	p.Par2ReleaseReason = j.Par2ReleaseReason()
+	p.RecoveryBytes = j.RecoveryBytes()
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
-		return
+		return nil
 	}
-	if err := d.store.Save(ctx, p); err != nil {
+	d.storeMu.Lock()
+	d.mu.Lock()
+	if d.removing[j.ID()] > 0 || d.byID[j.ID()] == nil {
+		d.mu.Unlock()
+		d.storeMu.Unlock()
+		return nil
+	}
+	d.mu.Unlock()
+
+	if err := d.store.Save(ctx, p); err != nil { //lockio: storeMu serializes store.Save with store.Delete to prevent row resurrection
+		d.storeMu.Unlock()
 		d.logStoreError(j.ID(), err)
-		return
+		return err
 	}
+	d.storeMu.Unlock()
 	d.markWritten(p)
+	return nil
 }
 
 // evictCancelledNeverRun removes a job the user cancelled before it ever ran,
 // and reports whether THIS JOB'S PASS IS OVER — which is not the same as
 // whether the removal succeeded, and the difference was a defect.
+//
+// An unset, cancelled job must not be deregistered if an active occupier or
+// worker is still attached to it. If the job has active occupiers or is
+// launched, eviction is refused under live work and returns false so that live
+// operations are not unseated and resources are cleanly tracked.
 //
 // The bool used to mean "did I evict?", so a failed store.Delete returned
 // false and tick could not tell that case apart from "this is not a cancelled
@@ -144,7 +169,18 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 	if s.State.State != job.StateUnset || s.Intent != job.IntentCancel {
 		return false
 	}
-	if err := d.store.Delete(ctx, j.ID()); err != nil {
+
+	d.mu.Lock()
+	isLiveOrLaunched := len(d.occupancyTokens[j.ID()]) > 0 || d.launched[j.ID()] != nil
+	d.mu.Unlock()
+	if isLiveOrLaunched {
+		return false
+	}
+
+	d.storeMu.Lock()
+	err := d.store.Delete(ctx, j.ID())
+	d.storeMu.Unlock()
+	if err != nil {
 		// Leave it registered: removing it from the registry here while the
 		// store still holds the row would resurrect it at the next Start,
 		// which is worse than trying again on the next tick. Returning true
@@ -245,6 +281,9 @@ func (d *Dispatcher) isResident(id string) bool {
 func (d *Dispatcher) markResident(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.removing[id] > 0 || d.byID[id] == nil {
+		return
+	}
 	d.resident[id] = true
 }
 

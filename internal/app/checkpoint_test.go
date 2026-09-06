@@ -7,20 +7,20 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // makeCheckpointApp builds a minimal Application whose queue has one
 // article-bearing job. The checkpoint interval is set to interval so
 // tests don't need to wait 30 s.
-func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, *queue.Job, *history.Repository) {
+func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, *job.Job, dispatch.Header, *history.Repository) {
 	t.Helper()
 	// Store-backed, matching production: app.New only builds a queue Store
-	// when it is given a live repo, and the store-less path it used to take
-	// ran the whole-queue JSON engine removed in #266.
+	// when it is given a live repo.
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	// Use empty mock so all articles return 430 — the job fails fast and
@@ -54,21 +54,17 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 			Bytes: 1024,
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "checkpoint-test"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
-	}
+	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "checkpoint-test"})
 
-	return application, job, repo
+	return application, j, hdr, repo
 }
 
-// TestCheckpointFires_AfterMutation verifies that when the queue has unsaved
-// mutations (article/file state changes), the periodic ticker saves within
-// the configured interval.
+// TestCheckpointFires_AfterMutation verifies that when the checkpointer has unsaved
+// mutations, the periodic ticker saves within the configured interval.
 func TestCheckpointFires_AfterMutation(t *testing.T) {
 	t.Parallel()
 	const checkInterval = 10 * time.Millisecond
-	application, job, _ := makeCheckpointApp(t, checkInterval)
+	application, j, hdr, _ := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -77,40 +73,31 @@ func TestCheckpointFires_AfterMutation(t *testing.T) {
 	}
 	defer application.Shutdown() //nolint:errcheck
 
-	// Add the job so the queue has something to save.
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	// Add the job so the dispatcher has something to track.
+	if err := application.Dispatcher().Add(j, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
-	// Dirty the queue. RecordDownload is progress-tier, so it works whether
-	// or not the job happens to have been promoted to resident yet —
-	// MarkArticleDone would race PromoteNext and fail with ErrJobNotResident.
-	if err := application.Queue().RecordDownload(job.ID, "mock", 512); err != nil {
-		t.Fatalf("RecordDownload: %v", err)
-	}
+	// Dirty the checkpointer.
+	application.Checkpointer().Mark(j)
 
-	// Watch the dirty flag rather than the filesystem. runCheckpoint saves
-	// only when the queue is dirty, and Save clears the flag, so a
-	// dirty→clean transition is the checkpoint firing — exactly, with no
-	// dependence on mtime resolution or on which file the store happens to
-	// write. The queue index this used to stat was the JSON engine's, removed
-	// in #266.
+	// Watch the dirty flag on checkpointer.
 	deadline := time.Now().Add(20 * checkInterval)
 	for time.Now().Before(deadline) {
-		if !application.Queue().IsDirty() {
+		if application.Checkpointer().DirtyCount() == 0 {
 			return // checkpoint fired and the save landed
 		}
 		time.Sleep(checkInterval / 2)
 	}
-	t.Errorf("the queue was still dirty %v after a mutation; no checkpoint ran", 20*checkInterval)
+	t.Errorf("the checkpointer was still dirty %v after a mutation; no checkpoint ran", 20*checkInterval)
 }
 
 // TestCheckpointSkips_WhenClean verifies that when no mutations happen after
-// a save the periodic ticker does not re-write the queue index.
+// a save the periodic ticker does not re-write the job row.
 func TestCheckpointSkips_WhenClean(t *testing.T) {
 	t.Parallel()
 	const checkInterval = 10 * time.Millisecond
-	application, job, repo := makeCheckpointApp(t, checkInterval)
+	application, j, hdr, repo := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -119,31 +106,21 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 	}
 	defer application.Shutdown() //nolint:errcheck
 
-	// Pause before adding: makeCheckpointApp's mock 430s every article, so an
-	// unpaused job fails and leaves the queue for history — taking with it
-	// the row this test needs to watch.
-	application.Queue().PauseAll()
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	// Pause before adding: mock 430s every article, so an unpaused job fails
+	// and leaves the queue for history — taking with it the row this test needs to watch.
+	application.Dispatcher().Pause()
+	if err := application.Dispatcher().Add(j, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
-	// RecordDownload rather than MarkArticleDone: a paused job is
-	// non-resident, and the manifest-tier mutators correctly refuse it
-	// (#261). Per-server byte counts live in progress, which is always
-	// resident, so this dirties the queue in any residency state.
-	if err := application.Queue().RecordDownload(job.ID, "mock", 512); err != nil {
-		t.Fatalf("RecordDownload: %v", err)
-	}
+	application.Checkpointer().Mark(j)
 
-	// Wait for quiescence. The download pipeline is still failing articles
-	// in the background, each of which legitimately dirties the queue, so
-	// "clean" means clean and staying clean — five consecutive observations.
-	// This replaces a stabilization loop over the index file's mtime; the
-	// index belonged to the JSON engine removed in #266, and the dirty flag
-	// is the exact signal the checkpoint itself reads.
+	// Wait for quiescence and initial row persistence.
 	quiesceDeadline := time.Now().Add(5 * time.Second)
 	clean := 0
 	for time.Now().Before(quiesceDeadline) && clean < 5 {
-		if application.Queue().IsDirty() {
+		var s int
+		rowExists := repo.DB().QueryRowContext(t.Context(), `SELECT state FROM dispatch_jobs WHERE id = ?`, j.ID()).Scan(&s) == nil
+		if !rowExists || application.Checkpointer().DirtyCount() != 0 {
 			clean = 0
 		} else {
 			clean++
@@ -151,27 +128,29 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 		time.Sleep(checkInterval)
 	}
 	if clean < 5 {
-		t.Fatal("the queue never went quiet, so a skipped checkpoint cannot be distinguished from a busy one")
+		t.Fatal("the checkpointer never went quiet, so a skipped checkpoint cannot be distinguished from a busy one")
 	}
 
-	// Plant a value only a checkpoint would overwrite. Save's UpdateBatch
-	// rewrites every job row, so if the ticker saves while the queue is
-	// clean the sentinel disappears — an exact write-detector, where the old
-	// test could only compare mtimes and hope.
-	const sentinel = "sentinel-must-survive-a-clean-tick"
-	if _, err := repo.DB().ExecContext(t.Context(),
-		`UPDATE jobs SET name = ? WHERE id = ?`, sentinel, job.ID); err != nil {
+	// Plant a value only a checkpoint would overwrite. Checkpoint writes to
+	// dispatch_jobs table, so if the ticker saves while clean the sentinel disappears.
+	const sentinelState = 99
+	res, err := repo.DB().ExecContext(t.Context(),
+		`UPDATE dispatch_jobs SET state = ? WHERE id = ?`, sentinelState, j.ID())
+	if err != nil {
 		t.Fatalf("plant sentinel: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		t.Fatalf("plant sentinel: 0 rows updated for job %s", j.ID())
 	}
 
 	time.Sleep(10 * checkInterval)
 
-	var got string
+	var got int
 	if err := repo.DB().QueryRowContext(t.Context(),
-		`SELECT name FROM jobs WHERE id = ?`, job.ID).Scan(&got); err != nil {
+		`SELECT state FROM dispatch_jobs WHERE id = ?`, j.ID()).Scan(&got); err != nil {
 		t.Fatalf("read sentinel: %v", err)
 	}
-	if got != sentinel {
-		t.Errorf("the job row was rewritten on a clean queue (name = %q, want the sentinel); runCheckpoint is saving every tick instead of only when dirty", got)
+	if got != sentinelState {
+		t.Errorf("the job row was rewritten on a clean queue (state = %d, want sentinel %d); checkpoint is saving every tick instead of only when dirty", got, sentinelState)
 	}
 }

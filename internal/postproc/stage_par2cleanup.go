@@ -47,7 +47,7 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "par2_cleanup", "job", job.Queue.ID)
+	log = log.With("component", "par2_cleanup", "job", job.JobID())
 
 	if !s.cleanup.Load() {
 		return nil

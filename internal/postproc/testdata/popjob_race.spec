@@ -19,7 +19,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
 		var jobCancel context.CancelFunc
 		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, j.Queue.ID, jobCancel)
+		p.setBusyWithJob(true, j.JobID(), jobCancel) //lockio: q.mu -> busyMu is intentional acyclic order
 	})
 	if !ok {
 		return nil, nil, false
@@ -33,7 +33,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 		return nil, nil, false
 	}
 	jobCtx, jobCancel := context.WithCancel(p.workerCtx)
-	p.setBusyWithJob(true, job.Queue.ID, jobCancel)
+	p.setBusyWithJob(true, job.JobID(), jobCancel)
 	return job, jobCtx, true
 }
 --- end
@@ -72,7 +72,7 @@ func (p *PostProcessor) Has(jobID string) bool {
 			found = true
 			return
 		}
-		p.busyMu.Lock()
+		p.busyMu.Lock() //lockio: q.mu -> busyMu is intentional acyclic order
 		found = p.currentJobID == jobID
 		p.busyMu.Unlock()
 	})
@@ -104,7 +104,7 @@ func (p *PostProcessor) Empty() bool {
 			empty = false
 			return
 		}
-		p.busyMu.Lock()
+		p.busyMu.Lock() //lockio: q.mu -> busyMu is intentional acyclic order
 		empty = !p.busy
 		p.busyMu.Unlock()
 	})
@@ -118,3 +118,4 @@ func (p *PostProcessor) Empty() bool {
 	return !busy && p.q.Empty()
 }
 --- end
+

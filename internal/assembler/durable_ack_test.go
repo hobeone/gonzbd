@@ -578,7 +578,7 @@ func TestRelievePressureForUnknownFileIsSkippedSafely(t *testing.T) {
 // old race was a Done ack racing a Failed ack for the same article, with the
 // loser's claim winning. Both acks are gone from this package: a success is
 // reported only by appearing in Drain, and a permanent failure produces no
-// report here at all — it goes to Queue.AckPermanentFailure from the pipeline.
+// report here at all — it goes to Job.MarkArticleFailed from the pipeline.
 // With one reporter and one direction, there is no second claim to outrace.
 //
 // What that means concretely is the assertion below: a FatalErr arriving after

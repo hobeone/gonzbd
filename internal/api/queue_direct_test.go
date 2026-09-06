@@ -12,9 +12,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
 
@@ -58,45 +57,33 @@ func TestFirstIncompleteFile(t *testing.T) {
 
 	t.Run("all files complete returns empty", func(t *testing.T) {
 		t.Parallel()
-		_, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
-		ackDone(t, q, job.ID, "test-article-id-001@example.com")
-		if err := q.MarkFileComplete(job.ID, 0); err != nil {
-			t.Fatalf("MarkFileComplete: %v", err)
-		}
-		snap := q.SnapshotJob(job.ID)
-		if got := firstIncompleteFile(snap); got != "" {
+		disp := newTestAPIDispatcher(t)
+		m := makeJobManifest(t, []string{"f1.rar"}, []int64{1024}, [][]int64{{1024}}, [][]string{{"test-article-id-001@example.com"}})
+		j := job.New("j1", "job.nzb", job.Policy{})
+		_ = j.AttachContent(m)
+		_ = disp.Add(j, dispatch.Header{Name: "job.nzb", Bytes: 1024})
+		_ = j.MarkFileComplete(0)
+		if got := firstIncompleteFile(j); got != "" {
 			t.Errorf("firstIncompleteFile = %q; want empty when every file is complete", got)
 		}
 	})
 
 	t.Run("returns the first incomplete file's subject", func(t *testing.T) {
 		t.Parallel()
-		parsed := &nzb.NZB{Files: []nzb.File{
-			{Subject: "file0.rar", Bytes: 500, Articles: []nzb.Article{{ID: "a0@t", Bytes: 500, Number: 1}}},
-			{Subject: "file1.rar", Bytes: 500, Articles: []nzb.Article{{ID: "a1@t", Bytes: 500, Number: 1}}},
-		}}
-		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
-		if err != nil {
-			t.Fatalf("NewJob: %v", err)
-		}
-		q := queue.New()
-		if err := q.Add(job); err != nil {
-			t.Fatalf("Add: %v", err)
-		}
-		ackDone(t, q, job.ID, "a0@t")
-		if err := q.MarkFileComplete(job.ID, 0); err != nil {
-			t.Fatalf("MarkFileComplete: %v", err)
-		}
-		snap := q.SnapshotJob(job.ID)
-		if got := firstIncompleteFile(snap); got != "file1.rar" {
+		disp := newTestAPIDispatcher(t)
+		m := makeJobManifest(t, []string{"file0.rar", "file1.rar"}, []int64{500, 500}, [][]int64{{500}, {500}}, [][]string{{"a0@t"}, {"a1@t"}})
+		j := job.New("j2", "f.nzb", job.Policy{})
+		_ = j.AttachContent(m)
+		_ = disp.Add(j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
+		_ = j.MarkFileComplete(0)
+		if got := firstIncompleteFile(j); got != "file1.rar" {
 			t.Errorf("firstIncompleteFile = %q; want file1.rar", got)
 		}
 	})
 
 	t.Run("non-resident job returns empty rather than erroring", func(t *testing.T) {
 		t.Parallel()
-		job := newEvictedJob(t)
+		job, _ := newEvictedJob(t)
 		if got := firstIncompleteFile(job); got != "" {
 			t.Errorf("firstIncompleteFile = %q; want empty for a non-resident job", got)
 		}
@@ -110,27 +97,26 @@ func TestBuildQueueFiles(t *testing.T) {
 
 	t.Run("returns the per-file breakdown", func(t *testing.T) {
 		t.Parallel()
-		_, q := testQueueServer(t)
-		job := addLargeTestJob(t, q, 4) // 4 segments x 1 MiB
-		jobInternal := q.SnapshotJob(job.ID)
-		if jobInternal == nil {
-			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
-		}
-		m := mustManifest(t, jobInternal)
-		doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
-		ackDone(t, q, job.ID, doneIDs...)
-		snap := q.SnapshotJob(job.ID)
+		disp := newTestAPIDispatcher(t)
+		const segSize = 1024 * 1024
+		m := makeJobManifest(t, []string{"large.bin"}, []int64{4 * segSize},
+			[][]int64{{segSize, segSize, segSize, segSize}},
+			[][]string{{"s1@t", "s2@t", "s3@t", "s4@t"}})
+		j := job.New("j_large", "large.nzb", job.Policy{})
+		_ = j.AttachContent(m)
+		_ = disp.Add(j, dispatch.Header{Name: "large.nzb", Bytes: 4 * segSize})
+		ackDone(t, disp, "j_large", "s1@t", "s2@t")
 
-		files := buildQueueFiles(snap)
+		files := buildQueueFiles(j)
 		if len(files) != 1 {
 			t.Fatalf("len(files) = %d; want 1", len(files))
 		}
 		f := files[0]
-		if f.Bytes != 4*1024*1024 {
-			t.Errorf("Bytes = %d; want %d", f.Bytes, 4*1024*1024)
+		if f.Bytes != 4*segSize {
+			t.Errorf("Bytes = %d; want %d", f.Bytes, 4*segSize)
 		}
-		if f.BytesDownloaded != 2*1024*1024 {
-			t.Errorf("BytesDownloaded = %d; want %d", f.BytesDownloaded, 2*1024*1024)
+		if f.BytesDownloaded != 2*segSize {
+			t.Errorf("BytesDownloaded = %d; want %d", f.BytesDownloaded, 2*segSize)
 		}
 		if f.State != "downloading" {
 			t.Errorf("State = %q; want downloading", f.State)
@@ -142,7 +128,7 @@ func TestBuildQueueFiles(t *testing.T) {
 
 	t.Run("non-resident job returns a non-nil empty slice", func(t *testing.T) {
 		t.Parallel()
-		job := newEvictedJob(t)
+		job, _ := newEvictedJob(t)
 		got := buildQueueFiles(job)
 		if got == nil {
 			t.Fatal("buildQueueFiles returned nil; want a non-nil empty slice so JSON encodes as []")
@@ -158,7 +144,7 @@ func TestBuildQueueFiles(t *testing.T) {
 func TestQueuePauseAll_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
@@ -247,7 +233,7 @@ func TestQueueDelete_Direct(t *testing.T) {
 	t.Run("removes the matching job", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID, nil)
 		rr := httptest.NewRecorder()
@@ -287,8 +273,8 @@ func TestQueueDelete_Direct(t *testing.T) {
 func TestQueuePurge_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
-	addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "a.nzb"})
+	addTestJob(t, q, testAddOptions{Filename: "b.nzb"})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
@@ -310,13 +296,13 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 	t.Run("pauses matching jobs and logs the found one", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		// A nonexistent ID is included alongside a real one to exercise the
 		// silently-ignored not-found branch without failing the request.
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+",nonexistent", nil)
 		rr := httptest.NewRecorder()
-		s.queueSetPaused(rr, req, s.queue.Pause, "paused")
+		s.queueSetPaused(rr, req, "paused")
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
@@ -335,7 +321,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 		s, _ := testQueueServer(t)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
-		s.queueSetPaused(rr, req, s.queue.Pause, "paused")
+		s.queueSetPaused(rr, req, "paused")
 
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("status = %d; want 400", rr.Code)
@@ -346,7 +332,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 func TestQueuePauseJobs_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 	// A nonexistent ID is included alongside a real one, mirroring
 	// queueSetPaused's lenient bulk semantics (not-found IDs are silently
@@ -370,7 +356,7 @@ func TestQueuePauseJobs_Direct(t *testing.T) {
 func TestQueueResumeJobs_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -399,7 +385,7 @@ func TestQueuePriority_Direct(t *testing.T) {
 	t.Run("sets the job priority", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet,
 			"/?value="+job.ID+"&value2="+"1", nil)
@@ -433,7 +419,7 @@ func TestQueuePriority_Direct(t *testing.T) {
 	t.Run("missing value2 is a 400", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID, nil)
 		rr := httptest.NewRecorder()
 		s.queuePriority(rr, req)
@@ -452,7 +438,7 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 	t.Run("sets the PP level", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=3", nil)
 		rr := httptest.NewRecorder()
@@ -473,7 +459,7 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 	t.Run("out-of-range pp is a 400", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=5", nil)
 		rr := httptest.NewRecorder()
 		s.queueChangeOpts(rr, req)
@@ -500,7 +486,7 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s, q := testQueueServer(t)
-			job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+			job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 			req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2="+tc.pp, nil)
 			rr := httptest.NewRecorder()
 			s.queueChangeOpts(rr, req)
@@ -545,7 +531,7 @@ func TestQueueChangeCat_Direct(t *testing.T) {
 			{Name: "Default", PP: 3, Script: "", Priority: int(constants.NormalPriority)},
 			{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
 		})
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=movies", nil)
 		rr := httptest.NewRecorder()
@@ -584,7 +570,7 @@ func TestQueueChangeName_Direct(t *testing.T) {
 	t.Run("renames the job", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "original.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "original.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=NewName", nil)
 		rr := httptest.NewRecorder()
@@ -605,7 +591,7 @@ func TestQueueChangeName_Direct(t *testing.T) {
 	t.Run("missing value2 is a 400", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID, nil)
 		rr := httptest.NewRecorder()
 		s.queueChangeName(rr, req)
@@ -624,7 +610,7 @@ func TestQueueChangeScript_Direct(t *testing.T) {
 	t.Run("sets and sanitizes the script", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet,
 			"/?value="+job.ID+"&value2="+url.QueryEscape("../evil.sh"), nil)
@@ -664,7 +650,7 @@ func TestQueueJobDetail_Direct(t *testing.T) {
 	t.Run("known job returns one populated slot", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
@@ -721,7 +707,7 @@ func TestQueueJobDetail_Direct(t *testing.T) {
 
 func TestModeAddFile_Direct(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
+	s, _ := testQueueServer(t)
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -742,8 +728,8 @@ func TestModeAddFile_Direct(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	if q.Len() != 1 {
-		t.Errorf("queue len = %d; want 1", q.Len())
+	if s.Dispatcher().Len() != 1 {
+		t.Errorf("queue len = %d; want 1", s.Dispatcher().Len())
 	}
 }
 
@@ -786,7 +772,7 @@ func TestEnqueueNZBData_Direct(t *testing.T) {
 
 	t.Run("valid NZB is parsed and enqueued", func(t *testing.T) {
 		t.Parallel()
-		s, q := testQueueServer(t)
+		s, _ := testQueueServer(t)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
 		s.enqueueNZBData(rr, req, makeTestNZB(t), "direct.nzb")
@@ -794,14 +780,14 @@ func TestEnqueueNZBData_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		if q.Len() != 1 {
-			t.Errorf("queue len = %d; want 1", q.Len())
+		if s.Dispatcher().Len() != 1 {
+			t.Errorf("queue len = %d; want 1", s.Dispatcher().Len())
 		}
 	})
 
 	t.Run("unparsable NZB is a 400 and nothing is enqueued", func(t *testing.T) {
 		t.Parallel()
-		s, q := testQueueServer(t)
+		s, _ := testQueueServer(t)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
 		s.enqueueNZBData(rr, req, []byte("not an nzb"), "bad.nzb")
@@ -809,8 +795,8 @@ func TestEnqueueNZBData_Direct(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("status = %d; want 400", rr.Code)
 		}
-		if q.Len() != 0 {
-			t.Errorf("queue len = %d; want 0", q.Len())
+		if s.Dispatcher().Len() != 0 {
+			t.Errorf("queue len = %d; want 0", s.Dispatcher().Len())
 		}
 	})
 }

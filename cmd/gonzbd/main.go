@@ -36,10 +36,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dirscanner"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 	"github.com/hobeone/gonzbd/internal/web"
@@ -493,7 +494,7 @@ func buildAPIServer(cfg *config.Config, configPath string, application *app.Appl
 		Version:      Version,
 		Commit:       Commit,
 		Date:         Date,
-		Queue:        application.Queue(),
+		Dispatcher:   application.Dispatcher(),
 		History:      histRepo,
 		Config:       cfg,
 		ConfigPath:   configPath,
@@ -967,7 +968,7 @@ func resolveLogLevels(cfg *config.Config, cliOverride string) (map[string]slog.L
 // complete), the context is cancelled, or a 60-minute deadline elapses.
 // It polls GetHistory every 2s as a secondary check, covering the case
 // where PostProcComplete fired before the select loop started listening.
-func waitForCompletion(ctx context.Context, application *app.Application, job *queue.Job, log *slog.Logger) error {
+func waitForCompletion(ctx context.Context, application *app.Application, j *job.Job, log *slog.Logger) error {
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 
@@ -979,14 +980,14 @@ func waitForCompletion(ctx context.Context, application *app.Application, job *q
 		case <-ctx.Done():
 			return fmt.Errorf("interrupted: %w", ctx.Err())
 		case ppc := <-application.PostProcComplete():
-			if ppc.JobID == job.ID {
+			if ppc.JobID == j.ID() {
 				return nil
 			}
 		case <-tick.C:
 			// Secondary check: has it already reached history?
 			// This covers the case where PostProcComplete fired before we started selecting.
-			if h, err := application.GetHistory(ctx, job.ID); err == nil {
-				log.Info("job found in history", "job", job.Name, "status", h.Status)
+			if h, err := application.GetHistory(ctx, j.ID()); err == nil {
+				log.Info("job found in history", "job", j.Name(), "status", h.Status)
 				return nil
 			}
 		case <-deadline.C:
@@ -1047,49 +1048,49 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 		}
 	}()
 
-	job, rawNZB, err := loadJob(cfg, nzbPath, log)
+	j, hdr, rawNZB, err := loadJob(cfg, nzbPath, log)
 	if err != nil {
 		return fmt.Errorf("load NZB: %w", err)
 	}
-	totalFiles := job.NumFiles()
+	totalFiles := j.NumFiles()
 	if totalFiles == 0 {
 		return fmt.Errorf("NZB %s contains no usable files", nzbPath)
 	}
 
-	if err := application.AddJob(ctx, job, rawNZB, true); err != nil {
+	if err := application.AddJob(ctx, j, hdr, rawNZB, true); err != nil {
 		return fmt.Errorf("enqueue job: %w", err)
 	}
 
 	start := time.Now()
 	log.Info("download started",
-		"job", job.Name, "files", totalFiles, "bytes", job.TotalBytes())
+		"job", j.Name(), "files", totalFiles, "bytes", j.TotalBytes())
 
 	// Wait for the job to reach History (indicates post-processing is complete).
-	log.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
-	if err := waitForCompletion(ctx, application, job, log); err != nil {
+	log.Info("waiting for job to complete", "job", j.Name(), "id", j.ID())
+	if err := waitForCompletion(ctx, application, j, log); err != nil {
 		return err
 	}
 
 	duration := time.Since(start)
-	hist, err := application.GetHistory(ctx, job.ID)
+	hist, err := application.GetHistory(ctx, j.ID())
 	if err != nil {
 		return fmt.Errorf("retrieve history for summary: %w", err)
 	}
-	printSummary(job, hist, duration)
+	printSummary(j, hist, duration)
 	return nil
 }
 
 // printSummary prints the one-shot mode download summary to stdout.
-func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
+func printSummary(j *job.Job, hist *history.Entry, duration time.Duration) {
 	// The promoted scalar, which needs no resident manifest. The history
 	// fallback stays for a job that never carried one at all.
-	totalBytes := job.TotalBytes()
+	totalBytes := j.TotalBytes()
 	if totalBytes == 0 && hist != nil {
 		totalBytes = hist.Bytes
 	}
 
 	fmt.Printf("\n--- Download Summary ---\n")
-	fmt.Printf("Job:        %s\n", job.Name)
+	fmt.Printf("Job:        %s\n", j.Name())
 	fmt.Printf("Status:     %s\n", hist.Status)
 	if hist.FailMessage != "" {
 		fmt.Printf("Error:      %s\n", hist.FailMessage)
@@ -1104,21 +1105,21 @@ func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 	fmt.Printf("------------------------\n\n")
 }
 
-func loadJob(cfg *config.Config, path string, log *slog.Logger) (*queue.Job, []byte, error) { //nocover: thin delegator to unit-tested app.BuildIngestJob, covered end-to-end by test/integration/oneshot_test.go
+func loadJob(cfg *config.Config, path string, log *slog.Logger) (*job.Job, dispatch.Header, []byte, error) { //nocover: thin delegator to unit-tested app.BuildIngestJob, covered end-to-end by test/integration/oneshot_test.go
 	data, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied NZB path is the whole point
 	if err != nil {
-		return nil, nil, err
+		return nil, dispatch.Header{}, nil, err
 	}
 
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
-		return nil, nil, err
+		return nil, dispatch.Header{}, nil, err
 	}
-	job, err := app.BuildIngestJob(cfg, parsed, filepath.Base(path), types.FetchOptions{
+	j, hdr, err := app.BuildIngestJob(cfg, parsed, filepath.Base(path), types.FetchOptions{
 		PP:       types.PPInherit,
 		Priority: constants.DefaultPriority,
 	}, log)
-	return job, data, err
+	return j, hdr, data, err
 }
 
 // enabledServers filters the config's server list to Enable=true entries.

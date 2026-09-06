@@ -5,8 +5,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // ---------- Has ----------
@@ -64,8 +62,8 @@ func TestPPQueue_Len(t *testing.T) {
 	if q.Len() != 0 {
 		t.Errorf("Len on empty = %d", q.Len())
 	}
-	q.Push(&Job{Queue: newQueueJob(t, "a", 0)})
-	q.Push(&Job{Queue: newQueueJob(t, "b", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "a", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "b", 0)})
 	if q.Len() != 2 {
 		t.Errorf("Len after 2 pushes = %d", q.Len())
 	}
@@ -73,54 +71,12 @@ func TestPPQueue_Len(t *testing.T) {
 
 func TestPPQueue_Has(t *testing.T) {
 	q := newPPQueue()
-	q.Push(&Job{Queue: newQueueJob(t, "x", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "x", 0)})
 	if !q.Has("x") {
 		t.Error("Has('x') = false")
 	}
 	if q.Has("y") {
 		t.Error("Has('y') = true for absent job")
-	}
-}
-
-// ---------- StatusUpdater ----------
-
-func TestStatusUpdater_CalledPerStage(t *testing.T) {
-	var mu sync.Mutex
-	statuses := make(map[constants.Status]bool)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	p := startProcessor(t, Options{
-		Stages: []Stage{
-			newRecordStage("repair"),
-			newRecordStage("unpack"),
-			newRecordStage("finalize"),
-			newRecordStage("custom"),
-		},
-		StatusUpdater: func(_ string, s constants.Status) {
-			mu.Lock()
-			statuses[s] = true
-			mu.Unlock()
-		},
-		OnJobDone: func(_ *Job) { wg.Done() },
-	})
-
-	p.Process(makeJob(t, "status-job"))
-	wg.Wait()
-
-	mu.Lock()
-	defer mu.Unlock()
-	// Should have seen StatusVerifying, StatusExtracting, StatusMoving, StatusRunning
-	for _, want := range []constants.Status{
-		constants.StatusVerifying,
-		constants.StatusExtracting,
-		constants.StatusMoving,
-		constants.StatusRunning,
-	} {
-		if !statuses[want] {
-			t.Errorf("missing status %v", want)
-		}
 	}
 }
 
@@ -226,7 +182,7 @@ func TestHistory_CapMaxEntries(t *testing.T) {
 	// addHistory caps at 1000 entries. Process a few extra and verify.
 	p := New(Options{})
 	for range 1005 {
-		p.addHistory(&Job{Queue: newQueueJob(t, "j", 0)})
+		p.addHistory(&Job{Job: newQueueJob(t, "j", 0)})
 	}
 	h := p.History()
 	if len(h) > 1000 {

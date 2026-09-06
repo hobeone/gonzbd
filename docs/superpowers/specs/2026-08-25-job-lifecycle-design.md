@@ -3,14 +3,14 @@
 **Status:** Direction settled in discussion, and nine decisions are recorded
 (§14) — the six questions this document originally opened, plus three that
 arose from settling them. No question it raised is still open. It is the
-argument the implementation plans are written against. `internal/job` is now
+argument the implementation plans are written against. `internal/job` is
 built — the vocabulary (`State`, `Activity`, `Outcome`, `Policy`,
 `WaitReason`), the transition machine, `Attempt`, `Job`, and the `ToSABnzbd`
-translation. What remains is everything downstream of it: moving `Lease` and
-`Manifest` onto this design, the `Queue` rewrite and the deletions it
-implies, and inverting dispatch to call into this machine.
+translation. Plan 2 ("The Swap", RFC #456 §15) has landed: `Lease` and
+`Manifest` are re-homed into `internal/job`, `internal/queue` is deleted,
+and the daemon routes through `internal/dispatch` and `internal/sched`.
 
-**Scope:** Replaces the job state model in `internal/queue` and the ownership
+**Scope:** Replaces the legacy job state model in `internal/queue` and the ownership
 boundaries between `app`, `queue`, `downloader`, `durability` and `postproc`.
 
 > **This is not a migration.** Per Standing Design Rule 1, no part of this

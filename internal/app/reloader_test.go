@@ -9,24 +9,20 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// newBareQueueJob builds a real, empty-manifest *queue.Job via queue.NewJob,
-// with ID/MD5 set to the caller's chosen values — the plain header fields
-// are unaffected by the Manifest/Progress split, so setting them after
-// construction but before Queue.Add is safe.
-func newBareQueueJob(t *testing.T, id, md5 string) *queue.Job {
+func newBareJob(t *testing.T, app *Application, id, md5 string) (*job.Job, dispatch.Header) {
 	t.Helper()
-	job, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: id + ".nzb"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(app.config, &nzb.NZB{}, id+".nzb", types.FetchOptions{NzbName: id + ".nzb", JobID: id}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	job.ID = id
-	job.MD5 = md5
-	return job
+	hdr.MD5 = md5
+	return j, hdr
 }
 
 func TestApplication_ReloadOptions(t *testing.T) {
@@ -293,8 +289,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 	nzbDir := t.TempDir()
 
 	t.Run("not a duplicate", func(t *testing.T) {
-		job := &queue.Job{MD5: "no-match-md5"}
-		isDup, warning := a.detectDuplicateNZB(t.Context(), job, false, nzbDir)
+		isDup, warning := a.detectDuplicateNZB(t.Context(), "no-match-md5", "no-match.nzb", false, nzbDir)
 		if isDup {
 			t.Errorf("isDuplicate = true, want false")
 		}
@@ -304,13 +299,12 @@ func TestDetectDuplicateNZB(t *testing.T) {
 	})
 
 	t.Run("duplicate via MD5 already in queue, not forced", func(t *testing.T) {
-		existing := newBareQueueJob(t, "existing-not-forced", "dup-md5-queue")
-		if err := a.queue.Add(existing); err != nil {
-			t.Fatalf("queue.Add: %v", err)
+		existing, hdr := newBareJob(t, a, "existing-not-forced", "dup-md5-queue")
+		if err := a.Dispatcher().Add(existing, hdr); err != nil {
+			t.Fatalf("dispatcher.Add: %v", err)
 		}
 
-		job := &queue.Job{MD5: "dup-md5-queue"}
-		isDup, warning := a.detectDuplicateNZB(t.Context(), job, false, nzbDir)
+		isDup, warning := a.detectDuplicateNZB(t.Context(), "dup-md5-queue", "other.nzb", false, nzbDir)
 		if !isDup {
 			t.Fatalf("isDuplicate = false, want true")
 		}
@@ -320,13 +314,12 @@ func TestDetectDuplicateNZB(t *testing.T) {
 	})
 
 	t.Run("duplicate via MD5 already in queue, forced", func(t *testing.T) {
-		existing := newBareQueueJob(t, "existing-forced", "dup-md5-forced")
-		if err := a.queue.Add(existing); err != nil {
-			t.Fatalf("queue.Add: %v", err)
+		existing, hdr := newBareJob(t, a, "existing-forced", "dup-md5-forced")
+		if err := a.Dispatcher().Add(existing, hdr); err != nil {
+			t.Fatalf("dispatcher.Add: %v", err)
 		}
 
-		job := &queue.Job{MD5: "dup-md5-forced"}
-		isDup, warning := a.detectDuplicateNZB(t.Context(), job, true, nzbDir)
+		isDup, warning := a.detectDuplicateNZB(t.Context(), "dup-md5-forced", "other.nzb", true, nzbDir)
 		if !isDup {
 			t.Fatalf("isDuplicate = false, want true")
 		}
@@ -340,8 +333,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 			t.Fatalf("write backup fixture: %v", err)
 		}
 
-		job := &queue.Job{MD5: "unrelated-md5", Filename: "backed-up.nzb"}
-		isDup, warning := a.detectDuplicateNZB(t.Context(), job, false, nzbDir)
+		isDup, warning := a.detectDuplicateNZB(t.Context(), "unrelated-md5", "backed-up.nzb", false, nzbDir)
 		if !isDup {
 			t.Fatalf("isDuplicate = false, want true (filename found in backup dir)")
 		}

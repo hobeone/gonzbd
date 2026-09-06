@@ -8,6 +8,8 @@ package app
 import (
 	"compress/gzip"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,19 +23,22 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -122,7 +127,10 @@ type Application struct {
 	emitter  EventEmitter
 	meter    *bpsmeter.Meter
 
-	queue           *queue.Queue
+	dispatcher      *dispatch.Dispatcher
+	residency       *appResidency
+	runner          *appRunner
+	checkpointer    *checkpoint.Checkpointer
 	historyRepo     *history.Repository
 	downloader      Downloader
 	downloaderStats DownloaderStats
@@ -144,7 +152,7 @@ type Application struct {
 
 	// barrier is the single place the Written -> Durable -> Resolved
 	// transition happens (X2). It is the only thing that can mint a
-	// DurableProof, and Queue.AckDurable takes one, so no other path in the
+	// DurableProof, and Job.AckDurable takes one, so no other path in the
 	// program can ack an article as downloaded. nil when the process has no
 	// history database, in which case nothing acks and every restart
 	// re-downloads — see New.
@@ -235,6 +243,9 @@ type Application struct {
 	// just before its barrier. Same discipline as checkpointHook.
 	jobCheckpointHook func(context.Context)
 
+	// postProcStopHook, when non-nil, overrides postProcessor.Stop during Shutdown.
+	postProcStopHook func() error
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -281,6 +292,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	writeCacheBytes := int64(dl.WriteCacheSize)
 	minFreeBytes := int64(dl.MinFreeSpace)
 	maxActiveJobs := dl.MaxActiveJobs
+	maxComputeSlots := dl.MaxComputeSlots
 	sanitize := dl.SanitizeOptions()
 	serversConfig := snap.Servers
 
@@ -338,21 +350,39 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		app.meter = bpsmeter.NewMeter(10*time.Second, time.Now)
 	}
 
-	queueStateDir := filepath.Join(adminDir, "queue")
-	var qOpts []queue.Option
+	var dispatchStore dispatch.Store = nopDispatchStore{}
+	var checkpointStore checkpoint.Store = &appCheckpointStore{}
 	if repo != nil && repo.DB() != nil {
-		store := queue.NewSQLiteStore(repo.DB(), queueStateDir, repo)
-		qOpts = append(qOpts, queue.WithStore(store))
+		dispatchStore = dispatchstore.New(repo.DB())
+		checkpointStore = &appCheckpointStore{db: repo.DB()}
 	}
-	if maxActiveJobs > 0 {
-		qOpts = append(qOpts, queue.WithMaxActiveJobs(maxActiveJobs))
+	leaseCap := maxActiveJobs
+	if leaseCap <= 0 {
+		leaseCap = 4
 	}
-	qOpts = append(qOpts, queue.WithLogger(log), queue.WithSanitizeOptions(sanitize))
-	q, err := queue.Load(queueStateDir, qOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("app: load queue: %w", err)
+	slotCap := maxComputeSlots
+	if slotCap <= 0 {
+		slotCap = 2
 	}
-	app.queue = q
+	mdir := manifestDir(adminDir)
+	app.checkpointer = checkpoint.New(checkpointStore, 5*time.Second, log)
+	var historyDB *sql.DB
+	if repo != nil {
+		historyDB = repo.DB()
+	}
+	app.residency = newAppResidency(app.lookupJob, mdir, historyDB, log)
+	app.runner = newAppRunner(app)
+	app.dispatcher = dispatch.New(
+		leaseCap,
+		slotCap,
+		time.Second,
+		time.Now,
+		&appWorkers{app: app},
+		app.residency,
+		dispatchStore,
+		app.runner,
+	)
+	app.runner.report = app.dispatcher
 
 	// Probe sparse file support on the download directory. Pre-allocation
 	// uses fallocate/ftruncate which benefits from sparse-capable filesystems.
@@ -372,7 +402,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		for i, sc := range serversConfig {
 			servers[i] = downloader.NewServer(sc)
 		}
-		realDL := downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
+		realDL := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), log)
 		app.downloader = realDL
 		app.downloaderStats = realDL
 	}
@@ -394,23 +424,25 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 
 	p := &pipeline{
 		log:         log.With("component", "pipeline"),
-		queue:       q,
+		dispatcher:  app.dispatcher,
 		completions: app.downloader.Completions(),
 		downloadDir: dlDir,
 		sanitize:    sanitize,
 		onHeartbeat: app.RecordHeartbeat,
 		onJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
-				return
+			var msg string
+			if app.dispatcher != nil {
+				if j, ok := app.dispatcher.Job(jobID); ok {
+					msg = failMsgForJob(j)
+				}
 			}
-			msg := failMsgForJob(snap)
 			if msg == "" {
 				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
 			}
 			app.maybeFinalize(jobID, msg)
 		},
 		onArticleWritten: app.noteJobBytes,
+		checkpointer:     app.checkpointer,
 		updateCh:         make(chan completionSwap, 1),
 		fileInfo:         make(map[fileKey]assembler.FileInfo),
 	}
@@ -437,9 +469,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// behaviourally identical to the pre-refactor nil stage-pointer fields.
 	pp := postproc.New(postproc.Options{
 		Stages: stageList,
-		StatusUpdater: func(jobID string, status constants.Status) {
-			_ = q.SetStatus(jobID, status)
-		},
 		OnOutput: func(jobID, tool, line string) {
 			app.emit(Event{
 				Type:  "postproc_output",
@@ -495,7 +524,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	if repo != nil && repo.DB() != nil {
 		app.runs = durability.NewSQLiteRunStore(repo.DB())
 		app.resumer = durability.NewResumer(app.runs, log)
-		app.barrier = durability.NewBarrier(app.runs, q, app, log)
+		app.barrier = durability.NewBarrier(app.runs, app, app, log)
 	} else {
 		log.Warn("no history database: durability barrier disabled, " +
 			"no article will be acked and every restart re-downloads the whole queue")
@@ -511,7 +540,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// and handleArticleRejected does the acking. The refusal has no other
 	// witness — a bad yEnc offset is caught here and nowhere else — so without
 	// this the article is silently dropped and its job never finishes. Ordinary
-	// permanent failures still go to Queue.AckPermanentFailure from the
+	// permanent failures still go to Job.MarkArticleFailed from the
 	// pipeline.
 	//
 	// Options carries no durability store either, and nothing here records
@@ -583,8 +612,13 @@ func WithMetricsPushInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.metricsPushInterval = d }
 }
 
-// Queue returns the application's download queue.
-func (app *Application) Queue() *queue.Queue { return app.queue }
+func uniqueName(base string, exists func(string) bool) string {
+	name := base
+	for i := 1; exists(name); i++ {
+		name = fmt.Sprintf("%s.%d", base, i)
+	}
+	return name
+}
 
 // Speed returns the current aggregate download speed in bytes/sec, or 0
 // when downloading is idle or the downloader stats interface has not been wired yet.
@@ -602,21 +636,26 @@ func (app *Application) Speed() float64 {
 // whether it's a duplicate and the Warning string AddJob should attach to
 // the job (empty if not a duplicate). Split out of AddJob to isolate the
 // duplicate-detection branching from queue insertion (OPT-9).
-func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, force bool, nzbDir string) (isDuplicate bool, warning string) {
+func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename string, force bool, nzbDir string) (isDuplicate bool, warning string) {
 	dupReason := ""
-	if app.queue.ExistsByMD5(job.MD5) {
-		isDuplicate = true
-		dupReason = "found in active queue (MD5)"
+	if app.dispatcher != nil && md5 != "" {
+		for _, row := range app.dispatcher.List() {
+			if row.Header.MD5 != "" && row.Header.MD5 == md5 {
+				isDuplicate = true
+				dupReason = "found in active queue (MD5)"
+				break
+			}
+		}
 	}
-	if !isDuplicate && app.historyRepo != nil {
-		results, err := app.historyRepo.Search(ctx, history.SearchOptions{MD5Sum: job.MD5})
+	if !isDuplicate && app.historyRepo != nil && md5 != "" {
+		results, err := app.historyRepo.Search(ctx, history.SearchOptions{MD5Sum: md5})
 		if err == nil && len(results) > 0 {
 			isDuplicate = true
 			dupReason = fmt.Sprintf("found in history DB (MD5: %q)", results[0].NzoID)
 		}
 	}
-	if !isDuplicate && job.Filename != "" {
-		base := filepath.Base(job.Filename)
+	if !isDuplicate && filename != "" {
+		base := filepath.Base(filename)
 		// Check for gzipped backup (current format) and uncompressed (legacy).
 		if _, err := os.Stat(filepath.Join(nzbDir, base+".gz")); err == nil {
 			isDuplicate = true
@@ -629,7 +668,7 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, 
 	if !isDuplicate {
 		return false, ""
 	}
-	app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason, "forced", force)
+	app.log.Info("duplicate NZB detected", "filename", filename, "md5", md5, "reason", dupReason, "forced", force)
 	if !force {
 		return true, "Duplicate NZB"
 	}
@@ -638,39 +677,41 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, 
 
 // AddJob validates, deduplicates, and enqueues a new download job. If force
 // is false and a duplicate is detected, the job is added in a paused state.
-func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
+func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
 	adminDir := app.config.GetGeneral().AdminDir
 	nzbDir := filepath.Join(adminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
 		return fmt.Errorf("app: mkdir admin nzb: %w", err)
 	}
 
-	isDuplicate, warning := app.detectDuplicateNZB(ctx, job, force, nzbDir)
+	isDuplicate, warning := app.detectDuplicateNZB(ctx, hdr.MD5, hdr.Filename, force, nzbDir)
 	if isDuplicate {
 		if !force {
-			job.Status = constants.StatusPaused
+			_ = j.SetIntent(job.IntentPause)
 		}
 		// Appended rather than assigned: BuildIngestJob may already have
 		// recorded what the parser discarded, and a job can be both a
 		// duplicate and malformed. Overwriting would drop the parse warning
 		// silently, on exactly the jobs most likely to need it.
-		if job.Warning != "" {
-			job.Warning += "; " + warning
+		if hdr.Warning != "" {
+			hdr.Warning += "; " + warning
 		} else {
-			job.Warning = warning
+			hdr.Warning = warning
 		}
 	}
-	// Pick a name not already taken in the queue or on disk. queue.Add
-	// re-checks under its write lock (authoritative), so the small TOCTOU
-	// window here is limited to filesystem collisions which are benign.
+
 	snap := app.config.Snapshot()
 	gen := &snap.General
 	downloadDir := gen.DownloadDir
 	completeDir := gen.CompleteDir
 	categories := snap.Categories
-	job.Name = queue.UniqueName(job.Name, func(name string) bool {
-		if app.queue.ExistsByName(name) {
-			return true
+	hdr.Name = uniqueName(hdr.Name, func(name string) bool {
+		if app.dispatcher != nil {
+			for _, row := range app.dispatcher.List() {
+				if row.Header.Name == name {
+					return true
+				}
+			}
 		}
 		if _, err := os.Stat(filepath.Join(downloadDir, name)); err == nil {
 			return true
@@ -688,31 +729,64 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		}
 		return false
 	})
-	// Write the backup for every job that enters the queue, duplicate or
-	// not. It used to be skipped for duplicates, which meant a forced
-	// re-add downloaded normally and finalized with no NZB on disk — and
-	// since the backup is the only surviving copy of the article
-	// message-IDs once the manifest is unlinked, that job was silently
-	// unretryable. A non-forced duplicate is enqueued paused and can still
-	// be resumed, so it needs one too.
-	if job.Filename != "" && len(rawNZB) > 0 {
-		name, err := writeNZBBackup(nzbDir, job.Filename, rawNZB)
+	j.SetName(hdr.Name)
+
+	if hdr.Filename != "" && len(rawNZB) > 0 {
+		name, err := writeNZBBackup(nzbDir, hdr.Filename, rawNZB)
 		if err != nil {
-			// Not fatal: the download itself does not need the backup.
-			// job.NZBBackup stays empty and RetryHistoryJob reports the
-			// absence rather than failing obscurely later.
 			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable",
-				"filename", job.Filename, "err", err)
+				"filename", hdr.Filename, "err", err)
 		} else {
-			job.NZBBackup = name
+			hdr.NZBBackup = name
 		}
 	}
-	addStatus := job.Status // snapshot before q.Add notifies the dispatcher
-	if err := app.queue.Add(job); err != nil {
-		return fmt.Errorf("app: add to queue: %w", err)
+
+	mdir := manifestDir(adminDir)
+	if err := os.MkdirAll(mdir, 0o750); err != nil {
+		return fmt.Errorf("app: mkdir manifests: %w", err)
+	}
+	if m, err := j.Manifest(); err == nil && m != nil {
+		data, mErr := json.Marshal(m)
+		if mErr != nil {
+			return fmt.Errorf("app: marshal manifest: %w", mErr)
+		}
+		mpath, pErr := manifestPath(adminDir, j.ID())
+		if pErr != nil {
+			return fmt.Errorf("app: write manifest: %w", pErr)
+		}
+		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
+			return fmt.Errorf("app: write manifest: %w", err)
+		}
+	}
+
+	if app.dispatcher != nil {
+		if err := app.dispatcher.Add(j, hdr); err != nil {
+			return fmt.Errorf("app: add to dispatcher: %w", err)
+		}
+	}
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+		if m, err := j.Manifest(); err == nil && m != nil {
+			const qFiles = `
+INSERT INTO job_files
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, article_count, failed_bytes, bytes_downloaded)
+VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', 0, ?, 0, 0)
+ON CONFLICT(job_id, file_index) DO NOTHING`
+			for i := range m.NumFiles() {
+				isPar2 := 0
+				if m.FileIsPar2Recovery(i) {
+					isPar2 = 1
+				}
+				lo, hi := m.FileRange(i)
+				if _, err := app.historyRepo.DB().ExecContext(ctx, qFiles,
+					j.ID(), i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2, hi-lo,
+				); err != nil {
+					return fmt.Errorf("app: insert job_file %s index %d: %w", j.ID(), i, err)
+				}
+			}
+		}
 	}
 	app.emit(Event{Type: "queue_updated"})
-	app.log.Info("job added", "name", job.Name, "id", job.ID, "status", addStatus)
+	app.log.Info("job added", "name", hdr.Name, "id", j.ID())
 	return nil
 }
 
@@ -731,67 +805,35 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 // asking to keep a removed job's bytes — the caller wanted the data, not a
 // resumable job.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
-	snap := app.queue.SnapshotJob(id)
-	if snap == nil {
+	if app.dispatcher == nil {
 		return fmt.Errorf("job %q not found", id)
 	}
+	j, ok := app.dispatcher.Job(id)
+	if !ok {
+		return fmt.Errorf("job %q not found", id)
+	}
+	name := j.Name()
+
 	// Abort any active DirectUnpacker for this job before removing files.
 	app.duOrch.abortJob(id)
 
 	// Cancel in-flight post-processing before any file is removed, so the PP
 	// is not left operating on a directory that is being deleted.
 	app.postProcessor.Cancel(id)
-	// Remove from the queue BEFORE the assembler cancel, because this is the
-	// only step in the function whose failure is fatal and the cancel below
-	// is irreversible: its control arm unlinks every file it currently holds
-	// open for the job. Running the destructive half first meant a
-	// store-delete failure returned an error having already deleted the
-	// job's bytes, leaving the job resident and still dispatchable with
-	// nothing on disk to write into (#376).
-	//
-	// No FILE has been unlinked at this point, so returning here leaves the
-	// job's bytes intact and the caller can retry. It is not a clean no-op:
-	// abortJob and postProcessor.Cancel above have already dropped this
-	// job's in-memory unpack and post-processing state, and a job wedged
-	// that way stays wedged until a restart's PostProc rescan. That is
-	// unchanged by this swap — both already preceded the fatal step under
-	// the old order. What the swap buys is the bytes, which are the part
-	// nothing can rebuild.
-	//
-	// Queue.Remove is itself built this way — fallible store delete, then an
-	// eviction that cannot fail, then the irreversible manifest unlink — so
-	// this applies one level up the rule it already follows for itself.
-	//
-	// Removing from the queue first also stops dispatch immediately, since
-	// buildDispatchPlan iterates q.jobs: the window in which a job whose
-	// files are gone is still dispatchable closes rather than opening.
-	//
-	// One window opens in exchange. Between here and the worker handling the
-	// cancel, the job is gone from the queue while the assembler still holds
-	// its handles, which was previously unreachable through RemoveJob. A file
-	// whose last article lands in it finalizes against a nil sync target
-	// (syncTargetFor answers nil once SnapshotJob does), so
-	// finalizeCompletedFile returns early and its defer CLOSES the handle
-	// rather than unlinking it: the file survives on disk. That is the same
-	// disposition every already-completed file of a removed job gets, and
-	// MarkFileComplete refuses the completion, so nothing downstream acts
-	// on it.
-	if err := app.queue.Remove(id); err != nil {
+
+	_ = app.dispatcher.Cancel(id)
+	if app.checkpointer != nil {
+		app.checkpointer.Prune(id)
+	}
+	removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
 		return err
 	}
-	// CancelJob blocks until the assembler has actually closed the job's
-	// open file handles. If it returns an error (ctx cancelled, assembler
-	// not started/stopped), we have no such guarantee -- warn so a
-	// subsequent directory-delete failure (e.g. .nfsXXXXXX on NFS mounts)
-	// is traceable back to this race instead of looking unexplained.
-	//
-	// It must still precede the deleteFiles sweep below: that ordering is
-	// what 910d160d established, and it is unaffected by the swap above.
-	//
-	// The disposition is this function's own deleteFiles, which is what makes
-	// the flag mean one thing rather than two (#433). Under KeepFiles the
-	// handles are still closed here, so the ordering above is unchanged and
-	// still bought — it is only the unlink that is suppressed.
+	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); rmErr != nil && !os.IsNotExist(rmErr) {
+		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
+	}
+
 	disposition := assembler.KeepFiles
 	if deleteFiles {
 		disposition = assembler.DeleteFiles
@@ -810,9 +852,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// without it every deleted job leaves its rows behind for the life of
 	// the database.
 	app.deleteJobDurability(ctx, id)
-	if deleteFiles {
+	if deleteFiles && name != "" {
 		downloadDir := app.config.GetGeneral().DownloadDir
-		path := filepath.Join(downloadDir, snap.Name)
+		path := filepath.Join(downloadDir, name)
 		if err := safeDeleteDir(path, downloadDir); err != nil {
 			app.log.Warn("failed to delete job directory", "path", path, "err", err)
 		}
@@ -820,7 +862,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	app.emit(Event{Type: "queue_updated"})
 
 	// Disconnect NNTP servers if no downloadable jobs remain.
-	if !app.queue.HasDownloadableJobs() {
+	if !app.hasDownloadableJobs() {
 		app.mu.Lock()
 		dl := app.downloader
 		app.mu.Unlock()
@@ -830,6 +872,21 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		}
 	}
 	return nil
+}
+
+func (app *Application) hasDownloadableJobs() bool {
+	if app.dispatcher == nil || app.dispatcher.Paused() {
+		return false
+	}
+	for _, row := range app.dispatcher.List() {
+		if row.View.Reason.IsPause() {
+			continue
+		}
+		if row.View.State == job.StateUnset || row.View.State == job.Fetching {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoveHistoryJob deletes a completed job from history. If deleteFiles is true,
@@ -985,6 +1042,9 @@ func (app *Application) Start(ctx context.Context) error {
 		// runCheckpoint and runMetricsPush. Without this cancel they would run
 		// forever, and nothing would join them either, since app.wg.Wait lives
 		// only in Shutdown.
+		if app.dispatcher != nil {
+			_ = app.dispatcher.Stop()
+		}
 		if app.cancel != nil {
 			app.cancel()
 		}
@@ -995,35 +1055,22 @@ func (app *Application) Start(ctx context.Context) error {
 	// so gosec cannot see the calls. It is invoked by Shutdown on the success
 	// path and by the failure defer above on every error return.
 	app.ctx, app.cancel = context.WithCancel(ctx)
+	if app.dispatcher != nil {
+		if err := app.dispatcher.Start(app.ctx); err != nil {
+			return fmt.Errorf("app: start dispatcher: %w", err)
+		}
+	}
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
 	}
 	// Clear the Emitted flags and un-fail the articles the old downloader's
-	// teardown marked, so both are re-dispatchable. It changes no job's
-	// STATUS — the comment here used to say "Downloading → Queued", which it
-	// has never done, and that is worth being exact about directly above the
-	// sweep below, because a job's status is what decides whether the sweep
-	// touches it at all.
-	// nil: clear everything. Nothing is in flight at startup, no checkpoint has
-	// run to have partial coverage, and the L3 sweep below re-derives every
-	// DOWNLOADING job from the durability record before a single article can
-	// be dispatched.
-	app.queue.ClearAllEmitted(nil)
-	// L3: re-derive each DOWNLOADING job's work set from what is actually on
-	// stable storage, BEFORE the downloader below can dispatch a single
-	// article. Placed after ClearAllEmitted so the reset cannot undo it, and
-	// before dl.Start so a durable article is never requested at all — a seed
-	// that lands after dispatch begins still marks the right bits, but the
-	// re-fetch it exists to prevent has already gone out on the wire.
-	//
-	// "Downloading", not "resident", and the distinction is load-bearing
-	// rather than pedantic. The sweep is AUTHORITATIVE: it clears a bit whose
-	// bytes it cannot find (#362). JobPhase.IsResident is also true for the
-	// post-processing statuses, where par2 repairs a file in place and the
-	// move relocates it, so a recomputation there would clear correct state.
-	// Do not widen this to residency on the strength of "it can only seed a
-	// resident job" — that was the bound before #362 and it is the bug.
-	// resumeAllJobs' own doc has the full argument.
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if j, ok := app.dispatcher.Job(row.ID); ok {
+				j.ClearEmittedForReload(false)
+			}
+		}
+	}
 	if err := app.resumeAllJobs(app.ctx); err != nil {
 		_ = app.assembler.Stop()
 		return err
@@ -1054,41 +1101,31 @@ func (app *Application) Start(ctx context.Context) error {
 	interval := app.checkpointInterval
 	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
+	if app.checkpointer != nil {
+		app.wg.Go(func() { _ = app.checkpointer.Run(app.ctx) })
+	}
 
 	app.log.Info("application started")
 
-	for _, snap := range app.queue.Snapshot() {
-		if !snap.IsComplete() {
-			continue
-		}
-		if app.historyRepo != nil && app.dropJobAlreadyInHistory(ctx, snap.ID) {
-			continue
-		}
-
-		failMsg := failMsgForJob(snap)
-		if snap.PostProc {
-			// Crash recovery: PostProc was already set before the process
-			// died. We snapshot the job to decouple the post-processor
-			// from the queue's live pointer (preventing data races with
-			// concurrent API mutations). SetPostProcStarted is bypassed
-			// since it's already true.
-			if app.postProcessor.Has(snap.ID) {
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if app.historyRepo != nil && app.dropJobAlreadyInHistory(ctx, row.ID) {
 				continue
 			}
-			jobSnap := app.queue.SnapshotJob(snap.ID)
-			if jobSnap == nil {
-				continue
+			if row.View.State == job.Fetching || row.View.State == job.StateUnset {
+				j, ok := app.dispatcher.Job(row.ID)
+				if ok && j.IsComplete() {
+					failMsg := failMsgForJob(j)
+					app.maybeFinalize(row.ID, failMsg)
+				}
 			}
-			app.enqueuePostProc(jobSnap, failMsg)
-			continue
 		}
-		app.maybeFinalize(snap.ID, failMsg)
 	}
 
 	// Sweep expired history, after the reconciliation above and not before.
 	//
 	// That loop identifies a crash between the history commit and
-	// Queue.Remove by looking a still-queued completed job up in history,
+	// Dispatcher.Remove by looking a still-queued completed job up in history,
 	// and the entry is the only evidence the job already finished. Pruning
 	// first can delete it out from under the lookup, which turns into
 	// ErrNotFound and sends the job to maybeFinalize to be post-processed
@@ -1169,9 +1206,21 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 	app.reloadMu.Unlock()
 	// --- No lock held below this line ---
 
+	var dlErr error
 	if dl != nil {
-		if err := waitBounded("downloader", stepTimeout, dl.Stop, app.log); err != nil && errs != nil {
-			*errs = append(*errs, fmt.Errorf("downloader stop: %w", err))
+		if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
+			*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
+		}
+		// If dl.Stop returned cleanly with no error, all downloader workers have definitely
+		// exited and will not touch manifests or barriers again. Yield Fetching jobs so
+		// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
+		// so Dispatcher.Stop observes wait worker timeout and skips eviction.
+		if dlErr == nil && app.dispatcher != nil {
+			for _, row := range app.dispatcher.List() {
+				if row.View.State == job.Fetching {
+					_ = app.dispatcher.Yielded(row.ID)
+				}
+			}
 		}
 	}
 
@@ -1217,6 +1266,13 @@ func (app *Application) Shutdown() error {
 	// below. See the field's doc.
 	app.stopping.Store(true)
 
+	// Pause the dispatcher queue immediately: sets q.paused, which blocks new
+	// lease/slot grants by Advance and prevents job state moves during teardown,
+	// eliminating state churn between worker yield and dispatcher stop.
+	if app.dispatcher != nil {
+		app.dispatcher.Pause()
+	}
+
 	var errs []error
 	stepTimeout := app.shutdownStepTimeout
 	if stepTimeout <= 0 {
@@ -1234,13 +1290,34 @@ func (app *Application) Shutdown() error {
 		errs = append(errs, fmt.Errorf("wg wait: %w", err))
 	}
 
-	if err := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log); err != nil {
-		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
+	ppStopFn := app.postProcessor.Stop
+	if app.postProcStopHook != nil {
+		ppStopFn = app.postProcStopHook
+	}
+	ppErr := waitBounded("postprocessor", stepTimeout, ppStopFn, app.log)
+	if ppErr != nil {
+		errs = append(errs, fmt.Errorf("postprocessor stop: %w", ppErr))
+	}
+	if app.dispatcher != nil {
+		if ppErr == nil {
+			for _, row := range app.dispatcher.List() {
+				if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
+					_ = app.dispatcher.Yielded(row.ID)
+				}
+			}
+		}
 	}
 
-	adminDir := app.config.GetGeneral().AdminDir
-	if err := app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
-		errs = append(errs, fmt.Errorf("queue save: %w", err))
+	if app.dispatcher != nil {
+		if err := waitBounded("dispatcher", stepTimeout, app.dispatcher.Stop, app.log); err != nil {
+			errs = append(errs, fmt.Errorf("dispatcher stop: %w", err))
+		}
+	}
+
+	if app.checkpointer != nil {
+		if err := app.checkpointer.Flush(context.Background()); err != nil {
+			errs = append(errs, fmt.Errorf("checkpointer flush: %w", err))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -1278,12 +1355,12 @@ func (app *Application) watchCompletions(ctx context.Context) {
 //
 // A job that was removed, or whose manifest was evicted, between the
 // assembler producing this event and the queue receiving it is ordinary — the
-// queue methods report it as ErrNotFound/ErrJobNotResident precisely so a
+// queue methods report it as dispatch.ErrNotFound/job.ErrNotResident precisely so a
 // caller can recognise it rather than having it arrive as a silent nil (#261).
 // Those get Debug. Anything else is a write that should have landed and did
 // not, and gets Warn.
 func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err error) {
-	if errors.Is(err, queue.ErrNotFound) || errors.Is(err, queue.ErrJobNotResident) {
+	if errors.Is(err, job.ErrNotResident) || errors.Is(err, dispatch.ErrNotFound) {
 		app.log.Debug(op+" skipped, job no longer resident in the queue",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 		return
@@ -1362,7 +1439,7 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	//
 	//   - the ordinary path reached it, since finalizeCompletedFile returns
 	//     nil and its caller comes straight here;
-	//   - stall recovery did not. retryFinalize swallows ErrJobNotResident —
+	//   - stall recovery did not. retryFinalize swallows job.ErrNotResident —
 	//     the ack cannot mark a paused job — and returns before the CRC, then
 	//     Phase 4 arrives here having marked the file finalizeDone, and
 	//     nothing retried it;
@@ -1378,12 +1455,26 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	// Before MarkFileComplete, so the value is on the progress record by the
 	// time maybeFinalize below can hand the job to post-processing.
 	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
-	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
-		// Returning bare here was itself the shape #261 describes: the file
-		// never gets marked complete, no event is emitted, and nothing says
-		// why.
-		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-		return err
+	if app.dispatcher != nil {
+		j, ok := app.dispatcher.Job(fc.JobID)
+		if !ok {
+			err := job.ErrNotResident
+			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			return err
+		}
+		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			return err
+		}
+		if app.checkpointer != nil {
+			app.checkpointer.Mark(j)
+		}
+		if j.IsComplete() {
+			_ = j.SetNext(job.Assessing)
+			if err := app.dispatcher.Yielded(fc.JobID); err != nil {
+				app.dispatcher.Wake()
+			}
+		}
 	}
 	app.emit(Event{Type: "queue_updated"})
 
@@ -1396,13 +1487,6 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		app.duOrch.maybeStart(fc)
 	}
 
-	snap := app.queue.SnapshotJob(fc.JobID)
-	if snap != nil && snap.IsComplete() {
-		if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
-			return nil // downloader will fetch recovery volumes
-		}
-		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
-	}
 	return nil
 }
 
@@ -1416,59 +1500,38 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 // par2 index, so the volumes are held rather than spent or discarded), or
 // un-deferral itself fails (in which case we fall through to finalize without
 // recovery volumes, matching the pre-on-demand-par2 behaviour).
-func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string, snap *queue.Job) bool {
+func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	if !snap.HasDeferredPar2() || snap.Progress().Par2Recovered() {
+	if app.dispatcher == nil {
 		return false
 	}
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		return false
+	}
+
+	if !j.HasDeferredPar2() {
+		return false
+	}
+	if p := j.Progress(); p != nil && p.Par2Recovered() {
+		return false
+	}
+	jobName := j.Name()
+
 	cfgSnap := app.config.Snapshot()
 	downloadDir := cfgSnap.General.DownloadDir
 	pp := &cfgSnap.PostProc
 	parseOpts := par2.ParseOptionsFromConfig(pp)
-	dir := filepath.Join(downloadDir, snap.Name)
+	dir := filepath.Join(downloadDir, jobName)
 
-	// An unreadable manifest means the CRC comparison cannot be made here, so
-	// this job finalizes with its recovery volumes still deferred. That is
-	// the outcome, not a fallback that failed: an unreadable manifest is only
-	// observable for a non-resident job — a resident one holds its manifest
-	// in memory and never re-reads the file — and UndeferRecoveryVolumes is
-	// manifest-tier, so the very non-residency that exposes the unreadable
-	// manifest also makes the un-defer below fail. Hydrating first does not
-	// help; the manifest is what could not be read.
-	//
-	// This is survivable because verification is not skipped, only moved.
-	// Post-processing's quickcheck stage hits the same unreadable manifest
-	// and records QuickCheckInconclusive rather than staying silent, which
-	// forces the repair stage to run a full par2 verify against the index
-	// files already on disk (#294). The missing recovery volumes mean par2
-	// can detect damage but not repair it, so a corrupt job is reported
-	// rather than shipped.
-	//
-	// The branch used to argue the opposite — that finalizing meant shipping
-	// "a repair nothing checked for" — and set out to fetch the volumes
-	// anyway. It could never do that, and the premise was wrong besides.
-	// See TestMaybeReleaseRecoveryVolumes_UnreadableManifest.
 	outcome, reason := outcomeRepair, "manifest unreadable, cannot verify integrity"
-	if m, mErr := snap.Manifest(); mErr != nil {
+	m, err := j.Manifest()
+	if err != nil {
 		app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
-			"job", jobID, "err", mErr)
-	} else {
-		// Assess, decide, and only then move anything.
-		//
-		// The order is the fix. This used to rename first so that verification
-		// — which matched par2 entries by NAME — would have corrected names to
-		// match against. But renaming is exactly what invalidates those names,
-		// so the verdict had to be computed from state the rename had already
-		// made stale, and doing that correctly needed a re-snapshot here, a
-		// remap in post-processing, and two more patches elsewhere (#494).
-		//
-		// par2.Assess answers identification, verification and "what would
-		// move" in one pass over the pre-rename directory. The renames it
-		// reports are applied afterwards, and cannot be obtained without a
-		// verdict, so this ordering is not a convention to remember.
-		prog := snap.Progress()
+			"job", jobID, "err", err)
+	} else if prog := j.Progress(); prog != nil {
 		sets, sErr := par2.FindPar2Files(dir, parseOpts)
 		switch {
 		case sErr != nil || len(sets) == 0:
@@ -1488,87 +1551,27 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 					"job", jobID, "dir", dir, "err", aErr)
 				break
 			}
-			// Decide only. Nothing is renamed here, and the renames the
-			// assessment reports are deliberately dropped on this path.
-			//
-			// They were applied here once, so that verification — which
-			// matched par2 entries by NAME — would have corrected names to
-			// work with. Verification is content-based now and runs before any
-			// move, so the rename buys the verdict nothing, and it is not this
-			// path's job: post-processing's quickcheck stage relocates from its
-			// own assessment, ahead of the repair stage that needs the files at
-			// their par2 paths.
-			//
-			// Keeping it here cost more than it bought. JobProgress.Filename
-			// cannot hold a path — pipeline.go's registerFile feeds it back
-			// through fsutil.JoinSafe, and SanitizeFilename rewrites "/" to
-			// "_" — so a file relocated into a subdirectory could not be
-			// recorded truthfully. Recording its basename instead left the
-			// startup resume sweep stat-ing a top-level path that does not
-			// exist, and durability.Resume reads a missing file as disproof of
-			// every run it holds: it discards them and re-downloads a file that
-			// was already complete.
 			outcome, reason = par2Verdict(a, app.log)
 		}
 	}
 	switch outcome {
 	case outcomeClean:
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
-		// Log rather than discard: the only failure DiscardDeferredPar2 can
-		// still return is the job being genuinely gone (ErrNotFound), and
-		// silently swallowing that would mean a job removed mid-verification
-		// leaves no trace of why its recovery volumes were never marked
-		// FetchNever.
-		//
-		// DiscardDeferredPar2 marks the fetch policy on JobProgress, which is
-		// permanently resident (docs/queue-lifecycle.md), and makes no store
-		// call of its own (see its doc comment) — it neither needs the
-		// manifest nor can fail on residency, matching SetPar2ReleaseReason.
-		// The only failure left is the job being genuinely absent
-		// (ErrNotFound), which cannot happen here: jobID was just resolved
-		// to snap above.
-		if err := app.queue.DiscardDeferredPar2(jobID); err != nil {
-			app.log.Warn("on-demand par2: discarding the deferred volumes did not fully succeed",
-				"job", jobID, "err", err)
-		}
+		_ = j.DiscardDeferredPar2()
 		return false
 	case outcomeUnknown:
-		// Neither discard nor un-defer. Nothing on disk could be identified
-		// against the par2 index, so this is not a clean verdict — see
-		// outcomeUnknown's doc comment for why holding the volumes does not
-		// rescue the damaged case it is indistinguishable from. Recording the
-		// reason is still worth doing: it is the only place the "why" of a
-		// held-not-fetched job is written down.
-		if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
-			app.log.Warn("on-demand par2: could not record the release reason",
-				"job", jobID, "err", err)
-		}
+		j.SetPar2ReleaseReason(reason)
 		app.log.Info("on-demand par2: nothing on disk matched the par2 index; holding the volumes and finalizing",
 			"job", jobID, "reason", reason)
 		return false
 	case outcomeRepair:
-		if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
-			app.log.Warn("on-demand par2: could not record the release reason",
-				"job", jobID, "err", err)
-		}
-		idxs := snap.DeferredRecoveryIndices()
-		if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
+		j.SetPar2ReleaseReason(reason)
+		idxs := j.DeferredRecoveryIndices()
+		if err := j.UndeferRecoveryVolumes(idxs); err != nil {
 			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
 				"job", jobID, "err", err)
-			// Overwrite the reason set above: that one only explains why
-			// repair was needed, and on its own reads identically to
-			// outcomeUnknown's "nothing could be identified" reason once
-			// filelist.go can no longer tell them apart (Par2Recovered()
-			// stays false either way). Verification DID run and DID find
-			// damage here — the volumes just could not be fetched — so the
-			// reason needs to say that too, even though the two outcomes
-			// remain indistinguishable to the caller without a persisted
-			// par2Outcome (deliberately not added by this change).
 			failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
-			if err := app.queue.SetPar2ReleaseReason(jobID, failReason); err != nil {
-				app.log.Warn("on-demand par2: could not record the release reason",
-					"job", jobID, "err", err)
-			}
+			j.SetPar2ReleaseReason(failReason)
 			return false
 		}
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
@@ -1803,7 +1806,7 @@ func (app *Application) drainCompletions(ctx context.Context) {
 // "complete" state — the assembler fires OnFileComplete once every article
 // is Done-or-Failed, leaving gaps in the written file rather than blocking
 // the job forever on data that will never arrive.
-func hasFailedArticle(m *queue.Manifest, p *queue.JobProgress, fileIdx int) bool {
+func hasFailedArticle(m *job.Manifest, p *job.JobProgress, fileIdx int) bool {
 	lo, hi := m.FileRange(fileIdx)
 	for i := lo; i < hi; i++ {
 		if p.ArticleFailed(i) {
@@ -1828,49 +1831,18 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 }
 
 func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defensive error logging on state transition
-	started, err := app.queue.SetPostProcStarted(jobID)
-	if err == nil && started {
-		// Close any open assembler file handles for this job so post-processing
-		// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
-		// (.nfsXXXX) artifacts on open files.
-		//
-		// Bounded, because this is now reachable from the storage-fault path:
-		// Application.Fail routes a permanent fault here, and the whole reason
-		// the job is failing may be a mount that answers nothing. An unbounded
-		// wait would park whichever goroutine is finalizing — the completion
-		// consumer, or the checkpoint loop inside a barrier — for as long as
-		// the mount stays down. Handles that outlive the timeout are closed by
-		// the worker's shutdown drain instead.
-		closeTimeout := app.closeHandlesTimeout
-		if closeTimeout <= 0 {
-			closeTimeout = closeHandlesTimeout
-		}
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
-		err := app.assembler.CloseJobHandles(closeCtx, jobID)
-		closeCancel()
-		if err != nil {
-			app.log.Warn("maybeFinalize: failed to close assembler job handles", "job", jobID, "err", err)
-		}
-		// Force an immediate queue save so the PostProc=true flag survives
-		// a crash. Without this, a crash between job completion and the
-		// next periodic checkpoint (~30s) would lose the flag, causing
-		// articles to be re-downloaded on restart instead of entering
-		// post-processing via crash recovery.
-		adminDir := app.config.GetGeneral().AdminDir
-		if saveErr := app.queue.Save(filepath.Join(adminDir, "queue")); saveErr != nil {
-			app.log.Warn("forced queue save on job completion failed", "job", jobID, "err", saveErr)
-		}
-		// Snapshot the job to decouple the post-processor from the
-		// queue's live pointer. The PP may hold this for minutes during
-		// repair/unpack; if the API mutates the queue's copy (Pause,
-		// Resume), the snapshot is unaffected, preventing data races.
-		snap := app.queue.SnapshotJob(jobID)
-		if snap == nil {
-			app.log.Warn("maybeFinalize: job disappeared", "job", jobID)
-			return
-		}
-		app.enqueuePostProc(snap, failMsg)
+	if app.dispatcher == nil {
+		return
 	}
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		return
+	}
+	row, ok := app.dispatcher.Row(jobID)
+	if !ok {
+		return
+	}
+	app.enqueuePostProc(j, row.Header, failMsg)
 }
 
 // directUnpackWaiter is the subset of *directunpack.DirectUnpacker that
@@ -1906,11 +1878,29 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 	}
 }
 
-func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
+func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string) {
+	// Close any open assembler file handles for this job so post-processing
+	// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
+	// (.nfsXXXX) artifacts on open files.
+	closeTimeout := app.closeHandlesTimeout
+	if closeTimeout <= 0 {
+		closeTimeout = closeHandlesTimeout
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
+	if err := app.assembler.CloseJobHandles(closeCtx, j.ID()); err != nil {
+		app.log.Warn("enqueuePostProc: failed to close assembler job handles", "job", j.ID(), "err", err)
+	}
+	closeCancel()
+	if app.checkpointer != nil {
+		if err := app.checkpointer.Flush(context.Background()); err != nil {
+			app.log.Warn("forced checkpoint flush on job completion failed", "job", j.ID(), "err", err)
+		}
+	}
+
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
-	app.pipeline.forgetJob(job.ID)
-	app.forgetJobBarrierState(job.ID)
+	app.pipeline.forgetJob(j.ID())
+	app.forgetJobBarrierState(j.ID())
 
 	snap := app.config.Snapshot()
 	gen := &snap.General
@@ -1918,22 +1908,26 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	completeDir := gen.CompleteDir
 	categories := snap.Categories
 	sanitize := snap.Downloads.SanitizeOptions()
-	downloadDir := filepath.Join(downloadDirBase, job.Name)
+	downloadDir := filepath.Join(downloadDirBase, j.Name())
 
 	// Log the handoff from download → postproc. This is the "entering
 	// postproc" bookend; processJob logs the "exiting" bookend.
 	var dlDuration time.Duration
-	if !job.Progress().DownloadStarted().IsZero() {
-		dlDuration = job.Progress().DownloadFinished().Sub(job.Progress().DownloadStarted())
+	var failedBytes int64
+	if prog := j.Progress(); prog != nil {
+		if !prog.DownloadStarted().IsZero() && !prog.DownloadFinished().IsZero() {
+			dlDuration = prog.DownloadFinished().Sub(prog.DownloadStarted())
+		}
+		failedBytes = prog.FailedBytes()
 	}
 	app.log.Info("postproc: job entering pipeline",
-		"job", job.ID,
-		"name", job.Name,
-		"category", job.Category,
+		"job", j.ID(),
+		"name", j.Name(),
+		"category", hdr.Category,
 		"download_dir", downloadDir,
 		"download_duration", dlDuration.Round(time.Second),
-		"total_bytes", job.TotalBytes(),
-		"failed_bytes", job.Progress().FailedBytes(),
+		"total_bytes", j.TotalBytes(),
+		"failed_bytes", failedBytes,
 		"fail_msg", failMsg,
 	)
 
@@ -1948,7 +1942,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 				sz = info.Size()
 			}
 			app.log.Info("postproc: download file",
-				"job", job.ID,
+				"job", j.ID(),
 				"file", e.Name(),
 				"size", sz,
 				"dir", e.IsDir(),
@@ -1956,7 +1950,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		}
 	}
 
-	cat := config.FindCategory(categories, job.Category)
+	cat := config.FindCategory(categories, hdr.Category)
 	catDir := cat.Dir
 	// P6: Category dir trailing '*' suppresses the per-job subfolder.
 	// Files go directly into the category directory ("flat layout").
@@ -1966,7 +1960,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	if flatLayout {
 		catDir = strings.TrimSuffix(catDir, "*")
 	}
-	finalDir := filepath.Join(completeDir, catDir, job.Name)
+	finalDir := filepath.Join(completeDir, catDir, j.Name())
 	if flatLayout {
 		finalDir = filepath.Join(completeDir, catDir)
 	}
@@ -1974,11 +1968,18 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// When du != nil, Wait() is executed inside an asynchronous worker
 	// goroutine on app.wg so the completion event consumer (watchCompletions)
 	// never blocks waiting for disk unpacking to finish.
-	du := app.duOrch.collect(job.ID)
+	du := app.duOrch.collect(j.ID())
 
-	dispatch := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
+	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		app.postProcessor.Process(&postproc.Job{
-			Queue:                job,
+			Job:                  j,
+			Filename:             hdr.Filename,
+			NZBBackup:            hdr.NZBBackup,
+			Category:             hdr.Category,
+			Password:             hdr.Password,
+			Script:               hdr.Script,
+			PP:                   hdr.PP,
+			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
 			Sanitize:             sanitize,
@@ -1988,7 +1989,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 			DirectUnpackSkipped:  duSkipped,
 		})
 		select {
-		case app.jobComplete <- JobComplete{JobID: job.ID}:
+		case app.jobComplete <- JobComplete{JobID: j.ID()}:
 		default:
 		}
 	}
@@ -2010,21 +2011,21 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 			duSkipped := du.Skipped()
 			if len(duResults) > 0 {
 				app.log.Info("directunpack: passing results to postproc",
-					"job", job.ID, "sets", len(duResults))
+					"job", j.ID(), "sets", len(duResults))
 			}
 			if len(duFailures) > 0 {
 				app.log.Warn("directunpack: passing failures to postproc",
-					"job", job.ID, "failed_sets", len(duFailures))
+					"job", j.ID(), "failed_sets", len(duFailures))
 			}
 			if len(duSkipped) > 0 {
 				app.log.Info("directunpack: passing skipped sets to postproc",
-					"job", job.ID, "skipped_sets", len(duSkipped))
+					"job", j.ID(), "skipped_sets", len(duSkipped))
 			}
-			dispatch(duResults, duFailures, duSkipped)
+			enqueue(duResults, duFailures, duSkipped)
 		})
 		return
 	}
-	dispatch(nil, nil, nil)
+	enqueue(nil, nil, nil)
 }
 
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
@@ -2041,9 +2042,9 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 //
 // The rebuilt job takes the entry's ID so its retained progress, its
 // incomplete directory, and any later history entry all still line up.
-func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, error) {
+func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispatch.Header, error) {
 	if entry.NZBBackup == "" {
-		return nil, fmt.Errorf("app: retry %s: no NZB backup was recorded for this job", entry.NzoID)
+		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: no NZB backup was recorded for this job", entry.NzoID)
 	}
 	adminDir := app.config.GetGeneral().AdminDir
 	// filepath.Base defends against a stored value containing separators;
@@ -2053,19 +2054,19 @@ func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, err
 
 	f, err := os.Open(path) //nolint:gosec // path is adminDir-rooted with the basename taken above
 	if err != nil {
-		return nil, fmt.Errorf("app: retry %s: open NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: open NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, fmt.Errorf("app: retry %s: read NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: read NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
 	}
 	defer func() { _ = gz.Close() }()
 
 	parsed, err := nzb.Parse(gz)
 	if err != nil {
-		return nil, fmt.Errorf("app: retry %s: parse NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: parse NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
 	}
 
 	pp := types.PPInherit
@@ -2074,7 +2075,8 @@ func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, err
 			pp = n
 		}
 	}
-	job, err := BuildIngestJob(app.config, parsed, entry.NzbName, types.FetchOptions{
+	j, hdr, err := BuildIngestJob(app.config, parsed, entry.NzbName, types.FetchOptions{
+		JobID:    entry.NzoID,
 		NzbName:  entry.Name,
 		Category: entry.Category,
 		Script:   entry.Script,
@@ -2082,11 +2084,10 @@ func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, err
 		PP:       pp,
 	}, app.log)
 	if err != nil {
-		return nil, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
+		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
 	}
-	job.ID = entry.NzoID
-	job.NZBBackup = entry.NZBBackup
-	return job, nil
+	hdr.NZBBackup = entry.NZBBackup
+	return j, hdr, nil
 }
 
 // RetryHistoryJob re-enqueues a failed history job for re-download.
@@ -2114,53 +2115,53 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			jobID, entry.Status)
 	}
 
-	job, err := app.rebuildJobFromNZB(entry)
+	j, hdr, err := app.rebuildJobFromNZB(*entry)
 	if err != nil {
 		return err
 	}
-	// Hoisted out of the block below because the deletion downstream branches
-	// on it: the retained durability rows are only trustworthy for a retry
-	// whose re-parsed manifest has the same shape the rows were written
-	// against.
 	var progressApplied bool
-	if store := app.queue.Store(); store != nil {
-		applied, rErr := store.RestoreRetryProgress(ctx, job)
-		if rErr != nil {
-			return fmt.Errorf("app: retry %s: restore retained progress: %w", jobID, rErr)
-		}
-		if !applied {
-			app.log.Info("no usable retained progress for retry; downloading from scratch",
-				"job", jobID)
-		}
-		progressApplied = applied
+	retained, rErr := app.historyFileProgress(ctx, jobID)
+	if rErr != nil {
+		return fmt.Errorf("app: retry %s: restore retained progress: %w", jobID, rErr)
 	}
-	job.ResetForRetry()
-	// The job returns under the SAME ID, and its durability rows survive with
-	// it — see the deletion below, which is what makes that true. The barrier
-	// latches overlap warnings per (jobID, fileIdx), so without this the
-	// retry's overlaps match the previous attempt's latch and are dropped —
-	// silencing the warning permanently instead of raising it once per
-	// attempt.
+	m, _ := j.Manifest()
+	if len(retained) > 0 && m != nil && retainedMatchesManifest(retained, m) {
+		if app.runs != nil {
+			runs, runErr := app.runs.ForJob(ctx, jobID)
+			if runErr != nil {
+				return fmt.Errorf("app: retry %s: load runs: %w", jobID, runErr)
+			}
+			var files []int32
+			for fi := range m.NumFiles() {
+				files = append(files, int32(fi))
+			}
+			if err := j.ReplaceFromRuns(files, runs); err == nil {
+				progressApplied = true
+			}
+		}
+		for _, f := range retained {
+			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32, f.Fetch)
+		}
+	} else if len(retained) > 0 {
+		app.log.Info("no usable retained progress for retry; downloading from scratch",
+			"job", jobID)
+	}
+
+	if !progressApplied {
+		if err := app.dropJobDurability(ctx, jobID); err != nil {
+			return fmt.Errorf("app: retry %s: drop stale durability rows: %w", jobID, err)
+		}
+	}
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+		if _, err := app.historyRepo.DB().ExecContext(ctx,
+			"DELETE FROM failed_articles WHERE job_id = ?", jobID); err != nil {
+			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
+		}
+	}
+	j.ResetForRetry()
 	if app.barrier != nil {
 		app.barrier.ForgetJob(jobID)
 	}
-	// The assembler latches per-job state too, and for a longer time: its
-	// tombstone set is keyed on (jobID, fileIdx) and nothing removes an entry
-	// for the life of the worker goroutine. Since the retry returns under the
-	// same ID, every file this process already completed for it would reject
-	// the retry's writes as late duplicates — the articles would be pooled,
-	// never written, and failed again, with a restart the only cure.
-	//
-	// ResetForRetry clears Complete on a file whose failed articles it reset,
-	// which is what makes those articles fetchable again; this is what lets
-	// them land. The two have to move together or the reset creates work the
-	// assembler refuses.
-	//
-	// Logged rather than fatal, unlike the deletion below. Nothing is
-	// corrupted if it fails — the retry simply cannot make progress on
-	// already-completed files until a restart, which is exactly today's
-	// behaviour — and failing the retry outright would be a worse outcome
-	// than the degraded one.
 	if app.assembler != nil {
 		if err := app.assembler.ForgetJob(ctx, jobID); err != nil {
 			app.log.Warn("could not clear the assembler's completed-file tombstones for a "+
@@ -2169,94 +2170,32 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 				"job", jobID, "err", err)
 		}
 	}
-	if !progressApplied {
-		// The retained rows were written against a manifest this retry did not
-		// reproduce — RestoreRetryProgress declines the overlay on a shape
-		// mismatch but deletes nothing, so without this they would outlive a
-		// renumbering and describe articles that are no longer at those
-		// indices. Dropped BEFORE Add, so the re-enqueued job's own rows
-		// cannot be caught by the deletion.
-		//
-		// Fatal rather than logged, unlike every other caller of this
-		// deletion. Those are departed jobs whose rows are garbage; here the
-		// rows are about to be READ, and a stale one bounds FinalizeFile's
-		// truncate to the wrong article range — the silent partial-file
-		// destruction this whole change exists to stop. Prune is no backstop
-		// either: it skips job_ids present in `jobs`, and Add puts this one
-		// back there on the next line.
-		//
-		// Aborting here is clean because nothing has been committed yet. The
-		// history entry is untouched, no job has entered the queue, and the
-		// only prior effect is ForgetJob clearing an overlap latch, which
-		// costs one re-warning. The retry stays retryable.
-		if err := app.dropJobDurability(ctx, jobID); err != nil {
-			return fmt.Errorf("app: retry %s: the re-parsed manifest changed shape and the "+
-				"stale durability rows could not be dropped; refusing to requeue, because a "+
-				"stale row would bound the completion truncate to the wrong articles: %w", jobID, err)
+
+	adminDir := app.config.GetGeneral().AdminDir
+	mdir := manifestDir(adminDir)
+	if err := os.MkdirAll(mdir, 0o750); err != nil {
+		return fmt.Errorf("app: retry %s: mkdir manifests: %w", jobID, err)
+	}
+	if m, err := j.Manifest(); err == nil && m != nil {
+		data, mErr := json.Marshal(m)
+		if mErr != nil {
+			return fmt.Errorf("app: retry %s: marshal manifest: %w", jobID, mErr)
 		}
-	} else if store := app.queue.Store(); store != nil {
-		// The THIRD of Step 10's reversal sites, and the only one outside
-		// internal/queue. ResetForRetry above cleared every failed bit in
-		// memory; on this branch nothing else clears the rows behind them.
-		//
-		// The two tables part company here, and they are retained together by
-		// job_finalizer.go for opposite-facing reasons. durable_runs describes
-		// bytes still on disk, so DeleteKeepingDurability below deliberately
-		// keeps them (#422). failed_articles describes a DECISION not to
-		// fetch, and a retry exists to revisit that decision — so the rows go.
-		//
-		// The undo would be immediate, not restart-only: Add writes no
-		// resolution, and PromoteNext unconditionally calls
-		// Store.RestoreJobProgress, which re-derives per-article state from
-		// these two tables and re-marks exactly these articles Failed+Done. A
-		// user retrying a failed job would never re-attempt the articles that
-		// made it fail. It is a regression rather than a latent gap: the
-		// articles_done blob this table replaced was re-serialised wholesale
-		// by Add's own insert, so the reset corrected the stored copy as a
-		// side effect. A separate table has no wholesale rewrite.
-		//
-		// Fatal, for the same reason the sibling branch above gives: nothing
-		// has been committed at this point — the history entry is untouched
-		// and no job has entered the queue — so the abort is free and the
-		// retry stays retryable. Proceeding instead would requeue a job whose
-		// stored state contradicts the reset that was just performed on it.
-		if err := store.ClearFailedArticles(ctx, jobID); err != nil {
-			return fmt.Errorf("app: retry %s: the reset cleared the job's failed "+
-				"articles in memory but their stored rows could not be dropped; refusing "+
-				"to requeue, because the next promotion would restore them and the retry "+
-				"would skip the very articles it exists to re-attempt: %w", jobID, err)
+		mpath, pErr := manifestPath(adminDir, j.ID())
+		if pErr != nil {
+			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, pErr)
+		}
+		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
+			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, err)
 		}
 	}
-	if err := app.queue.Add(job); err != nil {
-		return err
+
+	if app.dispatcher != nil {
+		if err := app.dispatcher.Add(j, hdr); err != nil {
+			return err
+		}
 	}
-	// Deliberately a Delete variant rather than deleteHistoryEntries: the job
-	// is going back into the queue under the same ID and the same NZBBackup,
-	// and if it fails again it will finalize into a new history entry naming
-	// that same file. Removing the backup here would make the second failure
-	// unretryable. The retained per-file progress does go, because Add has
-	// just written fresh job_files rows that supersede it.
-	//
-	// KeepingDurability because ownership of durable_runs and failed_articles
-	// passes back to the job as it re-enters the queue. They are what bound
-	// this attempt's truncate to the whole partial file; plain Delete drops
-	// them, which destroyed the retention job_finalizer.go maintains for
-	// exactly this path and silently truncated the partial to whatever the
-	// retry re-fetched (#422). The !progressApplied branch above has already
-	// removed them where they could not be trusted.
-	//
-	// Logged, deliberately NOT returned, and the asymmetry with the durability
-	// deletion above is the point. That one runs BEFORE Add and guards a value
-	// about to be read, so failing it means nothing has happened yet and the
-	// abort is free. This one runs AFTER Add: the retry has already succeeded,
-	// the job is queued and will download. Returning an error here would report
-	// a failure for an operation that worked, and Queue.Add rejects a duplicate
-	// ID ("job %q already present"), so the caller's natural response — retry
-	// again — would then fail for a second, unrelated-looking reason.
-	//
-	// What actually survives a failure is a stale FAILED history entry beside a
-	// running job under the same ID, superseded when this attempt finalizes.
-	// That is worth a loud log and is not worth failing the call.
+
 	if _, err := app.historyRepo.DeleteKeepingDurability(ctx, jobID); err != nil {
 		app.log.Warn("retry requeued but its history entry could not be deleted; "+
 			"the entry is stale until this attempt finalizes over it",
@@ -2264,18 +2203,71 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
-	snap := app.queue.SnapshotJob(jobID)
-	if snap != nil && snap.IsComplete() {
-		app.maybeFinalize(jobID, failMsgForJob(snap))
+	if j.IsComplete() {
+		msg := failMsgForJob(j)
+		app.maybeFinalize(jobID, msg)
 	}
 	return nil
+}
+
+type retainedFile struct {
+	FileIndex      int
+	Complete       bool
+	Fetch          job.FetchPolicy
+	Filename       string
+	AssembledCRC32 uint32
+	ArticleCount   int
+}
+
+func (app *Application) historyFileProgress(ctx context.Context, jobID string) ([]retainedFile, error) {
+	if app.historyRepo == nil || app.historyRepo.DB() == nil {
+		return nil, nil
+	}
+	const q = `
+SELECT file_index, complete, fetch_policy,
+       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
+FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := app.historyRepo.DB().QueryContext(ctx, q, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("app: query history file progress %s: %w", jobID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []retainedFile
+	for rows.Next() {
+		var f retainedFile
+		var complete, fetch int
+		if err := rows.Scan(&f.FileIndex, &complete, &fetch,
+			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
+			return nil, fmt.Errorf("app: scan history_job_file %s: %w", jobID, err)
+		}
+		f.Complete = complete != 0
+		f.Fetch = job.FetchPolicy(fetch) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func retainedMatchesManifest(retained []retainedFile, m *job.Manifest) bool {
+	if len(retained) != m.NumFiles() {
+		return false
+	}
+	for i, f := range retained {
+		if f.FileIndex != i {
+			return false
+		}
+		lo, hi := m.FileRange(i)
+		if f.ArticleCount != hi-lo {
+			return false
+		}
+	}
+	return true
 }
 
 // buildDownloaderOptions constructs a downloader.Options from the current
 // app config. Used by both New() and ReloadDownloader() to ensure the same
 // options are applied consistently.
 func (app *Application) buildDownloaderOptions() downloader.Options {
-	q := app.queue
 	dl := app.config.GetDownloads()
 	maxArtTries := dl.MaxArtTries
 	maxArtOpt := dl.MaxArtOpt
@@ -2291,11 +2283,16 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		PreCheck:         preCheck,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
-				return
+			var msg string
+			if app.dispatcher != nil {
+				if j, ok := app.dispatcher.Job(jobID); ok {
+					msg = failMsgForJob(j)
+				}
 			}
-			app.maybeFinalize(jobID, failMsgForJob(snap))
+			if msg == "" {
+				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+			}
+			app.maybeFinalize(jobID, msg)
 		},
 	}
 }
@@ -2460,11 +2457,26 @@ func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	return nil
 }
 
-func failMsgForJob(job *queue.Job) string {
-	p := job.Progress()
+func failMsgForJob(j *job.Job) string {
+	if j == nil {
+		return ""
+	}
+	return failMsgForCounters(j.Progress(), string(j.RepairState()), j.RecoveryBytes(), j.RecoveryFiles(), j.RepairState().Hopeless())
+}
+
+type failureByteCounters interface {
+	FailedBytes() int64
+	ContentFailedBytes() int64
+	ExpectedBytes() int64
+}
+
+func failMsgForCounters(p failureByteCounters, state string, recBytes int64, recFiles int, hopeless bool) string {
+	if p == nil {
+		return ""
+	}
 
 	// Promoted scalars and JobProgress, never job.Manifest(): this runs from
-	// the startup recovery walk over Queue.Snapshot(), where a job may have
+	// the startup recovery walk over the dispatcher snapshot, where a job may have
 	// no resident manifest and a manifest read would nil-deref.
 	//
 	// Two different failure figures, and the difference matters. The
@@ -2501,23 +2513,23 @@ func failMsgForJob(job *queue.Job) string {
 	// into maybeFinalize with no fallback string — so a dispatcher that
 	// declares a job hopeless while this one still considers it repairable
 	// finalizes the job with an empty reason and shows the user nothing.
-	switch state := job.RepairState(); state {
-	case queue.RepairIntact, queue.RepairPossible, queue.RepairUnknown:
+	switch state {
+	case string(job.RepairIntact), string(job.RepairPossible), string(job.RepairUnknown):
 		// RepairIntact: only par2 failed, so there is nothing to repair and
 		// the job merely cannot be verified. RepairPossible: within capacity.
 		// RepairUnknown: par2 present but unrecognized, so capacity is
 		// unmeasured rather than absent. All three proceed to
 		// post-processing.
 		return ""
-	case queue.RepairBeyondCapacity:
+	case string(job.RepairBeyondCapacity):
 		// Capacity may be understated if some plainly-named par2 file also
 		// carries slices, so this errs toward aborting.
-		recoveryMB := float64(job.RecoveryBytes()) / (1024 * 1024)
+		recoveryMB := float64(recBytes) / (1024 * 1024)
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d recovery volumes). Job is beyond repair",
-			failedMB, recoveryMB, job.RecoveryFiles(),
+			failedMB, recoveryMB, recFiles,
 		)
-	case queue.RepairNoCapacity:
+	case string(job.RepairNoCapacity):
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
 			failedMB,
@@ -2533,7 +2545,7 @@ func failMsgForJob(job *queue.Job) string {
 		//
 		// TestFailMsgForJob_WordsEveryHopelessState fails when a state reaches
 		// here; this arm only bounds the damage until someone reads it.
-		if state.Hopeless() {
+		if hopeless {
 			return fmt.Sprintf(
 				"Aborted: %.1f MB failed (%s). Job is beyond repair",
 				failedMB, state,
@@ -2563,7 +2575,7 @@ func writeGzFile(path string, data []byte) error {
 // overwritten backup rather than any queue state.
 func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
 	base := filepath.Base(filename)
-	name := queue.UniqueName(base, func(candidate string) bool {
+	name := uniqueName(base, func(candidate string) bool {
 		_, err := os.Stat(filepath.Join(nzbDir, candidate+".gz"))
 		return err == nil
 	}) + ".gz"
@@ -2580,6 +2592,8 @@ type NNTPTestResult struct {
 }
 
 // TestNNTPServer dials an NNTP server to verify connectivity and credentials.
+//
+//testdouble:allow SABnzbd test_nntp_server API implementation
 func (a *Application) TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (NNTPTestResult, error) {
 	start := time.Now()
 	log := slog.Default()

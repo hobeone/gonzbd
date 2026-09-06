@@ -10,13 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // The unit fixture below is two files of two articles each, and in the file it
@@ -31,7 +32,7 @@ const (
 type resumeUnitFixture struct {
 	app      *Application
 	repo     *history.Repository
-	job      *queue.Job
+	job      *job.Job
 	dir      string
 	path     string
 	articles [2][]byte
@@ -60,21 +61,24 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 		}
 		parsed.Files = append(parsed.Files, file)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "resume-unit"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "resume-unit.nzb", types.FetchOptions{NzbName: "resume-unit"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
+	if err := application.dispatcher.Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := application.queue.SetFileFilename(job.ID, 0, unitFileOne); err != nil {
+	if err := j.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	if err := j.SetFileFilename(0, unitFileOne); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
 
-	f := &resumeUnitFixture{app: application, repo: repo, job: job}
+	f := &resumeUnitFixture{app: application, repo: repo, job: j}
 	f.articles[0] = bytes.Repeat([]byte{'x'}, unitArtLen)
 	f.articles[1] = bytes.Repeat([]byte{'y'}, unitArtLen)
-	f.dir = filepath.Join(application.pipeline.downloadDir, job.Name)
+	f.dir = filepath.Join(application.pipeline.downloadDir, j.Name())
 	f.path = filepath.Join(f.dir, unitFileOne)
 	if err := os.MkdirAll(f.dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -93,7 +97,7 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	// File 1 has a run of its own that must NOT reach the work set: with no
 	// resolved name there is no path the gate could have stat'ed, and adopting
 	// it would mark an article Done on the strength of the record alone.
-	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), job.ID,
+	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), j.ID(),
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 				CRC32: crc32.ChecksumIEEE(f.articles[0])},
@@ -106,19 +110,9 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 
 // saveQueue persists the fixture's queue to the store the way a running
 // process does.
-//
-// It exists because a non-resident job's progress is re-read from the store on
-// hydration, so a filename that only ever lived in memory is gone by the time
-// the sweep looks — and the sweep then skips the file for having no resolved
-// name, which makes a paused-job assertion pass for a reason that has nothing
-// to do with the phase bound. A real process has already run both the periodic
-// save and the shutdown save.
 func (f *resumeUnitFixture) saveQueue(t *testing.T) {
 	t.Helper()
-	adminDir := f.app.config.GetGeneral().AdminDir
-	if err := f.app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	f.app.dispatcher.Tick(t.Context())
 }
 
 // nameSecondFile gives file 1 a resolved on-disk name and a file to match, so
@@ -126,7 +120,7 @@ func (f *resumeUnitFixture) saveQueue(t *testing.T) {
 // context check has nothing to stop at.
 func (f *resumeUnitFixture) nameSecondFile(t *testing.T) {
 	t.Helper()
-	if err := f.app.queue.SetFileFilename(f.job.ID, 1, "B.bin"); err != nil {
+	if err := f.job.SetFileFilename(1, "B.bin"); err != nil {
 		t.Fatalf("SetFileFilename(1): %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(f.dir, "B.bin"), make([]byte, 2*unitArtLen), 0o600); err != nil {
@@ -140,7 +134,7 @@ func (f *resumeUnitFixture) nameSecondFile(t *testing.T) {
 // fault. File 0 is untouched and still resumes cleanly.
 func (f *resumeUnitFixture) faultOnSecondFile(t *testing.T) {
 	t.Helper()
-	if err := f.app.queue.SetFileFilename(f.job.ID, 1, "B.bin"); err != nil {
+	if err := f.job.SetFileFilename(1, "B.bin"); err != nil {
 		t.Fatalf("SetFileFilename(1): %v", err)
 	}
 	loop := filepath.Join(f.dir, "B.bin")
@@ -154,34 +148,27 @@ func (f *resumeUnitFixture) faultOnSecondFile(t *testing.T) {
 // SnapshotJob hydrates the clone it returns, and hydration re-derives every
 // article's state from the durability record — which is the same record a seed
 // installs from. So a SnapshotJob-based assertion cannot tell "the sweep
-// seeded this job" from "the store derived the same answer on its own", and
-// every "it was not seeded" guard read through it is unfalsifiable.
-//
-// Queue.Snapshot does not hydrate, so a non-resident job's clone carries the
-// live JobProgress as it actually stands. It is also the exact list
-// resumeAllJobs walks.
-func liveProgress(t *testing.T, app *Application, jobID string) *queue.JobProgress {
+// liveProgress reads a job's in-memory progress WITHOUT hydrating it.
+func liveProgress(t *testing.T, app *Application, jobID string) *job.JobProgress {
 	t.Helper()
-	for _, snap := range app.queue.Snapshot() {
-		if snap.ID == jobID {
-			return snap.Progress()
-		}
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		t.Fatalf("liveProgress: job %s is not in the dispatcher", jobID)
 	}
-	t.Fatalf("liveProgress: job %s is not in the queue", jobID)
-	return nil
+	return j.Progress()
 }
 
-func (f *resumeUnitFixture) snapshot(t *testing.T) (*queue.Job, *queue.Manifest) {
+func (f *resumeUnitFixture) snapshot(t *testing.T) (*job.Job, *job.Manifest) {
 	t.Helper()
-	snap := f.app.queue.SnapshotJob(f.job.ID)
-	if snap == nil {
-		t.Fatal("job vanished from the queue")
+	j, ok := f.app.dispatcher.Job(f.job.ID())
+	if !ok {
+		t.Fatal("job vanished from the dispatcher")
 	}
-	m, err := snap.Manifest()
+	m, err := j.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
-	return snap, m
+	return j, m
 }
 
 // TestResumeJobFiles_SkipsFilesWithNoResolvedName pins both halves of the
@@ -198,7 +185,7 @@ func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 	f := newResumeUnitFixture(t)
 	snap, m := f.snapshot(t)
 
-	swept, runs, fault, err := f.app.resumeJobFiles(t.Context(), snap, m)
+	swept, runs, fault, err := f.app.resumeJobFiles(t.Context(), snap.ID(), m, snap.Name(), snap.Progress())
 	if err != nil {
 		t.Fatalf("resumeJobFiles: %v", err)
 	}
@@ -221,7 +208,7 @@ func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 	}
 	// File 1's run is still on stable storage: the sweep neither adopted it
 	// nor discarded it, because it never looked.
-	stored, err := f.app.runs.ForFile(t.Context(), f.job.ID, 1)
+	stored, err := f.app.runs.ForFile(t.Context(), f.job.ID(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,28 +242,30 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	t.Parallel()
 	f := newResumeUnitFixture(t)
 
-	// A second job, paused so the queue evicts its manifest — and so the
-	// phase bound skips it. It carries committed runs of its own; nothing
-	// may reach them.
-	other, err := queue.NewJob(&nzb.NZB{Files: []nzb.File{{
+	// A second job, non-resident (evicted).
+	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  "B.bin",
 		Bytes:    unitArtLen,
 		Articles: []nzb.Article{{ID: "b0@t", Bytes: unitArtLen, Number: 1}},
-	}}}, queue.AddOptions{Name: "resume-unit-other"}, fsutil.SanitizeOptions{})
+	}}}
+	other, hdr, err := BuildIngestJob(f.app.config, parsed, "resume-unit-other.nzb", types.FetchOptions{NzbName: "resume-unit-other"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob(other): %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := f.app.queue.Add(other); err != nil {
+	if err := f.app.dispatcher.Add(other, hdr); err != nil {
 		t.Fatalf("Add(other): %v", err)
 	}
-	if err := f.app.queue.SetFileFilename(other.ID, 0, "B.bin"); err != nil {
+	if err := other.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt(other): %v", err)
+	}
+	if err := other.SetFileFilename(0, "B.bin"); err != nil {
 		t.Fatalf("SetFileFilename(other): %v", err)
 	}
 	// Its file and its recorded run are both real and consistent, so the only
 	// thing standing between it and a Done bit is its residency. Without them
 	// the assertion below would hold for a sweep that tried to seed it and
 	// merely found nothing.
-	otherDir := filepath.Join(f.app.pipeline.downloadDir, other.Name)
+	otherDir := filepath.Join(f.app.pipeline.downloadDir, other.Name())
 	if err := os.MkdirAll(otherDir, 0o750); err != nil {
 		t.Fatalf("mkdir(other): %v", err)
 	}
@@ -285,39 +274,25 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := os.WriteFile(otherPath, otherBytes, 0o600); err != nil {
 		t.Fatalf("write(other): %v", err)
 	}
-	if _, err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(t.Context(), other.ID,
+	if _, err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(t.Context(), other.ID(),
 		[]durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(otherBytes)}}); err != nil {
 		t.Fatalf("RunStore.Commit(other): %v", err)
 	}
-	if err := f.app.queue.SetStatus(other.ID, constants.StatusPaused); err != nil {
-		t.Fatalf("SetStatus(other, Paused): %v", err)
-	}
-	// Read through Snapshot rather than SnapshotJob: SnapshotJob hydrates the
-	// CLONE it returns, so it reports a manifest for an evicted job and would
-	// make this guard unfalsifiable. Snapshot does not hydrate, and it is also
-	// the exact list resumeAllJobs walks.
-	var otherResident bool
-	for _, snap := range f.app.queue.Snapshot() {
-		if snap.ID != other.ID {
-			continue
-		}
-		_, mErr := snap.Manifest()
-		otherResident = mErr == nil
-	}
-	if otherResident {
-		t.Fatal("pausing did not evict the second job's manifest, so it is resident and " +
+	other.Evict()
+	if other.Resident() {
+		t.Fatal("evict did not evict the second job's manifest, so it is resident and " +
 			"the assertion below says nothing")
 	}
-	if snap := f.app.queue.Snapshot(); len(snap) != 2 {
-		t.Fatalf("fixture guard: %d jobs in the queue, want 2", len(snap))
+	if list := f.app.dispatcher.List(); len(list) != 2 {
+		t.Fatalf("fixture guard: %d jobs in the queue, want 2", len(list))
 	}
 
 	if err := f.app.resumeAllJobs(t.Context()); err != nil {
 		t.Fatalf("resumeAllJobs: %v", err)
 	}
 
-	seeded := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	seeded := f.job.Progress()
 	if !seeded.ArticleDone(0) {
 		t.Error("the resident job's durable article was not seeded")
 	}
@@ -339,7 +314,7 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	// Read through liveProgress, not SnapshotJob: hydration re-derives the
 	// article state from the same record, so a hydrated clone reports the bit
 	// set whether or not anything seeded it.
-	if liveProgress(t, f.app, other.ID).ArticleDone(0) {
+	if liveProgress(t, f.app, other.ID()).ArticleDone(0) {
 		t.Error("a non-resident job was seeded although nothing stat'ed its file")
 	}
 }
@@ -410,8 +385,9 @@ func TestResumeAllJobs_CancelBetweenFilesStopsAtTheNextFile(t *testing.T) {
 func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
 	t.Parallel()
 	f := newResumeUnitFixture(t)
-	if err := f.app.queue.SetStatus(f.job.ID, constants.StatusPaused); err != nil {
-		t.Fatalf("SetStatus(Paused): %v", err)
+	f.job.Evict()
+	if err := f.app.dispatcher.PauseJob(f.job.ID()); err != nil {
+		t.Fatalf("PauseJob: %v", err)
 	}
 	counter := &countingResumer{inner: f.app.resumer}
 	f.app.resumer = counter
@@ -433,7 +409,7 @@ func TestResumeAllJobs_CancelBeforeAnyJobResumesNothing(t *testing.T) {
 	// liveProgress rather than SnapshotJob, for the reason its doc gives: a
 	// hydrated clone re-derives the article state from the record and would
 	// report this bit set whether or not the sweep ran.
-	if liveProgress(t, f.app, f.job.ID).ArticleDone(0) {
+	if liveProgress(t, f.app, f.job.ID()).ArticleDone(0) {
 		t.Error("an aborted sweep still seeded; the abort must leave the work set untouched")
 	}
 }
@@ -483,15 +459,18 @@ func TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault(t *testing.T) {
 	// with a fatal "an error came back" check would abort the test before
 	// these ran, and "no error" is the same message a dozen unrelated defects
 	// produce.
-	snap := f.app.queue.SnapshotJob(f.job.ID)
-	if snap.Status == constants.StatusPaused {
+	row, ok := f.app.dispatcher.Row(f.job.ID())
+	if !ok {
+		t.Fatal("job not in dispatcher")
+	}
+	if row.Status() == constants.StatusPaused {
 		t.Errorf("a shutdown during Resume was routed as a storage fault: status = %q. "+
 			"A stalled job is non-resident and is skipped by every future sweep, so this "+
-			"costs the job its seed permanently", snap.Status)
+			"costs the job its seed permanently", row.Status())
 	}
-	if strings.HasPrefix(snap.Warning, "Stalled: ") {
+	if strings.HasPrefix(row.Header.Warning, "Stalled: ") {
 		t.Errorf("a shutdown during Resume was surfaced as a storage condition that never "+
-			"existed: warning = %q", snap.Warning)
+			"existed: warning = %q", row.Header.Warning)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want it to carry context.Canceled — the sweep must report a "+
@@ -520,8 +499,12 @@ func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
 		t.Fatalf("resumeAllJobs: %v", err)
 	}
 
-	snap := f.app.queue.SnapshotJob(f.job.ID)
-	if !snap.Progress().ArticleDone(0) {
+	row, ok := f.app.dispatcher.Row(f.job.ID())
+	if !ok {
+		t.Fatal("job not in dispatcher")
+	}
+	p := f.job.Progress()
+	if !p.ArticleDone(0) {
 		t.Error("file 0 resumed cleanly, but its durable article was discarded because file 1 " +
 			"faulted afterwards — a transient fault must not cost the ground already recovered")
 	}
@@ -530,14 +513,14 @@ func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
 	// conversion is mutated. S3 itself is pinned by assertDone under
 	// TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles, so nothing
 	// is uncovered here — only this line is not what covers it.
-	if snap.Progress().ArticleDone(1) {
+	if p.ArticleDone(1) {
 		t.Error("an article whose bytes are not on disk came back Done")
 	}
-	if snap.Status != constants.StatusPaused {
-		t.Errorf("status = %q, want %q — the faulting file must still stall the job", snap.Status, constants.StatusPaused)
+	if row.Status() != constants.StatusPaused {
+		t.Errorf("status = %q, want %q — the faulting file must still stall the job", row.Status(), constants.StatusPaused)
 	}
-	if !strings.HasPrefix(snap.Warning, "Stalled: ") {
-		t.Errorf("warning = %q, want a surfaced stall reason (R27)", snap.Warning)
+	if !strings.HasPrefix(row.Header.Warning, "Stalled: ") {
+		t.Errorf("warning = %q, want a surfaced stall reason (R27)", row.Header.Warning)
 	}
 }
 
@@ -578,26 +561,26 @@ func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 	// Both articles recorded and both installed, so the state the sweep would
 	// destroy is a complete one. The fixture's own commit covers article 0
 	// only; this adds article 1.
-	if _, err := f.app.runs.Commit(t.Context(), f.job.ID, []durability.DurableArticle{
+	if _, err := f.app.runs.Commit(t.Context(), f.job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: unitArtLen, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(f.articles[1])},
 	}); err != nil {
 		t.Fatalf("RunStore.Commit: %v", err)
 	}
-	if err := f.app.queue.SeedFromRuns(f.job.ID, []durability.Run{
+	if err := f.job.ReplaceFromRuns([]int32{0}, []durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 2 * unitArtLen},
 	}); err != nil {
-		t.Fatalf("SeedFromRuns: %v", err)
+		t.Fatalf("ReplaceFromRuns: %v", err)
 	}
-	if err := f.app.queue.MarkFileComplete(f.job.ID, 0); err != nil {
+	if err := f.job.MarkFileComplete(0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
-	seedFileCRC(t, f.app.queue, f.job, 0, 0xC0FFEE)
+	seedFileCRC(t, f.job, 0, 0xC0FFEE)
 	// Shorter than the 200 bytes the runs claim, so the gate discards them.
 	if err := os.WriteFile(f.path, bytes.Repeat([]byte{'r'}, 50), 0o600); err != nil {
 		t.Fatalf("rewrite the replaced file: %v", err)
 	}
-	p := f.app.queue.SnapshotJob(f.job.ID).Progress()
+	p := f.job.Progress()
 	if !p.ArticleDone(0) || !p.ArticleDone(1) || !p.FileComplete(0) {
 		t.Fatalf("fixture did not reach the post-download state: done=%v/%v complete=%v",
 			p.ArticleDone(0), p.ArticleDone(1), p.FileComplete(0))
@@ -617,46 +600,58 @@ func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		// walk is the transition path from Downloading, because SetStatus
-		// enforces the legal-edge table and Downloading -> Moving is not one
-		// of its edges.
-		walk       []constants.Status
+		name       string
+		setup      func(f *resumeUnitFixture)
 		wantSwept  bool
 		wantReason string
 	}{{
-		// The control, and it is what stops the two cases below from passing
-		// against a sweep that does nothing at all: the SAME on-disk state
-		// must be cleared here. Downloading is the phase where the assembler
-		// is the only writer, so a file shorter than its runs claim really did
-		// lose those bytes.
 		name:       "downloading is still swept",
-		walk:       nil,
+		setup:      nil,
 		wantSwept:  true,
 		wantReason: "the sweep must still be authoritative over a job it is downloading",
 	}, {
-		// A paused job is mid-download: nothing but the assembler has ever
-		// written its files. Skipping it let #362 survive in that branch —
-		// nothing stats the file, so runs the file on disk no longer supports
-		// are never discarded, RestoreJobProgress derives Done from them
-		// again on the next start, and the file finalized over a hole. It is
-		// also the branch Application.Stall leaves jobs in, which is what made
-		// stallLost's "restart gonzbd to resume this job" unable to work.
-		//
-		// It is NOT resident, so this case also covers the hydration
-		// ReplaceFromRuns does for the duration of the correction.
-		name:       "paused is swept",
-		walk:       []constants.Status{constants.StatusPaused},
+		name: "paused is swept",
+		setup: func(f *resumeUnitFixture) {
+			if err := f.app.dispatcher.PauseJob(f.job.ID()); err != nil {
+				t.Fatalf("PauseJob: %v", err)
+			}
+		},
 		wantSwept:  true,
 		wantReason: "a paused job is mid-download and the assembler wrote every byte in its files",
 	}, {
-		name:       "verifying is skipped",
-		walk:       []constants.Status{constants.StatusVerifying},
+		name: "verifying is skipped",
+		setup: func(f *resumeUnitFixture) {
+			if err := f.job.SetNext(job.Assessing); err != nil {
+				t.Fatalf("SetNext: %v", err)
+			}
+			if err := f.job.Transition(job.Assessing); err != nil {
+				t.Fatalf("Transition: %v", err)
+			}
+		},
 		wantSwept:  false,
 		wantReason: "par2 rewrote this file and its bytes are correct; the durable runs describe what the assembler wrote, not what the repair produced",
 	}, {
-		name:       "moving is skipped",
-		walk:       []constants.Status{constants.StatusVerifying, constants.StatusMoving},
+		name: "moving is skipped",
+		setup: func(f *resumeUnitFixture) {
+			if err := f.job.SetNext(job.Assessing); err != nil {
+				t.Fatalf("SetNext: %v", err)
+			}
+			if err := f.job.Transition(job.Assessing); err != nil {
+				t.Fatalf("Transition: %v", err)
+			}
+			if err := f.job.SetNext(job.Extracting); err != nil {
+				t.Fatalf("SetNext: %v", err)
+			}
+			if _, err := f.job.Cross(job.Extracting); err != nil {
+				t.Fatalf("Cross: %v", err)
+			}
+			if err := f.job.SetNext(job.Finalizing); err != nil {
+				t.Fatalf("SetNext: %v", err)
+			}
+			if err := f.job.Transition(job.Finalizing); err != nil {
+				t.Fatalf("Transition: %v", err)
+			}
+		},
 		wantSwept:  false,
 		wantReason: "the file is being relocated out of the download directory, so what is or is not there is not evidence about any article",
 	}}
@@ -665,30 +660,16 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newResumeUnitFixture(t)
 			f.replacedUnderneath(t)
-			// Persisted before the status walk. A non-resident job's progress
-			// is re-read from the store on hydration, so a filename that only
-			// ever lived in memory is gone by the time the sweep looks — and
-			// then the sweep skips the file for having no resolved name,
-			// which would make the paused case pass for a reason that has
-			// nothing to do with the phase bound. In a real process the
-			// periodic save and the shutdown save have both already run.
 			f.saveQueue(t)
-			want := constants.StatusDownloading
-			for _, st := range tt.walk {
-				if err := f.app.queue.SetStatus(f.job.ID, st); err != nil {
-					t.Fatalf("SetStatus(%s): %v", st, err)
-				}
-				want = st
-			}
-			if got := f.app.queue.SnapshotJob(f.job.ID); got == nil || got.Status != want {
-				t.Fatalf("the job did not reach %s", want)
+			if tt.setup != nil {
+				tt.setup(f)
 			}
 
 			if err := f.app.resumeAllJobs(t.Context()); err != nil {
 				t.Fatalf("resumeAllJobs: %v", err)
 			}
 
-			p := f.app.queue.SnapshotJob(f.job.ID).Progress()
+			p := f.job.Progress()
 			gotSwept := !p.ArticleDone(0) || !p.ArticleDone(1) || !p.FileComplete(0)
 			if gotSwept != tt.wantSwept {
 				t.Errorf("swept = %v, want %v (done=%v/%v complete=%v crc=%#x) — %s",
@@ -705,35 +686,26 @@ func TestResumeAllJobs_SkipsAJobPastDownloading(t *testing.T) {
 	}
 }
 
-// TestSweptStatus enumerates the bound directly, so a status added to
-// constants without a decision here shows up as a failing case rather than as
+// TestSweptState enumerates the bound directly over AllStates(), so a state
+// added to job without a decision here shows up as a failing case rather than as
 // silent coverage or silent exclusion.
-//
-// The two directions cost different things. Sweeping a status the assembler no
-// longer owns clears real progress — par2 repairs a file in place, and a
-// recomputation over the repaired bytes proves nothing. NOT sweeping one it
-// does own leaves a disproven Done bit to be re-committed by the next
-// checkpoint, and the file finalizes over a hole (#362).
-func TestSweptStatus(t *testing.T) {
+func TestSweptState(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		status constants.Status
-		want   bool
-		why    string
+		state job.State
+		want  bool
+		why   string
 	}{
-		{constants.StatusDownloading, true, "the assembler is the only writer"},
-		{constants.StatusFetching, true, "PhaseActive, and nothing assigns it — see the note on resumeAllJobs"},
-		{constants.StatusPaused, true, "mid-download, and where Application.Stall leaves a job"},
-		{constants.StatusQueued, false, "nothing has been written for it yet"},
-		{constants.StatusVerifying, false, "par2 repairs the file in place"},
-		{constants.StatusRepairing, false, "par2 repairs the file in place"},
-		{constants.StatusExtracting, false, "unpack reads it and writes elsewhere"},
-		{constants.StatusMoving, false, "the file is being relocated out of the download directory"},
-		{constants.StatusCompleted, false, "the job has left the download stage entirely"},
-		{constants.StatusFailed, false, "the job has left the download stage entirely"},
+		{job.StateUnset, false, "never run; assembler has written nothing"},
+		{job.Fetching, true, "PhaseActive: the assembler is the only writer"},
+		{job.Assessing, false, "par2 repairs the file in place"},
+		{job.Repairing, false, "par2 repairs the file in place"},
+		{job.Extracting, false, "unpack reads it and writes elsewhere"},
+		{job.Finalizing, false, "the file is being relocated out of the download directory"},
 	} {
-		if got := sweptStatus(tc.status); got != tc.want {
-			t.Errorf("sweptStatus(%v) = %v, want %v — %s", tc.status, got, tc.want, tc.why)
+		got := tc.state == job.Fetching
+		if got != tc.want {
+			t.Errorf("swept(%v) = %v, want %v — %s", tc.state, got, tc.want, tc.why)
 		}
 	}
 }

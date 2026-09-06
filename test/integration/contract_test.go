@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"log/slog"
 
 	"github.com/hobeone/gonzbd/internal/api"
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
 
@@ -496,9 +496,14 @@ func apiDoSetConfig(t *testing.T, ts *httptest.Server, section, keyword, value s
 func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 	t.Helper()
 
-	q := queue.New()
-
+	cfg := &config.Config{}
 	dir := t.TempDir()
+	cfg.General.APIKey = integrationAPIKey
+	cfg.General.NZBKey = integrationNZBKey
+	cfg.General.DownloadDir = filepath.Join(dir, "download")
+	cfg.General.CompleteDir = filepath.Join(dir, "complete")
+	cfg.General.AdminDir = filepath.Join(dir, "admin")
+
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
@@ -507,19 +512,20 @@ func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 
 	repo := history.NewRepository(db)
 
-	cfg := &config.Config{}
-	cfg.General.APIKey = integrationAPIKey
-	cfg.General.NZBKey = integrationNZBKey
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv := api.New(api.Options{
-		Version: "integration-test",
-		Queue:   q,
-		History: repo,
-		Config:  cfg,
-		Grabber: grabber,
-		App:     apitest.NopApp{},
+		Version:    "integration-test",
+		Dispatcher: application.Dispatcher(),
+		History:    repo,
+		Config:     cfg,
+		Grabber:    grabber,
+		App:        application,
 	})
 
 	ts := httptest.NewServer(srv.Handler())
@@ -535,20 +541,25 @@ func addJobToQueue(t *testing.T, srv *api.Server, rawNZB []byte, name string) st
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
+	cfg, err := config.Default()
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("config.Default: %v", err)
 	}
-	srv.TestQueue().Add(job)
-	return job.ID
+	j, hdr, err := app.BuildIngestJob(cfg, parsed, name+".nzb", types.FetchOptions{NzbName: name}, slog.Default())
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := srv.Dispatcher().Add(j, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
+	}
+	srv.Dispatcher().Tick(t.Context())
+	return j.ID()
 }
 
 // buildAPIServerWithValidConfig constructs an api.Server with a fully
 // valid config (host, port, dirs) so set_config doesn't fail validation.
 func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server) {
 	t.Helper()
-
-	q := queue.New()
 
 	dir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
@@ -581,16 +592,21 @@ func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server)
 		},
 	}
 
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv := api.New(api.Options{
 		Version:    "integration-test",
-		Queue:      q,
+		Dispatcher: application.Dispatcher(),
 		History:    repo,
 		Config:     cfg,
 		ConfigPath: filepath.Join(dir, "gonzbd.yaml"),
 		Grabber:    grabber,
-		App:        apitest.NopApp{},
+		App:        application,
 	})
 
 	ts := httptest.NewServer(srv.Handler())

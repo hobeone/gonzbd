@@ -15,7 +15,7 @@ import (
 // A dispatched article carries a set Emitted bit. When its write fails the
 // bytes are not on disk and the article has to be fetched again, but
 // ForEachUnfinishedArticle skips a set Emitted bit and nothing else on this
-// path clears it: no Drain reports the article, no AckPermanentFailure names
+// path clears it: no Drain reports the article, no Job.MarkArticleFailed names
 // it, and eviction keeps job.progress, so pausing and resuming does not clear
 // it either. Without this the article is stranded for the life of the process
 // while the job reports it as work in flight.
@@ -29,33 +29,25 @@ func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	for _, idx := range []int32{0, 1} {
-		if err := application.queue.MarkArticleEmittedByIdx(job.ID, idx); err != nil {
-			t.Fatalf("MarkArticleEmittedByIdx(%d): %v", idx, err)
+		if err := job.MarkArticleEmitted(int(idx)); err != nil {
+			t.Fatalf("MarkArticleEmitted(%d): %v", idx, err)
 		}
 	}
 	// Grounding: without this the assertions below pass on a fixture that
 	// never reached the state under test.
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
-	}
-	if !snap.Progress().ArticleEmitted(0) || !snap.Progress().ArticleEmitted(1) {
+	if !job.Progress().ArticleEmitted(0) || !job.Progress().ArticleEmitted(1) {
 		t.Fatal("fixture never emitted both articles, so it cannot observe the bits being cleared")
 	}
 
-	application.handleArticlesUnwritten(job.ID, 0, []int32{0, 1})
+	application.handleArticlesUnwritten(job.ID(), 0, []int32{0, 1})
 
-	snap = application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
-	}
 	for _, idx := range []int32{0, 1} {
-		if snap.Progress().ArticleEmitted(int(idx)) {
+		if job.Progress().ArticleEmitted(int(idx)) {
 			t.Errorf("article %d is still Emitted after its write failed. "+
 				"ForEachUnfinishedArticle skips a set Emitted bit, so it is never "+
 				"re-dispatched and the job cannot finish", idx)
 		}
-		if snap.Progress().ArticleFailed(int(idx)) {
+		if job.Progress().ArticleFailed(int(idx)) {
 			t.Errorf("article %d was marked failed by a STORAGE fault, which A1 forbids: "+
 				"a full disk is not evidence about the article's availability", idx)
 		}
@@ -91,19 +83,19 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 			t.Fatalf("fixture error is permanent, so this subtest cannot observe the retryable branch")
 		}
 
-		application.handleWriteFault(job.ID, 0, f)
+		application.handleWriteFault(job.ID(), 0, f)
 		// The routing runs on its own goroutine — see the handler's doc for
 		// why it must not run on the assembler's worker.
 		application.wg.Wait()
 
-		snap := application.queue.SnapshotJob(job.ID)
-		if snap == nil {
-			t.Fatal("snap is nil")
+		row, ok := application.dispatcher.Row(job.ID())
+		if !ok {
+			t.Fatal("row not found")
 		}
-		if snap.Status != constants.StatusPaused {
+		if row.Status() != constants.StatusPaused {
 			t.Errorf("status = %v after a retryable write fault, want paused — a job that "+
 				"keeps dispatching into a device that cannot take them turns one fault "+
-				"into a flood", snap.Status)
+				"into a flood", row.Status())
 		}
 	})
 
@@ -114,13 +106,13 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 			t.Fatalf("fixture error is retryable, so this subtest cannot observe the permanent branch")
 		}
 
-		application.handleWriteFault(job.ID, 0, f)
+		application.handleWriteFault(job.ID(), 0, f)
 		// The routing runs on its own goroutine — see the handler's doc for
 		// why it must not run on the assembler's worker.
 		application.wg.Wait()
 
-		snap := application.queue.SnapshotJob(job.ID)
-		if snap != nil && snap.Status == constants.StatusPaused {
+		row, ok := application.dispatcher.Row(job.ID())
+		if ok && row.Status() == constants.StatusPaused {
 			t.Error("a permanent fault only paused the job; R20 says it is not " +
 				"re-evaluated, so pausing leaves it parked forever with no path out")
 		}
@@ -142,29 +134,21 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	if err := application.queue.MarkArticleEmittedByIdx(job.ID, 1); err != nil {
-		t.Fatalf("MarkArticleEmittedByIdx: %v", err)
+	if err := job.MarkArticleEmitted(1); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
-	}
-	if !snap.Progress().ArticleEmitted(1) {
+	if !job.Progress().ArticleEmitted(1) {
 		t.Fatal("fixture never emitted article 1, so it cannot observe the article being resolved")
 	}
-	before := snap.Progress().FailedBytes()
+	before := job.Progress().FailedBytes()
 
-	application.handleArticleRejected(job.ID, 0, 1, "negative offset")
+	application.handleArticleRejected(job.ID(), 0, 1, "negative offset")
 
-	snap = application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
-	}
-	if !snap.Progress().ArticleFailed(1) {
+	if !job.Progress().ArticleFailed(1) {
 		t.Error("the rejected article is not marked failed; its Emitted bit is still set, " +
 			"so ForEachUnfinishedArticle skips it and nothing ever re-dispatches it")
 	}
-	if got := snap.Progress().FailedBytes(); got <= before {
+	if got := job.Progress().FailedBytes(); got <= before {
 		t.Errorf("FailedBytes = %d, was %d — a rejected article's bytes must be charged, "+
 			"or the beyond-repair gate weighs them against par2's budget as if they had arrived",
 			got, before)
@@ -201,13 +185,13 @@ func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	const reason = "Overlapping segments in a.rar: <x> and <y> both claim byte offset 0"
-	application.handlePostAnomaly(job.ID, 0, reason)
+	application.handlePostAnomaly(job.ID(), 0, reason)
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("snap is nil")
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("row not found")
 	}
-	if got := snap.Warning; got != reason {
+	if got := row.Header.Warning; got != reason {
 		t.Errorf("job.Warning = %q, want %q — the anomaly reached the log but not the "+
 			"queue row, so nothing surfaces it to the user", got, reason)
 	}
@@ -244,7 +228,7 @@ func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
 	defer release()
 
 	start := time.Now()
-	application.handleWriteFault(job.ID, 0, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
+	application.handleWriteFault(job.ID(), 0, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
 	elapsed := time.Since(start)
 
 	if elapsed > time.Second {
@@ -256,8 +240,8 @@ func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
 	// The work still has to happen, or "does not block" is satisfied by doing
 	// nothing at all.
 	application.wg.Wait()
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap != nil && snap.Warning == "" {
+	row, ok := application.dispatcher.Row(job.ID())
+	if ok && row.Header.Warning == "" {
 		t.Error("the fault was never surfaced; the job halts with no reason (A2, R27)")
 	}
 }

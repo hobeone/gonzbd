@@ -50,13 +50,9 @@ var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 // the audit does its job across two Queues, not evidence two Queues sharing
 // a Job is a supported configuration — nothing in dispatch's own design
 // (D-B13, this Dispatcher owns its Queue outright) constructs more than one
-// Dispatcher per Job, and no PRODUCTION code constructs a Dispatcher at all:
-// `grep -rln 'dispatch\.New(' --include='*.go' internal/ cmd/ | grep -v
-// _test.go` (run from the repo root) finds 0 files. The two calls that exist
-// are both in internal/dispatch/store's lifecycle test, which runs a
-// Dispatcher against a real database — one at a time, never two over one Job.
-// This said "zero matches, in test or production code" until B2.2 added that
-// test; the production half is what the argument below actually needs. So
+// Dispatcher per Job, and production code constructs exactly one Dispatcher per
+// Application: `grep -rln 'dispatch\.New(' --include='*.go' internal/ cmd/ | grep -v _test.go`
+// (run from the repo root) finds 1 file (internal/app/app.go). So
 // today's single-pool claim survives, scoped to what runs: within a single
 // pool, which is every production configuration that exists today, identity
 // is exact — a double return or a lease this pool never issued is caught,
@@ -68,14 +64,15 @@ var ErrNotOutstanding = errors.New("sched: lease is not outstanding")
 // Not goroutine-safe: every caller is expected to hold Queue.mu. Stated
 // rather than locked, because a second lock here would be a second thing to
 // order against Queue.mu and Job.mu (prior spec §7.1). Queue.mu exists and is
-// taken by ten production doors — Cancel (cancel.go), Park, Retry and
+// taken by thirteen production doors — Cancel (cancel.go), Park, Retry and
 // Advance (advance.go), Settle (settle.go), Render and RenderAll (render.go),
-// and Pause, Resume and Paused (queue.go; see queue.go's own comment on mu) —
-// so this is now a description of a lock real code takes, not a
-// forward-looking constraint. queue.go's own comment carries the backticked
-// grep for the count; internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse
-// is what checks that these ten NAMES, not merely this count, are still
-// right — a grep proves how many, never which ones.
+// Pause, Resume, Paused, SetCaps, LeaseCap, and SlotCap (queue.go; see
+// queue.go's own comment on mu) — so this is now a description of a lock real
+// code takes, not a forward-looking constraint. queue.go's own comment carries
+// the backticked grep for the count;
+// internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse is what
+// checks that these thirteen NAMES, not merely this count, are still right — a
+// grep proves how many, never which ones.
 type leasePool struct {
 	capacity int
 	next     job.LeaseID
@@ -114,6 +111,13 @@ func (p *leasePool) reclaim(l *job.Lease) error {
 
 func (p *leasePool) outstanding() int { return len(p.issued) }
 
+func (p *leasePool) setCapacity(c int) {
+	if c < 1 {
+		c = 1
+	}
+	p.capacity = c
+}
+
 // slotPool is pool-B compute capacity, held by job ID. Slots have no object
 // because nothing travels with them — unlike a lease, which carries the
 // Manifest and StorageBarrier (spec §6).
@@ -143,3 +147,10 @@ func (p *slotPool) acquire(id string) bool {
 func (p *slotPool) release(id string)    { delete(p.held, id) }
 func (p *slotPool) holds(id string) bool { return p.held[id] }
 func (p *slotPool) outstanding() int     { return len(p.held) }
+
+func (p *slotPool) setCapacity(c int) {
+	if c < 1 {
+		c = 1
+	}
+	p.capacity = c
+}

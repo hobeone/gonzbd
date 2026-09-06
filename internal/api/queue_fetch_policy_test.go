@@ -11,7 +11,7 @@ import (
 // verdict having come back clean, which is the on-demand par2 saving made
 // visible per file rather than only in the history summary.
 func TestFileState_DistinguishesHeldFromSkipped(t *testing.T) {
-	q, job := newOnDemandPar2Job(t)
+	_, job := newOnDemandPar2Job(t)
 	m, err := job.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
@@ -27,9 +27,10 @@ func TestFileState_DistinguishesHeldFromSkipped(t *testing.T) {
 	}
 
 	// The verdict comes back clean.
-	if err := q.DiscardDeferredPar2(job.ID); err != nil {
-		t.Fatalf("DiscardDeferredPar2: %v", err)
+	if !job.DiscardDeferredPar2() {
+		t.Fatal("DiscardDeferredPar2 returned false, want true")
 	}
+	p = job.Progress()
 	if got := fileState(m, p, 1); got != "skipped" {
 		t.Errorf("discarded volume state = %q, want %q", got, "skipped")
 	}
@@ -42,13 +43,14 @@ func TestFileState_DistinguishesHeldFromSkipped(t *testing.T) {
 // volume that was withheld from download, which is what the badge
 // describes.
 func TestBuildSlot_Par2HeldStaysTrueAfterDiscard(t *testing.T) {
-	q, job := newOnDemandPar2Job(t)
+	disp, job := newOnDemandPar2Job(t)
 
-	if err := q.DiscardDeferredPar2(job.ID); err != nil {
-		t.Fatalf("DiscardDeferredPar2: %v", err)
+	if !job.DiscardDeferredPar2() {
+		t.Fatal("DiscardDeferredPar2 returned false, want true")
 	}
 
-	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+	rows := disp.List()
+	slot := buildSlot(rows[0], job, false, 0, 0, nil, app.JobCheckpointState{})
 	if !slot.Par2Held {
 		t.Error("Par2Held = false after DiscardDeferredPar2, want true — the badge must not disappear once the verdict comes back clean")
 	}

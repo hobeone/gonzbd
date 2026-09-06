@@ -11,8 +11,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // durabilitySlot is the part of the queue listing this file cares about,
@@ -26,23 +27,46 @@ type durabilitySlot struct {
 	LastBarrierUnix int64  `json:"last_barrier_unix"`
 }
 
-// stallTestServer wires a queue and a NopApp whose checkpoint figures the
+// stallTestServer wires a dispatcher and a NopApp whose checkpoint figures the
 // caller controls, then returns both so a test can assert on the wire shape
 // without standing up a real barrier.
-func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, counter *atomic.Int64) (*Server, *queue.Queue) {
+func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, counter *atomic.Int64) (*Server, *dispatch.Dispatcher) {
 	t.Helper()
-	q := queue.New()
+	disp := newTestAPIDispatcher(t)
 	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
+		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version:    "1.0.0-test",
+		Dispatcher: disp,
 		App: apitest.NopApp{
-			Queue:               q,
 			CheckpointStatesVal: states,
 			ReevaluatedVal:      counter,
 		},
 	})
-	return s, q
+	return s, disp
+}
+
+func addTestDispatcherJob(t *testing.T, disp *dispatch.Dispatcher, name string) *job.Job {
+	t.Helper()
+	files := []job.JobFile{
+		{
+			Subject:  name + ".rar",
+			Bytes:    1024,
+			Articles: []job.JobArticle{{ID: name + "@t", Bytes: 1024, Number: 1}},
+		},
+	}
+	m := job.NewManifest(files)
+	j := job.New("job-"+name, name, job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := disp.Add(j, dispatch.Header{
+		Name:     name,
+		Filename: name + ".nzb",
+		Bytes:    m.TotalBytes(),
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return j
 }
 
 func queueDurabilitySlots(t *testing.T, s *Server, path string) []durabilitySlot {
@@ -79,14 +103,14 @@ func findDurabilitySlot(t *testing.T, slots []durabilitySlot, id string) durabil
 // download they give up on.
 func TestQueueAPI_ReportsStallReason(t *testing.T) {
 	t.Parallel()
-	s, q := stallTestServer(t, nil, nil)
-	job := addTestJob(t, q, queue.AddOptions{Name: "stalled"})
+	s, disp := stallTestServer(t, nil, nil)
+	j := addTestDispatcherJob(t, disp, "stalled")
 	// Set after the job exists so the map key is the real ID.
-	s.status = apitest.NopApp{Queue: q, CheckpointStatesVal: map[string]app.JobCheckpointState{
-		job.ID: {StallReason: `Stalled: storage retryable fault on write "/data/x.bin": no space left on device`},
+	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
+		j.ID(): {StallReason: `Stalled: storage retryable fault on write "/data/x.bin": no space left on device`},
 	}}
 
-	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
+	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
 
 	if slot.StallReason == "" {
 		t.Fatal("stall_reason is empty for a stalled job — R27 requires an actionable reason")
@@ -111,8 +135,8 @@ func TestQueueAPI_ReportsStallReason(t *testing.T) {
 // the field, so the assertion has to be made against the raw object.
 func TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty(t *testing.T) {
 	t.Parallel()
-	s, q := stallTestServer(t, nil, nil)
-	job := addTestJob(t, q, queue.AddOptions{Name: "healthy"})
+	s, disp := stallTestServer(t, nil, nil)
+	j := addTestDispatcherJob(t, disp, "healthy")
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -130,8 +154,8 @@ func TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty(t *testing.T) {
 		t.Fatalf("slots = %d, want 1", len(raw.Queue.Slots))
 	}
 	slot := raw.Queue.Slots[0]
-	if slot["nzo_id"] != job.ID {
-		t.Fatalf("slot nzo_id = %v, want %s", slot["nzo_id"], job.ID)
+	if slot["nzo_id"] != j.ID() {
+		t.Fatalf("slot nzo_id = %v, want %s", slot["nzo_id"], j.ID())
 	}
 	got, present := slot["stall_reason"]
 	if !present {
@@ -154,14 +178,14 @@ func TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty(t *testing.T) {
 // chosen independently rather than derived from one another.
 func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 	t.Parallel()
-	s, q := stallTestServer(t, nil, nil)
-	job := addTestJob(t, q, queue.AddOptions{Name: "inflight"})
+	s, disp := stallTestServer(t, nil, nil)
+	j := addTestDispatcherJob(t, disp, "inflight")
 	barrierAt := time.Now().Truncate(time.Second)
-	s.status = apitest.NopApp{Queue: q, CheckpointStatesVal: map[string]app.JobCheckpointState{
-		job.ID: {PendingBytes: 512, LastBarrier: barrierAt},
+	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
+		j.ID(): {PendingBytes: 512, LastBarrier: barrierAt},
 	}}
 
-	before := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
+	before := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
 
 	if before.BytesPending != 512 {
 		t.Errorf("bytes_pending = %d, want 512 — the rework window is not reported at all",
@@ -181,13 +205,13 @@ func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 	// Now make the job's single 1024-byte article durable, through the same
 	// recorded-run replay a resume performs. Asserting only the zero above
 	// pinned nothing: a bytes_durable that always answered 0 satisfied it.
-	if err := q.SeedFromRuns(job.ID, []durability.Run{
+	if err := j.SeedFromRuns([]durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Length: 1024},
 	}); err != nil {
 		t.Fatalf("SeedFromRuns: %v", err)
 	}
 
-	after := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
+	after := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
 	if after.BytesDurable != 1024 {
 		t.Errorf("bytes_durable = %d after a recorded run covered the job's only article, "+
 			"want 1024 — the field reports nothing a barrier achieved", after.BytesDurable)
@@ -203,10 +227,10 @@ func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 // client formats as a date in the year 1754 rather than as an absence.
 func TestQueueAPI_ReportsNoLastBarrierAsZero(t *testing.T) {
 	t.Parallel()
-	s, q := stallTestServer(t, nil, nil)
-	job := addTestJob(t, q, queue.AddOptions{Name: "fresh"})
+	s, disp := stallTestServer(t, nil, nil)
+	j := addTestDispatcherJob(t, disp, "fresh")
 
-	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), job.ID)
+	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
 
 	if slot.LastBarrierUnix != 0 {
 		t.Errorf("last_barrier_unix = %d for a job that has never checkpointed, want 0",
@@ -220,15 +244,15 @@ func TestQueueAPI_ReportsNoLastBarrierAsZero(t *testing.T) {
 // exactly the case a user hits.
 func TestQueueAPI_DetailCarriesTheSameDurabilityFields(t *testing.T) {
 	t.Parallel()
-	s, q := stallTestServer(t, nil, nil)
-	job := addTestJob(t, q, queue.AddOptions{Name: "drawer"})
-	s.status = apitest.NopApp{Queue: q, CheckpointStatesVal: map[string]app.JobCheckpointState{
-		job.ID: {StallReason: "Stalled: disk full", PendingBytes: 64},
+	s, disp := stallTestServer(t, nil, nil)
+	j := addTestDispatcherJob(t, disp, "drawer")
+	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
+		j.ID(): {StallReason: "Stalled: disk full", PendingBytes: 64},
 	}}
 
 	slots := queueDurabilitySlots(t, s,
-		"/api?mode=queue&nzo_id="+job.ID+"&files=1&apikey="+testAPIKey)
-	slot := findDurabilitySlot(t, slots, job.ID)
+		"/api?mode=queue&nzo_id="+j.ID()+"&files=1&apikey="+testAPIKey)
+	slot := findDurabilitySlot(t, slots, j.ID())
 
 	if slot.StallReason == "" {
 		t.Error("stall_reason is empty in the detail response; the drawer the user opens on a " +
@@ -248,13 +272,13 @@ func TestQueueAPI_DetailCarriesTheSameDurabilityFields(t *testing.T) {
 func TestQueueResume_AsksForAStallReevaluation(t *testing.T) {
 	t.Parallel()
 	var reevaluated atomic.Int64
-	s, q := stallTestServer(t, nil, &reevaluated)
-	job := addTestJob(t, q, queue.AddOptions{Name: "resumed"})
-	if err := q.Pause(job.ID); err != nil {
+	s, disp := stallTestServer(t, nil, &reevaluated)
+	j := addTestDispatcherJob(t, disp, "resumed")
+	if err := disp.PauseJob(j.ID()); err != nil {
 		t.Fatal(err)
 	}
 
-	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value="+job.ID+"&apikey="+testAPIKey)
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value="+j.ID()+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}

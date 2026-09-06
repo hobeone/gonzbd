@@ -9,9 +9,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // The barrier's overlap findings are returned rather than pushed through a
@@ -47,14 +46,14 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 			{ID: "a2@t", Bytes: 100, Number: 3},
 		},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "overlap"}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "overlap.nzb", types.FetchOptions{NzbName: "overlap"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.queue.Add(job); err != nil {
+	if err := application.dispatcher.Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := application.pipeline.registerFile(job.ID, 0); err != nil {
+	if err := application.pipeline.registerFile(j.ID(), 0); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}
 
@@ -81,7 +80,7 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 		size   int
 	}{{0, 0, 100}, {1, 100, 100}, {2, 150, 150}} {
 		ref := assembler.ArticleRef{
-			JobID: job.ID, FileIdx: 0,
+			JobID: j.ID(), FileIdx: 0,
 			ArtIdx:    int32(w.art), //nolint:gosec // G115: test article counts are tiny
 			MessageID: string(rune('a'+w.art)) + "@t",
 		}
@@ -93,9 +92,9 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 
 	application.barrier = durability.NewBarrier(
 		durability.NewSQLiteRunStore(repo.DB()),
-		application.queue, application, slog.New(slog.DiscardHandler))
+		application, application, slog.New(slog.DiscardHandler))
 
-	return application, job.ID
+	return application, j.ID()
 }
 
 // assertOverlapWarned checks the message, not that a warning exists.
@@ -107,8 +106,8 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 func assertOverlapWarned(t *testing.T, application *Application, jobID, route string) {
 	t.Helper()
 	var warning string
-	if j := application.queue.SnapshotJob(jobID); j != nil {
-		warning = j.Warning
+	if row, ok := application.dispatcher.Row(jobID); ok {
+		warning = row.Header.Warning
 	}
 	// The base name and the excess. Not the article indices: a run merges the
 	// articles that abut into one row, so by the time the record is written
@@ -136,11 +135,15 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	jobID := addStallTestJob(t, application, "warnable").ID
+	jobID := addStallTestJob(t, application, "warnable").ID()
 
 	// Empty first: the overwhelmingly common case must not touch the warning.
 	application.reportPostAnomalies(jobID, nil)
-	if w := application.queue.SnapshotJob(jobID).Warning; w != "" {
+	row, ok := application.dispatcher.Row(jobID)
+	if !ok {
+		t.Fatalf("job %s not found in dispatcher", jobID)
+	}
+	if w := row.Header.Warning; w != "" {
 		t.Fatalf("an empty finding list set the warning to %q", w)
 	}
 
@@ -148,7 +151,8 @@ func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 		{FileIdx: 0, Reason: "first file is malformed"},
 		{FileIdx: 1, Reason: "second file is malformed"},
 	})
-	if w := application.queue.SnapshotJob(jobID).Warning; w != "second file is malformed" {
+	row, _ = application.dispatcher.Row(jobID)
+	if w := row.Header.Warning; w != "second file is malformed" {
 		t.Errorf("job warning = %q, want the LAST finding — Job.Warning holds one "+
 			"string, so a second file's report overwrites the first's", w)
 	}

@@ -97,9 +97,8 @@ func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
 	app.SetMaxArtOpt(d.MaxArtOpt)
 	app.SetTopOnly(d.TopOnly)
 	app.SetPropagationDelay(d.PropagationDelay)
-	if app.queue != nil {
-		app.queue.SetSanitizeOptions(d.SanitizeOptions())
-		app.queue.SetMaxActiveJobs(d.MaxActiveJobs)
+	if app.dispatcher != nil && d.MaxActiveJobs > 0 {
+		app.dispatcher.SetCaps(d.MaxActiveJobs, app.dispatcher.SlotCap())
 	}
 }
 
@@ -251,13 +250,20 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 			"barrier acks them",
 			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
 	}
-	app.queue.ClearAllEmitted(unprotected)
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if j, ok := app.dispatcher.Job(row.ID); ok {
+				_, skip := unprotected[row.ID]
+				j.ClearEmittedForReload(skip)
+			}
+		}
+	}
 
 	servers := make([]*downloader.Server, len(scs))
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)
 	}
-	newDownloader := downloader.New(app.queue, servers, app.meter, app.buildDownloaderOptions(), app.log)
+	newDownloader := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), app.log)
 	if err := newDownloader.Start(app.ctx); err != nil {
 		return err
 	}

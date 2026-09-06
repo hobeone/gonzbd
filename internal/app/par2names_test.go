@@ -3,101 +3,62 @@ package app
 import (
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/job"
 )
-
-// This file used to test recordPar2Names, which applied par2's renames during
-// download and wrote each new location to JobProgress.Filename. That function
-// is gone, and so are its tests.
-//
-// It existed so that verification — which matched par2 entries by NAME — would
-// have corrected names to work with. Verification is content-based now and
-// runs before anything moves, so the rename bought the verdict nothing, while
-// costing a real defect: JobProgress.Filename cannot hold a path, so a file
-// relocated into a subdirectory could not be recorded truthfully, and the
-// startup resume sweep then stat'ed a top-level path that does not exist.
-// durability.Resume reads a missing file as disproof of every run it holds and
-// re-downloads a file that was already complete.
-//
-// Relocation belongs to post-processing, which is where it was before and
-// where stage_quickcheck still does it, ahead of the repair stage that needs
-// files at their par2 paths. The idempotency property those tests pinned is
-// pinned at the level that owns it now:
-// par2.TestIdentify_FindsAnEntryAlreadyAtItsPar2Path.
 
 // TestResolvedName pins the precedence every par2 call site uses: the recorded
 // on-disk name wins over the NZB subject, and the subject is the fallback
 // until one is recorded.
-//
-// The precedence is what lets assembledFiles describe a file the assembler
-// wrote under its yEnc name rather than its subject, which is the ordinary
-// obfuscated case — and it is the reason the verdict can be taken against
-// names that are true without anything having been renamed.
 func TestResolvedName(t *testing.T) {
 	t.Parallel()
 
-	const jobID = "resolved-name-job"
-	qjob := newPar2Job(t, []par2FileSpec{
-		{subject: "subject-name.bin", bytes: 100},
-		{subject: "data.vol000+01.par2", bytes: 100},
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "subject-name.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<1@x>", Bytes: 100}}},
+		{Subject: "data.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
-	qjob.ID = jobID
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
+	j := job.New("resolved-name-job", "resolved-name-job", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
 
-	snap := q.SnapshotJob(jobID)
-	m, err := snap.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest: %v", err)
-	}
-
-	if got := resolvedName(m, snap.Progress(), 0); got != "subject-name.bin" {
+	if got := resolvedName(m, j.Progress(), 0); got != "subject-name.bin" {
 		t.Errorf("with nothing recorded, resolvedName = %q, want the subject", got)
 	}
 
-	if err := q.SetFileFilename(jobID, 0, "actual-on-disk.bin"); err != nil {
+	if err := j.SetFileFilename(0, "actual-on-disk.bin"); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
-	after := q.SnapshotJob(jobID)
-	if got := resolvedName(m, after.Progress(), 0); got != "actual-on-disk.bin" {
+	if got := resolvedName(m, j.Progress(), 0); got != "actual-on-disk.bin" {
 		t.Errorf("with a name recorded, resolvedName = %q, want the recorded name", got)
 	}
 }
 
 // TestAssembledFiles pins what the queue hands par2: the name each file
 // currently has on disk, paired with the CRC recorded for it.
-//
-// The pairing is the point. A file's CRC is looked up by the name par2
-// identification returns, so a list that carried the subject where a resolved
-// name exists would hand par2 a name nothing on disk answers to, and every
-// obfuscated file would come back unverified.
 func TestAssembledFiles(t *testing.T) {
 	t.Parallel()
 
-	const jobID = "assembled-files-job"
-	qjob := newPar2Job(t, []par2FileSpec{
-		{subject: "subject-name.bin", bytes: 100},
-		{subject: "data.vol000+01.par2", bytes: 100},
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "subject-name.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<1@x>", Bytes: 100}}},
+		{Subject: "data.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
-	qjob.ID = jobID
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
+	j := job.New("assembled-files-job", "assembled-files-job", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	if err := q.SetFileFilename(jobID, 0, "7xq6N6P340dCh9Lnih5hY3jsArfSN1"); err != nil {
+
+	if err := j.SetFileFilename(0, "7xq6N6P340dCh9Lnih5hY3jsArfSN1"); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
-	seedFileCRC(t, q, qjob, 0, 0x1068AFA6)
-
-	snap := q.SnapshotJob(jobID)
-	m, err := snap.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest: %v", err)
+	runs := []durability.Run{
+		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1068AFA6},
+	}
+	if _, err := j.SetFileCRC32FromRuns(0, runs); err != nil {
+		t.Fatalf("SetFileCRC32FromRuns: %v", err)
 	}
 
-	files := assembledFiles(m, snap.Progress())
+	files := assembledFiles(m, j.Progress())
 	if len(files) != m.NumFiles() {
 		t.Fatalf("got %d assembled files, want %d — one per manifest file", len(files), m.NumFiles())
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -80,6 +81,9 @@ func TestReconcileResidency_CalledDirectlyHydrates(t *testing.T) {
 // markResident and markNotResident.
 func TestResidentBookkeeping_MarksAndClears(t *testing.T) {
 	d := newTestDispatcher(t)
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	if d.isResident("j1") {
 		t.Fatal("isResident(j1) = true before anything marked it")
@@ -309,5 +313,30 @@ func TestResidency_CancelledContextDoesNotSettleOnANonContextError(t *testing.T)
 	if !j2.HoldsLease() {
 		t.Error("lease released — a job interrupted by shutdown keeps its " +
 			"resources; Stop's sweep parks them")
+	}
+}
+
+// TestResidency_HydrationFailureSettleError pins reconcileResidency error reporting.
+func TestResidency_HydrationFailureSettleError(t *testing.T) {
+	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("corrupt")}}
+	d := newTestDispatcher(t, withResidency(res))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background()) // opens the attempt at Fetching; no lease yet
+	if err := d.q.Advance(j); err != nil {
+		t.Fatalf("setup: Advance: %v", err)
+	}
+	if !d.q.Render(j).Holds {
+		t.Fatal("setup: job does not hold lease")
+	}
+
+	err := d.reconcileResidency(context.Background(), j)
+	if err == nil {
+		t.Fatal("expected error on corrupt manifest")
+	}
+	if strings.Contains(err.Error(), "and settle failed") {
+		t.Errorf("error = %q; should not report settle failure when settle succeeded", err)
 	}
 }

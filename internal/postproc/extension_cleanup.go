@@ -181,14 +181,15 @@ func cleanupEmptyDirs(root *os.Root) {
 }
 
 func (s *ExtensionCleanupStage) logger(job *Job) *slog.Logger {
+	id := job.JobID()
 	if s.Log != nil {
-		if job.Queue != nil {
-			return s.Log.With("job", job.Queue.ID, "stage", s.Name())
+		if id != "" {
+			return s.Log.With("job", id, "stage", s.Name())
 		}
 		return s.Log.With("stage", s.Name())
 	}
-	if job.Queue != nil {
-		return slog.Default().With("job", job.Queue.ID, "stage", s.Name())
+	if id != "" {
+		return slog.Default().With("job", id, "stage", s.Name())
 	}
 	return slog.Default().With("stage", s.Name())
 }

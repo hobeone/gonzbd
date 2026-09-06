@@ -485,3 +485,14 @@ func TestRouteFault(t *testing.T) {
 		})
 	}
 }
+
+func TestNewProof(t *testing.T) {
+	t.Parallel()
+	proof := newProof("job-123", []int32{1, 2, 3})
+	if proof.JobID() != "job-123" {
+		t.Errorf("JobID = %q, want job-123", proof.JobID())
+	}
+	if len(proof.Articles()) != 3 {
+		t.Errorf("Articles len = %d, want 3", len(proof.Articles()))
+	}
+}

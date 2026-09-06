@@ -17,8 +17,8 @@ import (
 // one article for good.
 //
 // Both tables, because they have different owners and the retention rules have
-// to agree about them: durability.RunStore owns durable_runs and the queue
-// owns failed_articles.
+// to agree about them: durability.RunStore owns durable_runs and
+// checkpoint.Store.SaveBatch owns failed_articles.
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
 	if _, err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
@@ -26,7 +26,8 @@ func seedDurability(t *testing.T, application *Application, jobID string) {
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)
 	}
-	if err := application.queue.Store().RecordFailedArticles(t.Context(), jobID, []int32{1}); err != nil {
+	if _, err := application.historyRepo.DB().ExecContext(t.Context(),
+		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, jobID); err != nil {
 		t.Fatalf("seed failed articles: %v", err)
 	}
 }
@@ -59,27 +60,27 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // aborts on a failure here rather than requeueing (#422).
 //
 // Both owners' errors are joined rather than the first winning, because they
-// are different stores: durability.RunStore owns durable_runs and the queue
-// owns failed_articles. A caller deciding whether to abort is better served by
+// are different stores: durability.RunStore owns durable_runs and
+// checkpoint.Store.SaveBatch owns failed_articles. A caller deciding whether to abort is better served by
 // the whole picture, and an early return would leave one owner's rows behind
 // for a job that is about to be re-downloaded over them.
 func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 
 	// The success path first, so the failure assertions below cannot pass
 	// against a function that never removes anything.
-	if err := application.dropJobDurability(t.Context(), job.ID); err != nil {
+	if err := application.dropJobDurability(t.Context(), job.ID()); err != nil {
 		t.Fatalf("dropJobDurability: %v", err)
 	}
-	if nr, nf := durabilityRowCounts(t, application, job.ID); nr != 0 || nf != 0 {
+	if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 0 || nf != 0 {
 		t.Fatalf("%d runs and %d failed rows survive the drop", nr, nf)
 	}
 
 	boom := errors.New("database is locked")
 	application.runs = failingRunStore{err: boom}
-	err := application.dropJobDurability(t.Context(), job.ID)
+	err := application.dropJobDurability(t.Context(), job.ID())
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the run store's failure — RetryHistoryJob "+
 			"aborts on this, and a swallowed failure requeues the job over stale rows", err)
@@ -111,18 +112,18 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 func TestPersistAndCommit_KeepsDurabilityForAFailedJob(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 
-	if nf, ne := durabilityRowCounts(t, application, job.ID); nf != 1 || ne != 1 {
+	if nf, ne := durabilityRowCounts(t, application, job.ID()); nf != 1 || ne != 1 {
 		t.Fatalf("fixture seeded %d runs and %d failed rows, want 1 and 1", nf, ne)
 	}
 
-	entry := history.Entry{NzoID: job.ID, Name: job.Name, Status: string(constants.StatusFailed)}
-	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Queue: job}); err != nil {
+	entry := history.Entry{NzoID: job.ID(), Name: job.Name(), Status: string(constants.StatusFailed)}
+	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: job}); err != nil {
 		t.Fatalf("persistAndCommit: %v", err)
 	}
 
-	nf, ne := durabilityRowCounts(t, application, job.ID)
+	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf == 0 {
 		t.Error("a failed job's durable runs were deleted. A retry rebuilds the same " +
 			"filename over the same partial file, so with no runs the truncate bound " +
@@ -144,14 +145,14 @@ func TestPersistAndCommit_KeepsDurabilityForAFailedJob(t *testing.T) {
 func TestPersistAndCommit_DropsDurabilityForACompletedJob(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 
-	entry := history.Entry{NzoID: job.ID, Name: job.Name, Status: string(constants.StatusCompleted)}
-	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Queue: job}); err != nil {
+	entry := history.Entry{NzoID: job.ID(), Name: job.Name(), Status: string(constants.StatusCompleted)}
+	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: job}); err != nil {
 		t.Fatalf("persistAndCommit: %v", err)
 	}
 
-	nf, ne := durabilityRowCounts(t, application, job.ID)
+	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 0 || ne != 0 {
 		t.Errorf("a completed job left %d runs and %d failed rows behind; nothing will "+
 			"ever read them again and they accumulate one set per download", nf, ne)

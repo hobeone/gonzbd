@@ -40,19 +40,23 @@ func newDirectUnpackOrchestrator(app *Application) *directUnpackOrchestrator {
 // job is eligible for extraction-while-downloading.
 func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	app := o.app
-	snap := app.queue.SnapshotJob(fc.JobID)
-	if snap == nil || snap.PostProc {
+	if app.dispatcher == nil {
+		return
+	}
+	j, ok := app.dispatcher.Job(fc.JobID)
+	if !ok {
+		return
+	}
+	row, ok := app.dispatcher.Row(fc.JobID)
+	if !ok {
 		return
 	}
 	// Skip DU for jobs that don't want unpacking (PP < 2) or have a password
 	// (DU would fail on the password and fall back anyway).
-	if snap.PP < 2 {
+	if row.Header.PP < 2 || row.Header.Password != "" {
 		return
 	}
-	if snap.Password != "" {
-		return
-	}
-	m, mErr := snap.Manifest()
+	m, mErr := j.Manifest()
 	if mErr != nil || fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
 		return
 	}
@@ -86,7 +90,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 				"job", fc.JobID, "active", o.active, "limit", limit)
 			return
 		}
-		downloadDir := filepath.Join(downloadDirBase, snap.Name)
+		downloadDir := filepath.Join(downloadDirBase, j.Name())
 		du = directunpack.New(
 			app.log.With("component", "directunpack", "job", fc.JobID),
 			fc.JobID, downloadDir, downloadDir,
@@ -113,7 +117,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	// success is suppressed) instead of silently trusting incomplete data. par2
 	// repair will fix it from the recovery blocks; the normal unpack stage
 	// re-extracts afterward.
-	if hasFailedArticle(m, snap.Progress(), fc.FileIdx) {
+	if hasFailedArticle(m, j.Progress(), fc.FileIdx) {
 		reason := fmt.Sprintf("volume %s had failed/missing download articles", filename)
 		du.MarkCorrupt(setname, reason)
 		app.log.Warn("directunpack: marking set corrupt, volume incomplete",

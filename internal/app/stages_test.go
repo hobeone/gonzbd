@@ -435,3 +435,13 @@ func testBuildStages(c Config, log *slog.Logger, probe binaryProbe) (builtStages
 	cfg := convertConfig(c)
 	return buildStages(cfg, c.Version, log, probe)
 }
+
+func TestProbeBinaries(t *testing.T) {
+	t.Parallel()
+	cfg := convertConfig(Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()})
+	p1 := probeBinaries(t.Context(), cfg, discardLog())
+	p2 := probeBinaries(t.Context(), cfg, discardLog())
+	if p1 != p2 {
+		t.Errorf("probeBinaries() = %+v, want cached %+v", p2, p1)
+	}
+}

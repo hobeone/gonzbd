@@ -69,7 +69,7 @@ func newRetryTestApp(t *testing.T) (*app.Application, *history.Repository, strin
 		t.Fatalf("app.New: %v", err)
 	}
 	application.PauseDownloads()
-	application.Queue().PauseAll()
+	application.Dispatcher().Pause()
 	return application, repo, adminDir
 }
 
@@ -95,12 +95,16 @@ func TestRetryHistoryJob_RebuildsFromNZBBackup(t *testing.T) {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	snap := application.Queue().SnapshotJob("retryfromnzb0001")
-	if snap == nil {
+	j, ok := application.Dispatcher().Job("retryfromnzb0001")
+	if !ok {
 		t.Fatal("retried job is not in the queue")
 	}
-	if snap.NumArticles() != 3 {
-		t.Errorf("NumArticles = %d, want 3 — the NZB was not re-parsed", snap.NumArticles())
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	if m.NumArticles() != 3 {
+		t.Errorf("NumArticles = %d, want 3 — the NZB was not re-parsed", m.NumArticles())
 	}
 	if _, err := repo.Get(t.Context(), "retryfromnzb0001"); err == nil {
 		t.Error("history entry survived a successful retry")
@@ -137,18 +141,18 @@ func TestRetryHistoryJob_PreservesJobOptions(t *testing.T) {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	snap := application.Queue().SnapshotJob("retrykeepsopts01")
-	if snap == nil {
+	row, ok := application.Dispatcher().Row("retrykeepsopts01")
+	if !ok {
 		t.Fatal("retried job is not in the queue")
 	}
-	if snap.PP != 3 {
-		t.Errorf("PP = %d, want 3", snap.PP)
+	if row.Header.PP != 3 {
+		t.Errorf("PP = %d, want 3", row.Header.PP)
 	}
-	if snap.Script != "notify.sh" {
-		t.Errorf("Script = %q, want %q", snap.Script, "notify.sh")
+	if row.Header.Script != "notify.sh" {
+		t.Errorf("Script = %q, want %q", row.Header.Script, "notify.sh")
 	}
-	if snap.Password != "hunter2" {
-		t.Errorf("Password = %q, want %q", snap.Password, "hunter2")
+	if row.Header.Password != "hunter2" {
+		t.Errorf("Password = %q, want %q", row.Header.Password, "hunter2")
 	}
 }
 
@@ -207,7 +211,7 @@ func TestRetryHistoryJob_RefusesCompletedEntry(t *testing.T) {
 	if err == nil {
 		t.Fatal("retry of a completed entry was accepted")
 	}
-	if application.Queue().SnapshotJob("retrycompleted01") != nil {
+	if _, ok := application.Dispatcher().Row("retrycompleted01"); ok {
 		t.Error("refused retry still enqueued the job")
 	}
 	if _, getErr := repo.Get(t.Context(), "retrycompleted01"); getErr != nil {

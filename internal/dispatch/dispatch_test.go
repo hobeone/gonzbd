@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -101,5 +102,72 @@ func TestLogHelpers_RecordTheJobIDAndTheError(t *testing.T) {
 				t.Errorf("log output %q does not contain the error text", out)
 			}
 		})
+	}
+}
+
+func TestDispatcher_SetCaps_LeaseCap_SlotCap(t *testing.T) {
+	d := newTestDispatcher(t, withCaps(2, 4))
+	if got := d.LeaseCap(); got != 2 {
+		t.Errorf("LeaseCap() = %d, want 2", got)
+	}
+	if got := d.SlotCap(); got != 4 {
+		t.Errorf("SlotCap() = %d, want 4", got)
+	}
+
+	d.SetCaps(6, 8)
+	if got := d.LeaseCap(); got != 6 {
+		t.Errorf("after SetCaps(6, 8), LeaseCap() = %d, want 6", got)
+	}
+	if got := d.SlotCap(); got != 8 {
+		t.Errorf("after SetCaps(6, 8), SlotCap() = %d, want 8", got)
+	}
+}
+
+func TestRestoreJobMetadata_Coverage(t *testing.T) {
+	j := job.New("j1", "name", job.Policy{})
+	m := job.NewManifest([]job.JobFile{{
+		Subject:  "f1",
+		Bytes:    1000,
+		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
+	}})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	p := Persisted{
+		Header: Header{
+			Added: 1700000000,
+		},
+		DownloadStarted:   1700000100,
+		DownloadFinished:  1700000200,
+		Par2ReleaseReason: "repair needed",
+	}
+	restoreJobMetadata(j, p)
+
+	if j.Added().Unix() != 1700000000 {
+		t.Errorf("Added = %d, want 1700000000", j.Added().Unix())
+	}
+	if j.Progress().DownloadStarted().Unix() != 1700000100 {
+		t.Errorf("DownloadStarted = %d, want 1700000100", j.Progress().DownloadStarted().Unix())
+	}
+	if j.Progress().DownloadFinished().Unix() != 1700000200 {
+		t.Errorf("DownloadFinished = %d, want 1700000200", j.Progress().DownloadFinished().Unix())
+	}
+	if j.Progress().Par2ReleaseReason() != "repair needed" {
+		t.Errorf("Par2ReleaseReason = %q, want 'repair needed'", j.Progress().Par2ReleaseReason())
+	}
+}
+
+func TestRestoreJobMetadata_RestoresAddedTimestamp(t *testing.T) {
+	j := job.New("j1", "Job 1", job.Policy{})
+	targetTime := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	p := Persisted{
+		Header: Header{
+			Added: targetTime.Unix(),
+		},
+	}
+	restoreJobMetadata(j, p)
+
+	if !j.Added().Equal(targetTime) {
+		t.Errorf("Added = %v, want %v", j.Added(), targetTime)
 	}
 }

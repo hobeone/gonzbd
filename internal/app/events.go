@@ -80,7 +80,12 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			remaining := app.queue.TotalRemainingBytes()
+			var remaining int64
+			if app.dispatcher != nil {
+				for _, row := range app.dispatcher.List() {
+					remaining += row.RemainingBytes
+				}
+			}
 			app.mu.Lock()
 			stats := app.downloaderStats
 			app.mu.Unlock()

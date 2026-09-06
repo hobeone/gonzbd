@@ -51,6 +51,11 @@ type DownloadConfig struct {
 	// repairing/extracting) concurrently. Defaults to 4.
 	MaxActiveJobs int `yaml:"max_active_jobs" json:"max_active_jobs"`
 
+	// MaxComputeSlots is the maximum number of jobs concurrently performing
+	// compute- or disk-heavy post-processing stages (Assessing, Repairing,
+	// Extracting, Finalizing). Defaults to 2.
+	MaxComputeSlots int `yaml:"max_compute_slots" json:"max_compute_slots"`
+
 	// TopOnly restricts dispatch to the highest-priority server per
 	// article (no fallback to backup servers).
 	TopOnly bool `yaml:"top_only" json:"top_only"`

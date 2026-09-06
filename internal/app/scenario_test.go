@@ -15,19 +15,19 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // scenarioHarness wires a full app pipeline over a scripted NNTP fake for
 // end-to-end state-machine tests. It owns tempdirs, a history Repository,
 // an Application, and drains the completion channels into replayable
 // logs so assertions do not race the consumer.
-//
+
 // Lifecycle: newScenarioHarness → Start → (AddSimpleJob / InjectFailure /
 // WaitUntil) → Stop. Cleanup is registered on the testing.TB so callers do
 // not need to call Stop explicitly unless they want to assert post-Stop.
@@ -35,6 +35,7 @@ type scenarioHarness struct {
 	t       testing.TB
 	server  *nntptest.Scripted
 	app     *app.Application
+	cfg     *config.Config
 	repo    *history.Repository
 	closeDB func() error
 
@@ -99,6 +100,7 @@ func newScenarioHarnessWithConfig(t testing.TB, conns int, tweak func(*config.Co
 		cfg.With(tweak)
 	}
 
+	h.cfg = cfg
 	a, err := app.New(cfg, h.repo, app.WithPostProcStages([]postproc.Stage{noOpStage{}}))
 	if err != nil {
 		t.Fatalf("scenario: app.New: %v", err)
@@ -123,15 +125,15 @@ func (h *scenarioHarness) Start() {
 	go h.drainPostProc()
 }
 
-// Stop shuts the application down and drains pending events. Safe to call
-// multiple times.
+// Stop shuts down the application and waits for drain routines to exit.
+// Safe to call multiple times.
 func (h *scenarioHarness) Stop() {
 	h.stopOnce.Do(func() {
-		if h.app != nil {
-			_ = h.app.Shutdown()
-		}
 		if h.cancel != nil {
 			h.cancel()
+		}
+		if h.app != nil {
+			_ = h.app.Shutdown()
 		}
 		h.drainWG.Wait()
 		if h.closeDB != nil {
@@ -140,11 +142,8 @@ func (h *scenarioHarness) Stop() {
 	})
 }
 
-// AddSimpleJob builds a single-file, single-article job whose body is the
-// provided raw bytes, posts the body to the scripted server, enqueues the
-// job, and returns it. The file subject encodes the part framing yEnc
-// expects.
-func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *queue.Job {
+// AddSimpleJob creates a single-file, single-article job and adds it to the queue.
+func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *job.Job {
 	h.t.Helper()
 	msgID := randomMsgID(h.t)
 
@@ -158,19 +157,19 @@ func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *queue.Job {
 			Bytes:    int64(len(raw)),
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(h.cfg, parsed, name+".nzb", types.FetchOptions{NzbName: name}, nil)
 	if err != nil {
-		h.t.Fatalf("scenario: NewJob: %v", err)
+		h.t.Fatalf("scenario: BuildIngestJob: %v", err)
 	}
-	if err := h.app.Queue().Add(job); err != nil {
-		h.t.Fatalf("scenario: Queue.Add: %v", err)
+	if err := h.app.Dispatcher().Add(j, hdr); err != nil {
+		h.t.Fatalf("scenario: Dispatcher.Add: %v", err)
 	}
-	return job
+	return j
 }
 
 // AddOneShotJob is like AddSimpleJob but uses Application.AddJob, which
 // triggers duplicate detection and renaming logic.
-func (h *scenarioHarness) AddOneShotJob(name string, raw []byte, force bool) *queue.Job {
+func (h *scenarioHarness) AddOneShotJob(name string, raw []byte, force bool) *job.Job {
 	h.t.Helper()
 	msgID := randomMsgID(h.t)
 
@@ -184,17 +183,16 @@ func (h *scenarioHarness) AddOneShotJob(name string, raw []byte, force bool) *qu
 			Bytes:    int64(len(raw)),
 		}},
 	}
-	// We must supply a Filename to trigger duplicate detection
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name, Filename: name + ".nzb"}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(h.cfg, parsed, name+".nzb", types.FetchOptions{NzbName: name}, nil)
 	if err != nil {
-		h.t.Fatalf("scenario: NewJob: %v", err)
+		h.t.Fatalf("scenario: BuildIngestJob: %v", err)
 	}
 
 	// We pass rawNZB as dummy XML since we are simulating the ingestion of the NZB.
-	if err := h.app.AddJob(h.t.Context(), job, []byte("<nzb/>"), force); err != nil {
+	if err := h.app.AddJob(h.t.Context(), j, hdr, []byte("<nzb/>"), force); err != nil {
 		h.t.Fatalf("scenario: AddJob: %v", err)
 	}
-	return job
+	return j
 }
 
 // InjectFailure wires a one-shot failure on the scripted server for msgID.
@@ -246,7 +244,8 @@ func (h *scenarioHarness) waitFor(timeout time.Duration, cond func() bool) bool 
 
 // QueueContains reports whether jobID is currently in the active queue.
 func (h *scenarioHarness) QueueContains(jobID string) bool {
-	return h.app.Queue().SnapshotJob(jobID) != nil
+	_, ok := h.app.Dispatcher().Row(jobID)
+	return ok
 }
 
 // Events returns copies of the recorded completion event slices.

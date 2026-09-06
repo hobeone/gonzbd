@@ -16,8 +16,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // retryFixtureNZB renders a minimal NZB with one file of nArticles articles.
@@ -64,25 +64,25 @@ func writeRetryNZBBackup(t *testing.T, adminDir, name string, raw []byte) {
 // history_job_files empty, so RestoreRetryProgress finds nothing to restore
 // and reports applied=false — which correctly discards the durability rows as
 // untrustworthy, and pins the opposite of what this test is for.
-func failJobIntoHistory(t *testing.T, application *Application, job *queue.Job, nArticles int) {
+func failJobIntoHistory(t *testing.T, application *Application, job *job.Job, nArticles int) {
 	t.Helper()
 	adminDir := application.config.GetGeneral().AdminDir
 	// The backup must re-parse to the SAME shape, because
 	// retainedMatchesManifest compares file count, file index order and
 	// per-file article count before the retained progress is trusted.
-	writeRetryNZBBackup(t, adminDir, job.ID+".nzb.gz", retryFixtureNZB(nArticles))
+	writeRetryNZBBackup(t, adminDir, job.ID()+".nzb.gz", retryFixtureNZB(nArticles))
 
 	entry := history.Entry{
-		NzoID:     job.ID,
-		Name:      job.Name,
-		NzbName:   job.ID + ".nzb",
-		NZBBackup: job.ID + ".nzb.gz",
+		NzoID:     job.ID(),
+		Name:      job.Name(),
+		NzbName:   job.ID() + ".nzb",
+		NZBBackup: job.ID() + ".nzb.gz",
 		Status:    string(constants.StatusFailed),
 	}
-	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Queue: job}); err != nil {
+	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: job}); err != nil {
 		t.Fatalf("persistAndCommit: %v", err)
 	}
-	if nf, ne := durabilityRowCounts(t, application, job.ID); nf != 1 || ne != 1 {
+	if nf, ne := durabilityRowCounts(t, application, job.ID()); nf != 1 || ne != 1 {
 		t.Fatalf("fixture: persistAndCommit left %d runs and %d failed rows, want 1 and 1 "+
 			"(a failed job must keep both, which is what this test then checks the retry does not undo)", nf, ne)
 	}
@@ -114,14 +114,14 @@ func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 	failJobIntoHistory(t, application, job, nArticles)
 
-	if err := application.RetryHistoryJob(t.Context(), job.ID); err != nil {
+	if err := application.RetryHistoryJob(t.Context(), job.ID()); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	nf, _ := durabilityRowCounts(t, application, job.ID)
+	nf, _ := durabilityRowCounts(t, application, job.ID())
 	if nf == 0 {
 		t.Error("the retry deleted the job's durable runs. It rebuilds the same " +
 			"filename over the same partial file, so with no runs the truncate " +
@@ -140,8 +140,8 @@ func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 // that decision. Job.ResetForRetry clears every failed bit in memory; nothing
 // on this path cleared the rows behind them.
 //
-// The undo is immediate rather than restart-only. Queue.Add writes no
-// resolution, and PromoteNext unconditionally calls Store.RestoreJobProgress,
+// The undo is immediate rather than restart-only. Dispatcher.Add writes no
+// resolution, and hydration would call Store.RestoreJobProgress,
 // which re-derives the per-article state from durable_runs and
 // failed_articles and re-marks exactly those articles Failed+Done. So the very
 // next promotion restores the state the reset just cleared and the retry never
@@ -162,14 +162,14 @@ func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
 	// Article 0 is covered by a durable run; article 1 is permanently failed.
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 	failJobIntoHistory(t, application, job, nArticles)
 
-	if err := application.RetryHistoryJob(t.Context(), job.ID); err != nil {
+	if err := application.RetryHistoryJob(t.Context(), job.ID()); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	nf, ne := durabilityRowCounts(t, application, job.ID)
+	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf == 0 {
 		t.Fatal("fixture: the retry took the !progressApplied branch, which drops both " +
 			"tables through dropJobDurability. This test pins the OTHER branch, so " +
@@ -182,15 +182,15 @@ func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
 			"re-attempts the articles it exists to re-attempt", ne)
 	}
 
-	// The rows are the mechanism; the outcome is what matters. Promote the
-	// job so RestoreJobProgress actually runs, then look for the failed
-	// article among the work the dispatcher would be offered.
-	application.queue.PromoteNext(t.Context())
+	// The rows are the mechanism; the outcome is what matters. In dispatcher,
+	// look for the failed article among the work that can be offered.
+	j, ok := application.dispatcher.Job(job.ID())
+	if !ok {
+		t.Fatal("job not in dispatcher")
+	}
 	var outstanding []int32
-	application.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
-		if a.JobID == job.ID {
-			outstanding = append(outstanding, a.ArtIdx)
-		}
+	j.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _ int, _ int, _ string) bool {
+		outstanding = append(outstanding, artIdx)
 		return true
 	})
 	if !slices.Contains(outstanding, 1) {
@@ -219,19 +219,19 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 	failJobIntoHistory(t, application, job, nArticles)
 
 	// Swap the backup for one of a different shape, so the re-parsed manifest
 	// no longer matches the retained progress.
 	adminDir := application.config.GetGeneral().AdminDir
-	writeRetryNZBBackup(t, adminDir, job.ID+".nzb.gz", retryFixtureNZB(nArticles+2))
+	writeRetryNZBBackup(t, adminDir, job.ID()+".nzb.gz", retryFixtureNZB(nArticles+2))
 
-	if err := application.RetryHistoryJob(t.Context(), job.ID); err != nil {
+	if err := application.RetryHistoryJob(t.Context(), job.ID()); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	nf, ne := durabilityRowCounts(t, application, job.ID)
+	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 0 || ne != 0 {
 		t.Errorf("the retry kept %d runs and %d failed rows against a manifest whose shape "+
 			"changed. They are keyed on article index, so they now describe articles "+
@@ -273,12 +273,12 @@ func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
 	t.Parallel()
 	const nArticles = 3
 	application, job := newDurabilityTestApp(t, 1, nArticles)
-	seedDurability(t, application, job.ID)
+	seedDurability(t, application, job.ID())
 	failJobIntoHistory(t, application, job, nArticles)
 
 	// A different shape, so the retry takes the !progressApplied branch.
 	adminDir := application.config.GetGeneral().AdminDir
-	writeRetryNZBBackup(t, adminDir, job.ID+".nzb.gz", retryFixtureNZB(nArticles+2))
+	writeRetryNZBBackup(t, adminDir, job.ID()+".nzb.gz", retryFixtureNZB(nArticles+2))
 
 	wantErr := errors.New("disk on fire")
 	application.runs = failingDeleteRunStore{RunStore: application.runs, err: wantErr}
@@ -286,12 +286,12 @@ func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
 	// Assert the pre-state rather than assume it. If the job were somehow
 	// still queued here, the "not queued" assertion below would pass for the
 	// wrong reason and pin nothing.
-	if snap := application.queue.SnapshotJob(job.ID); snap != nil {
-		t.Fatalf("fixture: job %s is still in the queue before the retry, so the "+
-			"post-abort queue assertion would be vacuous", job.ID)
+	if _, queued := application.dispatcher.Job(job.ID()); queued {
+		t.Fatalf("fixture: job %s is still in the dispatcher before the retry, so the "+
+			"post-abort queue assertion would be vacuous", job.ID())
 	}
 
-	err := application.RetryHistoryJob(t.Context(), job.ID)
+	err := application.RetryHistoryJob(t.Context(), job.ID())
 	if err == nil {
 		t.Fatal("the retry reported success while the stale durability rows it decided " +
 			"to drop are still in place; a stale row bounds the completion truncate to " +
@@ -300,7 +300,7 @@ func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Errorf("error does not wrap the cause: got %v, want it to wrap %v", err, wantErr)
 	}
-	if snap := application.queue.SnapshotJob(job.ID); snap != nil {
+	if _, queued := application.dispatcher.Job(job.ID()); queued {
 		t.Error("the retry aborted but still enqueued the job, so the download proceeds " +
 			"against durability rows the abort declared untrustworthy")
 	}

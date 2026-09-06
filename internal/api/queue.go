@@ -15,9 +15,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -70,7 +71,9 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
-	s.queue.PauseAll()
+	if s.dispatcher != nil {
+		s.dispatcher.Pause()
+	}
 	if s.downloads != nil {
 		s.downloads.PauseDownloads()
 	}
@@ -78,8 +81,10 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 	respondStatus(w)
 }
 
-func (s *Server) queueResumeAll(w http.ResponseWriter, r *http.Request) {
-	s.queue.ResumeAll(r.Context())
+func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
+	if s.dispatcher != nil {
+		s.dispatcher.Resume()
+	}
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
 		s.downloads.ReevaluateStalls()
@@ -132,14 +137,14 @@ type queueSlot struct {
 	RecoveryBytes int64 `json:"recovery_bytes"`
 	RecoveryFiles int   `json:"recovery_files"`
 	// RepairState is the job's repairability verdict, derived server-side by
-	// queue.RepairStateFrom and shared with the two abort gates.
+	// job.RepairStateFrom and shared with the two abort gates.
 	//
 	// It is sent as a verdict rather than as the figures behind it so that a
 	// client cannot reach a conclusion the backend declines to reach. That is
 	// not hypothetical: while the UI re-derived the comparison from raw
 	// fields, it condemned jobs the downloader was still working on, twice,
 	// and no reference search over Go could find it doing so.
-	RepairState       queue.RepairState    `json:"repair_state"`
+	RepairState       job.RepairState      `json:"repair_state"`
 	Par2Held          bool                 `json:"par2_held,omitempty"`
 	Par2ReleaseReason string               `json:"par2_release_reason,omitempty"`
 	DirectUnpack      *directunpack.Status `json:"direct_unpack,omitempty"`
@@ -297,19 +302,16 @@ func stageFromStatus(status constants.Status) string {
 	return strings.ToLower(string(status))
 }
 
-// firstIncompleteFile returns the subject of the first not-yet-complete
-// file in the job, or empty if every file is complete.
-func firstIncompleteFile(j *queue.Job) string {
+// firstIncompleteFile returns the subject of the first file that has not been
+// completely downloaded, skipping files with non-FetchAlways policy.
+func firstIncompleteFile(j *job.Job) string {
 	m, err := j.Manifest()
 	p := j.Progress()
 	if err != nil || p == nil {
 		return ""
 	}
 	for i := range m.NumFiles() {
-		// A file the job is not fetching is never Complete, so without this
-		// skip a held or discarded recovery volume becomes the reported
-		// current file for the rest of the job's life.
-		if p.FileFetchPolicy(i) != queue.FetchAlways {
+		if p.FileFetchPolicy(i) != job.FetchAlways {
 			continue
 		}
 		if !p.FileComplete(i) {
@@ -322,11 +324,11 @@ func firstIncompleteFile(j *queue.Job) string {
 // fileState classifies a file into a coarse UI state. "downloading"
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
-func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
+func fileState(m *job.Manifest, p *job.JobProgress, fileIdx int) string {
 	switch p.FileFetchPolicy(fileIdx) {
-	case queue.FetchIfNeeded:
+	case job.FetchIfNeeded:
 		return "held"
-	case queue.FetchNever:
+	case job.FetchNever:
 		return "skipped"
 	}
 	if p.FileComplete(fileIdx) {
@@ -371,7 +373,7 @@ func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
 // Reconciling the two views is a UI-side arithmetic question, not a missing
 // field — State carries "held" and "skipped" per file, so summing only the
 // files in neither state reproduces the row total exactly. Tracked as #325.
-func buildQueueFiles(j *queue.Job) []queueFile {
+func buildQueueFiles(j *job.Job) []queueFile {
 	m, err := j.Manifest()
 	p := j.Progress()
 	if err != nil || p == nil {
@@ -394,86 +396,103 @@ func buildQueueFiles(j *queue.Job) []queueFile {
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
 const noiseFloorBPS = 1024.0 // 1 KiB/s
 
-// buildSlot renders one Job into the API queueSlot shape. paused is the
+// buildSlot renders one Row into the API queueSlot shape. paused is the
 // queue-wide pause flag; speed is the snapshot aggregate BPS used for
 // ETA. index is the slot's display index in the listing (0 for the
 // detail endpoint). cp carries the durability figures that live in the
 // application rather than in the queue, snapshotted once per request.
-func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
-	// No manifest access: every value below comes from the job's promoted
-	// scalars or from JobProgress, both of which are resident for the life
-	// of the job. A queue listing is polled continuously and includes every
-	// queued and paused job, all of which have had their manifests evicted,
-	// so needing one here meant either a disk read per job per poll or a nil
-	// deref — this used to do both.
-	p := j.Progress()
-	totalBytes := p.ExpectedBytes()
-	remainingBytes := p.RemainingBytes()
+func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
+	// remainingBytes is initialized from r.RemainingBytes, which the Dispatcher
+	// captured at listing time. If the job was unregistered between
+	// List() and Job(r.ID) (a transient race window), we retain that snapshot
+	// rather than resetting to Header.Bytes so progress never falsely flashes 0%.
+	totalBytes := r.Header.Bytes
+	remainingBytes := r.RemainingBytes
+	var failedBytes int64
+	if j != nil && j.HasProgress() {
+		totalBytes, remainingBytes, failedBytes = j.ProgressFigures()
+	}
 
 	var pct int
 	if totalBytes > 0 {
 		pct = int(100 * (totalBytes - remainingBytes) / totalBytes)
+		if pct < 0 {
+			pct = 0
+		} else if pct > 100 {
+			pct = 100
+		}
 	}
 
-	displayStatus := j.Status
-	if paused && j.Status == constants.StatusDownloading {
-		displayStatus = constants.StatusPaused
-	}
+	displayStatus := r.Status()
 
 	var etaSeconds int
 	timeleft := "0:00:00"
 	etaStr := "unknown"
-	if !paused && j.Status == constants.StatusDownloading &&
+	if !paused && displayStatus == constants.StatusDownloading &&
 		speed > noiseFloorBPS && remainingBytes > 0 {
 		etaSeconds = int(float64(remainingBytes) / speed)
 		timeleft = formatDuration(etaSeconds)
 		etaStr = timeleft
 	}
 
+	var repairState job.RepairState
+	var recoveryBytes int64
+	var recoveryFiles int
+	var pendingArticles int
+	var currentFile string
+	var par2Held bool
+	var par2ReleaseReason string
+	var durableBytes int64
+
+	if j != nil {
+		repairState = j.RepairState()
+		recoveryBytes = j.RecoveryBytes()
+		recoveryFiles = j.RecoveryFiles()
+		currentFile = firstIncompleteFile(j)
+		par2Held = j.UsesOnDemandPar2()
+		if j.HasProgress() {
+			pendingArticles = j.PendingArticles()
+			par2ReleaseReason = j.Par2ReleaseReason()
+			durableBytes = app.DurableBytesOf(j)
+		}
+	}
+
 	return queueSlot{
-		NzoID:          j.ID,
-		Filename:       j.Filename,
-		Name:           j.Name,
-		Category:       j.Category,
-		Index:          index,
-		Priority:       j.Priority.String(),
-		Status:         string(displayStatus),
-		Script:         nonEmpty(j.Script, "none"),
-		Password:       j.Password,
-		Size:           humanfmt.Bytes(totalBytes),
-		SizeLeft:       humanfmt.Bytes(remainingBytes),
-		MB:             toMBString(totalBytes),
-		MBLeft:         toMBString(remainingBytes),
-		Bytes:          totalBytes,
-		RemainingBytes: remainingBytes,
-		Percentage:     pct,
-		Timeleft:       timeleft,
-		ETA:            etaStr,
-		PP:             strconv.Itoa(j.PP),
-		Warning:        j.Warning,
-		FailedBytes:    p.FailedBytes(),
-		// Job.RepairState is residency-agnostic, which this call site needs:
-		// a listing includes jobs whose manifests have been evicted.
-		RepairState:       j.RepairState(),
-		RecoveryBytes:     j.RecoveryBytes(),
-		RecoveryFiles:     j.RecoveryFiles(),
+		NzoID:             r.ID,
+		Filename:          r.Header.Filename,
+		Name:              r.Header.Name,
+		Category:          r.Header.Category,
+		Index:             index,
+		Priority:          constants.Priority(int8(r.Header.Priority)).String(), //nolint:gosec // G115: priority values fit in int8
+		Status:            string(displayStatus),
+		Script:            nonEmpty(r.Header.Script, "none"),
+		Password:          r.Header.Password,
+		Size:              humanfmt.Bytes(totalBytes),
+		SizeLeft:          humanfmt.Bytes(remainingBytes),
+		MB:                toMBString(totalBytes),
+		MBLeft:            toMBString(remainingBytes),
+		Bytes:             totalBytes,
+		RemainingBytes:    remainingBytes,
+		Percentage:        pct,
+		Timeleft:          timeleft,
+		ETA:               etaStr,
+		PP:                strconv.Itoa(r.Header.PP),
+		Warning:           r.Header.Warning,
+		FailedBytes:       failedBytes,
+		RepairState:       repairState,
+		RecoveryBytes:     recoveryBytes,
+		RecoveryFiles:     recoveryFiles,
 		CurrentStage:      stageFromStatus(displayStatus),
-		ArticlesRemaining: p.PendingArticles(),
+		ArticlesRemaining: pendingArticles,
 		ETASeconds:        etaSeconds,
-		CurrentFile:       firstIncompleteFile(j),
-		Par2Held:          j.UsesOnDemandPar2(),
-		Par2ReleaseReason: p.Par2ReleaseReason(),
+		CurrentFile:       currentFile,
+		Par2Held:          par2Held,
+		Par2ReleaseReason: par2ReleaseReason,
 		DirectUnpack:      duStatus,
 		StallReason:       cp.StallReason,
-		// From the job's own progress rather than a second snapshot: on this
-		// design a downloaded byte IS a durable byte, because the only things
-		// that mark an article Done are the barrier's ack and a replay of the
-		// recorded runs. That also fixes its unit as the encoded one
-		// -- see the field doc for why it is not the same unit as
-		// BytesPending below, and why neither can move.
-		BytesDurable:    app.DurableBytesOf(p),
-		BytesPending:    cp.PendingBytes,
-		LastBarrierUnix: unixOrZero(cp.LastBarrier),
+		BytesDurable:      durableBytes,
+		BytesPending:      cp.PendingBytes,
+		LastBarrierUnix:   unixOrZero(cp.LastBarrier),
 	}
 }
 
@@ -486,31 +505,32 @@ func unixOrZero(t time.Time) int64 {
 	return t.Unix()
 }
 
-// filterQueueSlots applies the category/status/search filters to jobs and
-// builds the resulting queueSlot list. Split out of queueList to isolate
-// per-job filtering from pagination and response assembly (OPT-9).
-func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
-	slots := make([]queueSlot, 0, len(jobs))
-	for _, j := range jobs {
-		// Post-processing jobs remain in the queue with their current
-		// status (Verifying, Repairing, Extracting, etc.) until
-		// OnJobDone removes them and moves them to history.
-		if catFilter != "" && j.Category != catFilter {
+// filterQueueSlots applies the category/status/search filters to rows and
+// builds the resulting queueSlot list.
+func (s *Server) filterQueueSlots(rows []dispatch.Row, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
+	slots := make([]queueSlot, 0, len(rows))
+	for _, r := range rows {
+		st := string(r.Status())
+		if catFilter != "" && r.Header.Category != catFilter {
 			continue
 		}
-		if statusFilter != "" && string(j.Status) != statusFilter {
+		if statusFilter != "" && st != statusFilter {
 			continue
 		}
-		if searchLower != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
-			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
+		if searchLower != "" && !strings.Contains(strings.ToLower(r.Header.Name), searchLower) &&
+			!strings.Contains(strings.ToLower(r.Header.Filename), searchLower) {
 			continue
 		}
 
 		var duStatus *directunpack.Status
-		if status, ok := duStatuses[j.ID]; ok {
+		if status, ok := duStatuses[r.ID]; ok {
 			duStatus = &status
 		}
-		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus, cpStates[j.ID]))
+		var j *job.Job
+		if s.dispatcher != nil {
+			j, _ = s.dispatcher.Job(r.ID)
+		}
+		slots = append(slots, buildSlot(r, j, paused, speed, len(slots), duStatus, cpStates[r.ID]))
 	}
 	return slots
 }
@@ -538,9 +558,6 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	catFilter := formValue(r, "cat")
 	statusFilter := formValue(r, "status")
 
-	jobs := s.queue.Snapshot()
-	paused := s.queue.IsPaused()
-
 	// Snapshot speed once per request so every slot's ETA is computed
 	// from the same denominator.
 	var speed float64
@@ -562,8 +579,13 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		cpStates = s.status.CheckpointStates()
 	}
 
-	// Build slots applying filters.
-	slots := filterQueueSlots(jobs, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
+	var slots []queueSlot
+	var paused bool
+	if s.dispatcher != nil {
+		rows := s.dispatcher.List()
+		paused = s.dispatcher.Paused()
+		slots = s.filterQueueSlots(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
+	}
 
 	total := len(slots)
 
@@ -626,13 +648,16 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 // frontend can reuse the same parser; Slots will contain exactly one
 // entry (or zero if the job has been removed).
 func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID string) {
-	job := s.queue.SnapshotJob(nzoID)
-	if job == nil {
+	if s.dispatcher == nil {
+		return
+	}
+	row, ok := s.dispatcher.Row(nzoID)
+	if !ok {
 		respondJSON(w, http.StatusOK, queueResponse{
 			Status: true,
 			Queue: queueDetail{
 				Status:    "Idle",
-				Paused:    s.queue.IsPaused(),
+				Paused:    s.dispatcher.Paused(),
 				NoOfSlots: 0,
 				Slots:     []queueSlot{},
 			},
@@ -640,7 +665,7 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 		return
 	}
 
-	paused := s.queue.IsPaused()
+	paused := s.dispatcher.Paused()
 	var speed float64
 	if s.status != nil {
 		speed = s.status.Speed()
@@ -649,13 +674,16 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 	var duStatus *directunpack.Status
 	var cp app.JobCheckpointState
 	if s.status != nil {
-		if status, ok := s.status.DirectUnpackStatus(job.ID); ok {
+		if status, ok := s.status.DirectUnpackStatus(nzoID); ok {
 			duStatus = &status
 		}
-		cp = s.status.CheckpointState(job.ID)
+		cp = s.status.CheckpointState(nzoID)
 	}
-	slot := buildSlot(job, paused, speed, 0, duStatus, cp)
-	slot.Files = buildQueueFiles(job)
+	j, _ := s.dispatcher.Job(nzoID)
+	slot := buildSlot(row, j, paused, speed, 0, duStatus, cp)
+	if j != nil {
+		slot.Files = buildQueueFiles(j)
+	}
 
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
@@ -682,8 +710,10 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	var ids []string
 
 	if value == "all" {
-		for _, j := range s.queue.Snapshot() {
-			ids = append(ids, j.ID)
+		if s.dispatcher != nil {
+			for _, row := range s.dispatcher.List() {
+				ids = append(ids, row.ID)
+			}
 		}
 	} else {
 		ids = splitCSV(value)
@@ -719,12 +749,12 @@ func (s *Server) queuePurge(w http.ResponseWriter, r *http.Request) {
 
 // queuePauseJobs pauses specific jobs by ID (CSV in value=).
 func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
-	s.queueSetPaused(w, r, s.queue.Pause, "paused")
+	s.queueSetPaused(w, r, "paused")
 }
 
 // queueResumeJobs resumes specific jobs by ID (CSV in value=).
 func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
-	s.queueSetPaused(w, r, s.queue.Resume, "resumed")
+	s.queueSetPaused(w, r, "resumed")
 	// R19's "on user action". A user who has just cleared a full disk and
 	// pressed resume should not also wait out the re-evaluation interval —
 	// and for a job parked by a failed file finalize, Queue.Resume alone does
@@ -737,19 +767,25 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 // queueSetPaused applies action (Pause or Resume) to each job ID in the
 // CSV value= parameter, logging the result with the given verb. Not-found
 // IDs are silently ignored, matching SABnzbd's lenient bulk semantics.
-func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, action func(string) error, verb string) {
+func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb string) {
 	value, ok := s.requireParam(w, r, "value", "")
 	if !ok {
 		return
 	}
 	for _, id := range splitCSV(value) {
-		_ = action(id) //nolint:errcheck // not-found silently ignored
-		// Use SnapshotJob (deep copy under RLock), never the live *Job
-		// from queue.Get: the download pipeline mutates job.Name
-		// concurrently, and reading it off the live pointer here would
-		// be an unsynchronized data race (TRACE-1).
-		if job := s.queue.SnapshotJob(id); job != nil {
-			s.log.Info("job "+verb, "job", id, "name", job.Name)
+		var name string
+		if s.dispatcher != nil {
+			if verb == "paused" {
+				_ = s.dispatcher.PauseJob(id)
+			} else {
+				_ = s.dispatcher.ResumeJob(id)
+			}
+			if row, ok := s.dispatcher.Row(id); ok {
+				name = row.Header.Name
+			}
+		}
+		if name != "" {
+			s.log.Info("job "+verb, "job", id, "name", name)
 		}
 	}
 	respondStatus(w)
@@ -766,7 +802,14 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pri := constants.Priority(int8(intParam(r, "value2"))) //nolint:gosec // G115: priority values fit in int8
-	if err := s.queue.SetPriority(nzoID, pri); err != nil {
+	var err error
+	if s.dispatcher != nil {
+		err = s.dispatcher.SetPriority(nzoID, int(pri))
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
+	}
+	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -793,7 +836,14 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("pp must be 0-3, got %d", pp))
 		return
 	}
-	if err := s.queue.SetPP(nzoID, pp); err != nil {
+	var err error
+	if s.dispatcher != nil {
+		err = s.dispatcher.SetPP(nzoID, pp)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
+	}
+	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -822,33 +872,26 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 	if s.config != nil {
 		cats = s.config.GetCategories()
 	}
-	if err := s.queue.SetCategory(nzoID, cat, cats); err != nil {
-		s.respondError(w, http.StatusNotFound, err.Error())
+	if s.dispatcher != nil {
+		resolvedCat := config.FindCategory(cats, cat)
+		cat = resolvedCat.Name
+		if err := s.dispatcher.SetCategory(nzoID, cat); err != nil {
+			s.respondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		_ = s.dispatcher.SetPP(nzoID, resolvedCat.PP)
+		_ = s.dispatcher.SetScript(nzoID, resolvedCat.Script)
+		_ = s.dispatcher.SetPriority(nzoID, resolvedCat.Priority)
+		row, _ := s.dispatcher.Row(nzoID)
+		s.log.Info("job category changed", "job", nzoID,
+			"cat", row.Header.Category, "pp", row.Header.PP, "script", row.Header.Script, "priority", row.Header.Priority)
+		respondJSON(w, http.StatusOK, map[string]any{
+			"status":  true,
+			"nzo_ids": []string{nzoID},
+		})
 		return
 	}
-	// Use SnapshotJob (deep copy under RLock), never the live *Job from
-	// queue.Get: the download pipeline mutates these fields concurrently,
-	// and reading them off the live pointer here would be an
-	// unsynchronized data race (TRACE-1).
-	job := s.queue.SnapshotJob(nzoID)
-	s.respondCategoryChanged(w, nzoID, job)
-}
-
-// respondCategoryChanged writes the change_cat success response. job is the
-// post-change snapshot used only for the log line and may be nil: SetCategory
-// has already succeeded by the time this is called, and a concurrent removal
-// of the job between that call and the snapshot is not a failure of this
-// request — it is only missing logging detail, so the response must stay
-// 200 regardless.
-func (s *Server) respondCategoryChanged(w http.ResponseWriter, nzoID string, job *queue.Job) {
-	if job != nil {
-		s.log.Info("job category changed", "job", nzoID,
-			"cat", job.Category, "pp", job.PP, "script", job.Script, "priority", job.Priority)
-	}
-	respondJSON(w, http.StatusOK, map[string]any{
-		"status":  true,
-		"nzo_ids": []string{nzoID},
-	})
+	s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
 }
 
 // queueChangeName handles name=rename and name=change_name.
@@ -862,7 +905,14 @@ func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.queue.SetName(nzoID, name); err != nil {
+	var err error
+	if s.dispatcher != nil {
+		err = s.dispatcher.SetName(nzoID, name)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
+	}
+	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -899,7 +949,14 @@ func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	script := sanitizeScriptParam(formValue(r, "value2"))
-	if err := s.queue.SetScript(nzoID, script); err != nil {
+	var err error
+	if s.dispatcher != nil {
+		err = s.dispatcher.SetScript(nzoID, script)
+	} else {
+		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
+		return
+	}
+	if err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -1078,17 +1135,17 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
 	}
-	job, err := app.BuildIngestJob(s.config, parsed, filename, opts, s.log)
+	j, hdr, err := app.BuildIngestJob(s.config, parsed, filename, opts, s.log)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.jobs.AddJob(r.Context(), job, data, false); err != nil {
+	if err := s.jobs.AddJob(r.Context(), j, hdr, data, false); err != nil {
 		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
-		"nzo_ids": []string{job.ID},
+		"nzo_ids": []string{j.ID()},
 	})
 }

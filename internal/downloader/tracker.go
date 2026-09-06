@@ -107,6 +107,22 @@ func (m *dispatchTracker) ClearTried(key articleKey) {
 	delete(m.tryList, key)
 }
 
+// ClearJob removes all try-list and in-flight tracking entries for a given jobID.
+func (m *dispatchTracker) ClearJob(jobID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.tryList {
+		if k.jobID == jobID {
+			delete(m.tryList, k)
+		}
+	}
+	for k := range m.inFlight {
+		if k.jobID == jobID {
+			delete(m.inFlight, k)
+		}
+	}
+}
+
 // Len returns the number of tracked entries.
 // Self-locking, used primarily for tests and assertions.
 func (m *dispatchTracker) Len() (tryListLen, inFlightLen int) {

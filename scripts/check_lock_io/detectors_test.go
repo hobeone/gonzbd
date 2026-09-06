@@ -43,14 +43,14 @@ func TestPersistence_StoreCallUnderLock(t *testing.T) {
 func (q *Queue) fail(job *Job) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	_ = q.store.MoveToHistory(ctx, job, entry)
+	_ = q.store.Save(ctx, p)
 }
 `)
 	findings := findingsFor(t, path)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for a store call under lock, got %d: %v", len(findings), findings)
 	}
-	if !strings.Contains(findings[0].desc, "MoveToHistory") {
+	if !strings.Contains(findings[0].desc, "Save") {
 		t.Errorf("finding does not name the call: %q", findings[0].desc)
 	}
 }
@@ -111,7 +111,7 @@ func (q *Queue) fine(job *Job) {
 	q.jobs = append(q.jobs, job)
 	q.mu.Unlock()
 
-	_ = q.store.MoveToHistory(ctx, job, entry)
+	_ = q.store.Save(ctx, p)
 }
 `)
 	if findings := findingsFor(t, path); len(findings) != 0 {
@@ -125,7 +125,7 @@ func TestPersistence_TrailingMarkerSuppresses(t *testing.T) {
 func (q *Queue) deliberate(job *Job) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	_ = q.store.Update(ctx, job) //lockio: keeps RAM and SQLite consistent
+	_ = q.store.Save(ctx, p) //lockio: keeps RAM and SQLite consistent
 }
 `)
 	if findings := findingsFor(t, path); len(findings) != 0 {
@@ -143,7 +143,7 @@ func (q *Queue) looksSuppressed(job *Job) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	//lockio: this comment is on its own line and suppresses nothing
-	_ = q.store.Update(ctx, job)
+	_ = q.store.Save(ctx, p)
 }
 `)
 	if findings := findingsFor(t, path); len(findings) != 1 {

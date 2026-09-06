@@ -12,7 +12,7 @@ import "fmt"
 // state and is simply not running, and the reason is derived by the Queue
 // rather than stored on the attempt — it reaches consumers as a field on
 // RenderView (render.go), not StateView. No non-test code in this package
-// writes it (`git grep -n 'Reaso[n]:' -- 'internal/job/*.go'
+// writes it (`git grep -nE '[[:space:]]Reaso[n]:' -- 'internal/job/*.go'
 // ':!internal/job/*_test.go'` returns nothing); sabnzbd_test.go builds
 // RenderView literals that set it, which is how the render table is driven
 // without a Queue to derive it.

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/humanfmt"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
@@ -17,9 +17,9 @@ import (
 //   - per-file name and size
 //   - download duration and total size
 //   - article completion stats from the queue
-func buildDownloadFileList(job *Job) []string {
+func buildDownloadFileList(j *Job) []string {
 	var lines []string
-	p := job.Queue.Progress()
+	p := j.Progress()
 
 	// The listing is a per-file report, so it needs the manifest's file
 	// table and there is no scalar substitute. Degrade rather than fail:
@@ -27,7 +27,7 @@ func buildDownloadFileList(job *Job) []string {
 	// reporting — the download itself is unaffected. Say so in the record
 	// instead of returning a silently empty listing, since an empty file
 	// list and a job that downloaded nothing look identical to a reader.
-	m, mErr := job.Queue.Manifest()
+	m, mErr := j.Manifest()
 	if mErr != nil {
 		return []string{fmt.Sprintf("File listing unavailable: %v", mErr)}
 	}
@@ -40,7 +40,7 @@ func buildDownloadFileList(job *Job) []string {
 			continue
 		}
 		recoveryVols++
-		if p.FileFetchPolicy(fi) != queue.FetchAlways {
+		if p.FileFetchPolicy(fi) != job.FetchAlways {
 			heldVols++
 		}
 	}
@@ -106,7 +106,7 @@ func buildDownloadFileList(job *Job) []string {
 		// explanation for whichever one actually happened.
 		// HasPar2Verdict() is true in this arm (the switch guards on it
 		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
-		// "" (internal/queue/progress.go:633), so the reason is always
+		// "" (`git grep -n 'func (p \*JobProgress) HasPar2Verdict' internal/job/`), so the reason is always
 		// non-empty here — no fallback needed.
 		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
@@ -134,15 +134,15 @@ func buildDownloadFileList(job *Job) []string {
 		// && p.Par2Recovered()` case above this one and re-running `go test
 		// ./...` broke nothing in this suite, so no test currently pins the
 		// order — the fix is deferred on scope, not on test coupling). It is
-		// not reached today: undeferRecovery is the only site that sets
-		// par2Recovered to true (internal/queue/job_articles.go:205; the
-		// other assignment, job.go:1077, sets it back to false on retry, and
-		// the rest are the field declaration and plain reads/copies — see a
-		// grep for par2Recovered outside tests), and undeferRecovery has two
-		// production callers: Queue.UndeferRecoveryVolumes
-		// (internal/queue/queue.go:1878, reached from app.go's
-		// maybeReleaseRecoveryVolumes) and workset.go's AckPermanentFailure
-		// (internal/queue/workset.go:159). Both pass
+		// not reached today: undeferRecovery is the only active mutation that sets
+		// par2Recovered to true (`git grep -n 'par2Recovered = true' internal/job/`
+		// finds one line; UnmarshalJSON restores it from persisted state, and
+		// ResetForRetry resets it to false — `git grep -n 'par2Recovered =' internal/job/`
+		// finds three lines). undeferRecovery has callers in Job.UndeferRecoveryVolumes
+		// (reached from app.go's maybeReleaseRecoveryVolumes;
+		// `git grep -n 'func (j \*Job) UndeferRecoveryVolumes' internal/job/` finds one line)
+		// and Job.MarkArticleFailed (`git grep -n 'func (j \*Job) MarkArticleFailed' internal/job/`
+		// finds one line). Both pass
 		// job.progress.DeferredRecoveryIndices() — every deferred index at
 		// once — so a real job's held volumes go from "all deferred" to
 		// "none deferred" in one step and heldVols is 0 by the time
@@ -170,12 +170,12 @@ func buildDownloadFileList(job *Job) []string {
 	// derived from article byte sums rather than JobFile.Bytes so they are
 	// internally consistent: a file reads 100% only when every article
 	// downloaded successfully.
-	lines = append(lines, buildFileCompletionLines(job)...)
+	lines = append(lines, buildFileCompletionLines(j)...)
 
 	// Enumerate files in the download directory, recursing into
 	// subdirectories so nothing nested (e.g. by extraction or par2 staging)
 	// is hidden from the listing.
-	treeLines, fileCount, err := buildDirTree(job.DownloadDir, "  ")
+	treeLines, fileCount, err := buildDirTree(j.DownloadDir, "  ")
 	if err != nil {
 		lines = append(lines, fmt.Sprintf("Error reading download dir: %v", err))
 		return lines
@@ -238,14 +238,14 @@ func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 // in full. A short file is not necessarily a broken file — a later par2
 // repair stage may still recover it; this section reports download
 // completeness only.
-func buildFileCompletionLines(job *Job) []string {
+func buildFileCompletionLines(j *Job) []string {
 	// Same reasoning as buildDownloadFileList, which has already reported
 	// the cause in the record by the time this runs — no second notice.
-	m, mErr := job.Queue.Manifest()
+	m, mErr := j.Manifest()
 	if mErr != nil {
 		return nil
 	}
-	p := job.Queue.Progress()
+	p := j.Progress()
 	numFiles := m.NumFiles()
 	if numFiles == 0 {
 		return nil
@@ -258,7 +258,7 @@ func buildFileCompletionLines(job *Job) []string {
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
 		}
-		if p.FileFetchPolicy(fi) != queue.FetchAlways {
+		if p.FileFetchPolicy(fi) != job.FetchAlways {
 			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}
@@ -310,10 +310,10 @@ func completionPct(downloaded, total int64) int {
 
 // buildFinalFileList creates a file listing of the job's final directory
 // for the summary stage. This shows the end state after all processing.
-func buildFinalFileList(job *Job) []string {
-	dir := job.FinalDir
+func buildFinalFileList(j *Job) []string {
+	dir := j.FinalDir
 	if dir == "" {
-		dir = job.DownloadDir
+		dir = j.DownloadDir
 	}
 
 	entries, err := os.ReadDir(dir)

@@ -1,0 +1,202 @@
+package app
+
+import (
+	"context"
+	"log/slog"
+
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
+)
+
+// reporter is how a runner tells the dispatcher a job's work ended. It is an
+// interface so the exactly-once test can observe the calls; production passes
+// the Dispatcher itself.
+type reporter interface {
+	Finished(id string, o job.Outcome) error
+	Yielded(id string) error
+}
+
+// appRunner routes a job at one state to the subsystem that does that state's
+// work, and returns immediately.
+//
+// runAssess executes work synchronously in-goroutine and passes ctx to
+// maybeReleaseRecoveryVolumes(ctx, id). runFetch and runPostProc hand off work
+// to downstream subsystem pools (downloader and postProcessor), whose cancellation
+// and worker drains are owned by their respective Stop methods during
+// Application.Shutdown.
+//
+// Every branch must end in exactly one Finished or Yielded, on some goroutine.
+// Returning without either strands the job's lease and compute slot: the Queue
+// cannot distinguish "holding and working" from "holding and yielded", so
+// nothing else can return them (ports.go, Runner).
+//
+// The obligation is discharged either synchronously within the runner or via
+// four documented downstream pipeline handoffs:
+//  1. Fetching: hands off to downloader (dl.Wake()). Downloader work completes
+//     and yields via handleFileComplete (`git grep -n 'func (app \*Application) handleFileComplete' internal/app/`) on download completion,
+//     noteStall (`git grep -n 'func (app \*Application) noteStall' internal/app/`) on stall, appWorkers.Abort
+//     (`git grep -n 'func (w \*appWorkers) Abort' internal/app/`) on cancellation, or stopWorkers (`git grep -n 'func (app \*Application) stopWorkers' internal/app/`)
+//     on shutdown.
+//  2. Assessing: discharges directly within runAssess via Yielded (intact,
+//     repairable, or deferred recovery) or Finished(OutcomeFailed) (hopeless).
+//  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
+//     (enqueuePostProc). Post-processing completes and yields via
+//     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`) or Shutdown (`git grep -n 'func (app \*Application) Shutdown' internal/app/`).
+//  4. Guard branches (missing app, missing job, app.stopping, unhandled states):
+//     discharges synchronously via immediate Yielded.
+type appRunner struct {
+	app    *Application
+	report reporter
+	log    *slog.Logger
+}
+
+func newAppRunner(app *Application) *appRunner {
+	var l *slog.Logger
+	if app != nil && app.log != nil {
+		l = app.log
+	} else {
+		l = slog.New(slog.DiscardHandler)
+	}
+	return &appRunner{app: app, log: l}
+}
+
+func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
+	if r.app != nil && r.app.stopping.Load() {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+	switch state {
+	case job.Fetching:
+		go r.runFetch(ctx, id)
+	case job.Assessing:
+		go r.runAssess(ctx, id)
+	case job.Repairing, job.Extracting, job.Finalizing:
+		go r.runPostProc(ctx, id, state)
+	default:
+		// A state with no work is still a state the dispatcher leased. Yield
+		// rather than return silently, or the lease is never released.
+		r.log.Warn("runner: no work for state; yielding", "job", id, "state", state)
+		if r.report != nil {
+			if err := r.report.Yielded(id); err != nil {
+				r.log.Error("runner: yield failed", "job", id, "error", err)
+			}
+		}
+	}
+}
+
+// runFetch hands off work to the downstream downloader pool by poking
+// dl.Wake(). Downloader worker goroutines are cancelled and drained by
+// downloader.Stop during Application.Shutdown.
+func (r *appRunner) runFetch(_ context.Context, id string) {
+	if r.app == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+	var j *job.Job
+	if r.app.dispatcher != nil {
+		j, _ = r.app.dispatcher.Job(id)
+	}
+	if j == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	r.app.mu.Lock()
+	dl := r.app.downloader
+	r.app.mu.Unlock()
+	if dl != nil {
+		if w, ok := dl.(interface{ Wake() }); ok {
+			w.Wake()
+		}
+	}
+}
+
+// runAssess executes assessment work synchronously in-goroutine and passes ctx
+// to maybeReleaseRecoveryVolumes(ctx, id). It directly reports completion or
+// state transition via Yielded or Finished.
+func (r *appRunner) runAssess(ctx context.Context, id string) {
+	if r.app == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+	var j *job.Job
+	if r.app.dispatcher != nil {
+		j, _ = r.app.dispatcher.Job(id)
+	}
+	if j == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	if r.app.maybeReleaseRecoveryVolumes(ctx, id) {
+		_ = j.SetNext(job.Fetching)
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	repairState := j.RepairState()
+	if repairState.Hopeless() {
+		failMsg := failMsgForJob(j)
+		r.app.maybeFinalize(id, failMsg)
+		if r.report != nil {
+			_ = r.report.Finished(id, job.OutcomeFailed)
+		}
+		return
+	}
+
+	if repairState == job.RepairPossible || repairState == job.RepairUnknown {
+		_ = j.SetNext(job.Repairing)
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	_ = j.SetNext(job.Extracting)
+	if r.report != nil {
+		_ = r.report.Yielded(id)
+	}
+}
+
+// runPostProc hands off work to the downstream postProcessor subsystem pool via
+// enqueuePostProc. Post-processor worker goroutines are cancelled and drained by
+// postProcessor.Stop during Application.Shutdown.
+func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
+	if r.app == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+	var j *job.Job
+	var hdr dispatch.Header
+	if r.app.dispatcher != nil {
+		if row, ok := r.app.dispatcher.Row(id); ok {
+			hdr = row.Header
+		}
+		j, _ = r.app.dispatcher.Job(id)
+	}
+	if j == nil || r.app.postProcessor == nil {
+		if r.report != nil {
+			_ = r.report.Yielded(id)
+		}
+		return
+	}
+
+	if !r.app.postProcessor.Has(id) {
+		failMsg := failMsgForJob(j)
+		r.app.enqueuePostProc(j, hdr, failMsg)
+	}
+}

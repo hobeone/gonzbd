@@ -1,14 +1,16 @@
 package app_test
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/postproc"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestRetry_ResetsDownloadStats verifies that RetryHistoryJob clears the
@@ -26,6 +28,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	// Pause downloads so the requeued job sits at Queued long enough to be
 	// inspected without racing the downloader/post-processor pipeline.
 	h.app.PauseDownloads()
+	h.app.Dispatcher().Pause()
 	t.Cleanup(h.app.ResumeDownloads)
 
 	const jobID = "retry-reset-00000001"
@@ -41,81 +44,49 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	started := time.Now().Add(-10 * time.Minute)
 	finished := started.Add(5 * time.Minute)
 
-	seeded, err := queue.NewJob(
-		mustParseNZB(t, retryNZB(2)),
-		queue.AddOptions{Filename: "retry-reset.nzb"},
-		fsutil.SanitizeOptions{},
-	)
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	seeded.ID = jobID
-	seeded.Name = "retry-reset"
-	seeded.NZBBackup = "retry-reset.nzb.gz"
+	parsed := mustParseNZB(t, retryNZB(2))
+	seeded, hdr := buildTestJob(t, h.cfg, parsed, types.FetchOptions{
+		JobID:   jobID,
+		NzbName: "retry-reset.nzb",
+	})
+	hdr.Name = "retry-reset"
+	hdr.NZBBackup = "retry-reset.nzb.gz"
 
-	q := h.app.Queue()
-	if err := q.Add(seeded); err != nil {
+	if err := h.app.Dispatcher().Add(seeded, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	q.PromoteNext(ctx)
-	if err := q.MarkJobStarted(jobID, started); err != nil {
-		t.Fatalf("MarkJobStarted: %v", err)
-	}
-	if err := q.RecordDownload(jobID, "mock", 123456); err != nil {
-		t.Fatalf("RecordDownload: %v", err)
-	}
-	// One article succeeds and one fails. The successful one is what makes
-	// the assertions below non-vacuous: it must survive the retry, which
-	// only a loaded overlay can achieve.
-	//
-	// The successful one is RECORDED as a durable run as well as installed in
-	// memory, because the retry overlay derives article resolution from the
-	// record rather than from a column the queue re-serialises. Without the
-	// run the retry rebuilds the job with nothing done, and the "article 0
-	// survived" assertion below fails for a reason that has nothing to do with
-	// the reset it is guarding. ackFailed needs no equivalent: it goes through
-	// AckPermanentFailure, which writes its own failed_articles row.
-	ackDone(t, q, jobID, "a1@t")
+	_ = seeded.BeginAttempt(started)
+	_ = seeded.RecordDownload("mock", 123456)
+	_ = seeded.MarkArticleDone(0, 100, "mock")
 	if _, err := durability.NewSQLiteRunStore(h.repo.DB()).Commit(ctx, jobID,
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		}); err != nil {
 		t.Fatalf("record the durable run: %v", err)
 	}
-	ackFailed(t, q, jobID, "a2@t")
-	if err := q.MarkDownloadFinished(jobID, finished); err != nil {
-		t.Fatalf("MarkDownloadFinished: %v", err)
-	}
-	if err := q.Save(h.adminDir); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	_ = seeded.MarkArticleFailed(1)
+	_, _ = seeded.Finish(job.OutcomeFailed, finished)
 
-	store := q.Store()
-	if store == nil {
-		t.Fatal("scenario harness queue has no store; retained progress cannot be exercised")
-	}
-	if err := store.MoveToHistory(ctx, seeded, history.Entry{
+	entry := history.Entry{
 		NzoID:     jobID,
 		Name:      "retry-reset",
 		NzbName:   "retry-reset.nzb",
 		NZBBackup: "retry-reset.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
-		t.Fatalf("MoveToHistory: %v", err)
 	}
-	if err := q.Remove(jobID); err != nil {
-		t.Fatalf("Remove: %v", err)
+	if err := h.app.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: seeded}); err != nil {
+		t.Fatalf("TriggerPersistAndCommit: %v", err)
 	}
 
 	h.app.PauseDownloads()
-	h.app.Queue().PauseAll()
+	h.app.Dispatcher().Pause()
 
 	if err := h.app.RetryHistoryJob(ctx, jobID); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	snap := h.app.Queue().SnapshotJob(jobID)
-	if snap == nil {
+	snap, ok := h.app.Dispatcher().Job(jobID)
+	if !ok {
 		t.Fatalf("job %s not in queue after retry", jobID)
 	}
 	if !snap.Progress().DownloadStarted().IsZero() {
@@ -127,8 +98,13 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	if stats := snap.Progress().ServerStats(); len(stats) != 0 {
 		t.Errorf("ServerStats = %v, want empty", stats)
 	}
-	if snap.Status != constants.StatusQueued {
-		t.Errorf("Status = %q, want Queued", snap.Status)
+	row, ok := h.app.Dispatcher().Row(jobID)
+	if !ok {
+		t.Fatalf("job %s not in dispatcher", jobID)
+	}
+	status := job.ToSABnzbd(row.View)
+	if status != constants.StatusPaused && status != constants.StatusQueued {
+		t.Errorf("Status = %q, want Paused or Queued", status)
 	}
 
 	// Without these the assertions above are vacuous. A retry rebuilds the

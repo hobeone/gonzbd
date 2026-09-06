@@ -28,7 +28,7 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "recover_par2_names", "job", job.Queue.ID)
+	log = log.With("component", "recover_par2_names", "job", job.JobID())
 
 	logf(ctx, log, job, slog.LevelInfo, "Running par2-based filename recovery in %s", job.DownloadDir)
 

@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -40,7 +39,7 @@ type fileResumer interface {
 // tested with nothing calling either, so a restart re-downloaded every byte an
 // earlier run had already fsynced. This is where the two meet.
 //
-// It seeds through Queue.ReplaceFromRuns rather than Queue.SeedFromRuns, and
+// It seeds through Job.ReplaceFromRuns rather than Job.SeedFromRuns, and
 // that is the whole of #362's fix. This is the ONLY caller that has stat'ed
 // the files, so it is the only one entitled to contradict what
 // Store.RestoreJobProgress derived — which it does by having had
@@ -144,149 +143,47 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 	if app.resumer == nil {
 		return nil
 	}
-	for _, snap := range app.queue.Snapshot() {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("app: resume sweep aborted: %w", err)
-		}
-		if !sweptStatus(snap.Status) {
-			// Not a residency check — see the phase note above. A job past
-			// downloading has files the assembler no longer owns, and there
-			// is no re-fetch to prevent for it either way.
-			app.log.Debug("resume sweep skipped a job that is not downloading",
-				"job", snap.ID, "status", snap.Status, "phase", snap.Phase())
-			continue
-		}
-		// A Paused job is not resident, so its clone carries no manifest.
-		// SnapshotJob hydrates one onto a clone, which is read-only and does
-		// not change the live job's residency; the write-back below goes
-		// through Queue.ReplaceFromRuns, which hydrates the live job itself
-		// for the duration.
-		if hydrated := app.queue.SnapshotJob(snap.ID); hydrated != nil {
-			snap = hydrated
-		}
-		m, err := snap.Manifest()
-		if err != nil {
-			// Not resident. Nothing here can install bits into it, and that
-			// is reported rather than silently skipped so the gap is visible
-			// in a log rather than only in this comment.
-			//
-			// No reachable state gets here any more, and that is worth writing
-			// down so nobody spends an afternoon building a fixture for it.
-			// The phase bound above already excluded everything that used to
-			// arrive non-resident, and a PhaseActive job is resident on every
-			// route into that phase: promotion attaches the manifest before it
-			// sets StatusDownloading; SetStatus re-hydrates on the way into a
-			// resident status, or fails and leaves the status alone; and
-			// SQLiteStore.Get REMOVES a job with files whose manifest file is
-			// missing rather than returning it non-resident, so the
-			// crash-with-a-lost-manifest case never reaches the queue at all.
-			// Verified by replacing this arm with a panic: nothing in
-			// ./internal/app reaches it.
-			//
-			// It stays because the alternative is a nil dereference if any of
-			// those three changes, and because Snapshot deliberately does not
-			// hydrate — "has a resident status" and "has a manifest on this
-			// clone" are two facts, not one. Read the absence of a test as the
-			// absence of a state to write one against, not as permission to
-			// delete the guard.
-			app.log.Debug("resume sweep skipped a non-resident job",
-				"job", snap.ID, "status", snap.Status, "err", err)
-			continue
-		}
-		swept, runs, fault, err := app.resumeJobFiles(ctx, snap, m)
-		if err != nil {
-			return err
-		}
-		// Seeded BEFORE the stall below, and unconditionally, because a fault
-		// on one file says nothing about the files already resumed.
-		//
-		// This used to return early on the first fault and discard them, and
-		// the cost was permanent rather than transient: the stall pauses the
-		// job, a paused job is not resident, and a non-resident job is skipped
-		// by every future sweep — which only runs at startup anyway. So an NFS
-		// flap on file 7 of 20 threw away the seed for all 20 and no later
-		// retry could recover it. A transient fault turning into a permanent
-		// loss of ground is the exact failure class this task exists to
-		// prevent.
-		//
-		// The order is load-bearing the other way too: Stall pauses the job,
-		// which evicts its manifest, and ReplaceFromRuns needs a resident one.
-		//
-		// That eviction used to strand the correction. The replace only
-		// mutated the in-memory JobProgress and set a dirty flag, so a Stall
-		// here discarded a cleared bit before any save, and the next promotion
-		// re-read the pre-correction row. ReplaceFromRuns now persists a
-		// clearing correction before it returns, which is what makes this
-		// ordering safe rather than merely necessary.
-		//
-		// A fault also bounds what "authoritative" may mean here, and `swept`
-		// is what carries that bound: it names only the files this sweep
-		// actually stat'ed, and ReplaceFromRuns touches only those. A file the
-		// fault stopped it from reaching is omitted, and omission is silence
-		// rather than a finding of absence — clearing on behalf of a file
-		// nobody read would turn one unreadable mount into a full re-download
-		// of the job.
-		//
-		// The file list has to travel SEPARATELY from the runs, and this is
-		// why: a file whose runs the gate discarded contributes no run at all,
-		// so the runs alone cannot distinguish "I looked and found nothing"
-		// from "I never looked".
-		replaceErr := app.queue.ReplaceFromRuns(snap.ID, swept, runs)
-		if replaceErr != nil {
-			// Not fatal to startup, but the two failures behind this differ
-			// and the message must not flatten them.
-			//
-			// A seeding failure costs a re-fetch: the job was not told what it
-			// already has, which is the safe direction under S3.
-			//
-			// A PERSIST failure is the other direction. The correction is
-			// applied in memory, so this process behaves correctly, but the
-			// file's stored `job_files` row still carries the Complete flag
-			// and assembled CRC this sweep cleared — the article bits are
-			// derived from durable_runs, whose rows Resumer has already
-			// deleted, so it is the FILE-level correction that is at risk and
-			// not the article-level one. If the job is evicted before the next
-			// successful save, the next promotion re-reads that row and the
-			// file comes back Complete over articles this sweep returned to
-			// Outstanding.
-			app.log.Warn("resume sweep could not fully apply a job's recomputation; "+
-				"if this was the persist, an eviction before the next queue save "+
-				"restores the file's cleared Complete flag and assembled CRC",
-				"job", snap.ID, "err", replaceErr)
-		}
-		if fault == nil && replaceErr == nil {
-			// Below ReplaceFromRuns because that is what installs the Done
-			// bits this reads, and inside the no-fault arm because a truncate
-			// is the one irreversible act in this sweep — see
-			// completeStrandedFiles for both arguments in full.
-			//
-			// Gated on ReplaceFromRuns SUCCEEDING for the same reason it is
-			// placed below it. A failure there leaves the Done bits as
-			// Store.RestoreJobProgress derived them, uncorrected — while
-			// Resumer has already deleted the runs of a file it found short or
-			// missing. Reading those two together describes a file as fully
-			// resolved when its bytes are gone, and this pass would then mark
-			// it Complete: a job shipped to post-processing over a file that
-			// was about to be re-fetched.
-			app.completeStrandedFiles(ctx, snap.ID, m, swept, runs)
-		}
-		if fault != nil {
-			// A1: a failure to READ the disk says nothing about any article.
-			// The job stalls with a surfaced reason and every article stays
-			// Outstanding; marking one permanently failed here would burn its
-			// retry budget and degrade the job's reported health over a
-			// condition of the device.
-			//
-			// Stalled even when the fault classifies permanent, which is
-			// deliberately NOT what Barrier.routeFault does. The two answer
-			// different questions: the barrier asks "is this condition
-			// recoverable", while startup asks "is there work to protect by
-			// failing". Here there is none — nothing has been downloaded in
-			// this process — so failing would send a job to history and
-			// discard the bytes an earlier run left on disk, over an EACCES
-			// or EROFS on a mount that has not finished coming up at boot and
-			// that the operator clears in seconds.
-			app.Stall(snap.ID, fault)
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("app: resume sweep aborted: %w", err)
+			}
+			if row.View.State != job.Fetching {
+				app.log.Debug("resume sweep skipped a job that is not downloading",
+					"job", row.ID, "state", row.View.State)
+				continue
+			}
+			if app.residency != nil {
+				_ = app.residency.Hydrate(ctx, row.ID)
+			}
+			j, ok := app.dispatcher.Job(row.ID)
+			if !ok {
+				continue
+			}
+			m, err := j.Manifest()
+			if err != nil {
+				app.log.Debug("resume sweep skipped a non-resident job",
+					"job", row.ID, "err", err)
+				continue
+			}
+			swept, runs, fault, err := app.resumeJobFiles(ctx, row.ID, m, row.Header.Name, j.Progress())
+			if err != nil {
+				return err
+			}
+			replaceErr := j.ReplaceFromRuns(swept, runs)
+			if replaceErr != nil {
+				app.log.Warn("resume sweep could not fully apply a job's recomputation",
+					"job", row.ID, "err", replaceErr)
+			}
+			if app.checkpointer != nil {
+				_ = app.checkpointer.Flush(ctx)
+			}
+			if fault == nil && replaceErr == nil {
+				app.completeStrandedFiles(ctx, row.ID, m, swept, runs)
+			}
+			if fault != nil {
+				app.Stall(row.ID, fault)
+			}
 		}
 	}
 	return nil
@@ -319,12 +216,14 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 // A fault returns what was gathered from the files BEFORE it, not nil. Its
 // caller seeds them and then stalls; see the note there for why discarding
 // them turned a transient fault into a permanent loss of ground.
-func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *queue.Manifest) (swept []int32, runs []durability.Run, fault *storagefault.Fault, err error) {
-	nFiles := m.NumFiles()
-	swept = make([]int32, 0, nFiles)
-	progress := snap.Progress()
+func (app *Application) resumeJobFiles(ctx context.Context, jobID string, m *job.Manifest, jobName string, progress *job.JobProgress) (swept []int32, runs []durability.Run, fault *storagefault.Fault, err error) {
+	numFiles := 0
+	if m != nil {
+		numFiles = m.NumFiles()
+	}
+	swept = make([]int32, 0, numFiles)
 	var restarted int
-	for f := range nFiles {
+	for f := range numFiles {
 		// R15: checked per file rather than per job. One file's gate is a
 		// single stat, so this is cheap insurance rather than the long-poll it
 		// was when the fallback re-read the whole file.
@@ -334,13 +233,16 @@ func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *
 		// A file with no resolved filename was never registered, so no
 		// process ever opened a path for it and there is nothing on disk to
 		// resume against. Guessing a path here would stat an unrelated file.
-		filename := progress.FileFilename(f)
+		var filename string
+		if progress != nil {
+			filename = progress.FileFilename(f)
+		}
 		if filename == "" {
 			continue
 		}
-		path := app.pipeline.jobFilePath(snap.Name, filename)
+		path := app.pipeline.jobFilePath(jobName, filename)
 		//nolint:gosec // G115: file counts are far below int32
-		res, rErr := app.resumer.Resume(ctx, snap.ID, int32(f), path)
+		res, rErr := app.resumer.Resume(ctx, jobID, int32(f), path)
 		if rErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, nil, nil, fmt.Errorf("app: resume sweep aborted: %w", ctxErr)
@@ -354,7 +256,7 @@ func (app *Application) resumeJobFiles(ctx context.Context, snap *queue.Job, m *
 		runs = append(runs, res.Runs...)
 	}
 	app.log.Info("resumed a job's work set from stable storage",
-		"job", snap.ID, "files", len(swept), "runs", len(runs),
+		"job", jobID, "files", len(swept), "runs", len(runs),
 		"files_restarted", restarted)
 	return swept, runs, nil, nil
 }
@@ -373,35 +275,6 @@ func (p *pipeline) jobFilePath(jobName, filename string) string {
 	p.mu.RUnlock()
 	// --- No lock held below this line ---
 	return fsutil.JoinSafe(jobDir, "", filename, sanitize)
-}
-
-// sweptStatus reports whether the startup resume sweep may re-derive a job's
-// progress from its bytes.
-//
-// Downloading and Fetching are PhaseActive: the assembler is the only writer,
-// so the file on disk is exactly what the record describes and a size that
-// falls short of it really means bytes were lost.
-//
-// PAUSED is here for the same reason and was missing. A paused job is
-// mid-download — nothing else owns its files, and the assembler wrote every
-// byte in them — but it is not PhaseActive, so the sweep skipped it and #362
-// survived in that branch: its disproven Done bits were never corrected, the
-// next checkpoint re-recorded them, and the file finalized over a hole. It is
-// also the branch Application.Stall leaves jobs in, which is what made
-// stallLost's own "restart gonzbd to resume this job from its recorded runs"
-// instruction unable to work.
-//
-// Everything else is excluded, and the phase note on resumeAllJobs says why at
-// length: in PhaseProcessing something other than the assembler owns the files
-// — par2 repairs one IN PLACE, unpack reads it, the move relocates it — so a
-// recomputation over those bytes proves nothing and would clear real progress.
-func sweptStatus(s constants.Status) bool {
-	switch s {
-	case constants.StatusDownloading, constants.StatusFetching, constants.StatusPaused:
-		return true
-	default:
-		return false
-	}
 }
 
 // completeStrandedFiles finishes the finalize a crash interrupted, for every
@@ -449,12 +322,19 @@ func sweptStatus(s constants.Status) bool {
 // one irreversible thing this whole sweep does. A file left stranded is no
 // worse off than before this pass existed; a file trimmed against a failing
 // mount is not recoverable by trying again later.
-func (app *Application) completeStrandedFiles(ctx context.Context, jobID string, m *queue.Manifest, swept []int32, runs []durability.Run) {
-	snap := app.queue.SnapshotJob(jobID)
-	if snap == nil {
+func (app *Application) completeStrandedFiles(ctx context.Context, jobID string, m *job.Manifest, swept []int32, runs []durability.Run) {
+	if app.dispatcher == nil {
 		return
 	}
-	progress := snap.Progress()
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		return
+	}
+	jobName := j.Name()
+	progress := j.Progress()
+	if progress == nil {
+		return
+	}
 	for _, f := range swept {
 		fi := int(f)
 		if !strandedComplete(progress, m, fi) {
@@ -464,7 +344,7 @@ func (app *Application) completeStrandedFiles(ctx context.Context, jobID string,
 		if filename == "" {
 			continue
 		}
-		path := app.pipeline.jobFilePath(snap.Name, filename)
+		path := app.pipeline.jobFilePath(jobName, filename)
 		bound, err := durability.TrimToRuns(path, runsForFile(runs, f))
 		if err != nil {
 			// Logged and skipped rather than stalled. The file keeps the
@@ -504,27 +384,24 @@ func (app *Application) completeStrandedFiles(ctx context.Context, jobID string,
 // else — the assembler's partsWritten counts a permanent failure toward
 // TotalParts — so a file whose last article will never arrive is complete,
 // short, and par2's problem.
-func strandedComplete(p *queue.JobProgress, m *queue.Manifest, fi int) bool {
-	// Bounds-checked here rather than left to the accessors, and the state
-	// that makes it necessary is theirs: JobProgress.FileFetchPolicy
-	// DOCUMENTS that an out-of-range index reports FetchAlways, and
-	// FileComplete reports false. Those two permissive answers combine to
-	// describe an index that does not exist as a file that is fetched and
-	// incomplete — a repair candidate — and Manifest.FileRange then indexes
-	// its offsets slice and panics. Inside the resume sweep that is a panic
-	// during Start.
+func strandedComplete(prog *job.JobProgress, m *job.Manifest, fi int) bool {
+	if m == nil || prog == nil {
+		return false
+	}
 	if fi < 0 || fi >= m.NumFiles() {
 		return false
 	}
-	if p.FileFetchPolicy(fi) != queue.FetchAlways || p.FileComplete(fi) {
+
+	if prog.FileFetchPolicy(fi) != job.FetchAlways || prog.FileComplete(fi) {
 		return false
 	}
+
 	lo, hi := m.FileRange(fi)
 	if hi <= lo {
 		return false
 	}
 	for i := lo; i < hi; i++ {
-		if !p.ArticleDone(i) {
+		if !prog.ArticleDone(i) {
 			return false
 		}
 	}

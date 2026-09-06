@@ -547,7 +547,7 @@ func (w *FileWriter) admitRetryOfFailed(artIdx int32) {
 // part total, and reports whether it was newly admitted.
 //
 // It records no ack. A permanent failure is the queue's to record via
-// AckPermanentFailure (R10). What is left here is the dedup that keeps
+// Job.MarkArticleFailed (R10). What is left here is the dedup that keeps
 // partsWritten from overshooting TotalParts, which is purely local
 // bookkeeping.
 func (w *FileWriter) admitPermanentFailure(artIdx int32) bool {

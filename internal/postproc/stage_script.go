@@ -88,9 +88,9 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "script", "job", job.Queue.ID)
+	log = log.With("component", "script", "job", job.JobID())
 
-	name := job.Queue.Script
+	name := job.Script
 	if name == "" || strings.EqualFold(name, "none") || strings.EqualFold(name, "default") {
 		logf(ctx, log, job, slog.LevelDebug, "No script configured")
 		return nil
@@ -134,17 +134,22 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "Running: %s", scriptPath)
 
+	var expectedBytes int64
+	if prog := job.Progress(); prog != nil {
+		expectedBytes = prog.ExpectedBytes()
+	}
+
 	in := ScriptInput{
 		FinalDir:    job.DownloadDir,
 		CompleteDir: s.CompleteDir,
-		NZBName:     job.Queue.Filename,
-		JobName:     job.Queue.Name,
-		Category:    job.Queue.Category,
+		NZBName:     job.Filename,
+		JobName:     job.Name(),
+		Category:    job.Category,
 		Status:      status,
-		PPFlags:     job.Queue.PP,
+		PPFlags:     job.PP,
 		ScriptName:  name,
-		NZOID:       job.Queue.ID,
-		URL:         job.Queue.URL,
+		NZOID:       job.JobID(),
+		URL:         job.URL,
 		Version:     s.Version,
 		APIKey:      s.APIKey,
 		APIURL:      s.APIURL,
@@ -156,7 +161,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		// internal/app/history_helper.go) — a script reading SAB_BYTES for
 		// an on-demand-par2 job that verified clean must see what was
 		// actually fetched, not the pre-discard total.
-		Bytes:         job.Queue.Progress().ExpectedBytes(),
+		Bytes:         expectedBytes,
 		RedactSecrets: s.redactSecrets.Load(),
 		OnLine: func(line string) {
 			if job.OnOutput != nil {

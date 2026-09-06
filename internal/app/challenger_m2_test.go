@@ -10,10 +10,10 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 func createTestApp(t *testing.T, maxActiveJobs int) (*app.Application, *history.Repository) {
@@ -65,9 +65,9 @@ func TestAppNew_MaxActiveJobsInitialization(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("MaxActiveJobs_%d", tc.configuredMax), func(t *testing.T) {
 			application, _ := createTestApp(t, tc.configuredMax)
-			actualMax := application.Queue().ActiveSet().MaxActive()
+			actualMax := application.Dispatcher().LeaseCap()
 			if actualMax != tc.expectedMax {
-				t.Fatalf("app.New initialized ActiveSet MaxActive = %d, want %d", actualMax, tc.expectedMax)
+				t.Fatalf("app.New initialized Dispatcher LeaseCap = %d, want %d", actualMax, tc.expectedMax)
 			}
 		})
 	}
@@ -77,8 +77,8 @@ func TestReloadDownloadOptions_MaxActiveJobsPropagation(t *testing.T) {
 	t.Parallel()
 
 	application, _ := createTestApp(t, 4)
-	if got := application.Queue().ActiveSet().MaxActive(); got != 4 {
-		t.Fatalf("initial MaxActive = %d, want 4", got)
+	if got := application.Dispatcher().LeaseCap(); got != 4 {
+		t.Fatalf("initial LeaseCap = %d, want 4", got)
 	}
 
 	// Update via ReloadDownloadOptions
@@ -89,8 +89,8 @@ func TestReloadDownloadOptions_MaxActiveJobsPropagation(t *testing.T) {
 	}
 	application.ReloadDownloadOptions(dlCfg)
 
-	if got := application.Queue().ActiveSet().MaxActive(); got != 12 {
-		t.Fatalf("after ReloadDownloadOptions MaxActive = %d, want 12", got)
+	if got := application.Dispatcher().LeaseCap(); got != 12 {
+		t.Fatalf("after ReloadDownloadOptions LeaseCap = %d, want 12", got)
 	}
 }
 
@@ -117,24 +117,24 @@ func TestReloadDownloadOptions_ConcurrentStress(t *testing.T) {
 		_ = workerID
 	}
 
-	// Promoters triggering promotion loop concurrently
+	// Promoters triggering promotion loop concurrently via Tick
 	for range 5 {
 		wg.Go(func() {
 			for range 100 {
-				application.Queue().PromoteNext(ctx)
+				application.Dispatcher().Tick(ctx)
 			}
 		})
 	}
 
-	// Readers observing ActiveSet limits and length concurrently
+	// Readers observing Dispatcher limits and length concurrently
 	for range 10 {
 		wg.Go(func() {
 			for range 100 {
-				maxVal := application.Queue().ActiveSet().MaxActive()
+				maxVal := application.Dispatcher().LeaseCap()
 				if maxVal <= 0 {
-					t.Errorf("observed invalid MaxActive <= 0 during stress: %d", maxVal)
+					t.Errorf("observed invalid LeaseCap <= 0 during stress: %d", maxVal)
 				}
-				_ = application.Queue().ActiveSet().Len()
+				_ = application.Dispatcher().Len()
 			}
 		})
 	}
@@ -146,8 +146,10 @@ func TestReloadDownloadOptions_PromotionLimitBehavior(t *testing.T) {
 	t.Parallel()
 
 	application, _ := createTestApp(t, 2)
-	q := application.Queue()
+	disp := application.Dispatcher()
+	ctx := context.Background()
 
+	jobs := make([]*job.Job, 6)
 	// Enqueue 6 jobs
 	for i := 1; i <= 6; i++ {
 		parsed := &nzb.NZB{
@@ -157,19 +159,36 @@ func TestReloadDownloadOptions_PromotionLimitBehavior(t *testing.T) {
 				Bytes:    1000,
 			}},
 		}
-		job, err := queue.NewJob(parsed, queue.AddOptions{Name: fmt.Sprintf("job-%d", i)}, fsutil.SanitizeOptions{})
+		j, hdr, err := app.BuildIngestJob(application.Config(), parsed, fmt.Sprintf("file%d.nzb", i), types.FetchOptions{
+			NzbName: fmt.Sprintf("job-%d", i),
+			JobID:   fmt.Sprintf("job-%d", i),
+		}, nil)
 		if err != nil {
-			t.Fatalf("failed to create job: %v", err)
+			t.Fatalf("failed to build ingest job: %v", err)
 		}
-		if err := q.Add(job); err != nil {
+		if err := disp.Add(j, hdr); err != nil {
 			t.Fatalf("failed to add job: %v", err)
 		}
+		jobs[i-1] = j
 	}
 
-	// Initial promotion with MaxActiveJobs = 2
-	q.PromoteNext(context.Background())
-	if got := q.ActiveSet().Len(); got != 2 {
-		t.Fatalf("after initial promotion, ActiveSet.Len() = %d, want 2", got)
+	countLeaseHolders := func() int {
+		count := 0
+		for _, j := range jobs {
+			if j.HoldsLease() {
+				count++
+			}
+		}
+		return count
+	}
+
+	// Initial promotion with MaxActiveJobs = 2.
+	// Tick twice: first tick begins attempt (transitions from StateUnset to Fetching),
+	// second tick grants lease to Fetching jobs.
+	disp.Tick(ctx)
+	disp.Tick(ctx)
+	if got := countLeaseHolders(); got != 2 {
+		t.Fatalf("after initial promotion, lease holders = %d, want 2", got)
 	}
 
 	// Expand to 4 via ReloadDownloadOptions
@@ -179,11 +198,14 @@ func TestReloadDownloadOptions_PromotionLimitBehavior(t *testing.T) {
 		MaxArtOpt:     1,
 	})
 
-	if got := q.ActiveSet().MaxActive(); got != 4 {
-		t.Fatalf("ActiveSet.MaxActive() = %d, want 4", got)
+	if got := disp.LeaseCap(); got != 4 {
+		t.Fatalf("Dispatcher.LeaseCap() = %d, want 4", got)
 	}
-	if got := q.ActiveSet().Len(); got != 4 {
-		t.Fatalf("after ReloadDownloadOptions(4), ActiveSet.Len() = %d, want 4", got)
+
+	disp.Tick(ctx)
+	disp.Tick(ctx)
+	if got := countLeaseHolders(); got != 4 {
+		t.Fatalf("after ReloadDownloadOptions(4), lease holders = %d, want 4", got)
 	}
 
 	// Reduce to 1 via ReloadDownloadOptions
@@ -193,11 +215,12 @@ func TestReloadDownloadOptions_PromotionLimitBehavior(t *testing.T) {
 		MaxArtOpt:     1,
 	})
 
-	if got := q.ActiveSet().MaxActive(); got != 1 {
-		t.Fatalf("ActiveSet.MaxActive() = %d, want 1", got)
+	if got := disp.LeaseCap(); got != 1 {
+		t.Fatalf("Dispatcher.LeaseCap() = %d, want 1", got)
 	}
-	// Existing resident jobs remain resident (active downloads aren't killed)
-	if got := q.ActiveSet().Len(); got != 4 {
-		t.Fatalf("after ReloadDownloadOptions(1), active resident jobs count = %d, want 4", got)
+	// Existing jobs retain leases (active downloads aren't killed)
+	disp.Tick(ctx)
+	if got := countLeaseHolders(); got != 4 {
+		t.Fatalf("after ReloadDownloadOptions(1), active lease holders count = %d, want 4", got)
 	}
 }

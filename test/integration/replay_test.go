@@ -218,16 +218,19 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	// Wait for either PostProcComplete or timeout.
 	select {
 	case ppc := <-application.PostProcComplete():
-		if ppc.JobID != job.ID {
-			t.Logf("received PostProcComplete for unexpected job %s (wanted %s)", ppc.JobID, job.ID)
+		if ppc.JobID != job.ID() {
+			t.Logf("received PostProcComplete for unexpected job %s (wanted %s)", ppc.JobID, job.ID())
 		}
 		t.Logf("job completed: %s", ppc.JobID)
 	case <-ctx.Done():
 		// Log what we know about the job state.
-		snap := application.Queue().SnapshotJob(job.ID)
-		if snap != nil {
-			t.Logf("timeout: job status=%s pending=%d remaining=%d",
-				snap.Status, snap.Progress().PendingArticles(), snap.Progress().RemainingBytes())
+		if row, ok := application.Dispatcher().Row(job.ID()); ok {
+			var rem int64
+			if j, ok := application.Dispatcher().Job(job.ID()); ok && j != nil && j.Progress() != nil {
+				rem = j.Progress().RemainingBytes()
+			}
+			t.Logf("timeout: job state=%s remaining=%d",
+				row.View.State, rem)
 		}
 		t.Fatalf("timeout (%v) waiting for job completion", timeout)
 	}

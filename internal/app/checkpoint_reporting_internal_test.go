@@ -42,17 +42,17 @@ func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
 	// Grounding: a job with no open file is exactly what a wedged Files()
 	// looks like from here, and the target must still exist or this test
 	// duplicates the nil-target case instead of covering this one.
-	if application.syncTargetFor(job.ID) == nil {
+	if application.syncTargetFor(job.ID()) == nil {
 		t.Fatal("the fixture has no sync target, so it exercises the nil-target guard " +
 			"rather than the empty-file-set one")
 	}
-	if application.hasBarrierStamp(job.ID) {
+	if application.hasBarrierStamp(job.ID()) {
 		t.Fatal("the fixture was already stamped, so it cannot observe a new stamp")
 	}
 
-	application.checkpointJob(t.Context(), job.ID)
+	application.checkpointJob(t.Context(), job.ID())
 
-	if application.hasBarrierStamp(job.ID) {
+	if application.hasBarrierStamp(job.ID()) {
 		t.Error("a barrier that saw no files stamped last_barrier. On a wedged mount " +
 			"Files() answers nil every interval, so the job reports a fresh barrier " +
 			"timestamp forever while nothing has been fsynced")
@@ -80,17 +80,17 @@ func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.noteJobBytes(job.ID, 400)
-	if got := application.pendingBytesFor(job.ID); got != 400 {
+	application.noteJobBytes(job.ID(), 400)
+	if got := application.pendingBytesFor(job.ID()); got != 400 {
 		t.Fatalf("fixture accumulated %d bytes, want 400", got)
 	}
 
 	// The job has no open files, so this checkpoint claims nothing — the same
 	// shape as a run that fails at phase 1, and what a wedged Files() produces
 	// every interval.
-	application.checkpointJob(t.Context(), job.ID)
+	application.checkpointJob(t.Context(), job.ID())
 
-	if got := application.pendingBytesFor(job.ID); got != 400 {
+	if got := application.pendingBytesFor(job.ID()); got != 400 {
 		t.Errorf("bytes_pending = %d after a barrier that claimed nothing, want 400. "+
 			"Reporting zero beside a stale last_barrier says nothing is at risk at "+
 			"the moment when everything written since the last real barrier is", got)
@@ -109,27 +109,27 @@ func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T
 func TestCheckpointJob_LeavesThePendingBytesWhenTheRunFails(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
-	writeFixtureArticle(t, application, job.ID, 0, 0)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
 	// Grounding: without an open file this takes the empty-set early return
 	// and never resets, so it would pass without the restore existing.
-	if len(application.syncTargetFor(job.ID).Files()) == 0 {
+	if len(application.syncTargetFor(job.ID()).Files()) == 0 {
 		t.Fatal("the fixture has no open file, so the run returns before the reset")
 	}
 
 	application.barrier = durability.NewBarrier(
 		failingCommitStore{RunStore: application.runs},
-		application.queue, application, slog.New(slog.DiscardHandler),
+		application, application, slog.New(slog.DiscardHandler),
 	)
 
-	application.noteJobBytes(job.ID, 400)
-	if got := application.pendingBytesFor(job.ID); got != 400 {
+	application.noteJobBytes(job.ID(), 400)
+	if got := application.pendingBytesFor(job.ID()); got != 400 {
 		t.Fatalf("fixture accumulated %d bytes, want 400", got)
 	}
 
-	application.checkpointJob(t.Context(), job.ID)
+	application.checkpointJob(t.Context(), job.ID())
 
-	if got := application.pendingBytesFor(job.ID); got < 400 {
+	if got := application.pendingBytesFor(job.ID()); got < 400 {
 		t.Errorf("bytes_pending = %d after a failed barrier, want at least 400. The "+
 			"window was retired by a run that claimed nothing, so the figure reports "+
 			"no bytes at risk while every byte written since the last real barrier "+
@@ -149,14 +149,14 @@ func TestSettleJobBytes_SubtractsRatherThanClears(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// The window the barrier read before it started.
-	application.noteJobBytes(job.ID, 400)
-	pending := application.pendingBytesFor(job.ID)
+	application.noteJobBytes(job.ID(), 400)
+	pending := application.pendingBytesFor(job.ID())
 	// 120 bytes arrived while that barrier was in flight.
-	application.noteJobBytes(job.ID, 120)
+	application.noteJobBytes(job.ID(), 120)
 
-	application.settleJobBytes(job.ID, pending)
+	application.settleJobBytes(job.ID(), pending)
 
-	if got := application.pendingBytesFor(job.ID); got != 120 {
+	if got := application.pendingBytesFor(job.ID()); got != 120 {
 		t.Errorf("pending = %d, want 120 — clearing would drop the bytes written during "+
 			"the run, which are the least likely of all to be on disk", got)
 	}
@@ -168,9 +168,9 @@ func TestSettleJobBytes_IgnoresANonPositiveAmount(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.settleJobBytes(job.ID, 0)
+	application.settleJobBytes(job.ID(), 0)
 
-	if got := application.pendingBytesFor(job.ID); got != 0 {
+	if got := application.pendingBytesFor(job.ID()); got != 0 {
 		t.Errorf("pending = %d after settling nothing, want 0", got)
 	}
 	if at := application.jobsAtRisk(); len(at) != 0 {
@@ -186,11 +186,11 @@ func TestSettleJobBytes_RemovesTheEntryWhenTheWindowIsFullyRetired(t *testing.T)
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.noteJobBytes(job.ID, 400)
-	application.settleJobBytes(job.ID, 400)
+	application.noteJobBytes(job.ID(), 400)
+	application.settleJobBytes(job.ID(), 400)
 
 	application.barrierMu.Lock()
-	_, present := application.jobBarrierBytes[job.ID]
+	_, present := application.jobBarrierBytes[job.ID()]
 	application.barrierMu.Unlock()
 	if present {
 		t.Error("a fully settled job kept its accumulator entry; the map grows by one " +

@@ -304,7 +304,7 @@ two tables, both keyed by job ID:
   merge, so a file whose articles arrive in order collapses to a single row at
   offset 0 whose `crc32` is the whole-file CRC.
 - `failed_articles` — one row per permanently failed article: `{job_id,
-  art_idx}`. Written solely by `internal/queue`. A failed article never
+  art_idx}`. Written solely by `checkpoint.Checkpointer`. A failed article never
   decodes, so no run ever covers it, and this is the only record that it will
   not arrive.
 
@@ -677,6 +677,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |
+| `max_compute_slots` | int | `2` | Maximum number of concurrent compute/post-processing jobs |
 | `top_only` | bool | false | Only use top-priority server |
 | `no_penalties` | bool | false | Use minimal penalty times |
 | `pre_check` | bool | false | Pre-check article availability via STAT |
@@ -1284,7 +1285,7 @@ Key parsing:
 
 Job IDs (`nzo_id`): GoNZBD uses a bare 16-character lowercase hex string —
 8 random bytes hex-encoded, no prefix (e.g. `a1b2c3d47f8e2b09`). See
-`internal/queue/job.go` `newJobID`. (SABnzbd used `SABnzbd_nzo_<8 alnum>`,
+`internal/job/job.go` `NewJobID`. (SABnzbd used `SABnzbd_nzo_<8 alnum>`,
 e.g. `SABnzbd_nzo_a1b2c3d4`; GoNZBD drops the prefix.)
 
 File IDs: GoNZBD does not expose a per-file `nzf_id` (the `delete_nzf` API

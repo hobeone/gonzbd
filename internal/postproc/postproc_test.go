@@ -14,42 +14,32 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-// newQueueJob builds a real *queue.Job (with a valid Manifest/Progress) via
-// queue.NewJob, adds it to a fresh queue, and returns it — the one way to
-// get a job into existence, rather than a parallel struct-literal path.
-func newQueueJob(t *testing.T, id string, pp int) *queue.Job {
+// newQueueJob builds a real *job.Job (with a valid Manifest/Progress)
+// for testing.
+func newQueueJob(t *testing.T, id string, pp int) *job.Job {
 	t.Helper()
-	qjob, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: id + ".nzb", Name: id, PP: pp}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	j := job.New(id, id, job.PolicyFromPP(pp))
+	m := job.NewManifest(nil)
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	// ID is a plain exported field, unaffected by the Manifest/Progress
-	// split — override the randomly-generated one so tests can match jobs
-	// by the readable id they passed in (e.g. p.Cancel(id)).
-	qjob.ID = id
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	return qjob
+	return j
 }
 
-// makeJob creates a minimal Job backed by a queue.Job for use in tests.
+// makeJob creates a minimal Job backed by a job.Job for use in tests.
 func makeJob(t *testing.T, name string) *Job {
 	t.Helper()
 	return &Job{
-		Queue: newQueueJob(t, name, 3), // Repair + Unpack + Delete (production default)
+		Job: newQueueJob(t, name, 3), // Repair + Unpack + Delete (production default)
+		PP:  3,
 	}
 }
 
@@ -87,7 +77,7 @@ func (s *recordStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 	s.mu.Lock()
-	s.calls = append(s.calls, s.name+"/"+job.Queue.Name)
+	s.calls = append(s.calls, s.name+"/"+job.Name())
 	s.mu.Unlock()
 	if s.runFn != nil {
 		return s.runFn(ctx, job)
@@ -469,7 +459,7 @@ func TestCancelQueuedJob(t *testing.T) {
 	hist := p.History()
 	found := false
 	for _, j := range hist {
-		if j.Queue.ID == "second" && len(j.StageLog) > 0 {
+		if j.JobID() == "second" && len(j.StageLog) > 0 {
 			found = true
 		}
 	}
@@ -552,8 +542,8 @@ func TestOnJobDoneFiredOnce(t *testing.T) {
 		Stages: []Stage{s1, s2},
 		OnJobDone: func(j *Job) {
 			mu.Lock()
-			firings[j.Queue.ID]++
-			logs[j.Queue.ID] = append([]StageLogEntry{}, j.StageLog...)
+			firings[j.JobID()]++
+			logs[j.JobID()] = append([]StageLogEntry{}, j.StageLog...)
 			mu.Unlock()
 			wg.Done()
 		},
@@ -606,7 +596,7 @@ func TestPPQueueOrdering(t *testing.T) {
 	q := newPPQueue()
 	names := []string{"j1", "j2", "j3"}
 	for _, n := range names {
-		q.Push(&Job{Queue: newQueueJob(t, n, 0)})
+		q.Push(&Job{Job: newQueueJob(t, n, 0)})
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
@@ -617,23 +607,23 @@ func TestPPQueueOrdering(t *testing.T) {
 		if !ok {
 			t.Fatalf("Pop returned false, want job %q", want)
 		}
-		if job.Queue.Name != want {
-			t.Errorf("got job %q, want %q", job.Queue.Name, want)
+		if job.Name() != want {
+			t.Errorf("got job %q, want %q", job.Name(), want)
 		}
 	}
 }
 
 func TestPPQueueCancel(t *testing.T) {
 	q := newPPQueue()
-	q.Push(&Job{Queue: newQueueJob(t, "a", 0)})
-	q.Push(&Job{Queue: newQueueJob(t, "b", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "a", 0)})
+	q.Push(&Job{Job: newQueueJob(t, "b", 0)})
 	if !q.Cancel("a") {
 		t.Error("Cancel('a') = false, want true")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	job, ok := q.Pop(ctx, nil)
-	if !ok || job.Queue.ID != "b" {
+	if !ok || job.JobID() != "b" {
 		t.Errorf("expected 'b', got ok=%v job=%v", ok, job)
 	}
 
@@ -722,7 +712,7 @@ func TestPPEnforcement_PP0SkipsRepairAndUnpack(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: newQueueJob(t, "pp0", 0)}
+	job := &Job{Job: newQueueJob(t, "pp0", 0), PP: 0}
 	p.Process(job)
 	wg.Wait()
 
@@ -749,7 +739,7 @@ func TestPPEnforcement_PP1SkipsUnpack(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: newQueueJob(t, "pp1", 1)}
+	job := &Job{Job: newQueueJob(t, "pp1", 1), PP: 1}
 	p.Process(job)
 	wg.Wait()
 
@@ -782,7 +772,7 @@ func TestPPEnforcement_PP2RunsRepairAndUnpack(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: newQueueJob(t, "pp2", 2)}
+	job := &Job{Job: newQueueJob(t, "pp2", 2), PP: 2}
 	p.Process(job)
 	wg.Wait()
 
@@ -822,7 +812,7 @@ func TestPPEnforcement_PP3RunsAll(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: newQueueJob(t, "pp3", 3)}
+	job := &Job{Job: newQueueJob(t, "pp3", 3), PP: 3}
 	p.Process(job)
 	wg.Wait()
 
@@ -862,7 +852,7 @@ func TestPPEnforcement_PP0_NonGatedStagesAlwaysRun(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: newQueueJob(t, "pp0-full", 0)}
+	job := &Job{Job: newQueueJob(t, "pp0-full", 0), PP: 0}
 	p.Process(job)
 	wg.Wait()
 
@@ -945,7 +935,7 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 		Stages: []Stage{quickcheck, repair, finalize},
 		OnJobDone: func(j *Job) {
 			doneMu.Lock()
-			doneJobs = append(doneJobs, j.Queue.ID)
+			doneJobs = append(doneJobs, j.JobID())
 			doneMu.Unlock()
 		},
 	})
@@ -999,7 +989,7 @@ func TestScriptCanFail_True(t *testing.T) {
 		Stages: []Stage{finalize, failScript},
 		OnJobDone: func(j *Job) {
 			doneMu.Lock()
-			doneJobs = append(doneJobs, j.Queue.ID)
+			doneJobs = append(doneJobs, j.JobID())
 			doneMu.Unlock()
 		},
 	})
@@ -1046,7 +1036,8 @@ func TestPreCheck_EmptyDir(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue:       newQueueJob(t, "empty", 3),
+		Job:         newQueueJob(t, "empty", 3),
+		PP:          3,
 		DownloadDir: dir,
 	}
 	p.Process(job)
@@ -1089,7 +1080,8 @@ func TestPreCheck_MissingDir(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue:       newQueueJob(t, "missing", 3),
+		Job:         newQueueJob(t, "missing", 3),
+		PP:          3,
 		DownloadDir: "/nonexistent/path/xyz",
 	}
 	p.Process(job)
@@ -1119,7 +1111,8 @@ func TestPreCheck_UnsetDirSkipsGuard(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue: newQueueJob(t, "no-dir", 3),
+		Job: newQueueJob(t, "no-dir", 3),
+		PP:  3,
 		// DownloadDir deliberately empty
 	}
 	p.Process(job)
@@ -1159,7 +1152,8 @@ func TestProcessJob_SeedsOwnedFilesFromDownloadDir(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue:       newQueueJob(t, "seed", 3),
+		Job:         newQueueJob(t, "seed", 3),
+		PP:          3,
 		DownloadDir: dir,
 	}
 	p.Process(job)
@@ -1186,22 +1180,19 @@ func TestPostProc_HelperMethods(t *testing.T) {
 
 	t.Run("buildPreambleLog", func(t *testing.T) {
 		now := time.Now()
-		q := queue.New()
-		qjob, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: "job1.nzb", Name: "TestJob"}, fsutil.SanitizeOptions{})
-		if err != nil {
-			t.Fatalf("NewJob: %v", err)
+		j := job.New("job1", "TestJob", job.Policy{})
+		m := job.NewManifest(nil)
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
 		}
-		if err := q.Add(qjob); err != nil {
-			t.Fatalf("Add: %v", err)
-		}
-		if err := q.MarkJobStarted(qjob.ID, now); err != nil {
+		if err := j.MarkJobStarted(now); err != nil {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
-		if err := q.MarkDownloadFinished(qjob.ID, now.Add(5*time.Second)); err != nil {
+		if err := j.MarkDownloadFinished(now.Add(5 * time.Second)); err != nil {
 			t.Fatalf("MarkDownloadFinished: %v", err)
 		}
 		job := &Job{
-			Queue:       qjob,
+			Job:         j,
 			DownloadDir: t.TempDir(),
 		}
 
@@ -1254,7 +1245,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 	t.Run("buildSummaryEntry", func(t *testing.T) {
 		now := time.Now()
 		job := &Job{
-			Queue: newQueueJob(t, "job1", 0),
+			Job: newQueueJob(t, "job1", 0),
 			StageLog: []StageLogEntry{
 				{
 					Stage:   "repair",
@@ -1294,19 +1285,13 @@ func TestPostProc_HelperMethods(t *testing.T) {
 	})
 
 	t.Run("runStage", func(t *testing.T) {
-		var updatedID string
-		var updatedStatus constants.Status
-
 		p := &PostProcessor{
 			log: slog.Default(),
-			statusUpdater: func(id string, status constants.Status) {
-				updatedID = id
-				updatedStatus = status
-			},
 		}
 
 		job := &Job{
-			Queue: newQueueJob(t, "job1", 0), // PP=0 skips repair
+			Job: newQueueJob(t, "job1", 0), // PP=0 skips repair
+			PP:  0,
 		}
 
 		mockStage := &mockPPStage{
@@ -1326,7 +1311,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 
 		// 2. Normal success run
-		job.Queue.PP = 3 // PP=3 runs repair
+		job.PP = 3 // PP=3 runs repair
 		var stageRan bool
 		mockStage.runFunc = func(ctx context.Context, job *Job) error {
 			stageRan = true
@@ -1340,9 +1325,6 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 		if !stageRan {
 			t.Error("expected stage.Run to be executed")
-		}
-		if updatedID != "job1" || updatedStatus != constants.StatusVerifying {
-			t.Errorf("expected status update to Verifying, got id=%s status=%s", updatedID, updatedStatus)
 		}
 		if entry.Err != nil {
 			t.Errorf("expected no error, got %v", entry.Err)
@@ -1386,7 +1368,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 func TestBuildSummaryEntry_EmptyStageLog(t *testing.T) {
 	t.Parallel()
 	job := &Job{
-		Queue:    newQueueJob(t, "empty-log", 0),
+		Job:      newQueueJob(t, "empty-log", 0),
 		StageLog: []StageLogEntry{}, // no stages ran
 	}
 
@@ -1414,7 +1396,7 @@ func TestBuildSummaryEntry_AllSuccess(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	job := &Job{
-		Queue:    newQueueJob(t, "all-ok", 0),
+		Job:      newQueueJob(t, "all-ok", 0),
 		FinalDir: "/output/done",
 		StageLog: []StageLogEntry{
 			{Stage: "repair", Started: now, Elapsed: time.Second, Err: nil},

@@ -9,10 +9,9 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 type fakeDownloader struct {
@@ -141,12 +140,12 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 			}},
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "test-job", PP: 3}, fsutil.SanitizeOptions{})
+	j, hdr, err := BuildIngestJob(application.config, parsed, "test.nzb", types.FetchOptions{NzbName: "test-job", PP: 3}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
 
 	// Start the application
@@ -164,13 +163,9 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 		}
 	})
 
-	if err := application.Queue().SetStatus(job.ID, constants.StatusDownloading); err != nil {
-		t.Fatalf("Queue.SetStatus: %v", err)
-	}
-
 	// Push article completion result
 	fd.completions <- &downloader.ArticleResult{
-		JobID:     job.ID,
+		JobID:     j.ID(),
 		MessageID: "msg1@example.com",
 		FileIdx:   0,
 		Subject:   "test.bin",
@@ -184,16 +179,14 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	select {
 	case <-application.PostProcComplete():
 	case <-time.After(5 * time.Second):
-		snap := application.Queue().SnapshotJob(job.ID)
-		if snap != nil {
-			t.Logf("Job in queue: Status=%v, PostProc=%v, IsComplete=%v",
-				snap.Status, snap.PostProc, snap.IsComplete())
+		if row, ok := application.Dispatcher().Row(j.ID()); ok {
+			t.Logf("Job in dispatcher: Status=%v", row.Status())
 		}
 		t.Fatal("timed out waiting for PostProcComplete")
 	}
 
 	// PostProcComplete fired — the job should now be in history.
-	entry, err := application.GetHistory(t.Context(), job.ID)
+	entry, err := application.GetHistory(t.Context(), j.ID())
 	if err != nil {
 		t.Fatalf("GetHistory: %v", err)
 	}

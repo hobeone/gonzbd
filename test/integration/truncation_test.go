@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"log/slog"
+
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
@@ -90,14 +92,13 @@ func TestDownload_FileSizeMatchesPayload(t *testing.T) {
 	downloadDir := t.TempDir()
 	a := newTestAppWithDir(t, srv.Addr(), downloadDir)
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename: "truncation-test.nzb",
-		Name:     "truncation-test",
-	}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(a.Config(), parsed, "truncation-test.nzb", types.FetchOptions{
+		NzbName: "truncation-test",
+	}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.AddJob(t.Context(), job, nzbXML, false); err != nil {
+	if err := a.AddJob(t.Context(), j, hdr, nzbXML, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 
@@ -199,14 +200,13 @@ func TestDownload_MultiPartFileSizeExact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename: "multipart-exact.nzb",
-		Name:     "multipart-exact",
-	}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(a.Config(), parsed, "multipart-exact.nzb", types.FetchOptions{
+		NzbName: "multipart-exact",
+	}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := a.AddJob(t.Context(), job, nzbXML, false); err != nil {
+	if err := a.AddJob(t.Context(), j, hdr, nzbXML, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 

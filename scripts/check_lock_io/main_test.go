@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,180 @@ func trustedFn(cfg *Config, log *Logger) bool {
 	}
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for log call inside With closure, got %d: %v", len(findings), findings)
+	}
+}
+
+// TestClosureWrapper_DirectLockInsideClosure verifies that calling Lock() or
+// RLock() inside a closure wrapper (e.g. With or ForEachUnfinishedArticle) is
+// flagged as a lock acquisition inside the closure.
+func TestClosureWrapper_DirectLockInsideClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func process(cfg *Config) {
+	cfg.With(func(c *Config) {
+		mu.Lock()
+		defer mu.Unlock()
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for direct lock inside With closure, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside With(...) closure: mu.Lock()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_JobLockMethodInsideClosure verifies that calling a job.Job
+// method that acquires locks (such as j.Added()) inside a ForEachUnfinishedArticle
+// closure is flagged as a lock acquisition inside the closure.
+func TestClosureWrapper_JobLockMethodInsideClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func dispatch(j *Job) {
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.Added()
+		return true
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for Job locking method inside ForEachUnfinishedArticle closure, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside ForEachUnfinishedArticle(...) closure: j.Added()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_HoistedClosure verifies that hoisting a closure to a local
+// variable (fn := func(...) { ... }; j.ForEachUnfinishedArticle(fn)) is detected.
+func TestClosureWrapper_HoistedClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func dispatch(j *Job) {
+	fn := func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.Added()
+		return true
+	}
+	_ = j.ForEachUnfinishedArticle(fn)
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for hoisted closure passed to ForEachUnfinishedArticle, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside ForEachUnfinishedArticle(...) closure: j.Added()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_HelperDescentInsideClosure verifies that calling a helper
+// function that acquires locks inside a closure wrapper is caught by one-level descent.
+func TestClosureWrapper_HelperDescentInsideClosure(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func addedOf(j *Job) int {
+	return j.Added()
+}
+
+func dispatch(j *Job) {
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = addedOf(j)
+		return true
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for helper calling Job lock method inside ForEachUnfinishedArticle closure, got %d: %v", len(findings), findings)
+	}
+	expected := "lock acquisition inside ForEachUnfinishedArticle(...) closure (via addedOf): j.Added()"
+	if findings[0].desc != expected {
+		t.Errorf("finding desc = %q, want %q", findings[0].desc, expected)
+	}
+}
+
+// TestClosureWrapper_NonJobClosureNotFlagged verifies that calling a method
+// named Name() inside a non-Job closure (like Config.With) does not trigger a false positive.
+func TestClosureWrapper_NonJobClosureNotFlagged(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+type Cfg struct{ n string }
+func (c *Cfg) With(fn func(*Cfg)) { fn(c) }
+func (c *Cfg) Name() string       { return c.n }
+func Probe(c *Cfg) string {
+	var out string
+	c.With(func(cc *Cfg) { out = cc.Name() })
+	return out
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for non-job closure calling Name(), got %d: %v", len(findings), findings)
+	}
+}
+
+// TestClosureWrapper_SafeClosureNotFlagged verifies that a closure passed to a
+// closureLockMethod that does not perform I/O or acquire locks is not flagged.
+func TestClosureWrapper_SafeClosureNotFlagged(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func inspect(j *Job) int {
+	count := 0
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		count++
+		return true
+	})
+	return count
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for safe closure, got %d: %v", len(findings), findings)
+	}
+}
+
+// TestClosureWrapper_LockSuppressionComment verifies that a trailing //lockio:
+// suppression comment suppresses a lock acquisition finding inside a closure wrapper.
+func TestClosureWrapper_LockSuppressionComment(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func dispatch(j *Job) {
+	j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.Added() //lockio: intentional lock acquisition in test
+		return true
+	})
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings when //lockio: suppression is present, got %d: %v", len(findings), findings)
 	}
 }
 
@@ -359,6 +534,42 @@ func (a *App) SetDir(dir string) {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings — //lockio: comment should suppress, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestSuppressionComment_BareRequiresReason(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (a *App) SetDir(dir string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dir = dir
+	a.log.Info("dir updated", "dir", dir) //lockio:
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	// Expect 2 findings: bare comment violation AND unsuppressed I/O call
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings for bare //lockio: (reason required + unsuppressed I/O), got %d: %v", len(findings), findings)
+	}
+	hasReasonError := false
+	hasIOError := false
+	for _, f := range findings {
+		if strings.Contains(f.desc, "//lockio: requires a reason") {
+			hasReasonError = true
+		}
+		if strings.Contains(f.desc, "I/O call while holding lock") {
+			hasIOError = true
+		}
+	}
+	if !hasReasonError {
+		t.Errorf("expected finding with reason requirement, got: %v", findings)
+	}
+	if !hasIOError {
+		t.Errorf("expected finding for unsuppressed I/O call, got: %v", findings)
 	}
 }
 

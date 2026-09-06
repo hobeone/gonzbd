@@ -2,55 +2,43 @@ package api
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // newEvictedJob builds a job with two data files and one par2 recovery
-// volume, adds it to a store-backed queue, and pauses it so the queue evicts
-// the manifest. A store is required: without one the queue keeps every
-// manifest resident and there is nothing to test.
-func newEvictedJob(t *testing.T) *queue.Job {
+// volume and evicts its manifest.
+func newEvictedJob(t *testing.T) (*job.Job, dispatch.Row) {
 	t.Helper()
-	parsed := &nzb.NZB{
-		Files: []nzb.File{
-			{Subject: "movie.part01.rar", Bytes: 100, Articles: []nzb.Article{{ID: "a0@t", Bytes: 100, Number: 1}}},
-			{Subject: "movie.part02.rar", Bytes: 100, Articles: []nzb.Article{{ID: "a1@t", Bytes: 100, Number: 1}}},
-			{Subject: "movie.vol01+02.par2", Bytes: 50, Articles: []nzb.Article{{ID: "a2@t", Bytes: 50, Number: 1}}},
+	files := []job.JobFile{
+		{Subject: "movie.part01.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "a0@t", Bytes: 100, Number: 1}}},
+		{Subject: "movie.part02.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "a1@t", Bytes: 100, Number: 1}}},
+		{Subject: "movie.vol01+02.par2", Bytes: 50, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "a2@t", Bytes: 50, Number: 1}}},
+	}
+	m := job.NewManifest(files)
+	j := job.New("j1", "movie.nzb", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	j.Evict()
+	if _, err := j.Manifest(); !errors.Is(err, job.ErrNotResident) {
+		t.Fatalf("fixture guard: want ErrNotResident after Evict, got %v — nothing is being tested", err)
+	}
+	row := dispatch.Row{
+		ID: "j1",
+		Header: dispatch.Header{
+			Name:     "movie.nzb",
+			Filename: "movie.nzb",
+			Bytes:    m.TotalBytes(),
+		},
+		View: job.RenderView{
+			StateView: job.StateView{State: job.Fetching},
 		},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-
-	dir := t.TempDir()
-	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-	q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)), queue.WithStateDir(dir))
-
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := q.Pause(job.ID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	// Absence is the property under test here, so this asserts on the error
-	// rather than going through mustManifest, which would fatal on it.
-	if _, err := job.Manifest(); !errors.Is(err, queue.ErrJobNotResident) {
-		t.Fatalf("fixture guard: want ErrJobNotResident after Pause, got %v — nothing is being tested", err)
-	}
-	return job
+	return j, row
 }
 
 // buildSlot renders one entry of the queue listing, and the listing is
@@ -64,18 +52,18 @@ func newEvictedJob(t *testing.T) *queue.Job {
 // in one column.
 func TestBuildSlot_NonResidentJob(t *testing.T) {
 	t.Parallel()
-	job := newEvictedJob(t)
+	j, row := newEvictedJob(t)
 
 	// Captured before the assertions so a fixture that silently stopped
 	// carrying par2 would fail loudly here rather than making the checks
 	// below vacuous.
-	wantBytes, wantPar2Bytes, wantPar2Files := job.TotalBytes(), job.RecoveryBytes(), job.RecoveryFiles()
+	wantBytes, wantPar2Bytes, wantPar2Files := j.TotalBytes(), j.RecoveryBytes(), j.RecoveryFiles()
 	if wantBytes == 0 || wantPar2Bytes == 0 || wantPar2Files == 0 {
 		t.Fatalf("fixture guard: scalars unset after eviction (bytes=%d par2Bytes=%d par2Files=%d)",
 			wantBytes, wantPar2Bytes, wantPar2Files)
 	}
 
-	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(row, j, false, 0, 0, nil, app.JobCheckpointState{})
 
 	if slot.Bytes != wantBytes {
 		t.Errorf("Bytes = %d, want %d", slot.Bytes, wantBytes)
@@ -94,41 +82,44 @@ func TestBuildSlot_NonResidentJob(t *testing.T) {
 // every poll.
 func TestBuildSlot_NonResidentJobHasNoCurrentFile(t *testing.T) {
 	t.Parallel()
-	job := newEvictedJob(t)
+	j, row := newEvictedJob(t)
 
-	if got := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{}).CurrentFile; got != "" {
+	if got := buildSlot(row, j, false, 0, 0, nil, app.JobCheckpointState{}).CurrentFile; got != "" {
 		t.Errorf("CurrentFile = %q, want empty for a non-resident job", got)
 	}
 }
 
 // newOnDemandPar2Job builds a resident job with one content file and one
 // par2 recovery volume, added with OnDemandPar2 so the recovery volume
-// starts Deferred (see Job.NewJob's Deferred: isRecovery &&
-// opts.OnDemandPar2). No store is needed: unlike newEvictedJob, this test
-// needs the manifest resident, not evicted. Returns the queue alongside the
-// job so a caller can drive ackDone through it.
-func newOnDemandPar2Job(t *testing.T) (*queue.Queue, *queue.Job) {
+// starts Deferred. Returns the dispatcher alongside the job.
+func newOnDemandPar2Job(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 	t.Helper()
-	parsed := &nzb.NZB{
-		Files: []nzb.File{
-			{Subject: "content.rar", Bytes: 10_000, Articles: []nzb.Article{{ID: "c1@t", Bytes: 10_000, Number: 1}}},
-			// Recovery-volume subject: matches isRecoveryVolume's
-			// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it deferred.
-			{Subject: "content.vol000+01.par2", Bytes: 1_000, Articles: []nzb.Article{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
-		},
+	files := []job.JobFile{
+		{Subject: "content.rar", Bytes: 10_000, Articles: []job.JobArticle{{ID: "c1@t", Bytes: 10_000, Number: 1}}},
+		// Recovery-volume subject: matches isRecoveryVolume's
+		// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it deferred.
+		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Deferred: true, Articles: []job.JobArticle{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "par2.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	m := job.NewManifest(files)
+	j := job.New("j-par2", "par2.nzb", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
+	if err := j.SetFileFetchPolicy(1, job.FetchIfNeeded); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+	disp := newTestAPIDispatcher(t)
+	if err := disp.Add(j, dispatch.Header{
+		Name:     "par2.nzb",
+		Filename: "par2.nzb",
+		Bytes:    m.TotalBytes(),
+	}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if !job.HasDeferredPar2() {
+	if !j.HasDeferredPar2() {
 		t.Fatal("fixture guard: recovery volume not deferred — OnDemandPar2 wiring didn't take, nothing is being tested")
 	}
-	return q, job
+	return disp, j
 }
 
 // TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent pins the
@@ -140,17 +131,18 @@ func newOnDemandPar2Job(t *testing.T) (*queue.Queue, *queue.Job) {
 // and p.ExpectedBytes() agree for it either way.
 func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
 	t.Parallel()
-	_, job := newOnDemandPar2Job(t)
+	disp, j := newOnDemandPar2Job(t)
 
 	// Guard the fixture against the bug this test exists to catch: under
 	// the old pairing (Size = job.TotalBytes(), the whole-manifest total
 	// of 11_000) a fresh job would already show >0% downloaded even though
 	// nothing has been fetched.
-	if got, want := job.TotalBytes(), int64(11_000); got != want {
+	if got, want := j.TotalBytes(), int64(11_000); got != want {
 		t.Fatalf("fixture guard: TotalBytes() = %d, want %d", got, want)
 	}
 
-	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+	rows := disp.List()
+	slot := buildSlot(rows[0], j, false, 0, 0, nil, app.JobCheckpointState{})
 
 	if got, want := slot.Bytes, int64(10_000); got != want {
 		t.Errorf("Bytes = %d, want %d (deferred recovery volume must not count)", got, want)
@@ -170,11 +162,12 @@ func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
 // number depressed by counting the undispatched deferred bytes against it.
 func TestBuildSlot_DeferredPar2VolumeExcludedAfterDownload(t *testing.T) {
 	t.Parallel()
-	q, job := newOnDemandPar2Job(t)
+	disp, j := newOnDemandPar2Job(t)
 
-	ackDone(t, q, job.ID, "c1@t")
+	ackDone(t, disp, j.ID(), "c1@t")
 
-	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+	rows := disp.List()
+	slot := buildSlot(rows[0], j, false, 0, 0, nil, app.JobCheckpointState{})
 
 	if got, want := slot.Percentage, 100; got != want {
 		t.Errorf("Percentage = %d, want %d (content complete, deferred volume must not count)", got, want)

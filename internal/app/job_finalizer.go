@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
@@ -21,23 +23,25 @@ import (
 // deleted; it is now the NZB backup plus the per-file progress MoveToHistory
 // retains for failed jobs only.
 //
-// It holds *Application only for read-only, construction-immutable dependencies
-// (config, historyRepo, queue, postProcComplete, ctx, log, emit,
-// notifyDispatcher); it introduces no lock of its own.
+// It holds *Application for read-only, construction-immutable dependencies
+// (config, historyRepo, dispatcher, postProcComplete, ctx, log, emit,
+// notifyDispatcher).
 type jobFinalizer struct {
 	app *Application
 }
 
 func newJobFinalizer(app *Application) *jobFinalizer {
-	return &jobFinalizer{app: app}
+	return &jobFinalizer{
+		app: app,
+	}
 }
 
 // finalize is called by the post-processor (OnJobDone) when a job is done
 // (success or failure).
-func (f *jobFinalizer) finalize(job *postproc.Job) {
+func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	app := f.app
-	entry := buildHistoryEntry(job)
-	if err := f.persistAndCommit(app.log, entry, job); err != nil {
+	entry := buildHistoryEntry(ppJob)
+	if err := f.persistAndCommit(app.log, entry, ppJob); err != nil {
 		return
 	}
 	f.fireCompletionNotification(entry)
@@ -57,79 +61,157 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 	defer pruneCancel()
 	if _, err := app.PruneHistory(pruneCtx); err != nil {
 		app.log.Warn("history retention sweep failed after finalize",
-			"job", job.Queue.ID, "err", err)
+			"job", ppJob.Job.ID(), "err", err)
 	}
 }
 
 // persistAndCommit writes the history entry to the database, removes the job
-// from the queue, and broadcasts the finalization events. Returns a non-nil error if persistence failed and the job was kept in
-// the queue for recovery (the error is already logged; callers can simply return).
-func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error { //nocover: orchestrates queue-to-history transition and error fallbacks
+// from the dispatcher, and broadcasts the finalization events. Registry and
+// filesystem teardown (checkpointer prune, dispatcher removal, manifest
+// unlinking, and barrier state reset) is always attempted
+// regardless of history persistence success. If dispatcher.Remove returns an
+// error, the error is logged while the job remains registered for retry or
+// caller handling.
+// Sub-budgets within persistAndCommit are strictly partitioned against
+// starvation:
+//   - History write & files loop: 4s dbCtx, derived from
+//     context.WithoutCancel(app.ctx).
+//   - Dispatcher removal: 3s removeCtx, derived from occupyCtx to retain the
+//     occupancy lease token for bypass in Dispatcher.Remove.
+//   - Durability check & delete: 3s delCtx, derived from
+//     context.WithoutCancel(app.ctx).
+//
+// Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
+// write cannot starve dispatcher removal or durability cleanup. Prune operates
+// in memory. removeManifestIn unlinks the queue manifest on the filesystem
+// hosting AdminDir, and takes no context: docs/durability-contract.md notes
+// that a remote NFS/SMB mount can stall such a call, and nothing here bounds
+// it. Note that the enclosing finalize method
+// also executes completion notifications and asynchronous history pruning
+// under its own 30s context outside of persistAndCommit.
+//
+// Durability rows for a failed job are owned by the retry path and must never
+// be deleted here. Furthermore, if history persistence fails against a
+// pre-existing failed history entry (such as after a crash between commit and
+// Dispatcher.Remove), those durability rows belong to the existing failed entry
+// and are preserved for retry.
+//
+// Returns a non-nil error if persistence failed (the error is already logged;
+// callers can simply return).
+func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
-	if store := app.queue.Store(); store != nil {
-		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		defer dbCancel()
-		if err := store.MoveToHistory(dbCtx, job.Queue, entry); err != nil {
-			log.Error("failed to add history entry; keeping job in queue for recovery",
-				"job", job.Queue.ID, "err", err)
-			app.emit(Event{Type: "queue_updated"})
-			return err
+	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+		_ = app.dispatcher.Cancel(ppJob.Job.ID())
+		_ = app.dispatcher.Yielded(ppJob.Job.ID())
+	}
+
+	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 10*time.Second)
+	defer finalCancel()
+
+	runCommit := func(occupyCtx context.Context) error {
+		mdir := manifestDir(app.config.GetGeneral().AdminDir)
+
+		var persistErr error
+		if app.historyRepo != nil && app.historyRepo.DB() != nil {
+			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 4*time.Second)
+			defer dbCancel()
+			if err := app.historyRepo.Add(dbCtx, entry); err != nil {
+				log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
+					"job", ppJob.Job.ID(), "err", err)
+				persistErr = err
+			} else if entry.Status == string(constants.StatusFailed) && ppJob != nil && ppJob.Job != nil {
+				p := ppJob.Job.Progress()
+				m, mErr := ppJob.Job.Manifest()
+				if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
+					if f, oErr := openManifestIn(mdir, ppJob.Job.ID()); oErr == nil {
+						if diskM, dErr := decodeManifest(f); dErr == nil {
+							m = diskM
+							mErr = nil
+						}
+					}
+				}
+				if mErr != nil {
+					log.Error("failed to load manifest for failed job files; history_job_files not populated",
+						"job", ppJob.Job.ID(), "err", mErr)
+				} else if p != nil && m != nil {
+					for fi := range m.NumFiles() {
+						lo, hi := m.FileRange(fi)
+						artCount := hi - lo
+						filename := p.FileFilename(fi)
+						complete := 0
+						if p.FileComplete(fi) {
+							complete = 1
+						}
+						crc := p.FileAssembledCRC32(fi)
+						fetch := int(p.FileFetchPolicy(fi))
+						_, _ = app.historyRepo.DB().ExecContext(dbCtx, `
+INSERT OR REPLACE INTO history_job_files
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+							ppJob.Job.ID(), fi, complete, fetch, filename, crc, artCount)
+					}
+				}
+			}
 		}
-	} else if app.historyRepo != nil { //nocover: legacy non-SQLite store fallback
-		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		defer dbCancel()
-		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-			log.Error("failed to add history entry; keeping job in queue for recovery",
-				"job", job.Queue.ID, "err", err)
-			app.emit(Event{Type: "queue_updated"})
-			return err
+		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
+			app.checkpointer.Prune(ppJob.Job.ID())
 		}
+		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
+			defer removeCancel()
+			if err := app.dispatcher.Remove(removeCtx, ppJob.Job.ID()); err != nil {
+				log.Warn("failed to remove job from dispatcher after post-proc", "job", ppJob.Job.ID(), "err", err)
+			}
+		}
+		if ppJob != nil && ppJob.Job != nil {
+			_ = removeManifestIn(mdir, ppJob.Job.ID())
+		}
+
+		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
+		defer delCancel()
+		shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
+		if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
+			existing, err := app.historyRepo.Get(delCtx, ppJob.Job.ID())
+			if err == nil {
+				if existing.Status == string(constants.StatusFailed) {
+					shouldDeleteDurability = false
+				}
+			} else if !errors.Is(err, history.ErrNotFound) {
+				log.Warn("history lookup failed during finalize conflict check; preserving durability rows on doubt",
+					"job", ppJob.Job.ID(), "err", err)
+				shouldDeleteDurability = false
+			}
+		}
+		if shouldDeleteDurability {
+			app.deleteJobDurability(delCtx, ppJob.Job.ID())
+		}
+		app.forgetJobBarrierState(ppJob.Job.ID())
+		if persistErr != nil {
+			app.emit(Event{Type: "queue_updated"})
+			return persistErr
+		}
+		select {
+		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
+		default:
+		}
+		// job_finalized signals a queue→history transition so both stores
+		// refresh from a single trigger and reach the new state together.
+		app.emit(Event{Type: "job_finalized", NzoID: ppJob.Job.ID()})
+		return nil
 	}
-	if err := app.queue.Remove(job.Queue.ID); err != nil {
-		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
+
+	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+		var runErr error
+		if err := app.dispatcher.Occupy(finalCtx, ppJob.Job.ID(), func(occupyCtx context.Context) {
+			runErr = runCommit(occupyCtx)
+		}); err != nil {
+			// If Occupy fails (e.g. ErrNotFound if already removed), fallback to running without occupy wrapper.
+			log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", ppJob.Job.ID(), "err", err)
+			return runCommit(finalCtx)
+		}
+		return runErr
 	}
-	// The download is over and filed, so its durable runs and failed-article
-	// rows describe a queue entry that no longer exists. They are keyed by job
-	// ID with no foreign key to the queue, so without a deliberate removal
-	// they accumulate one set per job ever downloaded. SQLiteStore.Prune is
-	// the backstop for a crash between the Remove above and this call; it is
-	// not a reason to skip this one.
-	//
-	// Deliberately here rather than in enqueuePostProc: post-processing can
-	// send a job back for more downloading, and a job that returns to the
-	// queue without its runs re-fetches every byte it already has.
-	//
-	// A FAILED job keeps them, in step with MoveToHistory, which retains that
-	// job's job_files row — filename, complete, assembled_crc32 — for the same
-	// reason. Retrying reuses the job ID, resolves the same filename over the
-	// same partial file, and re-fetches only the articles that failed, so the
-	// retained runs are what bound FinalizeFile's truncate to the whole file
-	// rather than to this run's few articles. Without them the bound is the
-	// end offset of the re-fetched articles alone and the rest of the partial
-	// is destroyed, silently.
-	//
-	// This is the replacement for the max_written column migration 011 carried
-	// into history_job_files for exactly this case. That column and the
-	// assembler's maxWritten seed are gone, and taking the bound over the
-	// retained runs keeps one record the single authority (S5) instead of
-	// reintroducing a summary that can drift from it.
-	//
-	// The retention is bounded the same way the job_files one is: these rows
-	// are removed with the history entry itself, in history.Delete.
-	if entry.Status != string(constants.StatusFailed) {
-		delCtx, delCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		app.deleteJobDurability(delCtx, job.Queue.ID)
-		delCancel()
-	}
-	app.forgetJobBarrierState(job.Queue.ID)
-	select {
-	case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
-	default:
-	}
-	// job_finalized signals a queue→history transition so both stores
-	// refresh from a single trigger and reach the new state together.
-	app.emit(Event{Type: "job_finalized", NzoID: job.Queue.ID})
-	return nil
+	return runCommit(finalCtx)
 }
 
 // fireCompletionNotification sends a push notification for a finished job.

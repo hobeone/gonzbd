@@ -8,11 +8,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
-
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 )
 
 const (
@@ -21,13 +21,13 @@ const (
 )
 
 func testServer() *Server {
-	q := queue.New()
+	d := dispatch.New(2, 2, time.Hour, time.Now, &apiStubWorkers{}, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
 	return New(Options{
-		Config:  cfg,
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     apitest.NopApp{Queue: q},
+		Config:     cfg,
+		Version:    "1.0.0-test",
+		Dispatcher: d,
+		App:        apitest.NopApp{Dispatcher: d},
 	})
 }
 
@@ -314,17 +314,17 @@ func TestSessionKey_UniquePerServerInstance(t *testing.T) {
 
 func TestAuthConfigDynamic(t *testing.T) {
 	t.Parallel()
-	q := queue.New()
+	d := dispatch.New(2, 2, time.Hour, time.Now, &apiStubWorkers{}, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
 	cfg := &config.Config{
 		General: config.GeneralConfig{
 			APIKey: "old-key",
 		},
 	}
 	s := New(Options{
-		Config:  cfg,
-		Version: "1.0.0-test",
-		Queue:   q,
-		App:     apitest.NopApp{Queue: q},
+		Config:     cfg,
+		Version:    "1.0.0-test",
+		Dispatcher: d,
+		App:        apitest.NopApp{Dispatcher: d},
 	})
 
 	// Authenticate with old-key works

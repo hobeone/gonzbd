@@ -10,7 +10,9 @@ func (s *Server) modePause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.queue.PauseAll()
+	if s.dispatcher != nil {
+		s.dispatcher.Pause()
+	}
 	if s.downloads != nil {
 		s.downloads.PauseDownloads()
 	}
@@ -24,7 +26,9 @@ func (s *Server) modeResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.queue.ResumeAll(r.Context())
+	if s.dispatcher != nil {
+		s.dispatcher.Resume()
+	}
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
 	}

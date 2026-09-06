@@ -182,7 +182,7 @@ CREATE INDEX idx_jobs_md5 ON jobs(md5);
 -- value in parallel is the defect. These are the first.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id           TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id           TEXT NOT NULL,
     file_index       INTEGER NOT NULL,
     subject          TEXT NOT NULL,
     date             INTEGER NOT NULL,

@@ -6,15 +6,44 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	appkg "github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
+
+type stubWorkers struct{}
+
+func (w *stubWorkers) Abort(string) {}
+
+type stubResidency struct{}
+
+func (r *stubResidency) Hydrate(context.Context, string) error { return nil }
+func (r *stubResidency) Evict(string)                          {}
+
+type stubStore struct{}
+
+func (s *stubStore) Load(context.Context) ([]dispatch.Persisted, error) { return nil, nil }
+func (s *stubStore) Save(context.Context, dispatch.Persisted) error     { return nil }
+func (s *stubStore) Delete(context.Context, string) error               { return nil }
+
+type stubRunner struct{}
+
+func (r *stubRunner) Run(context.Context, string, job.State) {}
+
+func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
+	t.Helper()
+	d := dispatch.New(2, 2, time.Hour, time.Now, &stubWorkers{}, &stubResidency{}, &stubStore{}, &stubRunner{})
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+	return d
+}
 
 func TestNopApp_Contract(t *testing.T) {
 	ctx := context.Background()
@@ -100,26 +129,22 @@ func TestNopApp_Contract(t *testing.T) {
 	app.ReloadDownloadOptions(config.DownloadConfig{})
 	app.ReloadGeneralOptions(config.GeneralConfig{})
 
-	// 3. Nil Queue and History safety
-	if err := app.AddJob(ctx, nil, nil, false); err != nil {
-		t.Errorf("AddJob(nil queue) = %v, want nil", err)
+	// 3. Nil Dispatcher and History safety
+	if err := app.AddJob(ctx, nil, dispatch.Header{}, nil, false); err != nil {
+		t.Errorf("AddJob(nil dispatcher) = %v, want nil", err)
 	}
 	if err := app.RemoveJob(ctx, "job1", false); err != nil {
-		t.Errorf("RemoveJob(nil queue) = %v, want nil", err)
+		t.Errorf("RemoveJob(nil dispatcher) = %v, want nil", err)
 	}
 	if err := app.RemoveHistoryJob(ctx, "job1", false); err != nil {
 		t.Errorf("RemoveHistoryJob(nil history) = %v, want nil", err)
 	}
 
-	// 4. Wired Queue and History delegation
-	q := queue.New()
-	j, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: "job1.nzb", Name: "Test Job"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	j.ID = "job1"
-	if err := q.Add(j); err != nil {
-		t.Fatalf("q.Add failed: %v", err)
+	// 4. Wired Dispatcher and History delegation
+	disp := newTestDispatcher(t)
+	j := job.New("job1", "Test Job", job.Policy{})
+	if err := disp.Add(j, dispatch.Header{Name: "Test Job"}); err != nil {
+		t.Fatalf("disp.Add failed: %v", err)
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "hist.db")
@@ -135,15 +160,15 @@ func TestNopApp_Contract(t *testing.T) {
 	}
 
 	wiredApp := NopApp{
-		Queue:   q,
-		History: repo,
+		Dispatcher: disp,
+		History:    repo,
 	}
 
 	if err := wiredApp.RemoveJob(ctx, "job1", false); err != nil {
 		t.Errorf("wired RemoveJob() = %v, want nil", err)
 	}
-	if job := q.SnapshotJob("job1"); job != nil {
-		t.Error("job1 still in queue after wired RemoveJob()")
+	if _, ok := disp.Job("job1"); ok {
+		t.Error("job1 still in dispatcher after wired RemoveJob()")
 	}
 
 	if err := wiredApp.RemoveHistoryJob(ctx, "hjob1", false); err != nil {

@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -67,7 +66,7 @@ type stallRecord struct {
 	//
 	// Phase 2 of a re-evaluation resumes unconditionally, and a stall record
 	// exists for reasons that do not involve a pause at all: a user pause
-	// evicts the job, the next checkpoint's ack fails with ErrJobNotResident,
+	// evicts the job, the next checkpoint's ack fails with job.ErrNotResident,
 	// and noteNeedsSeed creates one. The user's pause was then undone within
 	// one interval, with no log saying so — and recreated as fast as it was
 	// cleared, because handles stay open through a pause (CloseJobHandles runs
@@ -249,7 +248,7 @@ type StallInfo struct {
 //
 // Read from here rather than from Job.Warning because the two have different
 // lifetimes: re-evaluation resumes the job to find out whether the condition
-// cleared, and Queue.Resume wipes the warning as it goes. A user polling the
+// cleared, and Dispatcher.ResumeJob wipes the warning as it goes. A user polling the
 // queue during a re-evaluation would see the reason blink out and come back.
 func (app *Application) StallReason(jobID string) StallInfo {
 	app.stallMu.Lock()
@@ -301,7 +300,7 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // # The automatic cadence does not resume a job until its finalizes have landed
 //
 // The first draft resumed first, because Barrier.FinalizeFile ends in
-// AckDurable and that needs a resident job, which Stall -> Queue.Pause evicted.
+// AckDurable and that needs a resident job, which Stall -> Dispatcher.PauseJob evicted.
 // It works, and it costs too much: an unpaused job dispatches articles into the
 // device that has just refused them, for the length of every retry, every
 // interval, forever — contradicting the reason Stall pauses at all.
@@ -334,11 +333,15 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // could not run this time runs at the next interval instead.
 func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// A job that has left the queue has nothing to recover and nothing to
-	// resume. Checked before phase 1 rather than left to Queue.Resume in phase
+	// resume. Checked before phase 1 rather than left to Dispatcher.ResumeJob in phase
 	// 2, because phase 1 returns early while anything is still blocked — so a
 	// departed job with a pending finalize would be retried on every interval
 	// for the life of the process, and its routed fault re-logged each time.
-	if app.queue.SnapshotJob(jobID) == nil {
+	exists := false
+	if app.dispatcher != nil {
+		_, exists = app.dispatcher.Job(jobID)
+	}
+	if !exists {
 		app.log.Info("stall re-evaluation: the job has left the queue; forgetting its parked state",
 			"job", jobID)
 		app.clearStall(jobID)
@@ -380,25 +383,36 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 			blocked++
 		}
 	}
+
 	if blocked > 0 {
-		app.log.Info("stall re-evaluation: the job stays parked",
-			"job", jobID, "files_blocked", blocked, "files_to_recover", len(files))
 		return
 	}
 
-	// Phase 2 — resume, which is what re-promotes the job and makes it
-	// resident again.
+	// Phase 2 — unpause, if we paused it.
 	//
-	// Only a job THIS application parked. A stall record exists for reasons
-	// that involve no pause of ours: a USER pause evicts the job, the next
-	// checkpoint's ack fails with ErrJobNotResident, and noteNeedsSeed creates
-	// a record. Resuming on that undid the user's pause within one interval,
-	// with no log saying so — and the record was recreated as fast as it was
+	// A user pause is respected: a user who paused a stalled job before the
+	// mount came back wanted it paused, and resuming it because the storage
+	// cleared would undo their action silently. The other way round is
+	// worse: a job the user paused has no open files, so the checkpoint
+	// returns job.ErrNotResident and creates a stall record; resuming here
+	// would unpause a user-paused job every thirty seconds, and recreate the
+	// record as fast as it was cleared, because handles stay open through a
+	// pause (CloseJobHandles runs only from maybeFinalize).
+	//
+	// Phase 2 used to do that: it resumed unconditionally. The user's pause
+	// was then undone within one interval, and recreated as fast as it was
 	// cleared, because handles stay open through a pause, so the next
 	// checkpoint failed the same way.
 	if app.weParked(jobID) {
-		if err := app.queue.Resume(jobID); err != nil {
-			app.log.Warn("stall re-evaluation: the job could not be resumed", "job", jobID, "err", err)
+		resumed := false
+		if app.dispatcher != nil {
+			if err := app.dispatcher.ResumeJob(jobID); err != nil {
+				app.log.Warn("stall re-evaluation: the job could not be resumed in dispatcher", "job", jobID, "err", err)
+			} else {
+				resumed = true
+			}
+		}
+		if !resumed {
 			app.clearStall(jobID)
 			return
 		}
@@ -465,9 +479,13 @@ func (app *Application) seedFromCommittedRuns(ctx context.Context, jobID string)
 			"job", jobID, "err", err)
 		return
 	}
-	if err := app.queue.SeedFromRuns(jobID, runs); err != nil {
-		app.log.Warn("stall re-evaluation: could not seed the work set; the job will re-fetch",
-			"job", jobID, "err", err)
+	if app.dispatcher != nil {
+		if j, ok := app.dispatcher.Job(jobID); ok {
+			if err := j.SeedFromRuns(runs); err != nil {
+				app.log.Warn("stall re-evaluation: could not seed the work set in job; the job will re-fetch",
+					"job", jobID, "err", err)
+			}
+		}
 	}
 }
 
@@ -534,17 +552,7 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 		return fmt.Errorf("%w: job %s file %d: the job has no readable manifest, so no barrier "+
 			"can be run over it", ErrNotFinalized, jobID, fileIdx)
 	}
-	err = app.finalizeCompletedFile(ctx, jobID, fileIdx)
-	if errors.Is(err, queue.ErrJobNotResident) {
-		app.log.Debug("retried finalize recorded its durable runs but could not ack a "+
-			"non-resident job; the articles are replayed from the record after the resume",
-			"job", jobID, "fileidx", fileIdx)
-		if cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); cerr != nil { //nolint:gosec // G115: file counts are far below int32
-			app.log.Debug("close finalized file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
-		}
-		return nil
-	}
-	return err
+	return app.finalizeCompletedFile(ctx, jobID, fileIdx)
 }
 
 // stallLost re-surfaces a stall whose file can no longer be finalized in this
@@ -585,7 +593,7 @@ func (app *Application) stallLost(jobID string, fileIdx int) {
 				"restart gonzbd to resume this job from its recorded runs", path)
 	}
 	app.noteStallReason(jobID, reason)
-	if err := app.queue.SetWarning(jobID, reason); err != nil {
-		app.log.Warn("stall: could not surface the reason", "job", jobID, "err", err)
+	if app.dispatcher != nil {
+		_ = app.dispatcher.SetWarning(jobID, reason)
 	}
 }

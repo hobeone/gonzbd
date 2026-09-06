@@ -14,6 +14,7 @@
 package uitest
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -25,16 +26,17 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/job"
 
 	"github.com/mxschmitt/playwright-go"
 
 	"github.com/hobeone/gonzbd/internal/api"
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/web"
 	"github.com/hobeone/gonzbd/ui"
 )
@@ -43,14 +45,51 @@ const testAPIKey = "uitest-api-key-1234"
 
 // testEnv bundles everything needed for a UI test.
 type testEnv struct {
-	Server  *httptest.Server
-	BaseURL string
-	Queue   *queue.Queue
-	APISrv  *api.Server
-	HistDB  *history.DB
-	HistR   *history.Repository
-	PW      *playwright.Playwright
-	Browser playwright.Browser
+	Server     *httptest.Server
+	BaseURL    string
+	Dispatcher *dispatch.Dispatcher
+	APISrv     *api.Server
+	HistDB     *history.DB
+	HistR      *history.Repository
+	PW         *playwright.Playwright
+	Browser    playwright.Browser
+}
+
+type uiStubWorkers struct {
+	disp *dispatch.Dispatcher
+}
+
+func (w *uiStubWorkers) Abort(id string) {
+	if w.disp != nil {
+		go func() { _ = w.disp.Yielded(id) }()
+	}
+}
+
+type uiStubResidency struct{}
+
+func (uiStubResidency) Hydrate(context.Context, string) error { return nil }
+func (uiStubResidency) Evict(string)                          {}
+
+type uiStubStore struct{}
+
+func (uiStubStore) Load(context.Context) ([]dispatch.Persisted, error) { return nil, nil }
+func (uiStubStore) Save(context.Context, dispatch.Persisted) error     { return nil }
+func (uiStubStore) Delete(context.Context, string) error               { return nil }
+
+type uiStubRunner struct{}
+
+func (uiStubRunner) Run(context.Context, string, job.State) {}
+
+func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
+	t.Helper()
+	workers := &uiStubWorkers{}
+	d := dispatch.New(10, 10, time.Hour, time.Now, workers, uiStubResidency{}, uiStubStore{}, uiStubRunner{})
+	workers.disp = d
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+	return d
 }
 
 // newTestEnv starts a test HTTP server serving both API and SPA, plus a
@@ -63,8 +102,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal("ui/dist/index.html not found — run 'cd ui && bun run build' first")
 	}
 
-	q := queue.New()
-	ma := apitest.NopApp{Queue: q}
+	d := newTestDispatcher(t)
+	ma := apitest.NopApp{Dispatcher: d}
 
 	// In-memory history database.
 	histDB, err := history.Open(t.Context(), ":memory:")
@@ -86,12 +125,12 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	apiSrv := api.New(api.Options{
-		Version: "test-uitest",
-		Queue:   q,
-		Config:  cfg,
-		App:     ma,
-		History: histR,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		Version:    "test-uitest",
+		Dispatcher: d,
+		Config:     cfg,
+		App:        ma,
+		History:    histR,
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	})
 
 	// Build a mux combining API + SPA handlers.
@@ -125,14 +164,14 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	env := &testEnv{
-		Server:  ts,
-		BaseURL: ts.URL,
-		Queue:   q,
-		APISrv:  apiSrv,
-		HistDB:  histDB,
-		HistR:   histR,
-		PW:      pw,
-		Browser: browser,
+		Server:     ts,
+		BaseURL:    ts.URL,
+		Dispatcher: d,
+		APISrv:     apiSrv,
+		HistDB:     histDB,
+		HistR:      histR,
+		PW:         pw,
+		Browser:    browser,
 	}
 
 	t.Cleanup(func() {
@@ -195,18 +234,20 @@ func (e *testEnv) seedQueue(t *testing.T, n int) {
 			}},
 		}}
 		id := fmt.Sprintf("test-job-%04d", i)
-		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: fmt.Sprintf("test_%d.nzb", i)}, fsutil.SanitizeOptions{})
+		name := fmt.Sprintf("Test.Download.%d.x264-GROUP", i)
+		filename := fmt.Sprintf("test_%d.nzb", i)
+		j, hdr, err := app.BuildIngestJob(nil, parsed, filename, types.FetchOptions{
+			JobID:    id,
+			NzbName:  name,
+			Category: "TV",
+		}, slog.Default())
 		if err != nil {
-			t.Fatalf("NewJob: %v", err)
+			t.Fatalf("BuildIngestJob: %v", err)
 		}
-		job.ID = id
-		job.Name = fmt.Sprintf("Test.Download.%d.x264-GROUP", i)
-		job.Category = "TV"
-		job.Status = constants.StatusQueued
-		if err := e.Queue.Add(job); err != nil {
-			t.Fatalf("queue.Add: %v", err)
+		if err := e.Dispatcher.Add(j, hdr); err != nil {
+			t.Fatalf("Dispatcher.Add: %v", err)
 		}
-		ackDone(t, e.Queue, id, fmt.Sprintf("test-job-%04d-a@t", i))
+		ackDone(t, e.Dispatcher, id, fmt.Sprintf("test-job-%04d-a@t", i))
 	}
 }
 

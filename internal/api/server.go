@@ -11,8 +11,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
 
@@ -28,9 +28,8 @@ type Options struct {
 	// Logger is the structured logger. Defaults to slog.Default() when nil.
 	Logger *slog.Logger
 
-	// Queue is the download queue singleton. May be nil; handlers that need it
-	// will respond with 500 if it is absent.
-	Queue *queue.Queue
+	// Dispatcher is the job dispatcher singleton.
+	Dispatcher *dispatch.Dispatcher
 
 	// History is the history repository. May be nil; handlers that need it
 	// will respond with 500 if it is absent.
@@ -72,7 +71,7 @@ type Server struct {
 	startTime time.Time
 	log       *slog.Logger
 
-	queue      *queue.Queue
+	dispatcher *dispatch.Dispatcher
 	history    *history.Repository
 	config     *config.Config
 	configPath string
@@ -125,7 +124,7 @@ func New(opts Options) *Server {
 		date:         opts.Date,
 		startTime:    time.Now(),
 		log:          log,
-		queue:        opts.Queue,
+		dispatcher:   opts.Dispatcher,
 		history:      opts.History,
 		config:       opts.Config,
 		configPath:   opts.ConfigPath,
@@ -260,9 +259,7 @@ func (s *Server) getAuth() AuthConfig {
 	return auth
 }
 
-// TestQueue returns the underlying queue for test use. Do not use in
-// production code — this exists solely so integration tests can add
-// jobs directly to the queue without going through the HTTP handler.
-func (s *Server) TestQueue() *queue.Queue {
-	return s.queue
+// Dispatcher returns the job dispatcher singleton.
+func (s *Server) Dispatcher() *dispatch.Dispatcher {
+	return s.dispatcher
 }

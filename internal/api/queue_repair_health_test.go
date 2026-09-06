@@ -5,9 +5,8 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 type repairHealthFile struct {
@@ -15,31 +14,45 @@ type repairHealthFile struct {
 	bytes   int64
 }
 
-// buildRepairHealthJob builds a queued job from the given files and fails the
-// articles at failIdx, mirroring internal/app's buildFailMsgJob so the API
-// layer can be pinned against the same fixtures the two abort gates use.
-func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int) *queue.Job {
+// buildRepairHealthJob builds a job record from the given files and fails the
+// articles at failIdx.
+func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int) (*job.Job, dispatch.Row) {
 	t.Helper()
-	parsed := &nzb.NZB{}
+	jFiles := make([]job.JobFile, 0, len(files))
+	var totalBytes int64
 	for i, f := range files {
-		parsed.Files = append(parsed.Files, nzb.File{
-			Subject:  f.subject,
-			Bytes:    f.bytes,
-			Articles: []nzb.Article{{ID: fmt.Sprintf("a%d@t", i), Bytes: int(f.bytes), Number: 1}},
+		totalBytes += f.bytes
+		jFiles = append(jFiles, job.JobFile{
+			Subject:        f.subject,
+			Bytes:          f.bytes,
+			Articles:       []job.JobArticle{{ID: fmt.Sprintf("a%d@t", i), Bytes: int(f.bytes), Number: 1}},
+			IsPar2Recovery: job.IsRecoveryVolume(f.subject),
 		})
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "t.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	m := job.NewManifest(jFiles)
+	j := job.New("j1", "t.nzb", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
+	for _, idx := range failIdx {
+		if err := j.MarkArticleFailed(idx); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
 	}
-	for _, i := range failIdx {
-		ackFailed(t, q, job.ID, fmt.Sprintf("a%d@t", i))
+	row := dispatch.Row{
+		ID: "j1",
+		Header: dispatch.Header{
+			Name:  "t.nzb",
+			Bytes: totalBytes,
+		},
+		View: job.RenderView{
+			StateView: job.StateView{
+				State: job.Fetching,
+			},
+			Running: true,
+		},
 	}
-	return job
+	return j, row
 }
 
 // TestBuildSlot_SendsTheVerdictNotItsInputs pins the queue listing to the same
@@ -63,7 +76,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 		name    string
 		files   []repairHealthFile
 		failIdx []int
-		want    queue.RepairState
+		want    job.RepairState
 	}{
 		{
 			// The shape this whole line of work exists to spare: index
@@ -76,7 +89,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.par2", bytes: 50},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairIntact,
+			want:    job.RepairIntact,
 		},
 		{
 			// A plainly-named par2 file: the PAR2 specification recommends
@@ -88,7 +101,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.par2", bytes: 50},
 			},
 			failIdx: []int{0},
-			want:    queue.RepairUnknown,
+			want:    job.RepairUnknown,
 		},
 		{
 			name: "no par2 at all leaves the verdict standing",
@@ -97,7 +110,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.part02.rar", bytes: 50},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairNoCapacity,
+			want:    job.RepairNoCapacity,
 		},
 		{
 			name: "content damage within recognized capacity",
@@ -107,7 +120,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.vol01+02.par2", bytes: 300},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairPossible,
+			want:    job.RepairPossible,
 		},
 		{
 			name: "content damage beyond recognized capacity",
@@ -117,22 +130,22 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 				{subject: "movie.vol01+02.par2", bytes: 300},
 			},
 			failIdx: []int{1},
-			want:    queue.RepairBeyondCapacity,
+			want:    job.RepairBeyondCapacity,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			job := buildRepairHealthJob(t, tc.files, tc.failIdx...)
-			slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+			j, row := buildRepairHealthJob(t, tc.files, tc.failIdx...)
+			slot := buildSlot(row, j, false, 0, 0, nil, app.JobCheckpointState{})
 
 			if slot.RepairState != tc.want {
 				t.Errorf("RepairState = %q, want %q", slot.RepairState, tc.want)
 			}
 			// The listing must agree with the job it describes, or the row
 			// contradicts the gate that is acting on the same job.
-			if got := job.RepairState(); slot.RepairState != got {
+			if got := j.RepairState(); slot.RepairState != got {
 				t.Errorf("buildSlot sent %q but Job.RepairState() is %q — the listing "+
 					"re-derived the verdict instead of asking for it", slot.RepairState, got)
 			}
@@ -146,18 +159,18 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 func TestBuildSlot_FailedBytesStaysTheTotal(t *testing.T) {
 	t.Parallel()
 
-	job := buildRepairHealthJob(t, []repairHealthFile{
+	j, row := buildRepairHealthJob(t, []repairHealthFile{
 		{subject: "movie.part01.rar", bytes: 1000},
 		{subject: "movie.par2", bytes: 50},
 	}, 1)
 
-	slot := buildSlot(job, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(row, j, false, 0, 0, nil, app.JobCheckpointState{})
 	if slot.FailedBytes != 50 {
 		t.Errorf("FailedBytes = %d, want 50 — the par2 index's failure is still a failure to report",
 			slot.FailedBytes)
 	}
-	if slot.RepairState != queue.RepairIntact {
+	if slot.RepairState != job.RepairIntact {
 		t.Errorf("RepairState = %q, want %q — the same failure is not content damage",
-			slot.RepairState, queue.RepairIntact)
+			slot.RepairState, job.RepairIntact)
 	}
 }

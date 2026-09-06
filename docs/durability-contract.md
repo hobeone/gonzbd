@@ -75,7 +75,7 @@ can over-claim — "this article is on disk" — is now **written in exactly one
 place**: `durability.Barrier`, after an `fsync` it performed, and nothing else
 puts content into a `durable_runs` row. Stating the bound precisely, because a looser
 version of this sentence has misled before: what the *compiler* enforces is
-narrower than that, covering `Queue.AckDurable`'s proof payload and that door
+narrower than that, covering `Job.AckDurable`'s proof payload and that door
 only (§1). That nothing else puts content into the record is enforced by there
 being one such writer, not by the type system — and it is a claim about
 CONTENT, not about the table, which several paths delete from (§6).
@@ -162,7 +162,7 @@ and one is new. Each change is argued at the section named.
        │                          │                               │                    durable_runs
        │                          │                               │                          │
        └──────────────────────────┴───────────────────────────────┘                          ▼
-          a write failure, a storage fault, or a                                     Queue.AckDurable
+           a write failure, a storage fault, or a                                       Job.AckDurable
           restart with no run covering the article                                           │
           returns the article to Outstanding                                                 ▼
           — never Failed                                                              ARTICLE IS DONE
@@ -170,9 +170,9 @@ and one is new. Each change is argued at the section named.
                                        ON RESTART, the SECOND way in:                        │
                                        the runs a previous process committed are ────────────┘
                                        adopted, gated on one stat per file, and
-                                       Queue.ReplaceFromRuns resolves the
-                                       articles they cover — no barrier, no
-                                       proof, no fsync by this process. See §6.
+                                        Job.ReplaceFromRuns resolves the
+                                        articles they cover — no barrier, no
+                                        proof, no fsync by this process. See §6.
 ```
 
 There are therefore **two** ways an article becomes Done, and only the first
@@ -208,7 +208,7 @@ turns on not conflating them:
 | **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its share of the write cache, its coalescing, its pre-allocation. Reports `Written`. | Worker-owned; never touched from another goroutine. |
 | **Barrier** | `durability.Barrier` | The only place `Written → Durable → Resolved` happens **during a download**. Drains, fsyncs, commits the runs, mints the proof. Not the only place an article becomes Done: the Resume tier below resolves articles too, with no barrier and no proof — see the state diagram above and §1. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
 | **Cadence** | `Application.runCheckpoint`, `noteJobBytes` | *When* a barrier runs. Time bound, byte bound, file completion, clean shutdown. | One goroutine; per-job mutex around each barrier. |
-| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | One `stat` per file at startup, and no reads — and, through `Queue.ReplaceFromRuns`, the second path by which an article becomes Done. Its whole mutation budget is **deletion**: a file shorter than its runs claim has them dropped. Authoritative over the files it is passed: it *clears* bits no surviving run covers. | Per-file, shares no state between calls. |
+| **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | One `stat` per file at startup, and no reads — and, through `Job.ReplaceFromRuns`, the second path by which an article becomes Done. Its whole mutation budget is **deletion**: a file shorter than its runs claim has them dropped. Authoritative over the files it is passed: it *clears* bits no surviving run covers. | Per-file, shares no state between calls. |
 | **Fault routing** | `internal/storagefault`, `Application.Stall` / `Fail` | Turns a storage error into a stalled or failed job with a reason a user can act on — never into a failed article. | — |
 | **DirectUnpack** | `internal/directunpack` | Streams RAR extraction as whole volumes complete. Reads assembled files, never partial article data. | Mutex over volume tracking and kill state; blocking `volumeReady` channel. |
 
@@ -216,7 +216,7 @@ turns on not conflating them:
 
 ### 1. One barrier, one proof, one ack
 
-`Queue.AckDurable` takes a `durability.DurableProof`. `DurableProof` has no
+`Job.AckDurable` takes a `durability.DurableProof`. `DurableProof` has no
 exported fields and no exported constructor, so **no package outside
 `internal/durability` can create a proof that names any article**. "Ack only
 after fsync" is therefore not a rule six call sites must each remember; it is a
@@ -226,7 +226,7 @@ State the bound precisely, because an earlier version of this section did not.
 Go permits a composite literal with no field values even when every field is
 unexported, so `durability.DurableProof{}` compiles in any package — this was
 checked by compiling it, not reasoned about. Such a proof is necessarily empty,
-and `Queue.AckDurable` returns `nil` without touching an article when
+and `Job.AckDurable` returns `nil` without touching an article when
 `Articles()` is empty. The compiler bounds the **payload**; a one-line early
 return makes an empty payload inert. That early return is therefore part of the
 invariant, and
@@ -236,8 +236,8 @@ Inside `internal/durability` the guarantee is package-scoped: `newProof` is
 reachable from anywhere in the package, and exactly two functions call it —
 `Barrier.Run` and `Barrier.FinalizeFile`. That pair is what review has to hold.
 
-**This gate covers one door.** `Queue.SeedFromRuns` and
-`Queue.ReplaceFromRuns` also reach `markDone`, and are callable from any
+**This gate covers one door.** `Job.SeedFromRuns` and
+`Job.ReplaceFromRuns` also reach `markDone`, and are callable from any
 package with no barrier and no proof. That is deliberate — their evidence is
 the runs a barrier's fsync already recorded, which is exactly the kind of
 evidence a proof cannot represent — but it means "ack before fsync is code that
@@ -365,7 +365,7 @@ starts at offset 0, and it covers every article of the file**; its `crc32` is
 the value. `crc32util.Combine` is
 zlib's `crc32_combine` and is associative, so a run's CRC is built pairwise as
 articles join it, across restarts — nothing reads the file.
-`Application.recordAssembledCRC` threads the value to `Queue.SetFileCRC32FromRuns` when
+`Application.recordAssembledCRC` threads the value to `Job.SetFileCRC32FromRuns` when
 the file finalizes.
 
 **Its consumer is `par2.Assess`.** This used to be stated as a distinction —
@@ -399,7 +399,7 @@ Together they are `prefixWalk.consumedAll` restated in the vocabulary of runs �
 *did the record account for every article of this file?* — which is the
 guarantee this change had to carry across, and #387 is what it is for.
 
-`Queue.SetFileCRC32FromRuns` owns the whole predicate. It takes the runs rather
+`Job.SetFileCRC32FromRuns` owns the whole predicate. It takes the runs rather
 than a `uint32` deliberately: a setter accepting a bare value cannot refuse a
 wrong one, and the CRC's meaning is entirely a property of the record it came
 from, so the value and its evidence arrive together or the invariant lives only
@@ -482,7 +482,7 @@ operation, the path, and whether the condition is `Permanent`.
 | retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
 | permanent | `Stallable.Fail` → `Application.Fail` | stopped, reason carried into history (R20) | stay **Outstanding** |
 
-In neither case is `Queue.AckPermanentFailure` called, the failed-byte count
+In neither case is `Job.MarkArticleFailed` called, the failed-byte count
 touched, or the job's reported health degraded (R21). Attributing a full disk to
 the article would burn its retry budget over something a user often fixes in ten
 seconds.
@@ -798,7 +798,7 @@ visible rather than assumed:
 Every other trigger may fail a job silently: the bytes stay on disk, the
 articles stay Outstanding, and the next barrier picks them up. The reload
 trigger is different, because `ReloadDownloader` follows it with
-`Queue.ClearAllEmitted` — and clearing an Emitted bit hands the article back to
+`Job.ClearAllEmitted` — and clearing an Emitted bit hands the article back to
 a downloader that is about to be pointed at a **different server set**.
 
 An article the assembler had written but no barrier had acked would then be
@@ -948,7 +948,7 @@ The sequence is:
                     │     │                          re-sync, re-stat, commit, ack)
                     │     └─ Assembler.CloseFile    (ONLY on success)
                     └─ completeFinalizedFile
-                          ├─ Queue.MarkFileComplete
+                          ├─ Job.MarkFileComplete
                           └─ DirectUnpack handoff
 ```
 
@@ -1047,7 +1047,7 @@ For each job it sweeps, per file:
 2. `durability.Resumer.Resume` — one `stat`, adopt-or-discard, per §6 above.
 3. Collect the file's index, and the runs that survived the gate.
 
-Then `Queue.ReplaceFromRuns` installs the finding. It is authoritative
+Then `Job.ReplaceFromRuns` installs the finding. It is authoritative
 **over the files it is given, and only those**: for each file named there an
 article no surviving run covers goes back to Outstanding, and the job's derived
 figures are recomputed so its reported health matches its per-article state.
@@ -1149,7 +1149,7 @@ The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
 A swept job that is **not resident** — every paused one — is hydrated for the
 duration and evicted again, so residency is unchanged from outside.
 `Application.resumeAllJobs` takes a hydrated clone through `SnapshotJob` to read
-the manifest, and `Queue.ReplaceFromRuns` hydrates the live job itself to
+the manifest, and `Job.ReplaceFromRuns` hydrates the live job itself to
 apply the correction. Startup is when this is cheapest and safest: nothing else
 holds a manifest and no article is being dispatched.
 
@@ -1451,7 +1451,7 @@ A rejected write returns its buffer to the pool and makes no claim about its
 bytes.
 
 It is an ARTICLE fault, not a storage fault, so it resolves against the article
-(A1): `OnArticleRejected` carries it to `Queue.AckPermanentFailure`, which
+(A1): `OnArticleRejected` carries it to `Job.MarkArticleFailed`, which
 charges its bytes to the job's failed-byte count, releases on-demand par2, and
 clears its `Emitted` bit so nothing waits on a re-dispatch that will never come.
 
@@ -1618,7 +1618,7 @@ recorded here so the next reader does not mistake them for design.
 1. **The startup sweep skips non-resident jobs.** `ReplaceFromRuns` needs a
    resident manifest. **Resolved:** a swept job is hydrated for the duration of
    the correction and evicted again, so the durability subsystem's own fault
-   response manufacturing that state — `Application.Stall` → `Queue.Pause` →
+   response manufacturing that state — `Application.Stall` → `Dispatcher.PauseJob` →
    eviction — no longer takes the job out of the sweep's reach. What remains
    true is that the sweep is startup-only: a job stalled after startup is not
    re-swept until the next one.
@@ -1820,7 +1820,7 @@ a green run does and does not bound.
   `DurableProof`, and the SQLite `RunStore` behind `durable_runs`.
 - `internal/storagefault`: classification into retryable/permanent with the
   operation and path attached.
-- Compiler-enforced ack path: `Queue.AckDurable(durability.DurableProof)` —
+- Compiler-enforced ack path: `Job.AckDurable(durability.DurableProof)` —
   enforced on the proof's *payload*, and on that one door. See §1 for the exact
   bound and for the seeding doors it does not cover.
 - `assembler.FileWriter` — per-file ownership with no authority to ack, record a
@@ -1829,7 +1829,7 @@ a green run does and does not bound.
   timeout-bounded.
 - Checkpoint cadence: time bound, byte bound, file completion, clean shutdown,
   with `lastBarrier`/`PendingBytes` surfaced through the API and UI.
-- Authoritative startup sweep (`resumeAllJobs` → `Queue.ReplaceFromRuns`) and
+- Authoritative startup sweep (`resumeAllJobs` → `Job.ReplaceFromRuns`) and
   the additive stall-recovery replay (`SeedFromRuns`).
 - Repair for a finalize a crash interrupted (`completeStrandedFiles` →
   `durability.TrimToRuns` → `completeFinalizedFile`), which trims the file to
@@ -1840,7 +1840,7 @@ a green run does and does not bound.
 - `durable_runs` and `failed_articles` tables (migrations `002`/`003`), which
   replaced `article_facts`, `file_extents` and `job_files.articles_done`;
   `job_files.max_written` and `write_cursor` removed earlier.
-- The whole-file CRC threaded to `Queue.SetFileCRC32FromRuns` by
+- The whole-file CRC threaded to `Job.SetFileCRC32FromRuns` by
   `Application.recordAssembledCRC`, for a file that collapses to one run
   accounting for every one of its articles.
 - Crash-consistency suite (`test/crash/`, six tests).

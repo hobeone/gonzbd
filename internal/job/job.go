@@ -114,9 +114,8 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 
 // Job owns its state. Every field is unexported. The lifecycle field —
 // attempts — is guarded by mu, and there is no path to it that does not go
-// through a method here. id, name and policy are not guarded: they are set
-// once in New and never written again, so ID, Name and Policy read them
-// without taking the lock.
+// through a method here. id and name are set once in New and never written again
+// (except name via SetName which locks mu). policy and created are guarded by mu.
 //
 // What is established now: a Job method never calls any other repository
 // package's method, because this package imports nothing from the rest of
@@ -129,42 +128,46 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 //
 // The ordering half of this is now enforced, not merely intent: internal/sched
 // defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
-// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds ten
+// `grep -n 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds thirteen
 // sites (advance.go's Park, Retry and Advance, cancel.go's Cancel, settle.go's
-// Settle, render.go's Render and RenderAll, and queue.go's Pause, Resume and
-// Paused). Of those ten, seven reach a *job.Job method call — Cancel (via
-// SetIntent, Snapshot and, through finishCancel/settleLocked, Finish), Park
-// (via parkLocked's Surrender), Retry (Snapshot, BeginAttempt), Advance
-// (Snapshot, BeginAttempt, Cross, Transition, and grantFor's
-// HoldsLease/Grant), Settle (Snapshot), Render (Snapshot) and RenderAll
-// (Snapshot, once per job); reviewed by reading all ten bodies, not derived
-// from a test — TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse
-// (internal/sched/lock_enumeration_test.go) is what now checks it,
-// superseding the "reviewer-maintained" status this split used to carry. See
-// that test's own comment for why: adding RenderAll moved this split from
-// six-of-nine to seven-of-ten silently, with no gate catching the move,
-// which is exactly the case this rule (AGENTS.md Rule 4) exists for. Pause,
-// Resume and Paused touch only Queue's own paused field and never reach a
-// *Job.
+// Settle, render.go's Render and RenderAll, and queue.go's Pause, Resume,
+// Paused, SetCaps, LeaseCap and SlotCap). Of those thirteen, seven reach a
+// *job.Job method call — Cancel (via SetIntent, Snapshot and, through
+// finishCancel/settleLocked, Finish), Park (via parkLocked's Surrender), Retry
+// (Snapshot, BeginAttempt), Advance (Snapshot, BeginAttempt, Cross, Transition,
+// and grantFor's HoldsLease/Grant), Settle (Snapshot), Render (Snapshot) and
+// RenderAll (Snapshot, once per job); reviewed by reading all thirteen bodies,
+// not derived from a test — TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse
+// (internal/sched/lock_enumeration_test.go) is what now checks it, superseding
+// the "reviewer-maintained" status this split used to carry. See that test's
+// own comment for why: adding RenderAll moved this split from six-of-nine to
+// seven-of-ten silently, and adding SetCaps/LeaseCap/SlotCap moved it to
+// seven-of-thirteen, with no gate catching the move, which is exactly the case
+// this rule (AGENTS.md Rule 4) exists for. Pause, Resume, Paused, SetCaps,
+// LeaseCap and SlotCap touch only Queue's own fields and never reach a *Job.
 // The other half holds by construction: this package imports nothing from
 // internal/sched (its own import block has none; the only hits for that
 // string are comment mentions in doc.go and this file), so Job cannot call
 // into Queue at all, and the order is one-directional — Queue.mu before
-// Job.mu, never the reverse. The grep above proves the count of ten; it
-// cannot say whether these are the same ten NAMES named here, so a rename
+// Job.mu, never the reverse. The grep above proves the count of thirteen; it
+// cannot say whether these are the same thirteen NAMES named here, so a rename
 // this pattern still matches would leave this citation green while the prose
 // went wrong. That is what
 // internal/sched.TestQueueMuLockers_MatchTheEnumerationStatedInProse checks —
-// it enforces the ten locker NAMES; the seven-of-ten *job.Job call claim
-// above is now enforced separately by
+// it enforces the thirteen locker NAMES; the seven-of-thirteen *job.Job call
+// claim above is now enforced separately by
 // internal/sched.TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse.
 //
-// Job does no I/O. It exposes State() and the attempt accessors. The later
-// plan's design intent is a Checkpointer that reads those and writes the
-// database; no such type exists in this repository today
-// (`git grep -n 'type[ ]Checkpointer'`, run from the repository root,
-// returns nothing — the bracketed space is so this citation, quoted
-// verbatim, does not match its own quoted text).
+// Job does no I/O. It exposes State() and the attempt accessors. The
+// checkpoint package (internal/checkpoint.Checkpointer) reads those and writes
+// the database.
+//
+// Lock Hierarchy:
+// - j.mu is the outer lock (guards lifecycle state, attempts, leases, metadata).
+// - j.contentMu is the inner lock (guards manifest, progress, and article/byte tracking).
+//
+// Code holding j.mu MAY acquire j.contentMu.
+// Code holding j.contentMu must NEVER acquire j.mu.
 type Job struct {
 	mu sync.RWMutex
 
@@ -196,24 +199,76 @@ type Job struct {
 	// surrenderLocked writing nil. Cross and Finish both settle a job's need
 	// for its lease and both yield it by calling surrenderLocked, not the
 	// exported Surrender — see surrenderLocked's comment for why the
-	// exported form would deadlock from either door.
 	lease *Lease
+
+	// contentMu guards the manifest/progress POINTER PAIR, not their contents.
+	// Eviction and hydration swap both pointers together; a reader holding a
+	// *Job but not this lock would race the swap (the defect #263 records
+	// against internal/queue's residencyMu, which this replaces).
+	//
+	// It is a value, not a pointer, so every construction path gets a usable
+	// mutex with no initializer to forget.
+	contentMu sync.RWMutex
+	manifest  *Manifest
+	progress  *JobProgress
+
+	totalBytes    int64
+	recoveryBytes int64
+	recoveryFiles int
+
+	created time.Time
 }
 
 // New builds a job that has never run. It has no attempt record, because
 // nothing has happened to it yet.
 func New(id, name string, p Policy) *Job {
-	return &Job{id: id, name: name, policy: p}
+	return &Job{id: id, name: name, policy: p, created: time.Now().UTC()}
 }
 
 // ID returns the job's identifier.
 func (j *Job) ID() string { return j.id }
 
 // Name returns the job's display name.
-func (j *Job) Name() string { return j.name }
+func (j *Job) Name() string {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.name
+}
+
+// SetName updates the job's display name.
+func (j *Job) SetName(name string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.name = name
+}
 
 // Policy returns the job's retry/repair policy.
-func (j *Job) Policy() Policy { return j.policy }
+func (j *Job) Policy() Policy {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.policy
+}
+
+// SetPolicy updates the job's retry/repair policy.
+func (j *Job) SetPolicy(p Policy) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.policy = p
+}
+
+// Added returns the job's creation timestamp.
+func (j *Job) Added() time.Time {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.created
+}
+
+// SetAdded sets the job's creation timestamp (used during restoration and ingestion).
+func (j *Job) SetAdded(t time.Time) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.created = t
+}
 
 // State returns the current attempt's view, or a StateUnset view for a job that
 // has never run. A job with no attempt is not AT a state — the old model

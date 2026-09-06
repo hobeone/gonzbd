@@ -7,19 +7,21 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // NopApp is a no-op implementation of the api.AppServices aggregate (and
 // therefore of every api role interface it embeds).
 // It is intended for use in tests (unit, integration, and UI) to eliminate
 // duplicate mock definitions of the 20+-method interface.
+//
+//testdouble:allow shared test double for api.AppServices
 type NopApp struct {
-	Queue              *queue.Queue
+	Dispatcher         *dispatch.Dispatcher
 	History            *history.Repository
 	SpeedVal           float64
 	ServerSnapshotsVal []downloader.ServerSnapshot
@@ -86,22 +88,28 @@ func (n NopApp) ServerStatus() []downloader.ServerSnapshot { return n.ServerSnap
 // Speed returns the configured mock speed value.
 func (n NopApp) Speed() float64 { return n.SpeedVal }
 
-// AddJob forwards the job adding to the wired queue if present.
-func (n NopApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
-	if n.Queue != nil {
-		if (job.Filename != "" && n.Queue.ExistsByName(job.Filename)) || (job.Name != "" && n.Queue.ExistsByName(job.Name)) {
-			job.Status = constants.StatusPaused
-			job.Warning = "Duplicate NZB"
+// AddJob forwards the job adding to the wired dispatcher if present.
+func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error { //nocover: test double stub
+	if n.Dispatcher != nil {
+		for _, row := range n.Dispatcher.List() {
+			if (hdr.Filename != "" && (row.Header.Filename == hdr.Filename || row.Header.Name == hdr.Filename)) ||
+				(hdr.Name != "" && (row.Header.Name == hdr.Name || row.Header.Filename == hdr.Name)) {
+				hdr.Warning = "Duplicate NZB"
+				if !force {
+					_ = j.SetIntent(job.IntentPause)
+				}
+				break
+			}
 		}
-		return n.Queue.Add(job)
+		return n.Dispatcher.Add(j, hdr)
 	}
 	return nil
 }
 
-// RemoveJob forwards the job removal to the wired queue if present.
-func (n NopApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
-	if n.Queue != nil {
-		return n.Queue.Remove(id)
+// RemoveJob forwards the job removal to the wired dispatcher if present.
+func (n NopApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error { //nocover: test double stub
+	if n.Dispatcher != nil {
+		return n.Dispatcher.Remove(ctx, id)
 	}
 	return nil
 }
@@ -147,6 +155,8 @@ func (n NopApp) ArticleCacheBytes() int64 { return 0 }
 func (n NopApp) DownloadDirFreeBytes(context.Context) (int64, error) { return 0, nil }
 
 // TestDownloadDirWriteSpeedMBPerSec is a stub.
+//
+//testdouble:allow implements AppServices.TestDownloadDirWriteSpeedMBPerSec
 func (n NopApp) TestDownloadDirWriteSpeedMBPerSec(context.Context) (float64, error) { return 0, nil }
 
 // PingDB is a stub.
@@ -156,6 +166,8 @@ func (n NopApp) PingDB(context.Context) error { return nil }
 func (n NopApp) IsPipelineHealthy(context.Context) bool { return true }
 
 // TestNNTPServer is a stub.
+//
+//testdouble:allow implements AppServices.TestNNTPServer
 func (n NopApp) TestNNTPServer(context.Context, config.ServerConfig) (app.NNTPTestResult, error) {
 	return app.NNTPTestResult{}, nil
 }

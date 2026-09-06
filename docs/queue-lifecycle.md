@@ -1,11 +1,12 @@
 # Queue & Job Lifecycle Contract
+ 
+This document was the contract for `internal/queue`: what state a job is
+guaranteed to have, which operations may fail, and which must not. Following
+Plan 2 ("The Swap", RFC #456 §15), `internal/queue` is retired and its tier
+invariants (Header, Progress, Leased Manifest) are compiler-enforced across
+`internal/job`, `internal/sched`, `internal/dispatch`, and `internal/checkpoint`.
 
-This document is the contract for `internal/queue`: what state a job is
-guaranteed to have, which operations may fail, and which must not. Read it
-before changing anything that touches job residency, the `ActiveSet`, the
-promotion loop, or `Manifest`/`JobProgress` access.
-
-`docs/ARCHITECTURE.md` describes the queue's shape. This describes its
+`docs/ARCHITECTURE.md` describes the architecture. This describes its
 obligations.
 
 **This states the contract in the present tense, including parts not yet
@@ -176,7 +177,7 @@ passing by unit coincidence.
 The article-level work set is a separate question. At startup
 `Application.resumeAllJobs` stats each of a downloading job's files, has
 `durability.Resumer` **delete** the runs of any file shorter than they claim,
-and installs what survives through `Queue.ReplaceFromRuns` — which clears a bit
+and installs what survives through `Job.ReplaceFromRuns` — which clears a bit
 no surviving run covers as well as setting the ones that are covered. The
 restored state is what the runs said before the stat; the sweep's finding
 supersedes it (#362). See `docs/durability-contract.md` § *Restart* for the sweep's bounds —
@@ -431,12 +432,11 @@ Recorded so these are not re-investigated as open questions:
   Four of the ten were nearly missed. `MarkArticlesDone`, `MarkArticleDone`,
   `MarkArticlesFailed` and `MarkArticleFailed` — all four since deleted by the
   durability work, which replaced the assembler's six ack sites with
-  `Queue.AckDurable`/`AckPermanentFailure` — wrote the guard inverted —
+  `Job.AckDurable`/`AckPermanentFailure` (formerly on `Queue`) — wrote the guard inverted —
   `if job.manifest != nil && job.progress != nil { ...whole body... }` — so a
   search for `== nil` does not find them. The two timestamp marks hid a dead
   progress guard the same way. The methods are still here —
-  `Queue.MarkJobStarted` and `Queue.MarkDownloadFinished` are both live, and
-  `MarkJobStarted` is on the production path at `internal/app/pipeline.go` —
+  `Job.MarkJobStarted` is live on the production path at `internal/app/pipeline.go` —
   but the guards are gone: B2.4a moved their bodies to
   `Job.markStartedOnce`/`Job.markDownloadFinishedOnce`, which dereference
   progress unguarded because it is permanently resident, and #457 deleted the
@@ -444,23 +444,16 @@ Recorded so these are not re-investigated as open questions:
   inverted-guard shape is what outlives the examples — it evades an `== nil`
   search, which is why none of these was ever found by grepping for one. This is the
   third time a hand search over this surface has returned a different subset
-  (#267 records the first two), which is why the invariant is now enforced by
-  `TestManifestAccessIsGated` rather than by reading: it walks the package AST
-  and fails any `*Queue` **or `*Job`** method that dereferences a manifest
-  without going through a residency gate. Its exemption list is written to
-  shrink — a new method is a failure until someone gates it or records why it
-  does not need to be.
+  (#267 records the first two).
 
-  There are two entry points to that one gate, since B2.4a moved the
-  manifest-tier bodies onto `*Job`: `Queue.residentJob` for a caller starting
-  from an ID, which adds the ID to the error, and `Job.resident` for a caller
-  that already holds the `*Job`. The second is the condition; the first
-  delegates to it. Widening the walk to `*Job` is what keeps the enforcement
-  where the code went — a walk still matching only `*Queue` would have gone
-  blind without going red, because the test's vacuity guards are satisfied by
-  the `*Queue` methods that remain.
+  Historically, there were two entry points to that residency gate (when B2.4a moved the
+  manifest-tier bodies onto `*Job`): `Queue.residentJob` for a caller starting
+  from an ID, which added the ID to the error, and `Job.resident` for a caller
+  that already held the `*Job`. With `internal/queue` subsequently retired in favor
+  of `internal/dispatch`, the gate on `*Job` is `j.manifest == nil` returning
+  `job.ErrNotResident`, pinned by `internal/job.TestManifestAccessIsGated` (`internal/job/manifest_gate_test.go`).
 
-  The rule that falls out, and that `residentJob`'s doc comment now states:
+  The rule that falls out:
   **gate on residency if and only if the method needs the manifest.** Adding a
   residency check to a progress-tier method is the same defect wearing
   caution's clothes — it refuses work the method is always able to do.

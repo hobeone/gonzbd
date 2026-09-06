@@ -11,8 +11,8 @@ import (
 //
 // Phase 2 resumed unconditionally, and a stall record exists for reasons that
 // involve no pause of ours at all. The reachable one is ordinary: a user pauses
-// a job, Queue.Pause evicts it, the next checkpoint's AckDurable fails with
-// ErrJobNotResident, and checkpointJob calls noteNeedsSeed — which creates a
+// a job, Dispatcher.PauseJob evicts it, the next checkpoint's AckDurable fails with
+// job.ErrNotResident, and checkpointJob calls noteNeedsSeed — which creates a
 // record. On the next tick nothing is blocked, so phase 2 flipped Paused →
 // Queued and cleared the warning, with no log saying so.
 //
@@ -23,28 +23,28 @@ func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	if err := application.queue.Pause(job.ID); err != nil {
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 	// What checkpointJob does when its ack finds the job non-resident. It is
 	// not a pause and carries no reason.
-	application.noteNeedsSeed(job.ID)
+	application.noteNeedsSeed(job.ID())
 
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil || snap.Status != constants.StatusPaused {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok || row.Status() != constants.StatusPaused {
 		t.Fatal("the fixture is not paused, so it cannot observe the pause being undone")
 	}
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	snap = application.queue.SnapshotJob(job.ID)
-	if snap == nil {
+	row, ok = application.dispatcher.Row(job.ID())
+	if !ok {
 		t.Fatal("the job left the queue")
 	}
-	if snap.Status != constants.StatusPaused {
+	if row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v — the user's pause was undone within one re-evaluation "+
 			"interval, with no log saying so, by a record that was never a pause of ours",
-			snap.Status)
+			row.Status())
 	}
 }
 
@@ -57,22 +57,22 @@ func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// What Application.Stall does: record the reason, then pause.
-	application.noteStallReason(job.ID, "Stalled: storage retryable fault on write")
-	if err := application.queue.Pause(job.ID); err != nil {
+	application.noteStallReason(job.ID(), "Stalled: storage retryable fault on write")
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	snap := application.queue.SnapshotJob(job.ID)
-	if snap == nil || snap.Status != constants.StatusPaused {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok || row.Status() != constants.StatusPaused {
 		t.Fatal("the fixture is not paused, so it cannot observe the resume")
 	}
 
-	application.reevaluateStall(t.Context(), job.ID)
+	application.reevaluateStall(t.Context(), job.ID())
 
-	snap = application.queue.SnapshotJob(job.ID)
-	if snap == nil {
+	row, ok = application.dispatcher.Row(job.ID())
+	if !ok {
 		t.Fatal("the job left the queue")
 	}
-	if snap.Status == constants.StatusPaused {
+	if row.Status() == constants.StatusPaused {
 		t.Error("a job this application parked on a storage fault was left parked after " +
 			"the condition cleared: indefinite non-progress with a reason the user has " +
 			"already acted on (L2, R19)")

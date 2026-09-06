@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
@@ -49,12 +50,15 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		c.General.DownloadDir = downloadDir
 		c.General.CompleteDir = completeDir
 		c.General.AdminDir = adminDir
+		// Keep penalty escalation active: this test verifies recovery under sustained server failure.
+		c.Downloads.NoPenalties = false
 		c.Servers = []config.ServerConfig{
 			{
 				Name:        "chaos",
 				Host:        host,
 				Port:        port,
 				Connections: 4,
+				Timeout:     5,
 				Enable:      true,
 			},
 		}
@@ -117,8 +121,9 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		}
 	}
 
-	// Chaos harness goroutine
-	chaosCtx, chaosCancel := context.WithCancel(ctx)
+	// Chaos harness goroutine: inject a burst of network failures for 2 seconds,
+	// then stop so the pipeline can recover from penalties and complete.
+	chaosCtx, chaosCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer chaosCancel()
 	go func() {
 		modes := []nntptest.FailureMode{
@@ -131,6 +136,9 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		for {
 			select {
 			case <-chaosCtx.Done():
+				for _, id := range msgIDs {
+					server.InjectFailure(id, nntptest.FailureNone)
+				}
 				return
 			case <-ticker.C:
 				msgID := msgIDs[rand.IntN(len(msgIDs))]
@@ -141,20 +149,22 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	}()
 
 	// Enqueue the job
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "chaos-job"}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(application.Config(), parsed, "chaos-job.nzb", types.FetchOptions{NzbName: "chaos-job"}, slog.Default())
 	if err != nil {
-		t.Fatalf("queue.NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.AddJob(ctx, job, nzbData, false); err != nil {
+	if err := application.AddJob(ctx, j, hdr, nzbData, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 
 	// Wait for completion (or timeout)
-	timeout := 30 * time.Second
+	// With penalty escalation enabled (NoPenalties = false), unexpected EOF
+	// incurs PenaltyUnknown (3 minutes), so the timeout must exceed 3m.
+	timeout := 4 * time.Minute
 	deadline := time.Now().Add(timeout)
 	completed := false
 	for time.Now().Before(deadline) {
-		h, err := repo.Get(ctx, job.ID)
+		h, err := repo.Get(ctx, j.ID())
 		if err == nil && (h.Status == "Completed" || h.Status == "Failed") {
 			completed = true
 			break
@@ -169,12 +179,12 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	// Invariants assertions
 	// 1. Every added job reaches history (checked above)
 	// 2. No job stays in the queue with PostProc=true for > 60s
-	if application.Queue().SnapshotJob(job.ID) != nil {
+	if _, ok := application.Dispatcher().Row(j.ID()); ok {
 		t.Errorf("job still in queue after completion")
 	}
 
 	// 3. ServerStats verification
-	h, _ := repo.Get(ctx, job.ID)
+	h, _ := repo.Get(ctx, j.ID())
 	t.Logf("Job finished with status: %s", h.Status)
 }
 

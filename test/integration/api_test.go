@@ -18,12 +18,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/api/apitest"
-
 	"github.com/hobeone/gonzbd/internal/api"
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
@@ -40,15 +38,15 @@ const (
 	integrationNZBKey = "1100ffeeddccbbaa"
 )
 
-// buildAPIServer constructs an api.Server with a queue, history, config, and
-// grabber wired. The httptest.Server is registered for cleanup. dir is the
-// temp directory backing the server's history DB; it is also configured as
+// buildAPIServer constructs a minimal, fully-wired api.Server backed by a fresh
+// history.Repository and in-memory queue. It returns the Server, an httptest.Server
+// wrapping it, and the temp directory used for the history DB.
+//
+// The returned directory is both the database home and the temp directory backing the server's history DB; it is also configured as
 // General.DownloadDir so tests exercising path-scoped handlers (e.g.
 // addlocalfile, browse) have a valid configured root to operate within.
 func buildAPIServer(t *testing.T) (srv *api.Server, ts *httptest.Server, dir string) {
 	t.Helper()
-
-	q := queue.New()
 
 	dir = t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
@@ -63,16 +61,23 @@ func buildAPIServer(t *testing.T) (srv *api.Server, ts *httptest.Server, dir str
 	cfg.General.APIKey = integrationAPIKey
 	cfg.General.NZBKey = integrationNZBKey
 	cfg.General.DownloadDir = dir
+	cfg.General.CompleteDir = filepath.Join(dir, "complete")
+	cfg.General.AdminDir = filepath.Join(dir, "admin")
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv = api.New(api.Options{
-		Version: "integration-test",
-		Queue:   q,
-		History: repo,
-		Config:  cfg,
-		Grabber: grabber,
-		App:     apitest.NopApp{},
+		Version:    "integration-test",
+		Dispatcher: application.Dispatcher(),
+		History:    repo,
+		Config:     cfg,
+		Grabber:    grabber,
+		App:        application,
 	})
 
 	ts = httptest.NewServer(srv.Handler())

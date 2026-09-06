@@ -53,8 +53,8 @@ func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 //
 // Assessed is set true here because it is the only value a real Repairing row
 // could carry: Repairing's one inbound edge is Assessing (legalEdges,
-// internal/job/transition.go:47), and Assessed is set unconditionally on
-// entering Assessing (transition, internal/job/attempt.go:280-281) with no
+// `git grep -n 'var legalEdges' internal/job/` finds one line), and Assessed is set unconditionally on
+// entering Assessing (transition, `git grep -n 'func (j \*Job) Transition' internal/job/`) with no
 // door that later clears it — so a Repairing row with Assessed false names a
 // position no attempt could have reached. The fixture does not trust this
 // field at face value; reconstruct re-derives it by replaying the job through
@@ -367,7 +367,7 @@ func TestPersistIfChanged_WritesHeaderFromTheRegistry(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	h := Header{Name: "n", Category: "movies", Priority: 1, Bytes: 42}
+	h := Header{Name: "n", Category: "movies", Priority: 1, Bytes: 42, Added: 1700000000}
 	if err := d.Add(j, h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -405,6 +405,9 @@ func TestPersistIfChanged_SkipsAnUnregisteredJob(t *testing.T) {
 // ID that was never written must report ok == false.
 func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
+	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	if _, ok := d.lastWritten("j1"); ok {
 		t.Error("lastWritten(j1) = ok before any write, want false")
@@ -431,7 +434,7 @@ func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 // key.
 func TestEntryFor_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
-	h := Header{Name: "n", Category: "tv"}
+	h := Header{Name: "n", Category: "tv", Added: 1700000000}
 	if err := d.Add(job.New("j1", "n", job.Policy{}), h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

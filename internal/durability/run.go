@@ -151,6 +151,6 @@ type RunStore interface {
 
 	// DeleteJob removes every run for a job that has left the queue. It
 	// touches only durable_runs — failed_articles is owned and written
-	// solely by internal/queue, and this store never writes to it.
+	// solely by checkpoint.Store.SaveBatch, and this store never writes to it.
 	DeleteJob(ctx context.Context, jobID string) error
 }

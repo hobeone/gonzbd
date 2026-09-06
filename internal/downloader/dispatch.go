@@ -13,10 +13,26 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
+
+// UnfinishedArticle is the snapshot record yielded by
+// buildDispatchPlan. It carries the minimum the dispatcher
+// needs to target a specific article; full Job state stays behind
+// the job's lock.
+type UnfinishedArticle struct {
+	JobID       string
+	JobAdded    time.Time
+	FileIdx     int
+	ArtIdx      int32 // Global article index within Manifest
+	MessageID   string
+	Bytes       int
+	Subject     string
+	PartNumber  int
+	RepairState job.RepairState
+}
 
 // dispatchPlan holds the results of one iteration over the unfinished
 // article queue. buildDispatchPlan populates it; dispatchPass applies it.
@@ -25,7 +41,7 @@ import (
 type dispatchPlan struct {
 	dispatched   int                 // number of articles handed to a server
 	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
-	hopelessJobs map[string]struct{} // jobs whose queue.RepairState is Hopeless()
+	hopelessJobs map[string]struct{} // jobs whose job.RepairState is Hopeless()
 	exhausted    []*articleRequest   // articles with no eligible server this pass
 }
 
@@ -44,9 +60,7 @@ type dispatchOpts struct {
 }
 
 // buildDispatchPlan iterates over the unfinished article queue and populates
-// a dispatchPlan. It holds the queue RLock (via ForEachUnfinishedArticle)
-// for the duration and must not block on channels or take any write locks.
-// All side effects (status transitions, result emission, idle disconnect)
+// a dispatchPlan. All side effects (result emission, idle disconnect)
 // are deferred to the caller's applyDispatchPlan call.
 func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) dispatchPlan {
 	plan := dispatchPlan{
@@ -58,46 +72,80 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		return plan
 	}
 
-	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
-		if a.JobStatus == constants.StatusPaused {
-			return true // skip paused jobs, keep iterating
+	for _, row := range d.dispatcher.List() {
+		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
+		// must not be dispatched either.
+		if row.View.Intent != job.IntentRun {
+			continue // skip paused or cancelled jobs, keep iterating
+		}
+		if !row.View.Running || row.View.State != job.Fetching {
+			continue // only active fetching jobs download articles
+		}
+
+		j, ok := d.dispatcher.Job(row.ID)
+		if !ok || !j.Resident() {
+			continue
 		}
 
 		// Propagation delay: skip jobs that haven't aged enough.
 		// Posts need time to propagate to all NNTP servers; dispatching
 		// too early causes 430 (article not found) errors on backups.
-		if opts.propagationDelay > 0 && opts.now.Before(a.JobAdded.Add(opts.propagationDelay)) {
-			return true // too young, skip for now
+		//
+		// Trade-off: Added is normalized at ingestion (Dispatcher.Add) to
+		// the current time when <= 0. By Rule 1, persisted jobs satisfy this
+		// invariant and never carry Added <= 0, so restoreJobMetadata
+		// (`grep -n 'j.SetAdded(time.Unix(p.Header.Added, 0).UTC())' internal/dispatch/dispatch.go` finds 1 hit) restores Added directly from
+		// the persisted header with no normalization. Newly ingested jobs with
+		// unset/zero timestamps age from ingestion time rather than epoch
+		// (1970-01-01), deliberately holding them back for propagationDelay to
+		// prevent premature missing-article churn.
+		if opts.propagationDelay > 0 && opts.now.Before(j.Added().Add(opts.propagationDelay)) {
+			continue // too young, skip for now
 		}
 
 		// Early Health Gate: stop dispatching a job that cannot be repaired.
-		//
-		// The verdict comes from queue.RepairStateFrom, shared with
-		// failMsgForJob and the queue listing. Hopeless() is deliberately
-		// false for two non-verdicts: damage within the recognized capacity
-		// (bytes cannot prove repairability, only rule it out) and capacity
-		// that is unmeasured rather than absent. Killing a download on either
-		// is worse than letting post-processing read the real par2 packets.
-		if a.RepairState.Hopeless() {
-			plan.hopelessJobs[a.JobID] = struct{}{}
-			return true
+		repairState := j.RepairState()
+		if repairState.Hopeless() {
+			plan.hopelessJobs[j.ID()] = struct{}{}
+			continue
 		}
 
-		handled, exReq := d.tryDispatch(ctx, a, opts)
-		if handled {
-			plan.dispatched++
-			plan.activeJobs[a.JobID] = struct{}{}
+		jobAdded := j.Added()
+		stopAll := false
+		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+			a := UnfinishedArticle{
+				JobID:       j.ID(),
+				JobAdded:    jobAdded,
+				FileIdx:     fi,
+				ArtIdx:      artIdx,
+				MessageID:   id,
+				Bytes:       bytes,
+				Subject:     subject,
+				PartNumber:  number,
+				RepairState: repairState,
+			}
+			handled, exReq := d.tryDispatch(ctx, a, opts) //lockio: tracker lock is leaf under contentMu
+			if handled {
+				plan.dispatched++
+				plan.activeJobs[a.JobID] = struct{}{}
+			}
+			if exReq != nil {
+				plan.exhausted = append(plan.exhausted, exReq)
+			}
+			if d.allServersFull(opts.serverCfgs) {
+				stopAll = true
+				return false
+			}
+			if ctx.Err() != nil {
+				stopAll = true
+				return false
+			}
+			return true
+		})
+		if stopAll {
+			break
 		}
-		if exReq != nil {
-			plan.exhausted = append(plan.exhausted, exReq)
-		}
-		if d.allServersFull(opts.serverCfgs) {
-			return false
-		}
-		// Always continue — per-article send is non-blocking and
-		// we want to fan out as much as will fit this pass.
-		return ctx.Err() == nil
-	})
+	}
 
 	return plan
 }
@@ -129,30 +177,17 @@ func (d *Downloader) allServersFull(serverCfgs []config.ServerConfig) bool {
 }
 
 // applyDispatchPlan executes the side effects deferred from buildDispatchPlan:
-// drains exhausted articles (must happen after queue RLock is released to
-// avoid deadlock on the completions channel), transitions job statuses,
-// handles hopeless jobs, and triggers idle disconnect.
+// drains exhausted articles, handles hopeless jobs, and triggers idle disconnect.
 func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, opts dispatchOpts) {
-	// Queue RLock and tryMu are both released by now. Safe to block on
-	// completions; the pipeline consumer can take the queue write lock.
 	for _, req := range plan.exhausted {
-		// Mark Emitted before emitting so a concurrent dispatch pass
-		// triggered by another worker's signalDispatch doesn't re-see
-		// the article as dispatchable (all try-list entries would still
-		// be present, so it would keep re-emitting ErrNoServersLeft in
-		// a tight loop until the pipeline finally recorded it Failed
-		// through Queue.AckPermanentFailure).
-		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
-			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
+		if j, ok := d.dispatcher.Job(req.jobID); ok {
+			if err := j.MarkArticleEmitted(int(req.artIdx)); err != nil {
+				d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
+			}
 		}
 		d.clearTried(req.jobID, req.artIdx)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassExhaustedAllServers, 1)
 		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
-	}
-
-	// Transition Queued → Downloading for jobs that had articles dispatched.
-	for jobID := range plan.activeJobs {
-		_ = d.queue.SetStatusIf(jobID, constants.StatusDownloading, constants.StatusQueued)
 	}
 
 	// Handle hopeless jobs.
@@ -161,18 +196,34 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		if opts.onJobHopeless != nil {
 			opts.onJobHopeless(jobID)
 		} else {
-			_ = d.queue.Pause(jobID) // Fallback if no callback
+			_ = d.dispatcher.PauseJob(jobID) // Fallback if no callback
 		}
 	}
 
 	// Idle disconnect: if nothing was dispatched and no downloadable
-	// work remains, close all NNTP connections. This catches the
-	// scenario where in-flight articles for a hopeless/completed job
-	// finish after DisconnectAll was already called (those workers
-	// missed the earlier signal because they were busy).
-	if plan.dispatched == 0 && !d.queue.HasDownloadableJobs() && d.hasActiveConnections() {
+	// work remains, close all NNTP connections.
+	if plan.dispatched == 0 && !d.hasDownloadableJobs() && d.hasActiveConnections() {
 		d.DisconnectAll()
 	}
+}
+
+// hasDownloadableJobs reports whether any job in the queue is actively downloading
+// or waiting to download (i.e. in Fetching or queued to fetch, not paused, and not settled).
+func (d *Downloader) hasDownloadableJobs() bool {
+	if d.dispatcher.Paused() {
+		return false
+	}
+	for _, row := range d.dispatcher.List() {
+		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
+		// must not count as downloadable either.
+		if row.View.Intent != job.IntentRun || row.View.Outcome.IsSettled() {
+			continue
+		}
+		if row.View.State == job.Fetching || (row.View.State == job.StateUnset && row.View.Next == job.Fetching) {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchPass walks the queue once and tries to feed every not-yet-done
@@ -189,7 +240,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 // a future signalDispatch (worker completion) or queue.Notify (queue
 // mutation) will trigger another pass.
 func (d *Downloader) dispatchPass(ctx context.Context) {
-	if d.paused.Load() || d.queue.IsPaused() {
+	if d.paused.Load() || d.dispatcher.Paused() {
 		return
 	}
 	if err := ctx.Err(); err != nil {
@@ -199,7 +250,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 
 	// Snapshot server configs once per pass. srv.Cfg() returns a
 	// by-value struct copy; calling it per-article per-server was
-	// 0.69s in the pprof. Cache here before acquiring queue RLock.
+	// 0.69s in the pprof. Cache here before acquiring locks.
 	serverCfgs := make([]config.ServerConfig, len(d.servers))
 	for i, srv := range d.servers {
 		serverCfgs[i] = srv.Cfg()
@@ -250,13 +301,11 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 //     article is permanently failed for this session. The caller must
 //     emit ErrNoServersLeft for it *after* releasing any locks held
 //     across the dispatchPass iteration — emitting inline would deadlock
-//     the dispatcher if the completions channel is full, because the
-//     consumer needs the queue write lock that dispatchPass is currently
-//     holding via ForEachUnfinishedArticle.
+//     the dispatcher if the completions channel is full.
 //
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
-func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
+func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
 	key := articleKey{jobID: a.JobID, artIdx: a.ArtIdx}
 
 	d.tracker.Lock()
@@ -487,15 +536,27 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 	// connWorker from eagerly draining the entire workCh. We size
 	// the limit to pipelineDepth*2 to allow decode overlap: up to
 	// pipelineDepth requests can be on the wire (bounded by
-	// nntp.Conn.sem), while another pipelineDepth can be decoding.
+	// wireSem), while another pipelineDepth can be decoding.
 	maxOutstanding := pipelineDepth * 2
 	sem := make(chan struct{}, maxOutstanding)
+	wireSem := make(chan struct{}, pipelineDepth)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case sem <- struct{}{}:
+			// Bound wire concurrency to pipelineDepth before pulling work.
+			// This prevents a connection worker with an in-flight wire request
+			// (e.g. stalled or slow) from greedily pulling subsequent requests off
+			// workCh that it cannot put on the wire, starving other idle workers.
+			select {
+			case <-ctx.Done():
+				<-sem
+				return
+			case wireSem <- struct{}{}:
+			}
+
 			// We have capacity — now wait for work or disconnect signal.
 			//
 			// sem holds this iteration's slot plus one per still-running
@@ -504,11 +565,14 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 			req, decision := selectWork(ctx, d.disconnectChanFor(mc, len(sem) > 1), workCh)
 			switch decision {
 			case workCancelled:
+				<-wireSem
+				<-sem
 				return
 			case workDisconnect:
 				// DisconnectAll was called — close idle connection.
 				// Release our semaphore slot and wait for any in-flight
 				// handleRequest goroutines to finish before closing.
+				<-wireSem
 				<-sem
 				workerWg.Wait()
 				d.log.Debug("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
@@ -519,7 +583,9 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 				go func(req *articleRequest) {
 					defer workerWg.Done()
 					defer func() { <-sem }()
-					d.handleRequest(ctx, srv, serverIdx, mc, req, workerID)
+					d.handleRequest(ctx, srv, serverIdx, mc, req, workerID, func() {
+						<-wireSem
+					})
 				}(req)
 			}
 		}
@@ -531,13 +597,21 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) {
+func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string, wireDone func()) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.artIdx)
 
+	done := func() {}
+	if wireDone != nil {
+		var once sync.Once
+		done = func() { once.Do(wireDone) }
+		defer done()
+	}
+
 	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
+	done()
 	if !ok {
 		return
 	}
@@ -555,21 +629,26 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 
 	name := srv.Cfg().Name
 
-	// Per-job pause check: the article was queued into workCh before
-	// the user clicked pause on this specific job. Check now before
-	// starting any network I/O.
-	if status, err := d.queue.GetJobStatus(req.jobID); err == nil && status == constants.StatusPaused {
+	// Per-job pause/cancel check: the article was queued into workCh before
+	// the user clicked pause or cancel on this specific job. Check now before
+	// starting any network I/O. != IntentRun rather than == IntentPause:
+	// a cancelled job must drop its in-flight article too.
+	if j, ok := d.dispatcher.Job(req.jobID); !ok || j.Intent() != job.IntentRun {
 		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		_ = d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx)
+		if ok {
+			_ = j.ClearArticleEmitted(int(req.artIdx))
+		}
 		return nil, false
 	}
 
 	// Global pause check: same as above but for app-wide pause.
 	// The pauseCtx cancellation aborts in-flight reads, but articles
 	// sitting in the workCh buffer still need to be drained.
-	if d.paused.Load() || d.queue.IsPaused() {
+	if d.paused.Load() || d.dispatcher.Paused() {
 		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		_ = d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx)
+		if j, ok := d.dispatcher.Job(req.jobID); ok {
+			_ = j.ClearArticleEmitted(int(req.artIdx))
+		}
 		return nil, false
 	}
 
@@ -696,8 +775,10 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Non-CRC decode errors are terminal failures — mark Emitted so
 		// the dispatcher never re-picks this article, then clear the tryList.
-		if markErr := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); markErr != nil && !errors.Is(markErr, queue.ErrNotFound) && !errors.Is(markErr, queue.ErrJobNotResident) {
-			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
+		if j, ok := d.dispatcher.Job(req.jobID); ok {
+			if markErr := j.MarkArticleEmitted(int(req.artIdx)); markErr != nil {
+				d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
+			}
 		}
 		d.clearTried(req.jobID, req.artIdx)
 		telemetry.PipelineErrors.Add(classifyDecodeError(err), 1)
@@ -706,11 +787,11 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	}
 
 	// The article is not marked Done here, and this package cannot mark it
-	// Done at all: Queue.AckDurable takes a durability.DurableProof, which has
+	// Done at all: Job.AckDurable takes a durability.DurableProof, which has
 	// no exported constructor outside internal/durability. Only a barrier that
 	// has drained and fsynced the file can mint one.
 	//
-	// MarkArticleEmittedByIdx (transient, not persisted) keeps the dispatcher from
+	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher from
 	// re-picking this article between now and that barrier. If the process
 	// crashes first, Emitted is lost on restart, the startup resume sweep
 	// cannot prove the bytes, and the article is re-dispatched — which is S3,
@@ -719,8 +800,10 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// So Done means a completed fsync covered the bytes, not merely that they
 	// reached WriteAt. See nntp-downloader-contract.md §5 and
 	// docs/durability-contract.md.
-	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
-		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
+	if j, ok := d.dispatcher.Job(req.jobID); ok {
+		if err := j.MarkArticleEmitted(int(req.artIdx)); err != nil {
+			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
+		}
 	}
 	d.clearTried(req.jobID, req.artIdx)
 	d.notePartNumberDisagreement(req, payload.partNumber)
@@ -796,10 +879,11 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// Unconditional because it is a no-op where no bit was set: the
 		// ErrNoArticle paths (:616, :636) and the CRC-mismatch path (:691)
 		// reach here without marking.
-		if err := d.queue.ClearArticleEmittedByIdx(req.jobID, req.artIdx); err != nil &&
-			!errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
-			d.log.Warn("clear the emitted bit for a dropped result",
-				"job", req.jobID, "msgid", req.messageID, "err", err)
+		if j, ok := d.dispatcher.Job(req.jobID); ok {
+			if err := j.ClearArticleEmitted(int(req.artIdx)); err != nil {
+				d.log.Warn("clear the emitted bit for a dropped result",
+					"job", req.jobID, "msgid", req.messageID, "err", err)
+			}
 		}
 	}
 }

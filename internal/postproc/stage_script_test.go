@@ -8,9 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 func TestScriptStage_PathTraversalRejected(t *testing.T) {
@@ -28,7 +26,7 @@ func TestScriptStage_PathTraversalRejected(t *testing.T) {
 	secretScript := filepath.Join(tmpDir, "secret.sh")
 	writeScript(t, secretScript, []byte("#!/bin/sh\nexit 0\n"))
 
-	job.Queue.Script = "../secret.sh"
+	job.Script = "../secret.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 
 	err := stage.Run(t.Context(), job)
@@ -57,7 +55,7 @@ func TestScriptStage_SymlinkEscapeRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job.Queue.Script = "hook.sh"
+	job.Script = "hook.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 
 	err := stage.Run(t.Context(), job)
@@ -79,7 +77,7 @@ func TestScriptStage_AbsolutePathRejected(t *testing.T) {
 	absScript := filepath.Join(t.TempDir(), "abs.sh")
 	writeScript(t, absScript, []byte("#!/bin/sh\nexit 0\n"))
 
-	job.Queue.Script = absScript
+	job.Script = absScript
 	stage := NewScriptStage("/nonexistent-dir", "/tmp/complete", "test", "", "")
 
 	err := stage.Run(t.Context(), job)
@@ -98,7 +96,7 @@ func TestScriptStage_EmptyScriptDirRejected(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
 
-	job.Queue.Script = "sonarr.sh"
+	job.Script = "sonarr.sh"
 	stage := NewScriptStage("", "/tmp/complete", "test", "", "")
 
 	err := stage.Run(t.Context(), job)
@@ -115,7 +113,7 @@ func TestScriptStage_CaseInsensitiveNoneAndDefault(t *testing.T) {
 	for _, scriptName := range []string{"none", "NONE", "default", "DEFAULT", "Default"} {
 		t.Run(scriptName, func(t *testing.T) {
 			job, _ := stageJob(t)
-			job.Queue.Script = scriptName
+			job.Script = scriptName
 			stage := NewScriptStage("/nonexistent", "/tmp/complete", "test", "", "")
 			if err := stage.Run(t.Context(), job); err != nil {
 				t.Errorf("Run(%q) expected nil, got %v", scriptName, err)
@@ -139,7 +137,7 @@ func TestScriptStage_CanFailFalse_SetsFailMsg(t *testing.T) {
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 7\n"))
 
-	job.Queue.Script = "fail.sh"
+	job.Script = "fail.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 	// ScriptCanFail defaults to false — do not call SetScriptCanFail.
 
@@ -172,7 +170,7 @@ func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 3\n"))
 
-	job.Queue.Script = "fail.sh"
+	job.Script = "fail.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 	stage.SetScriptCanFail(true)
 
@@ -199,42 +197,39 @@ func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
 	}
 	t.Parallel()
 
-	parsed := &nzb.NZB{
-		Files: []nzb.File{
-			{Subject: `"movie.mkv" yEnc`, Bytes: 1000, Articles: []nzb.Article{{ID: "c@x", Bytes: 1000, Number: 1}}},
-			{Subject: `"movie.par2" yEnc`, Bytes: 50, Articles: []nzb.Article{{ID: "i@x", Bytes: 50, Number: 1}}},
-			{Subject: `"movie.vol000+01.par2" yEnc`, Bytes: 500, Articles: []nzb.Article{{ID: "v@x", Bytes: 500, Number: 1}}},
-		},
+	j := job.New("bytes-test", "bytes-test.nzb", job.Policy{})
+	m := job.NewManifest([]job.JobFile{
+		{Subject: `"movie.mkv" yEnc`, Bytes: 1000, Articles: []job.JobArticle{{ID: "c@x", Bytes: 1000}}},
+		{Subject: `"movie.par2" yEnc`, Bytes: 50, Articles: []job.JobArticle{{ID: "i@x", Bytes: 50}}},
+		{Subject: `"movie.vol000+01.par2" yEnc`, Bytes: 500, Articles: []job.JobArticle{{ID: "v@x", Bytes: 500}}},
+	})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
 	}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "bytes-test.nzb", Name: "bytes-test", OnDemandPar2: true}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	if err := j.SetFileFetchPolicy(2, job.FetchIfNeeded); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if !qjob.HasDeferredPar2() {
+	if !j.Progress().HasDeferredPar2() {
 		t.Fatal("fixture guard: expected a deferred recovery volume")
 	}
-	if err := q.DiscardDeferredPar2(qjob.ID); err != nil {
-		t.Fatalf("DiscardDeferredPar2: %v", err)
+	if err := j.SetFileFetchPolicy(2, job.FetchNever); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}
 
-	wantExpected := qjob.Progress().ExpectedBytes()
-	wantTotal := qjob.TotalBytes()
+	wantExpected := j.Progress().ExpectedBytes()
+	wantTotal := m.TotalBytes()
 	if wantExpected >= wantTotal {
 		t.Fatalf("fixture guard: ExpectedBytes (%d) must be less than TotalBytes (%d), or this test cannot distinguish them", wantExpected, wantTotal)
 	}
 
-	job := &Job{Queue: qjob, DownloadDir: t.TempDir()}
+	job := &Job{Job: j, DownloadDir: t.TempDir()}
 
 	scriptDir := t.TempDir()
 	outFile := filepath.Join(scriptDir, "bytes.txt")
 	scriptPath := filepath.Join(scriptDir, "report.sh")
 	writeScript(t, scriptPath, fmt.Appendf(nil, "#!/bin/sh\necho \"$SAB_BYTES\" > %s\n", outFile))
 
-	job.Queue.Script = "report.sh"
+	job.Script = "report.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 
 	if err := stage.Run(t.Context(), job); err != nil {
@@ -262,7 +257,7 @@ func TestScriptStage_ValidScriptAllowed(t *testing.T) {
 	scriptPath := filepath.Join(scriptDir, "sonarr.sh")
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 0\n"))
 
-	job.Queue.Script = "sonarr.sh"
+	job.Script = "sonarr.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 
 	if err := stage.Run(t.Context(), job); err != nil {

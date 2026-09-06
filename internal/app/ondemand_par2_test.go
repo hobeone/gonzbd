@@ -10,11 +10,12 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // copyFixturePar2 copies the shared par2 index fixture (which protects
@@ -30,9 +31,8 @@ func copyFixturePar2(t *testing.T, dir string) {
 	}
 }
 
-// copyFixtureSubdirPar2 puts a set whose only entry is "Screens/data.bin" on
-// disk — the subdirectory case, which is the one that makes identification's
-// idempotency observable.
+// copyFixtureSubdirPar2 copies a par2 index that protects a file inside a
+// subdirectory ("Screens/data.bin").
 func copyFixtureSubdirPar2(t *testing.T, dir string) {
 	t.Helper()
 	b, err := os.ReadFile("../../test/fixtures/par2/subdir.par2")
@@ -44,9 +44,10 @@ func copyFixtureSubdirPar2(t *testing.T, dir string) {
 	}
 }
 
-// copyFixturePayload puts the protected file itself on disk beside the index.
+// copyFixturePayload writes the bytes that match data.par2's expectation into
+// dir under asName.
 //
-// par2.Assess IDENTIFIES the delivered files before verifying them, and
+// The assessment path needs this where the old verification did not, because
 // identification reads the directory — an index describing data.bin with no
 // data.bin present means the file is genuinely missing, and the honest answer
 // is to fetch the recovery volumes. par2Verdict itself reads only the
@@ -66,14 +67,14 @@ func copyFixturePayload(t *testing.T, dir, asName string) {
 
 // seedFileCRC gives one of a job's files an assembled CRC32.
 //
-// It goes through Queue.SetFileCRC32FromRuns rather than writing the field,
+// It goes through Job.SetFileCRC32FromRuns rather than writing the field,
 // which means presenting the record that would have earned the value: one
 // durable run at offset 0 spanning every article of the file. That is the
 // gatekeeper's point — the CRC and its evidence arrive together — and it keeps
 // these fixtures describing a state the program can actually reach.
-func seedFileCRC(t *testing.T, q *queue.Queue, job *queue.Job, fileIdx int, crc uint32) {
+func seedFileCRC(t *testing.T, j *job.Job, fileIdx int, crc uint32) {
 	t.Helper()
-	m, err := job.Manifest()
+	m, err := j.Manifest()
 	if err != nil {
 		t.Fatalf("manifest for the CRC fixture: %v", err)
 	}
@@ -86,7 +87,7 @@ func seedFileCRC(t *testing.T, q *queue.Queue, job *queue.Job, fileIdx int, crc 
 		Length:      m.FileBytes(fileIdx),
 		CRC32:       crc,
 	}}
-	if err := q.SetFileCRC32FromRuns(job.ID, fileIdx, runs); err != nil {
+	if _, err := j.SetFileCRC32FromRuns(fileIdx, runs); err != nil {
 		t.Fatalf("SetFileCRC32FromRuns(%d): %v", fileIdx, err)
 	}
 }
@@ -99,12 +100,8 @@ type par2FileSpec struct {
 	bytes   int64
 }
 
-// newPar2Job builds a real, not-yet-added *queue.Job via queue.NewJob (with
-// OnDemandPar2 enabled, so any *.volNNN+MM.par2 subject classifies and
-// defers correctly). Callers needing a custom ID must set job.ID before
-// adding it to a queue — Queue.Add indexes by whatever ID is set at Add
-// time, so overriding it afterward silently orphans the original key.
-func newPar2Job(t *testing.T, specs []par2FileSpec) *queue.Job {
+// newPar2Job builds a real, not-yet-added *job.Job with OnDemandPar2 enabled.
+func newPar2Job(t *testing.T, id, name string, specs []par2FileSpec) (*job.Job, dispatch.Header) {
 	t.Helper()
 	parsed := &nzb.NZB{}
 	for i, f := range specs {
@@ -118,29 +115,29 @@ func newPar2Job(t *testing.T, specs []par2FileSpec) *queue.Job {
 			Articles: []nzb.Article{{ID: fmt.Sprintf("f%d@t", i), Bytes: int(b), Number: 1}},
 		})
 	}
-	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "t.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	cfg, err := config.Default()
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("config.Default: %v", err)
 	}
-	return qjob
+	cfg.Downloads.OnDemandPar2 = true
+	j, hdr, err := BuildIngestJob(cfg, parsed, "t.nzb", types.FetchOptions{JobID: id, NzbName: name}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	return j, hdr
 }
 
-// buildPar2Job builds a job via newPar2Job, adds it to a fresh queue, and
-// sets each file's assembled CRC32 through the queue's real mutator.
-func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job) {
+// buildPar2Job builds a job via newPar2Job and sets each file's assembled CRC32.
+func buildPar2Job(t *testing.T, specs []par2FileSpec) *job.Job {
 	t.Helper()
-	qjob := newPar2Job(t, specs)
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
+	j, _ := newPar2Job(t, "test-job", "test-job", specs)
 	for i, f := range specs {
 		if f.crc == 0 {
 			continue
 		}
-		seedFileCRC(t, q, qjob, i, f.crc)
+		seedFileCRC(t, j, i, f.crc)
 	}
-	return q, qjob
+	return j
 }
 
 // assessVerdict is what maybeReleaseRecoveryVolumes does, minus the acting on
@@ -151,7 +148,7 @@ func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job)
 // of #494 — the verdict is now a pure function of an observation taken before
 // anything moves — so these tests compose the two the same way production
 // does rather than reaching for a combined helper that no longer exists.
-func assessVerdict(t *testing.T, dir string, qjob *queue.Job, log *slog.Logger) (par2Outcome, string) {
+func assessVerdict(t *testing.T, dir string, qjob *job.Job, log *slog.Logger) (par2Outcome, string) {
 	t.Helper()
 	sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
 	if err != nil || len(sets) == 0 {
@@ -175,7 +172,7 @@ func TestPar2Verdict(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
 		copyFixturePayload(t, dir, "data.bin")
-		_, qjob := buildPar2Job(t, []par2FileSpec{
+		qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 			deferredVol,
 		})
@@ -188,7 +185,7 @@ func TestPar2Verdict(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
 		copyFixturePayload(t, dir, "data.bin")
-		_, qjob := buildPar2Job(t, []par2FileSpec{
+		qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100},
 			deferredVol,
 		})
@@ -203,7 +200,7 @@ func TestPar2Verdict(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
 		copyFixturePayload(t, dir, "data.bin")
-		_, qjob := buildPar2Job(t, []par2FileSpec{
+		qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", bytes: 100},
 			deferredVol,
 		})
@@ -216,7 +213,7 @@ func TestPar2Verdict(t *testing.T) {
 
 	t.Run("missing par2 index falls back to fetching recovery", func(t *testing.T) {
 		dir := t.TempDir() // empty — no par2 index on disk
-		_, qjob := buildPar2Job(t, []par2FileSpec{
+		qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 		})
 		if got, reason := assessVerdict(t, dir, qjob, log); got != outcomeRepair {
@@ -248,7 +245,7 @@ func TestPar2Verdict(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "other.bin"), []byte(strings.Repeat("not-the-protected-file", 400)), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, qjob := buildPar2Job(t, []par2FileSpec{
+		qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "other.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
@@ -286,7 +283,7 @@ func TestPar2Verdict(t *testing.T) {
 		// it, every file this suite identifies while also leaving another
 		// entry unaccounted verifies clean, and the fold-in code would never
 		// be exercised by a non-empty CRC summary.
-		_, qjob := buildPar2Job(t, []par2FileSpec{
+		qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
@@ -414,40 +411,28 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
 
-	cfg, err := config.Default()
-	if err != nil {
-		t.Fatalf("config.Default: %v", err)
-	}
-	cfg.With(func(c *config.Config) {
+	app := newTestApplication(t)
+	app.config.With(func(c *config.Config) {
 		c.General.DownloadDir = dir
+		c.Downloads.OnDemandPar2 = true
 	})
+	app.log = log
 
 	const jobID = "job-1"
-	qjob := newPar2Job(t, []par2FileSpec{
+	qjob, hdr := newPar2Job(t, jobID, "job-name", []par2FileSpec{
 		{subject: "data.bin", bytes: 100},
 		{subject: "data.vol000+01.par2", bytes: 100},
 	})
-	qjob.ID = jobID
-	qjob.Name = "job-name"
-	q := queue.New()
-	if err := q.Add(qjob); err != nil {
+	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	seedFileCRC(t, q, qjob, 0, 0x1068AFA6)
-
-	app := &Application{
-		queue:   q,
-		log:     log,
-		config:  cfg,
-		emitter: dummyEmitter{},
-	}
+	seedFileCRC(t, qjob, 0, 0x1068AFA6)
 
 	t.Run("context cancelled returns false", func(t *testing.T) {
 		cancelledCtx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		snap := q.SnapshotJob(jobID)
-		if app.maybeReleaseRecoveryVolumes(cancelledCtx, jobID, snap) {
+		if app.maybeReleaseRecoveryVolumes(cancelledCtx, jobID) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when context is cancelled")
 		}
 	})
@@ -460,25 +445,26 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		copyFixturePar2(t, dirClean)
 		copyFixturePayload(t, dirClean, "data.bin")
 
-		snap := q.SnapshotJob(jobID)
-		if app.maybeReleaseRecoveryVolumes(t.Context(), jobID, snap) {
+		if app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when verification is clean")
 		}
 
 		// Verify that the recovery volume is marked FetchNever rather than
 		// removed from the job: DiscardDeferredPar2 no longer changes the
-		// file set (see its doc comment in internal/queue/queue.go), so the
-		// recovery volume is still in the manifest, just no longer awaiting
-		// the CRC verdict.
-		snapAfter := q.SnapshotJob(jobID)
-		m := mustManifest(t, snapAfter)
+		// file set, so the recovery volume is still in the manifest, just no
+		// longer awaiting the CRC verdict.
+		j, ok := app.Dispatcher().Job(jobID)
+		if !ok {
+			t.Fatal("job not in dispatcher")
+		}
+		m := mustManifest(t, j)
 		sawRecovery := false
 		for fi := range m.NumFiles() {
 			if !m.FileIsPar2Recovery(fi) {
 				continue
 			}
 			sawRecovery = true
-			if got := snapAfter.Progress().FileFetchPolicy(fi); got != queue.FetchNever {
+			if got := j.Progress().FileFetchPolicy(fi); got != job.FetchNever {
 				t.Errorf("recovery file %d policy = %d, want FetchNever after a clean verification discarded it", fi, got)
 			}
 		}
@@ -490,50 +476,33 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	t.Run("corrupt data undeferes recovery volumes", func(t *testing.T) {
 		// Create a new job with mismatched CRC.
 		const jobCorruptID = "job-corrupt"
-		jobCorrupt := newPar2Job(t, []par2FileSpec{
+		jobCorrupt, hdrCorrupt := newPar2Job(t, jobCorruptID, "job-corrupt-name", []par2FileSpec{
 			{subject: "data.bin", bytes: 100},
 			{subject: "data.vol000+01.par2", bytes: 100},
 		})
-		jobCorrupt.ID = jobCorruptID
-		jobCorrupt.Name = "job-corrupt-name"
-		if err := q.Add(jobCorrupt); err != nil {
+		seedFileCRC(t, jobCorrupt, 0, 0xDEADBEEF)
+		if err := app.Dispatcher().Add(jobCorrupt, hdrCorrupt); err != nil {
 			t.Fatal(err)
 		}
-		seedFileCRC(t, q, jobCorrupt, 0, 0xDEADBEEF)
 
 		dirCorrupt := filepath.Join(dir, "job-corrupt-name")
 		if err := os.MkdirAll(dirCorrupt, 0o750); err != nil {
 			t.Fatal(err)
 		}
 		copyFixturePar2(t, dirCorrupt)
-		// The payload has to be ON DISK, under the name par2 gives it, for
-		// this subtest to mean what it says.
-		//
-		// It used to copy only the index, so the state it built was "the file
-		// is absent", not "the file is corrupt" — and it passed because the
-		// guard it exercised fired on both. Absence and corruption now take
-		// different branches (an entry matching nothing delivered is the
-		// Layout B signature, and does NOT fetch), so building the wrong one
-		// silently stopped testing the CRC path this subtest is named for.
-		//
-		// The bytes are the real fixture so identification succeeds by name
-		// and the file is accounted for; the seeded CRC above (0xDEADBEEF) is
-		// what disagrees with par2, which is the mismatch under test.
 		copyFixturePayload(t, dirCorrupt, "data.bin")
 
-		snap := q.SnapshotJob(jobCorruptID)
-		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorruptID, snap) {
+		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorruptID) {
 			t.Error("maybeReleaseRecoveryVolumes must return true when verification fails")
 		}
 
 		// Verify that the deferred recovery volume was undeferred.
-		snapAfter := q.SnapshotJob(jobCorruptID)
-		m, p := mustManifest(t, snapAfter), snapAfter.Progress()
+		m, p := mustManifest(t, jobCorrupt), jobCorrupt.Progress()
 		found := false
 		for fi := range m.NumFiles() {
 			if m.FileIsPar2Recovery(fi) {
 				found = true
-				if p.FileFetchPolicy(fi) != queue.FetchAlways {
+				if p.FileFetchPolicy(fi) != job.FetchAlways {
 					t.Error("deferred recovery volume was not undeferred")
 				}
 			}
@@ -544,99 +513,56 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	})
 
 	// The branch that runs when there is no index to assess against.
-	//
-	// It is separate from "the assessment says fetch": there is no assessment
-	// at all, so no verdict was taken and none could be. Fetching is the safe
-	// fallback, and it is the behaviour that predates on-demand par2 entirely.
 	t.Run("no par2 index on disk fetches the volumes", func(t *testing.T) {
 		const noIndexJobID = "job-no-index"
 
-		noIdx := newPar2Job(t, []par2FileSpec{
+		noIdx, hdrNoIdx := newPar2Job(t, noIndexJobID, "job-no-index-name", []par2FileSpec{
 			{subject: "data.bin", bytes: 100},
 			{subject: "data.vol000+01.par2", bytes: 100},
 		})
-		noIdx.ID = noIndexJobID
-		noIdx.Name = "job-no-index-name"
-		if err := q.Add(noIdx); err != nil {
+		seedFileCRC(t, noIdx, 0, 0x1068AFA6)
+		if err := app.Dispatcher().Add(noIdx, hdrNoIdx); err != nil {
 			t.Fatal(err)
 		}
-		seedFileCRC(t, q, noIdx, 0, 0x1068AFA6)
 
 		// The job directory exists but holds no par2 files at all.
-		if err := os.MkdirAll(filepath.Join(dir, noIdx.Name), 0o750); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, "job-no-index-name"), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		copyFixturePayload(t, filepath.Join(dir, noIdx.Name), "data.bin")
+		copyFixturePayload(t, filepath.Join(dir, "job-no-index-name"), "data.bin")
 
-		if !app.maybeReleaseRecoveryVolumes(t.Context(), noIndexJobID, q.SnapshotJob(noIndexJobID)) {
+		if !app.maybeReleaseRecoveryVolumes(t.Context(), noIndexJobID) {
 			t.Error("a job whose par2 index never arrived must fetch its recovery volumes; without an index " +
 				"nothing can be verified, so skipping them would ship an unchecked job")
 		}
 	})
 
-	// The whole point of the change, end to end, against the real fixture: a
-	// clean OBFUSCATED download must fetch nothing.
-	//
-	// This runs through maybeReleaseRecoveryVolumes rather than calling
-	// par2Verdict directly, and that is the entire reason it exists.
-	// par2Verdict takes an assessment as a parameter, so a test that builds
-	// one itself cannot see whether the caller assembled the right inputs —
-	// which is where every defect on this path has actually lived.
-	//
-	// Two properties, and the second is why this test outlived the rename it
-	// was written for: the verdict must be "clean", and NOTHING may have
-	// moved. The download path used to relocate here, and both halves of that
-	// were wrong — the rename bought the verdict nothing once identification
-	// became content-based, and it could not be recorded truthfully for a
-	// subdirectory target.
-	//
-	// Calling par2Verdict directly cannot see that: it takes progress as
-	// a parameter, so a test that passes a freshly-read one is asking a
-	// question the defect does not live in.
 	t.Run("a clean obfuscated download fetches nothing", func(t *testing.T) {
 		const obfJobID = "job-obfuscated"
 		const obfuscated = "7xq6N6P340dCh9Lnih5hY3jsArfSN1"
 
-		obfJob := newPar2Job(t, []par2FileSpec{
+		obfJob, hdrObf := newPar2Job(t, obfJobID, "job-obfuscated-name", []par2FileSpec{
 			{subject: obfuscated, bytes: 100},
 			{subject: "data.vol000+01.par2", bytes: 100},
 		})
-		obfJob.ID = obfJobID
-		obfJob.Name = "job-obfuscated-name"
-		if err := q.Add(obfJob); err != nil {
+		seedFileCRC(t, obfJob, 0, 0x1068AFA6)
+		if err := app.Dispatcher().Add(obfJob, hdrObf); err != nil {
 			t.Fatal(err)
 		}
-		// The CRC of the fixture payload, which is what the assembler would
-		// have computed for these bytes whatever the file was called.
-		seedFileCRC(t, q, obfJob, 0, 0x1068AFA6)
 
-		dirObf := filepath.Join(dir, obfJob.Name)
+		dirObf := filepath.Join(dir, "job-obfuscated-name")
 		if err := os.MkdirAll(dirObf, 0o750); err != nil {
 			t.Fatal(err)
 		}
 		copyFixturePar2(t, dirObf) // protects data.bin
 		copyFixturePayload(t, dirObf, obfuscated)
 
-		if app.maybeReleaseRecoveryVolumes(t.Context(), obfJobID, q.SnapshotJob(obfJobID)) {
+		if app.maybeReleaseRecoveryVolumes(t.Context(), obfJobID) {
 			t.Fatal("an intact obfuscated download undeferred its recovery volumes; identification finds the file " +
 				"by content, so a verdict of \"needs repair\" means verification was not reading what " +
 				"identification found")
 		}
 
-		// And NOTHING was renamed, which is the second half of the property.
-		//
-		// This path used to relocate here, so that verification — which
-		// matched par2 entries by name — would have corrected names to work
-		// with. Content identification made that pointless, and it was never
-		// free: JobProgress.Filename cannot hold a path, so a file relocated
-		// into a subdirectory could not be recorded truthfully, and the
-		// startup resume sweep then stat'ed a top-level path that does not
-		// exist. durability.Resume reads a missing file as disproof of every
-		// run it holds and re-downloads a complete file.
-		//
-		// Relocation is post-processing's job: stage_quickcheck does it from
-		// its own assessment, ahead of the repair stage that needs the files
-		// at their par2 paths.
 		if _, err := os.Stat(filepath.Join(dirObf, obfuscated)); err != nil {
 			t.Errorf("the delivered file is no longer at %q: the download path must not move files, or the "+
 				"queue's record of where they are stops being true: %v", obfuscated, err)

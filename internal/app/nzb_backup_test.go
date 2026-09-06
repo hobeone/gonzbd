@@ -7,10 +7,11 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // newBackupTestApp builds an Application over temp dirs with a real history
@@ -37,18 +38,18 @@ func newBackupTestApp(t *testing.T) (*app.Application, string) {
 // filename and article ID. A distinct article ID gives the job a distinct
 // MD5, so the MD5 duplicate probe does not fire and the filename path is the
 // one under test.
-func addBackupTestJob(t *testing.T, filename, articleID string) (*queue.Job, []byte) {
+func addBackupTestJob(t *testing.T, cfg *config.Config, filename, articleID string) (*job.Job, dispatch.Header, []byte) {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  "file.bin",
 		Bytes:    1024,
 		Articles: []nzb.Article{{ID: articleID, Bytes: 1024, Number: 1}},
 	}}}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filename}, fsutil.SanitizeOptions{})
+	j, hdr, err := app.BuildIngestJob(cfg, parsed, filename, types.FetchOptions{NzbName: filename}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	return job, []byte("<nzb>" + articleID + "</nzb>")
+	return j, hdr, []byte("<nzb>" + articleID + "</nzb>")
 }
 
 // TestAddJob_RecordsNZBBackupName pins that AddJob records the basename of
@@ -58,49 +59,56 @@ func TestAddJob_RecordsNZBBackupName(t *testing.T) {
 	t.Parallel()
 	application, adminDir := newBackupTestApp(t)
 
-	job, raw := addBackupTestJob(t, "Show.S01E01.nzb", "a@t")
-	if err := application.AddJob(t.Context(), job, raw, false); err != nil {
+	j, hdr, raw := addBackupTestJob(t, application.GetConfig(), "Show.S01E01.nzb", "a@t")
+	if err := application.AddJob(t.Context(), j, hdr, raw, false); err != nil {
 		t.Fatalf("AddJob: %v", err)
 	}
 
-	if job.NZBBackup != "Show.S01E01.nzb.gz" {
-		t.Errorf("NZBBackup = %q, want %q", job.NZBBackup, "Show.S01E01.nzb.gz")
+	row, ok := application.Dispatcher().Row(j.ID())
+	if !ok {
+		t.Fatalf("job not found in dispatcher")
 	}
-	if _, err := os.Stat(filepath.Join(adminDir, "nzb", job.NZBBackup)); err != nil {
+	if row.Header.NZBBackup != "Show.S01E01.nzb.gz" {
+		t.Errorf("NZBBackup = %q, want %q", row.Header.NZBBackup, "Show.S01E01.nzb.gz")
+	}
+	if _, err := os.Stat(filepath.Join(adminDir, "nzb", row.Header.NZBBackup)); err != nil {
 		t.Errorf("backup not written at recorded name: %v", err)
 	}
 }
 
 // TestAddJob_ForcedDuplicateKeepsBothBackups pins that a forced duplicate add
 // gets a backup of its own rather than none.
-//
-// Before this change AddJob wrote the backup only when the job was not a
-// duplicate, so a forced re-add downloaded normally and finalized with no NZB
-// on disk at all — unretryable, and silently so. The suffix keeps the
-// original file intact, since admin/nzb/ is browsable by the name the job was
-// submitted under and overwriting would lose the first NZB.
 func TestAddJob_ForcedDuplicateKeepsBothBackups(t *testing.T) {
 	t.Parallel()
 	application, adminDir := newBackupTestApp(t)
 
-	first, firstRaw := addBackupTestJob(t, "Show.S01E01.nzb", "a@t")
-	if err := application.AddJob(t.Context(), first, firstRaw, false); err != nil {
+	first, firstHdr, firstRaw := addBackupTestJob(t, application.GetConfig(), "Show.S01E01.nzb", "a@t")
+	if err := application.AddJob(t.Context(), first, firstHdr, firstRaw, false); err != nil {
 		t.Fatalf("AddJob first: %v", err)
 	}
 
-	second, secondRaw := addBackupTestJob(t, "Show.S01E01.nzb", "b@t")
-	if err := application.AddJob(t.Context(), second, secondRaw, true); err != nil {
+	second, secondHdr, secondRaw := addBackupTestJob(t, application.GetConfig(), "Show.S01E01.nzb", "b@t")
+	if err := application.AddJob(t.Context(), second, secondHdr, secondRaw, true); err != nil {
 		t.Fatalf("AddJob second (forced): %v", err)
 	}
 
-	if second.NZBBackup == "" {
-		t.Fatal("forced duplicate recorded no NZB backup, so it cannot be retried")
+	firstRow, ok := application.Dispatcher().Row(first.ID())
+	if !ok {
+		t.Fatal("first job not found in dispatcher")
 	}
-	if second.NZBBackup == first.NZBBackup {
-		t.Fatalf("both jobs recorded backup %q; the second overwrote the first", first.NZBBackup)
+	secondRow, ok := application.Dispatcher().Row(second.ID())
+	if !ok {
+		t.Fatal("second job not found in dispatcher")
 	}
 
-	for _, name := range []string{first.NZBBackup, second.NZBBackup} {
+	if secondRow.Header.NZBBackup == "" {
+		t.Fatal("forced duplicate recorded no NZB backup, so it cannot be retried")
+	}
+	if secondRow.Header.NZBBackup == firstRow.Header.NZBBackup {
+		t.Fatalf("both jobs recorded backup %q; the second overwrote the first", firstRow.Header.NZBBackup)
+	}
+
+	for _, name := range []string{firstRow.Header.NZBBackup, secondRow.Header.NZBBackup} {
 		if _, err := os.Stat(filepath.Join(adminDir, "nzb", name)); err != nil {
 			t.Errorf("backup %q missing: %v", name, err)
 		}

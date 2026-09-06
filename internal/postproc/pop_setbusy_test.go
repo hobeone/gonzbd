@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // TestPopJob_EmptyQueueReturnsFalseWhenWorkerContextDone pins popJob's
@@ -54,7 +54,7 @@ func TestPopJob_DequeuesAndMarksBusy(t *testing.T) {
 	t.Cleanup(p.workerCancel)
 
 	const jobID = "pop-job-busy"
-	want := &Job{Queue: &queue.Job{ID: jobID}}
+	want := &Job{Job: job.New(jobID, jobID, job.Policy{})}
 	p.q.Push(want)
 
 	got, jobCtx, ok := p.popJob()
@@ -196,7 +196,7 @@ func TestEmpty_QueueNonEmptyReturnsFalseWithoutBusy(t *testing.T) {
 	t.Parallel()
 
 	p := New(Options{})
-	p.q.Push(&Job{Queue: newQueueJob(t, "queued", 0)})
+	p.q.Push(&Job{Job: job.New("queued", "queued", job.Policy{})})
 
 	if p.Empty() {
 		t.Error("Empty() = true with a job queued and busy=false, want false")

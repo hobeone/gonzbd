@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestDurability_DoneMeansOnDisk verifies that an article flagged Done in the
@@ -40,8 +40,8 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	parsed := heldFile(t, server, "durable.bin", payload)
 
 	srvCfg := server.ServerConfig("durability", 2)
-	srvCfg.Timeout = 60 // the stall must outlast the assertions below
-	a, err := app.New(testConfig(downloadDir, completeDir, adminDir, srvCfg), repo,
+	cfg := testConfig(downloadDir, completeDir, adminDir, srvCfg)
+	a, err := app.New(cfg, repo,
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 		app.WithCheckpointInterval(50*time.Millisecond),
 		app.WithCheckpointBytes(1<<40),
@@ -60,20 +60,17 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	go drainAny(ctx, a.JobComplete())
 	go drainAny(ctx, a.PostProcComplete())
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "durability-job"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "durability-job.nzb"})
+	if err := a.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
 	// Only AckDurable sets this bit, and only Barrier.Run and
 	// Barrier.FinalizeFile can call it, because DurableProof has no
 	// constructor outside internal/durability.
 	if !waitUntil(10*time.Second, func() bool {
-		snap := a.Queue().SnapshotJob(job.ID)
-		return snap != nil && snap.Progress().ArticleDone(0)
+		j, ok := a.Dispatcher().Job(job.ID())
+		return ok && j.Progress().ArticleDone(0)
 	}) {
 		t.Fatal("the article was never marked Done; nothing minted a DurableProof, " +
 			"so every restart re-downloads it")
@@ -82,8 +79,11 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 		t.Error("the article is Done but no barrier ran — something acked outside the barrier (X2)")
 	}
 
-	snap := a.Queue().SnapshotJob(job.ID)
-	filename := snap.Progress().FileFilename(0)
+	j, ok := a.Dispatcher().Job(job.ID())
+	if !ok {
+		t.Fatal("job not in dispatcher")
+	}
+	filename := j.Progress().FileFilename(0)
 	if filename == "" {
 		t.Fatal("the queue never recorded a resolved filename for file 0")
 	}
@@ -97,17 +97,18 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 			diskBytes, payload)
 	}
 
-	// The bit must reach the file too: an in-memory Done that never lands is
+	// The bit must reach the database too: an in-memory Done that never lands is
 	// exactly the state a restart cannot use.
-	if err := a.Queue().Save(filepath.Join(adminDir, "queue")); err != nil {
-		t.Fatalf("Queue.Save: %v", err)
+	runStore := durability.NewSQLiteRunStore(repo.DB())
+	runs, err := runStore.ForJob(t.Context(), job.ID())
+	if err != nil {
+		t.Fatalf("runStore.ForJob: %v", err)
 	}
-	reloaded := loadTestQueue(t, repo, adminDir).SnapshotJob(job.ID)
-	if reloaded == nil {
-		t.Fatal("job missing from the on-disk queue")
+	if len(runs) == 0 {
+		t.Fatal("the article is Done in memory but no durable_runs were recorded in SQLite")
 	}
-	if !reloaded.Progress().ArticleDone(0) {
-		t.Error("the article is Done in memory but not on disk")
+	if runs[0].FirstArtIdx != 0 {
+		t.Errorf("got run FirstArtIdx = %d, want 0", runs[0].FirstArtIdx)
 	}
 }
 
@@ -133,8 +134,8 @@ func TestDurability_AcceptedIsNotDone(t *testing.T) {
 	parsed := heldFile(t, server, "held.bin", []byte("first article bytes"))
 	srvCfg := server.ServerConfig("accepted-not-done", 2)
 	srvCfg.Timeout = 60 // the stall must outlast the assertions below
-
-	a, err := app.New(testConfig(downloadDir, completeDir, adminDir, srvCfg), repo,
+	cfg := testConfig(downloadDir, completeDir, adminDir, srvCfg)
+	a, err := app.New(cfg, repo,
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 		// An hour-long interval and a terabyte-sized byte bound mean neither
 		// half of B1 can fire during this test.
@@ -157,28 +158,25 @@ func TestDurability_AcceptedIsNotDone(t *testing.T) {
 	go drainAny(ctx, a.JobComplete())
 	go drainAny(ctx, a.PostProcComplete())
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "accepted-not-done"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "accepted-not-done.nzb"})
+	if err := a.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
-	}
-	awaitFirstArticle(t, a, job.ID)
+	awaitFirstArticle(t, a, job.ID())
 
 	if runs := a.BarrierRuns(); runs != 0 {
 		t.Fatalf("%d barriers ran despite an hour-long interval and a 1 TiB byte bound; "+
 			"the article below may legitimately be Done and this test proves nothing", runs)
 	}
-	snap := a.Queue().SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job left the queue")
+	j, ok := a.Dispatcher().Job(job.ID())
+	if !ok {
+		t.Fatal("job left the dispatcher")
 	}
-	if snap.Progress().ArticleDone(0) {
+	if j.Progress().ArticleDone(0) {
 		t.Error("article 0 is marked Done with no fsync behind it — acceptance into a " +
 			"buffer was treated as evidence about disk (S2, #355)")
 	}
-	if snap.Progress().ArticleDone(1) {
+	if j.Progress().ArticleDone(1) {
 		t.Error("article 1 is marked Done although it never arrived at all")
 	}
 }
@@ -208,9 +206,10 @@ func TestBarrierFiresOnByteBound(t *testing.T) {
 		})
 	}
 
-	a, err := app.New(testConfig(downloadDir, completeDir, adminDir,
+	cfg := testConfig(downloadDir, completeDir, adminDir,
 		server.ServerConfig("byte-bound", 2), //nolint:gocritic // positional args match testConfig
-	), repo,
+	)
+	a, err := app.New(cfg, repo,
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 		app.WithCheckpointInterval(time.Hour),
 		// One article's payload is 512 bytes, so this bound is crossed after
@@ -231,13 +230,9 @@ func TestBarrierFiresOnByteBound(t *testing.T) {
 	go drainAny(ctx, a.JobComplete())
 	go drainAny(ctx, a.PostProcComplete())
 
-	job, err := queue.NewJob(&nzb.NZB{Files: files},
-		queue.AddOptions{Name: "byte-bound"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	job, hdr := buildTestJob(t, cfg, &nzb.NZB{Files: files}, types.FetchOptions{NzbName: "byte-bound.nzb"})
+	if err := a.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
 	if !waitUntil(10*time.Second, func() bool { return a.BarrierRuns() >= 1 }) {
@@ -259,7 +254,8 @@ func TestBarrierFiresOnTimeBound(t *testing.T) {
 	srvCfg := server.ServerConfig("time-bound", 2)
 	srvCfg.Timeout = 60
 
-	a, err := app.New(testConfig(downloadDir, completeDir, adminDir, srvCfg), repo,
+	cfg := testConfig(downloadDir, completeDir, adminDir, srvCfg)
+	a, err := app.New(cfg, repo,
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 		app.WithCheckpointInterval(50*time.Millisecond),
 		app.WithCheckpointBytes(1<<40),
@@ -278,12 +274,9 @@ func TestBarrierFiresOnTimeBound(t *testing.T) {
 	go drainAny(ctx, a.JobComplete())
 	go drainAny(ctx, a.PostProcComplete())
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "time-bound"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "time-bound.nzb"})
+	if err := a.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
 	// Two runs, not one: a single run could come from any one-off trigger,
@@ -308,7 +301,8 @@ func TestBarrierRunsOnCleanShutdown(t *testing.T) {
 	srvCfg := server.ServerConfig("shutdown-barrier", 2)
 	srvCfg.Timeout = 60
 
-	a, err := app.New(testConfig(downloadDir, completeDir, adminDir, srvCfg), repo,
+	cfg := testConfig(downloadDir, completeDir, adminDir, srvCfg)
+	a, err := app.New(cfg, repo,
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 		app.WithCheckpointInterval(time.Hour),
 		app.WithCheckpointBytes(1<<40),
@@ -324,14 +318,11 @@ func TestBarrierRunsOnCleanShutdown(t *testing.T) {
 	go drainAny(ctx, a.JobComplete())
 	go drainAny(ctx, a.PostProcComplete())
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "shutdown-barrier"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "shutdown-barrier.nzb"})
+	if err := a.Dispatcher().Add(job, hdr); err != nil {
+		t.Fatalf("Dispatcher.Add: %v", err)
 	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("Queue.Add: %v", err)
-	}
-	awaitFirstArticle(t, a, job.ID)
+	awaitFirstArticle(t, a, job.ID())
 
 	if before := a.BarrierRuns(); before != 0 {
 		t.Fatalf("%d barriers ran before shutdown despite the cadence being pinned open; "+
@@ -345,15 +336,18 @@ func TestBarrierRunsOnCleanShutdown(t *testing.T) {
 			"checkpoint is re-fetched on the next start (R6)")
 	}
 
-	// And the ack it produced is on disk, not just in memory: Shutdown saves
-	// the queue after the barrier for exactly this reason.
-	snap := loadTestQueue(t, repo, adminDir).SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job missing from the on-disk queue after shutdown")
+	// And the ack it produced is on disk, not just in memory: Shutdown persists
+	// runs to durable_runs in SQLite.
+	runStore := durability.NewSQLiteRunStore(repo.DB())
+	runs, err := runStore.ForJob(t.Context(), job.ID())
+	if err != nil {
+		t.Fatalf("runStore.ForJob: %v", err)
 	}
-	if !snap.Progress().ArticleDone(0) {
-		t.Error("the shutdown barrier acked article 0 but the queue was saved before it, " +
-			"so the ack did not survive the process")
+	if len(runs) == 0 {
+		t.Fatal("the shutdown barrier acked article 0 but no durable_runs were recorded in SQLite")
+	}
+	if runs[0].FirstArtIdx != 0 {
+		t.Errorf("got run FirstArtIdx = %d, want 0", runs[0].FirstArtIdx)
 	}
 }
 
@@ -394,12 +388,12 @@ func heldFile(t *testing.T, server *nntptest.Scripted, name string, payload []by
 func awaitFirstArticle(t *testing.T, a *app.Application, jobID string) {
 	t.Helper()
 	if !waitUntil(10*time.Second, func() bool {
-		snap := a.Queue().SnapshotJob(jobID)
-		if snap == nil {
+		j, ok := a.Dispatcher().Job(jobID)
+		if !ok {
 			return false
 		}
 		var total int64
-		for _, n := range snap.Progress().ServerStats() {
+		for _, n := range j.Progress().ServerStats() {
 			total += n
 		}
 		return total > 0

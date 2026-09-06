@@ -12,8 +12,12 @@ func (s *Server) modeFullStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paused := s.queue.IsPaused()
-	noofslots := s.queue.Len()
+	var paused bool
+	var noofslots int
+	if s.dispatcher != nil {
+		paused = s.dispatcher.Paused()
+		noofslots = s.dispatcher.Len()
+	}
 
 	// Resolve the absolute complete_dir path. Sonarr reads
 	// status.completedir when the config's complete_dir is relative.

@@ -99,6 +99,9 @@ go vet -tags=integration,uitest,crash ./...
 echo "Running golangci-lint..."
 golangci-lint run ./...
 
+echo "Running Test Double Guard Check..."
+go run scripts/check_test_doubles/main.go --all
+
 # govulncheck's status is captured rather than left to `set -e`, and reported
 # at the very end.
 #
@@ -141,12 +144,13 @@ echo -e "\nRunning Mutex-held-during-I/O Check..."
 go run scripts/check_lock_io/main.go
 echo -e "${GREEN}✓ Mutex-held-during-I/O Check Passed${NC}"
 
-# The two whole-repository checks. Unlike the three above they are NOT scoped
-# to the diff, because what they examine is invisible to every other gate here:
-# comments and Markdown are neither compiled nor executed, so a duplicated
-# comment block that authoritatively describes the wrong declaration, or an
-# audit snapshot that does not admit it is frozen, passes vet, lint and the
-# whole test suite. Both found a real defect on their first run.
+# The three whole-repository checks (alongside check_test_doubles above). Unlike
+# the diff-scoped checks they are NOT scoped to the diff, because what they
+# examine is invisible to every other gate here: comments and Markdown are
+# neither compiled nor executed, so a duplicated comment block that
+# authoritatively describes the wrong declaration, or an audit snapshot that
+# does not admit it is frozen, passes vet, lint and the whole test suite.
+# Both found a real defect on their first run.
 echo -e "\nRunning Duplicated-Comment Check..."
 go run ./scripts/check_dup_comments
 echo -e "${GREEN}✓ Duplicated-Comment Check Passed${NC}"
@@ -154,6 +158,15 @@ echo -e "${GREEN}✓ Duplicated-Comment Check Passed${NC}"
 echo -e "\nRunning Review-Banner Check..."
 go run ./scripts/check_review_banner
 echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
+
+# Mutation Specs Check: verifies that all committed mutation specs in the repository
+# compile against the codebase, match valid anchors, and kill all mutations.
+echo -e "\nRunning Mutation Specs Check..."
+find . -name '*.spec' -path '*testdata*' | sort | while read -r spec; do
+    echo "Running mutation spec: $spec"
+    go run ./scripts/mutate "$spec"
+done
+echo -e "${GREEN}✓ All Mutation Specs Killed${NC}"
 
 # 3. Go Integration Tests
 echo -e "\n[3/7] Running Go Integration Tests..."

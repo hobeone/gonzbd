@@ -175,8 +175,8 @@ of their failure ratio.
 
    `Done` now means what it says. `durability.Barrier` drains the assembler's
    write cache, `fsync`s the file, commits the drained articles to
-   `durable_runs`, and only then mints a `DurableProof` — which `Queue.AckDurable` requires and which has no
-   exported constructor outside `internal/durability`. So an acked article's
+   `durable_runs`, and only then mints a `DurableProof` — which `Job.AckDurable` requires and which has no
+   exported constructor outside `internal/durability`. No caller outside that package can name an article's
    bytes were covered by a completed `fsync`; the ack does not describe bytes
    sitting in a page cache.
 

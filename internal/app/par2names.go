@@ -2,7 +2,6 @@ package app
 
 import (
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // resolvedName is the name a file currently has on disk, as the rest of the
@@ -16,7 +15,18 @@ import (
 // startup resume sweep would stat a top-level path that does not exist.
 // Relocation belongs to post-processing, where nothing re-derives a verdict
 // from these names afterwards.
-func resolvedName(m *queue.Manifest, p *queue.JobProgress, fi int) string {
+type manifestReader interface {
+	FileSubject(fileIdx int) string
+	FileBytes(fileIdx int) int64
+	NumFiles() int
+}
+
+type progressReader interface {
+	FileFilename(fileIdx int) string
+	FileAssembledCRC32(fileIdx int) uint32
+}
+
+func resolvedName(m manifestReader, p progressReader, fi int) string {
 	name := m.FileSubject(fi)
 	if fn := p.FileFilename(fi); fn != "" {
 		name = fn
@@ -36,7 +46,7 @@ func resolvedName(m *queue.Manifest, p *queue.JobProgress, fi int) string {
 // copies it onto the queue when the file finalizes. A file that keeps more than
 // one row reads as CRC 0, which is R23's "unavailable" rather than a CRC of
 // zero, and par2Verdict treats it conservatively.
-func assembledFiles(m *queue.Manifest, p *queue.JobProgress) []par2.AssembledFile {
+func assembledFiles(m manifestReader, p progressReader) []par2.AssembledFile {
 	files := make([]par2.AssembledFile, m.NumFiles())
 	for fi := range m.NumFiles() {
 		files[fi] = par2.AssembledFile{

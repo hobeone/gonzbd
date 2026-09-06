@@ -441,24 +441,24 @@ func doorsReachingJobMethod(t *testing.T) map[string]bool {
 // hand-maintained copy of the same list.
 func TestQueueMuLockers_MatchTheEnumerationStatedInProse(t *testing.T) {
 	got := scanQMuLockers(t)
-	// The ten names doc.go, queue.go and pool.go's comments state, sorted —
+	// The thirteen names doc.go, queue.go and pool.go's comments state, sorted —
 	// spelled out explicitly rather than derived, since a silently-wrong
 	// `want` would defeat the whole point of this test.
-	want := []string{"Advance", "Cancel", "Park", "Pause", "Paused", "Render", "RenderAll", "Resume", "Retry", "Settle"}
+	want := []string{"Advance", "Cancel", "LeaseCap", "Park", "Pause", "Paused", "Render", "RenderAll", "Resume", "Retry", "SetCaps", "Settle", "SlotCap"}
 	if !slices.Equal(got, want) {
 		t.Errorf("methods calling q.mu.Lock() = %v, want %v\n\n"+
 			"internal/sched/queue.go's own mu comment, internal/sched/pool.go's "+
 			"leasePool comment, and internal/job/job.go's Snapshot comment all "+
-			"claim these ten methods, and only these ten, take q.mu. If a "+
+			"claim these thirteen methods, and only these thirteen, take q.mu. If a "+
 			"different set is correct, update all three comments AND this list "+
-			"together — a comment that still names the old ten once an eleventh "+
+			"together — a comment that still names the old thirteen once another "+
 			"exists (or one is removed/renamed) is worse than no comment at all.",
 			got, want)
 	}
 }
 
 // TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse pins the
-// seven-of-ten split that internal/job/job.go states in prose. That comment
+// seven-of-thirteen split that internal/job/job.go states in prose. That comment
 // was explicitly "a reviewed property, not a machine-checked one", and adding
 // RenderAll moved it from six-of-nine to seven-of-ten — a change no gate in
 // this repository would have caught, since
@@ -469,6 +469,7 @@ func TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse(t *testing.T) {
 		"Cancel": true, "Park": true, "Retry": true, "Advance": true,
 		"Settle": true, "Render": true, "RenderAll": true,
 		"Pause": false, "Resume": false, "Paused": false,
+		"SetCaps": false, "LeaseCap": false, "SlotCap": false,
 	}
 	got := doorsReachingJobMethod(t) // set of exported doors whose body reaches a *job.Job method
 	for name, expected := range want {

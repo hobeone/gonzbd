@@ -3,14 +3,12 @@ package app
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // failMsgFile describes one file for buildFailMsgJob: its subject and its
@@ -25,9 +23,9 @@ type failMsgFile struct {
 	bytes   int64
 }
 
-// buildFailMsgJob adds a job built from files to a fresh queue and fails the
+// buildFailMsgJob adds a job built from files to a fresh dispatcher and fails the
 // articles at failIdx, returning the job as failMsgForJob will see it.
-func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *queue.Job {
+func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *job.Job {
 	t.Helper()
 	parsed := &nzb.NZB{}
 	for i, f := range files {
@@ -37,18 +35,18 @@ func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *queue.J
 			Articles: []nzb.Article{{ID: fmt.Sprintf("a%d@t", i), Bytes: int(f.bytes), Number: 1}},
 		})
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "t.nzb"}, fsutil.SanitizeOptions{})
+	app := newTestApplication(t)
+	j, hdr, err := BuildIngestJob(app.config, parsed, "t.nzb", types.FetchOptions{NzbName: "t.nzb"}, nil)
 	if err != nil {
-		t.Fatalf("NewJob: %v", err)
+		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	q := queue.New()
-	if err := q.Add(job); err != nil {
+	if err := app.Dispatcher().Add(j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	for _, i := range failIdx {
-		ackFailed(t, q, job.ID, fmt.Sprintf("a%d@t", i))
+		ackFailed(t, app.Dispatcher(), j.ID(), fmt.Sprintf("a%d@t", i))
 	}
-	return job
+	return j
 }
 
 // failMsgForJob decides whether a partially-failed job is worth handing to
@@ -120,42 +118,54 @@ func TestFailMsgForJob(t *testing.T) {
 }
 
 // The same verdicts must hold with no resident manifest: failMsgForJob runs
-// on the startup recovery walk over Queue.Snapshot(), where a job may have
+// on the startup recovery walk, where a job may have
 // been evicted. It used to read job.Manifest().TotalBytes() and would have
 // nil-dereferenced there.
 func TestFailMsgForJob_WithoutResidentManifest(t *testing.T) {
 	t.Parallel()
-	job := buildFailMsgJob(t,
+	testJob := buildFailMsgJob(t,
 		[]failMsgFile{{"movie.part01.rar", 100}, {"movie.part02.rar", 100}, {"movie.vol01+02.par2", 50}},
 		0)
 
-	want := failMsgForJob(job)
+	want := failMsgForJob(testJob)
 	if !strings.Contains(want, "exceeds repair capacity") {
 		t.Fatalf("fixture guard: got %q while resident, want the exceeds-capacity verdict", want)
 	}
 
-	// A store is required for eviction: without one the queue keeps every
-	// manifest resident, and Pause would leave nothing to test.
-	dir := t.TempDir()
-	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-	q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)), queue.WithStateDir(dir))
-
-	if err := q.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := q.Pause(job.ID); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if _, err := job.Manifest(); !errors.Is(err, queue.ErrJobNotResident) {
-		t.Fatalf("fixture guard: want ErrJobNotResident after Pause, got %v — the eviction path is not being exercised", err)
+	testJob.Evict()
+	if _, err := testJob.Manifest(); !errors.Is(err, job.ErrNotResident) {
+		t.Fatalf("fixture guard: want ErrNotResident after Evict, got %v", err)
 	}
 
-	if got := failMsgForJob(job); got != want {
+	if got := failMsgForJob(testJob); got != want {
 		t.Errorf("failMsgForJob() after eviction = %q, want %q — the verdict must not depend on manifest residency", got, want)
+	}
+}
+
+type fakeProgressCounters struct {
+	failed  int64
+	content int64
+	exp     int64
+}
+
+func (f fakeProgressCounters) ProgressFigures() (int64, int64, int64) { return f.exp, 0, f.failed }
+func (f fakeProgressCounters) FailedBytes() int64                     { return f.failed }
+func (f fakeProgressCounters) ContentFailedBytes() int64              { return f.content }
+func (f fakeProgressCounters) ExpectedBytes() int64                   { return f.exp }
+func (f fakeProgressCounters) RemainingBytes() int64                  { return 0 }
+
+func TestFailMsgForCounters_Direct(t *testing.T) {
+	t.Parallel()
+	p := fakeProgressCounters{failed: 100, content: 100, exp: 100}
+	msg := failMsgForCounters(p, "", 0, 0, false)
+	if !strings.Contains(msg, "Job is beyond repair") {
+		t.Errorf("failMsgForCounters = %q, want 'Job is beyond repair'", msg)
+	}
+}
+
+func TestFailMsgForJob_NilJob(t *testing.T) {
+	t.Parallel()
+	if got := failMsgForJob(nil); got != "" {
+		t.Errorf("failMsgForJob(nil) = %q, want empty string", got)
 	}
 }

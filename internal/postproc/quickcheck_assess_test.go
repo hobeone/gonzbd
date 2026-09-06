@@ -56,7 +56,7 @@ func TestQuickCheckStage_Assess(t *testing.T) {
 		dir, sets, content := newDir(t)
 		q := &QuickCheckStage{}
 		job := &Job{
-			Queue:       buildQCJob(t, "assess-ok", "payload.bin", int64(len(content)), crc32.ChecksumIEEE(content)),
+			Job:         buildQCJob(t, "assess-ok", "payload.bin", int64(len(content)), crc32.ChecksumIEEE(content)),
 			DownloadDir: dir,
 		}
 

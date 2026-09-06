@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
+	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
@@ -31,6 +32,11 @@ func (a *Application) GetConfig() *config.Config {
 	return a.config
 }
 
+// Checkpointer returns the application's checkpointer for testing.
+func (a *Application) Checkpointer() *checkpoint.Checkpointer {
+	return a.checkpointer
+}
+
 // TriggerMaybeDirectUnpack drives the DirectUnpack orchestrator's start path.
 func (a *Application) TriggerMaybeDirectUnpack(fc FileComplete) {
 	a.duOrch.maybeStart(fc)
@@ -44,6 +50,14 @@ func (a *Application) TriggerBuildDirectUnpackOpts() any {
 // TriggerPersistAndCommit calls the finalizer's persistAndCommit method.
 func (a *Application) TriggerPersistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
 	return a.finalizer.persistAndCommit(log, entry, job)
+}
+
+// DispatcherIsOccupied reports whether the dispatcher has active occupiers for id.
+func (a *Application) DispatcherIsOccupied(id string) bool {
+	if a.dispatcher == nil {
+		return false
+	}
+	return a.dispatcher.IsOccupied(id)
 }
 
 // InjectDirectUnpacker injects a direct unpacker for testing.
@@ -88,9 +102,19 @@ func (a *Application) InjectCtx(ctx context.Context) {
 	a.ctx = ctx
 }
 
+// InjectCancel injects a lifecycle cancel function.
+func (a *Application) InjectCancel(cancel context.CancelFunc) {
+	a.cancel = cancel
+}
+
 // SetActiveDU sets the DirectUnpack active count.
 func (a *Application) SetActiveDU(val int32) {
 	a.duOrch.setActive(int(val))
+}
+
+// SetStarted sets the started state for testing.
+func (a *Application) SetStarted(val bool) {
+	a.started.Store(val)
 }
 
 // TriggerFireCompletionNotification calls the finalizer's fireCompletionNotification method.
@@ -184,6 +208,12 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 // claiming to test a crash.
 func (a *Application) ForceStopWorkers() {
 	a.stopWorkers(15*time.Second, nil, noBarrierOnStop)
+	if a.postProcessor != nil {
+		_ = a.postProcessor.Stop()
+	}
+	if a.dispatcher != nil {
+		_ = a.dispatcher.Stop()
+	}
 }
 
 // BarrierRuns reports how many checkpoint barriers have been started.
@@ -196,4 +226,29 @@ func (a *Application) BarrierRuns() int64 { return a.barrierRuns.Load() }
 // Assembler returns the internal assembler for testing.
 func (a *Application) Assembler() *assembler.Assembler {
 	return a.assembler
+}
+
+// NoteJobBytes notes written bytes for a job in the barrier accumulator.
+func (a *Application) NoteJobBytes(jobID string, n int) {
+	a.noteJobBytes(jobID, n)
+}
+
+// JobBarrierState reports whether the job has tracked barrier state (bytes, mutex, or last barrier).
+func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool, hasLast bool) {
+	a.barrierMu.Lock()
+	defer a.barrierMu.Unlock()
+	_, hasBytes = a.jobBarrierBytes[jobID]
+	_, hasMu = a.jobBarrierMu[jobID]
+	_, hasLast = a.lastBarrier[jobID]
+	return
+}
+
+// SetPostProcessorStopHook overrides postProcessor.Stop behavior during testing.
+func (a *Application) SetPostProcessorStopHook(fn func() error) {
+	a.postProcStopHook = fn
+}
+
+// SetShutdownStepTimeout sets the shutdownStepTimeout for testing.
+func (a *Application) SetShutdownStepTimeout(d time.Duration) {
+	a.shutdownStepTimeout = d
 }

@@ -11,7 +11,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // QuickCheckOutcome is what the quickcheck stage was able to determine about
@@ -122,11 +122,20 @@ type Stage interface {
 }
 
 // Job is the post-processing unit of work.  It wraps the download-queue Job
-// with post-proc-specific state.  The queue.Job must not be mutated here;
+// with post-proc-specific state.
 // stages accumulate their results into the fields below.
 type Job struct {
-	// Queue is the source job from the download queue. Read-only for stages.
-	Queue *queue.Job
+	// Job is the rehomed job record from internal/job.
+	Job *job.Job
+
+	// Ingest / Queue metadata needed by post-processing stages:
+	Filename  string
+	NZBBackup string
+	Category  string
+	Password  string
+	Script    string
+	PP        int
+	URL       string
 
 	// DownloadDir is the absolute path where the assembler wrote the job's
 	// files — the working directory for in-place stages (par2, unpack,
@@ -258,4 +267,84 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 		j.Err = &s
 	}
 	return json.Marshal(j)
+}
+
+// HasRecord reports whether this post-processing job wraps a download job record.
+func (j *Job) HasRecord() bool {
+	return j.Job != nil
+}
+
+// JobID returns the job identifier.
+func (j *Job) JobID() string {
+	if j.Job != nil {
+		return j.Job.ID()
+	}
+	return ""
+}
+
+// Name returns the job display name.
+func (j *Job) Name() string {
+	if j.Job != nil {
+		return j.Job.Name()
+	}
+	return ""
+}
+
+// Manifest provides read-only access to the job's manifest for post-processing stages.
+type Manifest interface {
+	NumFiles() int
+	FileSubject(fi int) string
+	FileIsPar2Recovery(fi int) bool
+	TotalBytes() int64
+	FileRange(fi int) (int, int)
+	ArticleBytes(i int) int
+}
+
+// Progress provides read-only access to the job's progress for post-processing stages.
+type Progress interface {
+	FileFilename(fi int) string
+	FileAssembledCRC32(fi int) uint32
+	FileFetchPolicy(fi int) job.FetchPolicy
+	ExpectedBytes() int64
+	FailedBytes() int64
+	DownloadStarted() time.Time
+	DownloadFinished() time.Time
+	Par2Recovered() bool
+	HasPar2Verdict() bool
+	Par2ReleaseReason() string
+	ServerStats() map[string]int64
+	ArticleDone(i int) bool
+	ArticleFailed(i int) bool
+}
+
+// Manifest returns the job's manifest.
+//
+//nolint:ireturn // interface bridge for stages
+func (j *Job) Manifest() (Manifest, error) {
+	if j.Job != nil {
+		return j.Job.Manifest()
+	}
+	return nil, job.ErrNotResident
+}
+
+// Progress returns the job's progress record.
+//
+//nolint:ireturn // interface bridge for stages
+func (j *Job) Progress() Progress {
+	if j.Job != nil {
+		p := j.Job.Progress()
+		if p == nil {
+			return nil
+		}
+		return p
+	}
+	return nil
+}
+
+// NumFiles returns the number of files in the job.
+func (j *Job) NumFiles() int {
+	if j.Job != nil {
+		return j.Job.NumFiles()
+	}
+	return 0
 }
