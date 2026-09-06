@@ -835,10 +835,19 @@ Two consequences worth stating, because both are surprising:
   two act on disjoint articles — `markFailed` clears `emitted` as it sets
   `failed`. Skipping both would leave a teardown failure permanent, trading one
   strand for another on the same inflated figure.
-- **The resulting stall is only partly self-clearing.** A later barrier releases
-  an Emitted bit when its article's bytes reach disk, but an article whose data
-  died with the old downloader is never acked and needs a restart. The reload
-  logs a warning naming the affected jobs for that reason.
+- **The resulting stall is self-clearing, and no longer needs a restart.** An
+  earlier version of this bullet said it was only partly self-clearing, and it
+  was right about the code it described: an article whose result a cancelled
+  `emitResult` dropped had its Emitted bit set with no result coming, so nothing
+  downstream ever cleared it. `emitResult` now clears that bit itself on the
+  cancelled-send path (`internal/downloader/dispatch.go`), which is where that
+  bit's owner is — the Rule 2 move, precise where a bulk clear could not tell
+  that article from one whose bytes are on disk awaiting a barrier. So every
+  withheld article is now one whose bytes ARE on disk, and `markDone` releases
+  it when a later barrier acks them — ordinarily the next periodic checkpoint.
+  The reload still logs a warning naming the affected jobs, because the delay is
+  real and a job that quietly stops after a settings change is harder to
+  diagnose than the corruption the withholding replaces.
 
 The checkpoint remains **best-effort in coverage** — a budget expiry or a
 storage fault still leaves a job unacked. What changed is that the caller now

@@ -163,7 +163,7 @@ of their failure ratio.
    `connWorker` spun at full CPU, silently (the branch logs only at `Debug`,
    and `downloader` is commonly configured at `info`).
 
-5. **Emitted-is-transient durability contract**: `MarkArticleEmittedByIdx` is not
+5. **Emitted-is-transient durability contract**: `Job.MarkArticleEmitted` is not
    persisted to disk. If the process crashes before a barrier makes the
    article durable, the `Emitted` flag is lost on restart and the article is
    re-dispatched.
@@ -284,13 +284,13 @@ downstream action:
 
 | Error Category / Response | Try-List Retention | Server Penalty | Downloader Action |
 |---|---|---|---|
-| **Success (NNTP 222)** | Cleared (`clearTried`) | None | `MarkArticleEmittedByIdx`, emits `ArticleResult` with data. |
+| **Success (NNTP 222)** | Cleared (`clearTried`) | None | `Job.MarkArticleEmitted`, emits `ArticleResult` with data. |
 | **NNTP 430 / 423 (Not Found)** | Retained (`mask.set(idx)`) | None — server healthy, `RecordGoodConnection` | Emits retryable `ArticleResult` (`ErrNoArticle`), leaves un-emitted so next pass tries fallback server. Pipeline filters retryable error. |
 | **CRC Mismatch** | Retained (`mask.set(idx)`) | None — `RecordGoodConnection` | Increments `ErrClassCRCMismatch`, emits retryable `ArticleResult` (`ErrCRCMismatch`), leaves un-emitted so dispatcher tries alternate server. Pipeline filters retryable error. |
 | **Connection / Socket Error** | Unmarked (`unmarkTried`) | Yes — `PenaltyFor(err)` | Drops socket via `DropIfMatches`, returns article to pool. Only the first goroutine to observe the failure records `RecordBadConnection` and applies penalty. |
 | **Penalized Server Dial** | Unmarked (`unmarkTried`) | Existing penalty retained | Silently returns article to dispatch pool. No result emitted, no telemetry counted. |
-| **Context Cancelled (pause/shutdown)** | Unmarked (`unmarkTried`) | None — not a server fault | `ClearArticleEmittedByIdx`, article re-dispatched on resume. |
-| **Decode Error (non-CRC)** | Cleared (`clearTried`) | None | `MarkArticleEmittedByIdx` (terminal), emits failed `ArticleResult`. Includes DMCA/takedown (`ErrArticleRemoved`). |
+| **Context Cancelled (pause/shutdown)** | Unmarked (`unmarkTried`) | None — not a server fault | `Job.ClearArticleEmitted`, article re-dispatched on resume. |
+| **Decode Error (non-CRC)** | Cleared (`clearTried`) | None | `Job.MarkArticleEmitted` (terminal), emits failed `ArticleResult`. Includes DMCA/takedown (`ErrArticleRemoved`). |
 | **Max Tries Exceeded (`maxArtTries`)** | — | None | Emits `ErrNoServersLeft`. |
 | **All Eligible Servers Exhausted** | — | None | Emits `ErrNoServersLeft` after queue lock release (via `applyDispatchPlan`). |
 
@@ -310,7 +310,7 @@ command (`c.Stat`) before issuing `BODY`.
 `ErrArticleRemoved` is detected by `isDMCA()` after both yEnc and UU decoding
 fail — the article body is scanned for keywords (`dmca`, `removed`, `cancel`,
 `blocked`). It flows through the generic non-CRC decode error path in
-`processFetchedArticle`: `MarkArticleEmittedByIdx` + `clearTried` + emit. There is no
+`processFetchedArticle`: `Job.MarkArticleEmitted` + `clearTried` + emit. There is no
 special short-circuit; it is terminal because the emitted `ArticleResult` carries
 the error and the dispatcher will never re-pick an emitted article.
 
@@ -386,7 +386,7 @@ a server that intermittently succeeds will never trigger auto-deactivation.
   and global pause (`d.paused.Load() || queue.IsPaused()`). Pausing also cancels
   `pauseCtx`, aborting in-flight socket reads immediately. Buffered requests
   in `workCh` are drained without I/O, calling `unmarkTried` and
-  `ClearArticleEmittedByIdx` so articles re-dispatch cleanly on resume.
+  `Job.ClearArticleEmitted` so articles re-dispatch cleanly on resume.
   `DisconnectAll()` is called to close idle sockets.
 
 - **Completions buffer full**: If the assembler cannot keep up, the
