@@ -259,8 +259,8 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
   reports insufficient blocks, nothing currently promotes the additional
   `.par2` volumes the job needs and re-enters `StatusDownloading` — the job
   simply finishes with `ParError = true`. The seam for this already exists
-  and is live: `Queue.UndeferRecoveryVolumes`'s `fileIdxs` argument
-  (`internal/queue/queue.go`) is documented to accept either the full
+  and is live: `Job.UndeferRecoveryVolumes`'s `fileIdxs` argument
+  (`internal/job/content.go`) is documented to accept either the full
   deferred set (Phase 1, already used) or "a block-covering subset" (Phase 2,
   not yet implemented). Target: compute the block-covering subset from the
   repair stage's reported shortfall and call `UndeferRecoveryVolumes` with
