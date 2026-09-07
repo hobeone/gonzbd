@@ -674,7 +674,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			// handleRequest's deferred clearInFlight releases it.
 			//
 			// So the next dispatch pass re-offers this article on its own. It
-			// does not wait for ClearAllEmitted, and it is unaffected by
+			// does not wait for Job.ClearEmittedForReload, and it is unaffected by
 			// whether its job was withheld from one (#417).
 			return nil, false
 		}
@@ -859,15 +859,18 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// The result is dropped, and dropping it falsifies a claim three of
 		// this function's callers make just before calling it.
 		//
-		// MarkArticleEmittedByIdx means "a result for this article is on its
+		// Job.MarkArticleEmitted means "a result for this article is on its
 		// way to the pipeline" — it is what stops the dispatcher re-picking
 		// the article between emission and the barrier that acks it. Three
 		// callers set it and then call this function: the exhausted-try-list
 		// path (:145), the terminal-decode-error path (:697), and the ordinary
 		// success path (:720). When the send loses the race to cancellation,
-		// no result arrives, so nothing downstream ever clears that bit:
-		// ForEachUnfinishedArticle skips the article, its file never
-		// completes, and only ClearAllEmitted recovers it.
+		// no result arrives.
+		//
+		// What that USED to cost, stated in the past tense because the clear
+		// below is what ended it: nothing downstream cleared the bit,
+		// ForEachUnfinishedArticle skipped the article, its file never
+		// completed, and only a restart or a downloader reload recovered it.
 		//
 		// That last part is what makes this the owner's job rather than the
 		// sweep's. A bulk clear cannot tell this article — abandoned, nothing

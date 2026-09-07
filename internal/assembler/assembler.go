@@ -231,8 +231,20 @@ type Options struct {
 	//
 	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
 	// bit, so an article reported by neither is stranded for the life of the
-	// process — not Done, not Failed, not Outstanding — and only a restart's
-	// ClearAllEmitted recovers it.
+	// process — not Done, not Failed, not Outstanding — until something clears
+	// the bit. Two things do, and neither is on this path:
+	//
+	//   - A restart, by NOT persisting the bit rather than by clearing it.
+	//     jobProgressJSON excludes emitted deliberately
+	//     (internal/job/progress.go), so a job reloaded from the store starts
+	//     with none set. Nothing has to run for this to hold.
+	//   - A downloader reload, which calls Job.ClearEmittedForReload(false)
+	//     per job and clears them in-process — unless the job is one whose
+	//     checkpoint could not protect it, in which case #417 withholds
+	//     exactly this clear.
+	//
+	// So "stranded until the process stops" is the worst case, not the only
+	// one: a reload in between recovers it, and a withheld reload does not.
 	//
 	// No fault is passed, deliberately. This says nothing about why the write
 	// failed and must not be read as evidence about any article (A1).
@@ -1175,9 +1187,10 @@ func (a *Assembler) dispatchRequest(
 //
 // Their Emitted bits therefore stay set, which is NOT the same as Outstanding
 // — an earlier version of this doc said "left Outstanding and re-fetched (S3)"
-// and that was only ever true of the worker-exit caller, where the next start's
-// ClearAllEmitted resets them. On the CloseJobHandles path the process keeps
-// running and nothing resets them until it stops.
+// and that was only ever true of the worker-exit caller, where the next start
+// begins with them clear because emitted is never persisted. On the
+// CloseJobHandles path the process keeps running, and nothing resets them
+// until it stops or a downloader reload clears them in-process.
 //
 // That costs nothing in the ordinary case. A clean stop runs
 // Application.shutdownCheckpoint — a full barrier, ack included — while the

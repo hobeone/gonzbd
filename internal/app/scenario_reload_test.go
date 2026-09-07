@@ -18,7 +18,7 @@ import (
 // it immediately and blocks. The other workers process files 1-5. Once the
 // stall has fired (StallCount >= 1) AND files 1-5 are done, the test
 // triggers a reload. The old downloader's context cancels the stalled
-// fetch. ClearAllEmitted makes the article eligible again. The new
+// fetch. ClearEmittedForReload makes the article eligible again. The new
 // downloader re-fetches it (stalls are one-shot).
 func TestReload_NoArticleLossInFlight(t *testing.T) {
 	const conns = 4

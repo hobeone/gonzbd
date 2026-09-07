@@ -119,7 +119,7 @@ type Application struct {
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
 	// from mu (which only guards the brief downloader/downloaderStats field
 	// swap) so concurrent reloads queue up instead of interleaving their
-	// Stop/setCompletions/checkpoint/ClearAllEmitted/Start sequences, which
+	// Stop/setCompletions/checkpoint/ClearEmittedForReload/Start sequences, which
 	// would otherwise risk wiring app.downloader and app.pipeline's
 	// completions source to two different downloader instances.
 	reloadMu sync.Mutex
@@ -1063,7 +1063,25 @@ func (app *Application) Start(ctx context.Context) error {
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
 	}
-	// Clear the Emitted flags and un-fail the articles the old downloader's
+	// This sentence used to read "Clear the Emitted flags and un-fail the
+	// articles the old downloader's" and stopped there, mid-clause. It is
+	// reload logic that was copied onto the startup path, and what it says is
+	// not true here: there is no old downloader at startup, and no teardown
+	// has marked anything failed.
+	//
+	// What the call does on THIS path, stated from source rather than from
+	// the name: emitted is already clear (jobProgressJSON never persists it,
+	// and nothing sets it before dispatch begins), so the only live effect is
+	// resetForReload's un-fail — it clears done and failed and refunds
+	// failedBytes for every failed article in an incomplete file, undoing the
+	// failed_articles state residency hydration has just restored.
+	//
+	// It also races that hydration: Dispatcher.Start launches the tick before
+	// returning, so a job hydrated before this loop is un-failed and one
+	// hydrated after is skipped on the nil-manifest guard. #523 owns the
+	// decision about whether this belongs here at all; it is described rather
+	// than changed, because deleting it is a behaviour change and this comment
+	// is not the place to make one.
 	if app.dispatcher != nil {
 		for _, row := range app.dispatcher.List() {
 			if j, ok := app.dispatcher.Job(row.ID); ok {

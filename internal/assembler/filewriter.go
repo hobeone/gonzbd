@@ -444,9 +444,11 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 //
 // Absence from Drain's return does NOT leave the article Outstanding. Its
 // Emitted bit is still set from dispatch and ForEachUnfinishedArticle skips a
-// set Emitted bit, so an article that is merely dropped here is stranded for
-// the life of the process: neither Done, nor Failed, nor Outstanding, and only
-// a restart's ClearAllEmitted recovers it.
+// set Emitted bit, so an article that is merely dropped here is stranded until
+// something clears that bit: neither Done, nor Failed, nor Outstanding. A
+// restart clears it by not persisting it — jobProgressJSON excludes emitted
+// deliberately (internal/job/progress.go) — and a downloader reload clears it
+// in-process, unless #417 withholds that job's clear.
 //
 // Every batch failure rolls back MORE articles than the one that triggered it
 // — a coalesced run loses every part, a drain loses everything after the
@@ -865,7 +867,10 @@ func (w *FileWriter) Truncate(n int64) error {
 // afterwards, w.faulted included. An article left in that set is neither Done,
 // nor Failed, nor Outstanding — its Emitted bit is still set from dispatch and
 // ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
-// life of the process and only a restart's ClearAllEmitted recovers it.
+// life of the process unless something clears that bit. A restart clears it by
+// not persisting it — jobProgressJSON excludes emitted deliberately
+// (internal/job/progress.go) — and a downloader reload clears it in-process,
+// unless #417 withholds that job's clear.
 //
 // There are two call sites — `grep -n 'w\.Close()' internal/assembler/*.go |
 // grep -v _test.go` returns the cancel arm and drainAndClose — and the set is

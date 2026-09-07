@@ -835,7 +835,7 @@ func (p *JobProgress) clone() *JobProgress {
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
 // Called after Add and Load, and after any bulk state change
-// (ClearAllEmitted, undeferRecovery) where incremental tracking is
+// (ClearEmittedForReload, undeferRecovery) where incremental tracking is
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
@@ -1018,7 +1018,7 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 // BytesDownloaded/FailedBytes on read, and an article that was never
 // downloaded leaves BytesDownloaded untouched, so undoing FailedBytes here is
 // what makes the article's bytes reappear as remaining. Used by
-// ClearAllEmitted on a downloader reload; recompute must be called afterward
+// ClearEmittedForReload on a downloader reload; recompute must be called afterward
 // to rebuild Pending counters from the resulting ground truth.
 //
 // # Why a Complete file's article is left resolved (#426)
@@ -1046,8 +1046,11 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 // still holds — is a different one, and its objection does not apply here. It
 // needs knowledge of the writer that this layer does not have; Complete is
 // queue-owned state.
-// It reports whether it cleared article i's failed bit. ClearAllEmitted needs
-// that answer per article to name the stored rows it may drop: now that the
+// It reports whether it cleared article i's failed bit, which
+// ClearEmittedForReload aggregates into its `cleared` return. NO CALLER USES
+// THAT RETURN TODAY — `git grep -n 'j\.ClearEmittedForReload(' -- '*.go'
+// ':!*_test.go'` finds 2 lines, and both discard it. The per-article answer
+// exists so that a caller CAN name the stored rows it may drop: now that the
 // reset is not exhaustive, a whole-job delete would forget an article that is
 // still failed in memory.
 // clearEmitted is false for a job whose reload checkpoint could not make its
