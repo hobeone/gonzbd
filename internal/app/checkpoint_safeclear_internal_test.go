@@ -225,7 +225,10 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 	application.settleJobBytes(job.ID(), 4096)
 	// Empty rather than nil: the zero "idle-job" entry above is still present,
 	// so the map is allocated and then filtered down to nothing. Either shape
-	// means the same thing to ClearEmittedForReload, which only does lookups.
+	// means the same thing to ReloadDownloader's membership lookup
+	// (`unprotected[row.ID]`, reloader.go), which is what reads this set — a
+	// nil map and an empty one both answer false. ClearEmittedForReload
+	// itself never sees the map; it takes the bool that lookup produced.
 	if got := application.jobsAtRisk(); len(got) != 0 {
 		t.Errorf("jobsAtRisk() = %v after the window was settled, want no jobs", got)
 	}

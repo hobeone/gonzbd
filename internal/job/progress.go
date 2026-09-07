@@ -1046,8 +1046,11 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 // still holds — is a different one, and its objection does not apply here. It
 // needs knowledge of the writer that this layer does not have; Complete is
 // queue-owned state.
-// It reports whether it cleared article i's failed bit. ClearEmittedForReload needs
-// that answer per article to name the stored rows it may drop: now that the
+// It reports whether it cleared article i's failed bit, which
+// ClearEmittedForReload aggregates into its `cleared` return. NO CALLER USES
+// THAT RETURN TODAY — `git grep -n 'j\.ClearEmittedForReload(' -- '*.go'
+// ':!*_test.go'` finds 2 lines, and both discard it. The per-article answer
+// exists so that a caller CAN name the stored rows it may drop: now that the
 // reset is not exhaustive, a whole-job delete would forget an article that is
 // still failed in memory.
 // clearEmitted is false for a job whose reload checkpoint could not make its

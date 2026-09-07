@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/history"
 )
 
 // Direct tests for two unexported helpers in app.go, added for the same reason
@@ -41,13 +44,34 @@ func TestUniqueName_SuffixesUntilFree(t *testing.T) {
 	})
 }
 
-// TestHistoryFileProgress_NoRepoIsNotAnError pins the early return. It matters
-// because the caller (RetryHistoryJob) distinguishes "no retained progress" —
-// a legitimate answer that means retry from scratch — from a query failure,
-// and a store-less Application must produce the former.
+// testHistoryRepo opens a real SQLite history store in a temp dir. The query
+// path in historyFileProgress needs one; a nil repo takes the early return and
+// exercises nothing.
+func testHistoryRepo(t *testing.T) *history.Repository {
+	t.Helper()
+	db, err := history.Open(context.Background(), filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return history.NewRepository(db)
+}
+
+// TestHistoryFileProgress_NoRepoIsNotAnError pins the early return: a
+// store-less Application answers (nil, nil) rather than panicking or erroring.
+//
+// It uses a bare &Application{} rather than newTestApplication, because the
+// branch under test is reached before anything else on the struct is touched
+// and the fixture would otherwise allocate three temp dirs and probe the
+// filesystem for sparse support to test one nil check.
+//
+// What this does NOT establish, stated because the obvious reading is wrong:
+// it is not a caller fallback. RetryHistoryJob — the only caller — opens with
+// `app.historyRepo.Get(ctx, jobID)` (app.go) and would panic on a nil repo
+// long before reaching historyFileProgress. The guard is defence inside the
+// helper, unreachable from production today.
 func TestHistoryFileProgress_NoRepoIsNotAnError(t *testing.T) {
-	app := newTestApplication(t)
-	app.historyRepo = nil
+	app := &Application{}
 
 	got, err := app.historyFileProgress(context.Background(), "j1")
 	if err != nil {
@@ -59,14 +83,16 @@ func TestHistoryFileProgress_NoRepoIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestHistoryFileProgress_ReturnsNothingForAnUnknownJob pins the query path
+// TestHistoryFileProgress_ReturnsNothingForAnUnknownJob exercises the query
 // itself against a real store: a job with no history_job_files rows yields no
 // retained files and no error, which is what lets a first-time retry proceed.
+//
+// An earlier version of this test guarded on `app.historyRepo == nil` and
+// skipped. newTestApplication builds its Application with New(cfg, nil), so
+// that guard was true on every run and the query never executed — a test that
+// satisfied check_test_alignment while verifying nothing.
 func TestHistoryFileProgress_ReturnsNothingForAnUnknownJob(t *testing.T) {
-	app := newTestApplication(t)
-	if app.historyRepo == nil || app.historyRepo.DB() == nil {
-		t.Skip("test application has no history repo; the query path needs one")
-	}
+	app := &Application{historyRepo: testHistoryRepo(t)}
 
 	got, err := app.historyFileProgress(context.Background(), "no-such-job")
 	if err != nil {

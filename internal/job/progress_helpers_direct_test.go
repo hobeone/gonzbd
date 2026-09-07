@@ -2,12 +2,14 @@ package job
 
 import "testing"
 
-// Direct tests for five unexported helpers in progress.go.
+// Direct tests for seven unexported helpers in progress.go: markNotDone,
+// fileMetaFromManifest, derivedRemainingBytes, sizeFigures,
+// describesSameJobAs, setPar2ReleaseReason and clearPar2ReleaseReason.
 //
-// They are here because a comment-only edit to progress.go put every
-// unexported helper in the file on check_test_alignment's bar, which is the
-// gate working as designed — it examines the whole touched file, not the
-// changed lines. Rather than dodge that, these are real assertions on
+// They are here because a comment-only edit to progress.go put the file's
+// unexported helpers on check_test_alignment's bar, which is the gate working
+// as designed — it examines the whole touched file, not the changed lines.
+// Rather than dodge that, these are real assertions on
 // behaviour worth pinning, and markNotDone's is load-bearing: its refusal is
 // cited by docs/durability-contract.md as what keeps a permanently failed
 // article permanently failed.
@@ -55,7 +57,8 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 
 // TestFileMetaFromManifest_ProjectsCountsBytesAndPar2 pins the projection
 // newJobProgress depends on: per-file article counts, byte totals, and the
-// par2 classification that sizeFigures later excludes on.
+// par2 classification ContentFailedBytes and HasPar2Files select on
+// (progress.go). Not sizeFigures — that excludes on Fetch, never on IsPar2.
 func TestFileMetaFromManifest_ProjectsCountsBytesAndPar2(t *testing.T) {
 	m := newManifest([]JobFile{
 		{Subject: "movie.part1.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}}},
@@ -77,7 +80,8 @@ func TestFileMetaFromManifest_ProjectsCountsBytesAndPar2(t *testing.T) {
 		t.Errorf("file 1 = {count:%d bytes:%d}, want {count:1 bytes:50}", got[1].ArticleCount, got[1].Bytes)
 	}
 	if !got[1].IsPar2 {
-		t.Error("file 1 (movie.vol00+01.par2) not classified as par2 — sizeFigures excludes on this")
+		t.Error("file 1 (movie.vol00+01.par2) not classified as par2 — ContentFailedBytes and " +
+			"HasPar2Files select on this")
 	}
 }
 
@@ -188,8 +192,11 @@ func TestDescribesSameJobAs_GuardsBothDimensions(t *testing.T) {
 		t.Error("progress for 2 files accepted a 1-file manifest with the same article count")
 	}
 
-	// Nil on either side is not a match — this is what keeps a null manifest
-	// out of recompute rather than letting it panic there.
+	// Nil on either side is not a match. This is defence in depth rather than
+	// the guard that keeps a null manifest out of recompute: RestoreContent
+	// rejects a nil manifest or progress on the line BEFORE it calls this
+	// (content.go), so the nil case here is only reachable from a caller that
+	// does not. Asserted so the predicate stays total if one appears.
 	if p.describesSameJobAs(nil) {
 		t.Error("describesSameJobAs(nil) = true")
 	}
