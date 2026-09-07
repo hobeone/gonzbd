@@ -72,7 +72,7 @@ func TestRemove_PreservesOrderOfRemainingEntries(t *testing.T) {
 		}
 	}
 
-	d.remove("b")
+	deregister(t, d, "b")
 
 	got := d.List()
 	want := []string{"a", "c", "d"}
@@ -101,7 +101,7 @@ func TestRemove_PrunesTheWrittenRecord(t *testing.T) {
 		t.Fatal("setup: markWritten did not record j1")
 	}
 
-	d.remove("j1")
+	deregister(t, d, "j1")
 
 	if _, ok := d.lastWritten("j1"); ok {
 		t.Error("lastWritten(j1) = ok after remove, want false — remove must prune d.written alongside d.byID and d.order")
@@ -128,7 +128,7 @@ func TestRemove_PrunesTheResidentAndLaunchedFlags(t *testing.T) {
 		t.Fatal("setup: claimLaunched(j1) = false on a fresh dispatcher")
 	}
 
-	d.remove("j1")
+	deregister(t, d, "j1")
 
 	if d.isResident("j1") {
 		t.Error("isResident(j1) = true after remove — a reused ID would never hydrate, since reconcileResidency only hydrates when !isResident")
@@ -180,7 +180,7 @@ func TestSortKey_ReproducesQueueOrderAcrossRemoval(t *testing.T) {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
-	d.remove("b")
+	deregister(t, d, "b")
 
 	rows := d.List()
 	got := make([]string, 0, len(rows))

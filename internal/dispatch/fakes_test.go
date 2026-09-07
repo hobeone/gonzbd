@@ -26,6 +26,23 @@ func (s *stubWorkers) Abort(jobID string) {
 
 func testClock() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
+// deregister takes a job out of the registry through the removal protocol,
+// for a test whose subject is what the registry looks like AFTERWARDS rather
+// than the teardown itself.
+//
+// There is deliberately no way to deregister without beginning a removal
+// first (#513), so this is the shortest honest spelling of "and then the job
+// was gone" — and it goes through the same door production does, so a test
+// setup cannot drift from the protocol it is setting up for.
+func deregister(t *testing.T, d *Dispatcher, id string) {
+	t.Helper()
+	rm, ok := d.beginRemoval(id)
+	if !ok {
+		t.Fatalf("deregister(%s): job is not registered", id)
+	}
+	rm.end()
+}
+
 // fakeResidency is the Residency test double. failOn lets a test force
 // Hydrate to fail for one job ID, for Task 4's hydration-failure test.
 // onHydrate lets Task 5's tests interleave a Cancel with the unlocked

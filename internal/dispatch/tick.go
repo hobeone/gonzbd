@@ -108,7 +108,7 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
 	}
 	d.storeMu.Lock()
 	d.mu.Lock()
-	if d.removing[j.ID()] > 0 || d.byID[j.ID()] == nil {
+	if !d.admitsLocked(j.ID()) {
 		d.mu.Unlock()
 		d.storeMu.Unlock()
 		return nil
@@ -170,11 +170,21 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 		return false
 	}
 
-	d.mu.Lock()
-	isLiveOrLaunched := len(d.occupancyTokens[j.ID()]) > 0 || d.launched[j.ID()] != nil
-	d.mu.Unlock()
-	if isLiveOrLaunched {
+	// The liveness check and the marker are taken under ONE d.mu acquisition,
+	// and that is the fix for #513 rather than an optimisation. Checking
+	// liveness, releasing the lock and then marking would leave the same
+	// window this function used to have for its whole teardown: an Occupy or
+	// a worker launch admitted between the two would pass a check that had
+	// already been made, and be erased by the deregistration it did not know
+	// was coming.
+	rm, live := d.beginRemovalIfIdle(j.ID())
+	if live {
 		return false
+	}
+	if rm == nil {
+		// Deregistered underneath us. Nothing left to evict, and the pass for
+		// this job is over.
+		return true
 	}
 
 	d.storeMu.Lock()
@@ -186,10 +196,18 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 		// which is worse than trying again on the next tick. Returning true
 		// anyway is what keeps the rest of the tick — above all
 		// persistIfChanged — from writing the row back.
+		//
+		// abort, not end: staying registered means staying schedulable. A job
+		// that kept the removal marker would be registered and permanently
+		// inert — refusing every occupier, worker launch and store write —
+		// which is a worse failure than the store error it followed, because
+		// nothing reports it and the retry this path exists for would evict a
+		// job that had silently stopped working.
+		rm.abort()
 		d.logStoreError(j.ID(), err)
 		return true
 	}
-	d.remove(j.ID())
+	rm.end()
 	return true
 }
 
@@ -281,7 +299,7 @@ func (d *Dispatcher) isResident(id string) bool {
 func (d *Dispatcher) markResident(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.removing[id] > 0 || d.byID[id] == nil {
+	if !d.admitsLocked(id) {
 		return
 	}
 	d.resident[id] = true

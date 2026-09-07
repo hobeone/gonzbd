@@ -718,10 +718,12 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Setting removing[id] = 1 manually under lock simulates an in-progress Remove.
-	d.mu.Lock()
-	d.removing["j1"] = 1
-	d.mu.Unlock()
+	// A real in-progress removal rather than a hand-set marker: beginRemoval
+	// is the only writer of d.removing now, so this is the state Remove and
+	// evictCancelledNeverRun actually put a job into.
+	if _, ok := d.beginRemoval("j1"); !ok {
+		t.Fatal("beginRemoval: job not registered")
+	}
 
 	// persistIfChanged must not save or mark written while removing.
 	d.persistIfChanged(context.Background(), j)
@@ -750,7 +752,7 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 	}
 
 	// After job is completely removed from byID:
-	d.remove("j1")
+	deregister(t, d, "j1")
 
 	d.markResident("j1")
 	if d.isResident("j1") {

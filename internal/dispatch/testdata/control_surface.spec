@@ -15,6 +15,6 @@ file internal/dispatch/registry.go
 --- anchor
 	if err := d.Cancel(id); err != nil {
 --- replace
-	d.remove(id)
+	rm.end()
 	if err := d.Cancel(id); err != nil {
 --- end
