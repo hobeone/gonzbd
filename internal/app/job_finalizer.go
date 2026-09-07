@@ -75,7 +75,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // "queue_updated" event is emitted while the job remains registered for retry
 // or restart handling.
 // Sub-budgets within persistAndCommit are strictly partitioned against
-// starvation under a 12s finalCtx (4s DB + 3s initial Remove + 3s retry Remove + 2s margin):
+// starvation:
 //   - History write & files loop: 4s dbCtx, derived from
 //     context.WithoutCancel(app.ctx).
 //   - Dispatcher removal: 3s removeCtx (with an additional 3s retryCtx on
@@ -83,6 +83,13 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 //     occupancy lease token for bypass in Dispatcher.Remove.
 //   - Durability check & delete: 3s delCtx, derived from
 //     context.WithoutCancel(app.ctx).
+//
+// Within Occupy, the 12s finalCtx bounds the history write and both removal
+// attempts (4s DB + 3s initial Remove + 3s retry Remove = 10s, leaving a 2s
+// margin before Occupy expires). Sequentially across all phases including
+// durability cleanup, the maximum execution bound is 13s (10s Occupy + 3s
+// delCtx), which fits within the 15s shutdown step timeout (stepTimeout)
+// under waitBounded when terminating post-processing.
 //
 // Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
 // write cannot starve dispatcher removal or durability cleanup. Prune operates

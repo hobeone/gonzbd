@@ -98,11 +98,11 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 }
 
 // assertOverlapWarned checks the message, not that a warning exists.
-// job.Warning is single-valued with at least four other writers — the stall
-// reason, two durability warnings, the claim-failure note — and both
-// Application.Stall and Application.Fail set it and are reachable from a
-// barrier that failed inside the same call. A non-emptiness assertion would
-// pass on a fixture that faulted for an unrelated reason.
+// job.Warning is single-valued with at least five other writers — the stall
+// reason, two durability warnings, the claim-failure note, the queue removal
+// failure note — and both Application.Stall and Application.Fail set it and
+// are reachable from a barrier that failed inside the same call. A non-emptiness
+// assertion would pass on a fixture that faulted for an unrelated reason.
 func assertOverlapWarned(t *testing.T, application *Application, jobID, route string) {
 	t.Helper()
 	var warning string
