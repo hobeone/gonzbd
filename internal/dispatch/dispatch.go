@@ -56,7 +56,7 @@ type Dispatcher struct {
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
 	//   - clearLaunched (worker.go), one line: launched. The per-map
-	//     accessor Finished, Yielded, Stop's sweep and deregister all call.
+	//     accessor Finished, YieldedFor, Stop's sweep and deregister all call.
 	//   - Occupy (occupy.go), four lines: occupancyTokens, occupiers, occupyDrained, and occupyStep when refcount drops to 0.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two

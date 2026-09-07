@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -213,7 +214,7 @@ func TestLaunch_SkippedWhenIntentTurnedToCancelDuringHydration(t *testing.T) {
 }
 
 // TestWorkerExits_ClearTheLaunchClaimBeforeKicking pins the call ORDER inside
-// Finished and Yielded: clearLaunched must precede kick.
+// Finished and YieldedFor: clearLaunched must precede kick.
 //
 // Why this is a source-order check and not a behavioural one. The consequence
 // is real but the window is nanoseconds — between kick() returning and a
@@ -234,7 +235,7 @@ func TestWorkerExits_ClearTheLaunchClaimBeforeKicking(t *testing.T) {
 		t.Fatalf("parse worker.go: %v", err)
 	}
 
-	want := map[string]bool{"Finished": false, "Yielded": false}
+	want := map[string]bool{"Finished": false, "YieldedFor": false}
 	for _, decl := range file.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
 		if !ok || fd.Body == nil {
@@ -474,5 +475,78 @@ func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
 		d.mu.Lock()
 		delete(d.launched, "j1")
 		d.mu.Unlock()
+	}
+}
+
+func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1 := job.New("j1", "first", job.Policy{})
+	if err := d.Add(j1, Header{}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+
+	// j1 runs and claims launch latch
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched(j1) = false, want true")
+	}
+
+	// Simulate j1 being finalized and deregistered
+	rm, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("beginRemoval: job not registered")
+	}
+	rm.end()
+
+	// New attempt under the same ID is registered
+	j2 := job.New("j1", "second", job.Policy{})
+	if err := d.Add(j2, Header{}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+
+	// j2 claims launched
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched(j2) = false, want true")
+	}
+
+	// Delayed yield from j1's abort arrives targeting j1
+	err := d.YieldedFor("j1", j1)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("YieldedFor(j1) with mismatched job = %v, want ErrNotFound", err)
+	}
+
+	// Assert j2's launched latch was NOT cleared
+	d.mu.Lock()
+	launchedCh := d.launched["j1"]
+	d.mu.Unlock()
+	if launchedCh == nil {
+		t.Error("YieldedFor with stale job object cleared the new attempt's launched latch")
+	}
+}
+
+func TestYieldedJob(t *testing.T) {
+	d := newTestDispatcher(t)
+
+	// nil job returns ErrNotFound
+	if err := d.YieldedJob(nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("YieldedJob(nil) = %v, want ErrNotFound", err)
+	}
+
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add(j): %v", err)
+	}
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched(j) = false, want true")
+	}
+
+	// Normal YieldedJob clears launch claim and returns nil
+	if err := d.YieldedJob(j); err != nil {
+		t.Errorf("YieldedJob(j) = %v, want nil", err)
+	}
+	d.mu.Lock()
+	ch := d.launched["j1"]
+	d.mu.Unlock()
+	if ch != nil {
+		t.Error("YieldedJob did not clear launched latch")
 	}
 }

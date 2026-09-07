@@ -26,7 +26,7 @@ func TestApplicationConstructsAWiredDispatcher(t *testing.T) {
 	}
 
 	w := &appWorkers{app: app}
-	w.Abort("test-job")
+	w.Abort(job.New("test-job", "Test Job", job.Policy{}))
 
 	appNilDisp := &Application{}
 	if _, ok := appNilDisp.lookupJob("test-job"); ok {
@@ -63,11 +63,14 @@ func (m *mockCancelWakeDownloader) Wake() {
 func TestAppWorkers_Abort(t *testing.T) {
 	// 1. Nil app should safely return without panic.
 	wNil := &appWorkers{app: nil}
-	wNil.Abort("job-nil")
+	wNil.Abort(job.New("job-nil", "Job Nil", job.Policy{}))
+
+	// Nil job should safely return without panic.
+	wNil.Abort(nil)
 
 	// 2. App with nil downloader and nil dispatcher should safely return.
 	wEmpty := &appWorkers{app: &Application{}}
-	wEmpty.Abort("job-empty")
+	wEmpty.Abort(job.New("job-empty", "Job Empty", job.Policy{}))
 
 	// 3. App with wired mock downloader and real dispatcher.
 	app := newTestApplication(t)
@@ -83,7 +86,7 @@ func TestAppWorkers_Abort(t *testing.T) {
 	app.downloader = mockDL
 	app.mu.Unlock()
 
-	w.Abort("job-abort")
+	w.Abort(j)
 
 	mockDL.mu.Lock()
 	cancelledLen := len(mockDL.cancelled)
@@ -99,6 +102,39 @@ func TestAppWorkers_Abort(t *testing.T) {
 	}
 	if wokenCount != 1 {
 		t.Errorf("Wake called %d times, want 1", wokenCount)
+	}
+}
+
+func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T) {
+	app := newTestApplication(t)
+	w := &appWorkers{app: app}
+
+	j1 := job.New("job-reuse", "First Attempt", job.Policy{})
+	if err := app.dispatcher.Add(j1, dispatch.Header{Name: "First Attempt"}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+
+	// Remove j1 from dispatcher, simulating j1 being removed / completed.
+	if err := app.dispatcher.Remove(context.Background(), "job-reuse"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Register a new attempt under the same ID.
+	j2 := job.New("job-reuse", "Second Attempt", job.Policy{})
+	if err := app.dispatcher.Add(j2, dispatch.Header{Name: "Second Attempt"}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+
+	// Simulate delayed Abort call from old attempt j1.
+	w.Abort(j1)
+
+	// Wait briefly to allow the async goroutine spawned by Abort to run.
+	time.Sleep(50 * time.Millisecond)
+
+	// Dispatcher still holds j2 under "job-reuse".
+	got, ok := app.lookupJob("job-reuse")
+	if !ok || got != j2 {
+		t.Fatalf("lookupJob returned (%v, %v), want (%v, true)", got, ok, j2)
 	}
 }
 

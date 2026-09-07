@@ -60,13 +60,36 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 	return nil
 }
 
-// Yielded records a worker exiting without finishing its state's work: a pause
+// Yielded records a worker exiting without finishing its state's work by job
+// ID alone, delegating to YieldedFor with a nil expected job pointer.
+func (d *Dispatcher) Yielded(id string) error {
+	return d.YieldedFor(id, nil)
+}
+
+// YieldedJob records a worker exiting without finishing its state's work.
+// If the job registered under j.ID() is no longer the instance j (e.g. because
+// the aborted job was removed and a new attempt with the same ID was registered),
+// YieldedJob no-ops and returns ErrNotFound so it does not clear the new
+// attempt's launch claim or park its resources.
+func (d *Dispatcher) YieldedJob(j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: YieldedJob: nil job: %w", ErrNotFound)
+	}
+	return d.YieldedFor(j.ID(), j)
+}
+
+// YieldedFor records a worker exiting without finishing its state's work: a pause
 // yield at an article boundary, an Abort, a shutdown, a dead connection.
 //
-// It parks unconditionally. Park is total — slot release is a map delete,
-// Surrender returns nil when nothing is held, and reclaim no-ops on nil — so
-// the dispatcher never has to decide whether a yielding worker still holds
-// something. That totality is what makes one door correct for every exit shape.
+// When expected is non-nil, it asserts that the currently registered job object
+// matches expected by pointer identity; if the job was removed or replaced by
+// another attempt under the same ID, it no-ops and returns ErrNotFound.
+//
+// When registered (and matching expected when non-nil), it parks unconditionally.
+// Park is total — slot release is a map delete, Surrender returns nil when
+// nothing is held, and reclaim no-ops on nil — so the dispatcher never has to
+// decide whether a yielding worker still holds something. That totality is what
+// makes one door correct for every exit shape.
 //
 // This is the input the tick cannot compute. Advance branch 2 returns early
 // while holds() is true, because the Queue cannot distinguish a working holder
@@ -74,7 +97,7 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 // the dispatcher knows which it is.
 //
 // The launched claim latch is cleared via clearLaunched(id),
-// for the same reason as Finished: for runner workers, Yielded is called after
+// for the same reason as Finished: for runner workers, YieldedFor is called after
 // Run returns or when yielding mid-pipeline, so the claim is stale on entry
 // regardless of whether Park succeeds. External callers call it explicitly to
 // release the launch claim without waiting for goroutine teardown.
@@ -83,11 +106,16 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 // calling Park would let a concurrent tick's launch observe the job still
 // Running (Park has not yet released it) with the claim already free, and start
 // a second worker on resources the first has not yet surrendered.
-func (d *Dispatcher) Yielded(id string) error {
-	j, ok := d.lookup(id)
-	if !ok {
+func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok || (expected != nil && e.j != expected) {
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: Yielded: no job %q: %w", id, ErrNotFound)
 	}
+	j := e.j
+	d.mu.Unlock()
+
 	err := d.q.Park(j)
 	// After Park, before kick — see Finished above for why the ordering is
 	// load-bearing in both directions.
@@ -121,7 +149,7 @@ func (d *Dispatcher) launch(j *job.Job) {
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
-// job already being worked. Finished, Yielded, Stop's sweep and deregister are its four
+// job already being worked. Finished, YieldedFor, Stop's sweep and deregister are its four
 // exit-path clearers — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
 // grep -v _test.go` finds four lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {

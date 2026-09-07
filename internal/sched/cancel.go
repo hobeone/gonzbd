@@ -50,7 +50,7 @@ func (q *Queue) finishCancel(j *job.Job, s job.Snapshot) error {
 		if !cancelInterrupts(s.State.State) {
 			return nil // gate: let it reach the end; D-I11 lets it complete OK
 		}
-		q.work.Abort(j.ID()) // interrupt: settled on the tick after it yields
+		q.work.Abort(j) // interrupt: settled on the tick after it yields
 		return nil
 	}
 	// This line is reached both pre- and post-boundary: a non-running

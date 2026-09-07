@@ -69,7 +69,11 @@ func TestResume_TakesTheQueueLock(t *testing.T) {
 
 type stubWorkers struct{ aborted []string }
 
-func (s *stubWorkers) Abort(jobID string) { s.aborted = append(s.aborted, jobID) }
+func (s *stubWorkers) Abort(j *job.Job) {
+	if j != nil {
+		s.aborted = append(s.aborted, j.ID())
+	}
+}
 
 func testClock() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 

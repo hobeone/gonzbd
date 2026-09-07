@@ -26,7 +26,7 @@ type Workers interface {
 	// implementation that takes that same dispatcher lock deadlocks ABBA
 	// against a concurrent Cancel. This is a precondition B2's implementation
 	// of Workers must satisfy; nothing in this package enforces it.
-	Abort(jobID string)
+	Abort(j *job.Job)
 }
 
 // Queue owns admission: the pure predicates over a job.Snapshot (holds,

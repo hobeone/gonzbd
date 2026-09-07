@@ -59,9 +59,9 @@ type uiStubWorkers struct {
 	disp *dispatch.Dispatcher
 }
 
-func (w *uiStubWorkers) Abort(id string) {
-	if w.disp != nil {
-		go func() { _ = w.disp.Yielded(id) }()
+func (w *uiStubWorkers) Abort(j *job.Job) {
+	if w.disp != nil && j != nil {
+		go func() { _ = w.disp.YieldedJob(j) }()
 	}
 }
 

@@ -37,10 +37,11 @@ type appWorkers struct {
 // tracking records (tryList and inFlight) for the given jobID before yielding
 // the job on the dispatcher. Note that CancelJob clears tracking records; it
 // does not cancel or drain active NNTP worker goroutines.
-func (w *appWorkers) Abort(jobID string) {
-	if w.app == nil {
+func (w *appWorkers) Abort(j *job.Job) {
+	if w.app == nil || j == nil {
 		return
 	}
+	jobID := j.ID()
 	w.app.mu.Lock()
 	dl := w.app.downloader
 	disp := w.app.dispatcher
@@ -57,13 +58,14 @@ func (w *appWorkers) Abort(jobID string) {
 	}
 	if disp != nil {
 		// Yield asynchronously: Abort is invoked inside sched.Queue.mu's lock span
-		// during Cancel. Calling disp.Yielded directly would deadlock on Queue.mu.
-		// If the job was already removed via Dispatcher.Remove, disp.Yielded returns
-		// an ErrNotFound which is benign and logged at debug level.
+		// during Cancel. Calling disp.YieldedJob directly would deadlock on Queue.mu.
+		// If the job was already removed via Dispatcher.Remove or replaced by a new
+		// attempt under the same ID, disp.YieldedJob returns an ErrNotFound which is
+		// benign and logged at debug level.
 		go func() {
-			if err := disp.Yielded(jobID); err != nil && log != nil {
+			if err := disp.YieldedJob(j); err != nil && log != nil {
 				if errors.Is(err, dispatch.ErrNotFound) {
-					log.Debug("abort: worker yield completed with notice (job not found)", "job", jobID, "err", err)
+					log.Debug("abort: worker yield completed with notice", "job", jobID, "err", err)
 				} else {
 					log.Warn("abort: worker yield failed", "job", jobID, "err", err)
 				}
