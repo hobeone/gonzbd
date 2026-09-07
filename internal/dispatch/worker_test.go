@@ -214,7 +214,7 @@ func TestLaunch_SkippedWhenIntentTurnedToCancelDuringHydration(t *testing.T) {
 }
 
 // TestWorkerExits_ClearTheLaunchClaimBeforeKicking pins the call ORDER inside
-// Finished and Yielded: clearLaunched must precede kick.
+// Finished and YieldedFor: clearLaunched must precede kick.
 //
 // Why this is a source-order check and not a behavioural one. The consequence
 // is real but the window is nanoseconds — between kick() returning and a
@@ -235,7 +235,7 @@ func TestWorkerExits_ClearTheLaunchClaimBeforeKicking(t *testing.T) {
 		t.Fatalf("parse worker.go: %v", err)
 	}
 
-	want := map[string]bool{"Finished": false, "Yielded": false}
+	want := map[string]bool{"Finished": false, "YieldedFor": false}
 	for _, decl := range file.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
 		if !ok || fd.Body == nil {
@@ -520,5 +520,33 @@ func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
 	d.mu.Unlock()
 	if launchedCh == nil {
 		t.Error("YieldedFor with stale job object cleared the new attempt's launched latch")
+	}
+}
+
+func TestYieldedJob(t *testing.T) {
+	d := newTestDispatcher(t)
+
+	// nil job returns ErrNotFound
+	if err := d.YieldedJob(nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("YieldedJob(nil) = %v, want ErrNotFound", err)
+	}
+
+	j := job.New("j1", "test", job.Policy{})
+	if err := d.Add(j, Header{}); err != nil {
+		t.Fatalf("Add(j): %v", err)
+	}
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched(j) = false, want true")
+	}
+
+	// Normal YieldedJob clears launch claim and returns nil
+	if err := d.YieldedJob(j); err != nil {
+		t.Errorf("YieldedJob(j) = %v, want nil", err)
+	}
+	d.mu.Lock()
+	ch := d.launched["j1"]
+	d.mu.Unlock()
+	if ch != nil {
+		t.Error("YieldedJob did not clear launched latch")
 	}
 }

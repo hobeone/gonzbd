@@ -84,10 +84,35 @@ func (d *Dispatcher) Finished(id string, o job.Outcome) error {
 // Running (Park has not yet released it) with the claim already free, and start
 // a second worker on resources the first has not yet surrendered.
 func (d *Dispatcher) Yielded(id string) error {
-	j, ok := d.lookup(id)
-	if !ok {
+	return d.YieldedFor(id, nil)
+}
+
+// YieldedJob records a worker exiting without finishing its state's work.
+// If the job registered under j.ID() is no longer the instance j (e.g. because
+// the aborted job was removed and a new attempt with the same ID was registered),
+// YieldedJob no-ops and returns ErrNotFound so it does not clear the new
+// attempt's launch claim or park its resources.
+func (d *Dispatcher) YieldedJob(j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: YieldedJob: nil job: %w", ErrNotFound)
+	}
+	return d.YieldedFor(j.ID(), j)
+}
+
+// YieldedFor records a worker exiting without finishing its state's work.
+// When expected is non-nil, it asserts that the currently registered job object
+// matches expected by pointer identity; if the job was removed or replaced by
+// another attempt under the same ID, it no-ops and returns ErrNotFound.
+func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok || (expected != nil && e.j != expected) {
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: Yielded: no job %q: %w", id, ErrNotFound)
 	}
+	j := e.j
+	d.mu.Unlock()
+
 	err := d.q.Park(j)
 	// After Park, before kick — see Finished above for why the ordering is
 	// load-bearing in both directions.
@@ -97,11 +122,6 @@ func (d *Dispatcher) Yielded(id string) error {
 	}
 	d.kick()
 	return nil
-}
-
-// YieldedFor records a worker exiting without finishing its state's work.
-func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
-	return d.Yielded(id)
 }
 
 // launch starts a worker if the job is runnable and still wanted.
