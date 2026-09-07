@@ -231,8 +231,15 @@ type Options struct {
 	//
 	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
 	// bit, so an article reported by neither is stranded for the life of the
-	// process — not Done, not Failed, not Outstanding — and only a restart's
-	// ClearAllEmitted recovers it.
+	// process — not Done, not Failed, not Outstanding — and only a restart
+	// recovers it.
+	//
+	// The restart recovers it by NOT persisting the bit, rather than by
+	// clearing it: jobProgressJSON excludes emitted deliberately
+	// (internal/job/progress.go), so a job reloaded from the store starts with
+	// none set. Nothing has to run for this to hold, which is why it survives
+	// #417 — the selective Job.ClearEmittedForReload the reload path uses may
+	// withhold a job's Emitted bits, and a restart is unaffected either way.
 	//
 	// No fault is passed, deliberately. This says nothing about why the write
 	// failed and must not be read as evidence about any article (A1).
@@ -1176,8 +1183,9 @@ func (a *Assembler) dispatchRequest(
 // Their Emitted bits therefore stay set, which is NOT the same as Outstanding
 // — an earlier version of this doc said "left Outstanding and re-fetched (S3)"
 // and that was only ever true of the worker-exit caller, where the next start's
-// ClearAllEmitted resets them. On the CloseJobHandles path the process keeps
-// running and nothing resets them until it stops.
+// unconditional Job.ClearEmittedForReload(false) at startup resets them. On the
+// CloseJobHandles path the process keeps running and nothing resets them until
+// it stops.
 //
 // That costs nothing in the ordinary case. A clean stop runs
 // Application.shutdownCheckpoint — a full barrier, ack included — while the

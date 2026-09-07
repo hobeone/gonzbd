@@ -110,7 +110,7 @@ const reloadMuHoldTestDuration = 80 * time.Millisecond
 // app.reloadMu is observed continuously held while two ReloadDownloader
 // callers race for it. ReloadDownloader's own body takes at least a few
 // hundred microseconds end to end (the setCompletions cross-goroutine
-// handshake plus Stop/ClearAllEmitted/New/Start), so a healthy reloadMu that
+// handshake plus Stop/ClearEmittedForReload/New/Start), so a healthy reloadMu that
 // wraps the whole function must show a streak at least in that range. If a
 // future change narrows reloadMu's scope (e.g. moving the Lock call past the
 // snapshot, or Unlock-ing before Start), two overlapping callers would only

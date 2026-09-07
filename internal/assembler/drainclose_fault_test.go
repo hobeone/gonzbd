@@ -15,7 +15,7 @@ import (
 // A failed Drain rolls back everything after the failing write into w.faulted,
 // and takeFaulted is its only consumer. Without a releaseFaulted here the set
 // died with the writer: the articles kept their Emitted bits, so
-// ForEachUnfinishedArticle skipped them and only a restart's ClearAllEmitted
+// ForEachUnfinishedArticle skipped them and only a restart
 // recovered them, and partsWritten kept counting them — leaving the file that
 // many parts closer to TotalParts with nothing on disk behind them.
 func TestDrainAndClose_ReturnsTheRolledBackArticles(t *testing.T) {

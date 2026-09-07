@@ -15,7 +15,7 @@ import (
 // set never crosses the SyncTarget interface — the barrier gets an error and a
 // list of what DID land, and nothing else. So the articles were left neither
 // Done, nor Failed, nor Outstanding: their Emitted bits stayed set,
-// ForEachUnfinishedArticle skipped them, and only a restart's ClearAllEmitted
+// ForEachUnfinishedArticle skipped them, and only a restart
 // recovered them.
 //
 // The counts matter as much as the routing. partsWritten is incremented on

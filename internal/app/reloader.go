@@ -131,7 +131,7 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // concurrently with itself internally, but the API layer (modeSetConfig)
 // invokes it once per HTTP request with no serialization of its own, so two
 // concurrent server-config updates could otherwise interleave their
-// Stop/setCompletions/checkpoint/ClearAllEmitted/Start sequences and leave app.downloader
+// Stop/setCompletions/checkpoint/ClearEmittedForReload/Start sequences and leave app.downloader
 // and app.pipeline's completions source wired to two different downloader
 // instances (leaking the loser's goroutines and stalling dispatch on the
 // orphaned one). app.mu is only held within that section to snapshot the old
@@ -163,7 +163,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// hand-off, and it did not always hold. Draining moves results onto a
 	// buffered work channel; the pwrite happens later, on a worker. The
 	// checkpoint below acks what is on disk, so anything still queued to be
-	// written would be cleared as outstanding by ClearAllEmitted and then
+	// written would be cleared as outstanding by ClearEmittedForReload and then
 	// written immediately afterwards — #390 again, with the checkpoint in
 	// place. pipeline.setCompletions now waits for the writes, so this line
 	// is what makes the ordering below sound.

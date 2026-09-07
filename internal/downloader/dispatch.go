@@ -674,7 +674,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			// handleRequest's deferred clearInFlight releases it.
 			//
 			// So the next dispatch pass re-offers this article on its own. It
-			// does not wait for ClearAllEmitted, and it is unaffected by
+			// does not wait for Job.ClearEmittedForReload, and it is unaffected by
 			// whether its job was withheld from one (#417).
 			return nil, false
 		}
@@ -867,7 +867,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// success path (:720). When the send loses the race to cancellation,
 		// no result arrives, so nothing downstream ever clears that bit:
 		// ForEachUnfinishedArticle skips the article, its file never
-		// completes, and only ClearAllEmitted recovers it.
+		// completes, and only a restart recovers it (emitted is not persisted).
 		//
 		// That last part is what makes this the owner's job rather than the
 		// sweep's. A bulk clear cannot tell this article — abandoned, nothing

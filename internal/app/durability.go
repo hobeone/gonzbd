@@ -51,8 +51,10 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 // a set Emitted bit. Nothing else clears them on this path: no Drain reports
 // them, no Job.MarkArticleFailed names them, and eviction keeps job.progress, so
 // pause and resume do not clear them either. Left alone they are stranded for
-// the life of the process, at any residency, and only a restart's
-// ClearAllEmitted recovers them.
+// the life of the process, at any residency, and only a restart recovers them
+// — by not persisting the bits rather than by clearing them. jobProgressJSON
+// excludes emitted deliberately (internal/job/progress.go), so a job reloaded
+// from the store starts with none set.
 //
 // It takes a SET rather than one article, and that is the point. The assembler
 // used to carry a single index alongside the fault, so a batch failure — a
@@ -588,8 +590,10 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		//   - CloseJobHandles: the job is already StatusVerifying, and
 		//     ForEachUnfinishedArticle skips a PostProc job, so its Emitted
 		//     bits cannot produce a re-fetch whether cleared or not.
-		//   - CancelJob: the job is removed from the queue, so ClearAllEmitted
-		//     never iterates it.
+		//   - CancelJob: the job is deregistered, so the reload loop that calls
+		//     Job.ClearEmittedForReload never reaches it. The iteration is the
+		//     CALLER's — the method is per-job — so a deregistered job is
+		//     skipped by never being listed, not by anything the method does.
 		//   - opClose, from CloseFile/FinalizeFile: the barrier acked those
 		//     articles before the close.
 		//   - drainAndCloseAll at worker exit: the assembler is stopping, so
@@ -851,9 +855,11 @@ func perJobShare(total time.Duration, jobs int) time.Duration {
 // job list is known, so a policy can divide by it.
 func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func(jobs int) time.Duration) map[string]struct{} {
 	// The returned set names the jobs this sweep could NOT protect — those
-	// whose checkpointJob reported unsafe. ReloadDownloader withholds their
-	// Emitted bits from ClearAllEmitted (#417); every other caller ignores it,
-	// which Go permits for a call statement, so nothing else needed changing.
+	// whose checkpointJob reported unsafe. ReloadDownloader passes
+	// skipEmitted=true to Job.ClearEmittedForReload for each of them, which
+	// withholds their Emitted bits (#417); every other caller ignores the
+	// returned set, which Go permits for a call statement, so nothing else
+	// needed changing.
 	//
 	// The two early returns below cannot ask checkpointJob about any job,
 	// because neither reaches the loop. They answer from the barrier
@@ -871,9 +877,10 @@ func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func
 	// without one (noteJobBytes is inert), so it answers the empty set.
 	//
 	// COVERAGE, stated so the question does not have to be re-derived: this
-	// sweep visits OpenJobIDs — jobs holding an open file — while
-	// ClearAllEmitted iterates every resident job, so the set is always a
-	// subset. That is not an unclosed instance of #417. A resident job with no
+	// sweep visits OpenJobIDs — jobs holding an open file — while the reload
+	// loop calls Job.ClearEmittedForReload for every registered job (a
+	// non-resident one returns early, having no manifest or progress), so the
+	// set is always a subset. That is not an unclosed instance of #417. A resident job with no
 	// open file either never wrote anything, or had its handles closed by
 	// CloseJobHandles, which runs only on a job already at StatusVerifying;
 	// ForEachUnfinishedArticle skips a PostProc job, so its Emitted bits
