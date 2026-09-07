@@ -135,8 +135,9 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 //
 // It writes job.Warning, which QueueRow renders next to the job. That field is
 // single-valued and has other writers — the stall reason (which QueueRow shows
-// in PREFERENCE to it), the two durability warnings, and the claim-failure note
-// — so this can be overwritten by a later condition, and Resume/Retry clear it.
+// in PREFERENCE to it), the two durability warnings, the claim-failure note,
+// and the queue removal failure note — so this can be overwritten by a later
+// condition, and Resume/Retry clear it.
 // That is acceptable for a diagnostic: the log line in routeFaulted is the
 // durable record, and the warning is the thing that makes a user look.
 //
