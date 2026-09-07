@@ -70,13 +70,16 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
 // unlinking, and barrier state reset) is always attempted
 // regardless of history persistence success. If dispatcher.Remove returns an
-// error, the error is logged while the job remains registered for retry or
-// caller handling.
+// error, it is retried once. If the retry also fails, the error is logged, a
+// warning is surfaced on the dispatcher row via SetWarning, and a
+// "queue_updated" event is emitted while the job remains registered for retry
+// or restart handling.
 // Sub-budgets within persistAndCommit are strictly partitioned against
-// starvation:
+// starvation under a 12s finalCtx (4s DB + 3s initial Remove + 3s retry Remove + 2s margin):
 //   - History write & files loop: 4s dbCtx, derived from
 //     context.WithoutCancel(app.ctx).
-//   - Dispatcher removal: 3s removeCtx, derived from occupyCtx to retain the
+//   - Dispatcher removal: 3s removeCtx (with an additional 3s retryCtx on
+//     failure if occupyCtx is unexpired), derived from occupyCtx to retain the
 //     occupancy lease token for bypass in Dispatcher.Remove.
 //   - Durability check & delete: 3s delCtx, derived from
 //     context.WithoutCancel(app.ctx).
@@ -105,7 +108,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		_ = app.dispatcher.Yielded(ppJob.Job.ID())
 	}
 
-	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 10*time.Second)
+	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 12*time.Second)
 	defer finalCancel()
 
 	runCommit := func(occupyCtx context.Context) error {
@@ -157,10 +160,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			app.checkpointer.Prune(ppJob.Job.ID())
 		}
 		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+			jobID := ppJob.Job.ID()
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
-			defer removeCancel()
-			if err := app.dispatcher.Remove(removeCtx, ppJob.Job.ID()); err != nil {
-				log.Warn("failed to remove job from dispatcher after post-proc", "job", ppJob.Job.ID(), "err", err)
+			err := app.dispatcher.Remove(removeCtx, jobID)
+			removeCancel()
+			if err != nil && occupyCtx.Err() == nil {
+				retryCtx, retryCancel := context.WithTimeout(occupyCtx, 3*time.Second)
+				err = app.dispatcher.Remove(retryCtx, jobID)
+				retryCancel()
+			}
+			if err != nil {
+				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart",
+					"job", jobID, "err", err)
+				_ = app.dispatcher.SetWarning(jobID, "failed to remove finalized job from queue: "+err.Error())
+				app.emit(Event{Type: "queue_updated"})
 			}
 		}
 		if ppJob != nil && ppJob.Job != nil {
