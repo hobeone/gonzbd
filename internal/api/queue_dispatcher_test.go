@@ -19,10 +19,13 @@ type apiStubWorkers struct {
 	aborted []string
 }
 
-func (s *apiStubWorkers) Abort(jobID string) {
-	s.aborted = append(s.aborted, jobID)
+func (s *apiStubWorkers) Abort(j *job.Job) {
+	if j == nil {
+		return
+	}
+	s.aborted = append(s.aborted, j.ID())
 	if s.disp != nil {
-		go func() { _ = s.disp.Yielded(jobID) }()
+		go func() { _ = s.disp.YieldedJob(j) }()
 	}
 }
 

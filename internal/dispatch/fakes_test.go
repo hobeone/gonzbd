@@ -17,10 +17,13 @@ type stubWorkers struct {
 	onAbort func(string)
 }
 
-func (s *stubWorkers) Abort(jobID string) {
-	s.aborted = append(s.aborted, jobID)
+func (s *stubWorkers) Abort(j *job.Job) {
+	if j == nil {
+		return
+	}
+	s.aborted = append(s.aborted, j.ID())
 	if s.onAbort != nil {
-		s.onAbort(jobID)
+		s.onAbort(j.ID())
 	}
 }
 

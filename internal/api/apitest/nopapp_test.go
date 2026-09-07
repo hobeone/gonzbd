@@ -18,7 +18,7 @@ import (
 
 type stubWorkers struct{}
 
-func (w *stubWorkers) Abort(string) {}
+func (w *stubWorkers) Abort(*job.Job) {}
 
 type stubResidency struct{}
 

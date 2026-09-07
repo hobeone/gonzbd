@@ -19,7 +19,7 @@ import (
 // actually launched work would make the assertions depend on scheduling.
 type nopWorkers struct{}
 
-func (nopWorkers) Abort(string) {}
+func (nopWorkers) Abort(*job.Job) {}
 
 type nopResidency struct{}
 

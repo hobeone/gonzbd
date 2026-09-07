@@ -11,7 +11,7 @@ import (
 
 type testWorkers struct{}
 
-func (testWorkers) Abort(string) {}
+func (testWorkers) Abort(*job.Job) {}
 
 type testResidency struct{}
 
