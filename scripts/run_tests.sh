@@ -159,10 +159,26 @@ echo -e "\nRunning Review-Banner Check..."
 go run ./scripts/check_review_banner
 echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
 
-# Mutation Specs Check: verifies that all committed mutation specs in the repository
-# compile against the codebase, match valid anchors, and kill all mutations.
+# Mutation Specs Check: verifies that all mutation specs belonging to THIS
+# checkout compile against the codebase, match valid anchors, and kill all
+# mutations.
+#
+# Discovery goes through git, not `find`, because a spec is only meaningful
+# against the tree it was written for. `scripts/mutate` takes its root from
+# `git rev-parse --show-toplevel` in the CWD (scripts/mutate/main.go, repoRoot),
+# so a spec found under a nested checkout is read from there and then resolved
+# and mutated HERE -- against a different branch's source. `find` walks the
+# filesystem and knows nothing about git, so it descended into the sibling
+# worktrees under `.claude/` (ignored by .gitignore) and ran their specs against
+# this tree; that surfaced as `ANCHOR -- anchor matched no site`, and would have
+# produced a bogus KILLED/LIVED verdict instead had the anchor text happened to
+# exist in both branches. `git ls-files` cannot leave the current worktree.
+#
+# `--others --exclude-standard` keeps a newly written, not-yet-staged spec in
+# scope: tracked-only discovery would silently skip the spec you just wrote,
+# which is the failure mode this check exists to prevent.
 echo -e "\nRunning Mutation Specs Check..."
-find . -name '*.spec' -path '*testdata*' | sort | while read -r spec; do
+git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u | while read -r spec; do
     echo "Running mutation spec: $spec"
     go run ./scripts/mutate "$spec"
 done
