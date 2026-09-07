@@ -99,6 +99,11 @@ func (d *Dispatcher) Yielded(id string) error {
 	return nil
 }
 
+// YieldedFor records a worker exiting without finishing its state's work.
+func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
+	return d.Yielded(id)
+}
+
 // launch starts a worker if the job is runnable and still wanted.
 //
 // It re-reads the snapshot rather than trusting the one the tick took: between

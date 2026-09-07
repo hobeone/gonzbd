@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -474,5 +475,50 @@ func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
 		d.mu.Lock()
 		delete(d.launched, "j1")
 		d.mu.Unlock()
+	}
+}
+
+func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1 := job.New("j1", "first", job.Policy{})
+	if err := d.Add(j1, Header{}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+
+	// j1 runs and claims launch latch
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched(j1) = false, want true")
+	}
+
+	// Simulate j1 being finalized and deregistered
+	rm, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("beginRemoval: job not registered")
+	}
+	rm.end()
+
+	// New attempt under the same ID is registered
+	j2 := job.New("j1", "second", job.Policy{})
+	if err := d.Add(j2, Header{}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+
+	// j2 claims launched
+	if !d.claimLaunched("j1") {
+		t.Fatal("claimLaunched(j2) = false, want true")
+	}
+
+	// Delayed yield from j1's abort arrives targeting j1
+	err := d.YieldedFor("j1", j1)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("YieldedFor(j1) with mismatched job = %v, want ErrNotFound", err)
+	}
+
+	// Assert j2's launched latch was NOT cleared
+	d.mu.Lock()
+	launchedCh := d.launched["j1"]
+	d.mu.Unlock()
+	if launchedCh == nil {
+		t.Error("YieldedFor with stale job object cleared the new attempt's launched latch")
 	}
 }
