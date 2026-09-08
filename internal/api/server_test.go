@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -134,6 +135,51 @@ func TestCallerLevel_HeaderKey(t *testing.T) {
 	req.Header.Set("X-API-Key", testAPIKey)
 	if got := callerLevel(req, AuthConfig{APIKey: testAPIKey}); got != LevelAdmin {
 		t.Errorf("level = %d; want %d (admin via header)", got, LevelAdmin)
+	}
+}
+
+// TestGetAuth_NilConfigFailsClosed pins the branch a config-less Server takes.
+// getAuth returns a zero AuthConfig rather than a partially-populated one, so
+// every credential comparison in callerLevel runs against an empty string and
+// no request can authenticate. Note this deliberately drops SessionKey too:
+// without a config there is no configured key to pair the cookie with, and
+// failing closed is the safe direction.
+func TestGetAuth_NilConfigFailsClosed(t *testing.T) {
+	t.Parallel()
+	s := New(Options{Version: "1.0.0-test"})
+	if s.config != nil {
+		t.Fatalf("precondition: config should be nil")
+	}
+	// AuthConfig holds a []netip.Prefix and a *slog.Logger, so it is not
+	// comparable with ==.
+	if got := s.getAuth(); !reflect.DeepEqual(got, AuthConfig{}) {
+		t.Errorf("getAuth() = %+v; want the zero AuthConfig", got)
+	}
+}
+
+// TestGetAuth_ReadsLiveConfig pins that getAuth snapshots the config on every
+// call rather than caching at construction, which is what lets a runtime key
+// change take effect without a restart.
+func TestGetAuth_ReadsLiveConfig(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+	if got := s.getAuth().APIKey; got != testAPIKey {
+		t.Fatalf("APIKey = %q; want %q", got, testAPIKey)
+	}
+	if got := s.getAuth().NZBKey; got != testNZBKey {
+		t.Errorf("NZBKey = %q; want %q", got, testNZBKey)
+	}
+	if got := s.getAuth().SessionKey; got != s.sessionKey {
+		t.Errorf("SessionKey = %q; want the server's own %q", got, s.sessionKey)
+	}
+
+	cfg.With(func(c *config.Config) { c.General.APIKey = "0123456789abcdef" })
+	if got := s.getAuth().APIKey; got != "0123456789abcdef" {
+		t.Errorf("APIKey after rotation = %q; want the new key", got)
 	}
 }
 

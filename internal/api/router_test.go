@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 func TestHandleAPI_CookieAuth_GET_StateChangingRestricted_405(t *testing.T) {
@@ -209,5 +212,69 @@ func TestHandleAPI_CookieAuth_GET_StateChangingClassification(t *testing.T) {
 				t.Errorf("%s via cookie GET: got 405, but a read-only action must be allowed", tc.name)
 			}
 		})
+	}
+}
+
+// TestModeAuth_ClassifiesKeys calls modeAuth directly and walks every branch
+// of its classification. The empty-key case is the surprising one: it answers
+// "apikey" rather than "badkey", matching Python's _api_auth, so a client
+// probing without credentials is told the server uses key auth rather than
+// being told its (absent) key is wrong.
+func TestModeAuth_ClassifiesKeys(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	for _, tc := range []struct {
+		name string
+		key  string
+		want string
+	}{
+		{"no key at all", "", "apikey"},
+		{"the full api key", testAPIKey, "apikey"},
+		{"the upload-only nzb key", testNZBKey, "nzbkey"},
+		{"an unrecognized key", "not-a-real-key", "badkey"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			url := "/api?mode=auth"
+			if tc.key != "" {
+				url += "&apikey=" + tc.key
+			}
+			rr := httptest.NewRecorder()
+			s.modeAuth(rr, httptest.NewRequest(http.MethodGet, url, nil))
+			var m map[string]any
+			if err := json.NewDecoder(rr.Body).Decode(&m); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if m["auth"] != tc.want {
+				t.Errorf("auth = %v; want %v", m["auth"], tc.want)
+			}
+		})
+	}
+}
+
+// TestRegisterModes_VersionIsOpen pins the access level mode=version is
+// registered at. SABnzbd answers it unauthenticated, and third-party clients
+// rely on that to probe a server before a key is configured; promoting it to
+// LevelProtected would turn a first-time Sonarr setup into a 403 rather than
+// the version handshake it expects.
+func TestRegisterModes_VersionIsOpen(t *testing.T) {
+	t.Parallel()
+	s := New(Options{Version: "1.0.0-test"})
+	s.registerModes()
+
+	entry, ok := s.modes["version"]
+	if !ok {
+		t.Fatalf("mode=version is not registered")
+	}
+	if entry.handler == nil {
+		t.Error("mode=version has a nil handler")
+	}
+	if entry.level != LevelOpen {
+		t.Errorf("mode=version level = %d; want LevelOpen (%d)", entry.level, LevelOpen)
 	}
 }
