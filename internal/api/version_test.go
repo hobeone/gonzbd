@@ -9,14 +9,19 @@ import (
 	"testing"
 )
 
-// sonarrVersionRegex is Sonarr's own parser, copied verbatim from
-// Sonarr/src/NzbDrone.Core/Download/Clients/Sabnzbd/Sabnzbd.cs:38 (and the
-// byte-identical line in Radarr's copy):
+// sonarrVersionRegex is a Go translation of Sonarr's own parser. The line it
+// translates, quoted verbatim, is this one from
+// Sonarr/src/NzbDrone.Core/Download/Clients/Sabnzbd/Sabnzbd.cs — and the
+// same line appeared in Radarr's copy when this was written (both `develop`
+// branches, checked 2026-09-07):
 //
 //	new Regex(@"(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+|x)")
 //
-// It is unanchored and Sonarr takes the first match, so leading or trailing
-// text is tolerated. A string it fails to match is reported to the user as
+// The translation below drops the group names, which .NET needs and Go's
+// regexp does not; the pattern is otherwise character-for-character the same,
+// so it matches the same strings. It is unanchored and Sonarr takes the first
+// match, so leading or trailing text is tolerated. A string it fails to match
+// is reported to the user as
 // "Unknown Version: <raw>".
 var sonarrVersionRegex = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+|x)`)
 

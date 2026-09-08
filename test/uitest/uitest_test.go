@@ -839,7 +839,8 @@ func TestAPIVersionEndpoint(t *testing.T) {
 	// Not the "test-uitest" build version this harness starts the server
 	// with: mode=version reports the SABnzbd API generation gonzbd
 	// implements (api.sabnzbdAPIVersion), which SABnzbd clients feature-gate
-	// on. The build version is served by mode=about and mode=status_overview.
+	// on. The build version is served by mode=about, mode=status_overview and
+	// mode=status&name=build_info.
 	if !strings.Contains(body, `"version":"4.5.3"`) {
 		t.Errorf(`version response should contain "version":"4.5.3"; got: %s`, body)
 	}

@@ -126,10 +126,13 @@ func (s *Server) registerModes() {
 
 // sabnzbdAPIVersion is the SABnzbd release whose API generation gonzbd
 // implements. It is deliberately NOT gonzbd's own build version: mode=version
-// is a protocol-generation identifier that clients feature-gate on, and
-// docs/sabnzbd_spec.md describes it as "SABnzbd version" for that reason.
+// is a protocol-generation identifier that clients feature-gate on. Bump it
+// when gonzbd's API surface actually reaches a later SABnzbd generation, never
+// to track a gonzbd release.
 //
-// Sonarr and Radarr share one Sabnzbd.cs, which parses this with an unanchored
+// Sonarr and Radarr each carry a Sabnzbd.cs whose version handling was
+// identical when this was written (checked against both projects' `develop`
+// branches on 2026-09-07). It parses this with an unanchored
 // `(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+|x)` and rejects a non-match as
 // "Unknown Version: <raw>". Two gates then read the parsed value:
 //
