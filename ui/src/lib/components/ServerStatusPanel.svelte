@@ -108,21 +108,34 @@
 		return servers.reduce((sum, s) => sum + s.bps, 0);
 	}
 
+	// Capacity totals cover only enabled servers. A disabled one has no
+	// connection workers and no connection slots — the downloader skips it
+	// entirely at startup — so counting its configured connections would
+	// report capacity the daemon will never open.
+	//
+	// The test is `enabled`, not `active`. A penalized or deactivated server
+	// is still enabled: its workers exist and it re-enters the pool when the
+	// penalty expires, so its connections are real capacity that is
+	// momentarily idle. Filtering on `active` would make the denominator
+	// shrink and grow as servers are penalized, which is what the total is
+	// meant to be measured against.
+	let enabledServers = $derived(servers.filter((s) => s.enabled));
+
 	function totalActiveConns(): number {
-		return servers.reduce((sum, s) => sum + s.active_conns, 0);
+		return enabledServers.reduce((sum, s) => sum + s.active_conns, 0);
 	}
 
 	// Articles on the wire, which is not the same as busy connections:
 	// pipelining_requests > 1 lets one connection carry several at once.
 	function totalInFlight(): number {
-		return servers.reduce(
+		return enabledServers.reduce(
 			(sum, s) => sum + s.connections.reduce((n, c) => n + c.in_flight, 0),
 			0
 		);
 	}
 
 	function totalMaxConns(): number {
-		return servers.reduce((sum, s) => sum + s.max_connections, 0);
+		return enabledServers.reduce((sum, s) => sum + s.max_connections, 0);
 	}
 </script>
 

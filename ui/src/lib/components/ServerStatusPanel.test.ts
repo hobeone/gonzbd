@@ -27,7 +27,7 @@ function conn(over: Partial<ConnSnapshot> = {}): ConnSnapshot {
 	};
 }
 
-function server(conns: ConnSnapshot[]): ServerSnapshot {
+function server(conns: ConnSnapshot[], over: Partial<ServerSnapshot> = {}): ServerSnapshot {
 	return {
 		name: 'news.example.com',
 		host: 'news.example.com',
@@ -45,9 +45,56 @@ function server(conns: ConnSnapshot[]): ServerSnapshot {
 		penalty_until: 0,
 		bps: 1024,
 		total_bytes: 4096,
-		connections: conns
+		connections: conns,
+		...over
 	};
 }
+
+describe('ServerStatusPanel capacity totals', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it('leaves a disabled server out of the connection total', () => {
+		vi.mocked(getServerStats).mockReturnValue([
+			server([conn({ index: 0, article_id: 'a@h', subject: 'f.rar', in_flight: 1 }), conn({ index: 1 })]),
+			// Disabled: 60 configured connections the daemon will never open.
+			// It gets no connActivity entries at all, hence the empty list.
+			// Server.Active() returns false whenever Enable is false, so a
+			// realistic disabled snapshot carries active: false too.
+			server([], {
+				name: 'disabled.example.com',
+				enabled: false,
+				active: false,
+				max_connections: 60,
+				active_conns: 0
+			})
+		]);
+
+		render(ServerStatusPanel, { open: true });
+
+		expect(screen.getByText('1 / 2')).toBeTruthy();
+		expect(screen.queryByText('1 / 62')).toBeNull();
+	});
+
+	it('counts an enabled server that is merely penalized', () => {
+		vi.mocked(getServerStats).mockReturnValue([
+			server([conn({ index: 0, article_id: 'a@h', subject: 'f.rar', in_flight: 1 })]),
+			// Penalized, not disabled: its workers exist and it will come
+			// back, so its capacity is still real.
+			server([conn({ index: 0 })], {
+				name: 'penalized.example.com',
+				active: false,
+				penalty_until: Math.floor(Date.now() / 1000) + 300,
+				active_conns: 0
+			})
+		]);
+
+		render(ServerStatusPanel, { open: true });
+
+		expect(screen.getByText('1 / 2')).toBeTruthy();
+	});
+});
 
 describe('ServerStatusPanel pipelining display', () => {
 	beforeEach(() => {
