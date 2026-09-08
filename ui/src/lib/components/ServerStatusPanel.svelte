@@ -127,8 +127,10 @@
 
 	let totalActiveConns = $derived(enabledServers.reduce((sum, s) => sum + s.active_conns, 0));
 
-	// Articles on the wire, which is not the same as busy connections:
-	// pipelining_requests > 1 lets one connection carry several at once.
+	// Articles being handled, which is not the same as busy connections:
+	// pipelining_requests > 1 lets one connection hold several at once.
+	// See ConnSnapshot.in_flight — this spans decode time as well as wire
+	// time, so it can exceed pipelining_requests per connection.
 	let totalInFlight = $derived(
 		enabledServers.reduce((sum, s) => sum + s.connections.reduce((n, c) => n + c.in_flight, 0), 0)
 	);
@@ -337,7 +339,7 @@
 												{#if conn.in_flight > 1}
 													<span
 														class="flex-shrink-0 rounded-full bg-m3-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-m3-primary"
-														title="{conn.in_flight} articles pipelined on this connection; the one named is the oldest"
+														title="{conn.in_flight} articles in hand on this connection (fetching or decoding); the one named is the oldest"
 													>
 														×{conn.in_flight}
 													</span>

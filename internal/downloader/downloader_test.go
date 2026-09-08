@@ -964,7 +964,7 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 // TestConnActivity_PipelinedSlotBusyUntilLastArticle pins the invariant that
 // broke the UI's connection counter: with pipelining_requests > 1, several
 // handleRequest goroutines share one workerID, and the first to finish must
-// not mark the whole connection idle while the others are still on the wire.
+// not mark the whole connection idle while the others are still in hand.
 //
 // Before the fix, clearConnActivity reset the slot's single article/subject/
 // bytes/since cell, so ActiveConns dropped to 0 here while two articles were
@@ -992,10 +992,10 @@ func TestConnActivity_PipelinedSlotBusyUntilLastArticle(t *testing.T) {
 	}
 	snap := d.ServerStatus()[0]
 	if snap.ActiveConns != 1 {
-		t.Fatalf("ActiveConns with 3 articles on the wire = %d; want 1", snap.ActiveConns)
+		t.Fatalf("ActiveConns with 3 articles in hand = %d; want 1", snap.ActiveConns)
 	}
 	if snap.Connections[0].InFlight != 3 {
-		t.Errorf("InFlight with 3 articles on the wire = %d; want 3", snap.Connections[0].InFlight)
+		t.Errorf("InFlight with 3 articles in hand = %d; want 3", snap.Connections[0].InFlight)
 	}
 
 	// The first article lands. Two are still outstanding, so the
