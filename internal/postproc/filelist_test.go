@@ -297,22 +297,15 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 	t.Run("recovered: an already-undeferred volume must not read as could-not-verify", func(t *testing.T) {
 		// Two recovery volumes, only one undeferred: Par2Recovered() reads
 		// true (undeferRecovery sets it on any change) while the other
-		// volume is still held, so heldVols > 0 too. That combination is
-		// what pins the new case's `!p.Par2Recovered()` conjunct — drop it
-		// and heldVols>0 && HasPar2Verdict() alone starts matching here,
-		// which it must not: a job that already has a repair verdict is not
-		// the "could not verify" state that case exists to report.
+		// volume is still held, so heldVols > 0 too.
 		//
-		// The plain `case heldVols > 0:` fallback (unconditional on
-		// Par2Recovered) intercepts this fixture ahead of `case
-		// recoveryVols > 0 && p.Par2Recovered():`, so the correct-code
-		// output actually observed here is "verified clean", not "fetched
-		// ... for repair" — that ordering is pre-existing (unconditional on
-		// UndeferRecoveryVolumes always releasing every deferred index at
-		// once, so filelist.go never sees this state from app.go) and out
-		// of this task's scope. What this test pins is narrower and
-		// sufficient: the new case must not fire and claim "could not
-		// verify" for a job a verdict already released volumes for.
+		// That combination verifies that:
+		// 1. The first case's `!p.Par2Recovered()` conjunct excludes this job
+		//    from reporting "could not verify".
+		// 2. The second case `recoveryVols > 0 && p.Par2Recovered():` intercepts
+		//    this job ahead of the bare `case heldVols > 0:` fallback, so
+		//    a partially un-deferred job reports fetched volumes rather than
+		//    mislabelling as "verified clean" (#505).
 		dir := t.TempDir()
 		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
@@ -330,6 +323,12 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if strings.Contains(got, "could not verify") {
 			t.Errorf("a job whose verdict already released volumes must not read as could-not-verify; got:\n%s", got)
+		}
+		if strings.Contains(got, "verified clean") {
+			t.Errorf("a job whose recovery volumes were un-deferred must not report verified clean (#505); got:\n%s", got)
+		}
+		if !strings.Contains(got, "⚠ Par2: fetched 1 recovery volume(s) for repair (reason: repair needed)") {
+			t.Errorf("expected fetched 1 recovery volume line; got:\n%s", got)
 		}
 	})
 

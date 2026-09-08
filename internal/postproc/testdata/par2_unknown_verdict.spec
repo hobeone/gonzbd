@@ -24,3 +24,14 @@ file internal/postproc/filelist.go
 --- replace
 	case heldVols > 0 && p.HasPar2Verdict():
 --- end
+
+# Neutering the recovered-volumes arm collapses partially un-deferred jobs
+# into the clean case, which is the mislabel #505 removes.
+[the recovered-volumes arm is neutered]
+file internal/postproc/filelist.go
+--- anchor
+	case recoveryVols > 0 && p.Par2Recovered():
+--- replace
+	case false:
+--- end
+
