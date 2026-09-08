@@ -646,6 +646,20 @@ func TestHandleWS(t *testing.T) {
 		}
 	})
 
+	t.Run("guard lives in the handler, not the router", func(t *testing.T) {
+		// Calling handleWS directly, bypassing Handler(), pins that the
+		// LevelProtected check is the handler's own. The router-level
+		// subtests above would still pass if the guard were middleware,
+		// leaving any future direct registration of handleWS unprotected.
+		t.Parallel()
+		s := testServer()
+		rr := httptest.NewRecorder()
+		s.handleWS(rr, httptest.NewRequest("GET", "/api/ws", nil))
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("status = %d; want 403 Forbidden", rr.Code)
+		}
+	})
+
 	t.Run("forbidden with wrong apikey", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := config.Default()

@@ -121,11 +121,16 @@ func TestAPI_OpenModes(t *testing.T) {
 		checkVal   any
 	}{
 		{
+			// Not "integration-test", the build version this server was
+			// constructed with: mode=version reports the SABnzbd API
+			// generation gonzbd implements (api.sabnzbdAPIVersion), because
+			// SABnzbd clients feature-gate on it. Pinning the literal here is
+			// deliberate — this is a wire contract a third-party client reads.
 			name:       "version no key",
 			query:      "mode=version",
 			wantStatus: http.StatusOK,
 			checkKey:   "version",
-			checkVal:   "integration-test",
+			checkVal:   "4.5.3",
 		},
 		{
 			name:       "auth no key",

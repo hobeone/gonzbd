@@ -836,8 +836,16 @@ func TestAPIVersionEndpoint(t *testing.T) {
 	if body == "" {
 		t.Error("empty API response body")
 	}
-	if !strings.Contains(body, "test-uitest") {
-		t.Errorf("version response should contain 'test-uitest'; got: %s", body)
+	// Not the "test-uitest" build version this harness starts the server
+	// with: mode=version reports the SABnzbd API generation gonzbd
+	// implements (api.sabnzbdAPIVersion), which SABnzbd clients feature-gate
+	// on. The build version is served by mode=about, mode=status_overview and
+	// mode=status&name=build_info.
+	if !strings.Contains(body, `"version":"4.5.3"`) {
+		t.Errorf(`version response should contain "version":"4.5.3"; got: %s`, body)
+	}
+	if strings.Contains(body, "test-uitest") {
+		t.Errorf("version response leaked the build version; got: %s", body)
 	}
 	t.Logf("API version response: %s", body)
 }

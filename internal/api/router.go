@@ -124,9 +124,34 @@ func (s *Server) registerModes() {
 	}
 }
 
-// modeVersion returns the server version. No auth required.
+// sabnzbdAPIVersion is the SABnzbd release whose API generation gonzbd
+// implements. It is deliberately NOT gonzbd's own build version: mode=version
+// is a protocol-generation identifier that clients feature-gate on. Bump it
+// when gonzbd's API surface actually reaches a later SABnzbd generation, never
+// to track a gonzbd release.
+//
+// Sonarr and Radarr each carry a Sabnzbd.cs whose version handling was
+// identical when this was written (checked against both projects' `develop`
+// branches on 2026-09-07). It parses this with an unanchored
+// `(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+|x)` and rejects a non-match as
+// "Unknown Version: <raw>". Two gates then read the parsed value:
+//
+//   - TestConnectionAndVersion requires Major >= 1 or Minor >= 7.
+//   - GetCategories requires HasVersion(2, 0) before it will resolve a
+//     relative complete_dir via mode=fullstatus. Below 2.0 it reads
+//     default_root_folder off mode=queue instead, which gonzbd never emits
+//     (`git grep -n 'root_folder["]' -- '*.go'` finds 0 — the bracket keeps
+//     the pattern from matching its own comment).
+//
+// Reporting the build version failed both: "dev" matched no digits, and a
+// pre-1.0 tag would parse yet still fall short of each threshold.
+const sabnzbdAPIVersion = "4.5.3"
+
+// modeVersion returns the SABnzbd API generation gonzbd implements. No auth
+// required. gonzbd's own build version is reported by mode=about,
+// mode=status_overview and mode=status&name=build_info instead.
 func (s *Server) modeVersion(w http.ResponseWriter, _ *http.Request) {
-	respondOK(w, "version", s.version)
+	respondOK(w, "version", sabnzbdAPIVersion)
 }
 
 // modeAuth validates the supplied API key and returns its type.
