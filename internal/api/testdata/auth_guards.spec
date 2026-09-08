@@ -48,3 +48,19 @@ file internal/api/router.go
 --- replace
 		"version": {handler: s.modeVersion, level: LevelProtected},
 --- end
+
+[a mode registered with a handler dispatch would panic on]
+file internal/api/router.go
+--- anchor
+		"health":  {handler: s.modeHealth, level: LevelOpen},
+--- replace
+		"health":  {handler: nil, level: LevelOpen},
+--- end
+
+[a mode gated at a level no caller can satisfy]
+file internal/api/router.go
+--- anchor
+		"queue":        {handler: s.modeQueue, level: LevelProtected},
+--- replace
+		"queue":        {handler: s.modeQueue, level: 99},
+--- end

@@ -652,11 +652,7 @@ func TestHandleWS(t *testing.T) {
 		// subtests above would still pass if the guard were middleware,
 		// leaving any future direct registration of handleWS unprotected.
 		t.Parallel()
-		cfg, err := config.Default()
-		if err != nil {
-			t.Fatalf("Default(): %v", err)
-		}
-		s := testServerWithConfig(t, cfg)
+		s := testServer()
 		rr := httptest.NewRecorder()
 		s.handleWS(rr, httptest.NewRequest("GET", "/api/ws", nil))
 		if rr.Code != http.StatusForbidden {

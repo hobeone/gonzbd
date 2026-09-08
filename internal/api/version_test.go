@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -25,13 +24,17 @@ import (
 // "Unknown Version: <raw>".
 var sonarrVersionRegex = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+|x)`)
 
-// buildVersions are the build-version strings that must not reach a SABnzbd
-// API client. "dev" is cmd/gonzbd/main.go's local-build default and is what
-// Sonarr rejected in the field ("Unknown Version: dev"); it matches no digits
-// and is not the literal "develop" that Sonarr special-cases to 3.0.0.
+// buildVersions returns the build-version strings that must not reach a
+// SABnzbd API client. "dev" is cmd/gonzbd/main.go's local-build default and is
+// what Sonarr rejected in the field ("Unknown Version: dev"); it matches no
+// digits and is not the literal "develop" that Sonarr special-cases to 3.0.0.
 // "v0.1.0" is the near miss — it parses, but as major 0 it fails Sonarr's
 // gates just as completely, which is why tagging a release is not the fix.
-var buildVersions = []string{"dev", "v0.1.0", "1.0.0-test", ""}
+//
+// A function rather than a package-level var so each caller gets its own
+// slice: the tests below run in parallel, and a shared one would be a seam
+// for a future edit to mutate under them.
+func buildVersions() []string { return []string{"dev", "v0.1.0", "1.0.0-test", ""} }
 
 // TestModeVersion_SatisfiesSonarrVersionGate pins the client contract rather
 // than the constant: mode=version must parse under Sonarr's regex and clear
@@ -41,7 +44,7 @@ var buildVersions = []string{"dev", "v0.1.0", "1.0.0-test", ""}
 // s.version.
 func TestModeVersion_SatisfiesSonarrVersionGate(t *testing.T) {
 	t.Parallel()
-	for _, bv := range buildVersions {
+	for _, bv := range buildVersions() {
 		t.Run("build="+bv, func(t *testing.T) {
 			t.Parallel()
 			s := New(Options{Version: bv})
@@ -86,7 +89,7 @@ func TestModeVersion_SatisfiesSonarrVersionGate(t *testing.T) {
 // default reach Sonarr, and would break clients again on any pre-1.0 tag.
 func TestModeVersion_DecoupledFromBuildVersion(t *testing.T) {
 	t.Parallel()
-	for _, bv := range buildVersions {
+	for _, bv := range buildVersions() {
 		t.Run("build="+bv, func(t *testing.T) {
 			t.Parallel()
 			s := New(Options{Version: bv})
@@ -112,16 +115,14 @@ func TestModeVersion_IgnoresRequest(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "/api?mode=version&version=9.9.9", nil),
 		httptest.NewRequest(http.MethodPost, "/api?mode=version&apikey="+testAPIKey, nil),
 	}
-	for i, req := range reqs {
-		rr := httptest.NewRecorder()
-		s.modeVersion(rr, req)
-		var m map[string]any
-		if err := json.NewDecoder(rr.Body).Decode(&m); err != nil {
-			t.Fatalf("req %d: decode: %v", i, err)
-		}
-		if m["version"] != sabnzbdAPIVersion {
-			t.Errorf("req %d (%s %s): version = %v; want %v",
-				i, req.Method, req.URL, m["version"], sabnzbdAPIVersion)
-		}
+	for _, req := range reqs {
+		t.Run(req.Method+" "+req.URL.RawQuery, func(t *testing.T) {
+			t.Parallel()
+			rr := httptest.NewRecorder()
+			s.modeVersion(rr, req)
+			if got := decodeJSON(t, rr)["version"]; got != sabnzbdAPIVersion {
+				t.Errorf("version = %v; want %v", got, sabnzbdAPIVersion)
+			}
+		})
 	}
 }

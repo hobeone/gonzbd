@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -246,14 +245,42 @@ func TestModeAuth_ClassifiesKeys(t *testing.T) {
 			}
 			rr := httptest.NewRecorder()
 			s.modeAuth(rr, httptest.NewRequest(http.MethodGet, url, nil))
-			var m map[string]any
-			if err := json.NewDecoder(rr.Body).Decode(&m); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
+			m := decodeJSON(t, rr)
 			if m["auth"] != tc.want {
 				t.Errorf("auth = %v; want %v", m["auth"], tc.want)
 			}
 		})
+	}
+}
+
+// TestRegisterModes_EveryEntryIsDispatchable calls registerModes directly and
+// checks the whole table rather than one entry. dispatch invokes
+// entry.handler(w, r) at router.go:61 with no nil guard, so a mode registered
+// with a nil handler panics on the first request that names it instead of
+// failing anything at build time. The levels are checked against the three
+// AccessLevel constants for the same reason: an unrecognized level would
+// silently gate a mode at something no caller can satisfy.
+func TestRegisterModes_EveryEntryIsDispatchable(t *testing.T) {
+	t.Parallel()
+	s := New(Options{Version: "1.0.0-test"})
+	s.registerModes()
+
+	if len(s.modes) == 0 {
+		t.Fatal("registerModes populated no modes")
+	}
+	for name, entry := range s.modes {
+		if name == "" {
+			t.Error("a mode is registered under the empty name")
+		}
+		if entry.handler == nil {
+			t.Errorf("mode %q has a nil handler; dispatch would panic on it", name)
+		}
+		switch entry.level {
+		case LevelOpen, LevelProtected, LevelAdmin:
+		default:
+			t.Errorf("mode %q has level %d, which is not one of the three "+
+				"AccessLevel constants", name, entry.level)
+		}
 	}
 }
 
@@ -264,8 +291,9 @@ func TestModeAuth_ClassifiesKeys(t *testing.T) {
 // the version handshake it expects.
 func TestRegisterModes_VersionIsOpen(t *testing.T) {
 	t.Parallel()
+	// New calls registerModes at server.go:147; calling it again here would
+	// mask a regression in New that skipped registration.
 	s := New(Options{Version: "1.0.0-test"})
-	s.registerModes()
 
 	entry, ok := s.modes["version"]
 	if !ok {
