@@ -111,30 +111,35 @@ func buildDownloadFileList(j *Job) []string {
 		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
 			heldVols, reasonStr))
+	case recoveryVols > 0 && p.Par2Recovered():
+		// Volumes were un-deferred and fetched because repair was needed.
+		// This arm sits ahead of case heldVols > 0: so that partially
+		// un-deferred jobs report that recovery volumes were fetched for
+		// repair rather than falling into the bare heldVols > 0 arm and
+		// claiming "verified clean" (#505).
+		fetchedVols := recoveryVols - heldVols
+		reasonStr := ""
+		if p.Par2ReleaseReason() != "" {
+			reasonStr = fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
+		}
+		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair%s", fetchedVols, reasonStr))
 	case heldVols > 0:
-		// Still withheld at finalize. This arm is reached three ways, and
-		// "only when HasPar2Verdict() is false" is NOT one of them — that
-		// phrasing was tried and is false:
+		// Still withheld at finalize. This arm is reached only two ways,
+		// since Par2Recovered() is false here (the arm above intercepts any
+		// job where recovery volumes were fetched, including partial
+		// un-deferral):
 		//
 		//  (a) on-demand par2 never ran (fetch policy off, or the job
 		//      finalized before verification) — HasPar2Verdict() is false.
 		//  (b) the clean-verdict path discarded the volumes without
 		//      recording a reason (outcomeClean never calls
 		//      SetPar2ReleaseReason) — HasPar2Verdict() is false.
-		//  (c) a verdict-bearing job whose recovery volumes were only
-		//      PARTIALLY un-deferred: Par2Recovered() is true (set on any
-		//      change by undeferRecovery), so the case above's
-		//      !p.Par2Recovered() conjunct excludes it, and some volumes
-		//      are still held — HasPar2Verdict() is true.
 		//
-		// (c) reports "verified clean" for a job a verdict already found
-		// damage in, which is the same class of mislabel the case above
-		// exists to remove — reordering the switch to fix it is deliberately
-		// NOT done here (tracked as issue #505; moving the `recoveryVols > 0
-		// && p.Par2Recovered()` case above this one and re-running `go test
-		// ./...` broke nothing in this suite, so no test currently pins the
-		// order — the fix is deferred on scope, not on test coupling). It is
-		// not reached today: undeferRecovery is the only active mutation that sets
+		// The partial un-defer case (formerly latent (c), where a verdict-bearing
+		// job had only some recovery volumes un-deferred so heldVols > 0 and
+		// Par2Recovered() is true) is now intercepted by
+		// case recoveryVols > 0 && p.Par2Recovered(): above (#505).
+		// undeferRecovery is the only active mutation that sets
 		// par2Recovered to true (`git grep -n 'par2Recovered = true' internal/job/`
 		// finds one line; UnmarshalJSON restores it from persisted state, and
 		// ResetForRetry resets it to false — `git grep -n 'par2Recovered =' internal/job/`
@@ -151,16 +156,9 @@ func buildDownloadFileList(j *Job) []string {
 		// seam on UndeferRecoveryVolumes' fileIdxs parameter.
 		//
 		// (a) and (b) both leave the bytes never fetched, which is what
-		// this line reports; (c) is the latent exception.
+		// this line reports.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
-	case recoveryVols > 0 && p.Par2Recovered():
-		// Volumes were un-deferred and fetched because repair was needed.
-		reasonStr := ""
-		if p.Par2ReleaseReason() != "" {
-			reasonStr = fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
-		}
-		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair%s", recoveryVols, reasonStr))
 	}
 
 	// Per-file download completion. Lets the user see exactly which files
