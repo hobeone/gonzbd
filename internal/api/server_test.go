@@ -193,8 +193,8 @@ func TestModeVersion_NoAuth(t *testing.T) {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
 	m := decodeJSON(t, rr)
-	if m["version"] != "1.0.0-test" {
-		t.Errorf("version = %v; want 1.0.0-test", m["version"])
+	if m["version"] != sabnzbdAPIVersion {
+		t.Errorf("version = %v; want %v", m["version"], sabnzbdAPIVersion)
 	}
 }
 
@@ -413,8 +413,8 @@ func TestModeFromURLEncodedFormBody(t *testing.T) {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
 	m := decodeJSON(t, rr)
-	if m["version"] != "1.0.0-test" {
-		t.Errorf("version = %v; want 1.0.0-test", m["version"])
+	if m["version"] != sabnzbdAPIVersion {
+		t.Errorf("version = %v; want %v", m["version"], sabnzbdAPIVersion)
 	}
 }
 
@@ -437,8 +437,8 @@ func TestModeFromMultipartFormBody(t *testing.T) {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
 	m := decodeJSON(t, rr)
-	if m["version"] != "1.0.0-test" {
-		t.Errorf("version = %v; want 1.0.0-test", m["version"])
+	if m["version"] != sabnzbdAPIVersion {
+		t.Errorf("version = %v; want %v", m["version"], sabnzbdAPIVersion)
 	}
 }
 

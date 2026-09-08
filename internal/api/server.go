@@ -18,7 +18,16 @@ import (
 
 // Options configures the API server at construction time.
 type Options struct {
-	// Version is the application version string returned by mode=version.
+	// Version is gonzbd's own build version (cmd/gonzbd's main.Version,
+	// defaulting to "dev" for a local build). It is NOT what mode=version
+	// returns — that reports the SABnzbd API generation, because clients
+	// feature-gate on it; see sabnzbdAPIVersion in router.go.
+	//
+	// It reaches clients through mode=about, mode=status_overview,
+	// mode=status&name=build_info and the GitHub update check:
+	// `git grep -n 's[.]version' -- 'internal/api/*.go' ':(exclude)internal/api/*_test.go'`
+	// finds 6 — one read in each of about.go, statusbuildinfo.go and
+	// statusoverview.go, and three in versioncheck.go.
 	Version string
 	// Commit is the short git SHA of the build.
 	Commit string

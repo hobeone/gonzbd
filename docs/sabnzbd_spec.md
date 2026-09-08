@@ -885,7 +885,7 @@ Error:
 | Mode | Parameters | Response | Description |
 |------|-----------|----------|-------------|
 | `fullstatus` | `skip_dashboard` | Full status JSON | All queue, server, stats |
-| `version` | | version string | SABnzbd version |
+| `version` | | version string | The SABnzbd API generation gonzbd implements, as a constant (`sabnzbdAPIVersion` in `internal/api/router.go`), **not** gonzbd's own build version. Clients feature-gate on it: Sonarr and Radarr reject an unparseable string as "Unknown Version", and take a legacy `default_root_folder` path below 2.0. gonzbd's build version is reported by `about`, `status_overview` and `status&name=build_info`. |
 | `auth` | | auth type | Validate API key |
 | `warnings` | | warnings list | Recent warnings |
 | `showlog` | | streaming text | Tail the log |
