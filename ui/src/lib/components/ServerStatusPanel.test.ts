@@ -77,6 +77,24 @@ describe('ServerStatusPanel capacity totals', () => {
 		expect(screen.queryByText('1 / 62')).toBeNull();
 	});
 
+	it('shows a disabled server no connection capacity in its own row', () => {
+		vi.mocked(getServerStats).mockReturnValue([
+			server([], {
+				name: 'disabled.example.com',
+				enabled: false,
+				active: false,
+				max_connections: 60,
+				active_conns: 0
+			})
+		]);
+
+		render(ServerStatusPanel, { open: true });
+
+		// "0/60 conns" would advertise 60 slots that were never allocated.
+		expect(screen.queryByText('0/60 conns')).toBeNull();
+		expect(screen.getByText('Disabled')).toBeTruthy();
+	});
+
 	it('counts an enabled server that is merely penalized', () => {
 		vi.mocked(getServerStats).mockReturnValue([
 			server([conn({ index: 0, article_id: 'a@h', subject: 'f.rar', in_flight: 1 })]),

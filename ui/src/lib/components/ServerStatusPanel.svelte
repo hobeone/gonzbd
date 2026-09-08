@@ -104,9 +104,13 @@
 		return `${secs}s`;
 	}
 
-	function totalBps(): number {
-		return servers.reduce((sum, s) => sum + s.bps, 0);
-	}
+	// The aggregates below are $derived rather than functions because the
+	// template reads several of them more than once per render — totalBps
+	// once for the tile and again per server inside the {#each}, and
+	// totalActiveConns/totalInFlight twice each around the in-flight line.
+	// A function call in markup is re-run on every one of those reads;
+	// $derived computes once per update.
+	let totalBps = $derived(servers.reduce((sum, s) => sum + s.bps, 0));
 
 	// Capacity totals cover only enabled servers. A disabled one has no
 	// connection workers and no connection slots — the downloader skips it
@@ -121,22 +125,15 @@
 	// meant to be measured against.
 	let enabledServers = $derived(servers.filter((s) => s.enabled));
 
-	function totalActiveConns(): number {
-		return enabledServers.reduce((sum, s) => sum + s.active_conns, 0);
-	}
+	let totalActiveConns = $derived(enabledServers.reduce((sum, s) => sum + s.active_conns, 0));
 
 	// Articles on the wire, which is not the same as busy connections:
 	// pipelining_requests > 1 lets one connection carry several at once.
-	function totalInFlight(): number {
-		return enabledServers.reduce(
-			(sum, s) => sum + s.connections.reduce((n, c) => n + c.in_flight, 0),
-			0
-		);
-	}
+	let totalInFlight = $derived(
+		enabledServers.reduce((sum, s) => sum + s.connections.reduce((n, c) => n + c.in_flight, 0), 0)
+	);
 
-	function totalMaxConns(): number {
-		return enabledServers.reduce((sum, s) => sum + s.max_connections, 0);
-	}
+	let totalMaxConns = $derived(enabledServers.reduce((sum, s) => sum + s.max_connections, 0));
 </script>
 
 {#if open}
@@ -171,14 +168,14 @@
 		<div class="grid grid-cols-3 gap-3 border-b border-m3-outline/10 bg-m3-surface-variant/20 px-6 py-3.5">
 			<div class="text-center">
 				<div class="text-xs font-semibold uppercase tracking-wider text-m3-primary">Speed</div>
-				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{formatBps(totalBps())}</div>
+				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{formatBps(totalBps)}</div>
 			</div>
 			<div class="text-center">
 				<div class="text-xs font-semibold uppercase tracking-wider text-m3-primary">Active</div>
-				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{totalActiveConns()} / {totalMaxConns()}</div>
-				{#if totalInFlight() > totalActiveConns()}
+				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{totalActiveConns} / {totalMaxConns}</div>
+				{#if totalInFlight > totalActiveConns}
 					<div class="text-[10px] font-medium text-m3-on-surface-variant/70">
-						{totalInFlight()} articles in flight
+						{totalInFlight} articles in flight
 					</div>
 				{/if}
 			</div>
@@ -199,7 +196,7 @@
 			{#each servers as server (server.name)}
 				{@const penalty = formatPenalty(server.penalty_until)}
 				{@const isExpanded = expandedServers.has(server.name)}
-				{@const aggrBps = totalBps()}
+				{@const aggrBps = totalBps}
 				{@const speedPct = aggrBps > 0 ? (server.bps / aggrBps) * 100 : 0}
 
 				<div class="overflow-hidden rounded-2xl border border-m3-outline/20 bg-m3-surface-variant/10">
@@ -244,7 +241,14 @@
 							<div class="flex-shrink-0 text-right">
 								<div class="text-sm font-bold text-m3-on-surface">{formatBps(server.bps)}</div>
 								<div class="text-xs text-m3-on-surface-variant/85 font-medium">
-									{server.active_conns}/{server.max_connections} conns
+									{#if server.enabled}
+										{server.active_conns}/{server.max_connections} conns
+									{:else}
+										<!-- Not "0/N conns": the downloader allocates a disabled
+										     server no connection slots at all, so N would advertise
+										     capacity that does not exist. -->
+										Disabled
+									{/if}
 								</div>
 							</div>
 
