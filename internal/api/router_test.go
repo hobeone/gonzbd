@@ -215,7 +215,15 @@ func TestHandleAPI_CookieAuth_GET_StateChangingClassification(t *testing.T) {
 }
 
 // TestModeAuth_ClassifiesKeys calls modeAuth directly and walks every branch
-// of its classification. The empty-key case is the surprising one: it answers
+// of its classification.
+//
+// It coexists with TestModeAuth_{ValidKey,NZBKey,BadKey,NoKey} in
+// server_test.go deliberately, and the pair is not redundant: those reach the
+// handler through apiGet -> Handler(), so they cover mode dispatch and the
+// auth middleware as well, while this one exercises the handler alone. The
+// direct call is also what check_test_alignment requires — removing it
+// reports modeAuth as an untested helper, since no other test in the package
+// names it. The empty-key case is the surprising one: it answers
 // "apikey" rather than "badkey", matching Python's _api_auth, so a client
 // probing without credentials is told the server uses key auth rather than
 // being told its (absent) key is wrong.
