@@ -915,8 +915,8 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 	if ca == nil {
 		t.Fatal("connActivity entry not found for", wid)
 	}
-	if ca.ArticleID != "" {
-		t.Errorf("initial ArticleID = %q; want empty", ca.ArticleID)
+	if _, busy := ca.oldest(); busy {
+		t.Errorf("initial slot reports busy; want idle")
 	}
 
 	// Set activity.
@@ -929,32 +929,115 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 	d.setConnActivity(wid, req)
 
 	d.connActivityMu.RLock()
-	ca = d.connActivity[wid]
+	got, busy := d.connActivity[wid].oldest()
 	d.connActivityMu.RUnlock()
-	if ca.ArticleID != "art@example.com" {
-		t.Errorf("ArticleID = %q; want art@example.com", ca.ArticleID)
+	if !busy {
+		t.Fatal("slot reports idle after setConnActivity")
 	}
-	if ca.Subject != "My File.rar" {
-		t.Errorf("Subject = %q; want My File.rar", ca.Subject)
+	if got.req != req {
+		t.Errorf("oldest() returned a different request than the one set")
 	}
-	if ca.Bytes != 5000 {
-		t.Errorf("Bytes = %d; want 5000", ca.Bytes)
+	if got.req.messageID != "art@example.com" {
+		t.Errorf("messageID = %q; want art@example.com", got.req.messageID)
 	}
-	if ca.Since.IsZero() {
-		t.Error("Since should be set")
+	if got.req.subject != "My File.rar" {
+		t.Errorf("subject = %q; want My File.rar", got.req.subject)
+	}
+	if got.req.bytes != 5000 {
+		t.Errorf("bytes = %d; want 5000", got.req.bytes)
+	}
+	if got.since.IsZero() {
+		t.Error("since should be set")
 	}
 
 	// Clear activity.
-	d.clearConnActivity(wid)
+	d.clearConnActivity(wid, req)
 
 	d.connActivityMu.RLock()
-	ca = d.connActivity[wid]
+	_, busy = d.connActivity[wid].oldest()
 	d.connActivityMu.RUnlock()
-	if ca.ArticleID != "" {
-		t.Errorf("cleared ArticleID = %q; want empty", ca.ArticleID)
+	if busy {
+		t.Error("slot reports busy after its only article was cleared")
 	}
-	if !ca.Since.IsZero() {
-		t.Error("cleared Since should be zero")
+}
+
+// TestConnActivity_PipelinedSlotBusyUntilLastArticle pins the invariant that
+// broke the UI's connection counter: with pipelining_requests > 1, several
+// handleRequest goroutines share one workerID, and the first to finish must
+// not mark the whole connection idle while the others are still in hand.
+//
+// Before the fix, clearConnActivity reset the slot's single article/subject/
+// bytes/since cell, so ActiveConns dropped to 0 here while two articles were
+// still outstanding — a 60-connection server read as "1 of 60 in use".
+func TestConnActivity_PipelinedSlotBusyUntilLastArticle(t *testing.T) {
+	t.Parallel()
+	disp := newTestDispatcher(t)
+	srv := NewServer(config.ServerConfig{
+		Name:               "pipelined",
+		Host:               "news.example.com",
+		Port:               563,
+		Connections:        1,
+		PipeliningRequests: 4,
+		Enable:             true,
+	})
+	d := New(disp, []*Server{srv}, nil, Options{}, nil)
+
+	wid := "pipelined#0"
+	first := &articleRequest{messageID: "first@h", subject: "a.rar", bytes: 100}
+	second := &articleRequest{messageID: "second@h", subject: "b.rar", bytes: 200}
+	third := &articleRequest{messageID: "third@h", subject: "c.rar", bytes: 300}
+
+	for _, req := range []*articleRequest{first, second, third} {
+		d.setConnActivity(wid, req)
+	}
+	snap := d.ServerStatus()[0]
+	if snap.ActiveConns != 1 {
+		t.Fatalf("ActiveConns with 3 articles in hand = %d; want 1", snap.ActiveConns)
+	}
+	if snap.Connections[0].InFlight != 3 {
+		t.Errorf("InFlight with 3 articles in hand = %d; want 3", snap.Connections[0].InFlight)
+	}
+
+	// The first article lands. Two are still outstanding, so the
+	// connection is still busy.
+	d.clearConnActivity(wid, first)
+	snap = d.ServerStatus()[0]
+	if snap.ActiveConns != 1 {
+		t.Errorf("ActiveConns after 1 of 3 completed = %d; want 1", snap.ActiveConns)
+	}
+	if snap.Connections[0].InFlight != 2 {
+		t.Errorf("InFlight after 1 of 3 completed = %d; want 2", snap.Connections[0].InFlight)
+	}
+	// The slot now reports the oldest survivor, not the completed article
+	// and not the newest.
+	if snap.Connections[0].ArticleID != "second@h" {
+		t.Errorf("reported ArticleID = %q; want second@h", snap.Connections[0].ArticleID)
+	}
+
+	// Out-of-order completion: the newest lands before the oldest.
+	d.clearConnActivity(wid, third)
+	snap = d.ServerStatus()[0]
+	if snap.ActiveConns != 1 {
+		t.Errorf("ActiveConns after 2 of 3 completed = %d; want 1", snap.ActiveConns)
+	}
+	if snap.Connections[0].ArticleID != "second@h" {
+		t.Errorf("reported ArticleID = %q; want second@h", snap.Connections[0].ArticleID)
+	}
+
+	// Last one lands — only now is the connection idle.
+	d.clearConnActivity(wid, second)
+	snap = d.ServerStatus()[0]
+	if snap.ActiveConns != 0 {
+		t.Errorf("ActiveConns after all completed = %d; want 0", snap.ActiveConns)
+	}
+	if snap.Connections[0].ArticleID != "" {
+		t.Errorf("idle ArticleID = %q; want empty", snap.Connections[0].ArticleID)
+	}
+	if snap.Connections[0].SinceUnix != 0 {
+		t.Errorf("idle SinceUnix = %d; want 0", snap.Connections[0].SinceUnix)
+	}
+	if snap.Connections[0].InFlight != 0 {
+		t.Errorf("idle InFlight = %d; want 0", snap.Connections[0].InFlight)
 	}
 }
 

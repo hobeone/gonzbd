@@ -113,6 +113,7 @@ func TestWireContracts(t *testing.T) {
 				"Subject":   "subject",
 				"Bytes":     "bytes",
 				"SinceUnix": "since_unix",
+				"InFlight":  "in_flight",
 				"Connected": "connected",
 			},
 			value: downloader.ConnSnapshot{},

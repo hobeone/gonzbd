@@ -217,10 +217,23 @@ export interface ConfigResponse {
 // Server status debug panel types
 export interface ConnSnapshot {
 	index: number;
+	/** The oldest article this connection has in hand; empty when idle. */
 	article_id: string;
 	subject: string;
 	bytes: number;
+	/** When the oldest in-hand article started — see `in_flight`, this spans decode time too. */
 	since_unix: number;
+	/**
+	 * How many articles this connection's worker is handling right now, on
+	 * the socket or being decoded. With `pipelining_requests > 1` a single
+	 * connection holds several at once, and article_id/subject/bytes/
+	 * since_unix describe only the oldest of them. 0 when idle.
+	 *
+	 * This is NOT a count of articles on the wire, and it can reach
+	 * `2 * pipelining_requests`: the backend adds an entry before dialling
+	 * and removes it after the body is decoded.
+	 */
+	in_flight: number;
 	connected: boolean;
 }
 

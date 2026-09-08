@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,17 +164,76 @@ type Options struct {
 // the per-server work channels are written by the dispatcher and
 // read by workers; the try-list has its own mutex.
 
-// ConnActivity describes what a single NNTP connection worker is doing
-// right now. Written only by the owning connWorker goroutine; read by
-// ServerStatus() under connActivityMu.RLock.
+// inflightArticle is one article a connection slot currently has in hand.
+//
+// "In hand", not "on the wire": setConnActivity runs at the top of
+// handleRequest, before fetchArticle has dialled anything, and the matching
+// clear is deferred to handleRequest's exit — which is after
+// processFetchedArticle has decoded the body. An entry therefore covers the
+// whole unit of work, wire time and decode time alike. See ConnSnapshot.
+//
+// It holds the request rather than copying its message-id, subject and
+// size, because a copy would be a second place for the same values to live
+// and drift. That is safe because an articleRequest is written once and
+// only once: every field is unexported, so nothing outside this package can
+// assign one, and within it there is a single production construction site.
+// `git grep -n 'req := &articleRequest{' -- 'internal/downloader/*.go' ':(exclude)internal/downloader/*_test.go'`
+// finds 2 — tryDispatch's composite literal, and this comment quoting the
+// pattern at itself. Nothing assigns those fields afterwards:
+// `git grep -nE '[.](messageID|subject|bytes) *=' -- 'internal/downloader/*.go' ':(exclude)internal/downloader/*_test.go'`
+// finds 0.
+//
+// The pointer doubles as the entry's identity — tryDispatch allocates a
+// fresh request per dispatch, so it stays unique for the life of the fetch
+// and lets clearConnActivity remove exactly the entry its own handleRequest
+// added.
+type inflightArticle struct {
+	req   *articleRequest
+	since time.Time
+}
+
+// ConnActivity describes what a single NNTP connection slot is doing right
+// now.
+//
+// A slot is not one article. With pipelining_requests N a connWorker runs
+// up to N*2 concurrent handleRequest goroutines that all share one
+// workerID, so several articles can be in hand for one slot at once — N on
+// the wire, bounded by wireSem, and up to another N decoding. inflight
+// holds all of them, which is what makes the slot report busy until the
+// last one lands rather than the first.
+//
+// len(inflight) is therefore bounded by 2*pipelining_requests, not by
+// pipelining_requests. Measured: at pipelining_requests 2 against the mock
+// server with 400 KiB bodies, it peaks at 4.
+//
+// Read by ServerStatus() under connActivityMu.RLock.
 type ConnActivity struct {
 	ServerName string
 	ConnIndex  int
-	ArticleID  string    // message-id being fetched; "" = idle
-	Subject    string    // human-friendly file subject
-	Bytes      int       // expected article size
-	Since      time.Time // when this fetch started; zero = idle
-	Connected  bool      // true when the underlying TCP connection exists
+	Connected  bool // true when the underlying TCP connection exists
+
+	// inflight holds this slot's articles in start order, so index 0 is
+	// the longest-running. Empty means idle. Written by setConnActivity
+	// and clearConnActivity, both under connActivityMu.Lock.
+	inflight []inflightArticle
+}
+
+// oldest returns the longest-running in-flight article for the slot, and
+// whether one exists.
+//
+// ServerStatus reports this one rather than the newest because the newest
+// resets the slot's clock on every pipelined dispatch, which would hide a
+// slow article behind its successors.
+//
+// The elapsed time it yields measures the oldest unit of work start to
+// finish, so a large value means the article is slow to fetch OR slow to
+// decode. It is not a socket-stall signal on its own, because the oldest
+// entry may have left the wire already.
+func (ca *ConnActivity) oldest() (inflightArticle, bool) {
+	if len(ca.inflight) == 0 {
+		return inflightArticle{}, false
+	}
+	return ca.inflight[0], true
 }
 
 // ConnSnapshot is the JSON-serialisable view of a single connection.
@@ -182,11 +242,25 @@ type ConnActivity struct {
 // response (nested in ServerSnapshot.Connections). Do not remove or rename
 // a field without checking internal/api's field-contract test — see #96.
 type ConnSnapshot struct {
-	Index     int    `json:"index"`
+	Index int `json:"index"`
+	// ArticleID, Subject, Bytes and SinceUnix describe the OLDEST article
+	// this connection has in hand. A pipelined connection holds several at
+	// once; InFlight says how many, so a reader can tell "one article" from
+	// "one of four" without the other three needing wire fields of their
+	// own. ArticleID == "" means the connection is idle and InFlight is 0.
+	//
+	// InFlight counts articles the connection worker is handling, which is
+	// NOT the same as articles on the socket. An entry is added before the
+	// dial and removed after the body is decoded, so InFlight spans wire
+	// time and decode time and is bounded by 2*pipelining_requests rather
+	// than by pipelining_requests. SinceUnix inherits that: it measures the
+	// oldest unit of work end to end, not how long the socket has been
+	// waiting.
 	ArticleID string `json:"article_id"`
 	Subject   string `json:"subject"`
 	Bytes     int    `json:"bytes"`
 	SinceUnix int64  `json:"since_unix"`
+	InFlight  int    `json:"in_flight"`
 	Connected bool   `json:"connected"`
 }
 
@@ -267,9 +341,11 @@ type Downloader struct {
 
 	tracker *dispatchTracker
 
-	// connActivityMu guards connActivity. Workers write their own
-	// entry via setConnActivity/clearConnActivity; ServerStatus()
-	// reads all entries under RLock.
+	// connActivityMu guards connActivity and the inflight slice inside
+	// every entry. handleRequest goroutines add and remove their own
+	// article via setConnActivity/clearConnActivity — several of them
+	// share one entry under pipelining — and ServerStatus() reads all
+	// entries under RLock.
 	connActivityMu sync.RWMutex
 	connActivity   map[string]*ConnActivity // key: "serverName#connIndex"
 
@@ -618,28 +694,33 @@ func (d *Downloader) disconnectChanFor(mc *managedConn, inFlight bool) <-chan st
 	return d.disconnectSnapshot()
 }
 
-// setConnActivity records that the worker identified by workerID is
-// now fetching the given article. Called at the start of handleRequest.
+// setConnActivity records that the slot identified by workerID has begun
+// fetching req. Called at the start of handleRequest.
 func (d *Downloader) setConnActivity(workerID string, req *articleRequest) {
 	d.connActivityMu.Lock()
 	if ca, ok := d.connActivity[workerID]; ok {
-		ca.ArticleID = req.messageID
-		ca.Subject = req.subject
-		ca.Bytes = req.bytes
-		ca.Since = time.Now()
+		ca.inflight = append(ca.inflight, inflightArticle{req: req, since: time.Now()})
 	}
 	d.connActivityMu.Unlock()
 }
 
-// clearConnActivity marks the worker as idle. Called via defer at the
-// end of handleRequest.
-func (d *Downloader) clearConnActivity(workerID string) {
+// clearConnActivity removes req from its slot, leaving that slot's other
+// pipelined articles in place. Called via defer at the end of
+// handleRequest.
+//
+// Removing one entry rather than resetting the slot is the whole point:
+// several handleRequest goroutines share a workerID under pipelining, and
+// a reset by whichever finished first marked a busy connection idle while
+// the rest were still in hand.
+func (d *Downloader) clearConnActivity(workerID string, req *articleRequest) {
 	d.connActivityMu.Lock()
 	if ca, ok := d.connActivity[workerID]; ok {
-		ca.ArticleID = ""
-		ca.Subject = ""
-		ca.Bytes = 0
-		ca.Since = time.Time{}
+		for i := range ca.inflight {
+			if ca.inflight[i].req == req {
+				ca.inflight = slices.Delete(ca.inflight, i, i+1)
+				break
+			}
+		}
 	}
 	d.connActivityMu.Unlock()
 }
@@ -697,18 +778,23 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 	d.connActivityMu.RLock()
 	activityByServer := make(map[string][]ConnSnapshot)
 	for _, ca := range d.connActivity {
-		var sinceUnix int64
-		if !ca.Since.IsZero() {
-			sinceUnix = ca.Since.Unix()
-		}
-		activityByServer[ca.ServerName] = append(activityByServer[ca.ServerName], ConnSnapshot{
+		snap := ConnSnapshot{
 			Index:     ca.ConnIndex,
-			ArticleID: ca.ArticleID,
-			Subject:   ca.Subject,
-			Bytes:     ca.Bytes,
-			SinceUnix: sinceUnix,
 			Connected: ca.Connected,
-		})
+		}
+		// A pipelined slot has several articles in hand; report the
+		// oldest. ArticleID staying empty is what marks the slot idle,
+		// and it is how activeCount below counts busy connections.
+		if a, ok := ca.oldest(); ok {
+			snap.ArticleID = a.req.messageID
+			snap.Subject = a.req.subject
+			snap.Bytes = a.req.bytes
+			snap.InFlight = len(ca.inflight)
+			if !a.since.IsZero() {
+				snap.SinceUnix = a.since.Unix()
+			}
+		}
+		activityByServer[ca.ServerName] = append(activityByServer[ca.ServerName], snap)
 	}
 	d.connActivityMu.RUnlock()
 
@@ -738,6 +824,30 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 			conns = []ConnSnapshot{}
 		}
 
+		// Busy CONNECTIONS, not articles in flight: a pipelined
+		// connection carrying several articles contributes one.
+		//
+		// ActiveConns cannot exceed MaxConnections, and that holds by
+		// construction rather than by arithmetic here. New pre-populates
+		// connActivity with max(srv.Connections(), 1) entries for each
+		// ENABLED server, one per workerID, and that is the only insertion
+		// — `git grep -n 'd.connActivity\[wid\] = ' internal/downloader`
+		// finds 1, and `git grep -n 'delete(.*connActivity' internal/downloader`
+		// finds 1, which is this comment quoting the pattern at itself
+		// rather than any code — so len(conns) never moves after startup.
+		//
+		// Two branches make len(conns) and MaxConnections differ, and
+		// neither breaks the inequality:
+		//
+		//   - Disabled server: New allocates it no entries at all, so
+		//     len(conns) is 0 while MaxConnections still reports the
+		//     configured count. activeCount is then 0, which is <= any
+		//     MaxConnections.
+		//   - cfg.Connections < 1: the max(..., 1) above would allocate one
+		//     entry against a MaxConnections of 0, and activeCount could
+		//     reach 1. Unreachable through a validated config —
+		//     config.validate calls positive("connections", ...) — so the
+		//     inequality assumes a server that came through validation.
 		activeCount := 0
 		for _, c := range conns {
 			if c.ArticleID != "" {

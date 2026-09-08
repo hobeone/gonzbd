@@ -599,7 +599,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // (forcing a re-dial on the next call).
 func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string, wireDone func()) {
 	d.setConnActivity(workerID, req)
-	defer d.clearConnActivity(workerID)
+	defer d.clearConnActivity(workerID, req)
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.artIdx)
 
