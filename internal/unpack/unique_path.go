@@ -12,11 +12,7 @@ import (
 // suffix is appended before the extension: "file.txt" → "file_1.txt",
 // "file_1.txt" → "file_2.txt", etc. This mirrors 7z's -aou behavior.
 //
-// Lstat, not Stat: the question is whether anything holds the NAME, and Stat
-// answers about the link's target instead. A symlink to a missing file reads
-// as absent under Stat, so the undecorated name is handed back and the write
-// then follows the link to wherever it points. This mirrors SABnzbd's
-// os.path.exists → os.path.lexists fix in get_unique_filename.
+// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath.
 func uniquePath(destPath string) string {
 	if _, err := os.Lstat(destPath); err != nil {
 		return destPath // doesn't exist, use as-is

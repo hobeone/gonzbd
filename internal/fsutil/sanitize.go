@@ -243,8 +243,10 @@ var maxAttempts = 10_000
 // GetUniqueFilename returns a unique version of the path by appending .1, .2, etc.
 // if the file already exists on disk. Stops after 10,000 attempts to prevent
 // unbounded iteration on pathologically crowded directories.
+//
+// Lstat, not Stat, for the reason given on GetUniqueRelPath.
 func GetUniqueFilename(path string) string {
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Lstat(path); err != nil {
 		// If the file definitely doesn't exist, we can use this path.
 		if errors.Is(err, os.ErrNotExist) {
 			return path
@@ -257,7 +259,7 @@ func GetUniqueFilename(path string) string {
 	base := path[:len(path)-len(ext)]
 	for i := 1; i <= maxAttempts; i++ {
 		newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
-		if _, err := os.Stat(newPath); err != nil {
+		if _, err := os.Lstat(newPath); err != nil {
 			// If the suffix path doesn't exist, we can use it.
 			if errors.Is(err, os.ErrNotExist) {
 				return newPath
