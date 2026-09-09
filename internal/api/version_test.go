@@ -73,6 +73,7 @@ func TestModeVersion_SatisfiesSonarrVersionGate(t *testing.T) {
 			// (`git grep -n 'root_folder["]' -- '*.go'` finds 0 — the bracket
 			// keeps the pattern from matching its own comment). Major >= 2 also
 			// subsumes the weaker `Major >= 1 || Minor >= 7` check that
+			//doccite:ok TestConnectionAndVersion — Sonarr/Radarr's own C# test, not a Go test in this tree
 			// TestConnectionAndVersion applies.
 			if major < 2 {
 				t.Errorf("version %q parses as major %d; want >= 2 so Sonarr "+

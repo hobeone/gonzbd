@@ -6,7 +6,7 @@ import "fmt"
 // answers where the job is and what may happen next; what is executing right
 // now is Activity, and how the attempt ended is Outcome. Keeping the three
 // apart is what collapses the transition table from a fan-out into a graph —
-// see docs/superpowers/specs/2026-08-25-job-lifecycle-design.md §3.
+// see docs/job-lifecycle.md's state-model section.
 //
 // The field lives on the current Attempt, not on the Job (§3.1).
 type State uint8

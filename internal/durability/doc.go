@@ -2,7 +2,7 @@
 //
 // It records ONE fact about a download, in one table, whose content is put
 // there by one writer at one moment, per
-// docs/superpowers/specs/2026-08-22-single-durability-record-design.md:
+// docs/durability-contract.md:
 //
 //	durable_runs(job_id, file_idx, first_art_idx, last_art_idx,
 //	             offset, length, crc32)

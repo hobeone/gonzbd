@@ -115,8 +115,13 @@ reviews:
         before calling the function whose job is to release it — is the same
         defect and has shipped here.
 
-    - path: "docs/superpowers/specs/**"
+    - path: "docs/*.md"
       instructions: |
-        These are design specs, reviewed as prose. Check for internal
-        contradiction, for claims the implementation does not deliver, and for
-        sections the code has since falsified. Do not flag style or formatting.
+        These are living contracts: they describe what the app does now, not
+        how it came to do it. Check for internal contradiction, for claims the
+        implementation does not deliver, and for sections the code has since
+        falsified. Flag any sentence that narrates history — "used to",
+        "previously", "will be", "is not yet" — unless it is load-bearing
+        because it explains why a rule exists, or is a supersession record
+        tied to a migration that cannot be edited. Do not flag style or
+        formatting.

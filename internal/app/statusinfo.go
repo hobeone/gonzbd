@@ -252,8 +252,9 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // package and fails when the set of functions reaching markDone, or setting
 // the bit directly, stops matching what these three sites say. It exists
 // because this enumeration was found short TWICE — the second time here,
-// months after the copy in queue/progress.go was corrected, because a grep of
-// internal/queue cannot reach internal/app.
+// months after the sibling copy was corrected in the since-deleted
+// internal/queue, because a grep of that package could not reach
+// internal/app.
 //
 // ReplaceFromRuns also UN-marks an article whose run the resume discarded
 // (#362), and this figure follows it down rather than needing a correction of
@@ -285,7 +286,7 @@ type ProgressByteCounters interface {
 //
 // All three legs are NZB-declared, yEnc-ENCODED bytes, so this figure is too.
 // It is deliberately not a sum over the durability record's lengths, which are
-// the DECODED payload bytes an fsync proved -- docs/queue-lifecycle.md records
+// the DECODED payload bytes an fsync proved -- docs/job-lifecycle.md records
 // that substitution overstating every non-resident job's remaining bytes by
 // the encoding overhead.
 func DurableBytesOf(p ProgressByteCounters) int64 {

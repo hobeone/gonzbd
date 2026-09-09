@@ -84,7 +84,7 @@ type fileResumer interface {
 // INTO the record, and a delete only ever takes one away.
 //
 // A non-resident job in a SWEPT phase is hydrated for the duration and evicted
-// again, so the residency budget docs/queue-lifecycle.md exists to bound is
+// again, so the residency budget docs/job-lifecycle.md exists to bound is
 // unchanged from outside. It matters because a Paused job is the case that
 // needs this most and is never resident: Application.Stall leaves the job
 // Paused, and the sweep skipping it is what let #362 survive in that branch.

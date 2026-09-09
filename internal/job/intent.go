@@ -5,7 +5,7 @@ import "fmt"
 // Intent is what a person has asked of this job, independent of where the job
 // is (State), what it is executing (Activity), or how an attempt ended
 // (Outcome). It is the fourth orthogonal axis — see
-// docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md §3.1.
+// docs/job-lifecycle.md's Intent section.
 //
 // It exists because pause is a GATE, not an interrupt (prior spec §8.3): work
 // in flight runs to the end of its state and the job then stops. The request

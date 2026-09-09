@@ -80,7 +80,7 @@ type Collision struct {
 }
 
 // RunStore is the durability record, described in
-// docs/superpowers/specs/2026-08-22-single-durability-record-design.md.
+// docs/durability-contract.md.
 //
 // One record, written only after the fsync that makes it true (S1, S2), and
 // grouped into runs rather than kept per article. It replaced a pairing of two

@@ -207,7 +207,7 @@ type queueSlot struct {
 	// it exists for. bytes_durable pairs with size/sizeleft/mb, which are the
 	// encoded NZB figures a client renders beside it, and summing the
 	// durability record's lengths instead -- a decoded figure -- is the exact
-	// substitution docs/queue-lifecycle.md records as having overstated every
+	// substitution docs/job-lifecycle.md records as having overstated every
 	// non-resident job's remaining bytes.
 	// bytes_pending feeds B1's volume bound, which measures rework at risk
 	// and is therefore about bytes on disk by definition.

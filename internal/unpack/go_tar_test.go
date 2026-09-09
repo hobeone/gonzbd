@@ -296,8 +296,8 @@ func TestGoTar_SymlinkNameWithTraversal(t *testing.T) {
 
 	// Proves the non-regular-type skip and path-sanitization checks
 	// compose correctly: this symlink entry's *name* contains "..", not
-	// its Linkname (TestGoTar_SymlinkEntrySkipped already covers a
-	// symlink with an absolute Linkname but a clean name). Regardless of
+	// its Linkname (FuzzGoTar's seed corpus covers a symlink with an
+	// absolute Linkname but a clean name). Regardless of
 	// which check -- type-based skip, or path sanitization -- would catch
 	// this first, the outcome must be the same: nothing is created on
 	// disk, so a future reordering of these checks can't accidentally let

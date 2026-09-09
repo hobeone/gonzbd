@@ -623,7 +623,7 @@ func (d *Dispatcher) Stop() error {
 // process to reclaim, so a job persisted mid-Repairing is simply a job at
 // Repairing that holds nothing, and branch 2 of Advance grants it resources
 // on the first tick — the same path a paused job resumes through (D-B13's
-// Startup paragraph, docs/superpowers/specs/2026-08-28-sched-dispatcher-design.md).
+// Startup paragraph, docs/dispatch-contract.md).
 //
 // Standing Design Rule 1 applies directly: rows an earlier build wrote may be
 // assumed to satisfy the invariants this design introduces, so there is no

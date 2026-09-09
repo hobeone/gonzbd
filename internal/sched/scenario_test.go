@@ -28,7 +28,7 @@ func renderStatus(q *Queue, j *job.Job) constants.Status {
 }
 
 // TestBothPoolsAreAccountedAtEveryExit is spec §6 test 4b. §10's
-// revision-3→4 table (docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md,
+// revision-3→4 table (docs/job-lifecycle.md,
 // "five of the twelve were one problem: nobody returned the lease") lists
 // five leak paths: pre-boundary Finish(Failed), Assessing→Finish(Unrecoverable),
 // Cancel→Finish(Cancelled), Cross after an already-surrendered pause, and
@@ -910,16 +910,22 @@ func TestScenario_5_13_CancellingARunningFinalizingJob(t *testing.T) {
 	}
 }
 
-// specScenariosPath is docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md,
-// relative to this package's directory — `go test` runs with the package
+// specScenariosPath is docs/job-lifecycle.md, relative to this package's
+// directory — `go test` runs with the package
 // directory as its working directory, so this is stable across invocation
 // styles (`go test ./...` from the repo root, `go test .` from here, an IDE
 // runner) without needing runtime.Caller to locate it.
-const specScenariosPath = "../../docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md"
+const specScenariosPath = "../../docs/job-lifecycle.md"
 
-// TestEveryScenarioHasATest fails when §5 grows a scenario nobody pinned.
-// §5 is the regression suite for four revisions of defects; a scenario without
-// a test is a defect class with nothing watching it.
+// TestEveryScenarioHasATest fails when the contract grows a scenario nobody
+// pinned. The scenarios are the regression suite for four revisions of
+// defects; one without a test is a defect class with nothing watching it.
+//
+// The scenarios lived in a dated design spec until that spec was folded into
+// the contract. They moved rather than went: the numbering (5.1 through 5.13)
+// is the join key between a scenario and its TestScenario_ function, so it is
+// preserved deliberately and must not be renumbered to close the gap left by
+// the sections that were dropped around them.
 //
 // The comparison is against the spec's own §5 headings, parsed from the file
 // (specScenarioCount below) — not a hardcoded literal. A hardcoded count
@@ -947,11 +953,12 @@ func TestEveryScenarioHasATest(t *testing.T) {
 	}
 }
 
-// specHeadingRE matches a §5 scenario heading, e.g. "### 5.13 Cancelling a
-// running `Finalizing` job". Anchored on "### 5." rather than a bare "###" so
-// a level-3 heading elsewhere in the document (§6's subsections, say) cannot
-// be miscounted as a scenario.
-var specHeadingRE = regexp.MustCompile(`^### 5\.\d+\b`)
+// specHeadingRE matches a scenario heading, e.g.
+// "### Scenario 5.13 — Cancelling a running `Finalizing` job". Anchored on the
+// "Scenario 5." prefix rather than a bare "###" so that none of the document's
+// other level-3 headings can be miscounted as a scenario: it carries 44 of
+// them and only these 13 are scenarios.
+var specHeadingRE = regexp.MustCompile(`^### Scenario 5\.\d+\b`)
 
 // specScenarioCount reads specScenariosPath and counts §5's own scenario
 // headings — the population TestEveryScenarioHasATest checks this file's

@@ -2,7 +2,8 @@
 // from leaking into production builds without appropriate build tags.
 //
 // In Round 3 review (Finding B2 and Part C Class 7), an exported test constructor
-// NewTestDurableProof was shipped in internal/durability/testing.go (a non-test
+// NewTestDurableProof was shipped in a non-test internal/durability file (since
+// deleted) without a build tag, which
 // file without a build tag), which leaked into production builds and completely
 // nullified the compile-time DurableProof gate.
 //

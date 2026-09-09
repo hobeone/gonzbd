@@ -142,6 +142,9 @@ The required order for any fix:
    requires each to produce a red result, and restores the file on every exit
    path including SIGINT:
 
+   <!-- doccite:ok TestTheNewPin — placeholder in the spec-format example, as AGENTS.md states -->
+   <!-- doccite:ok internal/pkg/target.go — the example's illustrative path, not a real file -->
+
    ```bash
    go run ./scripts/mutate path/to/the.spec
    ```

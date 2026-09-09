@@ -521,7 +521,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 //
 // It is therefore NOT Job.TotalBytes(), which is the immutable
 // whole-manifest total and still includes deferred recovery volumes. See
-// docs/superpowers/specs/2026-08-05-job-size-figures-design.md, which
+// docs/job-lifecycle.md's byte-accounting section, which
 // records that a job's advertised expectation moving as par2 decisions are
 // made is a deliberate consequence.
 //
@@ -855,10 +855,13 @@ func (p *JobProgress) clone() *JobProgress {
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
-// manifest is resident: RestoreJobProgress replays per-article state
-// through markFailed on top of a progress that newJobProgressSized may
-// already have seeded from job_files, so without a single owner the seed
-// and the replay stack (see TestFailedBytes_NotDoubledByHydration).
+// manifest is resident, and that single ownership is what keeps hydration
+// from double-counting. The restore path replays per-article state through
+// markFailed on top of a progress that newJobProgressSized may already have
+// seeded from job_files — two sources for one figure — so an owner that
+// recomputes from the manifest is what makes the seed and the replay agree
+// instead of stacking.
+//
 // Incremental maintenance by markFailed/resetForReload is what carries the
 // value between recomputes, while no manifest is resident to recompute
 // against.
