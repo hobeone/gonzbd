@@ -52,27 +52,38 @@ RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || ec
 
 # ---- Build par2cmdline-turbo ----
 FROM alpine:${ALPINE_VERSION} AS par2-builder
+# Its own RUN, before the PAR2_VERSION/PAR2_SHA256 ARGs below: neither ARG
+# is referenced here, but both are referenced in the RUN that follows them,
+# so keeping the two RUNs separate means a version/checksum bump can't bust
+# this toolchain-install layer's cache the way a single fused RUN would.
+RUN apk add --no-cache autoconf automake build-base curl
 ARG PAR2_VERSION=v1.5.0
-# SHA256 of the GitHub-generated source tarball for PAR2_VERSION. Not
-# published by upstream — animetosho ships prebuilt binaries with no
-# checksum file, and this source archive is GitHub's own auto-generated
-# snapshot, not a signed release asset — so this is a self-computed pin for
-# tamper/drift detection, not verification against an independent source.
-# IMPORTANT: bumping PAR2_VERSION requires recomputing this by hand
-# (`curl -sL <url> | sha256sum`) in the same change. Renovate's custom regex
-# manager (renovate.json) only tracks the version string and cannot discover
-# a new checksum on its own, so a Renovate-driven version bump PR will fail
-# this build (sha256sum -c) until the checksum below is updated to match —
+# SHA256 of the official release source tarball for PAR2_VERSION, as
+# published in GitHub's own `assets[].digest` for that release (see
+# `curl -s https://api.github.com/repos/animetosho/par2cmdline-turbo/releases/tags/${PAR2_VERSION}`).
+# This is an uploaded release asset, not the `/archive/${ref}.tar.gz`
+# codeload snapshot GitHub regenerates on demand — codeload's gzip bytes
+# (hence its sha256) can drift with no underlying code change, which is
+# what broke this build under the previous archive-URL approach.
+# IMPORTANT: bumping PAR2_VERSION requires copying the new release's
+# published digest in the same change. Renovate's custom regex manager
+# (renovate.json) only tracks the version string and cannot discover a new
+# checksum on its own, so a Renovate-driven version bump PR will fail this
+# build (sha256sum -c) until the checksum below is updated to match —
 # loudly, on purpose, rather than silently building an unverified tarball.
-ARG PAR2_SHA256=38ae0b5158c496c5fe60dfdfdc05ea18516a2efa9c3ea0dc2cd477df498937a3
-RUN apk add --no-cache autoconf automake build-base curl \
- && mkdir /tmp/par2 \
- && curl -L -o /tmp/par2.tar.gz "https://github.com/animetosho/par2cmdline-turbo/archive/${PAR2_VERSION}.tar.gz" \
- && echo "${PAR2_SHA256}  /tmp/par2.tar.gz" | sha256sum -c - \
- && tar xz -C /tmp/par2 --strip-components=1 -f /tmp/par2.tar.gz \
- && rm /tmp/par2.tar.gz \
+# NOTE: upstream only started publishing this source-tarball asset at
+# v1.5.0 — v1.4.0 and earlier shipped prebuilt platform zips only, so a
+# downgrade below v1.5.0 needs the codeload archive path restored instead.
+ARG PAR2_SHA256=035584144d3ac3b08fb5d7d4b844f60cf97404b6469f6aed7d9b9430a25bef0e
+RUN mkdir /tmp/par2 \
+ && curl -L -o /tmp/par2.tar.xz "https://github.com/animetosho/par2cmdline-turbo/releases/download/${PAR2_VERSION}/par2cmdline-turbo-${PAR2_VERSION#v}.tar.xz" \
+ && echo "${PAR2_SHA256}  /tmp/par2.tar.xz" | sha256sum -c - \
+ && tar xJ -C /tmp/par2 --strip-components=1 -f /tmp/par2.tar.xz \
+ && rm /tmp/par2.tar.xz \
  && cd /tmp/par2 \
- && ./automake.sh && ./configure && make -j"$(nproc)" && make install \
+ && ./automake.sh \
+ && CFLAGS="-O3" CXXFLAGS="-O3" ./configure \
+ && make -j"$(nproc)" && make install-strip \
  && rm -rf /tmp/par2
 
 # ---- Runtime ----
