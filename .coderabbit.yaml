@@ -11,9 +11,12 @@ reviews:
   path_instructions:
     - path: "internal/job/**"
       instructions: |
-        This package is a job-lifecycle state machine. Nothing outside it
-        imports it yet — that is deliberate, and "this is unused" is not a
-        finding. A later plan (Half B) does the wiring.
+        This package is a job-lifecycle state machine, and it is wired in:
+        nine non-test packages import it (cmd/gonzbd, internal/api,
+        internal/api/apitest, internal/app, internal/checkpoint,
+        internal/dispatch, internal/downloader, internal/postproc,
+        internal/sched). "This is unused" IS a valid finding here — an
+        exported symbol with no production caller is the class #297 tracks.
 
         Review against these invariants, which generic Go review will not
         surface. They describe the model as it stands after #443; if a claim
