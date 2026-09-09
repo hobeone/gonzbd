@@ -257,15 +257,16 @@ which only *sets* durable bits and never clears one, while
 `Store.RestoreJobProgress` had already restored every article the last barrier
 acked. So the queue's restored state outranked the finding that disproved it.
 
-The fix (#362) is `Queue.ReplaceFromRuns`: a second, **authoritative** seeding
+The fix (#362) is `Job.ReplaceFromRuns`: a second, **authoritative** seeding
 entry point that the startup sweep uses in place of `SeedFromRuns`, because it
 is the one caller that has just stat'ed the files and deleted the runs a file
 contradicts. Every other seeding path — `Application.reevaluateStall`'s phase 3
 — is replaying an ack that already landed and stays additive.
-`TestSeedFromRuns_StaysAdditive` and
-`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` are the guards
-on that split; they are the only tests in the repository that redden when the
-two entry points are merged.
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` guards that split
+from the replay side. The additive side needs no test: `Job.SeedFromRuns`
+writes done bits only through `progress.markDone`, which sets and never
+clears, so merging the two entry points would have to add a clearing path
+rather than change one.
 
 Making the sweep authoritative also turned two of the other four tests into
 real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the

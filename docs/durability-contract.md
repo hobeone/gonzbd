@@ -254,9 +254,14 @@ the runs a barrier's fsync already recorded, which is exactly the kind of
 evidence a proof cannot represent — but it means "ack before fsync is code that
 does not compile" is true of `AckDurable` and **false as a statement about the
 queue as a whole**. The seeding doors are held by their contracts and by
-`TestSeedFromRuns_StaysAdditive` /
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade`, not by the
 compiler.
+
+`Job.SeedFromRuns`'s half is stronger than a test: its only done-bit write is
+`progress.markDone`, which sets `p.done` and never clears it, so the additive
+property is structural rather than asserted. The enumeration of done-bit
+writers is machine-checked by
+`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse`.
 
 **How much narrower those doors got, exactly.** `durability.Run` is an exported
 struct with exported fields, so any package can build one — the narrowing is
@@ -657,11 +662,12 @@ be merged**:
 | `SeedFromRuns` | `Application.reevaluateStall` phase 3 | **additive** — only ever sets. Replaying an ack whose fsync already landed; it has stat'ed nothing. |
 
 The union of the two contracts is either #362 (a stale bit outliving the check
-that disproved it) or a stall recovery that throws away live acks.
-`TestSeedFromRuns_StaysAdditive` and
-`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` are the guards,
-and they are the only tests in the repository that redden when the two are
-merged.
+that disproved it) or a stall recovery that throws away live acks. What keeps
+them apart is now two different kinds of guard.
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` is a test.
+`Job.SeedFromRuns`'s additivity is not: the method's only done-bit write is
+`progress.markDone`, which sets `p.done` and never clears it, so there is no
+clearing path to assert the absence of.
 
 The file indices are carried separately from the runs, and that is structural
 rather than convenience: a file whose runs were **all** discarded contributes no
