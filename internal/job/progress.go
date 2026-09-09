@@ -602,6 +602,21 @@ func (p *JobProgress) DownloadFinished() time.Time {
 // time.Now(), so a value failing this test is a programming error, not data.
 func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 
+// jobStampOrZero returns t when it is a stamp this process could have minted,
+// and the zero time otherwise.
+//
+// It exists so the filter has one application rather than two. Restored stamps
+// reach a job by two routes — restoreDownloadStamps into a live JobProgress,
+// and Job.RestoreProgressState into the Job-level copy a job carries before
+// hydration — and a stamp accepted by one route and rejected by the other
+// would read differently from the same accessor before and after hydration.
+func jobStampOrZero(t time.Time) time.Time {
+	if isJobStamp(t) {
+		return t
+	}
+	return time.Time{}
+}
+
 // setDownloadStartedOnce records the download start, reporting whether it took.
 // A later call is a no-op: first start wins.
 //
@@ -681,17 +696,14 @@ func (p *JobProgress) clearDownloadStamps() {
 // code until the mistake.
 //
 // Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
-// returns 2 files — this file (declaration and UnmarshalJSON) and content.go
-// (Job.RestoreDownloadStamps). It reads a stamp the process did not mint, which is
-// what this method is the door for.
+// returns 2 files — this file (declaration and UnmarshalJSON) and content.go,
+// where AttachContent seeds a fresh JobProgress from the stamps
+// RestoreProgressState recorded on the Job before hydration (#504). It reads a
+// stamp the process did not mint, which is what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.clearDownloadStamps()
-	if isJobStamp(started) {
-		p.downloadStarted = started
-	}
-	if isJobStamp(finished) {
-		p.downloadFinished = finished
-	}
+	p.downloadStarted = jobStampOrZero(started)
+	p.downloadFinished = jobStampOrZero(finished)
 }
 
 // Par2Recovered reports whether on-demand par2 has un-deferred this job's recovery volumes.
@@ -720,6 +732,10 @@ func (p *JobProgress) clearPar2ReleaseReason() {
 
 func (p *JobProgress) restorePar2ReleaseReason(reason string) {
 	p.par2ReleaseReason = reason
+}
+
+func (p *JobProgress) restorePar2Recovered(recovered bool) {
+	p.par2Recovered = recovered
 }
 
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been

@@ -130,9 +130,6 @@ func TestRestoreJobMetadata_Coverage(t *testing.T) {
 		Bytes:    1000,
 		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
 	}})
-	if err := j.AttachContent(m); err != nil {
-		t.Fatalf("AttachContent: %v", err)
-	}
 	p := Persisted{
 		Header: Header{
 			Added: 1700000000,
@@ -141,7 +138,14 @@ func TestRestoreJobMetadata_Coverage(t *testing.T) {
 		DownloadFinished:  1700000200,
 		Par2ReleaseReason: "repair needed",
 	}
+	// Production order: dispatch.restore calls reconstruct (job.New, no
+	// content) and then restoreJobMetadata immediately, so the job has no
+	// JobProgress yet. Attaching first — as this test used to — lets every
+	// write land and hides that the progress-tier ones have nowhere to go.
 	restoreJobMetadata(j, p)
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
 
 	if j.Added().Unix() != 1700000000 {
 		t.Errorf("Added = %d, want 1700000000", j.Added().Unix())

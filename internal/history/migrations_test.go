@@ -254,8 +254,12 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		// This guarded a single 001_initial.sql until 002_durable_runs.sql
 		// added the replacement record, 003_drop_legacy_durability.sql
 		// dropped what it replaced, and 004_par2_release_reason.sql made the
-		// par2 verdict's reason durable. It still exists to catch an
-		// accidental extra file, just against a longer list.
+		// par2 verdict's reason durable. 005_dispatch_metadata.sql then moved
+		// that reason and the job metadata onto dispatch_jobs,
+		// 006_recovery_bytes_and_retire_jobs.sql added recovery_bytes and
+		// dropped the retired jobs table, and 007_persist_par2_recovered.sql
+		// added the last on-demand par2 field with no durable home. It still
+		// exists to catch an accidental extra file, just against a longer list.
 		entries, err := os.ReadDir("migrations")
 		if err != nil {
 			t.Fatal(err)
@@ -270,6 +274,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 			"001_initial.sql", "002_durable_runs.sql",
 			"003_drop_legacy_durability.sql", "004_par2_release_reason.sql",
 			"005_dispatch_metadata.sql", "006_recovery_bytes_and_retire_jobs.sql",
+			"007_persist_par2_recovered.sql",
 		}
 		if !slices.Equal(sqls, want) {
 			t.Errorf("migrations = %v, want exactly %v", sqls, want)

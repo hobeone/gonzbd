@@ -451,19 +451,51 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 
 	start := time.Unix(1700000000, 0).UTC()
 	finish := time.Unix(1700000100, 0).UTC()
-	if err := jResident.RestoreDownloadStamps(start, finish); err != nil {
-		t.Errorf("RestoreDownloadStamps: %v", err)
+
+	// Production order, which is what #504 was about: dispatch.restore applies
+	// the stored state before the job has any JobProgress, and AttachContent
+	// seeds the fresh record from it. Restoring onto an already-hydrated job
+	// is not a shape any caller produces.
+	restoreM := NewManifest([]JobFile{{
+		Subject:  "f1",
+		Bytes:    100,
+		Articles: []JobArticle{{ID: "<r1@x>", Bytes: 100, Number: 1}},
+	}})
+	jRestored := New("restored", "restored", Policy{})
+	jRestored.RestoreProgressState("repair needed", start, finish, false)
+
+	// Readable before hydration: the Job-level fields are authoritative while
+	// progress is nil, which is what stops persistIfChanged zeroing the row
+	// for a job that is never hydrated.
+	if got := jRestored.DownloadStarted(); !got.Equal(start) {
+		t.Errorf("DownloadStarted before hydration = %v, want %v", got, start)
 	}
-	if got := jResident.Progress().DownloadStarted(); !got.Equal(start) {
-		t.Errorf("DownloadStarted = %v, want %v", got, start)
+	if got := jRestored.DownloadFinished(); !got.Equal(finish) {
+		t.Errorf("DownloadFinished before hydration = %v, want %v", got, finish)
 	}
-	if got := jResident.Progress().DownloadFinished(); !got.Equal(finish) {
-		t.Errorf("DownloadFinished = %v, want %v", got, finish)
+	if got := jRestored.Par2ReleaseReason(); got != "repair needed" {
+		t.Errorf("Par2ReleaseReason before hydration = %q, want %q", got, "repair needed")
 	}
 
+	if err := jRestored.AttachContent(restoreM); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if got := jRestored.Progress().DownloadStarted(); !got.Equal(start) {
+		t.Errorf("DownloadStarted after hydration = %v, want %v", got, start)
+	}
+	if got := jRestored.Progress().DownloadFinished(); !got.Equal(finish) {
+		t.Errorf("DownloadFinished after hydration = %v, want %v", got, finish)
+	}
+	if got := jRestored.Progress().Par2ReleaseReason(); got != "repair needed" {
+		t.Errorf("Par2ReleaseReason after hydration = %q, want %q", got, "repair needed")
+	}
+
+	// SetPar2ReleaseReason on a job with no progress must be readable back,
+	// not silently dropped — the else branch in that setter.
 	jEmpty := New("empty", "empty", Policy{})
-	if err := jEmpty.RestoreDownloadStamps(start, finish); err == nil {
-		t.Error("RestoreDownloadStamps on non-resident job should error")
+	jEmpty.SetPar2ReleaseReason("set before hydration")
+	if got := jEmpty.Par2ReleaseReason(); got != "set before hydration" {
+		t.Errorf("Par2ReleaseReason = %q, want %q", got, "set before hydration")
 	}
 }
 
@@ -482,15 +514,15 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 		},
 	})
 	j := New("retry-job", "test.nzb", Policy{})
+	start := time.Unix(1700000000, 0).UTC()
+	finish := time.Unix(1700000100, 0).UTC()
+	// Restore before attaching, so the stamps reach the JobProgress the way a
+	// restarted job's do; then check ResetForRetry clears them.
+	j.RestoreProgressState("", start, finish, false)
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
 
-	start := time.Unix(1700000000, 0).UTC()
-	finish := time.Unix(1700000100, 0).UTC()
-	if err := j.RestoreDownloadStamps(start, finish); err != nil {
-		t.Fatalf("RestoreDownloadStamps: %v", err)
-	}
 	if got := j.Progress().DownloadStarted(); !got.Equal(start) {
 		t.Fatalf("DownloadStarted = %v, want %v", got, start)
 	}

@@ -51,6 +51,11 @@ func TestStore_RoundTripsEveryAxis(t *testing.T) {
 			Activity: job.ActPar2Repair, Outcome: job.OutcomePending, Assessed: true,
 		},
 		Intent: job.IntentCancel,
+		// Par2Recovered follows the all-true rule this test is named for: left
+		// false it agrees with the column DEFAULT 0, so an unmapped or
+		// transposed par2_recovered would round-trip by accident and this
+		// whole-struct comparison would still pass.
+		Par2Recovered: true,
 	}
 	if err := s.Save(t.Context(), want); err != nil {
 		t.Fatalf("Save: %v", err)
