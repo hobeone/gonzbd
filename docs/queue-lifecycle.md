@@ -77,8 +77,26 @@ queue lock and already return errors.
 ## Residency
 
 **Always resident, from `Add` until the job leaves the queue:** header fields,
-`JobProgress`, and the five manifest scalars. No code path may drop them, so no
-caller checks for their absence.
+`JobProgress`, and the five manifest scalars. No code path drops them once they
+exist: `Evict` clears only the manifest, and `AttachContent` and
+`RestoreContent` are the only writers of the progress pointer.
+
+**But `JobProgress` does not exist from `Add` for a job restored at startup**,
+and callers do check for its absence. `dispatch.restore` rebuilds each job with
+`job.New` and no content, because `internal/dispatch` imports only
+`internal/job` and `internal/sched` — it has no database access, so it cannot
+read `job_files` for the article counts `newJobProgressSized` would need. The
+record arrives later, at first hydration. `git grep -n 'j\.progress == nil\|j\.progress != nil'
+-- 'internal/job/*.go' ':!*_test.go'` finds 43 lines, so "no caller checks for
+their absence" describes an intent rather than the code.
+
+That window is why `Job` carries a small set of `restored*` fields for
+progress-tier state recovered from `dispatch_jobs` before the record exists —
+the download stamps, the par2 release reason, and the par2-recovered flag. The
+Job-level accessors read them while `progress` is nil, `AttachContent` seeds the
+fresh record from them and zeroes them, and the two are never both
+authoritative. Before #504 those writes were simply dropped, and the next
+`persistIfChanged` wrote the zeroes back over the stored row.
 
 **Evictable:** the `Manifest`, and only the manifest, bounded by `maxActive` as
 today.

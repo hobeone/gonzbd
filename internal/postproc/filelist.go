@@ -141,13 +141,14 @@ func buildDownloadFileList(j *Job) []string {
 		// case recoveryVols > 0 && p.Par2Recovered(): above (#505).
 		// undeferRecovery is the only active mutation that sets
 		// par2Recovered to true (`git grep -n 'par2Recovered = true' internal/job/`
-		// finds one line). `git grep -n 'par2Recovered =' internal/job/` finds
-		// four: that one, ResetForRetry resetting it to false,
+		// finds one line). `git grep -n 'par2Recovered =' internal/job/ ':!*_test.go'`
+		// finds four: that one, ResetForRetry resetting it to false,
 		// restorePar2Recovered applying the value AttachContent seeds from
 		// dispatch_jobs.par2_recovered, and JobProgress.UnmarshalJSON — whose
-		// assignment is real but sits on a path with no production caller, so
-		// the durable round-trip this arm depends on is the store one, not
-		// that one (#504). undeferRecovery has callers in Job.UndeferRecoveryVolumes
+		// assignment is real but sits on a path nothing in production calls
+		// (`git grep -n '\.UnmarshalJSON(' -- 'internal/job/*.go'
+		// ':!*_test.go'` finds no lines), so the durable round-trip this arm
+		// depends on is the store one, not that one (#504). undeferRecovery has callers in Job.UndeferRecoveryVolumes
 		// (reached from app.go's maybeReleaseRecoveryVolumes;
 		// `git grep -n 'func (j \*Job) UndeferRecoveryVolumes' internal/job/` finds one line)
 		// and Job.MarkArticleFailed (`git grep -n 'func (j \*Job) MarkArticleFailed' internal/job/`

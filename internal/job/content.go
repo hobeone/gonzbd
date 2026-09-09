@@ -32,6 +32,17 @@ func (j *Job) AttachContent(m *Manifest) error {
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
+	// Refuse a second attach rather than silently replacing a live record.
+	// newJobProgress below builds a FRESH JobProgress, so a re-attach would
+	// discard every done/failed bit and both stamps with no error — and since
+	// the first attach zeroed the Job-level copy, there would be nothing left
+	// to seed the replacement from either. Callers gate on this today
+	// (residency.Hydrate takes the RestoreContent arm when Progress() is
+	// non-nil, and the ingest path builds a fresh Job), which is what makes
+	// this an assertion of an invariant rather than a behaviour change.
+	if j.progress != nil || j.manifest != nil {
+		return fmt.Errorf("job %s: AttachContent: content already attached; use RestoreContent to install a manifest alongside existing progress", j.id)
+	}
 	j.manifest = m
 	j.progress = newJobProgress(m)
 	j.totalBytes = m.TotalBytes()
@@ -858,23 +869,24 @@ func (j *Job) MarkDownloadFinished(t time.Time) error {
 
 // RestoreProgressState applies progress-tier state recovered from the store.
 //
-// It writes only the Job-level restored* fields, never a live JobProgress: its
-// sole production caller is dispatch.restoreJobMetadata (`git grep -n
-// 'j\.RestoreProgressState(' -- 'internal/dispatch/*.go' ':!*_test.go'` finds
-// one line), which runs immediately after reconstruct and therefore always on
-// a job whose progress is nil. Applying to a live record as well would be a
-// second writer of those fields for a caller that does not exist.
+// It writes to whichever record is authoritative. Its sole production caller
+// is dispatch.restoreJobMetadata (`git grep -n 'j\.RestoreProgressState(' --
+// 'internal/dispatch/*.go' ':!*_test.go'` finds one line), which runs
+// immediately after reconstruct and therefore always on a job whose progress is
+// nil, so the live-record branch is unreachable in production today.
 //
-// AttachContent seeds the fresh JobProgress from these and zeroes them.
+// That branch is still not defensive padding: without it a call made after
+// hydration would land in fields the accessors stop reading once progress is
+// non-nil and return successfully having discarded the value — the identical
+// silent drop this function exists to remove, one level up. It adds no writer
+// of those fields; restoreDownloadStamps, restorePar2ReleaseReason and
+// restorePar2Recovered already own them and it calls all three.
 //
-// When progress already exists it writes there instead, through the same doors
-// AttachContent seeds with. That branch is unreachable from the sole caller
-// above and is not defensive padding: without it, a call made after hydration
-// would land in fields the accessors stop reading once progress is non-nil, and
-// return successfully having discarded the value — the identical silent drop
-// this function exists to remove, one level up. Routing to whichever record is
-// authoritative adds no writer of those fields; setPar2ReleaseReason and
-// restoreDownloadStamps already own them.
+// Both branches put the timestamps through jobStampOrZero, so a stamp is
+// accepted or rejected the same way whichever record receives it. Without that
+// the pre-hydration accessor could report a stamp that hydration then dropped.
+//
+// AttachContent seeds the fresh JobProgress from the Job-level copy and zeroes it.
 func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -885,8 +897,8 @@ func (j *Job) RestoreProgressState(reason string, started, finished time.Time, r
 		return
 	}
 	j.restoredPar2Reason = reason
-	j.restoredDLStarted = started
-	j.restoredDLFinished = finished
+	j.restoredDLStarted = jobStampOrZero(started)
+	j.restoredDLFinished = jobStampOrZero(finished)
 	j.restoredPar2Recovered = recovered
 }
 

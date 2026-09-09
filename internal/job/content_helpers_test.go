@@ -127,6 +127,93 @@ func TestRestoreProgressState_AppliesToALiveRecord(t *testing.T) {
 	}
 }
 
+// TestJobStampOrZero covers the filter both restore routes apply. Unix() > 0 is
+// the whole predicate, so the boundary is the epoch itself: 1970-01-01 is
+// rejected, one second later is kept. A job the process actually ran cannot
+// carry either, which is what makes the epoch a safe sentinel for "the store
+// held nothing here".
+func TestJobStampOrZero(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Time
+		want time.Time
+	}{
+		{name: "zero time", in: time.Time{}, want: time.Time{}},
+		{name: "the epoch itself", in: time.Unix(0, 0).UTC(), want: time.Time{}},
+		{name: "before the epoch", in: time.Unix(-1, 0).UTC(), want: time.Time{}},
+		{name: "one second after the epoch", in: time.Unix(1, 0).UTC(), want: time.Unix(1, 0).UTC()},
+		{name: "a real stamp", in: time.Unix(1700000100, 0).UTC(), want: time.Unix(1700000100, 0).UTC()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := jobStampOrZero(tc.in); !got.Equal(tc.want) {
+				t.Errorf("jobStampOrZero(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAttachContent_RefusesASecondAttach pins the guard. A re-attach would
+// install a fresh JobProgress over a live one, discarding every done/failed bit
+// and both stamps — and because the first attach zeroed the Job-level copy,
+// there would be nothing left to seed the replacement from either. Silent, and
+// unrecoverable.
+func TestAttachContent_RefusesASecondAttach(t *testing.T) {
+	m := NewManifest([]JobFile{
+		{Subject: "f", Bytes: 100, Articles: []JobArticle{{ID: "<a@x>", Bytes: 100, Number: 1}}},
+	})
+	j := New("j", "j", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("first AttachContent: %v", err)
+	}
+	if err := j.MarkArticleDone(0, 100, "srv"); err != nil {
+		t.Fatalf("MarkArticleDone: %v", err)
+	}
+
+	if err := j.AttachContent(m); err == nil {
+		t.Fatal("second AttachContent returned nil; it must refuse rather than replace a live record")
+	}
+	// The refusal must leave the existing record untouched, not half-replaced.
+	if got := j.Progress().PendingArticles(); got != 0 {
+		t.Errorf("PendingArticles = %d after a refused re-attach, want 0 — the live record was disturbed", got)
+	}
+}
+
+// TestRestoreProgressState_FiltersStampsTheSameWayBeforeAndAfterHydration pins
+// that both routes apply jobStampOrZero. A stamp accepted into the Job-level
+// copy but rejected by restoreDownloadStamps would make the same accessor
+// answer differently either side of hydration.
+func TestRestoreProgressState_FiltersStampsTheSameWayBeforeAndAfterHydration(t *testing.T) {
+	m := NewManifest([]JobFile{
+		{Subject: "f", Bytes: 100, Articles: []JobArticle{{ID: "<a@x>", Bytes: 100, Number: 1}}},
+	})
+	// Unix() <= 0, so isJobStamp rejects it: a stamp this process could not
+	// have minted.
+	bad := time.Unix(0, 0).UTC()
+	good := time.Unix(1700000200, 0).UTC()
+
+	j := New("j", "j", Policy{})
+	j.RestoreProgressState("", bad, good, false)
+
+	beforeStart, beforeFinish := j.DownloadStarted(), j.DownloadFinished()
+	if !beforeStart.IsZero() {
+		t.Errorf("DownloadStarted = %v before hydration, want zero — a non-job stamp must be filtered here too", beforeStart)
+	}
+
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if got := j.DownloadStarted(); !got.Equal(beforeStart) {
+		t.Errorf("DownloadStarted = %v after hydration, %v before; the two tiers filter differently", got, beforeStart)
+	}
+	if got := j.DownloadFinished(); !got.Equal(beforeFinish) {
+		t.Errorf("DownloadFinished = %v after hydration, %v before; the two tiers filter differently", got, beforeFinish)
+	}
+	if got := j.DownloadFinished(); !got.Equal(good) {
+		t.Errorf("DownloadFinished = %v, want %v — a valid stamp must survive both routes", got, good)
+	}
+}
+
 // TestRestorePar2Recovered covers the door AttachContent seeds through. It
 // must be able to write false as well as true: a job restored with the flag
 // clear and one that was never persisted at all reach the same seeding line,
@@ -149,10 +236,15 @@ func TestRestorePar2Recovered(t *testing.T) {
 	}
 }
 
-// TestUndeferRecovery covers the sole writer of par2Recovered. Its return value
-// is load-bearing: MarkArticleFailed records a release reason only when this
-// reports a change, so a wrong "true" would attach a reason to a job whose
-// volumes were never released.
+// TestUndeferRecovery covers undeferRecovery, which is the only function that
+// DERIVES par2Recovered from a change it made — `git grep -n 'par2Recovered =
+// true' internal/job/` finds one line. It is not the only writer:
+// restorePar2Recovered installs a value read back from the store, and
+// ResetForRetry clears it.
+//
+// Its return value is load-bearing: MarkArticleFailed records a release reason
+// only when this reports a change, so a wrong "true" would attach a reason to a
+// job whose volumes were never released.
 func TestUndeferRecovery(t *testing.T) {
 	newHeld := func(t *testing.T) *Job {
 		t.Helper()

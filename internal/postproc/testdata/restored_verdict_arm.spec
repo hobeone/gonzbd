@@ -21,8 +21,8 @@ file internal/postproc/filelist.go
 file internal/job/content.go
 --- anchor
 	j.restoredPar2Reason = reason
-	j.restoredDLStarted = started
+	j.restoredDLStarted = jobStampOrZero(started)
 --- replace
 	j.restoredPar2Reason = ""
-	j.restoredDLStarted = started
+	j.restoredDLStarted = jobStampOrZero(started)
 --- end
