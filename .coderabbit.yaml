@@ -11,12 +11,17 @@ reviews:
   path_instructions:
     - path: "internal/job/**"
       instructions: |
-        This package is a job-lifecycle state machine, and it is wired in:
-        nine non-test packages import it (cmd/gonzbd, internal/api,
-        internal/api/apitest, internal/app, internal/checkpoint,
-        internal/dispatch, internal/downloader, internal/postproc,
-        internal/sched). "This is unused" IS a valid finding here — an
-        exported symbol with no production caller is the class #297 tracks.
+        This package is a job-lifecycle state machine and it is fully wired
+        into production: it is imported across the app, api, dispatch, sched,
+        downloader, checkpoint and postproc layers, not held behind a future
+        integration. So "this is unused" IS a valid finding here — an exported
+        symbol with no production caller is the class #297 tracks.
+
+        That is stated as an invariant rather than a package list on purpose.
+        A frozen enumeration in a review prompt drifts silently and nothing
+        checks it; the command that produces it does not:
+        git grep -lI '"github.com/hobeone/gonzbd/internal/job"' -- '*.go'
+        ':!*_test.go' | xargs -n1 dirname | sort -u
 
         Review against these invariants, which generic Go review will not
         surface. They describe the model as it stands after #443; if a claim

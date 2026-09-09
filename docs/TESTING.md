@@ -263,10 +263,18 @@ is the one caller that has just stat'ed the files and deleted the runs a file
 contradicts. Every other seeding path — `Application.reevaluateStall`'s phase 3
 — is replaying an ack that already landed and stays additive.
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` guards that split
-from the replay side. The additive side needs no test: `Job.SeedFromRuns`
-writes done bits only through `progress.markDone`, which sets and never
-clears, so merging the two entry points would have to add a clearing path
-rather than change one.
+from the replay side. The additive side has no test, and what stands in for
+one is narrower than it looks: `Job.SeedFromRuns` writes done bits only
+through `progress.markDone`, which sets `p.done` and never clears it, so as
+the method stands today there is no clearing path to assert the absence of.
+
+That is a property of the current body, not an enforced invariant. A clearing
+path exists in the package — `markNotDone` calls `p.done.Clear` — and nothing
+would stop `SeedFromRuns` from calling it. In particular
+`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse` would not notice:
+its AST walk matches `.Set` on `.done` and is blind to `.Clear`, so it
+enumerates who SETS the bit rather than who may clear it. Read it as covering
+the writer list, not additivity.
 
 Making the sweep authoritative also turned two of the other four tests into
 real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the

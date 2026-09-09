@@ -46,9 +46,12 @@ import (
 // transaction opens rather than holding the write lock across its fsync.
 // Measured 0 in 40 runs afterwards, from 13 in 90 before. The unit pin that
 // held the property directly, TestSQLiteStore_AddSurvivesConcurrentCommits,
-// went with internal/queue and has no successor — so this integration test is
-// what stands behind the DSN change now, and the _txlock=immediate setting in
-// internal/history/db.go has no test naming it.
+// went with internal/queue; history.TestOpen_TakesTheWriteLockAtBegin replaces
+// it and is the deterministic one, asserting that a second BeginTx blocks
+// while a write transaction is open. This test remains the end-to-end check,
+// but it should not be relied on to catch a dropped DSN parameter: its
+// unpatched failure rate was 13 in 90, so a regression passes it most of the
+// time.
 //
 // A retry loop was tried and removed. It was not merely redundant once the
 // DSN change landed but actively harmful: contention moved to BeginTx, which

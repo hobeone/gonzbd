@@ -707,9 +707,15 @@ The union of the two contracts is either #362 (a stale bit outliving the check
 that disproved it) or a stall recovery that throws away live acks. What keeps
 them apart is now two different kinds of guard.
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` is a test.
-`Job.SeedFromRuns`'s additivity is not: the method's only done-bit write is
-`progress.markDone`, which sets `p.done` and never clears it, so there is no
-clearing path to assert the absence of.
+`Job.SeedFromRuns`'s additivity is not a test but a property of the method's
+body: its only done-bit write is `progress.markDone`, which sets `p.done` and
+never clears it, so today there is no clearing path to assert the absence of.
+
+Nothing enforces that. `markNotDone` clears the bit and sits in the same
+package, and `job.TestDoneBitWriters_MatchTheEnumerationStatedInProse` — which
+this document cites as the mechanical guard on the writer enumeration — would
+not catch `SeedFromRuns` acquiring a call to it: the walk matches `.Set` on
+`.done` and never looks for `.Clear`. The enumeration it guards is of setters.
 
 The file indices are carried separately from the runs, and that is structural
 rather than convenience: a file whose runs were **all** discarded contributes no

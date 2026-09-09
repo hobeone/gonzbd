@@ -1,6 +1,9 @@
 package job
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestAllFetchPolicies_Exhaustive pins AllFetchPolicies against the const
 // block it mirrors.
@@ -11,11 +14,23 @@ import "testing"
 // so the hand-written list was the unbacked third copy of the enum that every
 // one of those comments said it was not.
 //
-// The gap it leaves is silent rather than loud. AllFetchPolicies is what the
-// aggregates and the un-defer path walk, so a policy declared in progress.go
-// but absent from the list is excluded from every aggregate and invisible to
-// un-deferral — its file is never fetched and never blocks completion, and no
-// switch falls through to announce it.
+// What the list is FOR needs stating precisely, because the first version of
+// this comment got it wrong in the same way the comments above got their
+// claims wrong. AllFetchPolicies has no production caller at all — `git grep
+// -nw 'AllFetchPolicies' -- '*.go'` returns only this file, the declaration,
+// and two comments. Production never walks the list: it inspects each file's
+// Fetch field with the two binary predicates directly, `!= FetchAlways` for
+// dispatch and completion and `== FetchIfNeeded` for the deferred-par2 paths
+// (content.go's undeferRecovery, DeferredRecoveryIndices and the completion
+// scan).
+//
+// So the list is a registry for exhaustive TESTS, and this test is what keeps
+// it honest. The danger a missing entry creates is real but indirect: a policy
+// declared in progress.go and absent here is invisible to every table driven
+// from the list, so a case nobody considered reads as covered. The predicates
+// themselves would still see the new value — and treat it as whichever side of
+// each binary they happen to fall on, which is the decision the const block's
+// own comment says must be made deliberately at each site.
 //
 // progress.go is the source of truth; the list only has to agree with it.
 // Compared by iota VALUE rather than by name, because FetchPolicy has no
@@ -28,20 +43,16 @@ func TestAllFetchPolicies_Exhaustive(t *testing.T) {
 		t.Fatal("parsed no FetchPolicy constants from progress.go; the walk no longer matches the file's shape, so this test would pass vacuously")
 	}
 
-	listed := make(map[int]bool, len(AllFetchPolicies()))
-	for _, p := range AllFetchPolicies() {
-		listed[int(p)] = true
-	}
-
+	all := AllFetchPolicies()
 	for name, value := range declared {
-		if !listed[value] {
+		if !slices.Contains(all, FetchPolicy(value)) {
 			t.Errorf("%s is declared in progress.go but missing from AllFetchPolicies(); add it there, "+
 				"then decide what it means at each site that reads the policy — the fetch/hold predicates "+
 				"that drive CRC re-verification and whether a late failure may re-arm a volume", name)
 		}
 	}
-	if len(AllFetchPolicies()) != len(declared) {
+	if len(all) != len(declared) {
 		t.Errorf("AllFetchPolicies() has %d entries, progress.go declares %d; the list has a duplicate or an entry that is no longer declared",
-			len(AllFetchPolicies()), len(declared))
+			len(all), len(declared))
 	}
 }

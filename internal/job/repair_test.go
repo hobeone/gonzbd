@@ -36,13 +36,12 @@ func TestRepairStateFrom_EveryBranch(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name              string
-		contentFailed     int64
-		recoveryBytes     int64
-		hasPar2Files      bool
-		want              job.RepairState
-		wantHopeless      bool
-		whyItMattersIfNot string
+		name          string
+		contentFailed int64
+		recoveryBytes int64
+		hasPar2Files  bool
+		want          job.RepairState
+		wantHopeless  bool
 	}{
 		{
 			name: "no damage is intact whatever the capacity",
@@ -69,8 +68,8 @@ func TestRepairStateFrom_EveryBranch(t *testing.T) {
 			want: job.RepairBeyondCapacity, wantHopeless: true,
 		},
 		{
-			name:          "damage within capacity is repairable",
-			contentFailed: 100, recoveryBytes: 100, hasPar2Files: true,
+			name:          "damage strictly within capacity is repairable",
+			contentFailed: 50, recoveryBytes: 100, hasPar2Files: true,
 			want: job.RepairPossible, wantHopeless: false,
 		},
 		{
