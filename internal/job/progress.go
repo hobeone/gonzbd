@@ -681,9 +681,10 @@ func (p *JobProgress) clearDownloadStamps() {
 // code until the mistake.
 //
 // Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
-// returns 2 files — this file (declaration and UnmarshalJSON) and content.go
-// (Job.RestoreDownloadStamps). It reads a stamp the process did not mint, which is
-// what this method is the door for.
+// returns 2 files — this file (declaration and UnmarshalJSON) and content.go,
+// where AttachContent seeds a fresh JobProgress from the stamps
+// RestoreProgressState recorded on the Job before hydration (#504). It reads a
+// stamp the process did not mint, which is what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.clearDownloadStamps()
 	if isJobStamp(started) {

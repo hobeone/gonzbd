@@ -20,13 +20,9 @@ file internal/postproc/filelist.go
 [RestoreProgressState drops the reason, reproducing the silent no-op the old SetPar2ReleaseReason guard had at this call site]
 file internal/job/content.go
 --- anchor
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = reason
+	j.restoredDLStarted = started
 --- replace
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = ""
+	j.restoredDLStarted = started
 --- end

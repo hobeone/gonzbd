@@ -60,13 +60,9 @@ file internal/job/content.go
 [RestoreProgressState stops recording the reason, as the old silent no-op did]
 file internal/job/content.go
 --- anchor
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = reason
+	j.restoredDLStarted = started
 --- replace
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = ""
+	j.restoredDLStarted = started
 --- end

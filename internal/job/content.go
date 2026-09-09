@@ -751,6 +751,14 @@ func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32
 
 // ResetForRetry returns a failed job to a downloadable state, preserving
 // what it already fetched.
+//
+// It clears the progress-tier par2 state but not the Job-level restored*
+// fields, and the branch that makes that safe is that a retried job is always a
+// fresh object: the only production caller is app.RetryHistoryJob, which
+// rebuilds the job through BuildIngestJob's job.New + AttachContent rather than
+// reusing the restored one, so restored* is already zero. A caller that
+// retried a restored, never-hydrated job in place would return early here on
+// the progress == nil guard and keep the old values.
 func (j *Job) ResetForRetry() {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -858,9 +866,24 @@ func (j *Job) MarkDownloadFinished(t time.Time) error {
 // second writer of those fields for a caller that does not exist.
 //
 // AttachContent seeds the fresh JobProgress from these and zeroes them.
+//
+// When progress already exists it writes there instead, through the same doors
+// AttachContent seeds with. That branch is unreachable from the sole caller
+// above and is not defensive padding: without it, a call made after hydration
+// would land in fields the accessors stop reading once progress is non-nil, and
+// return successfully having discarded the value — the identical silent drop
+// this function exists to remove, one level up. Routing to whichever record is
+// authoritative adds no writer of those fields; setPar2ReleaseReason and
+// restoreDownloadStamps already own them.
 func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
+	if j.progress != nil {
+		j.progress.restoreDownloadStamps(started, finished)
+		j.progress.restorePar2ReleaseReason(reason)
+		j.progress.restorePar2Recovered(recovered)
+		return
+	}
 	j.restoredPar2Reason = reason
 	j.restoredDLStarted = started
 	j.restoredDLFinished = finished

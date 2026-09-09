@@ -1,10 +1,10 @@
 pkg ./internal/dispatch/
 run TestRestoreJobMetadata_Coverage
 
-[restore stops applying download stamps to restored job]
+[restore transposes the download stamps it applies to a restored job]
 file internal/dispatch/dispatch.go
 --- anchor
-	_ = j.RestoreDownloadStamps(started, finished)
+	j.RestoreProgressState(p.Par2ReleaseReason, started, finished, p.Par2Recovered)
 --- replace
-	_, _ = started, finished
+	j.RestoreProgressState(p.Par2ReleaseReason, finished, started, p.Par2Recovered)
 --- end

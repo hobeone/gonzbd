@@ -90,6 +90,43 @@ func TestJobPar2Recovered_ReadsThroughBeforeHydration(t *testing.T) {
 	}
 }
 
+// TestRestoreProgressState_AppliesToALiveRecord covers the branch taken when
+// progress already exists. No production caller reaches it — restoreJobMetadata
+// runs before hydration — but without it a misordered call would write to
+// fields the accessors stop reading once progress is installed and report
+// success, which is the silent drop this whole path exists to remove.
+func TestRestoreProgressState_AppliesToALiveRecord(t *testing.T) {
+	m := NewManifest([]JobFile{
+		{Subject: "f", Bytes: 100, Articles: []JobArticle{{ID: "<a@x>", Bytes: 100, Number: 1}}},
+	})
+	j := New("j", "j", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+
+	start := time.Unix(1700000100, 0).UTC()
+	finish := time.Unix(1700000200, 0).UTC()
+	j.RestoreProgressState("repair needed", start, finish, true)
+
+	if got := j.Progress().Par2ReleaseReason(); got != "repair needed" {
+		t.Errorf("Par2ReleaseReason = %q, want %q — the write must reach the live record", got, "repair needed")
+	}
+	if !j.Progress().Par2Recovered() {
+		t.Error("Par2Recovered = false; the write must reach the live record")
+	}
+	if got := j.Progress().DownloadStarted(); !got.Equal(start) {
+		t.Errorf("DownloadStarted = %v, want %v", got, start)
+	}
+	if got := j.Progress().DownloadFinished(); !got.Equal(finish) {
+		t.Errorf("DownloadFinished = %v, want %v", got, finish)
+	}
+	// The Job-level copy must stay empty, so nothing can later seed a second,
+	// stale value over the live record.
+	if j.restoredPar2Reason != "" || j.restoredPar2Recovered {
+		t.Error("the restored* fields were written while progress was live; only one copy may be authoritative")
+	}
+}
+
 // TestRestorePar2Recovered covers the door AttachContent seeds through. It
 // must be able to write false as well as true: a job restored with the flag
 // clear and one that was never persisted at all reach the same seeding line,

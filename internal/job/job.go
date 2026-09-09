@@ -221,8 +221,13 @@ type Job struct {
 	// The rule is uniform: while progress is nil these fields are
 	// authoritative and the Job-level accessors read them; once AttachContent
 	// installs a JobProgress it seeds it from these and zeroes them, so the
-	// two are never both live. RestoreProgressState and SetPar2ReleaseReason
-	// are the only writers — `git grep -n 'j\.restored' -- 'internal/job/*.go'`.
+	// two are never both live.
+	//
+	// Three functions write them, not two: RestoreProgressState and
+	// SetPar2ReleaseReason write values, and AttachContent writes the zeroes
+	// after seeding — `git grep -n 'j\.restored' -- 'internal/job/content.go'`
+	// finds 16 lines across those three plus the four accessors that read
+	// them. All sixteen are inside a contentMu critical section.
 	restoredPar2Reason    string
 	restoredDLStarted     time.Time
 	restoredDLFinished    time.Time
