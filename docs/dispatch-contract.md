@@ -141,11 +141,17 @@ until the next timer tick.
 (`Residency.Hydrate`) when a job holds but is not yet resident, or evicts
 (`Residency.Evict`) when a job is resident but no longer holds.
 
-Only the manifest tier is evictable. Header fields and `JobProgress` stay
-resident for a job's whole time in the registry (see
-`docs/queue-lifecycle.md` for that split); this design changes only who
-computes manifest residency — it stops being a set the dispatcher maintains
-independently and becomes a function of the pools.
+Only the manifest tier is evictable: nothing drops a `JobProgress` once it
+exists, and header fields never leave. That is weaker than "resident for a
+job's whole time in the registry", and deliberately so — a job restored at
+startup has no `JobProgress` until first hydration, because `dispatch.restore`
+rebuilds it with `job.New` and no content and this package has no database
+access to size one. See `docs/job-lifecycle.md` for that window and the
+`restored*` fields covering it.
+
+What the dispatcher changes is only who computes manifest residency: it stops
+being a set the dispatcher maintains independently and becomes a function of
+the pools.
 
 **The invariant holds at tick boundaries, not instantaneously.** `grantFor`
 runs inside `Advance` under `Queue.mu`, so the dispatcher learns a job

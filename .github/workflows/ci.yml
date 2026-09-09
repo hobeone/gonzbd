@@ -97,6 +97,9 @@ jobs:
       - name: Check citation counts
         run: go run ./scripts/check_citations
 
+      - name: Doc citation check
+        run: go run ./scripts/check_doc_citations
+
       - name: Test double leakage check
         run: go run scripts/check_test_doubles/main.go --all
 
