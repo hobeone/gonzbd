@@ -37,6 +37,18 @@ func (j *Job) AttachContent(m *Manifest) error {
 	j.totalBytes = m.TotalBytes()
 	j.recoveryBytes = m.RecoveryBytes()
 	j.recoveryFiles = m.RecoveryFiles()
+	// Seed from state restored before this job had a JobProgress, then zero it
+	// so the Job-level copy and the progress record are never both live. These
+	// go through the existing restore doors rather than assigning the fields:
+	// restoreDownloadStamps owns the isJobStamp filter, and a second
+	// implementation of it here is exactly the divergence that filter exists
+	// to prevent. Direct field access, not the exported setters — contentMu is
+	// held and sync.RWMutex is not reentrant.
+	j.progress.restoreDownloadStamps(j.restoredDLStarted, j.restoredDLFinished)
+	j.progress.restorePar2ReleaseReason(j.restoredPar2Reason)
+	j.restoredPar2Reason = ""
+	j.restoredDLStarted = time.Time{}
+	j.restoredDLFinished = time.Time{}
 	return nil
 }
 
@@ -177,32 +189,38 @@ func (j *Job) PendingArticles() int {
 	return j.progress.PendingArticles()
 }
 
-// DownloadStarted returns the time the first article began downloading, or zero if unstarted/not resident.
+// DownloadStarted returns the time the first article began downloading, or
+// zero if unstarted. Before the job has a JobProgress it reads the value
+// restored from the store, so a restored job reports the same stamp whether or
+// not it has been hydrated yet.
 func (j *Job) DownloadStarted() time.Time {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
 	if j.progress == nil {
-		return time.Time{}
+		return j.restoredDLStarted
 	}
 	return j.progress.DownloadStarted()
 }
 
-// DownloadFinished returns the time downloading completed, or zero if unfinished/not resident.
+// DownloadFinished returns the time downloading completed, or zero if
+// unfinished. Reads the restored value before hydration, as DownloadStarted does.
 func (j *Job) DownloadFinished() time.Time {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
 	if j.progress == nil {
-		return time.Time{}
+		return j.restoredDLFinished
 	}
 	return j.progress.DownloadFinished()
 }
 
-// Par2ReleaseReason returns the reason par2 articles were released, or empty if not released/not resident.
+// Par2ReleaseReason returns the reason par2 articles were released, or empty
+// if not released. Reads the restored value before hydration, as
+// DownloadStarted does.
 func (j *Job) Par2ReleaseReason() string {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
 	if j.progress == nil {
-		return ""
+		return j.restoredPar2Reason
 	}
 	return j.progress.Par2ReleaseReason()
 }
@@ -484,12 +502,21 @@ func (j *Job) DiscardDeferredPar2() bool {
 	return changed
 }
 
-// SetPar2ReleaseReason records the reason deferred recovery volumes were released or discarded.
+// SetPar2ReleaseReason records the reason deferred recovery volumes were
+// released or discarded.
+//
+// The else branch is not defensive padding: Par2ReleaseReason reads the
+// restored field while progress is nil, so dropping the write there — as this
+// did before #504 — would make a write-then-read on a job that has not been
+// hydrated return the restored value instead of the one just written. Writing
+// to whichever field is currently authoritative keeps the two in agreement.
 func (j *Job) SetPar2ReleaseReason(reason string) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress != nil {
 		j.progress.setPar2ReleaseReason(reason)
+	} else {
+		j.restoredPar2Reason = reason
 	}
 }
 
@@ -819,15 +846,22 @@ func (j *Job) MarkDownloadFinished(t time.Time) error {
 	return nil
 }
 
-// RestoreDownloadStamps restores download start and finish timestamps on resident progress.
-func (j *Job) RestoreDownloadStamps(started, finished time.Time) error {
+// RestoreProgressState applies progress-tier state recovered from the store.
+//
+// It writes only the Job-level restored* fields, never a live JobProgress: its
+// sole production caller is dispatch.restoreJobMetadata (`git grep -n
+// 'j\.RestoreProgressState(' -- 'internal/dispatch/*.go' ':!*_test.go'` finds
+// one line), which runs immediately after reconstruct and therefore always on
+// a job whose progress is nil. Applying to a live record as well would be a
+// second writer of those fields for a caller that does not exist.
+//
+// AttachContent seeds the fresh JobProgress from these and zeroes them.
+func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	j.progress.restoreDownloadStamps(started, finished)
-	return nil
+	j.restoredPar2Reason = reason
+	j.restoredDLStarted = started
+	j.restoredDLFinished = finished
 }
 
 func runsCoverage(m *Manifest, r durability.Run) (first, last int, err error) {

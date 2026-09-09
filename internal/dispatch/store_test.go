@@ -664,9 +664,19 @@ func TestRestore_PreservesSortKeyAndResumesAbove(t *testing.T) {
 // order after the SECOND restart.
 func TestRestore_DoesNotRewriteRowsItJustRead(t *testing.T) {
 	st := &fakeStore{}
+	// The progress-tier columns carry non-zero values deliberately. With them
+	// left zero this test passed vacuously: restoreJobMetadata's writes had
+	// nowhere to land on a job with no JobProgress, but the zeroes it read
+	// back afterwards matched what restore had recorded, so persistIfChanged
+	// saw no change and issued no Save. A restored job with a real reason and
+	// real stamps is what made the disagreement observable (#504).
 	st.seed([]Persisted{
-		{ID: "a", SortKey: 10, Header: Header{Name: "a"}},
-		{ID: "b", SortKey: 50, Header: Header{Name: "b"}},
+		{ID: "a", SortKey: 10, Header: Header{Name: "a"},
+			DownloadStarted: 1700000100, DownloadFinished: 1700000200,
+			Par2ReleaseReason: "repair needed"},
+		{ID: "b", SortKey: 50, Header: Header{Name: "b"},
+			DownloadStarted: 1700000300, DownloadFinished: 1700000400,
+			Par2ReleaseReason: "permanent article download failure"},
 	})
 	d := newTestDispatcher(t, withStore(st))
 	if err := d.restore(context.Background()); err != nil {

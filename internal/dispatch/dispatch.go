@@ -906,8 +906,12 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	if p.DownloadFinished > 0 {
 		finished = time.Unix(p.DownloadFinished, 0).UTC()
 	}
-	_ = j.RestoreDownloadStamps(started, finished)
-	j.SetPar2ReleaseReason(p.Par2ReleaseReason)
+	// One call, because all three are progress-tier and this runs before the
+	// job has a JobProgress: reconstruct is job.New, which attaches no
+	// content. The previous pair wrote through Job methods that require a live
+	// progress record, so both were silently lost and persistIfChanged then
+	// wrote the zeroes back over the stored row (#504).
+	j.RestoreProgressState(p.Par2ReleaseReason, started, finished)
 	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 

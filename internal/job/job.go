@@ -201,7 +201,8 @@ type Job struct {
 	// exported Surrender — see surrenderLocked's comment for why the
 	lease *Lease
 
-	// contentMu guards the manifest/progress POINTER PAIR, not their contents.
+	// contentMu guards the manifest/progress POINTER PAIR, and the restored*
+	// fields below — not the contents of *Manifest or *JobProgress.
 	// Eviction and hydration swap both pointers together; a reader holding a
 	// *Job but not this lock would race the swap (the defect #263 records
 	// against internal/queue's residencyMu, which this replaces).
@@ -211,6 +212,20 @@ type Job struct {
 	contentMu sync.RWMutex
 	manifest  *Manifest
 	progress  *JobProgress
+
+	// Progress-tier state recovered from the store before this job has a
+	// JobProgress. dispatch.restore calls reconstruct (New, below, which
+	// attaches no content) and then restoreJobMetadata immediately, so a
+	// progress-tier write there has nowhere to land.
+	//
+	// The rule is uniform: while progress is nil these fields are
+	// authoritative and the Job-level accessors read them; once AttachContent
+	// installs a JobProgress it seeds it from these and zeroes them, so the
+	// two are never both live. RestoreProgressState and SetPar2ReleaseReason
+	// are the only writers — `git grep -n 'j\.restored' -- 'internal/job/*.go'`.
+	restoredPar2Reason string
+	restoredDLStarted  time.Time
+	restoredDLFinished time.Time
 
 	totalBytes    int64
 	recoveryBytes int64

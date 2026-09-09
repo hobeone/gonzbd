@@ -678,11 +678,10 @@ func TestPersistIfChanged_Coverage(t *testing.T) {
 		Bytes:    1000,
 		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
 	}})
+	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0))
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
-	_ = j.RestoreDownloadStamps(time.Unix(100, 0), time.Unix(200, 0))
-	j.SetPar2ReleaseReason("test reason")
 
 	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -787,8 +786,9 @@ func TestRemove_ConcurrentPersistDoesNotResurrectRowOrResidency(t *testing.T) {
 			t.Fatalf("trial %d: setup: job not saved to store", trial)
 		}
 
-		// Mutate job so persistIfChanged has new data.
-		_ = j.RestoreDownloadStamps(time.Unix(int64(trial+1), 0), time.Unix(int64(trial+2), 0))
+		// Mutate job so persistIfChanged has new data. RecoveryBytes is
+		// job-level, so it lands whether or not the job is hydrated.
+		j.SetRecoveryBytes(int64(trial + 1))
 
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
@@ -865,8 +865,9 @@ func TestRemove_InFlightPersistBlockedByStoreMuDoesNotResurrect(t *testing.T) {
 	}
 	d.persistIfChanged(context.Background(), j)
 
-	// Mutate so it wants to persist.
-	_ = j.RestoreDownloadStamps(time.Unix(100, 0), time.Unix(200, 0))
+	// Mutate so it wants to persist. RecoveryBytes is job-level, so it lands
+	// whether or not the job is hydrated.
+	j.SetRecoveryBytes(100)
 
 	removeDone := make(chan error, 1)
 	go func() {
