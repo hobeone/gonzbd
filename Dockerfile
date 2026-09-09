@@ -64,7 +64,7 @@ ARG PAR2_VERSION=v1.5.0
 # a new checksum on its own, so a Renovate-driven version bump PR will fail
 # this build (sha256sum -c) until the checksum below is updated to match —
 # loudly, on purpose, rather than silently building an unverified tarball.
-ARG PAR2_SHA256=6f2cb042f23d9b0c93f14cc0e16de5bd6e98bf36d8be1f8f2e886fa85ad1b972
+ARG PAR2_SHA256=38ae0b5158c496c5fe60dfdfdc05ea18516a2efa9c3ea0dc2cd477df498937a3
 RUN apk add --no-cache autoconf automake build-base curl \
  && mkdir /tmp/par2 \
  && curl -L -o /tmp/par2.tar.gz "https://github.com/animetosho/par2cmdline-turbo/archive/${PAR2_VERSION}.tar.gz" \
