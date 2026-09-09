@@ -68,3 +68,34 @@ func TestUniquePath(t *testing.T) {
 		}
 	})
 }
+
+// TestUniquePath_DanglingSymlinkOccupiesTheName pins that a name held by a
+// symlink to nothing is treated as taken.
+//
+// Stat follows the link and fails on the missing target, which reads as "the
+// name is free" — so the caller writes to the undecorated name and the write
+// follows the link to wherever it points. Lstat answers about the link itself,
+// which is the entry actually occupying the name.
+func TestUniquePath_DanglingSymlinkOccupiesTheName(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	dest := filepath.Join(tmpDir, "file.txt")
+	if err := os.Symlink("no-such-target", dest); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if got := uniquePath(dest); got != filepath.Join(tmpDir, "file_1.txt") {
+		t.Errorf("uniquePath(%q) = %q, want the suffixed name — a dangling symlink still occupies the name", dest, got)
+	}
+
+	// The candidate loop has its own existence test, and the check above
+	// never reaches it. Occupying the first candidate with a second dangling
+	// link is what forces the loop's own Lstat to be the one under test.
+	if err := os.Symlink("no-such-target", filepath.Join(tmpDir, "file_1.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if got := uniquePath(dest); got != filepath.Join(tmpDir, "file_2.txt") {
+		t.Errorf("uniquePath(%q) = %q, want file_2.txt — a dangling symlink occupies the first candidate too", dest, got)
+	}
+}

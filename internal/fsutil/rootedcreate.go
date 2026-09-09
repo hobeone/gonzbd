@@ -91,10 +91,17 @@ func RootedCreateTemp(ctx context.Context, root *os.Root, rel string) (*os.File,
 }
 
 // GetUniqueRelPath returns a unique version of rel relative to root by checking
-// existence using root.Stat. It appends .1, .2, etc., up to 10,000 attempts if the
+// existence using root.Lstat. It appends .1, .2, etc., up to 10,000 attempts if the
 // target already exists.
+//
+// Lstat, not Stat: the question is whether anything holds the NAME, and Stat
+// answers about the link's target instead. A symlink to a missing file reads
+// as absent under Stat, so the undecorated name is handed back and the write
+// then follows the link to wherever it points — os.Root keeps that inside the
+// root but does not keep it off an unintended file. This mirrors SABnzbd's
+// os.path.exists → os.path.lexists fix in get_unique_dir/get_unique_filename.
 func GetUniqueRelPath(root *os.Root, rel string) string {
-	if _, err := root.Stat(rel); err != nil {
+	if _, err := root.Lstat(rel); err != nil {
 		// If the file definitely doesn't exist relative to root, use this path.
 		if errors.Is(err, os.ErrNotExist) {
 			return rel
@@ -106,7 +113,7 @@ func GetUniqueRelPath(root *os.Root, rel string) string {
 	base := rel[:len(rel)-len(ext)]
 	for i := 1; i <= 10_000; i++ {
 		newRel := fmt.Sprintf("%s.%d%s", base, i, ext)
-		if _, err := root.Stat(newRel); err != nil {
+		if _, err := root.Lstat(newRel); err != nil {
 			// If the suffix path doesn't exist, we can use it.
 			if errors.Is(err, os.ErrNotExist) {
 				return newRel
