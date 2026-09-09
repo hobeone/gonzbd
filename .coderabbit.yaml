@@ -8,14 +8,6 @@
 language: en-US
 
 reviews:
-  # The plans under docs/superpowers/plans/ are build artifacts: task-by-task
-  # instructions written for one-shot implementers, carrying verbatim code and
-  # per-task red-green procedures. They are a record of what was instructed,
-  # not living documentation, and reviewing them costs attention that belongs
-  # on the code. The specs alongside them ARE reviewable and are not filtered.
-  path_filters:
-    - "!docs/superpowers/plans/**"
-
   path_instructions:
     - path: "internal/job/**"
       instructions: |

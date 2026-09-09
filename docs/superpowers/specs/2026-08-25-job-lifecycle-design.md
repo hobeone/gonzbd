@@ -1382,5 +1382,3 @@ different questions. The `quickcheck` stage is retained permanently, and plan
 **Each plan is written only after its predecessor lands.** A plan for the swap
 written today would reference signatures that do not exist yet, and would be
 speculation formatted as instructions.
-
-`docs/superpowers/plans/2026-08-25-job-lifecycle-core.md` is plan 1.
