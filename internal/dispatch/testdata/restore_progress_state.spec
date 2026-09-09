@@ -37,15 +37,35 @@ file internal/job/content.go
 	}
 --- end
 
+[persistIfChanged stops reading the par2Recovered flag back, so a restored job's stored true is overwritten with false]
+file internal/dispatch/tick.go
+--- anchor
+	p.Par2Recovered = j.Par2Recovered()
+--- replace
+	p.Par2Recovered = false
+--- end
+
+[the Job accessor loses its pre-hydration fallback, so a never-hydrated job reports false]
+file internal/job/content.go
+--- anchor
+	if j.progress == nil {
+		return j.restoredPar2Recovered
+	}
+--- replace
+	if j.progress == nil {
+		return false
+	}
+--- end
+
 [RestoreProgressState stops recording the reason, as the old silent no-op did]
 file internal/job/content.go
 --- anchor
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {
+func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = reason
 --- replace
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {
+func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = ""

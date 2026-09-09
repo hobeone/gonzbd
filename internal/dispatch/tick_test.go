@@ -678,7 +678,7 @@ func TestPersistIfChanged_Coverage(t *testing.T) {
 		Bytes:    1000,
 		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
 	}})
-	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0))
+	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0), false)
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}

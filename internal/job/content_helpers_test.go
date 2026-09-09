@@ -2,6 +2,7 @@ package job
 
 import (
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
 )
@@ -52,6 +53,62 @@ func TestRunsCoverage(t *testing.T) {
 				t.Errorf("runsCoverage(%+v) = %d, %d; want %d, %d", tc.run, first, last, tc.wantFirst, tc.wantLast)
 			}
 		})
+	}
+}
+
+// TestJobPar2Recovered_ReadsThroughBeforeHydration covers both branches of the
+// Job-level accessor. The pre-hydration branch is the one #504 turns on: a
+// restored job that is never hydrated — it holds no lease or slot and is not
+// Fetching, so neither Hydrate call site reaches it — must still report the
+// flag, or persistIfChanged writes false back over the stored row.
+func TestJobPar2Recovered_ReadsThroughBeforeHydration(t *testing.T) {
+	m := NewManifest([]JobFile{
+		{Subject: "f", Bytes: 100, Articles: []JobArticle{{ID: "<a@x>", Bytes: 100, Number: 1}}},
+	})
+
+	j := New("j", "j", Policy{})
+	if j.Par2Recovered() {
+		t.Fatal("a job with neither progress nor restored state must report false")
+	}
+
+	j.RestoreProgressState("repair needed", time.Time{}, time.Time{}, true)
+	if !j.Par2Recovered() {
+		t.Error("Par2Recovered = false before hydration; the restored value must be readable")
+	}
+
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if !j.Par2Recovered() {
+		t.Error("Par2Recovered = false after hydration; AttachContent must seed the flag")
+	}
+	// Once progress exists it owns the value, so a later change there is what
+	// the accessor reports.
+	j.progress.restorePar2Recovered(false)
+	if j.Par2Recovered() {
+		t.Error("Par2Recovered still true after the live record cleared it; the accessor must not keep reading the restored copy")
+	}
+}
+
+// TestRestorePar2Recovered covers the door AttachContent seeds through. It
+// must be able to write false as well as true: a job restored with the flag
+// clear and one that was never persisted at all reach the same seeding line,
+// and a setter that only ever latched true would leave a re-fetched job
+// claiming a repair it did not need.
+func TestRestorePar2Recovered(t *testing.T) {
+	p := newJobProgress(NewManifest([]JobFile{
+		{Subject: "f", Bytes: 100, Articles: []JobArticle{{ID: "<a@x>", Bytes: 100, Number: 1}}},
+	}))
+	if p.Par2Recovered() {
+		t.Fatal("a fresh JobProgress must start with par2Recovered false")
+	}
+	p.restorePar2Recovered(true)
+	if !p.Par2Recovered() {
+		t.Error("Par2Recovered = false after restoring true")
+	}
+	p.restorePar2Recovered(false)
+	if p.Par2Recovered() {
+		t.Error("Par2Recovered = true after restoring false; the door must not latch")
 	}
 }
 

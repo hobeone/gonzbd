@@ -46,9 +46,11 @@ func (j *Job) AttachContent(m *Manifest) error {
 	// held and sync.RWMutex is not reentrant.
 	j.progress.restoreDownloadStamps(j.restoredDLStarted, j.restoredDLFinished)
 	j.progress.restorePar2ReleaseReason(j.restoredPar2Reason)
+	j.progress.restorePar2Recovered(j.restoredPar2Recovered)
 	j.restoredPar2Reason = ""
 	j.restoredDLStarted = time.Time{}
 	j.restoredDLFinished = time.Time{}
+	j.restoredPar2Recovered = false
 	return nil
 }
 
@@ -856,12 +858,24 @@ func (j *Job) MarkDownloadFinished(t time.Time) error {
 // second writer of those fields for a caller that does not exist.
 //
 // AttachContent seeds the fresh JobProgress from these and zeroes them.
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {
+func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	j.restoredPar2Reason = reason
 	j.restoredDLStarted = started
 	j.restoredDLFinished = finished
+	j.restoredPar2Recovered = recovered
+}
+
+// Par2Recovered reports whether on-demand par2 un-deferred this job's recovery
+// volumes. Reads the restored value before hydration, as Par2ReleaseReason does.
+func (j *Job) Par2Recovered() bool {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return j.restoredPar2Recovered
+	}
+	return j.progress.Par2Recovered()
 }
 
 func runsCoverage(m *Manifest, r durability.Run) (first, last int, err error) {

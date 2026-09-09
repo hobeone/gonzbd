@@ -223,9 +223,10 @@ type Job struct {
 	// installs a JobProgress it seeds it from these and zeroes them, so the
 	// two are never both live. RestoreProgressState and SetPar2ReleaseReason
 	// are the only writers — `git grep -n 'j\.restored' -- 'internal/job/*.go'`.
-	restoredPar2Reason string
-	restoredDLStarted  time.Time
-	restoredDLFinished time.Time
+	restoredPar2Reason    string
+	restoredDLStarted     time.Time
+	restoredDLFinished    time.Time
+	restoredPar2Recovered bool
 
 	totalBytes    int64
 	recoveryBytes int64

@@ -722,6 +722,10 @@ func (p *JobProgress) restorePar2ReleaseReason(reason string) {
 	p.par2ReleaseReason = reason
 }
 
+func (p *JobProgress) restorePar2Recovered(recovered bool) {
+	p.par2Recovered = recovered
+}
+
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been
 // reached for this job, using the reason string as the marker.
 //

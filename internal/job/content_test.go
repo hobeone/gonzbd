@@ -462,7 +462,7 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 		Articles: []JobArticle{{ID: "<r1@x>", Bytes: 100, Number: 1}},
 	}})
 	jRestored := New("restored", "restored", Policy{})
-	jRestored.RestoreProgressState("repair needed", start, finish)
+	jRestored.RestoreProgressState("repair needed", start, finish, false)
 
 	// Readable before hydration: the Job-level fields are authoritative while
 	// progress is nil, which is what stops persistIfChanged zeroing the row
@@ -518,7 +518,7 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 	finish := time.Unix(1700000100, 0).UTC()
 	// Restore before attaching, so the stamps reach the JobProgress the way a
 	// restarted job's do; then check ResetForRetry clears them.
-	j.RestoreProgressState("", start, finish)
+	j.RestoreProgressState("", start, finish, false)
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}

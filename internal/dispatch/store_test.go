@@ -673,10 +673,10 @@ func TestRestore_DoesNotRewriteRowsItJustRead(t *testing.T) {
 	st.seed([]Persisted{
 		{ID: "a", SortKey: 10, Header: Header{Name: "a"},
 			DownloadStarted: 1700000100, DownloadFinished: 1700000200,
-			Par2ReleaseReason: "repair needed"},
+			Par2ReleaseReason: "repair needed", Par2Recovered: true},
 		{ID: "b", SortKey: 50, Header: Header{Name: "b"},
 			DownloadStarted: 1700000300, DownloadFinished: 1700000400,
-			Par2ReleaseReason: "permanent article download failure"},
+			Par2ReleaseReason: "permanent article download failure", Par2Recovered: true},
 	})
 	d := newTestDispatcher(t, withStore(st))
 	if err := d.restore(context.Background()); err != nil {

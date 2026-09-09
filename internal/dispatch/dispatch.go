@@ -911,7 +911,7 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	// content. The previous pair wrote through Job methods that require a live
 	// progress record, so both were silently lost and persistIfChanged then
 	// wrote the zeroes back over the stored row (#504).
-	j.RestoreProgressState(p.Par2ReleaseReason, started, finished)
+	j.RestoreProgressState(p.Par2ReleaseReason, started, finished, p.Par2Recovered)
 	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 
