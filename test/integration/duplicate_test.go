@@ -44,9 +44,11 @@ import (
 // the write lock at BEGIN so there is no upgrade to contend on and
 // busy_timeout finally applies, plus Add writing the manifest before the
 // transaction opens rather than holding the write lock across its fsync.
-// Measured 0 in 40 runs afterwards, from 13 in 90 before, with
-// internal/queue's TestSQLiteStore_AddSurvivesConcurrentCommits pinning the
-// property directly.
+// Measured 0 in 40 runs afterwards, from 13 in 90 before. The unit pin that
+// held the property directly, TestSQLiteStore_AddSurvivesConcurrentCommits,
+// went with internal/queue and has no successor — so this integration test is
+// what stands behind the DSN change now, and the _txlock=immediate setting in
+// internal/history/db.go has no test naming it.
 //
 // A retry loop was tried and removed. It was not merely redundant once the
 // DSN change landed but actively harmful: contention moved to BeginTx, which

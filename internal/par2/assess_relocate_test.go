@@ -312,7 +312,7 @@ func TestComputeFileCRC32_MissingFile(t *testing.T) {
 	}
 }
 
-// TestQuickCheck_Phase4_CRCSizeFallback tests that Phase 4 (CRC32+Size)
+// TestAssess_Phase4_CRCSizeFallback tests that Phase 4 (CRC32+Size)
 // correctly relocates an obfuscated file that didn't match in phases 1-3.
 func TestAssess_Phase4_CRCSizeFallback(t *testing.T) {
 	dir := t.TempDir()
@@ -358,7 +358,7 @@ func TestAssess_Phase4_CRCSizeFallback(t *testing.T) {
 	}
 }
 
-// TestQuickCheck_Phase3HashMatch_EndToEnd drives QuickCheck itself (not just
+// TestAssess_Phase3HashMatch_EndToEnd drives Assess itself (not just
 // relocateFile/ComputeHash16k in isolation) through Phase 3's hash16k index
 // build-and-match loop: the obfuscated flat file matches neither the par2
 // basename nor the flattened name, so only the hash16k comparison can find it.
@@ -408,7 +408,7 @@ func TestAssess_Phase3HashMatch_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestQuickCheck_Phase4CRCMatch_EndToEnd drives QuickCheck itself through
+// TestAssess_Phase4CRCMatch_EndToEnd drives Assess itself through
 // Phase 4's CRC32+size index build-and-match loop. The entry's Hash16k is
 // deliberately wrong (so Phase 3 misses it) but its FileCRC32 — reconstructed
 // from a single full IFSC slice via Combine(0, crc, n) == crc — matches the

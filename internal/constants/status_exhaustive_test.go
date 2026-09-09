@@ -30,7 +30,7 @@ func TestAllStatuses_Exhaustive(t *testing.T) {
 
 	for name, value := range declared {
 		if !listed[value] {
-			t.Errorf("%s (%q) is declared in status.go but missing from AllStatuses(); add it there and give it a phase in queue.Job.Phase()", name, value)
+			t.Errorf("%s (%q) is declared in status.go but missing from AllStatuses(); add it there and give it an arm in job.ToSABnzbd", name, value)
 		}
 	}
 	if len(AllStatuses()) != len(declared) {

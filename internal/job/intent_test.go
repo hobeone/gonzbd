@@ -110,8 +110,9 @@ func TestJob_SetIntentIsLegalInEveryState(t *testing.T) {
 }
 
 // TestAllIntents_Exhaustive fails when intent.go declares an Intent that
-// AllIntents() does not list. The count check in TestAllIntents_HaveStringArms
-// cannot do this: it compares AllIntents() against a number, so a constant
+// AllIntents() does not list. The count check in
+// TestAllIntents_EveryEntryHasAStringArm cannot do this: it compares
+// AllIntents() against a number, so a constant
 // added to intent.go and forgotten in AllIntents() leaves both in agreement at
 // three and every table driven by the enumeration silently stops covering it.
 // State has had this enforcement since TestAllStates_Exhaustive; Intent did

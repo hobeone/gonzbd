@@ -32,7 +32,7 @@ type fileResumer interface {
 //
 // "Downloading" rather than "resident", and that word is the guard rather than
 // a description of it — see the phase note below. It re-derives rather than
-// seeds: the result REPLACES what Store.RestoreJobProgress restored, including
+// seeds: the result REPLACES what appResidency.Hydrate restored, including
 // clearing a bit whose bytes are gone (#362).
 //
 // durability.Resumer and the queue's seeding entry points were both built and
@@ -42,7 +42,8 @@ type fileResumer interface {
 // It seeds through Job.ReplaceFromRuns rather than Job.SeedFromRuns, and
 // that is the whole of #362's fix. This is the ONLY caller that has stat'ed
 // the files, so it is the only one entitled to contradict what
-// Store.RestoreJobProgress derived — which it does by having had
+// appResidency.restoreResolution derived from durable_runs — which it does
+// by having had
 // durability.Resumer DELETE the runs of a file shorter than they claim. Every
 // other seeding path is replaying an ack that already landed and must stay
 // additive; see SeedFromRuns' doc for why merging the two is a silent
@@ -117,7 +118,7 @@ type fileResumer interface {
 //
 // Skipping those phases costs nothing this exists to buy. The seed prevents a
 // re-fetch, and a job in post-processing dispatches no articles; if par2 sends
-// it back to the queue, the bits Store.RestoreJobProgress restored are still
+// it back to the queue, the bits appResidency.restoreResolution restored are still
 // there, because skipping leaves them alone. So the conservative direction for
 // a processing job is precisely to keep the record and not re-derive it.
 //
