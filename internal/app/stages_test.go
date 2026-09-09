@@ -312,9 +312,14 @@ func TestBuildStages_Par2CleanupDisabledByDefault(t *testing.T) {
 
 // ---------- Probe propagation ----------
 
-// TestBuildStages_UnrarHasProblemPropagated verifies that probe.UnrarInfo.HasProblem
-// flows into the unpack stage. The stage exposes HasProblem via UnpackOpts() in
-// export_test.go; this test confirms the value survives construction.
+// TestBuildStages_ProbeHasNoEffectOnEnablement verifies that probe.UnrarInfo
+// does not decide whether the unpack stage runs. An available unrar carrying
+// HasProblem leaves the stage enabled: HasProblem selects degraded behaviour
+// inside the stage, while enablement is config-driven (EnableUnrar).
+//
+// The two are separable, so a probe that reports a problem must not silently
+// turn unpacking off — that would present a configuration failure as a
+// missing feature.
 func TestBuildStages_ProbeHasNoEffectOnEnablement(t *testing.T) {
 	t.Parallel()
 

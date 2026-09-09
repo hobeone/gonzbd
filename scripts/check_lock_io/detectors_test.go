@@ -135,7 +135,7 @@ func (q *Queue) deliberate(job *Job) {
 
 // The marker must be trailing. A standalone comment above the call reads as a
 // suppression but is not one — the trap called out in #228, and the shape
-// that sat in internal/queue/queue.go believed to be doing something.
+// that sat in the since-deleted internal/queue believed to be doing something.
 func TestPersistence_StandaloneMarkerDoesNotSuppress(t *testing.T) {
 	path := writeFixture(t, `package fixture
 

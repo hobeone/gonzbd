@@ -15,12 +15,14 @@ in sync. Also update `docs/sabnzbd_spec.md` §9.x tables.
 
 ## Config ↔ UI Contract Test
 
-`internal/config/ui_contract_test.go` contains `TestUIKeywordsAreValidConfigTags`,
-which is the canonical list of every `keyword=` prop used in Svelte config
-components. **This file must be kept in sync with both the Go config structs and
-the Svelte UI.** Specifically:
+`internal/config/ui_contract_test.go` holds `TestUIKeywordsAreValidConfigTags`,
+which enforces the config↔UI contract. **It maintains no list.** It walks
+`ui/src/lib/components/config/`, extracts every `section=` / `keyword=` pair
+from `ConfigInput`, `ConfigSwitch`, `ConfigTextarea` and `ConfigSelect` with a
+regex, and asserts each one resolves to a settable Go config tag. So the Svelte
+components are the source of truth and the test follows them:
 
-- When you **add a new `keyword=` prop** to any `ConfigInput`, `ConfigSwitch`, or `ConfigTextarea` in `ui/src/lib/components/config/`, add a matching entry to `uiKeywords` in `ui_contract_test.go`.
-- When you **remove or rename a Svelte keyword**, remove or update the corresponding entry.
-- When you **rename or remove a Go config field** (changing its `json:` tag), the test `TestAllFlatConfigTagsAreSettable` will catch the breakage automatically — but you must also update any matching Svelte `keyword=` props.
+- When you **add a new `keyword=` prop** to any of those four components, nothing needs adding to the test — it discovers the prop on the next run, and fails if the Go field it names does not exist.
+- When you **remove or rename a Svelte keyword**, likewise: the test follows the component.
+- When you **rename or remove a Go config field** (changing its `json:` tag), `TestAllFlatConfigTagsAreSettable` catches the breakage automatically — but you must also update any matching Svelte `keyword=` props, because that direction is what `TestUIKeywordsAreValidConfigTags` fails on.
 - Run `go test ./internal/config/ -run 'TestUI|TestAllFlat'` to verify after any config or UI change.

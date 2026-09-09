@@ -69,9 +69,10 @@ func (s *Server) registerModes() {
 	// functional but are NOT called by the bundled Svelte UI (ui/src/lib/api.ts).
 	// They exist for compatibility with third-party clients (Sonarr, Radarr,
 	// NZB360, sabnzbd-api clients) that talk to the legacy mode-dispatch API
-	// directly. Do not remove them as "dead code" — verified via traceability
-	// audit TRACE-2 (docs/audit/2026-07-14-audit-findings.md) that the UI uses
-	// the WebSocket telemetry channel instead of polling these HTTP endpoints:
+	// directly. Do not remove them as "dead code" — a traceability audit
+	// confirmed the UI uses the WebSocket telemetry channel instead of polling
+	// these HTTP endpoints, so their absence from ui/src/lib/api.ts is evidence
+	// of the transport in use rather than of a dead endpoint:
 	//   - server_stats  (UI gets this via ui/src/lib/stores/telemetry.svelte.ts)
 	//   - fullstatus, watched_now, disconnect, addlocalfile, addurl
 	s.modes = modeTable{
@@ -134,7 +135,8 @@ func (s *Server) registerModes() {
 // identical when this was written (checked against both projects' `develop`
 // branches on 2026-09-07). It parses this with an unanchored
 // `(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+|x)` and rejects a non-match as
-// "Unknown Version: <raw>". Two gates then read the parsed value:
+// "Unknown Version: <raw>". Two gates then read the parsed value, and both
+// names below are Sonarr/Radarr's own, not this tree's:
 //
 //   - TestConnectionAndVersion requires Major >= 1 or Minor >= 7.
 //   - GetCategories requires HasVersion(2, 0) before it will resolve a
@@ -145,6 +147,8 @@ func (s *Server) registerModes() {
 //
 // Reporting the build version failed both: "dev" matched no digits, and a
 // pre-1.0 tag would parse yet still fall short of each threshold.
+//
+//doccite:ok TestConnectionAndVersion — Sonarr/Radarr's C# test, not a Go test here
 const sabnzbdAPIVersion = "4.5.3"
 
 // modeVersion returns the SABnzbd API generation gonzbd implements. No auth

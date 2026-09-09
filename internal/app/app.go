@@ -2498,7 +2498,7 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 
 	failedMB := float64(contentFailed) / (1024 * 1024)
 
-	// The verdict itself lives in queue.RepairStateFrom, which the dispatcher's
+	// The verdict itself lives in job.RepairStateFrom, which the dispatcher's
 	// Early Health Gate and the queue listing also read. Only the wording of
 	// each outcome belongs here: when these sites derived the comparison
 	// separately they drifted, and OnJobHopeless passes this function's result

@@ -58,7 +58,8 @@ func TestServerStatus_NilDownloaderStats(t *testing.T) {
 	}
 }
 
-// TestSpeed_DelegatesToDownloaderStats and TestServerStatus_Delegates pin the
+// TestSpeed_DelegatesToDownloaderStats and
+// TestServerStatus_DelegatesToDownloaderStats pin the
 // non-nil branch: the returned value must be the one the injected
 // DownloaderStats implementation provides, not a coincidental zero value.
 // fakeDownloader.ServerStatus returns a settable field (not a hardcoded nil)

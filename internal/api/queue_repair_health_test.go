@@ -66,8 +66,8 @@ func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int
 // was reachable by a reference search over Go, because the arithmetic lived in
 // TypeScript.
 //
-// Sending queue.RepairState removes the client's opportunity to disagree. The
-// verdict's own branches are pinned in internal/queue's TestRepairStateFrom;
+// Sending job.RepairState removes the client's opportunity to disagree. The
+// verdict's own branches are pinned in job.TestRepairStateFrom_EveryBranch;
 // what is tested here is that buildSlot asks for it rather than rebuilding it.
 func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 	t.Parallel()

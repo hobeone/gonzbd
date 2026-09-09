@@ -425,13 +425,14 @@ func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestHeaderFor_RoundTrip is a direct-call test for the registry lookup
-// persistIfChanged uses to attach a Header to a Persisted row.
-// TestEntryFor_RoundTrip covers the accessor persistIfChanged uses to read the
-// Header and the sequence together. Reading them in one acquisition is the
-// point: composing two correct accessors across a lock boundary let a job
-// removed in between be persisted back with the not-registered sentinel as its
-// key.
+// TestEntryFor_RoundTrip is a direct-call test for entryFor, the registry
+// accessor persistIfChanged uses to read a job's Header and its sequence
+// together when attaching them to a Persisted row.
+//
+// Reading them in ONE acquisition is the point, and it is why there is a
+// single accessor rather than one per field: composing two individually
+// correct accessors across a lock boundary let a job removed in between be
+// persisted back with the not-registered sentinel as its key.
 func TestEntryFor_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
 	h := Header{Name: "n", Category: "tv", Added: 1700000000}

@@ -89,8 +89,8 @@ var sqlReceivers = map[string]bool{
 // storeMethods are persistence operations on a `store` receiver. Unlike
 // db/tx, `store` is not unambiguous — internal/dirscanner uses it for an
 // in-memory path map — so matching is restricted to a method set rather than
-// any call. The names come from the queue.Store interface
-// (internal/queue/store.go), which is backed by SQLite, plus dirscanner's
+// any call. The names were taken from the store interface of the since-deleted
+// internal/queue, which was backed by SQLite, plus dirscanner's
 // storeMethods lists the method names of types performing SQLite store I/O.
 //
 // Delete is deliberately excluded: it is an operation on dirscanner's in-memory store

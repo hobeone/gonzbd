@@ -302,6 +302,9 @@ export SAB_7ZIP_COMMAND=""
 mkdir -p "$SAB_FINAL_PROCESSING_DIR"
 echo "test content" > "$SAB_FINAL_PROCESSING_DIR/test_file.mkv"
 
+<!-- doccite:ok ./scripts/my_script.sh — placeholder path in a user-facing example -->
+<!-- doccite:ok TestMyScript — placeholder name in a user-facing example -->
+
 # Run your script
 ./scripts/my_script.sh "$SAB_COMPLETE_DIR" "$SAB_FILENAME" \
     "$SAB_FINAL_NAME" "" "$SAB_CAT" "$SAB_GROUP" "0" ""

@@ -6,9 +6,10 @@
 // dispatch.Runner already have.
 //
 // It is the only reader or writer of the dispatch_jobs table. That table is
-// deliberately separate from `jobs`, which belongs to internal/queue until the
-// swap retires it — see the table's own comment block in
-// internal/history/migrations/001_initial.sql for the argument.
+// deliberately separate from `jobs`, which belonged to the since-deleted
+// internal/queue — see the table's own comment block in
+// internal/history/migrations/001_initial.sql for the argument that separated
+// them. The swap it anticipated has happened; the separation outlived it.
 //
 // Application constructs a Store via store.New(repo.DB()) to persist dispatch
 // jobs and queue ordering.

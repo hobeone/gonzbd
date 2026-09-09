@@ -52,10 +52,15 @@ const (
 // This is still written by hand — Go cannot enumerate a const block at
 // runtime — but it is not trusted to be complete. TestAllStatuses_Exhaustive
 // parses this file's const block and fails if a declared Status is missing
-// here, which is what makes downstream exhaustiveness checks (queue's
-// TestJobPhase_EveryStatusIsMappedDeliberately) meaningful: without that
-// backstop a new status would be absent from this list too, and every loop
-// over it would skip the one status nobody had considered.
+// here, which is what makes downstream exhaustiveness checks meaningful:
+// without that backstop a new status would be absent from this list too, and
+// every loop over it would skip the one status nobody had considered.
+//
+// The downstream check this used to name — a JobPhase mapping in the deleted
+// internal/queue — is gone with that package; residency is now the job's own
+// concern (job.Job.Resident). The list's live consumers are
+// constants_test.go's own walk and job.ToSABnzbd's membership check, which
+// job/sabnzbd_test.go drives from AllStatuses() rather than a local copy.
 func AllStatuses() []Status {
 	return []Status{
 		StatusIdle,

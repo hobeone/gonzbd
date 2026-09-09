@@ -11,7 +11,7 @@ CRC, and truncated a completed file to this run's high-water mark. None of that
 is true any more.
 
 `docs/ARCHITECTURE.md` places these packages in the download pipeline.
-`docs/queue-lifecycle.md` owns residency and the manifest/progress split, which
+`docs/job-lifecycle.md` owns residency and the manifest/progress split, which
 this contract depends on and does not restate.
 
 **This states the contract in the present tense.** Where the code and this
@@ -46,10 +46,8 @@ Only in-progress downloads pay, and only once.
 
 Nine open issues (#306, #311, #337, #344, #349, #353, #355, #356, #357) and five
 of the eight merged fixes before them (#305, #315, #341, #343, #350) were two
-defects wearing different clothes — see
-`docs/superpowers/specs/2026-08-11-download-durability-design.md` for the full
-derivation. The dominant one is **a claim recorded before the thing it asserts
-becomes true**: an article marked `Done` while its bytes sat in a memory buffer
+defects wearing different clothes. The dominant one is **a claim recorded
+before the thing it asserts becomes true**: an article marked `Done` while its bytes sat in a memory buffer
 (#355, refiled as #356), a truncate bound describing one process's writes applied
 to a file built by several (#342, #350), a CRC over a subrange reported as the
 CRC of a file (#349).
@@ -79,6 +77,51 @@ narrower than that, covering `Job.AckDurable`'s proof payload and that door
 only (§1). That nothing else puts content into the record is enforced by there
 being one such writer, not by the type system — and it is a claim about
 CONTENT, not about the table, which several paths delete from (§6).
+
+## Invariant labels cited throughout this document
+
+Sections below cite short labels (`S4`, `A1`, `R19`, …) as shorthand for a
+specific rule, without re-deriving the rule at each citation. This table is
+their sole remaining definition — they originate in the design document that
+proposed the durability record redesign, since superseded by this contract.
+
+| Label | Rule |
+|---|---|
+| S1 | No claim without an `fsync`: no persisted or externally observable fact may assert a byte range is present on stable storage unless a completed `fsync` covers it. |
+| S2 | Acceptance is not durability: entry into a buffer, channel, cache, or batch is never evidence about disk. |
+| S3 | Absence of evidence is absence: an article whose state cannot be established from stable storage is Outstanding. |
+| S4 | Where a stored record and a recomputation could disagree, one is authoritative by definition. **Inverted here** — see §6: the stored record now wins, gated on one `stat`. |
+| S5 | Exactly one authoritative representation per fact; a fact stored in two places is a design defect. |
+| S6 | Metadata may shrink a file's truncate bound, never grow it. |
+| S7 | Adoption of a cached/stored value for a partial file requires a validity check against the file as it exists now. **Narrowed here** — see §6: the check is size alone, `mtime` is not compared. |
+| A1 | A storage fault is never recorded as an article fault, nor the reverse. |
+| A2 | Every failure has a subject and a disposition; no path may log-and-continue. |
+| B1 | Bounded rework after power loss: default 30s or 64 MiB per job, whichever comes first. |
+| B2 | Bounded memory: held for in-flight/cached article data, independent of job size, file size, and job count. |
+| B4 | Bounded blocking: every storage syscall on the critical path is timeout-bounded. |
+| X1 | Single writer per file: exactly one component owns a file's handle and its derived state. |
+| R1 | The record is immutable/append-only. **Deleted** — see §*One record*: merging is read-modify-write. |
+| R2 | The record carries no ordering constraint against the write. **Deleted** — see §*One record*: the record now exists only after a completed `fsync`. |
+| R3 | Losing a suffix of the durability record degrades to a re-fetch only, never to incorrect state. |
+| R6 | The barrier runs on the lesser of a time bound and a byte bound, and additionally on file completion, job pause, and clean shutdown. |
+| R7 | A barrier failure acks nothing and leaves the prior committed record intact. |
+| R8 | Barrier cost does not scale with job size — it syncs open files, not every file the job will produce. |
+| R12 | Duplicate delivery of an article is idempotent. |
+| R18 | Write/sync failures are classified by subject and retryability. |
+| R19 | Retryable-storage → the job stalls, the reason is surfaced, articles stay Outstanding, re-evaluated on an interval and on user action. |
+| R20 | Permanent-storage → the job fails with that reason; no article is marked failed. |
+| R21 | No storage fault may alter the health percentage or the failed-byte count. |
+| R22 | Every storage syscall on the critical path is timeout-bounded, with at most one probe in flight per mount. |
+| R26 | A job can report at any time: bytes durable, bytes written-but-not-durable, articles outstanding, time of last successful barrier, and stall reason. |
+| R27 | A stalled job surfaces a reason the user can act on. |
+| R28 | An invariant violation fails loudly; it must never degrade silently. |
+
+`git grep -oE '\b(S[1-7]|A[12]|B[124]|X1|R(1|2|3|6|7|8|12|18|19|20|21|22|26|27|28))\b' docs/durability-contract.md`
+finds 28 distinct labels — every label the contract actually cites, and no
+others — and is the enumeration behind this table's row set. Labels defined
+in the source spec but never cited here (`L1`–`L3`, `B3`, `X2`, `X3`, most of
+`R4`–`R34`) are omitted because nothing in this document points a reader at
+them.
 
 ## One record
 
@@ -116,8 +159,7 @@ rejected, #421 recorded a bogus yEnc offset permanently because the store was
 append-only and re-fetching was the one mechanism `INSERT OR IGNORE` ignored.
 Both classes are gone, along with the contiguity apparatus that existed to
 reconcile them: `verifiedPrefix`, the abutment walk, `durableAt`, the durable
-`Bitmap`, and both of `FinalizeFile`'s guards. The full argument is
-`docs/superpowers/specs/2026-08-22-single-durability-record-design.md`.
+`Bitmap`, and both of `FinalizeFile`'s guards.
 
 The second table is **`failed_articles`** — `{job_id, art_idx}`, one row per
 permanently failed article. It is not a durability record and `internal/durability`
@@ -254,9 +296,14 @@ the runs a barrier's fsync already recorded, which is exactly the kind of
 evidence a proof cannot represent — but it means "ack before fsync is code that
 does not compile" is true of `AckDurable` and **false as a statement about the
 queue as a whole**. The seeding doors are held by their contracts and by
-`TestSeedFromRuns_StaysAdditive` /
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade`, not by the
 compiler.
+
+`Job.SeedFromRuns`'s half is stronger than a test: its only done-bit write is
+`progress.markDone`, which sets `p.done` and never clears it, so the additive
+property is structural rather than asserted. The enumeration of done-bit
+writers is machine-checked by
+`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse`.
 
 **How much narrower those doors got, exactly.** `durability.Run` is an exported
 struct with exported fields, so any package can build one — the narrowing is
@@ -657,11 +704,18 @@ be merged**:
 | `SeedFromRuns` | `Application.reevaluateStall` phase 3 | **additive** — only ever sets. Replaying an ack whose fsync already landed; it has stat'ed nothing. |
 
 The union of the two contracts is either #362 (a stale bit outliving the check
-that disproved it) or a stall recovery that throws away live acks.
-`TestSeedFromRuns_StaysAdditive` and
-`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` are the guards,
-and they are the only tests in the repository that redden when the two are
-merged.
+that disproved it) or a stall recovery that throws away live acks. What keeps
+them apart is now two different kinds of guard.
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` is a test.
+`Job.SeedFromRuns`'s additivity is not a test but a property of the method's
+body: its only done-bit write is `progress.markDone`, which sets `p.done` and
+never clears it, so today there is no clearing path to assert the absence of.
+
+Nothing enforces that. `markNotDone` clears the bit and sits in the same
+package, and `job.TestDoneBitWriters_MatchTheEnumerationStatedInProse` — which
+this document cites as the mechanical guard on the writer enumeration — would
+not catch `SeedFromRuns` acquiring a call to it: the walk matches `.Set` on
+`.done` and never looks for `.Clear`. The enumeration it guards is of setters.
 
 The file indices are carried separately from the runs, and that is structural
 rather than convenience: a file whose runs were **all** discarded contributes no
@@ -909,7 +963,7 @@ same unit as `size`/`sizeleft` beside it. `bytes_pending` accumulates
 `len(data)` per accepted article: **decoded** bytes, the ones on disk, because
 B1's volume bound measures rework at risk. Neither can move to the other's
 unit. Reading `bytes_durable` from a sum over the durability record's lengths —
-a decoded figure — is the substitution `docs/queue-lifecycle.md`
+a decoded figure — is the substitution `docs/job-lifecycle.md`
 records as having overstated every non-resident job's remaining bytes; and
 re-basing the accumulator on declared sizes would corrupt the cadence trigger
 it exists to drive. The API contract already forbids summing them; the unit

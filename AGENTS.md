@@ -282,7 +282,8 @@ design-level change.
 | [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
 | [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind Standing Design Rules 1-3 above (rule 4 is not from this document) |
-| [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the dispatcher tick loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
+| [`docs/job-lifecycle.md`](docs/job-lifecycle.md) | Touching job residency, the state model, or `Manifest`/`JobProgress` access | What a job always carries and the header/progress/manifest tiers; State, Activity, Outcome and Intent as orthogonal axes; the reversibility boundary and `Cross` as its only door; the `Lease`; persistence and restart; byte accounting; the thirteen lifecycle scenarios `sched.TestEveryScenarioHasATest` pins |
+| [`docs/dispatch-contract.md`](docs/dispatch-contract.md) | Touching `internal/dispatch` or `internal/sched` | What each package owns and the dependency direction; the tick loop and the kick; manifest residency derived from pool membership; lock discipline across the dispatch→sched boundary; the read doors; the store interface; what neither package gets, and why |
 | [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
 | [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | The `durable_runs` record and what may put content into it, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
 | [`docs/post-processing-contract.md`](docs/post-processing-contract.md) | Touching `internal/postproc`, `internal/par2`, or `internal/unpack` | Stage execution loop, self-gating matrix, Fast/Slow queue priority, QuickCheck bypass guarantees, insufficient-blocks/`ParError` handling, and script isolation |
@@ -384,6 +385,9 @@ file internal/job/progress.go
 --- end
 ```
 
+<!-- doccite:ok TestTheNewPin — a deliberate placeholder; the sentence above says it names no test -->
+<!-- doccite:ok internal/pkg/target.go — the spec format's illustrative path, not a real file -->
+
 That anchor is a real line, and keeping it one is deliberate: an example
 anchored on text the tree no longer contains still reads as a working example,
 but every reader who runs it gets `ANCHOR — anchor matched no site` and has to
@@ -394,7 +398,7 @@ download timestamps a single owner. `internal/job/testdata/postproc_stamp.spec`
 is the same mutation against the line that replaced it, kept as a committed
 spec — so the mutation above is one this repository actually runs. Its `run`
 line is still a placeholder: `TestTheNewPin` names no test, and the committed
-spec runs `TestSetPostProcStarted`.
+spec runs `TestMarkDownloadFinished_FirstWins`.
 
 `scripts/mutate/testdata/self.spec` is the worked example — it is the tool's own
 red check, and running it is how you verify a change to the tool.
@@ -507,7 +511,7 @@ and `check_dup_comments` only finds copies.
 - **Removing one term from a stated formula leaves the rest asserting
   something false.** Recompute the stated result from the surviving terms. This
   is arithmetic on what is already written down, not a re-derivation, and it
-  takes one line. `docs/queue-lifecycle.md` read `~80 B + map` per article and
+  takes one line. `docs/job-lifecycle.md` read `~80 B + map` per article and
   `~3.3 MB` per 20k-article job; deleting the `+ map` term left `80 x 20,000`
   visibly failing to equal `3.3 MB`. Re-measuring showed the total had been
   wrong all along (1.64 MB), which the composite form had been hiding. A
@@ -621,7 +625,7 @@ Note: Standard `go test ./...` and `go test -race ./...` exclude files with `//g
 **A tagged file is invisible to every default gate, and it rots silently.** The
 exclusion above is not specific to `integration`: `uitest` and `crash` are
 excluded the same way, and so is any path the mandated command does not
-name. `internal/app/integration_test.go` was uncompilable for six weeks (#475)
+name. A tagged `internal/app` integration test was uncompilable for six weeks (#475)
 because `app.New`'s signature changed under it — `go build`, `go vet` and
 `go test -race` all skipped it for being tagged, and the mandated integration
 command is scoped to `./test/integration/...`, which does not reach
@@ -700,7 +704,7 @@ Three rules follow:
   both directions. If a reported function looks untouched by your change,
   commit and re-run before writing a test for it.
 
-Four further gates are **whole-repository**, not diff-scoped, and exist because
+Five further gates are **whole-repository**, not diff-scoped, and exist because
 build, vet, lint and the test suite are structurally blind to what they check —
 comments and Markdown are neither type-checked nor executed:
 
@@ -708,6 +712,7 @@ comments and Markdown are neither type-checked nor executed:
 go run ./scripts/check_dup_comments         # duplicated multi-line // blocks
 go run ./scripts/check_review_banner        # docs/reviews/*.md frozen-record banners
 go run ./scripts/check_citations            # embedded grep / git grep claims whose count has moved
+go run ./scripts/check_doc_citations        # cited paths and Test names that resolve to nothing
 go run ./scripts/check_test_doubles --all   # test doubles or test-named files leaking into production builds
 ```
 
@@ -716,6 +721,7 @@ go run ./scripts/check_test_doubles --all   # test doubles or test-named files l
 | `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory, the marker must start the comment line, and a reason that wraps onto a second line must be closed by a blank `//` unless the marker is the block's last line — an unclosed wrapped reason is a hard exit-2 error, because guessing where it ends silently suppresses the finding on the *other* copy. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
 | `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
 | `check_citations` | A comment that embeds a backticked `grep` or `git grep` and states a count, where running the command no longer produces that count. This is Rule 4's enforcement arm: the rule requires the enumeration to be stated, and this runs it. | Re-run the command and correct the number, or correct the command so it means what the prose says — a count stated as "outside tests" whose command has no `\| grep -v _test.go` is the common case, as is a pattern that also matches its own comment or the declaration it describes. Where the population is real but not greppable ("the errors one function returns"), name it and do not dress it as a citation — and describe a historical command rather than backticking it, since a backticked example is indistinguishable from a live citation. Commands are parsed to argv, only `grep` and `git grep` are executed, quoted text is treated as literal rather than as shell syntax, and every file operand must resolve inside the repository — so a comment can be neither a code-execution surface nor a way to read files outside the tree. |
+| `check_doc_citations` | A cited file path that names nothing in the tree, or a `Test...` name cited as a guard that is declared nowhere. Complements `check_citations`, which reads only Go comments carrying an embedded `grep`; this reads Markdown too, and claims with no command behind them. The class is measured: `internal/queue` was deleted in `b6651d43` and ~400 references survived across 31 files, docs cited five migrations that were never applied, and five tests were named as the guard on an invariant while not existing | Correct the reference, or mark it deliberate with a reason — `//doccite:ok <token> — <why>` in Go, `<!-- doccite:ok <token> — <why> -->` in Markdown. A bare marker is itself an error. Prose that names something gone ON PURPOSE ("the test that stood here, X, was folded into Y") is recognised by its own vocabulary and needs no marker; `docs/reviews/` frozen records are skipped entirely, since their paths are supposed to be the ones that existed at the commit they name |
 | `check_test_doubles` | Test doubles (`Fake`, `Mock`, `Stub`, `Nop`, `*ForTesting`) or test-named files leaking into production builds without test build tags (`test`, `integration`, `uitest`, `crash`) | Add a recognized test build tag, move to a `*_test.go` file, or add `//testdouble:allow <reason>` on the declaration (or before `package` for filename exemptions). The reason is mandatory; a bare marker is flagged. |
 
 All four are part of `ci.yml`, but `ci.yml` has no automatic trigger (see
@@ -730,7 +736,7 @@ mode now depends on the local block being run, not on a server.
 None of the four is diff-scoped, so any of them can fail on a file you did not
 touch. Each found a real defect on its first run against this repository: a
 package doc comment duplicated across two files of `scripts/nntpfaultproxy`; a
-fixture comment in `internal/queue/progress_helpers_test.go` that named
+fixture comment in the since-deleted `internal/queue`'s progress helpers that named
 `resetForReload` above a test of `clone`; and four wrong citations —
 `internal/sched/advance.go` claiming `parkLocked` had two call sites when it had
 three, two commands whose prose said "outside tests" while the command filtered

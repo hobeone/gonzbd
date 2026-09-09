@@ -6,7 +6,7 @@ improvements that this PR brings. -->
 ## Checklist
 - [ ] I have run `go vet ./...` and `golangci-lint run ./...`
 - [ ] I have run `go test -race ./...` and all tests passed
-- [ ] **I have updated the state diagram in `docs/implementation_notes.md`** if these changes touch state-mutating queue or app methods.
+- [ ] **I have updated `docs/job-lifecycle.md`** if these changes touch the job state model, residency, or a state-mutating dispatch or app method.
 - [ ] **Every intentional snapshot-then-release lock pattern has a `// --- No lock held below this line ---` comment** (AGENTS.md § Concurrency & Locking) if this PR unlocks a mutex mid-function rather than via `defer`.
 
 ## Related Issues

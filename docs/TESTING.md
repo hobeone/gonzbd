@@ -257,15 +257,24 @@ which only *sets* durable bits and never clears one, while
 `Store.RestoreJobProgress` had already restored every article the last barrier
 acked. So the queue's restored state outranked the finding that disproved it.
 
-The fix (#362) is `Queue.ReplaceFromRuns`: a second, **authoritative** seeding
+The fix (#362) is `Job.ReplaceFromRuns`: a second, **authoritative** seeding
 entry point that the startup sweep uses in place of `SeedFromRuns`, because it
 is the one caller that has just stat'ed the files and deleted the runs a file
 contradicts. Every other seeding path — `Application.reevaluateStall`'s phase 3
 — is replaying an ack that already landed and stays additive.
-`TestSeedFromRuns_StaysAdditive` and
-`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` are the guards
-on that split; they are the only tests in the repository that redden when the
-two entry points are merged.
+`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` guards that split
+from the replay side. The additive side has no test, and what stands in for
+one is narrower than it looks: `Job.SeedFromRuns` writes done bits only
+through `progress.markDone`, which sets `p.done` and never clears it, so as
+the method stands today there is no clearing path to assert the absence of.
+
+That is a property of the current body, not an enforced invariant. A clearing
+path exists in the package — `markNotDone` calls `p.done.Clear` — and nothing
+would stop `SeedFromRuns` from calling it. In particular
+`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse` would not notice:
+its AST walk matches `.Set` on `.done` and is blind to `.Clear`, so it
+enumerates who SETS the bit rather than who may clear it. Read it as covering
+the writer list, not additivity.
 
 Making the sweep authoritative also turned two of the other four tests into
 real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the
@@ -332,7 +341,7 @@ real Chromium browser against it.
 go test -v -tags=uitest ./test/uitest/...
 
 # Single test
-go test -v -tags=uitest -run TestUI_QueuePage ./test/uitest/...
+go test -v -tags=uitest -run TestQueueDisplaysItems ./test/uitest/...
 ```
 
 Failed tests automatically capture screenshots to `test/uitest/screenshots/`.

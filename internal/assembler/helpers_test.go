@@ -437,7 +437,7 @@ func TestControlOps_CancelledContextBeatsEveryOtherOutcome(t *testing.T) {
 // offsetOK inverts offsetOutOfRange for TestOffsetInRange's assertions, which
 // read as "this offset is acceptable" rather than "this offset is not out of
 // range". The reason string the real signature also returns is exercised where
-// it is consumed, in TestRejectedOffsetIsNotCountedAndIsReported.
+// it is consumed, in TestRejectedOffsetIsFailedAndStillCompletesTheFile.
 func offsetOK(a *Assembler, f *openFile, req WriteRequest) bool {
 	_, bad := a.offsetOutOfRange(f, req)
 	return !bad

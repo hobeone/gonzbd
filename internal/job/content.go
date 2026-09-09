@@ -92,7 +92,7 @@ func (j *Job) RestoreContent(m *Manifest, p *JobProgress) error {
 
 // Evict drops the manifest and keeps the progress record.
 //
-// Progress is always resident by design (docs/queue-lifecycle.md's three
+// Progress is always resident by design (docs/job-lifecycle.md's three
 // tiers): it is small, and the abort checks and the queue listing read it for
 // jobs that are not running. Only the manifest, which is sized by article
 // count, is evictable.

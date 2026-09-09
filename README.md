@@ -88,6 +88,7 @@ docker compose up -d
 open http://localhost:4289
 ```
 
+<!-- doccite:ok config/gonzbd.yaml — a runtime-created path under the user's config dir, not a tracked file -->
 On first run, GoNZBD creates a default `config/gonzbd.yaml` with
 randomly generated API keys. Edit it to add your news servers, then
 restart:

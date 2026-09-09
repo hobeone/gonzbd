@@ -285,8 +285,8 @@ func TestCancelJob_KeepFilesFlushesCachedArticles(t *testing.T) {
 	}
 }
 
-// TestCancelJob_KeepFilesStillRejectsLateArticles pins the axis that must NOT
-// move with the disposition.
+// TestCancelJob_KeepFilesStillTombstonesTheWholeJob pins the axis that must
+// NOT move with the disposition.
 //
 // cancelledJobs gates article admission for the whole job, including files
 // that were never opened, and openTargetFile performs no queue-membership

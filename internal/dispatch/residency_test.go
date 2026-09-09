@@ -207,7 +207,7 @@ func TestResidency_HydrationFailureIsPersisted(t *testing.T) {
 //
 // Two things went wrong when Holds was vacuously true for it. The manifest
 // was hydrated for a job holding nothing, which is the memory bound
-// docs/queue-lifecycle.md sets; and if that read failed, the settle attempted
+// docs/job-lifecycle.md sets; and if that read failed, the settle attempted
 // on the way out hit job.ErrNoOpenAttempt, because Outcome lives on the
 // Attempt and a never-started job has none.
 func TestResidency_DoesNotHydrateANeverStartedJob(t *testing.T) {

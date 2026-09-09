@@ -6,8 +6,8 @@
 // resource as a side effect of being asked. Acquisition happens in exactly one
 // place, grantFor.
 //
-// It does NOT contain the dispatcher, the workers, or persistence. Those are
-// Half B2, which also retires internal/queue. It does hold the two rendering
+// It does NOT contain the dispatcher, the workers, or persistence. Those live
+// in internal/dispatch, which also retired internal/queue. It does hold the two rendering
 // doors, Render and RenderAll (see below) — composing the view a caller
 // renders from is a decision over a job.Snapshot like any other, and B2
 // supplies the HTTP layer that calls them, not the composition itself.

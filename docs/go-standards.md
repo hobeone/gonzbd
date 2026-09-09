@@ -142,6 +142,9 @@ The required order for any fix:
    requires each to produce a red result, and restores the file on every exit
    path including SIGINT:
 
+   <!-- doccite:ok TestTheNewPin — placeholder in the spec-format example, as AGENTS.md states -->
+   <!-- doccite:ok internal/pkg/target.go — the example's illustrative path, not a real file -->
+
    ```bash
    go run ./scripts/mutate path/to/the.spec
    ```
@@ -227,7 +230,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 ### 1. Concurrency & Locking
 
-- **Never hold a mutex during disk I/O or network calls.** Snapshot data under the lock (e.g., JSON-marshal), release the lock, then perform I/O. Holding `RLock` during `writeGzJSON` blocked the entire download pipeline for seconds. Pattern: `mu.RLock() → marshal → mu.RUnlock() → writeToDisk(marshaledBytes)`.
+- **Never hold a mutex during disk I/O or network calls.** Snapshot data under the lock (e.g., JSON-marshal), release the lock, then perform I/O. Holding `RLock` across the manifest write blocked the entire download pipeline for seconds. That write is `fsutil.WriteGzAtomicBytes` today, called from `internal/app`; the lesson was learned against its predecessor in the deleted `internal/queue`. Pattern: `mu.RLock() → marshal → mu.RUnlock() → writeToDisk(marshaledBytes)`.
   `scripts/check_lock_io` enforces this mechanically (heuristic AST matching, no type information — see its doc comment) across `internal/` and `cmd/`, run as part of `scripts/run_tests.sh`. Its closure-wrapper detection (`config.Config.With`, `job.Job.ForEachUnfinishedArticle`) is an explicit allowlist by method name — adding a new lock-wrapping closure method under internal/, when the callback parameter is a literal func type or a named func type declared in the same package, requires adding it to `closureLockMethods` in `scripts/check_lock_io/main.go` (pinned by `scripts/check_lock_io/closure_enumeration_test.go`). A genuine exception (the lock also serializes something else, e.g. dial-coalescing) is suppressed with a same-line `//lockio: <reason>` comment, mirroring `//nocover:` below — see `internal/downloader/dispatch.go`'s `managedConn.Get` and `internal/postproc/verified.go`'s `MarkVerified` for two documented examples of legitimate exceptions.
 
 - **Always use `defer mu.Unlock()`.** Manual unlock-before-return in multiple branches has caused deadlocks and double-close panics. The only exception is snapshot-then-release (above), where unlock is intentional mid-function. In that case, add a `// --- No lock held below this line ---` comment.
@@ -284,7 +287,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Never delete an archive on partial extraction failure.** If only some files fail to extract from a ZIP/RAR, preserve the archive for retry or manual recovery.
 
-- **Check directory containment before recursive delete.** `SortStage` deleted `FinalDir` when it was inside `origDir`. Always verify `!strings.HasPrefix(targetDir, sourceDir)` before removing a directory tree.
+- **Check directory containment before recursive delete.** Always verify `!strings.HasPrefix(targetDir, sourceDir)` before removing a directory tree. The worked example is historical — a sorting stage deleted its final directory when that directory sat inside the source directory. GoNZBD has no sorting stage today — `git grep -h '^type [A-Za-z]*Stage struct' -- internal/postproc/ ':!*_test.go'` returns the 10 concrete stages, and none of them sorts — so the rule is carried for the next stage that moves a tree, not for a caller that exists now.
 
 - **Path length limits are per-component (NAME_MAX = 255 bytes), not per-path.** This is Linux-only software; do not import Windows MAX_PATH heuristics. When sanitizing folder + filename pairs, make the folder name a function of the job alone — never derive folder truncation from the filename, or files in the same job will scatter across multiple directories.
 
@@ -334,7 +337,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Track and close file descriptors for cancelled jobs.** The assembler holds open file handles per job. When a job is cancelled, `CancelJob` must close all associated FDs via a control message to the worker goroutine, or FDs leak indefinitely.
 
-- **Use tombstone sets to reject late/duplicate messages.** After a file is completed and closed, late duplicate articles can re-open it, leaking FDs. Maintain a `completedFiles` set to reject them.
+- **Use tombstone sets to reject late/duplicate messages.** After a file is completed and closed, late duplicate articles can re-open it, leaking FDs. Maintain a tombstone set to reject them. The assembler's are `seenDone` and `seenFailed` on `FileWriter`, keyed on `ArtIdx` rather than Message-ID.
 
 - **Add idle read deadlines on long-lived network sockets.** NNTP connections without read deadlines hang silently when the remote end disappears. Use `SetReadDeadline` and reset on each successful read.
 

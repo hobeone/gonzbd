@@ -1149,7 +1149,7 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // It hands the whole record over and lets Job.SetFileCRC32FromRuns decide.
 // The decision needs the file's article range, which lives on the resident
 // manifest that the job owns and this package deliberately does not reach
-// into (docs/queue-lifecycle.md), and — more to the point — a setter that took
+// into (docs/job-lifecycle.md), and — more to the point — a setter that took
 // a bare uint32 would have no way to refuse a wrong one. The predicate, and
 // the argument for its exact shape, are at the gatekeeper.
 //

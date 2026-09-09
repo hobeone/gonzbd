@@ -179,7 +179,6 @@
 // or has enforced.
 //
 // The design this implements is
-// docs/superpowers/specs/2026-08-25-job-lifecycle-design.md, as amended by
-// docs/superpowers/specs/2026-08-26-lifecycle-intents-design.md — the source
+// docs/job-lifecycle.md — the source
 // of Intent, next, Cross and the removal of Waiting described above.
 package job

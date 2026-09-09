@@ -231,6 +231,94 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    `OutputLines` and `StageLogEntry.Lines` are capped at `MaxLogBytes = 512 KiB`
    per script execution to prevent memory exhaustion from verbose tools.
 
+## On-Demand Par2: Fetch Policy and Verdict
+
+A file's intent to download is a tri-state `FetchPolicy` (`internal/job/progress.go`),
+not a bool: `FetchAlways` (every content file, the par2 index, and any
+recovery volume the job has decided to fetch), `FetchIfNeeded` (a recovery
+volume held back pending the CRC verdict), and `FetchNever` (a recovery volume
+the verdict proved unnecessary). Only a recovery volume is ever set to
+anything but `FetchAlways`.
+
+Two predicates read the field for different questions, and the distinction is
+load-bearing rather than stylistic (`internal/job/progress.go`'s own comments
+on `HasDeferredPar2`/`UsesOnDemandPar2`/`DeferredRecoveryIndices` are the
+source for this paragraph):
+
+- **`!= FetchAlways`** — "is this file being withheld from download at all" —
+  drives dispatch skipping, completion (`IsComplete`), byte accounting, and the
+  `UsesOnDemandPar2` badge. It is true for both `FetchIfNeeded` and
+  `FetchNever`, because both describe bandwidth already saved.
+- **`== FetchIfNeeded`** — "is this file still awaiting the verdict" — is the
+  one `HasDeferredPar2` and `DeferredRecoveryIndices` use, and the exclusion of
+  `FetchNever` is deliberate: `DeferredRecoveryIndices` feeds
+  `undeferRecovery`, which any first-time permanent article failure calls
+  (`internal/job/content.go`). Including a discarded volume there would let one
+  late failure re-fetch exactly the volumes the CRC oracle already proved
+  unnecessary, undoing the feature. Likewise `HasDeferredPar2` reporting a
+  discarded volume as "held" would re-run full CRC verification on every
+  subsequent completion event.
+
+`DiscardDeferredPar2` (`internal/job/content.go`) is the sole path from
+`FetchIfNeeded` to `FetchNever`: a walk over the file table setting the policy,
+with no file-set mutation, deletion, or renumbering involved. `ResetForRetry`
+is the only path back (`FetchNever → FetchIfNeeded`), so a retry re-derives the
+verdict rather than trusting a downgrade computed against the previous
+download's damage profile; `FetchAlways` and `FetchIfNeeded` files are
+untouched by a retry.
+
+### The verdict: identify, then verify
+
+`par2.Assess` (`internal/par2/assess.go`) is the one function both consumers
+call, and it composes two operations in one fixed order — identify each
+on-disk file against the par2 index by content (`Hash16k`, falling back to an
+unambiguous basename or a `{CRC32, size}` match), then verify the identified
+files against the CRC recorded during download — before reporting the renames
+that would relocate a file to its par2-recorded path. Identification and
+verification are different questions (which entry is this file, versus is that
+file intact), and computing both from one pre-rename read of the directory is
+what removed the ordering bug this design exists to fix: an earlier version
+relocated first and verified second, which invalidated the very names
+verification matched against (#492, #494). `stage_quickcheck.go` and
+`app.maybeReleaseRecoveryVolumes` (via `app.par2Verdict`) are the two callers
+that consume one `Assessment`; renames are computed but not applied by
+`Assess` itself — `par2.ApplyRenames` is the separate, second act.
+
+`app.par2Verdict` (`internal/app/app.go`) turns an `Assessment` into one of
+three outcomes:
+
+| Outcome | Meaning | Action |
+|---|---|---|
+| `outcomeClean` | Every par2-tracked file was identified and its assembled CRC matched. | Recovery volumes discarded (`DiscardDeferredPar2`); job finalizes without them. |
+| `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | All deferred volumes un-deferred (`UndeferRecoveryVolumes`) and fetched; job re-enters download. |
+| `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content. | Volumes are held, neither fetched nor discarded; job finalizes as-is. |
+
+`outcomeUnknown` covers two indistinguishable cases: a Layout B post (par2
+protects the files an archive will extract to, which do not exist yet — safe
+to leave undecided only because `RepairStage` runs before `UnpackStage` with
+no second repair pass, so fetching the volumes here would spend them against
+files that are not there to check) and an obfuscated single-file post damaged
+inside its first 16 KB (defeating every identification method at once). Both
+read the same because identification found literally nothing to work with;
+holding rather than discarding avoids asserting a verdict ("skipped") that was
+never earned, leaving it as "held" instead.
+
+### `par2_release_reason`
+
+Persisted in the `jobs` table (migration `004_par2_release_reason.sql`) and
+exposed via `Job.Par2ReleaseReason()` / `SetPar2ReleaseReason`. It is not a
+repair result and nothing branches on its text. **Only its emptiness is
+load-bearing**: `JobProgress.HasPar2Verdict()` is defined as
+`par2ReleaseReason != ""`, and that single predicate is what tells a job
+resuming post-processing after a restart whether a verdict was ever already
+reached — distinguishing "volumes held because nothing could be identified"
+from "volumes still awaiting a verdict" so `buildDownloadFileList`
+(`internal/postproc/filelist.go`) does not report an unverified job as
+"verified clean". `ResetForRetry` is the only clearer, so a retry re-derives
+the verdict rather than inheriting stale text from the previous attempt. The
+`outcomeClean` path never calls `SetPar2ReleaseReason` — a clean verdict is
+recorded entirely through the fetch-policy discard, not through this field.
+
 ## Failure & Degradation Rules
 
 - **PAR2 Repair Failure (`ParError = true`)**: `unpack` is skipped unconditionally when `ParError = true`. `finalize` skips moving files to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` (when `folder_rename: true`), leaving files in the incomplete download directory so retries can find them.
