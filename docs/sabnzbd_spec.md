@@ -1050,8 +1050,10 @@ CREATE TABLE history (
 upstream Python schema and are gone. Nothing read them: each was written by the
 INSERT and scanned back, and no other code in the tree referenced the field. The
 annotation on `series` said "keep for migration", and Standing Design Rule 1
-abolishes that migration — `history.Open` refuses to open a database this
-build's migrations did not write, so there is no upgrade for them to serve.
+abolishes that migration — `history.Open` fails on an upstream file rather than
+adopting it, so there is no upgrade for them to serve. (It fails in the
+migration's own `CREATE TABLE history`, not in `refuseUnknownSchema`, which
+compares goose versions and an upstream file records none.)
 
 ```sql
 CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);

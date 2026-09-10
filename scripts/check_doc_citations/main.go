@@ -20,10 +20,11 @@
 //     in the tree. Every comment sweep run in the interim grepped those files
 //     and read them as though they described the code.
 //   - docs cited five migrations — 002_add_jobs_tables, 008, 009, 010, 011 —
-//     that do not exist and never did. The durability contract's supersession
-//     ledger was anchored on a migration history that had never been applied.
-//     The chain those citations missed has since been collapsed back into a
-//     single 001_initial.sql, which is the schema's one file.
+//     that no longer exist. They were real and shipped, and were discarded by
+//     the 001-011 collapse; the docs went on citing them by name for months.
+//     The durability contract's supersession ledger was anchored on files the
+//     tree no longer had. What replaced them has since been collapsed in turn,
+//     so the schema is again a single 001_initial.sql.
 //   - Five tests were cited as the guard on an invariant while not existing.
 //     One of them, TestSeedFromRuns_StaysAdditive, was named three times
 //     across two documents as one of "the only tests in the repository that

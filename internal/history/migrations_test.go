@@ -293,10 +293,12 @@ func TestMigrations_SchemaShape(t *testing.T) {
 // assertion that job_files.id still has one.
 //
 // The foreign-key half currently asserts an ABSENCE: the golden records no
-// foreign keys, because the only one the schema ever had was job_files's
-// CASCADE to jobs, and jobs was retired. That is worth pinning rather than
-// dropping — every cross-table deletion here is now an explicit job-scoped
-// DELETE, and a cascade reappearing would silently change who owns removal.
+// foreign keys. The only one this schema ever had was job_files's CASCADE to
+// jobs, declared in the pre-collapse 002_add_jobs_tables.sql, and it went at
+// the 001-011 collapse rather than when jobs was itself retired later. That
+// absence is worth pinning rather than dropping — every cross-table deletion
+// here is now an explicit job-scoped DELETE, and a cascade reappearing would
+// silently change who owns removal.
 //
 // It matters more here than it usually would. The schema is one file now, so
 // there is no chain of ALTERs recording what each column was for, and a

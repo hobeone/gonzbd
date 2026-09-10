@@ -3,11 +3,16 @@
 // the upstream Python implementation's and has since diverged from it.
 //
 // It is NOT interchangeable with an upstream history.db, and this package is
-// what makes that so: Open refuses any database whose recorded goose version
-// this build's migrations did not write (refuseUnknownSchema), which an
-// upstream file trivially is. Standing Design Rule 1 is the reason — gonzbd
-// targets fresh installations and is not a drop-in replacement — and the
-// divergences are listed in docs/sabnzbd_spec.md §11.2.
+// what makes that so: Open fails on one. Standing Design Rule 1 is the reason
+// — gonzbd targets fresh installations and is not a drop-in replacement — and
+// the divergences are listed in docs/sabnzbd_spec.md §11.2.
+//
+// Which mechanism refuses it depends on the file, and it is worth being exact
+// because the obvious summary is wrong. refuseUnknownSchema rejects a database
+// recording a goose version above what this build ships. An upstream file
+// records none at all — it has no goose_db_version table — so that guard
+// passes it through, and it is the migration itself that fails, on CREATE
+// TABLE history against a file that already has one.
 //
 // This comment used to claim the schema was "byte-for-byte compatible with the
 // upstream Python implementation, so users can run the Go daemon against an
@@ -102,14 +107,14 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("history: new goose provider: %w", err)
 	}
 
-	// Refuse a database this build's migrations cannot describe, BEFORE
-	// running them.
+	// Refuse a database recording a migration version ABOVE the highest this
+	// build ships, BEFORE running the migrations.
 	//
 	// The schema is one migration, and has twice been collapsed back to one
 	// after a chain grew. goose keys purely on version numbers, so a database
-	// written before any collapse reads as already at version 1: Up() applies
-	// nothing and returns nil against a schema that is missing whatever the
-	// discarded chain built.
+	// left at a version the collapse discarded would read as already migrated:
+	// Up() applies nothing and returns nil against a schema missing whatever
+	// the discarded chain built.
 	//
 	// That failure is silent by construction, and it has been observed. The
 	// daemon came up clean with no durability tables at all: every barrier
@@ -122,6 +127,30 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// because this names the cause: the operator is told their database
 	// predates the collapse, which is actionable, rather than that a table is
 	// missing, which is not.
+	//
+	// WHAT IT DOES NOT CATCH, and why that is accepted rather than unnoticed.
+	// A version number is not a schema identity, and 001_initial.sql is
+	// rewritten in place on each collapse, so "version 1" names several
+	// materially different schemas across this repository's history. Two cases
+	// slip past:
+	//
+	//   - A database recording exactly version 1, written by a build whose 001
+	//     was an earlier file. `git log --oneline -- migrations/001_initial.sql`
+	//     shows six such revisions; a database created between the 2026-08-15
+	//     rebuild and 2026-08-23, when 002 was added, records version 1 and
+	//     nothing else. It is accepted here, Up() applies nothing, and the
+	//     daemon runs against that older schema. Deliberately not defended:
+	//     Standing Design Rule 1 puts an eight-day-old installation out of
+	//     scope, and the alternatives — renumbering every collapse past all
+	//     previously used versions, or probing for a sentinel table — buy a
+	//     case that cannot arise here at the cost of a rule that has to be
+	//     re-derived by every later reader.
+	//
+	//   - An upstream SABnzbd history.db, which has no goose_db_version table
+	//     at all and so leaves via the not-migrated branch below. It is still
+	//     refused, but by Up() failing on `CREATE TABLE history` against a file
+	//     that already has that table, not by this guard. The message is worse
+	//     and there is no upgrade either way.
 	if err := refuseUnknownSchema(ctx, sqlDB, subFS); err != nil {
 		_ = sqlDB.Close() // superseded by schema error
 		return nil, err
@@ -195,14 +224,19 @@ func (d *DB) Ping(ctx context.Context) error {
 //
 // It is not a "downgrade" guard in the usual sense. The schema is a single
 // migration that has twice absorbed a chain grown on top of it, and goose keys
-// purely on version numbers — so a database written by any pre-collapse build
-// records versions that no longer exist, while version 1 reads as already
-// applied and Up() does nothing at all. The failure is silent by construction,
-// which is why it is refused rather than repaired.
+// purely on version numbers — so a database left at a version the collapse
+// discarded records migrations that no longer exist, while version 1 reads as
+// already applied and Up() does nothing at all. The failure is silent by
+// construction, which is why it is refused rather than repaired.
+//
+// It is a bound in ONE direction. See Open for the two cases a version
+// comparison cannot reach — a legacy database recording exactly version 1, and
+// an upstream file recording no version at all.
 var ErrSchemaFromTheFuture = errors.New("history: the database records migrations this build does not have")
 
 // refuseUnknownSchema fails when goose_db_version holds a version above the
-// highest migration this build embeds.
+// highest migration this build embeds. It is not a schema check: it compares
+// one integer, and everything it cannot see is enumerated on Open.
 //
 // A missing table is not an error: a fresh database has no goose_db_version
 // until the first migration runs, which is the ordinary first start.
@@ -214,7 +248,17 @@ func refuseUnknownSchema(ctx context.Context, db *sql.DB, migrations fs.FS) erro
 	var applied sql.NullInt64
 	row := db.QueryRowContext(ctx, `SELECT MAX(version_id) FROM goose_db_version`)
 	if err := row.Scan(&applied); err != nil {
-		// No such table: nothing has ever been migrated here.
+		// Ordinarily "no such table": nothing has ever been migrated here,
+		// which is the fresh-install path and by far the common case.
+		//
+		// This deliberately does not distinguish that from the other reasons
+		// the read can fail — a corrupt or differently-shaped goose_db_version,
+		// a busy database — and so fails OPEN on all of them. The cost is
+		// bounded: every such database reaches provider.Up next, which either
+		// migrates it or fails loudly, so the outcome is a worse error message
+		// rather than a silent success. Narrowing this to the "no such table"
+		// case would trade that for a second place to keep a driver's error
+		// vocabulary correct.
 		return nil //nolint:nilerr // a fresh database is the ordinary case, not a failure
 	}
 	if !applied.Valid || applied.Int64 <= highest {

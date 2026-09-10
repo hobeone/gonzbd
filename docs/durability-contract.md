@@ -1823,8 +1823,10 @@ recorded here so the next reader does not mistake them for design.
    barrier write state the checkpointer owns — the line `durable_runs`' own doc
    draws when it says `failed_articles` has a single writer. Since the swap that
    writer is the sole production implementation of `checkpoint.Store`, whose
-   `SaveBatch` holds the only `INSERT INTO failed_articles` in the tree
-   (`internal/app/dispatcher_wiring.go:107`).
+   `SaveBatch` holds the only `INSERT INTO failed_articles` outside tests —
+   `git grep -n 'INTO failed_articles' -- '*.go' ':!*_test.go'` returns the one
+   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it
+   returns nine, the other eight being test fixtures.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**

@@ -12,10 +12,17 @@
 -- A chain records how the schema was reached; this file records what it is.
 -- Those differ once a migration deletes something, and by the end of 002-007
 -- they had diverged badly: the chain CREATEd three tables it later DROPped
--- (jobs, article_facts, file_extents), declared 40 columns and 4 indexes that
--- no running build ever had, and spent one entire migration (004) adding a
--- column to a table two migrations later removed. A reader opening the schema
--- to learn the schema was told things that stopped being true further down.
+-- (jobs, article_facts, file_extents), and one entire migration (004) added a
+-- column to a table two migrations later removed. Counting what 001 declared
+-- and the chain then destroyed: jobs' 23 columns plus the one 004 added to it,
+-- article_facts' 6, file_extents' 9, and articles_done on two tables -- 41
+-- columns, and 4 indexes (idx_jobs_sort_key, idx_jobs_name, idx_jobs_md5,
+-- idx_article_facts_file).
+--
+-- Every one of those shipped and worked; the point is not that they were never
+-- real but that 001 was the wrong place to go on reading about them. Someone
+-- opening the schema to learn the schema was told things the next file down
+-- had already undone.
 --
 -- The rationale drifted the same way. Every column added by ALTER since the
 -- last collapse carried its justification in a separate file, so the table
@@ -25,8 +32,7 @@
 --
 -- WHAT THE COLLAPSE ALSO REMOVED
 --
--- Auditing every column for a consumer turned up four with none, and they are
--- gone rather than carried forward:
+-- Four things had no consumer and are gone rather than carried forward:
 --
 --   * queue_meta, a whole table. No .go file read it, wrote it, or named it.
 --     It survived the previous collapse as inertia.
@@ -36,12 +42,33 @@
 --     so they were not an incidental API surface either; the mode=history
 --     response is built field by field and never mentioned them.
 --
--- The stated reason for the three columns was schema parity with the upstream
--- Python implementation, annotated in docs/sabnzbd_spec.md as "keep for
--- migration". Standing Design Rule 1 abolishes that migration, and
--- refuseUnknownSchema does not merely decline to perform it -- it refuses to
--- OPEN a database this build's migrations did not write. A column kept for a
--- path the same package forbids is not parity, it is residue.
+-- That is what the audit FOUND, and it is not a clean bill of health for the
+-- rest of the schema. The method that found these four is not strong enough to
+-- have cleared job_files: it traced each column to a Go struct field and
+-- looked for a reader of that field, and a field populated from the manifest
+-- reads as live whether or not any query ever selects the column. Asking the
+-- SQL instead --
+--   git grep -n 'FROM job_files' -- '*.go' ':!*_test.go'
+-- returns one production read, internal/app/residency.go:108, and it selects
+-- five columns. subject, date, bytes, is_par2_recovery, failed_bytes and
+-- bytes_downloaded are written and never selected. Whether those are dead or
+-- whether a read path is missing is a different question from this collapse,
+-- and it is recorded here as found rather than guessed at.
+--
+-- The stated reason for keeping them was schema parity with the upstream
+-- Python implementation. Only `series` actually carried that annotation --
+-- docs/sabnzbd_spec.md marked it "(deprecated; keep for migration)", while
+-- `report` was described as an internal status string and `duplicate_key` was
+-- unannotated -- but parity is the only reading under which any of the three
+-- earns its place, since nothing here ever wrote them.
+--
+-- Standing Design Rule 1 abolishes that migration, and history.Open fails on
+-- an upstream file rather than adopting it. Be exact about WHICH mechanism
+-- does that, because the obvious answer is wrong: refuseUnknownSchema compares
+-- goose version numbers, and an upstream file records none at all, so it
+-- passes that guard and is rejected a moment later by this migration's own
+-- CREATE TABLE history failing against a file that already has one. Either way
+-- there is no upgrade path, and a column kept for one is not parity.
 --
 -- WHY IT IS SAFE
 --
@@ -63,8 +90,12 @@
 -- and compared token-for-token. internal/history/testdata/schema.golden is the
 -- standing form of that check -- it records every table, column, constraint
 -- and foreign key, and TestMigrations_GoldenSchema fails on any change to
--- them. A constraint deleted from this file leaves no trace anywhere else, so
--- that test is the only thing standing behind the DDL below.
+-- them. It is the broadest check rather than the only one: the nine subtests
+-- of TestMigrations_SchemaShape pin the properties this design turns on
+-- individually, and internal/history/schema_test.go pins the history column
+-- count. A constraint deleted from this file leaves no trace anywhere else,
+-- which is why the golden is worth regenerating deliberately and reading the
+-- resulting diff rather than accepting it.
 
 -- +goose Up
 
@@ -129,15 +160,24 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- resolution is now DERIVED -- done means covered by a durable_runs row,
 -- failed means a failed_articles row, and neither means outstanding.
 --
--- failed_bytes and bytes_downloaded survived that removal, and both are caches
--- rather than second authorities. Each caches a sum over one half of the
--- derived resolution above. Both are written by the same statement that writes
--- the rest of this row, so a sum cannot be persisted out of step with the row
--- it belongs to; and both are superseded wholesale on promotion, where
--- JobProgress.recompute ASSIGNS them from the manifest and the restored runs.
--- They exist for the NON-resident path, which has no manifest to recompute
--- from and would otherwise report an inflated remaining figure for every job
--- beyond maxActive.
+-- failed_bytes and bytes_downloaded survived that removal. Both are written by
+-- the same statement that writes the rest of this row, so neither can be
+-- persisted out of step with it, and both are superseded wholesale on
+-- promotion, where JobProgress.recompute ASSIGNS them from the manifest and
+-- the restored runs.
+--
+-- NOTHING READS THEM BACK. The justification inherited from the pre-collapse
+-- text said they "exist for the NON-resident path", which has no manifest to
+-- recompute from and would otherwise report an inflated remaining figure --
+-- but that names a read no query performs. The one production SELECT against
+-- this table is internal/app/residency.go:108, and it takes file_index,
+-- filename, complete, assembled_crc32 and fetch_policy. The writes are
+-- internal/app/app.go:771 and internal/app/dispatcher_wiring.go:99.
+--
+-- The reasoning below is preserved because it explains what the columns were
+-- FOR and would be the design if the read were restored. It is recorded as
+-- rationale, not as a description of current behaviour, and the discrepancy is
+-- left visible rather than papered over.
 --
 -- failed_bytes has no home in the durability tables. failed_articles records
 -- WHICH articles failed and never how many bytes they were, so no
@@ -150,9 +190,11 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- turned out to be the wrong QUANTITY rather than an unavailable one. The two
 -- count different things. This column counts ENCODED bytes -- the NZB `bytes`
 -- attribute summed over resolved articles -- because that is what it is
--- compared against: the remaining figure is this row's `bytes` minus this
--- column minus failed_bytes, and `bytes` is the encoded per-file total from
--- the same NZB. A durable run's `length` counts DECODED payload bytes, the
+-- compared against, in the design these columns serve: a remaining figure of
+-- this row's `bytes` minus this column minus failed_bytes, where `bytes` is
+-- the encoded per-file total from the same NZB. (That subtraction is where the
+-- columns were meant to be consumed; see the note above about the read that
+-- does not currently happen.) A durable run's `length` counts DECODED payload bytes, the
 -- lengths the assembler actually wrote, which run a few percent lower. Seeding
 -- one from the other made a non-resident job overstate its remaining bytes by
 -- that margin, breaking the residency parity both columns exist to provide.
@@ -231,7 +273,11 @@ CREATE TABLE durable_runs (
 -- its history_job_files row, because a retry reuses the job ID over the same
 -- partial file and the retained runs are what bound the completion truncate to
 -- the whole file rather than to the handful of articles the retry re-fetched.
--- They are dropped with the history entry itself, in history.Repository.Delete.
+-- They are dropped with the history entry itself, in
+-- history.Repository.Delete, and also by RetryHistoryJob when it declines to
+-- apply the retained progress (internal/app/app.go:2143 calling
+-- dropJobDurability). internal/app/durability.go:1387 enumerates the deleters
+-- in full; two named here are not the whole set.
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -247,8 +293,8 @@ CREATE TABLE failed_articles (
 -- ':!*_test.go'` returns one line: internal/app/dispatcher_wiring.go:107, the
 -- INSERT OR IGNORE prepared inside appCheckpointStore.SaveBatch -- the sole
 -- production implementation of the checkpoint.Store interface
--- (internal/checkpoint/checkpointer.go:25). Nothing in this package writes a
--- row.
+-- (declared at internal/checkpoint/checkpointer.go:24, its SaveBatch method on
+-- the next line). Nothing in this package writes a row.
 --
 -- Deletion is deliberately not so narrow, and calling the table "solely owned"
 -- would misdescribe it. Rows are removed on the retry path
@@ -280,7 +326,10 @@ CREATE TABLE failed_articles (
 -- This is a progress overlay, not a second manifest: subject, date, bytes and
 -- is_par2_recovery are absent because a retry rebuilds them by re-parsing the
 -- NZB. article_count is kept solely so the overlay can be refused when the
--- re-parsed NZB does not line up with the retained durability rows.
+-- re-parsed NZB does not line up with it: retainedMatchesManifest
+-- (internal/app/app.go:2243) compares these rows' count against the re-parsed
+-- manifest's file range, file by file. It does not consult durable_runs or
+-- failed_articles.
 --
 -- Like job_files, this table carries no derived byte or cursor columns, and no
 -- articles_done bitmap. Nothing a retry needs is lost: which articles
@@ -326,9 +375,16 @@ CREATE TABLE history_job_files (
 CREATE TABLE dispatch_jobs (
     id          TEXT PRIMARY KEY,
     -- sort_key is queue order: a monotonic insertion sequence the dispatcher
-    -- assigns once, at registration, and never revises. It survives a removal
-    -- without renumbering because the only two operations that change the
-    -- dispatcher's order are an append and an order-preserving delete.
+    -- assigns once, at registration. It survives a removal without renumbering
+    -- because the only two operations that change the dispatcher's order are
+    -- an append and an order-preserving delete.
+    --
+    -- Nothing revises it TODAY, and that is a statement about the operations
+    -- that exist rather than a property of the design -- see entry.seq in
+    -- internal/dispatch/registry.go, which says so at length and records that
+    -- it will not stay true: spec §4.7 and /api?mode=switch require arbitrary
+    -- reordering, and a reorder has to renumber, because restore rebuilds
+    -- order from this column alone.
     sort_key    INTEGER NOT NULL,
 
     -- Header: the display metadata job.Job does not carry, supplied by the
@@ -369,11 +425,17 @@ CREATE TABLE dispatch_jobs (
     -- column is the unresolved integer, kept because the API reports it back
     -- verbatim (internal/api/queue.go:479).
     --
-    -- It is not merely carried: internal/app/directunpack_orchestrator.go:56
-    -- gates DirectUnpack on `row.Header.PP < 2`, which is a second reading of
-    -- the same permission the Unpack column already resolves. That is one
-    -- consumer, named here so the next person to touch it knows it exists
-    -- rather than discovering it.
+    -- It is not merely carried, and not by one caller. The persisted integer
+    -- is handed into postproc.Job (internal/app/app.go:1973) and gates stages
+    -- there: postproc.go:459 skips a stage via shouldSkipForPP, and
+    -- stage_script.go:149 passes it to user scripts as PPFlags.
+    -- internal/app/directunpack_orchestrator.go:56 gates DirectUnpack on
+    -- `row.Header.PP < 2` separately.
+    --
+    -- Each of those is a second reading of a permission the resolved Verify /
+    -- Repair / Unpack columns above already express, which is the owner-model
+    -- tension named rather than resolved here: collapsing them is a behaviour
+    -- change and belongs to whoever takes that on, not to a schema rewrite.
     filename          TEXT NOT NULL DEFAULT '',
     warning           TEXT NOT NULL DEFAULT '',
     script            TEXT NOT NULL DEFAULT '',
@@ -416,14 +478,20 @@ CREATE TABLE dispatch_jobs (
     -- count. Zero here means "nothing recognized", never "nothing to repair
     -- with" -- see JobProgress.HasPar2Files and the abort gates.
     --
-    -- It is the is_par2_recovery aggregate over job_files and so could be
-    -- derived, but it is kept on this row deliberately. A job_files aggregate
-    -- fails soft, leaving its scalars at zero, and a zero recovery figure is
-    -- not a missing reading -- it is a definite claim that the job has no
-    -- repair capacity, which the UI renders as "No repair data" and both abort
-    -- gates read as grounds to declare a job hopeless. That must not be
-    -- reachable from a transient database error, so it lives on this row,
-    -- which is read unconditionally and fails the load rather than degrading.
+    -- It is derived, not measured here: Job.recoveryBytes is assigned from
+    -- Manifest.RecoveryBytes() (internal/job/content.go:49 and :88), which
+    -- returns the manifest's own par2RecoveryBytes. There is no SQL aggregate
+    -- over job_files.is_par2_recovery anywhere -- git grep -n 'is_par2_recovery'
+    -- over non-test .go files returns an INSERT column list, a JSON tag and a
+    -- comment.
+    --
+    -- It is persisted on this row rather than recomputed on load because a
+    -- non-resident job has no manifest to recompute from, and because a zero
+    -- recovery figure is not a missing reading -- it is a definite claim that
+    -- the job has no repair capacity, which the UI renders as "No repair data"
+    -- and both abort gates read as grounds to declare a job hopeless. That
+    -- must not be reachable from a degraded read, so it lives on a row that is
+    -- read unconditionally and fails the load rather than returning zero.
     recovery_bytes    INTEGER NOT NULL DEFAULT 0,
 
     -- par2_recovered records that on-demand par2 un-deferred this job's
