@@ -776,7 +776,7 @@ func TestDirectUnpack_OnLinePanic(t *testing.T) {
 
 // TestDirectUnpack_SkipsNonRAR verifies that DirectUnpack pre-checks the
 // magic bytes of the first volume and skips (rather than fails) sets that
-// aren't RAR3 or RAR5 (the only formats rarengine can read). Other formats
+// aren't RAR5 (the only format rarengine can read). Other formats
 // are handled by the normal unpack stage's external unrar fallback.
 func TestDirectUnpack_SkipsNonRAR(t *testing.T) {
 	workDir := t.TempDir()
@@ -819,8 +819,55 @@ func TestDirectUnpack_SkipsNonRAR(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 'notrar' to be recorded as skipped, got: %+v", skipped)
 	}
-	if !strings.Contains(s.Reason, "RAR3/RAR5") {
-		t.Errorf("expected skip reason to mention RAR3/RAR5, got: %q", s.Reason)
+	if !strings.Contains(s.Reason, "RAR5") {
+		t.Errorf("expected skip reason to mention RAR5, got: %q", s.Reason)
+	}
+}
+
+// TestDirectUnpack_SkipsRAR3 verifies that DirectUnpack rejects RAR3 archives
+// before streaming, skipping them so they fall back to the normal unpack stage's
+// external unrar.
+func TestDirectUnpack_SkipsRAR3(t *testing.T) {
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	// RAR3 signature: Rar!\x1a\x07\x00\x00
+	signature := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00}
+	volPath := filepath.Join(workDir, "archive_rar3.rar")
+	if err := os.WriteFile(volPath, signature, 0o644); err != nil {
+		t.Fatalf("write archive_rar3.rar: %v", err)
+	}
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{},
+	)
+
+	du.SetAllFilenames([]string{"archive_rar3.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	du.Add(ctx, "archive_rar3.rar", volPath)
+	du.Wait()
+
+	if results := du.Results(); len(results) != 0 {
+		t.Fatalf("expected no successful sets, got: %+v", results)
+	}
+	if failures := du.Failures(); len(failures) != 0 {
+		t.Fatalf("expected no failed sets, got: %+v", failures)
+	}
+
+	skipped := du.Skipped()
+	s, ok := skipped["archive_rar3"]
+	if !ok {
+		t.Fatalf("expected 'archive_rar3' to be recorded as skipped, got: %+v", skipped)
+	}
+	if !strings.Contains(s.Reason, "RAR5") {
+		t.Errorf("expected skip reason to mention RAR5, got: %q", s.Reason)
 	}
 }
 
