@@ -37,6 +37,11 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 		return Result{Reason: reason}, fmt.Errorf("go_unrar: %w", detectErr)
 	}
 
+	if ver == 3 {
+		log.Info("go_unrar: RAR3 is not supported by pure-Go rarengine", "archive", archive.MainFile)
+		return Result{Reason: FailUnknown}, rarengine.ErrUnsupportedFormat
+	}
+
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
 	beforeSnap, snapErr := snapshotDir(outDir)
 	res, err = GoUnRAREngine(ctx, log, archive, outDir, password, opts)
@@ -51,12 +56,18 @@ func ClassifyRarEngineError(err error) FailReason {
 	switch {
 	case errors.Is(err, rarengine.ErrWrongPassword), errors.Is(err, rarengine.ErrPasswordRequired):
 		return FailWrongPassword
-	case errors.Is(err, rarengine.ErrRarBombDetected):
-		return FailCorrupt
-	case errors.Is(err, rarengine.ErrBadHeaderCRC):
+	case errors.Is(err, rarengine.ErrRarBombDetected),
+		errors.Is(err, rarengine.ErrBadHeaderCRC),
+		errors.Is(err, rarengine.ErrCRCMismatch),
+		errors.Is(err, rarengine.ErrCorruptArchiveHeader),
+		errors.Is(err, rarengine.ErrTruncatedFile),
+		errors.Is(err, rarengine.ErrSolidStreamBroken):
 		return FailCorrupt
 	case errors.Is(err, rarengine.ErrNoNextVolume):
 		return FailMissingVolume
+	case errors.Is(err, rarengine.ErrUnsupportedFormat),
+		errors.Is(err, rarengine.ErrUnsupportedEncryptionVersion):
+		return FailUnknown
 	default:
 		return FailUnknown
 	}
@@ -111,9 +122,15 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	}
 	close(volumesChan)
 
-	sd := rarengine.NewStreamDecompressor(volumesChan)
+	r := rarengine.NewReader(volumesChan)
+	defer r.Close() //nolint:errcheck // close open and queued volumes
+	stop := context.AfterFunc(ctx, func() { _ = r.Close() })
+	defer stop()
+
 	if password != "" {
-		sd.SetPassword(password)
+		r.SetPasswords([]string{password})
+	} else if len(opts.Passwords) > 0 {
+		r.SetPasswords(opts.Passwords)
 	}
 
 	var extractedFiles []string
@@ -124,10 +141,13 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, err
 		}
 
-		fh, err := sd.Next()
+		entry, err := r.NextEntry()
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
 				break
+			}
+			if errors.Is(err, rarengine.ErrReaderClosed) && ctx.Err() != nil {
+				return res, ctx.Err()
 			}
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
@@ -136,13 +156,13 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
-		sp, sanitizeErr := NewSanitizedPath(fh.Name, opts.OneFolder)
+		sp, sanitizeErr := NewSanitizedPath(entry.Header.Name, opts.OneFolder)
 		if sanitizeErr != nil {
-			log.Warn("skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
+			log.Warn("skipping entry with bad path", "raw_name", entry.Header.Name, "err", sanitizeErr)
 			if opts.OnLine != nil {
-				opts.OnLine("Skipping bad path: " + fh.Name)
+				opts.OnLine("Skipping bad path: " + entry.Header.Name)
 			}
-			_, _ = io.Copy(io.Discard, sd) //nolint:errcheck // drain stream to skip bad entry
+			_ = entry.Close()
 			continue
 		}
 
@@ -154,22 +174,37 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			destPath = filepath.Join(outDir, destRel)
 		}
 
-		if err := ExtractEntryRarengine(ctx, root, outDir, destRel, destPath, fh, sd, opts, log); err != nil {
+		if err := ExtractEntryRarengine(ctx, root, outDir, destRel, destPath, entry.Header, entry, opts, log); err != nil {
+			_ = entry.Close()
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", fh.Name, err))
+				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
 			}
 			return res, err
 		}
 
-		if !fh.IsDir {
+		if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
+			res.Reason = ClassifyRarEngineError(err)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
+			}
+			return res, err
+		}
+
+		if !entry.Header.IsDir {
 			extractedFiles = append(extractedFiles, destPath)
 			displayPath := destRel
 			outBuf.WriteString("Extracting  " + displayPath + "\n")
 		}
 
 		if opts.OnLine != nil {
-			opts.OnLine("Extracting  " + fh.Name)
+			opts.OnLine("Extracting  " + entry.Header.Name)
 		}
 	}
 
@@ -178,6 +213,24 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	res.Output = outBuf.String()
 
 	return res, nil
+}
+
+// rarEntryReader wraps an io.Reader (typically a *rarengine.Entry) to convert
+// rarengine.ErrChecksumUnsupported at the end of a member into io.EOF.
+// rarengine returns its verdict from Read alongside the final bytes; for archives
+// with uncheckable digests (e.g. key-derived MACs or BLAKE2sp), this delivery is
+// valid content that should be published, with the verdict filtered at both Read
+// (here) and entry.Close().
+type rarEntryReader struct {
+	r io.Reader
+}
+
+func (er rarEntryReader) Read(p []byte) (int, error) {
+	n, err := er.r.Read(p)
+	if errors.Is(err, rarengine.ErrChecksumUnsupported) {
+		return n, io.EOF
+	}
+	return n, err
 }
 
 // ExtractEntryRarengine writes a single rarengine entry through root, an
@@ -207,7 +260,7 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 	// ClassifyRarEngineError), so r is passed through to writeEntrySafely
 	// unwrapped, unlike go_tar/go_sevenzip which wrap their reader in a
 	// boundReader before writing.
-	_, err := writeEntrySafely(ctx, root, destRel, destPath, r, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, rarEntryReader{r: r}, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
 	return err
 }
 

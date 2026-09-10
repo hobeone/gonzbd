@@ -936,3 +936,101 @@ func TestGoUnRAREngineInternal_ErrorBranches(t *testing.T) {
 		}
 	})
 }
+
+func TestClassifyRarEngineError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want FailReason
+	}{
+		{"wrong_password", rarengine.ErrWrongPassword, FailWrongPassword},
+		{"password_required", rarengine.ErrPasswordRequired, FailWrongPassword},
+		{"rar_bomb", rarengine.ErrRarBombDetected, FailCorrupt},
+		{"bad_header_crc", rarengine.ErrBadHeaderCRC, FailCorrupt},
+		{"crc_mismatch", rarengine.ErrCRCMismatch, FailCorrupt},
+		{"corrupt_archive_header", rarengine.ErrCorruptArchiveHeader, FailCorrupt},
+		{"truncated_file", rarengine.ErrTruncatedFile, FailCorrupt},
+		{"solid_stream_broken", rarengine.ErrSolidStreamBroken, FailCorrupt},
+		{"no_next_volume", rarengine.ErrNoNextVolume, FailMissingVolume},
+		{"unsupported_format", rarengine.ErrUnsupportedFormat, FailUnknown},
+		{"unsupported_encryption_version", rarengine.ErrUnsupportedEncryptionVersion, FailUnknown},
+		{"unknown_error", errors.New("some other error"), FailUnknown},
+		{"wrapped_wrong_password", fmt.Errorf("wrapped: %w", rarengine.ErrWrongPassword), FailWrongPassword},
+		{"wrapped_crc_mismatch", fmt.Errorf("wrapped: %w", rarengine.ErrCRCMismatch), FailCorrupt},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyRarEngineError(tt.err)
+			if got != tt.want {
+				t.Errorf("ClassifyRarEngineError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGoUnRAR_RAR3Unsupported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rar3.rar")
+	// RAR3 signature: Rar!\x1a\x07\x00\x00
+	signature := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00}
+	if err := os.WriteFile(path, signature, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "rar3",
+		MainFile: path,
+	}
+
+	outDir := t.TempDir()
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
+	if err == nil {
+		t.Fatal("GoUnRAR() expected error for RAR3 archive")
+	}
+	if !errors.Is(err, rarengine.ErrUnsupportedFormat) {
+		t.Errorf("err = %v, want ErrUnsupportedFormat", err)
+	}
+	if res.Reason != FailUnknown {
+		t.Errorf("res.Reason = %v, want FailUnknown", res.Reason)
+	}
+}
+
+func TestGoUnRAR_OptsPasswords(t *testing.T) {
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "password_rar5",
+		MainFile: filepath.Join("testdata", "password_rar5.rar"),
+	}
+
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
+		Passwords: []string{"testpass"},
+	})
+	if err != nil {
+		t.Fatalf("GoUnRAR() with opts.Passwords error: %v", err)
+	}
+	if len(res.ExtractedFiles) == 0 {
+		t.Fatal("GoUnRAR() extracted no files")
+	}
+}
+
+func TestGoUnRAR_EncryptedHeader_OptsPasswords(t *testing.T) {
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "encrypted_header",
+		MainFile: filepath.Join("testdata", "encrypted_header.rar"),
+	}
+
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
+		Passwords: []string{"testpass"},
+	})
+	if err != nil {
+		t.Fatalf("GoUnRAR() with opts.Passwords error: %v", err)
+	}
+	if len(res.ExtractedFiles) == 0 {
+		t.Fatal("GoUnRAR() extracted no files")
+	}
+}
